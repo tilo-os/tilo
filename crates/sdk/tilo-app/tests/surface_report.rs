@@ -56,7 +56,7 @@ impl ResourceApp for TypoApp {
 
 #[test]
 fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
-    let report = tilo_app::framework::testing::surface_report::<GoodApp>();
+    let report = tilo_app::framework::headless::surface_report::<GoodApp>();
     let surface = &report["resources"][0];
     assert_eq!(surface["kind"], "test.counter");
     assert!(
@@ -88,7 +88,7 @@ fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
     );
     assert!(report["view"].is_null(), "{report}");
 
-    let report = tilo_app::framework::testing::surface_report::<TypoApp>();
+    let report = tilo_app::framework::headless::surface_report::<TypoApp>();
     let unbound = report["unbound"].as_array().unwrap();
     assert_eq!(unbound.len(), 1, "{report}");
     assert!(unbound[0].as_str().unwrap().contains("bunp"), "{report}");

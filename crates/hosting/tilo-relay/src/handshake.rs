@@ -32,7 +32,6 @@ const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 const MAX_PENDING_HANDSHAKES: usize = 256;
 static PENDING_HANDSHAKES: Semaphore = Semaphore::const_new(MAX_PENDING_HANDSHAKES);
 
-/// Who an endpoint admits at the handshake.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EndpointTrust<'a> {
     /// [`HandshakeTrust::Live`], read from the relay's live policy when the

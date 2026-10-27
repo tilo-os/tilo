@@ -3,7 +3,7 @@
 A synthetic native SDK app reached a compositor-painted frame through the
 existing semantic launch action and ordinary net-off sandbox. This repairs an
 unusable measurement path; it does not establish a startup speedup.
-[Raw events, frame metadata and binary hashes](native-first-frame-2026-10-06.json).
+[Raw events, frame metadata and binary hashes](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/native-first-frame-2026-10-06.json).
 
 ## Measured timeline
 

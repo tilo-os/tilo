@@ -5,11 +5,26 @@
 //! handoff) through `nav_stack`.
 
 pub mod actions;
+mod device_status;
 pub mod hosted;
 pub mod now_playing;
 pub mod refresh;
 pub(crate) mod root;
 pub(crate) mod sections;
+
+/// The clipboard history as Quick Settings shows it: the Clipboard row's
+/// count and the section's copies, read together from one snapshot of the
+/// history so the row can never say "Empty" over a list of copies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardView {
+    /// Every copy in the history: the row's count.
+    pub total: usize,
+    /// The line over the copies: how many there are, or what is being
+    /// searched for (typing while the section is open searches).
+    pub caption: String,
+    /// The copies the section lists (the latest, or the matches).
+    pub rows: Vec<hosted::HostedRow>,
+}
 
 /// A single frame in the `QuickSettings` navigation stack. Everything else
 /// opens in place on the root page ([`QsSection`]).
@@ -33,7 +48,10 @@ pub enum QsSection {
     Bluetooth,
     /// `NetworkManager`'s VPN profiles.
     Vpn,
-    /// Charge, the power mode and what keeps the machine awake.
+    /// The power modes the daemon offers, under the Power mode tile: the
+    /// one place the mode is chosen.
+    PowerMode,
+    /// Charge, what keeps the machine awake, and a link to the power mode.
     Battery,
     /// Where sound plays: this machine's outputs.
     Sound,
@@ -49,11 +67,12 @@ pub enum QsSection {
 
 impl QsSection {
     /// Every section, in the order the page is laid out.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Sound,
         Self::Wifi,
         Self::Bluetooth,
         Self::Vpn,
+        Self::PowerMode,
         Self::Battery,
         Self::Devices,
         Self::Clipboard,
@@ -107,6 +126,9 @@ pub struct WifiPasswordPrompt {
     /// True while `nmcli` is associating, so the prompt stays inert
     /// instead of looking unresponsive.
     pub connecting: bool,
+    /// How tall the host's prompt is, in logical pixels, as it last laid
+    /// it out; 0 until it has. The section leaves this much room.
+    pub height: u32,
 }
 
 impl WifiPasswordPrompt {
@@ -117,6 +139,7 @@ impl WifiPasswordPrompt {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             error: None,
             connecting: false,
+            height: 0,
         }
     }
 
@@ -155,9 +178,84 @@ impl PowerProfile {
     }
 }
 
+/// Take the brightness service's levels into the sliders, by connector, as
+/// the service announces a change, whoever made it. Without per-display
+/// sliders the built-in panel's level is the one slider's. Returns whether
+/// a slider moved.
+pub fn follow_brightness_levels(
+    state: &mut crate::shell::chrome_state::QuickSettingsState,
+    levels: &[os_actions::MonitorLevel],
+) -> bool {
+    let before = (state.brightness.to_bits(), state.displays.clone());
+    for display in &mut state.displays {
+        if let Some(level) = levels.iter().find(|l| l.connector == display.connector) {
+            display.level = level.level;
+        }
+    }
+    let first = match state.displays.first() {
+        Some(display) => Some(display.level),
+        None => levels
+            .iter()
+            .find(|l| l.kind == os_actions::BrightnessKind::Backlight)
+            .map(|l| l.level),
+    };
+    if let Some(level) = first {
+        state.brightness = level;
+    }
+    before != (state.brightness.to_bits(), state.displays.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn level(
+        connector: &str,
+        level: f32,
+        kind: os_actions::BrightnessKind,
+    ) -> os_actions::MonitorLevel {
+        os_actions::MonitorLevel {
+            connector: connector.into(),
+            level,
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_backlight_change_moves_its_slider_and_nothing_else() {
+        use os_actions::BrightnessKind::{Backlight, Ddc};
+        let mut state = crate::shell::chrome_state::QuickSettingsState::default();
+        assert!(follow_brightness_levels(
+            &mut state,
+            &[level("eDP-1", 0.7, Backlight)]
+        ));
+        assert!(
+            (state.brightness - 0.7).abs() < f32::EPSILON,
+            "the one slider"
+        );
+
+        state.displays = vec![
+            crate::shell::chrome_state::DisplayBrightness {
+                connector: "eDP-1".into(),
+                name: "Built-in display".into(),
+                level: 0.7,
+            },
+            crate::shell::chrome_state::DisplayBrightness {
+                connector: "DP-2".into(),
+                name: "Dell U2720Q".into(),
+                level: 0.5,
+            },
+        ];
+        let levels = [level("eDP-1", 0.25, Backlight), level("DP-2", 0.5, Ddc)];
+        assert!(follow_brightness_levels(&mut state, &levels));
+        assert!((state.displays[0].level - 0.25).abs() < f32::EPSILON);
+        assert!((state.displays[1].level - 0.5).abs() < f32::EPSILON);
+        assert!((state.brightness - 0.25).abs() < f32::EPSILON);
+        assert!(
+            !follow_brightness_levels(&mut state, &levels),
+            "already shown"
+        );
+    }
 
     #[test]
     fn power_profile_label_matches_variant() {

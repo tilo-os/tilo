@@ -10,6 +10,8 @@ import tarfile
 import tempfile
 import unittest
 
+from hang import HANG_BOUND
+
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = "runtime/tilo-runtime/2026.07+native.07ebd4fdaafcf63c676f16737f3fb233"
 
@@ -65,7 +67,7 @@ class PriorCollectionTest(unittest.TestCase):
                  str(plan), str(destination), "x86_64",
                  env["TILO_PACKAGE_PUBLIC_BASE_URL"] + "/collection/fixture/apps.tar.gz",
                  hashlib.sha256(archive.read_bytes()).hexdigest()],
-                env=env, text=True, capture_output=True, timeout=10,
+                env=env, text=True, capture_output=True, timeout=HANG_BOUND,
             )
             copied = (destination / "files.tapp").exists()
             if result.returncode == 0:

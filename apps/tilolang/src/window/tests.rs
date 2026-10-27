@@ -637,7 +637,7 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
     let violations = ui::tilo_actions::validate_surface(
         &resources,
         &ActionRegistry::with(register_actions),
-        &ui::widget::Widget::resource_operation_handlers(&room.window),
+        &ui::widget::resource_operation_handlers(&room.window),
     );
     assert!(violations.is_empty(), "{violations:#?}");
     let output = room.agent_invokes(HOST, "catalogue", &Json::Null).unwrap();

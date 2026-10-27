@@ -35,7 +35,7 @@ fn shared_library() -> Vec<u8> {
 }
 
 fn run(data_dir: &Path, arguments: &[&str]) -> serde_json::Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(data_dir)
         .args(arguments)
@@ -184,7 +184,6 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             prereleases: MAX_ENTRY_VERSIONS,
         };
 
-        // The entry fills up to its limit.
         registry_client::publish(&client, &publisher, full, None, None, &keep_all).unwrap();
         promote(&data_dir, &publisher_hex, &channel_key);
         let entry = client.entry(PACKAGE_ID).unwrap().unwrap();
@@ -233,7 +232,7 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             reqwest::StatusCode::OK
         );
         for _ in 0..SNAPSHOT_HISTORY_RETAINED {
-            let output = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+            let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
                 .arg("--data-dir")
                 .arg(&data_dir)
                 .args(["sign-delegated-snapshot", "--channel-key-file"])

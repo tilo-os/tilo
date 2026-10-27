@@ -11,11 +11,15 @@ fn authorized_person_session(
     let room = session.room.clone();
     let socket = session.broker.capnp_socket().to_path_buf();
     let identity = session.identity_socket().to_path_buf();
-    let apps = InProcessApps::at(&profile.join("apps"), &session.actor)
-        .unwrap()
-        .reaching_broker(Rc::new(move |app, room| {
-            session_connector(socket.clone(), identity.clone(), app, room)
-        }));
+    let apps = InProcessApps::at(
+        &profile.join("apps"),
+        &profile.join("apps").join("person"),
+        &session.actor,
+    )
+    .unwrap()
+    .reaching_broker(Rc::new(move |app, room| {
+        session_connector(socket.clone(), identity.clone(), app, room)
+    }));
     (session, apps, room)
 }
 

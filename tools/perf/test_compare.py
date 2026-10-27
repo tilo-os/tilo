@@ -8,6 +8,7 @@ import io
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -175,6 +176,15 @@ class Budgets(unittest.TestCase):
         self.assertEqual((row.status, row.failing), ("new", True))
         self.assertIn("over budget: p99 20 > 16.7 ms", row.note)
 
+    def test_an_enforced_miss_says_so_beside_a_quiet_status(self):
+        rows = compare.compare([make(20, 1)], [], self.budgets(True), set(), set())
+        self.assertTrue(rows[0].over_budget)
+        text = compare.summary(rows)
+        # The status alone would read `new`, which looks like a run that
+        # changed nothing; the run it is in fails.
+        self.assertIn("**over budget** (new)", text)
+        self.assertIn("1 results, 1 failing (1 over budget).", text)
+
     def test_a_target_miss_is_reported_only(self):
         [row] = compare.compare([make(20, 1)], [], self.budgets(False), set(), set())
         self.assertFalse(row.failing)
@@ -204,7 +214,17 @@ class Budgets(unittest.TestCase):
         self.assertIn("footprint.tapp.bytes.x86_64", budgets.kpis)
 
 
-WORKFLOWS = HERE.parents[1] / ".forgejo/workflows"
+ROOT = HERE.parents[1]
+SCHEDULED = ROOT / "tools/ci/perf-scheduled.sh"
+
+
+def t_checks() -> dict[str, dict]:
+    return {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+
+
+def scheduled_groups() -> list[str]:
+    """The KPI groups tools/ci/perf-scheduled.sh measures, one t check each."""
+    return re.findall(r"^  ([a-z][a-z-]*)\)$", SCHEDULED.read_text(), re.M)
 
 
 def lane_budgets(**lanes: compare.Lane) -> compare.Budgets:
@@ -272,21 +292,45 @@ class Lanes(unittest.TestCase):
         self.assertEqual(budgets.owner("render.frame_cpu_ms"), "vm-acceptance")
         self.assertEqual(budgets.owner("render.shell.redraw_us.4k"), "perf-scheduled")
 
+    def test_every_benchmark_test_perf_scheduled_runs_exists(self):
+        # A filter that matches no test runs nothing and exits 0, so a renamed
+        # or removed benchmark is only noticed when its samples are missing.
+        script = SCHEDULED.read_text().replace("\\\n", " ")
+        filters = re.findall(r"cargo test [^\n]*?--lib\s+([\w:]+)\s+--", script)
+        self.assertIn("native_task_benchmark", [name.rsplit("::", 1)[-1] for name in filters])
+        # Cargo selects every test whose name contains the filter. One file
+        # at a time: the whole tree's sources at once do not fit the check.
+        missing = {name: re.compile(rf"\bfn \w*{name.rsplit('::', 1)[-1]}\w*\(") for name in filters}
+        for path in (path for top in ("apps", "crates") for path in (ROOT / top).rglob("*.rs")):
+            if not missing:
+                break
+            text = path.read_text(errors="replace")
+            missing = {name: pattern for name, pattern in missing.items() if not pattern.search(text)}
+        self.assertEqual(sorted(missing), [], "perf-scheduled.sh runs test filters that no test defines")
+
     def test_perf_scheduled_selects_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)
-        workflow = (WORKFLOWS / "perf-scheduled.yml").read_text()
-        [known] = re.findall(r"^\s*known=\(([^)]*)\)$", workflow, re.M)
-        self.assertEqual(set(known.split()), budgets.lane_groups("perf-scheduled"))
-        for group in known.split():
-            self.assertIn(f"\n  {group}:\n", workflow, f"perf-scheduled.yml has a {group} job")
-        self.assertIn("--lane perf-scheduled", workflow)
+        groups = scheduled_groups()
+        # hosting-room records are hosting's, footprint-image's footprint's
+        # (tools/ci/perf-compare.sh).
+        self.assertEqual({group.split("-")[0] for group in groups}, budgets.lane_groups("perf-scheduled"))
+        checks = t_checks()
+        # Whatever their outcome, so one failing group doesn't cost the others their records.
+        self.assertNotIn("needs", checks["perf-scheduled"])
+        self.assertEqual(set(checks["perf-scheduled"]["needs_any_outcome"]), {f"perf-{group}" for group in groups})
+        for group in groups:
+            self.assertEqual(checks[f"perf-{group}"]["run"], f"bash tools/ci/perf-scheduled.sh {group}")
+        compare_script = (ROOT / "tools/ci/perf-compare.sh").read_text()
+        self.assertIn('--lane perf-scheduled --groups "$groups"', compare_script)
+        self.assertIn('["lanes"]["perf-scheduled"]["groups"]', compare_script)
+        self.assertIn("T_NEEDS_FAILED", compare_script)
 
     def test_vm_acceptance_owes_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)
-        workflow = (WORKFLOWS / "vm-acceptance.yml").read_text()
-        [groups] = re.findall(r"\|\| groups=([a-z,]+)$", workflow, re.M)
+        perf = t_checks()["vm-acceptance-perf"]
+        self.assertEqual(perf["needs"], ["vm-acceptance"])
+        [groups] = re.findall(r"--lane vm-acceptance --groups ([a-z,]+) ", perf["run"])
         self.assertEqual(set(groups.split(",")), budgets.lane_groups("vm-acceptance"))
-        self.assertIn("--lane vm-acceptance", workflow)
 
     def test_each_workflows_render_records_satisfy_the_repository_budgets(self):
         # The nightly failure this fixes: both workflows select render, and

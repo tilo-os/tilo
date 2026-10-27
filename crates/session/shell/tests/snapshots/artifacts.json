@@ -2,16 +2,22 @@
   "schema": 1,
   "assets": [
     {
+      "file": "e2e-open-close-overview-settled.png",
+      "sha256": "d81a4c170a7c0a280353ac5fc7c677c833713d7f57dc8e0d064895d5b2c460d9",
+      "bytes": 79283,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d81a4c170a7c0a280353ac5fc7c677c833713d7f57dc8e0d064895d5b2c460d9/e2e-open-close-overview-settled.png"
+    },
+    {
       "file": "e2e-tab-drag-reorder-settled.png",
-      "sha256": "0fd17d8011ac09abf420106f7d459fd596fc804e9051dc38707abf12687c23d2",
-      "bytes": 22171,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/0fd17d8011ac09abf420106f7d459fd596fc804e9051dc38707abf12687c23d2/e2e-tab-drag-reorder-settled.png"
+      "sha256": "7513ec7d612ab17872c64391b1be9cc9b1b64f7bb66d0467fac9f6004b7a6c5a",
+      "bytes": 23634,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/7513ec7d612ab17872c64391b1be9cc9b1b64f7bb66d0467fac9f6004b7a6c5a/e2e-tab-drag-reorder-settled.png"
     },
     {
       "file": "e2e-maximized-tile-controls.png",
-      "sha256": "c58192db9e5787c461f7b2672dc5c73bb6eac8993a5f19cc8b8928c868ddccad",
-      "bytes": 23569,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/c58192db9e5787c461f7b2672dc5c73bb6eac8993a5f19cc8b8928c868ddccad/e2e-maximized-tile-controls.png"
+      "sha256": "6144302c4c347492227b29cac6bbf21c27e2a5d30c1768777bfc38c58547d5bd",
+      "bytes": 24295,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/6144302c4c347492227b29cac6bbf21c27e2a5d30c1768777bfc38c58547d5bd/e2e-maximized-tile-controls.png"
     }
   ]
 }

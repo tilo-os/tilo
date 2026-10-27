@@ -31,8 +31,12 @@ const REBUILD_PER_MIB: Duration = Duration::from_millis(250);
 /// Document states whose worker the pool remembers; the least recently used
 /// quarter is forgotten when full.
 const ROUTES: usize = 4096;
-/// How long a new worker may take to say it is ready.
-const STARTUP: Duration = Duration::from_secs(5);
+/// How long a new worker that is still running may take to say it is ready.
+/// Starting means executing this whole program again, which on a loaded
+/// machine (a cold page cache, every core busy) takes seconds; a worker that
+/// cannot serve exits at once and is reported as soon as it does, so only a
+/// slow start ever waits this long.
+const STARTUP: Duration = Duration::from_secs(30);
 
 pub(crate) struct Pool {
     limits: Limits,
@@ -271,7 +275,6 @@ impl Routes {
 
 /// What the worker builds the caller's document from.
 enum Base {
-    /// Its own copy.
     Cached,
     /// Its copy at an earlier state, plus the caller's changes since.
     After(Key, Vec<u8>),
@@ -356,7 +359,14 @@ impl Worker {
                     String::from_utf8_lossy(&frame)
                 )))
             }
-            _ => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                worker.kill();
+                Err(Rejected::Unavailable(format!(
+                    "automerge worker did not say it was ready within {STARTUP:?}"
+                )))
+            }
+            // It ended without a word: this program does not serve workers.
+            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 worker.kill();
                 Err(Rejected::Unavailable(not_serving()))
             }
@@ -554,6 +564,7 @@ mod tests {
     fn limits() -> Limits {
         Limits {
             workers: 1,
+            timeout: tilo_test_env::hang_bound(),
             ..Limits::default()
         }
     }
@@ -745,11 +756,9 @@ mod tests {
         doc.commit();
         let mut first = pool.load(&doc.save()).unwrap();
         let pid = (pool.slots[0]).lock_recover().as_ref().unwrap().child.id();
-        std::thread::sleep(Duration::from_millis(1600));
-        assert!(
-            (pool.slots[0]).lock_recover().as_mut().unwrap().exited(),
-            "worker {pid} did not exit"
-        );
+        tilo_test_env::wait_until(format!("idle worker {pid} to exit"), || {
+            (pool.slots[0]).lock_recover().as_mut().unwrap().exited()
+        });
         let mut remote = first.fork();
         remote.put(automerge::ROOT, "k", 2).unwrap();
         remote.commit();
@@ -771,9 +780,7 @@ mod tests {
         let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
         // SAFETY: signalling our own child.
         unsafe { libc::kill(pid, libc::SIGALRM) };
-        while !worker.exited() {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the signalled worker to exit", || worker.exited());
         *(pool.slots[0]).lock_recover() = Some(worker);
         assert!(pool.load(&doc.save()).is_ok());
     }
@@ -853,7 +860,6 @@ mod tests {
                 tilo_automerge::ApplyIncoming::merge_incoming(other, writer).unwrap();
             }
         }
-        // Leave the two heads concurrent.
         bo.put(automerge::ROOT, "bo", true).unwrap();
         bo.commit();
         tilo_automerge::ApplyIncoming::merge_incoming(&mut ada, &mut bo).unwrap();
@@ -876,7 +882,6 @@ mod tests {
         assert_eq!(hashes, reference.document().change_hashes());
         assert_eq!(hashes.len(), doc.get_changes(&[]).len());
 
-        // The caller's load with them builds the document a full load does.
         let mut validated = engine::load_validated(&saved, &hashes).unwrap();
         assert_eq!(validated.get_heads(), reference.get_heads());
         assert_eq!(

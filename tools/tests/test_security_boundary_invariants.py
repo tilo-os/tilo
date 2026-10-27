@@ -1,12 +1,13 @@
 import pathlib
 import subprocess
+import tomllib
 import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "tools/security-boundary-invariants.txt"
 RUNNER = ROOT / "tools/run-security-boundary-invariants.sh"
-WORKFLOW = ROOT / ".forgejo/workflows/check.yml"
+T_TOML = ROOT / "t.toml"
 
 
 def manifest_entries() -> list[str]:
@@ -18,7 +19,7 @@ def manifest_entries() -> list[str]:
 
 
 class SecurityBoundaryInvariantSuiteTests(unittest.TestCase):
-    def test_invariant_manifest_runner_and_workflow_agree(self):
+    def test_invariant_manifest_runner_and_check_agree(self):
         with self.subTest(phase='manifest is unique and resolves to supported files'):
             entries = manifest_entries()
             self.assertGreater(len(entries), 50)
@@ -37,11 +38,13 @@ class SecurityBoundaryInvariantSuiteTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.stdout.splitlines(), manifest_entries())
-        with self.subTest(phase='workflow delegates the suite to the runner'):
-            workflow = WORKFLOW.read_text(encoding="utf-8")
-            self.assertIn("bash tools/run-security-boundary-invariants.sh", workflow)
+        with self.subTest(phase='the check delegates the suite to the runner'):
+            checks = tomllib.loads(T_TOML.read_text(encoding="utf-8"))["check"]
+            [security] = [check for check in checks if check["name"] == "security"]
+            self.assertEqual(security["run"], "bash tools/run-security-boundary-invariants.sh")
+            config = T_TOML.read_text(encoding="utf-8")
             for entry in manifest_entries():
-                self.assertNotIn(entry, workflow)
+                self.assertNotIn(f"bash {entry}", config)
 
 
 if __name__ == "__main__":

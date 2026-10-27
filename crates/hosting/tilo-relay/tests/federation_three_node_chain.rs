@@ -131,7 +131,6 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     wait_until_subscribed(&r2.relay, WS, &r3_key).await;
     wait_until_subscribed(&r3.relay, WS, &r2_key).await;
 
-    // ---- Author on R1. ----
     let a_client = RelayClient::connect(
         client_endpoint().await,
         r1.relay.node_addr(),

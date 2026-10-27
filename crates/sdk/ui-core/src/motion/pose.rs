@@ -83,7 +83,6 @@ impl Pose {
         self.transform * point
     }
 
-    /// The bounds `rect` is drawn in.
     #[must_use]
     pub fn drawn_rect(&self, rect: Rect) -> Rect {
         self.transform.transform_rect_bbox(rect)

@@ -2,7 +2,7 @@
 Description=Set the TPM dictionary-attack reset authorisation and tighten its parameters
 Documentation=man:tilo-rollback(8)
 After=local-fs.target
-ConditionPathExists=/usr/bin/tilo-rollback
+ConditionPathExists=/usr/libexec/tilo/tilo-rollback
 # TPM character devices are alternatives. Mark both as trigger conditions so
 # systemd skips this oneshot cleanly unless at least one exists; the helper
 # keeps the same check as defense in depth for device-removal races.
@@ -13,8 +13,11 @@ ConditionPathExists=|/dev/tpm0
 # encrypted root; doing this from the live medium strands the secret there and
 # makes the installed system unable to administer its own lockout policy.
 ConditionKernelCommandLine=!tilo.install
-# Once the authorisation has been recorded there is nothing left to do.
+# Once the authorisation has been recorded there is nothing left to do,
+# including after tilo-authd has wrapped it under the admin's user key and the
+# recovery key and removed the plain file.
 ConditionPathExists=!/var/lib/tilo/rollback/lockout-auth
+ConditionPathExists=!/var/lib/tilo/auth/lockout.json
 
 [Service]
 Type=oneshot

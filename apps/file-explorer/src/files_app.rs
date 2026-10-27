@@ -14,7 +14,7 @@ use ui::widget::TaffyTreeExt;
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
-use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
+use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, sort_entries};
 use crate::places_sidebar::{self, FavStore, Places};
 use crate::views::file_view::{FileView, ThumbCtx};
 use crate::{config, favorites, fileops, templates};
@@ -27,7 +27,6 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::lock::MutexRecover as _;
-use ui::paint::PaintCtx;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
 use ui::tilo_actions::{Availability, Resource};
@@ -35,13 +34,14 @@ use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, Collaborative, Column, EmptyState, EmptyStateContent, NavShell, ScrollAxis, Scrollable,
-    SidebarPlacement, Spacer, Spinner, TextInput, Widget,
+    Button, Collaborative, Column, EmptyState, NavShell, ScrollAxis, Scrollable, SidebarPlacement,
+    Stack, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
+mod applications;
 mod clipboard_client;
 mod cloud_browse;
 mod drives;
@@ -52,6 +52,10 @@ mod selected_open;
 mod window_bar;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
+mod archives;
+#[cfg(test)]
+use archives::archive_member_copy;
+use archives::{ArchiveMembers, archive_member_cached};
 mod clash;
 mod notice;
 mod preview;
@@ -59,7 +63,9 @@ use preview::Preview;
 mod read_text;
 use clash::{ClashChoice, PendingClash};
 mod selection_actions;
-use notice::{Notice, NoticeAction, NoticeClick};
+use notice::{Notice, NoticeAction};
+mod folder_read;
+use folder_read::{Purpose, Then};
 mod shown_selection;
 
 /// A copy or move shows its progress once it has run this long.
@@ -69,39 +75,8 @@ const SPRING_OPEN: Duration = Duration::from_millis(700);
 /// The accessibility target prefix of the clash sheet's choices.
 const CLASH_TARGET: &str = "files-clash-choice:";
 /// The accessibility targets of the notice's action and close buttons.
-const NOTICE_ACTION_TARGET: &str = "files-notice-action";
-const NOTICE_DISMISS_TARGET: &str = "files-notice-dismiss";
 /// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
-/// Space kept clear at the bottom of the file viewport for the transient
-/// item/status pill. The pill includes its hover shadow, so this is larger
-/// than its measured text capsule: no file label or target may sit beneath it.
-/// A read-only copy of the file `member` of `archive`, made once per
-/// archive version in Files' cache, so opening it again reuses it.
-fn archive_member_copy(archive: &Path, member: &Path) -> std::io::Result<PathBuf> {
-    let modified = std::fs::metadata(archive)?
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |since| since.as_secs());
-    let digest = Sha256::digest(format!("{}\0{modified}", archive.display()).as_bytes());
-    let folder = config::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("archive-members")
-        .join(hex_prefix(&digest, 12))
-        .join(member.parent().unwrap_or_else(|| Path::new("")));
-    let name = member
-        .file_name()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"))?;
-    let copy = folder.join(name);
-    if copy.is_file() {
-        return Ok(copy);
-    }
-    std::fs::create_dir_all(&folder)?;
-    crate::archive::extract_member(archive, member, &copy)?;
-    Ok(copy)
-}
-
 /// A paste's policy for names the folder already has, as callers name it.
 fn paste_conflict(
     name: Option<&str>,
@@ -127,7 +102,7 @@ fn command_shortcut(command: &FileCommand) -> Option<ui::platform::Shortcut> {
     Some(match command {
         FileCommand::Activate(_) => Shortcut::key("Enter"),
         FileCommand::Rename => Shortcut::key("F2"),
-        FileCommand::Delete => Shortcut::key("Delete"),
+        FileCommand::Delete | FileCommand::Uninstall => Shortcut::key("Delete"),
         FileCommand::Copy => Shortcut::command("C"),
         FileCommand::Cut => Shortcut::command("X"),
         FileCommand::Paste => Shortcut::command("V"),
@@ -151,9 +126,6 @@ fn rename_stem_end(name: &str, is_dir: bool) -> Option<usize> {
     name.rfind('.').filter(|&dot| dot > 0)
 }
 
-pub fn status_bubble_safe_inset(theme: &ui::Theme) -> f32 {
-    theme.tokens.spacing.s16
-}
 /// Close up a menu spec: a separator stands only between two groups, and a
 /// group of one is not a group, so it joins its neighbour rather than being
 /// fenced off by a hairline. (A separator is an item with no label and no
@@ -242,6 +214,10 @@ enum OpFollowUp {
     /// Say how many of `count` were pasted; after Cut, take the moved ones
     /// off the clipboard (the ones that failed stay, to retry).
     Paste { count: usize, cut: bool },
+    /// Select what extracting the archive `name` made, or say why not.
+    Extract { name: String },
+    /// Select the new archive, or say why it was not made.
+    Compress,
 }
 
 /// What doing an effect came to: its answer now, or a job that answers later.
@@ -377,15 +353,19 @@ fn retry_row(may_pass: bool) -> Resource {
         .with_action(crate::effects::row_action(&effect, "invoke", label))
 }
 
-/// The retained button under a failed listing, bound to [`retry_row`].
-fn recovery_button(may_pass: bool) -> Button {
+/// A failed listing's state: what went wrong, and its way on bound to
+/// [`retry_row`].
+fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
     let row = retry_row(may_pass);
-    let button = Button::new(RETRY_ROW, &row.label);
+    let state = EmptyState::error(title, detail)
+        .with_icon(ui::icons::Icon::FolderOpen)
+        .with_action(row.label.clone())
+        .with_action_id(RETRY_ROW);
     match row.actions.first().and_then(|action| {
         ui::tilo_actions::ActionBinding::static_json(&row, action, serde_json::Map::new()).ok()
     }) {
-        Some(binding) => button.on_action(binding),
-        None => button.with_enabled(false),
+        Some(binding) => state.on_action(binding),
+        None => state.with_enabled(false),
     }
 }
 
@@ -410,11 +390,8 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
 
 /// Template create Effects, rows of the window.
 /// The catalogue is the user's Templates directory, not the live folder listing.
-pub(crate) fn published_template_resources() -> Vec<Resource> {
-    let Some(template_dir) = templates::templates_dir() else {
-        return Vec::new();
-    };
-    templates::list_templates(&template_dir)
+pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<Resource> {
+    templates
         .into_iter()
         .map(|template| {
             let template_path = template.to_string_lossy().into_owned();
@@ -640,14 +617,28 @@ pub struct FileExplorerWidget {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
+    /// What the window's search has been given: its words narrow the folder
+    /// open, never another folder's.
+    find: String,
     /// Multi-selection over the displayed entry list.
     selection: SelectionModel,
     shown_selection: shown_selection::ShownSelection,
     shown_folder: Option<Arc<host_fs::RetainedObject>>,
+    /// Whether the folder shown is a folder on the disk, as its last read
+    /// found: not Recent, not inside an archive, not a failed read.
+    shown_is_folder: bool,
+    /// The read of the folder shown still outstanding, if any.
+    folder_reads: folder_read::FolderReads,
     local_clipboard: clipboard_client::Client,
     selected_open: selected_open::Client,
     error: Option<String>,
     is_loading: bool,
+    /// Reads the archive being browsed off the window's thread.
+    archive_listing: crate::archive::Listing,
+    /// Files being read out of archives to be opened.
+    archive_members: ArchiveMembers,
+    /// Archives waiting for the folder Extract to… asks for.
+    extract_chooser: Option<(Vec<PathBuf>, ui::portal::PortalChannel)>,
     last_click: Option<(usize, Instant)>,
     sort_by: SortBy,
     sort_order: SortOrder,
@@ -707,6 +698,9 @@ pub struct FileExplorerWidget {
     /// Reports changes to the trusted-identity projection's directory, or,
     /// while it does not exist, its creation.
     identity_watch: crate::directory_watch::AwaitedDirectoryWatch,
+    /// Reports changes to the record catalogue's roots: a mount moves a
+    /// root's catalogue generation by changing the root.
+    catalog_watch: crate::directory_watch::RootsWatch,
     /// The directory watch reported a change that has not been read yet
     /// (held while a rename or pin drag defers the read).
     directory_changed: bool,
@@ -757,21 +751,21 @@ pub struct FileExplorerWidget {
     bar_query: Option<String>,
     /// What the bar's slots were last declared from.
     declared_bar: Option<window_bar::BarKey>,
-    /// Transient floating status bubble (bottom-right) — the item count /
-    /// operation status + selection summary, surfaced on a real change or on
-    /// hover then faded, in place of a permanent bottom footer strip so the
-    /// file list spans to the window bottom.
-    status_bubble: ui::StatusBubble,
-    shots_status: bool,
+    /// News ([`Self::status`], or that an archive is read-only on entering
+    /// it) said in the window's bar for a while; the item and selection
+    /// counts are the window's accessible status, not news.
+    status_notice: StatusText,
+    /// What Needs you reports back: the row a Files notice raised.
+    needs: ui::attention::Presses,
+    /// The status last said in the bar, so only a change is news.
+    status_said: Option<String>,
+    /// The archive last said to be read-only, so entering one says it once.
+    archive_said: Option<PathBuf>,
     staged_hover: Option<usize>,
     staged_move_drag: bool,
-    templates_dir: Option<PathBuf>,
-    /// Shared indeterminate progress indicator for the loading state. Its
-    /// reduced-motion behaviour and frame scheduling come from `Spinner`.
-    state_spinner: Spinner,
-    /// Retained shared control positioned beneath the painted failure state.
-    /// It publishes the same local Refresh operation as other retry routes.
-    state_retry: Button,
+    /// The user's template files, for the "New File" menus and the
+    /// published rows; read from memory on the frame loop.
+    templates: templates::Catalog,
     /// Set once `build_layout` has composed the panes into `nav`. Used to
     /// detect "hosted in a `TabBar` that never ran `build_layout` for us yet" so
     /// paint can flag a structure rebuild (replaces the old `chrome_below`
@@ -895,6 +889,8 @@ pub struct FileExplorerWidget {
     share_pending_path: Option<PathBuf>,
     /// Admission of a received bearer link, run on the app runtime.
     received_share: ui::LatestRequest<Result<fs_protocol::RecipientSubscriptionStatusV1, String>>,
+    /// The shared-file link last handed to the received-file service.
+    received_share_link: Option<String>,
     /// Host-projected names keyed by certified human roots. Labels affect
     /// presentation only; every command and request continues to carry the
     /// root key.
@@ -920,6 +916,8 @@ pub struct FileExplorerWidget {
     mounted_cloud: mounted_cloud::MountedCloud,
     /// NTFS drives the shell can open, for the places list.
     drives: drives::Drives,
+    /// The person's apps, for the Applications place.
+    applications: applications::Applications,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// A one-shot shell-owned document admission. The reply is strong only
     /// while this Files widget still owns the request; the shell gets a weak
@@ -979,6 +977,53 @@ pub struct FileExplorerWidget {
     app_chooser: ui::widget::command_palette::CommandPalette,
     app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
+}
+
+/// One test at a time: the waiting stack and the ledger are the process's,
+/// so two tests running at once would see each other's rows.
+#[cfg(test)]
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    use ui::lock::MutexRecover as _;
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock_recover()
+}
+
+/// Files, as the ledger names it.
+fn files_owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.files", "Files").with_icon(ui::icons::Icon::Folder)
+}
+
+/// What the folder last said about itself, waiting to be recorded: the
+/// ledger keeps it, and nothing expires.
+#[derive(Debug, Default)]
+struct StatusText(Option<String>);
+
+impl StatusText {
+    fn show(&mut self, text: impl Into<String>) {
+        self.0 = Some(text.into());
+    }
+
+    fn dismiss(&mut self) {
+        self.0 = None;
+    }
+
+    /// What was said since the last read.
+    fn take(&mut self) -> Option<String> {
+        self.0.take()
+    }
+
+    /// Whether the folder said something since it was last recorded; a
+    /// test reads it as the window would.
+    #[cfg(test)]
+    fn is_shown(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// What was said, for a test that reads it before the record does.
+    #[cfg(test)]
+    fn get(&self) -> Option<&String> {
+        self.0.as_ref()
+    }
 }
 
 impl Default for FileExplorerWidget {
@@ -1222,6 +1267,20 @@ impl FileExplorerWidget {
                 }
             }
             OpFollowUp::Paste { count, cut } => self.settle_paste(count, cut, outcome),
+            OpFollowUp::Extract { name } => match error {
+                None => self.select_written(outcome),
+                Some(error) => self.notify_failure(
+                    t_args("files-archive-extract-failed-named", &[arg("name", name)]),
+                    &error,
+                    None,
+                ),
+            },
+            OpFollowUp::Compress => match error {
+                None => self.select_written(outcome),
+                Some(error) => {
+                    self.notify_failure(t("files-archive-create-failed-title"), &error, None);
+                }
+            },
             OpFollowUp::Replaced => {
                 if let Some(error) = error {
                     self.notify_failure(t("files-trash-failed"), &error, None);
@@ -1230,35 +1289,17 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Give the notice the pointer events that are its: hover, and a press
-    /// and release on the card. Whether the event was the notice's.
-    fn route_notice_event(&mut self, event: &winit::event::WindowEvent) -> bool {
-        use winit::event::{ElementState, MouseButton, WindowEvent};
-        match event {
-            WindowEvent::CursorMoved { .. } => {
-                self.structure_dirty |= self.notice.pointer_moved(self.last_cursor);
-                self.notice.contains(self.last_cursor)
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.notice.press(self.last_cursor),
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => match self.notice.release(self.last_cursor) {
-                Some(click) => {
-                    if let NoticeClick::Action(action) = click {
-                        self.act_on_notice(action);
-                    }
-                    self.structure_dirty = true;
-                    true
-                }
-                None => false,
-            },
-            _ => false,
+    /// Select what an operation wrote, when it is in the folder shown.
+    fn select_written(&mut self, outcome: &crate::file_ops::Outcome) {
+        let written = outcome.result().iter().find_map(|change| match change {
+            crate::file_ops::Change::Wrote { path } => Some(PathBuf::from(path)),
+            _ => None,
+        });
+        if let Some(index) =
+            written.and_then(|path| self.displayed_entries().iter().position(|e| e.path == path))
+        {
+            self.selection.select_only(index);
+            self.retain_shown_selection();
         }
     }
 
@@ -1270,12 +1311,8 @@ impl FileExplorerWidget {
         // Undo is the window's: offered only when the window has it to give
         // (a window no framework hosts keeps no history).
         let undo = undoable && self.undo.can_undo();
-        self.notice.show(
-            title,
-            "",
-            ui::widget::toast::ToastKind::Success,
-            undo.then_some(NoticeAction::Undo),
-        );
+        self.notice
+            .show(title, "", undo.then_some(NoticeAction::Undo));
         self.structure_dirty = true;
     }
 
@@ -1288,12 +1325,8 @@ impl FileExplorerWidget {
             return;
         }
         self.status = None;
-        self.notice.show(
-            title,
-            crate::fileops::readable_error(reason),
-            ui::widget::toast::ToastKind::Error,
-            action,
-        );
+        self.notice
+            .show(title, crate::fileops::readable_error(reason), action);
         self.structure_dirty = true;
     }
 
@@ -1318,6 +1351,14 @@ impl FileExplorerWidget {
                     self.selection.select_only(i);
                     self.retain_shown_selection();
                     self.open_app_chooser();
+                }
+            }
+            NoticeAction::ReceiveAgain(uri) => self.admit_received_share(uri),
+            NoticeAction::OpenHistory(path) => {
+                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                    self.selection.select_only(i);
+                    self.retain_shown_selection();
+                    self.apply_command(FileCommand::ShowHistory);
                 }
             }
         }
@@ -1407,7 +1448,7 @@ impl FileExplorerWidget {
         let Some(device) = self.device.clone() else {
             return Vec::new();
         };
-        if self.is_trash_view() || !self.current_path.is_dir() {
+        if self.is_trash_view() || !self.shown_is_folder {
             return Vec::new();
         }
         let folder = self.current_path.display().to_string();
@@ -1463,9 +1504,16 @@ impl FileExplorerWidget {
             .and(file_explorer::WriteFile::paths().folder, folder.clone())
             .declaration("write-file-here", "Write a file here");
         let compressing = FileExplorer::COMPRESS
-            .bind(file_explorer::Compress::paths().device, device)
-            .and(file_explorer::Compress::paths().from, folder)
-            .declaration("compress-here", "Compress entries here to a zip archive");
+            .bind(file_explorer::Compress::paths().device, device.clone())
+            .and(file_explorer::Compress::paths().from, folder.clone())
+            .declaration(
+                "compress-here",
+                "Compress entries here to a zip or tar.zst archive",
+            );
+        let extracting = FileExplorer::EXTRACT
+            .bind(file_explorer::Extract::paths().device, device)
+            .and(file_explorer::Extract::paths().to, Some(folder))
+            .declaration("extract-here", "Extract an archive into this folder");
         [
             new_folder,
             rename,
@@ -1474,6 +1522,7 @@ impl FileExplorerWidget {
             copying,
             writing,
             compressing,
+            extracting,
         ]
         .into_iter()
         .flatten()
@@ -1515,6 +1564,22 @@ impl FileExplorerWidget {
             order: crate::resource::sort_order_token(self.sort_order).to_owned(),
             zoom: self.zoom_level,
             hidden: self.show_hidden,
+            widths: self.list_slot.widths(),
+        }
+    }
+
+    /// Keep the widths the person dragged as their preferences, so a column
+    /// stays where they put it after a relaunch.
+    fn store_widths(&mut self) {
+        let widths = self.list_slot.widths();
+        let stored = self.preferences.as_ref().map(ui::framework::Setting::get);
+        if stored.as_ref().is_some_and(|prefs| prefs.widths == widths) {
+            return;
+        }
+        if let Some(preferences) = &self.preferences
+            && let Err(error) = preferences.update(|prefs| prefs.widths = widths)
+        {
+            tracing::warn!(%error, "file-explorer: column widths not stored");
         }
     }
 
@@ -1542,6 +1607,9 @@ impl FileExplorerWidget {
             return;
         }
         self.shown_preferences = Some(stored.clone());
+        // A column the person dragged wide is theirs on every device: the
+        // list is laid out at those widths again.
+        self.list_slot.set_widths(&stored.widths);
         self.view_mode = crate::resource::parse_view_mode(&stored.view);
         let sort_by = crate::resource::parse_sort_key(&stored.sort);
         let sort_order = crate::resource::parse_sort_order(&stored.order);
@@ -1730,7 +1798,8 @@ impl FileExplorerWidget {
                 local_clipboard: false,
             }),
         );
-        widget.templates_dir = Some(scene.home.join("Templates"));
+        widget.templates =
+            templates::Catalog::new(Some(scene.home.join("Templates")), ui::WakeHandle::new());
         if scene.start != scene.home {
             widget.navigate(scene.start.clone());
         }
@@ -1780,22 +1849,12 @@ impl FileExplorerWidget {
         let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
-        let shown_folder = shown_selection::folder(&cwd);
-        let mut entries = if injected {
-            crate::model::read_dir_with_workspace_roots(&cwd, &workspace_roots)
-        } else {
-            read_dir_sync(&cwd)
-        }
-        .unwrap_or_default();
-        if !show_hidden {
-            entries.retain(|e| !e.name.starts_with('.'));
-        }
-        sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
         // The places list and the file view are swapped in on the first
         // `build_layout`; the toolbar is the content header's one action and
         // stays for the window's lifetime.
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
+        // window-bar: fallback, the header the bar takes over once it hosts the window
         let nav = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
             .with_id("files.shell")
@@ -1807,18 +1866,30 @@ impl FileExplorerWidget {
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
-        let state_retry = recovery_button(true);
-        Self {
+        let mut widget = Self {
             services,
             startup_accounts,
-            current_path: cwd,
+            current_path: cwd.clone(),
             home_path: home,
-            entries,
+            // Shown once the first read of `cwd` is (see below).
+            entries: Vec::new(),
+            find: String::new(),
             selection: SelectionModel::new(),
             shown_selection: shown_selection::ShownSelection::default(),
-            shown_folder,
+            shown_folder: None,
+            shown_is_folder: false,
+            folder_reads: folder_read::FolderReads::new(ui::WakeHandle::new()),
             error: None,
             is_loading: false,
+            archive_listing: {
+                let wake = ui::WakeHandle::new();
+                crate::archive::Listing::new(move || wake.wake())
+            },
+            extract_chooser: None,
+            archive_members: {
+                let wake = ui::WakeHandle::new();
+                ArchiveMembers::new(move || wake.wake())
+            },
             last_click: None,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
@@ -1852,6 +1923,7 @@ impl FileExplorerWidget {
             identity_watch: crate::directory_watch::AwaitedDirectoryWatch::new(
                 ui::WakeHandle::new(),
             ),
+            catalog_watch: crate::directory_watch::RootsWatch::new(ui::WakeHandle::new()),
             directory_changed: false,
             last_directory_read: ui::time::now(),
             renaming: None,
@@ -1875,13 +1947,16 @@ impl FileExplorerWidget {
             header_in_bar: false,
             bar_query: None,
             declared_bar: None,
-            status_bubble: ui::StatusBubble::new(),
-            state_spinner: Spinner::new(),
-            state_retry,
-            shots_status: false,
+            status_notice: StatusText::default(),
+            needs: ui::attention::Presses::new(),
+            status_said: None,
+            archive_said: None,
             staged_hover: None,
             staged_move_drag: false,
-            templates_dir: crate::templates::templates_dir(),
+            templates: crate::templates::Catalog::new(
+                crate::templates::templates_dir(),
+                ui::WakeHandle::new(),
+            ),
 
             composed_once: false,
             cmds,
@@ -1928,6 +2003,7 @@ impl FileExplorerWidget {
             share_result: ui::LatestRequest::new(),
             share_pending_path: None,
             received_share: ui::LatestRequest::new(),
+            received_share_link: None,
             trusted_humans,
             framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
             framework_history_binding: None,
@@ -1947,6 +2023,7 @@ impl FileExplorerWidget {
             cloud_fixture_consent: false,
             mounted_cloud: mounted_cloud::MountedCloud::default(),
             drives: drives::Drives::default(),
+            applications: applications::Applications::default(),
             host_intent: None,
             pending_document_open: None,
             open_queue: std::collections::VecDeque::new(),
@@ -1964,10 +2041,16 @@ impl FileExplorerWidget {
             open_with_cache: RefCell::new(HashMap::new()),
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
+            // window-bar: picker, the Open with chooser
             app_chooser: ui::widget::command_palette::CommandPalette::commands(),
             app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
-        }
+        };
+        // Nothing is shown yet: until the first read is, that is the
+        // loading state.
+        widget.is_loading = true;
+        widget.read_shown_folder(cwd, Then::Nothing);
+        widget
     }
 
     /// The thumbnail context (service + peniko memo) handed to each rebuilt file
@@ -2041,11 +2124,26 @@ impl FileExplorerWidget {
             .refresh(self.remote_accounts_search_revision, &accounts);
     }
 
-    /// The entries currently shown. (There is no in-app search field — search
-    /// is OS-owned per `crates/sdk/ui-core/HIG.md` §5 — so this is the sorted directory
-    /// listing as-is.)
+    /// The entries currently shown: the sorted listing of the folder open,
+    /// narrowed by what the window's search has been given. There is no
+    /// in-app search field — the window's own search is the one control, and
+    /// this is what it narrows.
     pub fn displayed_entries(&self) -> Vec<Entry> {
-        self.entries.clone()
+        let find = self.find.trim().to_lowercase();
+        if find.is_empty() {
+            return self.entries.clone();
+        }
+        self.entries
+            .iter()
+            .filter(|entry| entry.name.to_lowercase().contains(&find))
+            .cloned()
+            .collect()
+    }
+
+    /// How many of the folder's entries what the person typed leaves.
+    fn find_count(&self) -> ui::widget::FilterCount {
+        let shown = self.displayed_entries().len();
+        ui::widget::FilterCount::new(shown, self.entries.len())
     }
 
     /// The sole bridge from a durable/agent-visible resource id to a host
@@ -2579,6 +2677,14 @@ impl FileExplorerWidget {
                 self.open_drive(&drive)?;
                 None
             }
+            FilesEffect::UninstallApp { app } => {
+                let path = self
+                    .visible_entry_path(&app)
+                    .filter(|path| crate::applications::is_app(path))
+                    .ok_or_else(|| t("files-applications-gone"))?;
+                self.uninstall_apps(&[path]);
+                None
+            }
             FilesEffect::Reauthenticate { account } => {
                 let account = self.account_named(&account)?;
                 self.show_remote_account_panel(&account, true);
@@ -2928,7 +3034,9 @@ impl FileExplorerWidget {
         let nav = crate::toolbar::NavAvailability {
             back: !self.history.is_empty(),
             forward: !self.forward.is_empty(),
-            up: self.current_path.parent().is_some() && !self.is_recent_view(),
+            up: self.current_path.parent().is_some()
+                && !self.is_recent_view()
+                && !self.is_applications_view(),
         };
         self.toolbar.set_context(
             nav,
@@ -3009,12 +3117,18 @@ impl FileExplorerWidget {
             return self.build_cloud_pane(theme);
         }
         let sp = &theme.tokens.spacing;
-        // Loading and failure are painted by the shared centered state surface
-        // in `draw_state_surface`. Keep this structural slot empty: it avoids
-        // a stale list beneath a failure while the surface owns the visual,
-        // semantic, and recovery treatment consistently at every width.
-        if self.is_loading || self.error.is_some() {
-            return Box::new(Spacer::new());
+        // Loading and failure replace the list, so no stale rows sit under
+        // a failure.
+        if let Some((title, detail, can_retry)) = self.state_surface_copy() {
+            return Box::new(if can_retry {
+                failure_state(
+                    title,
+                    detail,
+                    self.folder_recovery_command() == FileCommand::Refresh,
+                )
+            } else {
+                EmptyState::new(title).with_message(detail).busy()
+            });
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
@@ -3033,14 +3147,12 @@ impl FileExplorerWidget {
             .with_item_rects(self.item_rects.clone())
             .with_thumbs(self.thumb_ctx())
             .with_folder_counts(Some(Arc::clone(&self.folder_counts)), self.show_hidden)
-            .with_list(self.list_slot.clone())
-            .with_bottom_inset(f64::from(status_bubble_safe_inset(theme)));
+            .with_list(self.list_slot.clone());
         // A plain (percent-height) column: this pane is the content column of
         // the shell, so it must FILL that rect (`percent(1.0)` height).
         let mut view_col = Column::new().with_vertical_padding(sp.s1);
         match self.view_mode {
-            // The list is a table that scrolls itself and keeps the status
-            // lane clear below its rows.
+            // The list is a table that scrolls itself.
             ViewMode::List => {
                 view_col = view_col.push(crate::views::list_view::build_list(
                     view,
@@ -3058,18 +3170,19 @@ impl FileExplorerWidget {
                         .fill_parent_height()
                         .with_persisted_offset(self.scroll_offset.clone())
                         .with_cursor(self.last_cursor)
-                        // The status pill is intentionally outside the
-                        // scrollable's interactive viewport. Besides making the
-                        // count easy to scan, that means it cannot obscure a
-                        // file name, target, or keyboard focus ring at the
-                        // bottom of a compact grid.
-                        .with_bottom_content_inset(status_bubble_safe_inset(theme))
                         .with_child(crate::views::grid_view::build_grid(view))
                         .into_widget(),
                 );
             }
         }
-        view_col.into_widget()
+        if !self.entries.is_empty() {
+            return view_col.into_widget();
+        }
+        // An empty folder keeps its view underneath, so a press on the
+        // background, a drop or the context menu still reach the folder.
+        Box::new(Stack::new().push(view_col.into_widget()).push(Box::new(
+            EmptyState::new(self.empty_state_message()).with_icon(self.empty_state_icon()),
+        )))
     }
 
     /// The label for the floating status bubble: an operation status, else the
@@ -3119,6 +3232,8 @@ impl FileExplorerWidget {
     fn empty_state_message(&self) -> String {
         if self.is_recent_view() {
             t("files-empty-recent")
+        } else if self.is_applications_view() {
+            t("files-empty-applications")
         } else if self.is_trash_view() {
             t("files-empty-trash")
         } else {
@@ -3186,96 +3301,11 @@ impl FileExplorerWidget {
         Some((crate::fileops::FolderFailure::of(cause), cause))
     }
 
-    /// What a failed listing's button says.
-    fn folder_recovery_label(&self) -> String {
-        retry_row(self.folder_recovery_command() == FileCommand::Refresh).label
-    }
-
     /// The command a failed listing's button runs.
     fn folder_recovery_command(&self) -> FileCommand {
         match self.folder_failure() {
             Some((failure, _)) if !failure.may_pass() => FileCommand::Up,
             _ => FileCommand::Refresh,
-        }
-    }
-
-    /// Draw the shared center-state primitive above the otherwise empty pane.
-    /// Loading adds the toolkit spinner (which stops requesting frames in
-    /// reduced-motion mode); failure uses the shared `EmptyState` visual plus a
-    /// retained shared Button for the same typed Refresh command every input
-    /// route uses.
-    fn draw_state_surface(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        let Some((title, detail, can_retry)) = self.state_surface_copy() else {
-            return;
-        };
-        let rect = self.content_body_rect();
-        if rect.width() <= 1.0 || rect.height() <= 1.0 {
-            return;
-        }
-        if can_retry {
-            // The shared empty state lays out the action as part of its
-            // centred stack (measured title, detail and label, so the pill
-            // clears the detail line at every text scale) and returns that
-            // rect; the retained shared Button — which owns hover, focus,
-            // keyboard activation and the typed Refresh command — is then
-            // painted over it, so the geometry has one author and the
-            // behaviour keeps the production control. Hover is suppressed on
-            // the underlay because the Button draws its own.
-            let action_rect = EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                &EmptyStateContent {
-                    icon: Some(ui::icons::Icon::FolderOpen),
-                    title: &title,
-                    message: Some(&detail),
-                    action_label: Some(&self.folder_recovery_label()),
-                    error: true,
-                    ..EmptyStateContent::new(&title)
-                },
-                Point::new(-1.0, -1.0),
-            );
-            let button_rect = action_rect.map_or(vello::kurbo::Rect::ZERO, |r| {
-                // Never narrower than four minimum pointer targets, so a short
-                // localized label still gets a comfortable retry button; widen
-                // symmetrically so the Button still covers the underlay pill.
-                let min_w = 4.0 * f64::from(theme.tokens.metrics.min_pointer_target);
-                let w = r.width().max(min_w);
-                vello::kurbo::Rect::from_center_size(r.center(), (w, r.height()))
-            });
-            self.state_retry.apply_layout_external(button_rect);
-            self.state_retry
-                .draw(scene, transform, text_renderer, theme, presence);
-        } else {
-            EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                &EmptyStateContent {
-                    title: &title,
-                    message: Some(&detail),
-                    ..EmptyStateContent::new(&title)
-                },
-                self.last_cursor,
-            );
-            let center = rect.center();
-            let side = f64::from(theme.tokens.metrics.icon_lg) + f64::from(theme.tokens.spacing.s1);
-            let spinner_rect = vello::kurbo::Rect::from_center_size(
-                Point::new(
-                    center.x,
-                    center.y - f64::from(theme.tokens.spacing.s16)
-                        + f64::from(theme.tokens.spacing.s1),
-                ),
-                (side, side),
-            );
-            self.state_spinner.set_rect(spinner_rect);
-            self.state_spinner
-                .draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -3458,46 +3488,32 @@ impl FileExplorerWidget {
         self.footer_label()
     }
 
-    /// `--shots`: stage the status bubble the way a change would, resting on
-    /// it, so a single headless frame captures the floating chip.
-    pub fn debug_show_status_bubble(&mut self) {
-        let now = ui::time::now();
-        let label = self.footer_label();
-        self.status_bubble.show(&label, now);
-        self.status_bubble.set_hover(true, now);
-    }
-
-    /// Paint the transient floating status bubble at the window's
-    /// bottom-right, the reclaimed home of the old footer strip. It surfaces
-    /// when there is news (a status) or while the pointer rests on its
-    /// corner, then fades.
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        tr: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-    ) {
-        let now = ui::time::now();
-        // Only news pops the bubble. The item and selection counts follow
-        // along and show when the pointer rests on the corner; selecting a
-        // file never flashes a bubble.
-        match &self.status {
-            Some(status) => {
-                self.status_bubble.show(status, now);
+    /// Say news in the window's bar: a new status, or that the archive just
+    /// entered is read-only until extracted.
+    fn publish_status(&mut self) {
+        if self.status != self.status_said {
+            self.status_said.clone_from(&self.status);
+            match self.status.clone() {
+                Some(status) => self.status_notice.show(status),
+                None => {
+                    self.status_notice.dismiss();
+                }
             }
-            None => self.status_bubble.set_text(&self.footer_label()),
         }
-        // Archive browsing is deliberately read-only. Unlike transient file
-        // operation feedback, that fact remains visible for the whole visit.
-        if self.shots_status || crate::archive::location(&self.current_path).is_some() {
-            self.status_bubble.set_hover(true, now);
-        } else {
-            self.status_bubble
-                .pointer_moved(self.rect, self.last_cursor, tr, theme, now);
+        let archive = crate::archive::location(&self.current_path)
+            .is_some()
+            .then(|| self.current_path.clone());
+        if archive != self.archive_said {
+            if archive.is_some() && self.status.is_none() {
+                self.status_notice.show(t("files-archive-read-only"));
+            }
+            self.archive_said = archive;
         }
-        self.status_bubble
-            .paint(scene, transform, tr, theme, self.rect, now);
+        // What the folder says about itself is recorded, not thrown at the
+        // window: nothing the system says expires.
+        if let Some(text) = self.status_notice.take() {
+            ui::attention::publish(ui::attention::Notice::did(files_owner(), text));
+        }
     }
 
     /// Whether the content column is narrower than the direct toolbar
@@ -3569,7 +3585,6 @@ impl FileExplorerWidget {
         self.entries.clear();
         self.is_loading = false;
         let denied = std::io::Error::from_raw_os_error(13).to_string();
-        self.state_retry = recovery_button(false);
         self.error = Some(t_args(
             "files-directory-read-failed",
             &[arg("error", denied)],
@@ -3595,139 +3610,9 @@ impl FileExplorerWidget {
         self.load(path);
     }
 
-    fn read_directory(&self, path: &Path) -> Result<Vec<Entry>, String> {
-        if crate::recent::is_location(path) {
-            return Ok(self.recent_entries());
-        }
-        if self.hosted_clipboard() && fileops::is_trash_dir(path) {
-            let mut entries = read_dir_sync(path)?;
-            if let Some(user_trash) = host_fs::trash::user_trash_dir()
-                && user_trash != path
-            {
-                match std::fs::symlink_metadata(&user_trash) {
-                    Ok(_) => entries.extend(read_dir_sync(&user_trash)?),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.to_string()),
-                }
-            }
-            return Ok(entries);
-        }
-        if self.startup_accounts.is_some() {
-            crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
-        } else {
-            read_dir_sync(path)
-        }
-    }
-
-    /// Re-read `path` into the view without touching history (shared by
-    /// navigate/back/forward/refresh).
-    fn load(&mut self, path: PathBuf) {
-        self.leave_cloud_browse();
-        self.typing.reset();
-        self.is_loading = true;
-        self.selection.clear();
-        self.retain_shown_selection();
-        self.error = None;
-        self.last_click = None;
-        self.status = None;
-        // A new directory starts at the top; the persisted scroll offset only
-        // survives *structural* rebuilds within the same directory.
-        self.scroll_offset.set((0.0, 0.0));
-        self.list_slot.reset_scroll();
-        self.invalidate_open_with();
-        self.close_app_chooser();
-        // Opening the Trash for the first time (nothing deleted yet) should show
-        // an empty folder, not a "no such directory" error, so materialise it.
-        if fileops::is_trash_dir(&path) {
-            let _ = fileops::ensure_trash_dir();
-        }
-        let recent = crate::recent::is_location(&path);
-        self.shown_folder = shown_selection::folder(&path);
-        // Watch before reading, so a change landing between the two is
-        // reported (and costs one more read) rather than lost.
-        let watched = self.watched_directory(&path);
-        self.directory_watch.point_at(watched.as_deref());
-        self.directory_changed = false;
-        // The new directory's watch decides whether and how often it is
-        // polled; the next sync schedules that.
-        self.next_metadata_refresh = None;
-        self.last_directory_read = ui::time::now();
-        let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
-            crate::archive::list_directory(&archive_path, &prefix)
-                .map(|archive_entries| {
-                    archive_entries
-                        .into_iter()
-                        .map(|entry| {
-                            let name = entry
-                                .path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            let synthetic_path = archive_path.join(&entry.path);
-                            Entry {
-                                name,
-                                path: synthetic_path.clone(),
-                                is_dir: entry.is_dir,
-                                size: entry.size,
-                                modified: None,
-                                mime: if entry.is_dir {
-                                    "inode/directory".into()
-                                } else {
-                                    tilo_mime::from_path_or_octet_stream(&synthetic_path)
-                                        .to_string()
-                                },
-                                sync_state: None,
-                                content_hash: None,
-                                record_id: None,
-                                availability: None,
-                                share: None,
-                                history: None,
-                                rich_metadata: None,
-                                observed: None,
-                            }
-                        })
-                        .collect()
-                })
-                .map_err(|error| error.to_string())
-        } else {
-            self.read_directory(&path)
-        };
-        match loaded {
-            Ok(mut entries) => {
-                if !self.show_hidden {
-                    entries.retain(|e| !e.name.starts_with('.'));
-                }
-                // Recent is ordered by when you last used each item.
-                if !recent {
-                    sort_entries(self.sort_by, self.sort_order, &mut entries);
-                }
-                self.entries = entries;
-            }
-            Err(e) => {
-                // Drop stale entries so the error view isn't backed by the old
-                // directory's contents.
-                self.entries.clear();
-                self.shown_folder = None;
-                let may_pass = crate::fileops::FolderFailure::of(&e).may_pass();
-                self.state_retry = recovery_button(may_pass);
-                self.error = Some(t_args("files-directory-read-failed", &[arg("error", e)]));
-            }
-        }
-        // Always record the path we attempted, even on error, so a Refresh
-        // ("Try again") retries the same target rather than reloading the
-        // previous valid directory and silently clearing the error.
-        self.current_path = path;
-        if self.error.is_none() && crate::archive::location(&self.current_path).is_some() {
-            self.status = Some(t("files-archive-read-only"));
-        }
-        self.is_loading = false;
-        self.refresh_external_search_catalogs();
-    }
-
     /// Go to the parent directory (history-aware).
     pub fn back(&mut self) {
-        if self.is_recent_view() {
+        if self.is_recent_view() || self.is_applications_view() {
             return;
         }
         if let Some(parent) = self.current_path.parent() {
@@ -3771,10 +3656,13 @@ impl FileExplorerWidget {
     /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
         // The first sync after construction starts the watches; changes made
-        // before a watch started are covered by one more read.
-        let watched = self.watched_directory(&self.current_path);
-        if self.directory_watch.point_at(watched.as_deref()) {
-            self.directory_changed = true;
+        // before a watch started are covered by one more read. A folder read starts the watch of the folder it reads; this
+        // starts it only for a folder shown without one.
+        if !self.folder_reads.is_pending() {
+            let watched = self.watched_directory(&self.current_path);
+            if self.directory_watch.point_at(watched.as_deref()) {
+                self.directory_changed = true;
+            }
         }
         let identities_watched = self.startup_accounts.is_none()
             && self.identity_watch.point_at(
@@ -3788,6 +3676,8 @@ impl FileExplorerWidget {
             self.directory_changed = true;
         }
         let identity_signal = identities_watched || self.identity_watch.take_changes();
+        let catalog_watched = self.catalog_watch.point_at(&self.catalog_roots_to_watch());
+        let catalog_signal = catalog_watched || self.catalog_watch.take_changes();
         let poll_due = self.next_metadata_refresh.is_some_and(|due| now >= due);
         if poll_due || self.next_metadata_refresh.is_none() {
             // Set the next deadline before doing any I/O.  A transient read
@@ -3795,7 +3685,9 @@ impl FileExplorerWidget {
             // busy loop.
             self.next_metadata_refresh = self.next_poll_interval().map(|interval| now + interval);
         }
-        let catalog_changed = poll_due
+        let catalog_changed = (catalog_signal
+            || (poll_due
+                && self.catalog_watch.coverage() != crate::directory_watch::Coverage::Complete))
             && self
                 .collaborative_record_pager
                 .borrow_mut()
@@ -3812,18 +3704,33 @@ impl FileExplorerWidget {
         let change_readable = self.directory_changed
             && now
                 >= self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len());
-        if !(directory_polled || change_readable)
-            || self.renaming.is_some()
-            || self.pin_drag.is_some()
-        {
-            return identities_changed || catalog_changed;
+        let changed = identities_changed || catalog_changed;
+        if !(directory_polled || change_readable) || self.directory_read_deferred() {
+            return changed;
         }
         // Drain before reading: a change after this point wakes the window
         // again and is read next time.
         let _ = self.directory_watch.take_changes();
         self.directory_changed = false;
         self.last_directory_read = now;
-        self.refresh_metadata_preserving_view() || identities_changed || catalog_changed
+        self.refresh_metadata_preserving_view() || changed
+    }
+
+    /// The record catalogue's roots, when one generation check reads them
+    /// all, so that a change any watch reports is seen; with more, none, and
+    /// the catalogue is checked on a timer, a few roots at a time.
+    fn catalog_roots_to_watch(&self) -> Vec<PathBuf> {
+        let roots = self.collaborative_record_pager.borrow().generation_roots();
+        if roots.len() > crate::model::WorkspaceRecordIndexPager::GENERATION_ROOTS_PER_POLL {
+            return Vec::new();
+        }
+        roots
+    }
+
+    /// A rename or pin drag defers reading the listing, and a read under way
+    /// covers every change before it started.
+    fn directory_read_deferred(&self) -> bool {
+        self.renaming.is_some() || self.pin_drag.is_some() || self.folder_reads.is_pending()
     }
 
     /// The directory to watch for `path`'s listing: `None` for listings that
@@ -3831,6 +3738,7 @@ impl FileExplorerWidget {
     /// that merges two directories), which are polled instead.
     fn watched_directory(&self, path: &Path) -> Option<PathBuf> {
         let virtual_listing = crate::recent::is_location(path)
+            || crate::applications::is_location(path)
             || crate::archive::location(path).is_some()
             || (self.hosted_clipboard() && fileops::is_trash_dir(path));
         (!virtual_listing).then(|| path.to_path_buf())
@@ -3843,15 +3751,13 @@ impl FileExplorerWidget {
         let entries = self.entries.len();
         let directory = match self.directory_watch.coverage() {
             Coverage::Complete => None,
-            // Local edits arrive as events; remote ones (tilo-fs gossip, a
-            // network share) only by reading, as promptly as before.
+            // Local edits arrive as events; remote ones (a network share, a
+            // FUSE mount that does not signal them) only by reading.
             Coverage::Partial => Some(metadata_refresh::interval(entries)),
             Coverage::None => Some(metadata_refresh::unwatched_interval(entries)),
         };
-        let catalog = self
-            .collaborative_record_pager
-            .borrow()
-            .has_roots()
+        let catalog = (self.collaborative_record_pager.borrow().has_roots()
+            && self.catalog_watch.coverage() != Coverage::Complete)
             .then_some(metadata_refresh::BACKGROUND_INTERVAL);
         let identities = (self.startup_accounts.is_none()
             && self.identity_watch.coverage() != Coverage::Complete)
@@ -3885,6 +3791,20 @@ impl FileExplorerWidget {
     /// this path because their xattr response changes row metadata but is not
     /// navigation.
     fn refresh_metadata_preserving_view(&mut self) -> bool {
+        // A read still outstanding is newer than what is shown.
+        if self.folder_reads.is_pending() {
+            return false;
+        }
+        let job = self.folder_job(self.current_path.clone(), true);
+        self.folder_reads
+            .start(job, Purpose::Update)
+            .is_some_and(|(purpose, read)| self.apply_read(purpose, read))
+    }
+
+    /// Show `listing`, a new read of the folder shown, keeping the
+    /// selection (by stable record identity, else by path), the scroll and
+    /// the status.
+    fn update_from(&mut self, listing: Result<Vec<Entry>, String>) -> bool {
         let selected = self
             .selection
             .selected()
@@ -3897,7 +3817,7 @@ impl FileExplorerWidget {
             .primary()
             .and_then(|index| self.entries.get(index))
             .map(|entry| (entry.record_id, entry.path.clone()));
-        let Ok(mut entries) = self.read_directory(&self.current_path) else {
+        let Ok(mut entries) = listing else {
             // A transient unmount/reconnect must not replace a still-useful
             // view with an error page. Explicit Refresh remains the path that
             // surfaces directory errors to the user.
@@ -3970,6 +3890,7 @@ impl FileExplorerWidget {
         self.sort_preserving_selection();
         if changed {
             self.store_preferences();
+            self.store_widths();
         }
     }
     pub fn toggle_sort_order(&mut self) {
@@ -3979,6 +3900,7 @@ impl FileExplorerWidget {
         };
         self.sort_preserving_selection();
         self.store_preferences();
+        self.store_widths();
     }
 
     fn sort_preserving_selection(&mut self) {
@@ -4020,6 +3942,7 @@ impl FileExplorerWidget {
         }
         self.view_mode = m;
         self.store_preferences();
+        self.store_widths();
     }
 
     pub fn entries_snapshot(&self) -> &[Entry] {
@@ -4064,7 +3987,7 @@ impl FileExplorerWidget {
                     | FileCommand::Cut
                     | FileCommand::Paste
                     | FileCommand::ExtractHere
-                    | FileCommand::CompressSelection
+                    | FileCommand::CompressSelection(_)
                     | FileCommand::OpenTerminal
                     | FileCommand::ArmDrag { .. }
                     | FileCommand::BeginDrag { .. }
@@ -4083,10 +4006,14 @@ impl FileExplorerWidget {
                     | FileCommand::Paste
                     | FileCommand::OpenTerminal
                     | FileCommand::ExtractHere
-                    | FileCommand::CompressSelection
+                    | FileCommand::ExtractTo
+                    | FileCommand::CompressSelection(_)
             )
         {
             self.status = Some(t("files-recent-not-a-folder"));
+            return true;
+        }
+        if self.is_applications_view() && self.refuses_in_applications(&cmd) {
             return true;
         }
         match cmd {
@@ -4504,7 +4431,12 @@ impl FileExplorerWidget {
                             )
                         }
                     };
-                    let transfer = availability.transfer.last_error.clone().unwrap_or_else(|| {
+                    let transfer = if availability.unavailable() {
+                        Some(t("files-unavailable-offline"))
+                    } else {
+                        availability.transfer.last_error.clone()
+                    };
+                    let transfer = transfer.unwrap_or_else(|| {
                         t_args(
                             "files-transfer-state",
                             &[arg(
@@ -4792,9 +4724,16 @@ impl FileExplorerWidget {
                     let identity = short_fingerprint(&version.actor.person.0);
                     // The device that signed the version names who wrote it,
                     // as the file's History does: an agent's own device reads
-                    // as the agent, on behalf of its person.
+                    // as the agent, on behalf of its person, and so does the
+                    // agent that device recorded as having caused it.
+                    let attribution =
+                        crate::framework_history::version_attribution(&path, version.id);
                     let author = authors
-                        .resolve_file_actor(&version.actor.person.0, &version.actor.device.0)
+                        .resolve_attributed_file_actor(
+                            &version.actor.person.0,
+                            &version.actor.device.0,
+                            attribution.as_ref(),
+                        )
                         .unwrap_or_else(|| {
                             ui::widget::HistoryAuthor::new(
                                 self.trusted_humans.display_name_or_fingerprint(&person),
@@ -5012,7 +4951,8 @@ impl FileExplorerWidget {
             }
             FileCommand::ExtractHere => self.apply_extract_here(),
             FileCommand::ExtractCurrentArchive => self.apply_extract_current_archive(),
-            FileCommand::CompressSelection => self.apply_compress_selection(),
+            FileCommand::ExtractTo => self.apply_extract_to(),
+            FileCommand::CompressSelection(packing) => self.apply_compress_selection(packing),
             FileCommand::OpenNearbySend => {
                 let selected = self.selected_paths();
                 if selected.len() != 1 {
@@ -5096,6 +5036,7 @@ impl FileExplorerWidget {
             FileCommand::ShowRemoteAccount(id) | FileCommand::RecheckRemoteAccount(id) => {
                 self.show_remote_account(&id)
             }
+            FileCommand::Uninstall => self.uninstall_selected_apps(),
             FileCommand::OpenDrive(id) => {
                 if let Err(error) = self.open_drive(&id) {
                     self.status = Some(t_args("files-drive-open-failed", &[arg("error", error)]));
@@ -5119,6 +5060,7 @@ impl FileExplorerWidget {
             FileCommand::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.store_preferences();
+                self.store_widths();
                 self.refresh();
                 true
             }
@@ -5214,6 +5156,11 @@ impl FileExplorerWidget {
         if paths.iter().any(|path| self.is_native_trash_entry(path)) {
             self.status = Some(t("files-native-trash-delete-unavailable"));
             return true;
+        }
+        if self.is_applications_view() && paths.iter().any(|path| crate::applications::is_app(path))
+        {
+            // An app leaves through Uninstall, which asks first.
+            return self.uninstall_selected_apps();
         }
         if self.is_recent_view() {
             // Recent lists uses of files from many folders: Delete forgets
@@ -5381,11 +5328,8 @@ impl FileExplorerWidget {
         match templates::create_from_template(template, &self.current_path) {
             Ok(path) => {
                 self.note_recent(&path, crate::recent::RecentUse::Changed);
-                self.refresh();
-                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
-                    self.selection.select_only(i);
-                    self.retain_shown_selection();
-                    self.begin_rename();
+                if !self.cloud.active {
+                    self.load_then(self.current_path.clone(), Then::Rename(path));
                 }
                 self.status = Some(t("files-created-file"));
                 Ok(())
@@ -5438,6 +5382,15 @@ impl FileExplorerWidget {
         // true in a given process, and each reports whether it
         // applied, so both are offered the gesture and at most
         // one takes it.
+        if self
+            .drag_paths
+            .iter()
+            .any(|path| crate::applications::is_app(path))
+        {
+            // An app is not a file another app could take: it is carried
+            // only inside this window, where the Trash uninstalls it.
+            return true;
+        }
         crate::external_drag::begin(self.drag_paths.clone());
         if ui::dnd::start_file_drag(&self.drag_paths) {
             tracing::debug!(
@@ -5573,134 +5526,6 @@ impl FileExplorerWidget {
         true
     }
 
-    fn apply_extract_here(&mut self) -> bool {
-        let paths: Vec<_> = self
-            .selected_paths()
-            .into_iter()
-            .filter(|path| crate::archive::is_supported(path))
-            .collect();
-        if paths.is_empty() {
-            self.status = Some(t("files-archive-select"));
-            return true;
-        }
-        let mut count = 0usize;
-        let mut failures = Vec::new();
-        for path in paths {
-            let stem = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Archive")
-                .trim_end_matches(".gz")
-                .trim_end_matches(".tar")
-                .trim_end_matches(".zip");
-            let parent = path.parent().unwrap_or(&self.current_path);
-            let mut destination = parent.join(stem);
-            let mut suffix = 2u32;
-            while destination.exists() {
-                destination = parent.join(format!("{stem} {suffix}"));
-                suffix = suffix.saturating_add(1);
-            }
-            match crate::archive::extract(&path, &destination) {
-                Ok(entries) => count = count.saturating_add(entries.len()),
-                Err(error) => failures.push(format!("{}: {error}", path.display())),
-            }
-        }
-        self.refresh();
-        self.status = Some(if failures.is_empty() {
-            t_args(
-                "files-archive-extracted",
-                &[arg("count", i64_of_usize(count))],
-            )
-        } else {
-            t_args(
-                "files-archive-extracted-partial",
-                &[
-                    arg("count", i64_of_usize(count)),
-                    arg("failures", failures.join("; ")),
-                ],
-            )
-        });
-        true
-    }
-
-    fn apply_extract_current_archive(&mut self) -> bool {
-        let Some((archive, _)) = crate::archive::location(&self.current_path) else {
-            return false;
-        };
-        self.selection.clear();
-        self.retain_shown_selection();
-        if let Some(index) = self.entries.iter().position(|entry| entry.path == archive) {
-            self.selection.select_only(index);
-            self.retain_shown_selection();
-            return self.apply_extract_here();
-        }
-        let parent = archive.parent().unwrap_or(&self.current_path).to_path_buf();
-        let stem = archive
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Archive")
-            .trim_end_matches(".gz")
-            .trim_end_matches(".tar")
-            .trim_end_matches(".zip");
-        let mut destination = parent.join(stem);
-        let mut suffix = 2u32;
-        while destination.exists() {
-            destination = parent.join(format!("{stem} {suffix}"));
-            suffix = suffix.saturating_add(1);
-        }
-        self.status = Some(match crate::archive::extract(&archive, &destination) {
-            Ok(entries) => t_args(
-                "files-archive-extracted",
-                &[arg("count", i64_of_usize(entries.len()))],
-            ),
-            Err(error) => t_args(
-                "files-archive-extract-failed",
-                &[arg("error", error.to_string())],
-            ),
-        });
-        true
-    }
-
-    fn apply_compress_selection(&mut self) -> bool {
-        let paths = self.selected_paths();
-        if paths.is_empty() {
-            self.status = Some(t("files-archive-select-compress"));
-            return true;
-        }
-        let base = if paths.len() == 1 {
-            paths
-                .first()
-                .and_then(|path| path.file_stem())
-                .and_then(|value| value.to_str())
-                .unwrap_or("Archive")
-        } else {
-            "Archive"
-        };
-        let mut output = self.current_path.join(format!("{base}.zip"));
-        let mut suffix = 2u32;
-        while output.exists() {
-            output = self.current_path.join(format!("{base} {suffix}.zip"));
-            suffix = suffix.saturating_add(1);
-        }
-        self.status = Some(match crate::archive::create_zip(&paths, &output) {
-            Ok(()) => {
-                self.refresh();
-                t_args(
-                    "files-archive-created",
-                    &[arg(
-                        "name",
-                        output.file_name().unwrap_or_default().to_string_lossy(),
-                    )],
-                )
-            }
-            Err(error) => t_args(
-                "files-archive-create-failed",
-                &[arg("error", error.to_string())],
-            ),
-        });
-        true
-    }
-
     /// `FileCommand::OpenTemplatesMenu` — opened from the menu-routing path
     /// with real geometry; if it arrives via the command queue just open it
     /// at the cursor.
@@ -5745,6 +5570,7 @@ impl FileExplorerWidget {
         if level != self.zoom_level {
             self.zoom_level = level;
             self.store_preferences();
+            self.store_widths();
         }
     }
 
@@ -5976,7 +5802,25 @@ impl FileExplorerWidget {
     )]
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
+        self.wait_for_archive();
         match scenario {
+            Some("archive-file-menu") => {
+                if let Some(index) = self
+                    .displayed_entries()
+                    .iter()
+                    .position(|entry| crate::archive::is_supported(&entry.path))
+                {
+                    self.debug_select(&[index]);
+                }
+                let at = Point::new(
+                    rect.x0 + rect.width() * 0.45,
+                    rect.y0 + rect.height() * 0.30,
+                );
+                self.last_cursor = at;
+                self.open_context_menu(at);
+                self.context_menu.focus_first_action();
+            }
+            Some("extract-progress") => self.debug_show_extract_progress(),
             Some("selection-actions") => self.stage_published_selection(),
             Some(name @ ("selection-sort" | "selection-sorted" | "selection-reversed")) => {
                 self.stage_sort_selection(name);
@@ -6024,9 +5868,9 @@ impl FileExplorerWidget {
             Some("select") => {
                 self.debug_select(&[9, 10]);
                 self.staged_hover = Some(12);
-                self.arm_status_bubble_for_shots();
+                self.arm_status_for_shots();
             }
-            Some("status") => self.arm_status_bubble_for_shots(),
+            Some("status") => self.arm_status_for_shots(),
             Some("rename") => {
                 self.debug_select(&[11]);
                 self.begin_rename();
@@ -6046,7 +5890,27 @@ impl FileExplorerWidget {
                 };
                 self.show_remote_account_panel(&account, true);
             }
+            Some("cloud-folder") => self.debug_show_cloud_folder(),
             Some("drives") => self.debug_show_sample_drives(),
+            Some(name @ ("applications" | "applications-menu")) => {
+                self.debug_show_sample_applications();
+                if name == "applications-menu" {
+                    if let Some(index) = self
+                        .displayed_entries()
+                        .iter()
+                        .position(|entry| entry.name == "Chess")
+                    {
+                        self.debug_select(&[index]);
+                    }
+                    let at = Point::new(
+                        rect.x0 + rect.width() * 0.45,
+                        rect.y0 + rect.height() * 0.30,
+                    );
+                    self.last_cursor = at;
+                    self.open_context_menu(at);
+                    self.context_menu.focus_first_action();
+                }
+            }
             Some("loading") => self.debug_show_loading_state(),
             Some("error") => self.debug_show_error_state(),
             Some("menu" | "archive-menu") => self.open_view_menu(),
@@ -6271,7 +6135,6 @@ impl FileExplorerWidget {
     /// Show the copy or move under way once it has run long enough to be
     /// worth watching, with Cancel; whether the card changed.
     fn follow_transfers(&mut self, now: Instant) -> bool {
-        use std::sync::atomic::Ordering;
         let running = crate::file_ops::active_transfers();
         let Some(transfer) = running.iter().find(|transfer| {
             transfer.started.is_some_and(|started| {
@@ -6285,15 +6148,24 @@ impl FileExplorerWidget {
             }
             return false;
         };
+        self.show_transfer(transfer);
+        true
+    }
+
+    /// The notice for a transfer under way: what it does, and how far it is.
+    fn show_transfer(&mut self, transfer: &crate::file_ops::LocalTransfer) {
+        use std::sync::atomic::Ordering;
         let folder = Path::new(&transfer.folder).file_name().map_or_else(
             || transfer.folder.clone(),
             |name| name.to_string_lossy().into_owned(),
         );
         let title = t_args(
-            if transfer.copy {
-                "files-copying"
-            } else {
-                "files-moving"
+            match transfer.kind {
+                crate::file_ops::TransferKind::Copy => "files-copying",
+                crate::file_ops::TransferKind::Move => "files-moving",
+                // `folder` is the archive being extracted.
+                crate::file_ops::TransferKind::Extract => "files-extracting",
+                crate::file_ops::TransferKind::Compress => "files-compressing",
             },
             &[
                 arg("count", i64_of_usize(transfer.count)),
@@ -6315,7 +6187,6 @@ impl FileExplorerWidget {
         );
         self.notice.show_progress(title, body);
         self.structure_dirty = true;
-        true
     }
 
     /// Open the folder a drag has rested on long enough; whether it did.
@@ -6424,6 +6295,7 @@ impl FileExplorerWidget {
         let paths = std::mem::take(&mut self.incoming);
         let target = self.drag_hover.take().or_else(|| {
             (!self.is_recent_view()
+                && !self.is_applications_view()
                 && !self.is_trash_view()
                 && crate::archive::location(&self.current_path).is_none())
             .then(|| self.current_path.clone())
@@ -6623,11 +6495,18 @@ impl FileExplorerWidget {
             let band = row.height() / 4.0;
             let inner = vello::kurbo::Rect::new(row.x0, row.y0 + band, row.x1, row.y1 - band);
             let path = places_sidebar::path_of_id(&id)?;
-            (inner.contains(pt)
-                && path.is_dir()
-                && !self.drag_paths.contains(&path)
-                && !crate::fileops::is_trash_dir(&path))
-            .then_some((path, row))
+            let carrying_apps = self
+                .drag_paths
+                .iter()
+                .any(|path| crate::applications::is_app(path));
+            let takes = if carrying_apps {
+                crate::fileops::is_trash_dir(&path)
+            } else {
+                path.is_dir()
+                    && !self.drag_paths.contains(&path)
+                    && !crate::fileops::is_trash_dir(&path)
+            };
+            (inner.contains(pt) && takes).then_some((path, row))
         })
     }
 
@@ -6647,7 +6526,12 @@ impl FileExplorerWidget {
         let origin = self.pin_drag.take();
         self.drag_hover = None;
         self.spring = None;
-        if let Some(dir) = target {
+        if paths.iter().any(|path| crate::applications::is_app(path)) {
+            // Apps go nowhere but the Trash, where they are uninstalled.
+            if target.as_deref().is_some_and(crate::fileops::is_trash_dir) {
+                self.uninstall_apps(&paths);
+            }
+        } else if let Some(dir) = target {
             self.drop_paths_into(&paths, &dir, copy);
         } else if over_sidebar {
             // Only a single folder can be a favourite — files and multi-drags
@@ -6757,6 +6641,17 @@ impl FileExplorerWidget {
             if let Some(result) = self.local_clipboard.decide(conflict) {
                 self.complete_clipboard_publication(result);
             }
+            return;
+        }
+        if pending.extracting.is_some() {
+            use crate::file_ops::IfExists;
+            let if_exists = match choice {
+                None => return,
+                Some(ClashChoice::Skip) => IfExists::Skip,
+                Some(ClashChoice::KeepBoth) => IfExists::KeepBoth,
+                Some(ClashChoice::Replace) => IfExists::Replace,
+            };
+            self.queue_extractions(&pending.sources, &pending.folder, if_exists);
             return;
         }
         match choice {
@@ -6969,30 +6864,35 @@ impl FileExplorerWidget {
         path: PathBuf,
         runner: &mut R,
     ) -> std::io::Result<bool> {
+        if let Some(app) = crate::applications::app_id(&path) {
+            self.open_app(app.to_owned());
+            return Ok(true);
+        }
         if let Some((archive, prefix)) = crate::archive::location(&path) {
             if prefix.as_os_str().is_empty() {
                 self.navigate(path);
                 return Ok(false);
             }
-            let member = crate::archive::list(&archive)?
-                .into_iter()
-                .find(|entry| entry.path == prefix);
-            let is_implicit_directory = member.is_none()
-                && crate::archive::list(&archive)?
-                    .iter()
-                    .any(|entry| entry.path.starts_with(&prefix));
-            if member.as_ref().is_some_and(|entry| entry.is_dir) || is_implicit_directory {
+            // The rows shown came from the archive's entries, read already;
+            // a path typed into an archive not yet read opens as a folder,
+            // which reads it.
+            let is_folder = crate::archive::cached(&archive).is_none_or(|entries| {
+                !entries.iter().any(|entry| {
+                    entry.path == prefix && entry.kind != crate::archive::Kind::Directory
+                })
+            });
+            if is_folder {
                 self.navigate(path);
                 return Ok(false);
             }
-            // A file inside an archive opens as a read-only copy of it.
-            return match archive_member_copy(&archive, &prefix) {
-                Ok(copy) => self.open_target(copy, runner),
-                Err(error) => {
-                    self.notify_open_failed(&path, &error.to_string());
-                    Ok(false)
-                }
-            };
+            // A file inside an archive opens as a read-only copy of it, read
+            // off the window's thread: reaching it can mean decoding most of
+            // a compressed tar.
+            if let Some(copy) = archive_member_cached(&archive, &prefix) {
+                return self.open_target(copy, runner);
+            }
+            self.archive_members.start(archive, prefix);
+            return Ok(true);
         }
         if path.is_dir() {
             self.navigate(path);
@@ -7150,42 +7050,17 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Draw the shared empty state in the file area when the current
-    /// directory has no entries (and isn't showing an error) — so an empty
-    /// folder, and especially an empty Trash, reads as intentionally empty
-    /// rather than broken. A muted icon over one context-aware sentence.
-    fn draw_empty_state(
-        &self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-    ) {
-        if self.cloud.active || !self.entries.is_empty() || self.error.is_some() || self.is_loading
-        {
-            return;
-        }
-        let rect = self.content_body_rect();
-        if rect.width() <= 1.0 || rect.height() <= 1.0 {
-            return;
-        }
-        let icon = if self.is_recent_view() {
+    /// The icon an empty folder shows above its sentence.
+    fn empty_state_icon(&self) -> ui::icons::Icon {
+        if self.is_recent_view() {
             ui::icons::Icon::History
+        } else if self.is_applications_view() {
+            ui::icons::Icon::LayoutGrid
         } else if self.is_trash_view() {
             ui::icons::Icon::Trash2
         } else {
             ui::icons::Icon::Folder
-        };
-        let message = self.empty_state_message();
-        EmptyState::paint(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            rect,
-            &EmptyStateContent {
-                icon: Some(icon),
-                ..EmptyStateContent::new(&message)
-            },
-            Point::new(-1.0, -1.0),
-        );
+        }
     }
 
     /// The sheet's spec: the title, a close control and, when the panel
@@ -7608,7 +7483,8 @@ impl FileExplorerWidget {
     pub fn open_terminal(&self) -> Result<(), String> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("open_terminal");
-        runtime_portal::tools::open_tool(self.terminal_intent())
+        let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
+        runtime_portal::tools::open_tool(self.terminal_intent(), on_behalf_of)
     }
 
     /// Activate entry `idx` (by displayed index): navigate into a directory
@@ -7634,10 +7510,7 @@ impl FileExplorerWidget {
     /// the current selection and clipboard.
     /// The template files currently available for the "New File ▸" submenu.
     pub fn available_templates(&self) -> Vec<PathBuf> {
-        self.templates_dir
-            .as_deref()
-            .map(templates::list_templates)
-            .unwrap_or_default()
+        self.templates.templates()
     }
 
     /// The menu item specs for the current selection / clipboard / state, given
@@ -7662,6 +7535,9 @@ impl FileExplorerWidget {
         if self.is_recent_view() {
             return self.recent_menu_spec();
         }
+        if let Some(spec) = self.applications_menu_spec() {
+            return spec;
+        }
 
         // An archive is a read-only folder view. Synthetic member paths must
         // never leak into filesystem mutation commands such as rename, trash,
@@ -7675,9 +7551,10 @@ impl FileExplorerWidget {
                 spec.push((String::new(), None));
             }
             spec.push((
-                t("files-archive-extract"),
+                t("files-archive-extract-here"),
                 Some(FileCommand::ExtractCurrentArchive),
             ));
+            spec.push((t("files-archive-extract-to"), Some(FileCommand::ExtractTo)));
             return tidy_menu(spec);
         }
 
@@ -7766,10 +7643,17 @@ impl FileExplorerWidget {
                     t("files-archive-extract-here"),
                     Some(FileCommand::ExtractHere),
                 ));
+                spec.push((t("files-archive-extract-to"), Some(FileCommand::ExtractTo)));
             }
             spec.push((
-                t("files-archive-compress"),
-                Some(FileCommand::CompressSelection),
+                t("files-archive-compress-zip"),
+                Some(FileCommand::CompressSelection(crate::archive::Packing::Zip)),
+            ));
+            spec.push((
+                t("files-archive-compress-tar-zst"),
+                Some(FileCommand::CompressSelection(
+                    crate::archive::Packing::TarZst,
+                )),
             ));
             // Favourites: add the single selected folder.
             if let Some(dir) = self.single_selected_dir() {
@@ -8191,8 +8075,7 @@ impl FileExplorerWidget {
     /// The stored place of the folder shown, when it is a folder a person
     /// can pin (not Recent, Trash or an archive).
     pub(crate) fn current_place(&self) -> Option<String> {
-        (self.current_path.is_dir() && !self.is_trash_view())
-            .then(|| self.place_for(&self.current_path))
+        (self.shown_is_folder && !self.is_trash_view()).then(|| self.place_for(&self.current_path))
     }
 
     /// Whether the folder shown is one of the Favourites.
@@ -8502,8 +8385,13 @@ impl FileExplorerWidget {
         }
         if crate::archive::location(&self.current_path).is_some() {
             spec.push((
-                t("files-archive-extract"),
+                t("files-archive-extract-here"),
                 Some(FileCommand::ExtractCurrentArchive),
+                None,
+            ));
+            spec.push((
+                t("files-archive-extract-to"),
+                Some(FileCommand::ExtractTo),
                 None,
             ));
             self.open_menu_right_aligned(spec, anchor, flip_y);
@@ -8799,6 +8687,7 @@ impl FileExplorerWidget {
     /// runs on the app runtime; when it finishes, Files opens the received
     /// mount or reports why it could not.
     pub fn admit_received_share(&mut self, uri: String) {
+        self.received_share_link = Some(uri.clone());
         if !self
             .received_share
             .spawn(crate::received_shares::admit_link(uri))
@@ -8824,7 +8713,16 @@ impl FileExplorerWidget {
                     self.set_external_status(t("files-received-admitted"));
                 }
             }
-            Err(error) => self.set_external_status(error),
+            Err(error) => {
+                // Said with Try again, which hands the service the link again.
+                let again = self
+                    .received_share_link
+                    .clone()
+                    .map(NoticeAction::ReceiveAgain);
+                self.status = None;
+                self.notice.show(error, "", again);
+                self.structure_dirty = true;
+            }
         }
         true
     }
@@ -8991,8 +8889,12 @@ impl FileExplorerWidget {
                 }
             }
             Err(error) => {
+                // Said with the file's Version history, where the change can
+                // be made again.
                 self.history_pending_success = None;
-                self.status = Some(error);
+                self.status = None;
+                let action = path.map(NoticeAction::OpenHistory);
+                self.notice.show(error, "", action);
             }
         }
         self.close_collab_panel();
@@ -9373,6 +9275,11 @@ impl FileExplorerWidget {
         if !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key()) {
             return false;
         }
+        // An open popup of the window (a dropdown's list, a menu) takes
+        // every wheel over the window, held keys or not.
+        if Widget::modal_capture(&self.nav).is_some() {
+            return false;
+        }
         let dy = match delta {
             winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
             winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
@@ -9646,7 +9553,7 @@ impl FileExplorerWidget {
         use ui::framework::LiveRow;
         let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites())
             .into_iter()
-            .chain(published_template_resources())
+            .chain(published_template_resources(self.available_templates()))
             .map(LiveRow::from_resource)
             .collect();
         rows.extend(self.live_entry_rows());
@@ -9783,12 +9690,12 @@ impl FileExplorerWidget {
     /// change asked for once its gap has passed
     /// ([`Self::refresh_metadata_if_due`]).
     fn listing_deadline(&self) -> Option<Instant> {
-        // A rename or pin drag defers the read; its end is input of its own,
-        // and a due deadline here would only spin until then.
-        let read_deferred = self.renaming.is_some() || self.pin_drag.is_some();
-        let changed_directory = (self.directory_changed && !read_deferred).then(|| {
-            self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
-        });
+        // A deferred read ends on input of its own or when the read under way
+        // wakes the window; a due deadline here would only spin until then.
+        let changed_directory =
+            (self.directory_changed && !self.directory_read_deferred()).then(|| {
+                self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
+            });
         [self.next_metadata_refresh, changed_directory]
             .into_iter()
             .flatten()
@@ -9821,7 +9728,7 @@ impl FileExplorerWidget {
             )
             .chain(self.local_clipboard.next_wake())
             .chain(self.drives.next_wake())
-            .chain(self.notice.deadline())
+            .chain(self.applications.next_wake())
             .chain((!self.incoming.is_empty()).then(Instant::now))
             .chain(
                 self.preview
@@ -9885,6 +9792,8 @@ impl Collaborative for FileExplorerWidget {
         }
         self.selected_open.event(event);
         self.poll_selected_open();
+        self.drives.event(event);
+        self.applications.event(event);
         let changed = self.handle_shortcut_event(event);
         let nearby_changed = self.handle_nearby_event(event);
         if changed || nearby_changed {
@@ -10027,12 +9936,29 @@ impl ui::undo::UndoControl for FileExplorerWidget {
     }
 }
 
+/// The window's search narrows the folder open: what a person types in the
+/// bar filters the listing they are looking at, and nothing else.
+impl ui::widget::Filterable for FileExplorerWidget {
+    fn set_filter(&mut self, query: &str) {
+        if self.find == query {
+            return;
+        }
+        self.find = query.to_owned();
+        self.structure_dirty = true;
+    }
+
+    fn filter_count(&self) -> Option<ui::widget::FilterCount> {
+        Some(self.find_count())
+    }
+}
+
 impl Widget for FileExplorerWidget {
     ui::provides!(
         dyn ui::undo::UndoControl,
         dyn ui::widget::Collaborative,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::widget::Filterable
     );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
@@ -10045,21 +9971,26 @@ impl Widget for FileExplorerWidget {
         let received = self.poll_received_share();
         let transfers = self.follow_transfers(ui::time::now());
         let previewed = self.preview.as_mut().is_some_and(Preview::poll);
-        let notice_expired = self.notice.expire(ui::time::now());
         let sprang = self.spring_open_if_due(ui::time::now());
         // A folder's item count came in: the list shows it.
         let counted = self.folder_counts.take_arrived();
-        self.structure_dirty |= notice_expired | counted;
+        let listed = self.take_folder_read()
+            | self.take_archive_listing()
+            | self.poll_extract_chooser()
+            | self.open_read_members();
+        self.structure_dirty |= counted;
         self.poll_share_result()
+            | self.poll_history_result()
             | received
-            | notice_expired
             | transfers
             | previewed
             | sprang
             | counted
+            | listed
             | self.poll_cloud()
             | self.poll_mounted_cloud()
-            | self.poll_drives(ui::time::now())
+            | self.poll_drives()
+            | self.poll_applications(ui::time::now())
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -10103,7 +10034,6 @@ impl Widget for FileExplorerWidget {
         // On its first frame select the name but not a file's extension, so
         // typing replaces the name and keeps the type (a folder's whole name).
         self.rename_input.sync(state, path);
-        self.state_retry.sync(state, path);
         if self.rename_select_pending {
             let is_dir = self
                 .renaming
@@ -10125,6 +10055,21 @@ impl Widget for FileExplorerWidget {
         {
             self.rename_buffer = value;
         }
+        // The notice says so in the window's bar while it is up; its
+        // button pressed there acts as the card's did.
+        // A row in Needs you waits on the very action this notice carried:
+        // pressing it acts here, where the change it is about lives.
+        for press in self.needs.take() {
+            let Some(acted) = ui::attention::apply(press) else {
+                continue;
+            };
+            if let Some(action) = self.notice.pressed(&acted) {
+                self.act_on_notice(action);
+                self.structure_dirty = true;
+            }
+        }
+        self.publish_status();
+        self.notice.publish();
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -10162,9 +10107,7 @@ impl Widget for FileExplorerWidget {
         self.refresh_cloud_header();
         self.nav.set_content(self.build_content_pane(theme));
 
-        // The shell fills the window; the item count / selection status floats
-        // in a reserved bottom lane inside the body (see `draw_status_bubble`),
-        // leaving the rest of the body available to the file viewport.
+        // The shell fills the window.
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
         let style = taffy::Style {
             display: taffy::Display::Flex,
@@ -10206,8 +10149,6 @@ impl Widget for FileExplorerWidget {
         self.paint_background(theme);
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
 
@@ -10224,20 +10165,6 @@ impl Widget for FileExplorerWidget {
         // above everything.
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        // Floating status bubble (item count / status + selection), above the
-        // content but below any open menus / drag ghost, and only while the
-        // file view is on screen (not while a narrow window shows the places
-        // screen). A notice takes the bubble's place while it is up: one
-        // message at a time at the bottom of the file view.
-        if self.nav.geometry().content_column.width() > 0.0 {
-            if self.notice.is_shown() {
-                let area = self.content_body_rect();
-                self.notice
-                    .paint(scene, transform, text_renderer, theme, area);
-            } else {
-                self.draw_status_bubble(scene, transform, text_renderer, theme);
-            }
-        }
         self.draw_collab_panel(scene, transform, text_renderer, theme);
         let window = self.rect;
         if let Some(preview) = self.preview.as_mut() {
@@ -10321,21 +10248,10 @@ impl Widget for FileExplorerWidget {
             *ctx.handled = true;
             return;
         }
-        if self.notice.is_shown() && self.route_notice_event(event) {
-            *ctx.handled = true;
-            return;
-        }
-        // The shared EmptyState visual and the retained Button share one
-        // recovery route. The button's `on_effect` publishes a typed local
-        // control action; draining it below enters the ordinary Refresh path.
-        if self.error.is_some() {
-            self.state_retry
-                .handle_event(event, &mut ctx.reborrow(path, ctx.node_id));
-            if *ctx.handled {
-                self.structure_dirty |= self.drain_commands();
-                return;
-            }
-            if matches!(
+        // A failed listing has nothing else to act on, so Enter or Space
+        // anywhere takes its way on, as its button does.
+        if self.error.is_some()
+            && matches!(
                 event,
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed
@@ -10346,11 +10262,11 @@ impl Widget for FileExplorerWidget {
                                     | winit::keyboard::NamedKey::Space
                             )
                         )
-            ) {
-                self.structure_dirty |= self.apply_command(self.folder_recovery_command());
-                *ctx.handled = true;
-                return;
-            }
+            )
+        {
+            self.structure_dirty |= self.apply_command(self.folder_recovery_command());
+            *ctx.handled = true;
+            return;
         }
         if self.collab_panel.is_some() {
             use winit::keyboard::{Key, NamedKey};
@@ -10461,8 +10377,6 @@ impl Widget for FileExplorerWidget {
             || self.cloud.chooser.is_some()
             || self.cloud_import_pending()
             || self.nav.needs_animation_frame()
-            || (self.is_loading && self.state_spinner.needs_animation_frame())
-            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -10482,6 +10396,14 @@ impl Widget for FileExplorerWidget {
             &self.submenu,
         ];
         v
+    }
+
+    /// The shell is laid out whether or not a panel covers it, so the
+    /// retained layout check walks it even while the panel keeps it from
+    /// routing.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.nav);
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -10567,7 +10489,7 @@ impl Widget for FileExplorerWidget {
             );
         }
 
-        let mut root = AccessNode::new(Role::Group)
+        let root = AccessNode::new(Role::Group)
             .with_name(t("files-a11y-activity"))
             .with_description(t_args(
                 "files-a11y-current-folder",
@@ -10580,47 +10502,6 @@ impl Widget for FileExplorerWidget {
                 Politeness::Polite
             })
             .with_state(AccessState::new().busy(self.is_loading));
-        if let Some((title, detail, can_retry)) = self.state_surface_copy() {
-            let mut state = AccessNode::new(Role::Group)
-                .with_name(title)
-                .with_description(detail)
-                .with_live(if can_retry {
-                    Politeness::Assertive
-                } else {
-                    Politeness::Polite
-                })
-                .with_state(AccessState::new().busy(self.is_loading));
-            if can_retry {
-                state = state.with_children(vec![
-                    AccessNode::new(Role::Button)
-                        .with_name(self.folder_recovery_label())
-                        .with_action_target("files-retry-folder"),
-                ]);
-            }
-            root = root.with_children(vec![state]);
-        }
-        if let Some(mut notice) = self.notice.access_node() {
-            let mut buttons = Vec::new();
-            if let Some(action) = self.notice.action() {
-                let label = match action {
-                    NoticeAction::Undo => t("files-notice-undo"),
-                    NoticeAction::OpenWith(_) => t("files-notice-open-with"),
-                    NoticeAction::CancelTransfer => t("files-notice-cancel"),
-                };
-                buttons.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(label)
-                        .with_action_target(NOTICE_ACTION_TARGET),
-                );
-            }
-            buttons.push(
-                AccessNode::new(Role::Button)
-                    .with_name(t("files-notice-dismiss"))
-                    .with_action_target(NOTICE_DISMISS_TARGET),
-            );
-            notice = notice.with_children(buttons);
-            root.children.push(notice);
-        }
         Some(root)
     }
 
@@ -10640,28 +10521,6 @@ impl Widget for FileExplorerWidget {
                 self.settle_clash(choice);
             }
             return choice.is_some();
-        }
-        if matches!(action, Action::Activate)
-            && (target == NOTICE_ACTION_TARGET || target == NOTICE_DISMISS_TARGET)
-        {
-            let click = if target == NOTICE_DISMISS_TARGET {
-                NoticeClick::Dismissed
-            } else {
-                match self.notice.action().cloned() {
-                    Some(action) => NoticeClick::Action(action),
-                    None => return false,
-                }
-            };
-            if let NoticeClick::Action(action) = self.notice.activate(click) {
-                self.act_on_notice(action);
-            }
-            self.structure_dirty = true;
-            return true;
-        }
-        if target == "files-retry-folder" && matches!(action, Action::Activate) {
-            let changed = self.apply_command(self.folder_recovery_command());
-            self.structure_dirty |= changed;
-            return changed;
         }
         if let Some(version) = target.strip_prefix("files-history-version:") {
             let Ok(version) = uuid::Uuid::parse_str(version) else {
@@ -10753,11 +10612,9 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
         if let Some(invocation) = self.app_chooser.take_control_invocation() {
             return Some(invocation);
         }
-        self.state_retry.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
     fn has_action_control_bindings(&self) -> bool {
         // Own accessibility actions are semantic; only children emit actions.
@@ -10804,6 +10661,10 @@ mod open_with_recent;
 #[cfg(test)]
 #[path = "files_app/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "files_app/notice_action_tests.rs"]
+mod notice_action_tests;
 
 /// What the palette, agents and scripts reach of a Files window, for the
 /// tests that drive the widget without a framework host: the resource's
@@ -10930,8 +10791,10 @@ impl FileExplorerWidget {
         true
     }
 
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.debug_show_status_bubble();
+    /// `--shots`: say the item and selection counts in the window's bar,
+    /// so a single headless frame shows them.
+    pub fn arm_status_for_shots(&mut self) {
+        let label = self.footer_label();
+        self.status_notice.show(label);
     }
 }

@@ -8,7 +8,7 @@ in a distrobox), but configurable for any host via env vars.
 ```
 os/dev/
   _common.sh       shared config + helpers (override via env)
-  build-image.sh   podman build (in-image compile) -> disk-image.sh -> qcow2
+  build-image.sh   os/image/compile.sh in the OS builder -> podman build -> disk-image.sh -> qcow2
   disk-image.sh    container image -> bootable qcow2 (systemd-repart + bootc install)
   vm.sh            boot / login / screenshot / logs / stop
 ```
@@ -252,10 +252,10 @@ For Windows ARM64 development, dispatch `os-dev-installer.yml` with
 ARM64 run. It layers the installer on that already-built unsigned image and
 uploads a compressed qcow2; it does not rebuild or sign the OS. Download the
 `tilo-dev-installer-aarch64-<run>` artifact, verify its SHA-256, decompress the
-qcow2 once, then run `tilo-vm scenario install --medium <qcow2> --graphics
+qcow2 once, then run `tilo device scenario install --medium <qcow2> --graphics
 software` on the Windows WHPX host. Keep the medium as the immutable base for
 later throwaway install overlays. Component changes in a running dev VM use
-`tilo-vm vm deploy`; normal OS image changes use `tilo-vm vm upgrade`.
+`tilo device vm deploy`; normal OS image changes use `tilo device vm upgrade`.
 When building that disposable medium in WSL instead, set
 `TILO_PODMAN_BUILD_NETWORK=host` only if Podman's private build namespace
 cannot reach the package mirrors while the WSL host can.
@@ -397,7 +397,7 @@ origin and loader entry; a split target changes only its boot representation.
 No OS rebuild, image commit or registry upload is involved. The signed release
 promotion path continues to require its prebuilt target bundle.
 
-Run the downloaded medium through `tilo-vm scenario install` on Windows ARM64.
+Run the downloaded medium through `tilo device scenario install` on Windows ARM64.
 The Windows backend requires WHPX and never falls back to TCG. A selected dev
 target emits proof v4: target manifest, source/run locators, deployment origin,
 composefs, UKI hash and GPT identities. This is VM evidence, not a CI signature.

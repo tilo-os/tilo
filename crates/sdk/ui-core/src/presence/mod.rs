@@ -1,16 +1,21 @@
 use crate::permissions::UserId;
 use crate::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 pub mod capability;
+mod caret_tag;
 mod chat;
 mod faces;
+pub mod frame;
 mod geom;
 mod interaction;
 mod key;
 mod labels;
 mod layer;
-mod render;
+mod placed;
+pub(crate) mod render;
+pub use caret_tag::{CaretTag, LabeledCaret, hide_names_beside_caret_tags, tag_gap, tags_crowd};
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
     ReactionFloat, single_emoji,
@@ -26,40 +31,47 @@ pub use labels::{ParticipantLabels, name_key};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
-/// Shared with the other widgets that frame a label in fixed-pixel insets
-/// (the capture studio's docked recorder), so one rule decides how much
-/// larger than the default a label paints.
-pub(crate) use render::label_magnification;
+pub use placed::PlacedPointer;
 pub use render::{
-    PeerCursor, PillPlacement, PillRequest, contrast_ink, contrast_ink_dim, draw_peer_cursors,
-    draw_peer_presence, draw_remote_cursors, draw_remote_presence, layout_peer_pills,
-    paint_own_chat_bubble, paint_reaction, paint_speaking_ring,
+    FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, contrast_ink, contrast_ink_dim,
+    draw_peer_cursors, draw_peer_presence, draw_remote_cursors, draw_remote_presence,
+    layout_peer_pills, paint_follow_frame, paint_followed_pointer, paint_own_chat_bubble,
+    paint_reaction, paint_speaking_ring,
 };
 
-/// How long a "just typed" highlight lingers before fading out.
-pub const TYPING_FADE: crate::time::Duration = crate::time::Duration::from_millis(2500);
-
-/// The highlight fades in this many steps, each a wake deadline: a slow
-/// taper reads the same in steps of a quarter second, and while a peer types
-/// the window repaints a few times a second instead of at every refresh.
-pub const TYPING_FADE_STEPS: u32 = 10;
-
-/// One step of the typing fade.
-const TYPING_FADE_STEP: crate::time::Duration = match TYPING_FADE.checked_div(TYPING_FADE_STEPS) {
-    Some(step) => step,
-    None => crate::time::Duration::ZERO,
-};
-
-/// Which fade step a mark `age` old is in; `None` once it has faded.
-fn typing_step(age: crate::time::Duration) -> Option<u32> {
-    (age < TYPING_FADE)
-        .then(|| u32::try_from(age.as_nanos() / TYPING_FADE_STEP.as_nanos()).unwrap_or(u32::MAX))
+/// The scope this process should publish its presence under — the room
+/// it collaborates in, or `None` when it has no room. Read from
+/// [`local_cluster_id`](crate::collaboration::local_cluster_id), the
+/// same value the routing address is built from, so the two cannot drift apart.
+///
+/// `None` when the room is the nil uuid: that value addresses nobody
+/// (`CrdtRoute::is_addressable` rejects it — an unminted room would
+/// otherwise make every unconfigured machine share one room). Fail closed.
+pub fn local_workspace_key() -> Option<PresenceKey> {
+    let cluster = crate::collaboration::local_cluster_id();
+    if cluster.is_nil() {
+        return None;
+    }
+    Some(PresenceKey::Workspace {
+        id: cluster.to_string(),
+    })
 }
 
-/// The alpha of a mark `age` old: `1.0` just typed, down a step at a time.
-fn typing_alpha(age: crate::time::Duration) -> Option<f32> {
-    typing_step(age).map(|step| (1.0 - step as f32 / TYPING_FADE_STEPS as f32).clamp(0.0, 1.0))
+/// [`PresenceKey::surface_pointer`] for this process's own surface. The
+/// coordinates a winit `CursorMoved` carries are surface-local, so this
+/// is the only representation an app can provide.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_surface_pointer() -> PresenceKey {
+    PresenceKey::surface_pointer(crate::local_surface_id())
 }
+
+/// How long a "just typed" highlight lingers, its fade included: the
+/// standard trace of a collaborator's mark ([`crate::motion::Trace`]).
+pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
+
+/// The highlight fades in this many steps, each a wake deadline
+/// ([`crate::motion::Trace::STEPS`]).
+pub const TYPING_FADE_STEPS: u32 = crate::motion::Trace::STEPS;
 
 /// Longest forward caret jump still read as "this peer just wrote that"
 /// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
@@ -73,104 +85,20 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-/// Stable identity colour for a collaborator who has not chosen one: the
-/// presence hue [`crate::tokens::PresenceHue::of_identity`] derives from
-/// their id, as the sRGB colour in [`PEER_PALETTE`]. A pure function of the
-/// id alone: two hosts painting the same room see different peer sets
-/// (everyone but themselves), so a colour derived from who's present
-/// couldn't agree across machines.
-///
-/// This is the identity as it travels; paint it through
-/// `theme.tokens.colors.presence.of_rgb(..)`, which carries the hue at the
-/// active theme's presence lightness and chroma.
-pub fn user_color(user_id: &str) -> (u8, u8, u8) {
-    identity_rgb(crate::tokens::PresenceHue::of_identity(user_id))
+pub use collab_types::presence::{PEER_PALETTE, assign_peer_colors, identity_rgb, user_color};
+
+/// [`user_color`] as a colour: what a face of `user_id` wears when the room
+/// has not given them one ([`Face::colour`]).
+pub fn identity_colour(user_id: &str) -> vello::peniko::Color {
+    let (red, green, blue) = user_color(user_id);
+    vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
-/// A presence hue as the identity colour it travels as.
-pub fn identity_rgb(hue: crate::tokens::PresenceHue) -> (u8, u8, u8) {
-    PEER_PALETTE.get(hue.slot()).copied().unwrap_or_default()
-}
-
-/// Every colour a peer can be drawn in: the design language's twelve
-/// presence hues (`tokens::colors::PRESENCE_HUES`, 30° apart) at the dark
-/// material's presence lightness and chroma (OKLCH L 0.74, C 0.14, gamut
-/// mapped), as sRGB. Equal lightness and chroma, so no participant looks
-/// more important than another; a closed ring rather than a hash over all
-/// 360 hues, so two people never land a few degrees apart.
-pub const PEER_PALETTE: [(u8, u8, u8); 12] = [
-    (0xf7, 0x85, 0x7d), // 25°  red
-    (0xed, 0x91, 0x4c), // 55°  orange — pinned for "bob"
-    (0xd3, 0xa3, 0x29), // 85°  amber
-    (0xa8, 0xb5, 0x40), // 115° olive
-    (0x6e, 0xc2, 0x72), // 145° green — pinned for "charlie"
-    (0x00, 0xc7, 0xa6), // 175° teal
-    (0x00, 0xc1, 0xd1), // 205° cyan
-    (0x38, 0xb8, 0xf6), // 235° sky
-    (0x81, 0xa8, 0xff), // 265° blue — pinned for "me"
-    (0xb2, 0x98, 0xf9), // 295° violet
-    (0xd7, 0x8a, 0xdb), // 325° magenta
-    (0xee, 0x83, 0xaf), // 355° pink — pinned for "alice"
-];
-
-/// Give everyone in a room a colour nobody else in it is wearing.
-///
-/// [`user_color`] alone can't promise this — it's a hash, so `carol` lands
-/// on `alice`'s pink. Whoever collides steps to the next free ring entry,
-/// walking ids in sorted order so every host agrees despite seeing a
-/// different membership (everyone but itself). `reserved` colours are
-/// already spoken for by an explicit roster choice.
-pub fn assign_peer_colors(
-    ids: &[&str],
-    reserved: &[(u8, u8, u8)],
-) -> HashMap<String, (u8, u8, u8)> {
-    let mut sorted: Vec<&str> = ids.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-
-    let mut taken = [false; PEER_PALETTE.len()];
-    for c in reserved {
-        if let Some(i) = PEER_PALETTE.iter().position(|p| p == c)
-            && let Some(slot) = taken.get_mut(i)
-        {
-            *slot = true;
-        }
-    }
-
-    let mut out = HashMap::with_capacity(sorted.len());
-    for id in sorted {
-        let natural = user_color(id);
-        let start = PEER_PALETTE
-            .iter()
-            .position(|p| *p == natural)
-            // Always a ring member; 0 just keeps a draw path total rather than panicking.
-            .unwrap_or(0);
-        let mut slot = start;
-        for step in 0..PEER_PALETTE.len() {
-            // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
-            // so the remainder can never divide by zero; `start`/`step` are
-            // both < 24, so the sum can't realistically overflow either.
-            let i = start
-                .saturating_add(step)
-                .checked_rem(PEER_PALETTE.len())
-                .unwrap_or(0);
-            if !taken.get(i).copied().unwrap_or(false) {
-                slot = i;
-                break;
-            }
-            // More people than colours: share the natural entry; the name still says who is who.
-            slot = start;
-        }
-        if let Some(s) = taken.get_mut(slot) {
-            *s = true;
-        }
-        out.insert(
-            id.to_string(),
-            PEER_PALETTE.get(slot).copied().unwrap_or_default(),
-        );
-    }
-    out
-}
+/// The face of someone here whose colour the room has not settled yet:
+/// grey, which the presence palette paints neutral
+/// ([`crate::tokens::colors::PresencePalette::of`]), never a ring colour
+/// they would then change from.
+pub const UNSETTLED_RGB: (u8, u8, u8) = (0x9a, 0x9a, 0x9a);
 
 /// How far apart two colours are, weighted the way an eye weights them (the
 /// "redmean" approximation).
@@ -395,12 +323,6 @@ impl From<bool> for ParticipantKind {
     }
 }
 
-impl AsRef<UserId> for UserId {
-    fn as_ref(&self) -> &UserId {
-        self
-    }
-}
-
 impl PresenceUser {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         let id = id.into();
@@ -500,16 +422,16 @@ pub enum RemotePresenceEffect {
 pub const POINTER_IDLE: Duration = Duration::from_secs(5);
 
 /// How long a quiet peer's pointer takes to fade out, ending at
-/// [`POINTER_IDLE`]. See [`PresenceCtx::pointer_opacity`].
-pub const POINTER_FADE: Duration = Duration::from_millis(400);
+/// [`POINTER_IDLE`]: the standard fade of a stream gone quiet
+/// ([`crate::motion::Follow::FADE`]). See [`PresenceCtx::pointer_opacity`].
+pub const POINTER_FADE: Duration = crate::motion::Follow::FADE;
 
 /// Longest a peer's pointer takes to glide to a newly heard position. Peers
 /// publish at ~30 Hz, so a moving pointer glides over the gap between its
 /// last two samples (~33 ms) and arrives as the next one is due; this caps
-/// the glide after a pause, so a pointer that sat still for a while does
-/// not drift lazily to where it was just put. See
+/// the glide after a pause ([`crate::motion::Follow::GLIDE_MAX`]). See
 /// [`PresenceCtx::pointer_position_at`].
-pub const POINTER_EASE_MAX: Duration = Duration::from_millis(100);
+pub const POINTER_EASE_MAX: Duration = crate::motion::Follow::GLIDE_MAX;
 
 /// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
 pub type PointerPositions = HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>;
@@ -564,15 +486,16 @@ pub struct PresenceCtx {
     pointer_moved: HashMap<(PresenceKey, UserId), Instant>,
     /// What people are saying beside their pointers, and their reactions.
     pub chats: CursorChats,
-    /// How available each person says they are, and the voice channel
-    /// they are in.
-    availability: HashMap<UserId, (crate::Availability, Option<String>)>,
-    /// Faces that bounce because this person waved at them.
+    /// How available each person says they are in each workspace, and the
+    /// voice channel they are in there, keyed by the workspace's room and
+    /// the person: one person says it to each workspace on their own terms.
+    availability: HashMap<(String, UserId), (crate::Availability, Option<String>)>,
+    /// The room of the workspace in front, which [`Self::availability_of`]
+    /// and [`Self::call_of`] read. A context that hears one room needs
+    /// none: what it heard is that room's.
+    room_in_front: Option<String>,
+    /// Faces that bounce because their person waved at this one.
     bounces: HashMap<UserId, crate::motion::Attention>,
-    /// Waves heard, oldest first: who waved, at whom (a roster id), when.
-    /// The shell takes them ([`Self::take_waves`]) and shows the ones at
-    /// this person.
-    waves: Vec<(UserId, String, Instant)>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
     /// Ephemeral visual relationships, keyed by `(room, follower)`. They
@@ -593,6 +516,11 @@ pub struct PresenceCtx {
     /// The person each agent, Shortcut or app acts for, as the broker
     /// admitted it: "Claude, for Ada".
     acting_for: HashMap<UserId, UserId>,
+    /// The person (their user root) each participant here is a device of,
+    /// where presence names devices rather than people (a browser page's
+    /// room) and the room's host paired them: what a person id from
+    /// elsewhere, a call's roster, is matched to the participant by.
+    persons: HashMap<UserId, UserId>,
     /// Short room-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
     statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
@@ -617,6 +545,10 @@ pub struct PresenceCtx {
     /// `Cell` so containers (Scrollable) can scope-push a tighter inner
     /// viewport without needing `&mut PresenceCtx` everywhere.
     pub viewport: std::cell::Cell<Option<vello::kurbo::Rect>>,
+    /// Where this frame painted each peer's caret name tag, in scene
+    /// coordinates, so the pointer layer drawn after the windows can leave
+    /// out a second tag with the same name right beside it.
+    caret_tags: std::cell::RefCell<Vec<CaretTag>>,
     /// The authority the subtree being drawn holds, scoped by whoever hands
     /// it one (a host, a bound component) through [`Self::with_permissions`]
     /// and read by gated widgets through [`Self::permits`]. `None` gates
@@ -665,6 +597,11 @@ impl PresenceCtx {
         }
     }
 
+    /// The active viewport, when a scrolling ancestor set one.
+    pub fn viewport(&self) -> Option<vello::kurbo::Rect> {
+        self.viewport.get()
+    }
+
     /// Replace the active viewport, returning the previous value so the caller can restore it.
     pub fn push_viewport(&self, vp: vello::kurbo::Rect) -> Option<vello::kurbo::Rect> {
         self.viewport.replace(Some(vp))
@@ -699,6 +636,22 @@ impl PresenceCtx {
     /// The authority of the subtree being drawn, if anyone scoped one.
     pub fn permission_context(&self) -> Option<crate::permissions::PermissionContext> {
         self.permissions.borrow().clone()
+    }
+
+    /// Forget the caret name tags painted so far: a host calls it before a
+    /// frame that draws every window again.
+    pub fn clear_caret_tags(&self) {
+        self.caret_tags.borrow_mut().clear();
+    }
+
+    /// The caret name tags painted since [`Self::clear_caret_tags`], in
+    /// scene coordinates.
+    pub fn caret_tags(&self) -> Vec<CaretTag> {
+        self.caret_tags.borrow().clone()
+    }
+
+    pub(crate) fn note_caret_tag(&self, tag: CaretTag) {
+        self.caret_tags.borrow_mut().push(tag);
     }
 }
 
@@ -1085,27 +1038,67 @@ impl PresenceCtx {
             .min()
     }
 
-    /// How available `user` says they are; available until they said.
-    pub fn availability_of(&self, user: &UserId) -> crate::Availability {
-        self.availability
-            .get(user)
+    /// Name the room of the workspace in front: the one
+    /// [`Self::availability_of`] and [`Self::call_of`] answer for.
+    pub fn set_room_in_front(&mut self, room: Option<String>) {
+        self.room_in_front = room;
+    }
+
+    /// What `user` said in `room`, or, with no room named, in the room in
+    /// front ([`Self::set_room_in_front`]), else in the one room this
+    /// context hears.
+    fn said(
+        &self,
+        room: Option<&str>,
+        user: &UserId,
+    ) -> Option<&(crate::Availability, Option<String>)> {
+        match room.or(self.room_in_front.as_deref()) {
+            Some(room) => self.availability.get(&(room.to_owned(), user.clone())),
+            None => self
+                .availability
+                .iter()
+                .find_map(|((_, who), said)| (who == user).then_some(said)),
+        }
+    }
+
+    /// How available `user` says they are in `room`; available until they
+    /// said.
+    pub fn availability_in(&self, room: &str, user: &UserId) -> crate::Availability {
+        self.said(Some(room), user)
             .map_or(crate::Availability::Available, |(state, _)| *state)
     }
 
-    /// Whether `user` has said how available they are.
-    #[must_use]
-    pub fn has_availability(&self, user: &UserId) -> bool {
-        self.availability.contains_key(user)
-    }
-
-    /// The voice channel `user` is in, if any.
-    pub fn call_of(&self, user: &UserId) -> Option<&str> {
-        self.availability
-            .get(user)
+    /// The voice channel `user` says they are in, in `room`.
+    pub fn call_in(&self, room: &str, user: &UserId) -> Option<&str> {
+        self.said(Some(room), user)
             .and_then(|(_, call)| call.as_deref())
     }
 
-    /// Bounce `user`'s face once: this person just waved at them.
+    /// Whether `user` has said how available they are in `room`.
+    #[must_use]
+    pub fn has_availability_in(&self, room: &str, user: &UserId) -> bool {
+        self.said(Some(room), user).is_some()
+    }
+
+    /// How available `user` says they are in the workspace in front.
+    pub fn availability_of(&self, user: &UserId) -> crate::Availability {
+        self.said(None, user)
+            .map_or(crate::Availability::Available, |(state, _)| *state)
+    }
+
+    /// Whether `user` has said how available they are in the workspace in
+    /// front.
+    #[must_use]
+    pub fn has_availability(&self, user: &UserId) -> bool {
+        self.said(None, user).is_some()
+    }
+
+    /// The voice channel `user` is in, in the workspace in front.
+    pub fn call_of(&self, user: &UserId) -> Option<&str> {
+        self.said(None, user).and_then(|(_, call)| call.as_deref())
+    }
+
+    /// Bounce `user`'s face once: they just waved at this person.
     pub fn bounce(&mut self, user: UserId, motion: crate::tokens::EffectiveMotion, now: Instant) {
         let bounce = self.bounces.entry(user).or_default();
         bounce.pulse(motion, now);
@@ -1119,16 +1112,6 @@ impl PresenceCtx {
         self.bounces
             .get(user)
             .map_or(1.0, |bounce| bounce.scale(now))
-    }
-
-    /// Whether a face is bouncing at `now`.
-    pub fn faces_moving(&self, now: Instant) -> bool {
-        self.bounces.values().any(|bounce| bounce.is_moving(now))
-    }
-
-    /// Waves heard since the last call: who waved, at whom, when.
-    pub fn take_waves(&mut self) -> Vec<(UserId, String, Instant)> {
-        std::mem::take(&mut self.waves)
     }
 
     /// Whether any pointer is fading out at `now` (see
@@ -1325,7 +1308,7 @@ impl PresenceCtx {
         {
             ids.push(own);
         }
-        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        ids.compact_sort_by(|a, b| a.0.cmp(&b.0));
         ids.into_iter().map(|id| self.user(id)).collect()
     }
 
@@ -1386,6 +1369,22 @@ impl PresenceCtx {
     /// acting for one.
     pub fn acting_for(&self, user: &UserId) -> Option<&UserId> {
         self.acting_for.get(user)
+    }
+
+    /// Replace which person each participant here is a device of, as the
+    /// room's host paired them: `(participant, person)`. Where presence
+    /// already names people, there is nothing to pair.
+    pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (UserId, UserId)>) {
+        self.persons = pairs
+            .into_iter()
+            .filter(|(participant, person)| participant != person && !person.0.trim().is_empty())
+            .collect();
+    }
+
+    /// The person participant `user` is a device of, when the room's host
+    /// paired them; `None` where presence names the person itself.
+    pub fn person_of(&self, user: &UserId) -> Option<&UserId> {
+        self.persons.get(user)
     }
 
     /// What every surface calls `user` — chat lines, pills, people lists,
@@ -1511,7 +1510,8 @@ impl PresenceCtx {
         marks
             .iter()
             .filter_map(|m| {
-                typing_alpha(now.saturating_duration_since(m.born)).map(|alpha| (m.range, alpha))
+                crate::motion::Trace::alpha(now.saturating_duration_since(m.born))
+                    .map(|alpha| (m.range, alpha))
             })
             .collect()
     }
@@ -1528,7 +1528,9 @@ impl PresenceCtx {
                 continue;
             }
             for m in marks {
-                if let Some(alpha) = typing_alpha(now.saturating_duration_since(m.born)) {
+                if let Some(alpha) =
+                    crate::motion::Trace::alpha(now.saturating_duration_since(m.born))
+                {
                     out.push((user.clone(), m.range, alpha));
                 }
             }
@@ -1543,11 +1545,7 @@ impl PresenceCtx {
         self.typing
             .values()
             .flatten()
-            .filter_map(|m| {
-                let step = typing_step(now.saturating_duration_since(m.born))?;
-                m.born
-                    .checked_add(TYPING_FADE_STEP.saturating_mul(step.saturating_add(1)))
-            })
+            .filter_map(|m| crate::motion::Trace::next_step(m.born, now))
             .min()
     }
 
@@ -1559,9 +1557,9 @@ impl PresenceCtx {
             .typing
             .values()
             .flatten()
-            .filter_map(|m| typing_step(now.saturating_duration_since(m.born)))
+            .filter_map(|m| crate::motion::Trace::step(now.saturating_duration_since(m.born)))
             .collect();
-        steps.sort_unstable();
+        steps.compact_sort();
         steps
     }
 
@@ -1815,7 +1813,7 @@ impl PresenceCtx {
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
             Arrived, Availability, Caret, Following, Interaction, Left, Pointer, Selection, Status,
-            Typing, Wave,
+            Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1951,15 +1949,11 @@ impl PresenceCtx {
                 }
             }
             Availability { state, call } => {
-                // Room presence, like a status.
-                if matches!(key, PresenceKey::Workspace { .. }) {
+                // Room presence, like a status, said to that room.
+                if let PresenceKey::Workspace { id: room } = key {
                     let call = call.filter(|call| !call.trim().is_empty());
-                    self.availability.insert(UserId(user_id), (state, call));
-                }
-            }
-            Wave { target } => {
-                if matches!(key, PresenceKey::Workspace { .. }) && !target.trim().is_empty() {
-                    self.waves.push((UserId(user_id), target, now));
+                    self.availability
+                        .insert((room, UserId(user_id)), (state, call));
                 }
             }
             Following { target } => {
@@ -2028,9 +2022,10 @@ impl PresenceCtx {
 
     pub fn unregister_peer(&mut self, user_id: &str) {
         let uid = UserId(user_id.to_owned());
-        self.availability.remove(&uid);
+        self.availability.retain(|(_, who), _| *who != uid);
         self.participant_kinds.remove(&uid);
         self.acting_for.remove(&uid);
+        self.persons.remove(&uid);
         for list in self.here.values_mut() {
             list.retain(|u| u != &uid);
         }
@@ -2214,22 +2209,16 @@ mod remote_cursor_tests {
         }
         .packed_colour();
         assert_eq!(
-            crate::collaboration::Collaborator::colour_from_packed(packed),
+            crate::collaboration::colour_from_packed(packed),
             Some(crate::tokens::PresenceHue::Violet),
             "every presence colour survives the roster's wire"
         );
         for hue in crate::tokens::PresenceHue::ALL {
             let (r, g, b) = identity_rgb(hue);
             let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
-            assert_eq!(
-                crate::collaboration::Collaborator::colour_from_packed(packed),
-                Some(hue)
-            );
+            assert_eq!(crate::collaboration::colour_from_packed(packed), Some(hue));
         }
-        assert_eq!(
-            crate::collaboration::Collaborator::colour_from_packed(0),
-            None
-        );
+        assert_eq!(crate::collaboration::colour_from_packed(0), None);
     }
 
     #[test]

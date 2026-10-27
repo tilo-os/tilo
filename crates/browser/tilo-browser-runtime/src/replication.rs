@@ -26,25 +26,29 @@
 //! native broker sends it; in the page's stores it is
 //! [`RecordId::package_primary`], kept at the room index.
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
+use tilo_sort::CompactSort as _;
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
+use tilo_browser_peer::content::ContentWants;
 use tilo_browser_peer::{DocumentRoute, PeerEvent, PeerEvents, PeerHandle};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordCheckout, RecordId, RecordStore};
 use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
-/// How often a page asks again whether the room lets its person moderate
-/// the shared desktop: a role the room grants while they are in it reaches
-/// their page within this.
+/// How often a page asks again what the room lets its person do: a role the
+/// room grants or withdraws while they are in it reaches their page within
+/// this.
 const MODERATION_ASK_EVERY_MS: u64 = 15_000;
 /// How soon a page asks again when the room could not answer (the page was
 /// between connections): what it knew stands meanwhile.
@@ -65,6 +69,10 @@ pub(crate) struct Attachment {
     /// Who the mount's person is: the desktop changes it publishes name
     /// them, so every page's Activity says whose they were.
     pub author: String,
+    /// What the mount's apps may offer their person: set to the role the
+    /// room answers they hold, so an app does not offer what the room
+    /// would refuse.
+    pub permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
 }
 
 struct Replica {
@@ -85,6 +93,8 @@ pub(crate) struct Room {
     uuid: String,
     workspace: u64,
     store: Rc<MemoryStore>,
+    /// Where `store` lives.
+    kept: Kept,
     ready: bool,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
@@ -97,6 +107,22 @@ pub(crate) struct Room {
     /// Records the room delivered that no mount had open, as wire
     /// `(app, record)`.
     stored: BTreeSet<(String, String)>,
+    /// The heads of each such record as the room delivered it, until a mount
+    /// opens it. The room has everything up to them, so what the mount sends
+    /// first is what it changed after them, not the whole document: a
+    /// checkpoint reaches only devices that lack the record, and the changes
+    /// a window makes as it opens (taking a seat) would never reach the
+    /// others.
+    delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
+    /// Changes the room delivered for a record before the changes they
+    /// build on, as the incremental runs they came in, by wire
+    /// `(app, record)`. The room replays a record by author, each author's
+    /// checkpoint and then their deltas, so a late joiner can be sent the
+    /// second player's seat before the table it sits at, and the dealer's
+    /// deal before that seat. A saved document keeps only the changes it can
+    /// apply, so these wait here, applied again with whatever arrives next,
+    /// until nothing they build on is missing.
+    waiting: HashMap<(String, String), Vec<Vec<u8>>>,
     /// Routes a delivered document failed to apply to: this page never
     /// answers a compaction request for them.
     unapplied: HashSet<DocumentRoute>,
@@ -109,6 +135,37 @@ pub(crate) struct Room {
     moderates: Arc<AtomicBool>,
     /// When the page next asks the room that (Unix milliseconds; 0: now).
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// The role the room last answered this page's person holds: the
+    /// attached desktop's, so its policy offers what the room allows.
+    standing: crate::desktop::Standing,
+    /// The standing the mounts' permissions were last set to.
+    followed: u8,
+    /// Nodes below the room the page's windows asked whether its person may
+    /// change (an item someone shares), with the asked node's text form and
+    /// the room's last answer. Those it allows beyond their role (an item
+    /// shared with them to edit) are mirrored into the mounts' permissions;
+    /// each is asked again with the person's role, so a share switched to
+    /// view or ended stops letting their windows change it.
+    permitted: BTreeMap<ui::permissions::TreePath, (String, bool)>,
+    /// The room's answers about those nodes, not applied yet.
+    permit_answers: Arc<Mutex<Vec<(String, bool)>>>,
+    /// The room keeps no member's layout: it refused this page's desktop as
+    /// a public room does. The attached desktops are their people's own
+    /// from then on: sent to nobody, and not replaced by the room's.
+    own_layout: bool,
+    /// The room's members as its governance lists them, once heard: what
+    /// someone no longer among them made on the desktop is released.
+    members: Option<std::collections::BTreeSet<String>>,
+    /// How many commits of each record route this page published the room
+    /// has not answered yet: once none is left, what the record's windows
+    /// said they did is said (`RecordStore::room_settled`).
+    in_flight: HashMap<DocumentRoute, usize>,
+    /// Content the open records' windows lacked and the page asked the
+    /// room for, by the wire `(app, record)` that references it.
+    content: ContentWants<(String, String)>,
+    /// Records a peer's change reached since the desktop last looked for
+    /// mentions in them ([`take_touched`]), as wire `(app, record)`.
+    touched: BTreeSet<(String, String)>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -131,16 +188,13 @@ fn storage_key(app: &str, room: &str, record: &str) -> Result<StorageKey, &'stat
 
 /// Start replicating `room` for peer `id`. `events` must have been created
 /// when the peer started.
-///
-/// # Errors
-/// The room is not a uuid.
 pub(crate) fn open(
     id: u32,
     device: String,
     peer: PeerHandle,
     events: PeerEvents,
     room: &str,
-    store: Rc<MemoryStore>,
+    (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
     let workspace =
         tilo_relay_protocol::room_workspace_id(room).map_err(|_| "room must be a uuid")?;
@@ -151,6 +205,7 @@ pub(crate) fn open(
         uuid: room.to_owned(),
         workspace,
         store,
+        kept,
         ready: false,
         mounts: HashMap::new(),
         desktop: DocumentReplica::new(AutoCommit::new()),
@@ -158,10 +213,21 @@ pub(crate) fn open(
         desktop_value: None,
         local_value: None,
         stored: BTreeSet::new(),
+        delivered: HashMap::new(),
+        waiting: HashMap::new(),
         unapplied: HashSet::new(),
         authored: 0,
         moderates: Arc::default(),
         moderation_due_ms: Arc::default(),
+        standing: crate::desktop::Standing::unknown(),
+        followed: 0,
+        permitted: BTreeMap::new(),
+        permit_answers: Arc::default(),
+        own_layout: false,
+        members: None,
+        in_flight: HashMap::new(),
+        content: ContentWants::default(),
+        touched: BTreeSet::new(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -179,6 +245,23 @@ pub(crate) fn device_of(id: u32) -> Option<String> {
     room(id).map(|room| room.borrow().device.clone())
 }
 
+/// `mutations` with every snapshot ahead of the incremental runs, each kind
+/// in the order it came. A snapshot holds its whole history, so a run that
+/// builds on it applies after it; a run applied before the changes it
+/// builds on only waits in memory, and merging a snapshot into a document
+/// copies the document's saved changes, never the ones still waiting.
+fn snapshots_first(mut mutations: Vec<DocumentMutation>) -> Vec<DocumentMutation> {
+    mutations.sort_by_key(|mutation| matches!(mutation, DocumentMutation::Incremental(_)));
+    mutations
+}
+
+/// The heads of the saved document `bytes`, when it holds any change: the
+/// host's empty document for a record a member is creating holds none.
+fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
+    let heads = AutoCommit::load(bytes).ok()?.get_heads();
+    (!heads.is_empty()).then_some(heads)
+}
+
 /// Whether peer `id`'s room holds record `record` (wire form) of `app`:
 /// open in a mount, or delivered and stored for whoever opens it.
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
@@ -189,7 +272,7 @@ pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
             || storage_key(app, &room.uuid, record)
                 .ok()
                 .and_then(|key| room.store.read(&key).ok().flatten())
-                .is_some()
+                .is_some_and(|stored| heads_of(&stored.bytes).is_some())
     })
 }
 
@@ -203,6 +286,55 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     let mut records = room.stored.clone();
     records.extend(room.open_records());
     records.into_iter().collect()
+}
+
+/// The records a peer's change reached since this was last taken, as wire
+/// `(app, record)`, and whether the room had replayed what it held by then:
+/// before that, what arrives is what the room already held.
+pub(crate) fn take_touched(id: u32) -> (bool, Vec<(String, String)>) {
+    let Some(room) = room(id) else {
+        return (false, Vec::new());
+    };
+    let mut room = room.borrow_mut();
+    let touched = std::mem::take(&mut room.touched);
+    (room.ready, touched.into_iter().collect())
+}
+
+/// Wire record `record` of `app` as peer `id` holds it now: the open
+/// record a mount has, else the document the page keeps for it.
+pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
+    let room = room(id)?;
+    let room = room.borrow();
+    for mounted in room.mounts.values() {
+        for store in mounted.attachment.stores.borrow().iter() {
+            if store.package_and_home().0 != app {
+                continue;
+            }
+            let Some(checkout) = store
+                .open_records()
+                .into_iter()
+                .find(|checkout| wire_record(&checkout.id) == record)
+            else {
+                continue;
+            };
+            if let Some(doc) = store.read(&checkout.id, AutoCommit::clone) {
+                return Some(doc);
+            }
+        }
+    }
+    let key = storage_key(app, &room.uuid, record).ok()?;
+    let stored = room.store.read(&key).ok().flatten()?;
+    AutoCommit::load(&stored.bytes).ok()
+}
+
+/// The name of the workspace in front on peer `id`'s room desktop, once the
+/// room delivered or the page published one.
+pub(crate) fn workspace_name(id: u32) -> Option<String> {
+    let room = room(id)?;
+    let room = room.borrow();
+    room.desktop_value
+        .as_ref()
+        .and_then(tilo_desktop_surface::history_log::workspace_name)
 }
 
 /// The room's desktop document with every peer's changes, for Activity.
@@ -223,13 +355,63 @@ pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::Change
 }
 
 pub(crate) fn close(id: u32) {
-    crate::browser::forget_feedback_startup(id);
+    crate::feedback_delivery::forget_feedback_startup(id);
     crate::feedback_delivery::forget(id);
     ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
 }
 
+/// The store peer `id` keeps the room's documents in when it is kept in
+/// no profile: a mount through it opens its records from there, where
+/// what the room delivers is kept, instead of from a profile of its own.
+pub(crate) fn page_store(id: u32) -> Option<Rc<MemoryStore>> {
+    let room = room(id)?;
+    let room = room.borrow();
+    (room.kept == Kept::InPage).then(|| Rc::clone(&room.store))
+}
+
+/// Where a peer keeps the room's documents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kept {
+    /// In the person's profile, with everything else of theirs.
+    InProfile,
+    /// Only in the page, for as long as it is open: a peer kept in no
+    /// profile (a watching page's). Its mounts keep their records there too.
+    InPage,
+}
+
 fn room(id: u32) -> Option<Rc<RefCell<Room>>> {
     ROOMS.with_borrow(|rooms| rooms.get(&id).cloned())
+}
+
+/// Ask peer `id`'s room `request` through the host's rooms door; `done`
+/// gets its answer.
+///
+/// # Errors
+/// The peer replicates no room, or its session is gone.
+pub(crate) fn rooms_then(
+    id: u32,
+    request: impl FnOnce(&str) -> tilo_relay_protocol::rooms::RoomsRequest,
+    done: tilo_browser_peer::RoomsCompletion,
+) -> Result<(), String> {
+    let room = room(id).ok_or("this page joined no room")?;
+    let room = room.borrow();
+    room.peer.rooms_then(request(&room.uuid), done)
+}
+
+/// The room told peer `id`'s person whether they may change things at
+/// `node` (its text form): their windows let them where the room will keep
+/// it, and stop where it no longer would.
+pub(crate) fn permit(id: u32, node: &str, may: bool) {
+    let Some(room) = room(id) else {
+        return;
+    };
+    let mut room = room.borrow_mut();
+    if room.note_permit(node, may) {
+        room.apply_standing();
+        for mounted in room.mounts.values() {
+            (mounted.attachment.notify)();
+        }
+    }
 }
 
 /// Attach mount `mount` to peer `id`'s room.
@@ -245,9 +427,15 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             warn(&format!("shared desktop not applied: {error}"));
         }
         if let Some((_, shared)) = &attachment.desktop {
+            shared.own_layout.set(room.own_layout);
+            shared.watching.set(room.peer.watching());
+            shared.members.replace(room.members.clone());
             room.moderates = Arc::clone(&shared.moderates);
-            room.moderation_due_ms.store(0, Ordering::Relaxed);
+            room.standing.share(&shared.standing);
         }
+        room.moderation_due_ms.store(0, Ordering::Relaxed);
+        // The new mount's apps learn what the room answered.
+        room.followed = 0;
         room.mounts.insert(
             mount,
             Mounted {
@@ -284,10 +472,45 @@ pub(crate) fn publish(id: u32) {
     if let Some(room) = room(id) {
         let mut room = room.borrow_mut();
         room.send();
+        room.ask_content();
         // Every frame passes here, so the room is asked again on time
         // whether or not anything arrived from it.
-        room.ask_moderation_when_due();
+        room.ask_standing_when_due();
+        room.follow_standing();
     }
+}
+
+/// Take what the room answered about this page's person since the last
+/// frame, before the frame decides whether it has anything to do: an
+/// answer that changes what their windows may do marks them changed, so an
+/// idle page draws it at once instead of whenever something else wakes it.
+pub(crate) fn follow_answers(id: u32) {
+    if let Some(room) = room(id) {
+        room.borrow_mut().follow_standing();
+    }
+}
+
+/// Ask the room now for content the open records' windows lack.
+pub(crate) fn ask_content(id: u32) {
+    if let Some(room) = room(id) {
+        room.borrow_mut().ask_content();
+    }
+}
+
+/// What a person reads when the room refused a change `app` made: that it
+/// was not kept, and the room's reason in plain words.
+fn refused_change(app: &str, plain: &str) -> String {
+    let title = crate::desktop::applications()
+        .into_iter()
+        .find(|definition| definition.app_id == app)
+        .map_or("The app", |definition| definition.title);
+    format!("{title} didn't keep that. {plain}")
+}
+
+fn debug(message: &str) {
+    web_sys::console::debug_1(&wasm_bindgen::JsValue::from_str(&format!(
+        "Browser runtime replication: {message}"
+    )));
 }
 
 fn warn(message: &str) {
@@ -297,16 +520,13 @@ fn warn(message: &str) {
 }
 
 impl Room {
-    /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], whether it
-    /// lets this page's person close and move what others made on its
-    /// shared desktop; the answer sets the desktop's flag and wakes it.
-    fn ask_moderation_when_due(&self) {
-        if !self.ready
-            || !self
-                .mounts
-                .values()
-                .any(|mounted| mounted.attachment.desktop.is_some())
-        {
+    /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], what it
+    /// lets this page's person do: whether they write, moderate (and so
+    /// close and move what others made on its shared desktop) and govern
+    /// it. The answers set the desktop's flag and the role the mounts' apps
+    /// follow, and wake them.
+    fn ask_standing_when_due(&self) {
+        if !self.ready || self.mounts.is_empty() {
             return;
         }
         let now = crate::shell::now_ms();
@@ -317,73 +537,211 @@ impl Room {
             now.saturating_add(MODERATION_ASK_EVERY_MS),
             Ordering::Relaxed,
         );
-        let moderates = Arc::clone(&self.moderates);
-        let due = Arc::clone(&self.moderation_due_ms);
+        self.ask_permits();
         let wake: Vec<_> = self
             .mounts
             .values()
             .map(|mounted| Arc::clone(&mounted.attachment.notify))
             .collect();
-        let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
-            room: self.uuid.clone(),
-            node: tilo_desktop_model::ownership::moderation_node(&self.uuid).to_string(),
-        };
-        if let Err(error) = self.peer.rooms_then(
-            request,
-            Box::new(move |answer| {
-                let now = match &answer {
-                    Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
-                    Ok(other) => {
-                        warn(&format!(
-                            "the room did not say what this page may moderate: {other:?}"
-                        ));
-                        false
-                    }
-                    Err(_) => {
-                        due.store(
-                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
-                            Ordering::Relaxed,
-                        );
+        let asked = tilo_action_policy::roles::telling_nodes(&self.uuid);
+        let answers: Arc<Mutex<[Option<bool>; 3]>> = Arc::default();
+        for (index, node) in asked.into_iter().enumerate() {
+            let answers = Arc::clone(&answers);
+            let moderates = Arc::clone(&self.moderates);
+            let standing = self.standing.clone();
+            let due = Arc::clone(&self.moderation_due_ms);
+            let wake = wake.clone();
+            let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+                room: self.uuid.clone(),
+                node: node.to_string(),
+            };
+            if let Err(error) = self.peer.rooms_then(
+                request,
+                Box::new(move |answer| {
+                    let may = match &answer {
+                        Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
+                        Ok(other) => {
+                            warn(&format!(
+                                "the room did not say what this page may do: {other:?}"
+                            ));
+                            false
+                        }
+                        Err(_) => {
+                            due.store(
+                                crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                                Ordering::Relaxed,
+                            );
+                            return;
+                        }
+                    };
+                    let answered = {
+                        let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
+                        if let Some(slot) = answers.get_mut(index) {
+                            *slot = Some(may);
+                        }
+                        *answers
+                    };
+                    let [Some(writes), Some(moderating), Some(governs)] = answered else {
                         return;
+                    };
+                    let role =
+                        tilo_action_policy::roles::role_answered([writes, moderating, governs]);
+                    let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
+                    if standing.set(Some(role)) || moved {
+                        for wake in &wake {
+                            wake();
+                        }
                     }
-                };
-                if moderates.swap(now, Ordering::Relaxed) != now {
-                    for wake in &wake {
-                        wake();
-                    }
-                }
-            }),
-        ) {
-            warn(&format!(
-                "could not ask the room what this page may moderate: {error}"
-            ));
-            self.moderation_due_ms
-                .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
+                }),
+            ) {
+                warn(&format!(
+                    "could not ask the room what this page may do: {error}"
+                ));
+                self.moderation_due_ms
+                    .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
+                return;
+            }
         }
     }
 
-    /// Whether `value`, this page's desktop, closes, moves or renames
-    /// something on the room's desktop that its person did not make and may
-    /// not moderate: the room refuses such a write, so it is never sent.
-    fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> bool {
-        if self.moderates.load(Ordering::Relaxed) {
-            return false;
-        }
-        let Some(room) = &self.desktop_value else {
+    /// Hold the room's answer whether this page's person may change `node`
+    /// (its text form); whether what their windows may do changed.
+    fn note_permit(&mut self, node: &str, may: bool) -> bool {
+        let Ok(path) = node.parse::<ui::permissions::TreePath>() else {
             return false;
         };
+        let held = self
+            .permitted
+            .insert(path.within_room(), (node.to_owned(), may));
+        match held {
+            Some((_, before)) => before != may,
+            None => may,
+        }
+    }
+
+    /// Ask the room again about every node this page's windows asked of,
+    /// with the person's role: what a share gives changes when it is
+    /// switched or ends, whether or not the app that asked is running.
+    fn ask_permits(&self) {
+        for (node, _) in self.permitted.values() {
+            let answers = Arc::clone(&self.permit_answers);
+            let asked = node.clone();
+            let wake: Vec<_> = self
+                .mounts
+                .values()
+                .map(|mounted| Arc::clone(&mounted.attachment.notify))
+                .collect();
+            let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+                room: self.uuid.clone(),
+                node: node.clone(),
+            };
+            if let Err(error) = self.peer.rooms_then(
+                request,
+                Box::new(move |answer| {
+                    if let Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) = answer {
+                        answers
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push((asked, may));
+                        for wake in &wake {
+                            wake();
+                        }
+                    }
+                }),
+            ) {
+                warn(&format!(
+                    "could not ask the room what this page may change: {error}"
+                ));
+                return;
+            }
+        }
+    }
+
+    /// Give every mount's apps the role the room last answered, once per
+    /// answer that changed it.
+    fn follow_standing(&mut self) {
+        let answers = std::mem::take(
+            &mut *self
+                .permit_answers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        let mut changed = false;
+        for (node, may) in answers {
+            changed |= self.note_permit(&node, may);
+        }
+        if changed {
+            self.apply_standing();
+            for mounted in self.mounts.values() {
+                (mounted.attachment.notify)();
+            }
+        }
+        let standing = self.standing.code();
+        if standing == self.followed {
+            return;
+        }
+        self.apply_standing();
+    }
+
+    /// Set every mount's permissions to the role the room last answered,
+    /// with what it permits beyond it.
+    fn apply_standing(&mut self) {
+        let Some(role) = self.standing.role() else {
+            return;
+        };
+        self.followed = self.standing.code();
+        for mounted in self.mounts.values() {
+            let attachment = &mounted.attachment;
+            *attachment.permissions.borrow_mut() =
+                self.permitted.iter().filter(|(_, (_, may))| *may).fold(
+                    ui::permissions::PermissionContext::member(attachment.author.clone(), role),
+                    |context, (node, _)| {
+                        context.permitted_at(node, ui::permissions::KindSet::UNDOABLE)
+                    },
+                );
+            // Its windows sync again, so what they offer (a bar's "View
+            // only", an editor that takes typing) follows at once rather
+            // than at the next change of their record.
+            attachment.changed.set(true);
+            // A window waiting to learn whether its person starts the
+            // room's record now knows.
+            if let Some((handle, shared)) = &attachment.desktop {
+                shared.retry_waiting(handle);
+            }
+        }
+    }
+
+    /// What `value`, this page's desktop, closes, moves or renames on the
+    /// room's desktop that its person did not make and may not moderate:
+    /// the room refuses such a write, so it is never sent. Said in words
+    /// the person reads; `None` when it touches nothing of anyone else's.
+    fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> Option<String> {
+        if self.moderates.load(Ordering::Relaxed) {
+            return None;
+        }
+        let room = self.desktop_value.as_ref()?;
         let parse = |value: &serde_json::Value| {
             serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
                 .ok()
         };
         let (Some(before), Some(after)) = (parse(room), parse(value)) else {
-            return false;
+            return None;
         };
-        let acts = tilo_desktop_model::ownership::foreign_acts(&before, &after, author);
-        if !acts.is_empty() {
-            warn(&format!("undid a change to what others made: {acts:?}"));
-        }
-        !acts.is_empty()
+        let acts = tilo_desktop_model::ownership::foreign_acts(
+            &before,
+            &after,
+            author,
+            self.members.as_ref(),
+        );
+        let first = acts.first()?;
+        warn(&format!("undid a change to what others made: {acts:?}"));
+        Some(
+            tilo_desktop_model::commands::Refusal::Others {
+                id: first.id,
+                owner: first.owner.clone(),
+            }
+            .to_string(),
+        )
     }
 
     /// Every record a mount has open in this room, as wire `(app, record)`.
@@ -423,12 +781,16 @@ impl Room {
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
         let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
+        let mut answered: Vec<DocumentRoute> = Vec::new();
+        let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
+                    self.follow_layout(&mut woken);
                 }
+                PeerEvent::RoomLayout { .. } => self.follow_layout(&mut woken),
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {
@@ -454,23 +816,43 @@ impl Room {
                 PeerEvent::DocumentRejected(reason) => {
                     warn(&format!("dropped a document: {reason}"));
                 }
+                PeerEvent::RecordContent {
+                    workspace_id,
+                    frame,
+                    ..
+                } if workspace_id == self.workspace => {
+                    content_arrived |= self.content_piece(&frame);
+                }
+                PeerEvent::ContentWanted {
+                    workspace_id,
+                    from,
+                    request,
+                } if workspace_id == self.workspace => self.content_wanted(from, &request),
                 PeerEvent::CommitRefused {
                     route,
                     changes,
                     reason,
                 } if route.cluster_id == self.uuid => {
+                    answered.push(route.clone());
                     refusals.push((route, changes, reason));
+                }
+                PeerEvent::Committed { route, .. } if route.cluster_id == self.uuid => {
+                    answered.push(route);
                 }
                 _ => {}
             }
         }
+        self.follow_members(&mut woken);
         // Withdrawn before what arrived since is merged: a peer's change can
         // never build on one the room refused.
         for (route, changes, reason) in refusals {
             self.withdraw(&route, &changes, &reason, &mut woken);
         }
+        for route in answered {
+            self.answered(&route, &mut woken);
+        }
         // Records first: a desktop naming a new tab's record finds it.
-        batches.sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
+        batches.compact_sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
         for (route, mutations) in batches {
             if let Err(error) =
                 self.apply(&route, tilo_browser_peer::coalesce(mutations), &mut woken)
@@ -480,26 +862,85 @@ impl Room {
             }
         }
         // Every document delivered before a request is applied by now.
-        for (route, request) in compactions {
-            match self.snapshot_of(&route) {
-                Ok(Some(snapshot)) => {
-                    let _ = self.peer.compact(request, snapshot);
-                }
-                Ok(None) => {}
-                Err(error) => warn(&format!(
-                    "{}/{}: no snapshot to compact: {error}",
-                    route.app_id, route.record
-                )),
-            }
-        }
-        woken
+        self.compact(compactions);
+        let mut notify: Vec<Arc<dyn Fn() + Send + Sync>> = woken
             .into_iter()
             .filter_map(|mount| self.mounts.get(&mount))
             .map(|mounted| {
                 mounted.attachment.changed.set(true);
                 Arc::clone(&mounted.attachment.notify)
             })
-            .collect()
+            .collect();
+        // Content changes no record: its windows draw what they waited for.
+        if content_arrived {
+            notify.extend(
+                self.mounts
+                    .values()
+                    .map(|mounted| Arc::clone(&mounted.attachment.notify)),
+            );
+        }
+        notify
+    }
+
+    /// Ask the room for the content open records' windows lack: what they
+    /// queued on the records' lanes ([`ContentLane`]). Content a window
+    /// stored for others is not offered from a page.
+    fn ask_content(&mut self) {
+        if !self.ready {
+            return;
+        }
+        let device = self.peer.status().device;
+        let now = crate::shell::now_ms();
+        let records: BTreeSet<(String, String)> = self.open_records().collect();
+        for (app, record) in records {
+            let lane = ContentLane::of(&app, &record);
+            for hash in lane.take_requests().wants {
+                let Some(request) = self.content.ask(
+                    &device,
+                    (app.clone(), record.clone()),
+                    (&app, &self.uuid),
+                    &hash,
+                    now,
+                ) else {
+                    continue;
+                };
+                if self.peer.want_content(self.workspace, request).is_err() {
+                    lane.retry_want(hash);
+                }
+            }
+        }
+    }
+
+    /// Answer device `from`'s request for content a record of an app this
+    /// page has open references, from what the page keeps: a file a visitor
+    /// posted here, which the room's host asks for to keep its own copy.
+    fn content_wanted(&self, from: [u8; 32], request: &[u8]) {
+        let device = self.peer.status().device;
+        let apps: BTreeSet<String> = self.open_records().map(|(app, _)| app).collect();
+        let pieces =
+            tilo_browser_peer::content::answer(&device, &from, request, |app, room, hash| {
+                if room != self.uuid || !apps.contains(app) {
+                    return None;
+                }
+                crate::page_content::page_content().read(hash)
+            });
+        for piece in pieces {
+            if self.peer.send_content(self.workspace, from, piece).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Keep a piece of content a member sent; whether it completed content
+    /// a record's window asked for, now on the record's lane.
+    fn content_piece(&mut self, frame: &[u8]) -> bool {
+        let device = self.peer.status().device;
+        let Some(arrived) = self.content.piece(&device, frame) else {
+            return false;
+        };
+        let (app, record) = arrived.tag;
+        ContentLane::of(&app, &record).arrive(arrived.hash, arrived.bytes);
+        true
     }
 
     /// Withdraw what the host refused of `route` from the open record that
@@ -513,11 +954,24 @@ impl Room {
         reason: &str,
         woken: &mut HashSet<u64>,
     ) {
+        let personal = route.app_id == DESKTOP_APP
+            && reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
+        if personal {
+            // Expected in a public room, not a fault: said once, quietly.
+            if !self.own_layout {
+                debug("this room keeps each member's layout to themselves");
+                self.keep_own_layout(woken);
+            }
+            return;
+        }
         warn(&format!(
             "{}/{}: the room refused a change: {reason}",
             route.app_id, route.record
         ));
-        if changes.is_empty() || route.app_id == DESKTOP_APP {
+        if route.app_id == DESKTOP_APP {
+            return;
+        }
+        if changes.is_empty() {
             return;
         }
         let refused: Vec<ui::automerge::ChangeHash> = changes
@@ -539,12 +993,19 @@ impl Room {
                 };
                 match store.withdraw_refused(&checkout.id, &refused, plain) {
                     Ok(withdrawn) => {
-                        if let Some(heads) = withdrawn
-                            && let Some(replica) = mounted
+                        if let Some(heads) = withdrawn {
+                            // What the person just did is taken back: say so
+                            // over the desktop, whatever the app shows, so a
+                            // change the room refused never looks kept.
+                            if let Some((handle, _)) = &mounted.attachment.desktop {
+                                handle.acknowledge(refused_change(&route.app_id, plain));
+                            }
+                            if let Some(replica) = mounted
                                 .records
                                 .get_mut(&(route.app_id.clone(), route.record.clone()))
-                        {
-                            replica.frontier.advance(heads);
+                            {
+                                replica.frontier.advance(heads);
+                            }
                         }
                         woken.insert(id);
                     }
@@ -552,6 +1013,53 @@ impl Room {
                         "{}/{}: a refused change stays: {error}",
                         route.app_id, route.record
                     )),
+                }
+            }
+        }
+    }
+
+    /// Answer the host's compaction `requests` with this page's snapshot of
+    /// each route, where it can vouch for one.
+    fn compact(&mut self, requests: Vec<(DocumentRoute, [u8; 16])>) {
+        for (route, request) in requests {
+            match self.snapshot_of(&route) {
+                Ok(Some(snapshot)) => {
+                    let _ = self.peer.compact(request, snapshot);
+                }
+                Ok(None) => {}
+                Err(error) => warn(&format!(
+                    "{}/{}: no snapshot to compact: {error}",
+                    route.app_id, route.record
+                )),
+            }
+        }
+    }
+
+    /// The room answered one commit of `route` this page published. Once it
+    /// answered all of them, what the record's windows said they did is
+    /// theirs to say: a refused change was withdrawn first, with what was
+    /// said of it.
+    fn answered(&mut self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+        let Some(left) = self.in_flight.get_mut(route) else {
+            return;
+        };
+        *left = left.saturating_sub(1);
+        if *left > 0 {
+            return;
+        }
+        self.in_flight.remove(route);
+        for (&id, mounted) in &self.mounts {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                if let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                {
+                    store.room_settled(&checkout.id);
+                    woken.insert(id);
                 }
             }
         }
@@ -610,6 +1118,23 @@ impl Room {
         }
         let app = route.app_id.clone();
         let record = route.record.clone();
+        let key = (app.clone(), record.clone());
+        self.touched.insert(key.clone());
+        // What waited for the changes it builds on goes with what arrived:
+        // after it, so a snapshot that may hold those changes comes first.
+        let mutations = snapshots_first(
+            mutations
+                .into_iter()
+                .chain(
+                    self.waiting
+                        .get(&key)
+                        .into_iter()
+                        .flatten()
+                        .cloned()
+                        .map(DocumentMutation::Incremental),
+                )
+                .collect(),
+        );
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -641,9 +1166,18 @@ impl Room {
             }
         }
         if merged {
+            // An open record keeps what still waits in its own document,
+            // which applies it once the changes it builds on arrive.
+            self.waiting.remove(&key);
             return Ok(());
         }
-        self.store_unopened(&app, &record, mutations)?;
+        // The host takes up a record a member created with an empty
+        // document of its own before the member's content arrives: no
+        // record yet, which a page opening it would refuse.
+        let Some(heads) = self.store_unopened(&app, &record, mutations)? else {
+            return Ok(());
+        };
+        self.delivered.insert((app.clone(), record.clone()), heads);
         // A window of the app that follows what its store keeps (a chain's
         // newer head) takes it up at its next frame.
         for mounted in self.mounts.values() {
@@ -663,16 +1197,17 @@ impl Room {
         Ok(())
     }
 
-    /// Merge into the record's stored document for whoever opens it next.
-    /// A snapshot into an empty store is kept as it came: opening the record
-    /// loads and checks it once, instead of loading, merging and saving it
-    /// here first.
+    /// Merge into the record's stored document for whoever opens it next,
+    /// and answer its heads once it holds any change. A snapshot into an empty
+    /// store is kept as it came: opening the record loads and checks it once,
+    /// instead of loading, merging and saving it here first. A document with
+    /// no change in it is no record yet and is not kept.
     fn store_unopened(
-        &self,
+        &mut self,
         app: &str,
         record: &str,
         mutations: Vec<DocumentMutation>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
         let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
         let writer = stored.as_ref().and_then(|stored| stored.writer.clone());
@@ -685,13 +1220,16 @@ impl Room {
         let bytes = match (stored, mutations.peek()) {
             (None, Some(DocumentMutation::Snapshot(_))) => {
                 let Some(DocumentMutation::Snapshot(snapshot)) = mutations.next() else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 if mutations.peek().is_none() {
+                    let Some(heads) = heads_of(&snapshot) else {
+                        return Ok(None);
+                    };
                     return self
                         .store
                         .write(&key, WriteOp::Replace(snapshot), writer.as_deref())
-                        .map(drop)
+                        .map(|_| Some(heads))
                         .map_err(|error| error.to_string());
                 }
                 snapshot
@@ -704,6 +1242,7 @@ impl Room {
             AutoCommit::load(&bytes).map_err(|error| error.to_string())?
         };
         let before = doc.get_heads();
+        let mut runs = Vec::new();
         for mutation in mutations {
             match mutation {
                 DocumentMutation::Snapshot(bytes) => {
@@ -716,7 +1255,13 @@ impl Room {
                         .into_iter()
                         .filter(|head| doc.get_change_by_hash(head).is_some())
                         .collect();
-                    if shared.len() < incoming.get_heads().len() {
+                    if !doc.get_missing_deps(&[]).is_empty() {
+                        // What waits in the stored document for the changes
+                        // it builds on stays only if the snapshot comes to
+                        // it, not it to the snapshot.
+                        doc.load_incoming(&incoming.save_after(&[]))
+                            .map_err(|error| error.to_string())?;
+                    } else if shared.len() < incoming.get_heads().len() {
                         incoming
                             .load_incoming(&doc.save_after(&shared))
                             .map_err(|error| error.to_string())?;
@@ -726,15 +1271,30 @@ impl Room {
                 DocumentMutation::Incremental(bytes) => {
                     doc.load_incoming(&bytes)
                         .map_err(|error| error.to_string())?;
+                    runs.push(bytes);
                 }
             }
         }
-        if doc.get_heads() == before && !fresh {
-            return Ok(());
+        // Changes whose dependencies have not arrived wait for the next
+        // delivery, or for the mount that opens the record: a document that
+        // holds nothing else is not stored, and a document merged into a
+        // snapshot brings only the changes it applied.
+        let waiting = (app.to_owned(), record.to_owned());
+        if doc.get_missing_deps(&[]).is_empty() {
+            self.waiting.remove(&waiting);
+        } else {
+            self.waiting.insert(waiting, runs);
+        }
+        let heads = doc.get_heads();
+        if heads.is_empty() {
+            return Ok(None);
+        }
+        if heads == before && !fresh {
+            return Ok(Some(heads));
         }
         self.store
             .write(&key, WriteOp::Replace(doc.save()), writer.as_deref())
-            .map(drop)
+            .map(|_| Some(heads))
             .map_err(|error| error.to_string())
     }
 
@@ -754,9 +1314,24 @@ impl Room {
         if self.desktop_value.as_ref() == Some(&value) {
             return Ok(());
         }
+        // A desktop of the person's own keeps what they arranged.
+        if self.own_layout {
+            self.desktop_value = Some(value);
+            return Ok(());
+        }
+        // A peer renaming the workspace is news to everyone else here; the
+        // first desktop this page receives is not.
+        let renamed = tilo_desktop_surface::history_log::WorkspaceRename::merged(
+            self.desktop.document(),
+            self.desktop_value.as_ref(),
+            &value,
+        );
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 crate::desktop::apply_shared(handle, shared, &value)?;
+                if let Some(rename) = &renamed {
+                    shared.renames.borrow_mut().push(rename.clone());
+                }
                 woken.insert(id);
             }
         }
@@ -789,13 +1364,24 @@ impl Room {
                             record: key.1.clone(),
                         });
                     }
-                    let replica = mounted
-                        .records
-                        .entry(key.clone())
-                        .or_insert_with(|| Replica {
-                            frontier: DocumentFrontier::default(),
-                            snapshotted: false,
-                        });
+                    let delivered = &mut self.delivered;
+                    let replica = mounted.records.entry(key.clone()).or_insert_with(|| {
+                        match delivered.remove(&key) {
+                            // The room has the record as it delivered it.
+                            Some(heads) => {
+                                let mut frontier = DocumentFrontier::default();
+                                frontier.advance(heads);
+                                Replica {
+                                    frontier,
+                                    snapshotted: true,
+                                }
+                            }
+                            None => Replica {
+                                frontier: DocumentFrontier::default(),
+                                snapshotted: false,
+                            },
+                        }
+                    });
                     let route = DocumentRoute {
                         app_id: app.clone(),
                         cluster_id: self.uuid.clone(),
@@ -822,9 +1408,13 @@ impl Room {
             // A first snapshot carries what was there already; an
             // increment is what this page changed.
             let authored = matches!(mutation, DocumentMutation::Incremental(_));
-            if self.peer.publish(route, &mutation).is_err() {
+            // The room answers each frame the publication is split into.
+            let commits = mutation.encode_frames().map_or(1, |frames| frames.len());
+            if self.peer.publish(route.clone(), &mutation).is_err() {
                 return;
             }
+            let left = self.in_flight.entry(route).or_default();
+            *left = left.saturating_add(commits);
             if authored {
                 self.authored = self.authored.saturating_add(1);
             }
@@ -841,7 +1431,51 @@ impl Room {
         self.send_desktop();
     }
 
+    /// A room whose layout is personal, as a public room's is, shares no
+    /// member's windows or layout: what this person arranges is theirs
+    /// alone, never sent, and nothing of it is undone. Known from the room's
+    /// governance as soon as the page hears it, or from the room refusing
+    /// this page's desktop as personal.
+    fn keep_own_layout(&mut self, woken: &mut HashSet<u64>) {
+        self.own_layout = true;
+        for (&id, mounted) in &self.mounts {
+            if let Some((_, shared)) = &mounted.attachment.desktop {
+                shared.own_layout.set(true);
+                woken.insert(id);
+            }
+        }
+    }
+
+    /// [`Self::keep_own_layout`] once the room's governance says its layout
+    /// is personal, as the peer heard it (`PeerStatus::personal_rooms`):
+    /// asked on joining, for a scope heard before this room listened, and
+    /// whenever a room's scope changes.
+    fn follow_layout(&mut self, woken: &mut HashSet<u64>) {
+        if !self.own_layout && self.peer.status().personal_rooms.contains(&self.uuid) {
+            self.keep_own_layout(woken);
+        }
+    }
+
+    /// The room's members as the peer last heard its governance list them:
+    /// the attached desktops release what someone who left made.
+    fn follow_members(&mut self, woken: &mut HashSet<u64>) {
+        let members = self.peer.status().room_members.get(&self.uuid).cloned();
+        if members == self.members {
+            return;
+        }
+        self.members = members;
+        for (&id, mounted) in &self.mounts {
+            if let Some((_, shared)) = &mounted.attachment.desktop {
+                shared.members.replace(self.members.clone());
+                woken.insert(id);
+            }
+        }
+    }
+
     fn send_desktop(&mut self) {
+        if self.own_layout {
+            return;
+        }
         let Some((value, author)) = self.mounts.values().find_map(|mounted| {
             mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
                 (
@@ -855,16 +1489,18 @@ impl Room {
         if self.local_value.as_ref() == Some(&value) {
             return;
         }
-        if self.rearranges_others(&value, &author) {
-            // Whatever moved someone else's window (a command, a race with
-            // their own move) is undone here: it springs back to where the
-            // room has it, and nothing is sent.
+        if let Some(refusal) = self.rearranges_others(&value, &author) {
+            // Whatever moved someone else's window that the desktop did not
+            // refuse first (a race with their own move) is undone here: it
+            // springs back to where the room has it, nothing is sent, and
+            // the person is told why.
             if let Some(room) = &self.desktop_value {
                 for mounted in self.mounts.values() {
                     if let Some((handle, shared)) = &mounted.attachment.desktop {
                         if let Err(error) = crate::desktop::return_to(handle, shared, room) {
                             warn(&format!("shared desktop not restored: {error}"));
                         }
+                        handle.acknowledge(refusal.clone());
                         (mounted.attachment.notify)();
                     }
                 }
@@ -936,6 +1572,8 @@ fn outbound(
     Ok((!delta.is_empty()).then_some((DocumentMutation::Incremental(delta), heads)))
 }
 
+/// Who wrote the newest change of the room's desktop, as its message names
+/// them (`history_log::record`).
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
     tilo_desktop_model::shared_record::read(doc, None)
         .and_then(|desktop| serde_json::to_value(desktop).ok())

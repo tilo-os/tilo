@@ -240,7 +240,7 @@ else
   bad "cmd_rollback no longer prints the /var and .tapp caveats. Discovering them
       afterwards is the failure this exists to prevent."
 fi
-for phrase in '/var does NOT' 'packages do NOT'; do
+for phrase in '/var does NOT' 'packages are kept'; do
   if grep -qF "$phrase" "$d"; then
     ok "the caveats still say: $phrase"
   else

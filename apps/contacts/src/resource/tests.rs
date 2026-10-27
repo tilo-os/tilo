@@ -371,8 +371,6 @@ fn the_book_publishes_places_items_and_search() {
     );
 }
 
-/// A merge through the duplicate's place merges, and one undo restores
-/// both contacts.
 #[test]
 fn a_published_merge_merges_and_one_undo_restores_both() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
@@ -497,7 +495,15 @@ fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
 
     let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
     assert_eq!(edit.state().contacts.len(), sample_book().len());
-    assert!(has_control(&mut edit, "Save"), "the edit form is open");
+    assert!(
+        has_control(&mut edit, "First name"),
+        "the edit form is open"
+    );
+    assert!(
+        ui::window_toolbar::declared()
+            .is_some_and(|toolbar| toolbar.actions.iter().any(|action| action.name == "Save")),
+        "the window's bar offers Save"
+    );
 
     let mut duplicates = TestApp::<ContactsShell>::capture(Some("duplicates")).unwrap();
     assert_eq!(duplicates.state().contacts.len(), sample_book().len() + 1);
@@ -553,20 +559,21 @@ fn the_window_edits_the_book_through_its_door() {
         .is_err(),
         "a contact that is not in the book is not opened"
     );
-    let favorite_control = app
-        .harness()
-        .a11y_node_named("Favorite")
-        .expect("the shared Favorite control is present");
-    app.harness()
-        .perform_a11y_action(favorite_control, &ui::a11y::Action::Activate)
-        .unwrap();
+    app.settle();
+    assert!(
+        ui::window_toolbar::declared()
+            .is_some_and(|toolbar| toolbar.actions.iter().any(|action| action.id == "favorite")),
+        "the window's bar offers Favorite"
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: "favorite".into(),
+    });
     app.settle();
     assert_ne!(favorite(&app), before, "the star reached the document");
     assert!(app.undo());
     assert_eq!(favorite(&app), before);
 }
 
-/// History says what each change to the book did, in the person's words.
 #[test]
 fn history_says_what_each_change_did() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
@@ -602,10 +609,10 @@ fn history_says_what_each_change_did() {
     );
 }
 
-/// Merging from the review asks the host to confirm while the review stays
-/// up; confirmed, the merge lands and the review closes.
+/// Merging from the review lands at once, since Undo takes it back: the
+/// host asks nothing, and Undo brings the merged contact back.
 #[test]
-fn merging_from_the_review_asks_the_host_and_lands() {
+fn merging_from_the_review_lands_at_once_and_undo_takes_it_back() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
     let mut survivor = person("Ada", "Lovelace");
     survivor.id = Uuid::from_u128(1);
@@ -632,14 +639,61 @@ fn merging_from_the_review_asks_the_host_and_lands() {
         app.settle();
     };
     activate(&mut app, "Merge contacts", ui::a11y::Action::Activate);
-    assert_eq!(app.state().contacts.len(), 2, "nothing merges unconfirmed");
-    activate(
-        &mut app,
-        "Confirmation",
-        ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    activate(&mut app, "Confirm", ui::a11y::Action::Activate);
+    assert!(app.asking().is_none(), "an undoable merge asks nothing");
     let merged = app.state().contacts;
-    assert_eq!(merged.len(), 1, "the confirmed merge lands");
+    assert_eq!(merged.len(), 1, "the merge lands at once");
     assert_eq!(merged[0].org, "Analytical Engines");
+    assert!(app.undo(), "the merge is one undo step");
+    assert_eq!(app.state().contacts.len(), 2, "Undo brings the copy back");
+}
+
+/// An agent keeps the address book, or one card it names, as vCards in
+/// the room's content, without the confirmation a file export asks.
+#[test]
+fn export_vcard_content_keeps_every_card_or_one_by_name_as_content() {
+    let mut app = TestApp::<ContactsShell>::new().unwrap();
+    let (ada, alan) = (person("Ada", "Lovelace"), person("Alan", "Turing"));
+    app.invoke(Contacts::add_all(vec![ada, alan.clone()]))
+        .unwrap();
+    let text = |app: &TestApp<ContactsShell>, answer: &serde_json::Value| {
+        let hash = ui::tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
+        String::from_utf8(app.content().read(hash).unwrap()).unwrap()
+    };
+    let all = app
+        .call("export-vcard-content", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(all["contacts"], 2);
+    let cards = text(&app, &all);
+    assert_eq!(cards.matches("BEGIN:VCARD").count(), 2);
+    assert!(cards.contains("VERSION:4.0"));
+    let one = app
+        .call(
+            "export-vcard-content",
+            serde_json::json!({ "name": "ada lovelace" }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(one["names"], serde_json::json!(["Ada Lovelace"]));
+    let card = text(&app, &one);
+    assert!(
+        card.contains("Lovelace") && !card.contains("Turing"),
+        "{card}"
+    );
+    let by_id = app
+        .call(
+            "export-vcard-content",
+            serde_json::json!({ "contact": alan.id.to_string() }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_id["names"], serde_json::json!(["Alan Turing"]));
+    assert!(
+        app.call(
+            "export-vcard-content",
+            serde_json::json!({ "name": "Grace" })
+        )
+        .is_err(),
+        "a name no card carries is refused"
+    );
 }

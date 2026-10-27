@@ -1,0 +1,25 @@
+#%PAM-1.0
+# Tilo's one sign-in service (docs/security/sign-in.md §5.2). The greeter
+# (greetd), the lock screen (tilo-unlock), polkit (polkit-1, which run0 and
+# pkexec authenticate through) and sudo take their auth, account and password
+# phases from here and keep only their own session phase, so every surface
+# accepts the same factors.
+#
+# 1. The boot sign-in: in the greeter's service only, whoever opened the
+#    system volume at boot starts their session without typing again, once.
+# 2. A fingerprint, only while tilo-authd holds the person's key for a session
+#    of theirs running now (the lock screen, polkit and sudo inside it, the
+#    greeter when switching back to them). After boot, or once their sessions
+#    have ended, a fingerprint is not offered: a match unwraps nothing, so it
+#    may only confirm someone whose key is already in memory (§4.3). The
+#    pam_tilo step decides; when it cannot, the fingerprint step is skipped.
+# 3. The secret: password-auth, where pam_tilo asks tilo-authd before the old
+#    password check (os/scripts/authselect-tilo.py).
+-auth      sufficient                  pam_tilo.so boot_sign_in=greetd
+auth       [success=ignore default=1]  pam_tilo.so fingerprint
+-auth      sufficient                  pam_fprintd.so
+auth       substack                    password-auth
+
+account    include                     password-auth
+
+password   substack                    password-auth

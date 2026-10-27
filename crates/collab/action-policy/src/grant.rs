@@ -121,7 +121,6 @@ impl fmt::Display for Role {
     }
 }
 
-/// Whom a grant is for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Subject {
@@ -131,11 +130,11 @@ pub enum Subject {
     Role(Role),
     /// An agent acting for a person.
     Agent(String),
-    /// A task an agent works on.
+    /// The work done on an issue, by its address: grants naming it bound
+    /// every run of the issue, and give no one more than they hold.
     Task(String),
     /// A Shortcut run for a person.
     Shortcut(String),
-    /// An app acting under its own identity.
     App(String),
     /// An installed bot, by installation id. It acts for its installer and
     /// never as them.
@@ -202,18 +201,60 @@ fn short(id: &str) -> &str {
 
 /// How long a grant is live.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(
+    rename_all = "snake_case",
+    from = "StoredLifetime",
+    into = "StoredLifetime"
+)]
 pub enum Lifetime {
     /// For one use; the door that used it revokes it.
     Once,
-    /// While the task is open.
-    Task(String),
     /// While the session lasts.
     Session(String),
     /// Until a time, in Unix milliseconds (exclusive).
     Until(u64),
     /// Until someone revokes it.
     UntilRevoked,
+}
+
+/// A lifetime as rooms store it, read and written. A grant once lived while
+/// a task of the room was open; those tasks are gone, and such a grant reads
+/// as one that has expired, so a room that holds one still loads. The task
+/// keeps its place: compact encodings (postcard) name a variant by its
+/// position, and a room's stored grants and the digests of its
+/// administration requests are made of those bytes, so every lifetime is
+/// written as it always was.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredLifetime {
+    Once,
+    Task(String),
+    Session(String),
+    Until(u64),
+    UntilRevoked,
+}
+
+impl From<Lifetime> for StoredLifetime {
+    fn from(lifetime: Lifetime) -> Self {
+        match lifetime {
+            Lifetime::Once => Self::Once,
+            Lifetime::Session(session) => Self::Session(session),
+            Lifetime::Until(at) => Self::Until(at),
+            Lifetime::UntilRevoked => Self::UntilRevoked,
+        }
+    }
+}
+
+impl From<StoredLifetime> for Lifetime {
+    fn from(stored: StoredLifetime) -> Self {
+        match stored {
+            StoredLifetime::Once => Self::Once,
+            StoredLifetime::Session(session) => Self::Session(session),
+            StoredLifetime::Until(at) => Self::Until(at),
+            StoredLifetime::Task(_) => Self::Until(0),
+            StoredLifetime::UntilRevoked => Self::UntilRevoked,
+        }
+    }
 }
 
 /// Names one grant, so it can be revoked or consumed.
@@ -239,7 +280,6 @@ impl fmt::Display for GrantId {
     }
 }
 
-/// One grant.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Grant {
     pub id: GrantId,
@@ -279,28 +319,18 @@ impl Grant {
         self
     }
 
-    /// Whether the grant lived while a task was open and that task no longer
-    /// is (`open` answers for a task id): it has lapsed, and is no longer the
-    /// room's.
-    #[must_use]
-    pub fn lapsed_with_tasks(&self, open: impl Fn(&str) -> bool) -> bool {
-        matches!(&self.lifetime, Lifetime::Task(task) if !open(task))
-    }
-
-    /// Whether the grant is live in `cx`.
     #[must_use]
     pub fn is_live(&self, cx: &Context<'_>) -> bool {
         match &self.lifetime {
             Lifetime::Once | Lifetime::UntilRevoked => true,
             Lifetime::Until(at) => cx.now_unix_ms < *at,
             Lifetime::Session(session) => cx.session.is_none_or(|current| current == session),
-            Lifetime::Task(task) => cx.task_open.is_none_or(|open| open(task)),
         }
     }
 }
 
 /// What liveness depends on where a decision is made.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
     /// Wall clock, Unix milliseconds.
     pub now_unix_ms: u64,
@@ -308,8 +338,6 @@ pub struct Context<'a> {
     /// session grant then counts as live, and the device that holds the session
     /// is the one that refuses after it ends.
     pub session: Option<&'a str>,
-    /// Whether a task is open. `None` where tasks are not known.
-    pub task_open: Option<&'a dyn Fn(&str) -> bool>,
 }
 
 impl<'a> Context<'a> {
@@ -318,7 +346,6 @@ impl<'a> Context<'a> {
         Self {
             now_unix_ms,
             session: None,
-            task_open: None,
         }
     }
 
@@ -344,21 +371,5 @@ impl<'a> Context<'a> {
     pub const fn in_session(mut self, session: &'a str) -> Self {
         self.session = Some(session);
         self
-    }
-
-    #[must_use]
-    pub const fn with_tasks(mut self, task_open: &'a dyn Fn(&str) -> bool) -> Self {
-        self.task_open = Some(task_open);
-        self
-    }
-}
-
-impl fmt::Debug for Context<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Context")
-            .field("now_unix_ms", &self.now_unix_ms)
-            .field("session", &self.session)
-            .field("task_open", &self.task_open.is_some())
-            .finish()
     }
 }

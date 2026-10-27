@@ -8,23 +8,16 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 import signing_spool as spool
+from restart_fixture import restart_fixture
 SPEC = importlib.util.spec_from_file_location('transfer', Path(__file__).resolve().parents[1] / 'dev/transfer-signing-spool.py')
 transfer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(transfer)
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class TransportTests(unittest.TestCase):
@@ -157,7 +150,7 @@ class TransportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'byte admission'):
                 transfer.bounded_process([sys.executable, '-c', 'print("x"*100)'], io.BytesIO(), 10)
             with self.assertRaisesRegex(ValueError, 'deadline'):
-                transfer.bounded_process([sys.executable, '-c', 'import time; time.sleep(2)'], io.BytesIO(), 10, timeout=0.1)
+                transfer.bounded_process([sys.executable, '-c', 'import time; time.sleep(3600)'], io.BytesIO(), 10, timeout=0.1)
         restart_fixture(self)
         with self.subTest(phase="large_payload_deadline_includes_a_conservative_stream_budget"):
             mib = 1024 * 1024
@@ -169,17 +162,29 @@ class TransportTests(unittest.TestCase):
         with self.subTest(phase="timeout_kills_descendant_after_leader_exits"):
             output = io.BytesIO()
             script = ('import subprocess,sys; '
-                      'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); '
+                      'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(3600)"]); '
                       'print(p.pid,flush=True)')
-            with self.assertRaisesRegex(ValueError, 'deadline'):
-                transfer.bounded_process([sys.executable, '-c', script], output, 1024, timeout=0.3)
+            # The transfer clock runs out once the leader has said its
+            # descendant's pid, never while a loaded runner is starting it.
+            clock = SimpleNamespace(monotonic=lambda: 1e9 if output.getvalue() else 0.0)
+            with self.assertRaisesRegex(ValueError, 'deadline'), patch.object(transfer, 'time', clock):
+                transfer.bounded_process([sys.executable, '-c', script], output, 1024, timeout=HANG_BOUND)
             child = int(output.getvalue())
             status = Path(f'/proc/{child}/stat')
+
+            def gone_or_zombie():
+                # The descendant can be reaped between looking for its stat
+                # and reading it: reading a vanished process's stat raises.
+                try:
+                    return status.read_text().split()[2] == 'Z'
+                except (FileNotFoundError, ProcessLookupError):
+                    return True
+
             try:
-                deadline = time.monotonic() + 1
-                while status.exists() and status.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+                deadline = time.monotonic() + HANG_BOUND
+                while not gone_or_zombie() and time.monotonic() < deadline:
                     time.sleep(0.01)
-                self.assertTrue(not status.exists() or status.read_text().split()[2] == 'Z')
+                self.assertTrue(gone_or_zombie(), 'the deadline killed the descendant')
             finally:
                 try:
                     os.kill(child, 9)

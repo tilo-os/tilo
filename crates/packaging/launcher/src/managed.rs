@@ -127,10 +127,6 @@ impl InstalledManagedPackage {
         &self.installed.payload_root
     }
     /// Re-verify the installed package and return its signed manifest.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description of the first verification failure.
     pub fn revalidate(&self, trust: &PackageTrust) -> Result<ManifestView, String> {
         self.verified_manifest(trust).map(|(manifest, _)| manifest)
     }
@@ -350,10 +346,6 @@ pub struct ManagedBinding {
 }
 impl ManagedBinding {
     /// Check the binding's package, generation and label syntax.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when any label is invalid.
     pub fn validate(&self) -> Result<(), String> {
         if self.app != WORKSPACE_AGENT_PACKAGE_ID
             || self.generation == 0
@@ -383,11 +375,6 @@ pub struct ProcessIdentity {
 }
 impl ProcessIdentity {
     /// Read the kernel start time identifying a live process.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the process is absent, exited, unreadable, or when kernel
-    /// custody is unsupported on this platform.
     pub fn read(pid: u32) -> Result<Self, String> {
         #[cfg(target_os = "linux")]
         {
@@ -617,10 +604,6 @@ impl RuntimeOwner {
 pub struct VerifiedManagedRuntime(Weak<RuntimeOwner>);
 impl VerifiedManagedRuntime {
     /// Re-verify the owning runtime and return its recorded facts.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the owner stopped or verification fails.
     pub fn revalidate(&self) -> Result<ManagedRuntimeFacts, String> {
         let owner = self.0.upgrade().ok_or("runtime owner lost")?;
         owner.revalidate()?;
@@ -660,10 +643,6 @@ pub trait ManagedLaunchAuthority: Send + Sync {
     /// Returns a description when the host refuses or cannot record the claim.
     fn claim_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
     /// Check retained binding and current policy without consuming/recreating a claim.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the binding is no longer permitted.
     fn revalidate_launch(&self, binding: &ManagedBinding) -> Result<(), String>;
 }
 /// A single reservation in one owning runtime. Intentionally neither Clone nor Serde.
@@ -676,10 +655,6 @@ pub struct VerifiedLaunchAuthority {
 }
 impl VerifiedLaunchAuthority {
     /// Repeatable current-policy check, independent of the consumed host claim.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the runtime, cancellation or host policy refuses the launch.
     pub fn revalidate(&self) -> Result<(), String> {
         let owner = self.owner.upgrade().ok_or("runtime owner lost")?;
         owner.revalidate()?;
@@ -741,10 +716,6 @@ impl VerifiedManagedSupervisor {
         self.record.runtime.revalidate()
     }
     /// Check that `binding` and `process` are still this supervisor's live custody.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the runtime, binding, process or custody is no longer current.
     pub fn revalidate(
         &self,
         binding: &ManagedBinding,
@@ -859,10 +830,6 @@ pub struct ManagedLauncher {
 }
 impl ManagedLauncher {
     /// Verify the package and runtime once and become their single owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the package, runtime paths or runtime bundle fail verification.
     pub fn new(
         package: InstalledManagedPackage,
         trust: PackageTrust,
@@ -997,10 +964,6 @@ impl ManagedLauncher {
             .map_err(|_| "managed event owner poisoned; outcome uncertain".into())
     }
     /// Cancel an owned launch and kill its live processes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description for a launch this owner does not hold or a failed kill.
     pub fn stop(&self, binding: &ManagedBinding) -> Result<(), String> {
         let attempt = self
             .attempts
@@ -1483,10 +1446,6 @@ impl ManagedLauncher {
 pub struct VerifiedManagedProcess(VerifiedManagedSupervisor);
 impl VerifiedManagedProcess {
     /// Current descriptive facts for this live agent process.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when custody is no longer current or this is not an agent process.
     #[cfg(target_os = "linux")]
     pub fn facts(&self) -> Result<ChannelProcessFacts, String> {
         self.revalidate(self.binding(), self.process())?;

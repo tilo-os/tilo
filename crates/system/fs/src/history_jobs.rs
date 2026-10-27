@@ -322,10 +322,6 @@ impl QuickFS {
     }
 
     /// Cancel the hydration behind history request `id` on `ino`.
-    ///
-    /// # Errors
-    ///
-    /// The caller may not write the file, or no download is running.
     pub fn cancel_history_job(&self, ino: u64, id: uuid::Uuid) -> Result<(), i32> {
         self.check_access(ino, Access::Write)?;
         if self.history_jobs.cancel(JobKey { ino, id }) {

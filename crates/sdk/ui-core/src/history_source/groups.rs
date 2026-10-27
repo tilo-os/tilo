@@ -29,6 +29,7 @@
 
 use crate::time::{Duration, UNIX_EPOCH};
 use tilo_automerge::ReadTyped as _;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
@@ -86,7 +87,7 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         });
     }
     // Stable order so two peers with the same document build the same forest.
-    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.compact_sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
@@ -512,7 +513,6 @@ mod tests {
     fn peers_naming_ranges_converge() {
         // phase: two_peers_naming_the_same_range_converge_on_one_name
         {
-            // Same key = map conflict, resolved identically on both sides.
             let mut alice = AutoCommit::new();
             alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
             alice.put(automerge::ROOT, "seed", "x").unwrap();

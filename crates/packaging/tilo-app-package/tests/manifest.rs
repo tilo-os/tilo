@@ -28,8 +28,6 @@ fn manifest_round_trips_with_cli_and_entrypoint_blocks() {
         let again = Manifest::from_toml_str(&reencoded).expect("decode-2");
         assert_eq!(m, again, "round-trip preserves manifest");
 
-        // Spot-check a few fields that are easy to drop in a custom
-        // de/encode path.
         assert_eq!(m.package.id, "so.tilo.editor");
         assert_eq!(m.package.version, "1.4.2");
         assert_eq!(
@@ -305,7 +303,6 @@ fn service_requirements_and_portal_policy_parse_strictly() {
             Some(PortalPolicy::Deny)
         );
 
-        // Round-trip preserves the enum.
         let reencoded = m.to_toml_string().expect("encode");
         let again = Manifest::from_toml_str(&reencoded).expect("decode-2");
         assert_eq!(m.sandbox.portals, again.sandbox.portals);

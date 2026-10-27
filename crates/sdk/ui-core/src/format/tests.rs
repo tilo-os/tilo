@@ -38,8 +38,6 @@ fn now() -> NaiveDateTime {
     at(2026, 6, 30, 14, 0)
 }
 
-// USER REQUIREMENT (2026-10-18): "relative-in-lists ("16:02", "Yesterday",
-// "Sun", "Jun 30", "Jun 30, 2025")"
 #[test]
 fn the_list_style_reads_as_the_person_asked_in_english_and_german() {
     speak("en-US");

@@ -62,10 +62,10 @@ impl TransferLauncher for FakeLauncher {
             return Err("the app could not be started".into());
         }
         let (resume, record_instance) =
-            shell::shell::launcher::take_staged_resume_for_package(app_id, workspace.room)
+            shell::shell::launcher::take_staged_resume_for_package(app_id, workspace.room())
                 .expect("the launch consumes the continuation staged for its tab");
         self.launched.borrow_mut().push(Launched {
-            room: workspace.room,
+            room: workspace.room(),
             tab,
             record_instance,
             resume,
@@ -124,7 +124,7 @@ impl Fixture {
         let data = tempfile::tempdir().unwrap();
         let mut tree = WorkspaceTree::bootstrap_default();
         let home = tree.desktop.workspaces[0].id;
-        let home_room = tree.desktop.workspaces[0].room;
+        let home_room = tree.desktop.workspaces[0].room();
         let home_strip = tree.desktop.workspaces[0].strips[0].id;
         tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
             id: 40,
@@ -136,6 +136,7 @@ impl Fixture {
                     app_id: APP.into(),
                     surface_id: SURFACE,
                 },
+                app_title: None,
             }],
             width: WindowWidth::Normal,
             maximized: false,
@@ -144,11 +145,15 @@ impl Fixture {
         tree.desktop.set_active_group(home_strip, 40);
         let elsewhere = WorkspaceId::new();
         let mut other = Workspace::new(elsewhere, "Elsewhere");
-        let elsewhere_room = other.room;
+        let elsewhere_room = other.room();
         let other_strip = StripId::new();
         other.strips.push(Strip::new(other_strip, "Main"));
         tree.desktop.workspaces.push(other);
         tree.desktop.active_strip.insert(elsewhere, other_strip);
+        // The Notes window's ids were written by hand, not minted: ids
+        // minted from here on (the destination's card) must not reuse them,
+        // as they never do after a stored tree is loaded.
+        tree.seed_next_id_from_self();
         tree.seed_doc_from_cache();
         let chrome = ChromeState::new(tree);
 
@@ -183,7 +188,7 @@ impl Fixture {
                 })
                 .unwrap();
             records.try_flush().unwrap();
-            profile
+            let _ = profile
                 .adopt_view(
                     &SavedInstanceView {
                         version: 2,
@@ -258,6 +263,16 @@ impl Fixture {
     fn answer(&self, choice: &str) -> shell::shell::portal_dialog::DialogView {
         let mut sheet = PortalDialogController::new(self.queue.clone());
         assert!(sheet.pump(), "the transfer sheet is up");
+        self.answer_on(sheet, choice)
+    }
+
+    /// Answer `sheet`, already up, with the choice whose label contains
+    /// `choice`.
+    fn answer_on(
+        &self,
+        mut sheet: PortalDialogController,
+        choice: &str,
+    ) -> shell::shell::portal_dialog::DialogView {
         let view = sheet.view().expect("the transfer sheet");
         let index = view
             .choices()
@@ -554,6 +569,114 @@ fn late_edits_restart_a_destination_instance_that_already_has_the_record() {
     assert!(f.notifications().iter().any(|n| n.contains("last edits")));
 }
 
+/// Run the shell's transfer step the way the frame loop does, where any
+/// wait on storage fails the test.
+fn tick_on_the_loop(f: &Fixture) {
+    let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+    tick(&mut f.chrome.borrow_mut());
+}
+
+/// Tick as the frame loop until `done`, which a transfer reaches only once
+/// the disk has taken what it hands over.
+fn tick_on_the_loop_until(f: &Fixture, what: &str, mut done: impl FnMut(&Fixture) -> bool) {
+    let started = std::time::Instant::now();
+    while !done(f) {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "{what}"
+        );
+        tick_on_the_loop(f);
+        std::thread::yield_now();
+    }
+}
+
+/// The frame loop drives a move and never waits on storage: planning,
+/// reading and writing the profiles happen on threads of their own, and the
+/// record is handed over (starting the new instance, retiring the source)
+/// only once those writes are on the disk, so what the next process reads
+/// from it is already there.
+#[test]
+fn a_move_on_the_frame_loop_hands_over_only_what_has_reached_the_disk() {
+    let (f, old) = Fixture::new(true, false);
+    let old = old.unwrap();
+    {
+        let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+        f.ask(TransferMode::Move);
+    }
+    let mut sheet = PortalDialogController::new(f.queue.clone());
+    tick_on_the_loop_until(
+        &f,
+        "the sheet asks once the window's record is read",
+        |_| sheet.pump(),
+    );
+    {
+        let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+        f.answer_on(sheet, "Move");
+    }
+    tick_on_the_loop_until(&f, "the new instance starts", |f| {
+        !f.launched.borrow().is_empty()
+    });
+    // A store of its own, as the new instance's process has: only the disk.
+    let (destination, view, carried) = f.arrived(INSTANCE);
+    assert_eq!(view.view.scroll, [120.0], "its View was on the disk");
+    let arrived = read_record(
+        destination.store(),
+        APP,
+        destination.workspace_id(),
+        &carried,
+    )
+    .expect("its record was on the disk when it started");
+    assert_eq!(body(&arrived).as_deref(), Some("Groceries: milk"));
+    drop(destination);
+
+    // Late edits in the old process, merged once it lets go.
+    old.with(&f.record.id, |doc| {
+        doc.put(ROOT, "body", "Groceries: milk, tea").unwrap();
+    })
+    .unwrap();
+    old.try_flush().unwrap();
+    let new_tab = f.launched.borrow()[0].tab;
+    assert_eq!(f.bind(NEW_SURFACE), new_tab);
+    tick_on_the_loop(&f);
+    assert_eq!(f.close_requests(), [SURFACE]);
+    f.destroy(SURFACE);
+    drop(old);
+    tick_on_the_loop_until(&f, "the move finishes", |f| {
+        !f.chrome.borrow().window_transfers.is_pending()
+    });
+    let destination = f.profile(f.elsewhere_room);
+    let merged = read_record(
+        destination.store(),
+        APP,
+        destination.workspace_id(),
+        &carried,
+    )
+    .unwrap();
+    assert_eq!(
+        body(&merged).as_deref(),
+        Some("Groceries: milk, tea"),
+        "the merge was on the disk before the source was retired"
+    );
+    assert!(f.notifications().iter().any(|n| n.contains("last edits")));
+    // The source's retirement is the last write and nothing waits on it; it
+    // still reaches the disk.
+    let started = std::time::Instant::now();
+    loop {
+        let source = f.profile(f.home_room);
+        if matches!(
+            read_record(source.store(), APP, source.workspace_id(), &f.record),
+            Err(TransferError::Open(RecordOpenError::Retired))
+        ) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the source is retired on the disk"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn a_move_whose_new_window_never_opens_rolls_back_and_keeps_the_old_one() {
     let (f, old) = Fixture::new(true, true);
@@ -742,13 +865,14 @@ fn a_second_window_on_the_same_document_blocks_move_but_not_copy() {
                     app_id: APP.into(),
                     surface_id: 9_909,
                 },
+                app_title: None,
             });
     }
     // The second window runs another instance showing the same notebook.
     let root = profile_root(f.data.path(), f.home_room);
     let profile = NativeProfile::open(&root, Some(&f.home_room.to_string())).unwrap();
     let mine = profile.saved_view(INSTANCE).unwrap().unwrap();
-    profile.adopt_view(&mine, INSTANCE + 1, &f.record).unwrap();
+    let _ = profile.adopt_view(&mine, INSTANCE + 1, &f.record).unwrap();
     global_registry()
         .lock()
         .unwrap()

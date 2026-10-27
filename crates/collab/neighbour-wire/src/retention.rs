@@ -347,7 +347,6 @@ mod tests {
         assert_eq!(first, retention(&frame([0; 32]), false).unwrap());
         assert_ne!(first.0, retention(&frame([1; 32]), false).unwrap().0);
         assert_eq!(first.1, Retention::Checkpoint);
-        // Every later frame replaces the channel's previous one.
         let change = |epoch| NeighbourMsg::MlsGovernance {
             room: "room".into(),
             frame: Box::new(

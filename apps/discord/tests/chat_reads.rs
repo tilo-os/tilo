@@ -121,3 +121,52 @@ fn read_room_is_what_the_planners_read() {
         .unwrap();
     assert_eq!(author.name, stored.name);
 }
+
+/// A feedback report filed in a channel reads as the message the channel
+/// shows: its picks read out as text, its masked picture as the image the
+/// bridge uploads.
+#[test]
+fn a_filed_report_reads_as_its_message_with_its_picture() {
+    let (mut app, channel) = begun();
+    let report = "0123456789abcdef0123456789abcdef";
+    let picture = "cd".repeat(32);
+    let submission = json!({
+        "id": report,
+        "destination": {"room": "room", "provider": "demo-chat", "channel": channel},
+        "feedback": {
+            "text": "Saving does nothing",
+            "context": [],
+            "screenshot": {"hash": picture, "width": 320, "height": 200},
+            "selections": [{
+                "app": "so.tilo.files", "app_name": "Files", "path": "Toolbar[0]/Button[2]",
+                "role": "button",
+                "label": {"kind": "interface", "parts": [{"text": "Save"}]}
+            }]
+        }
+    });
+    app.call_on_output(
+        &chat::projection::item_id("channels", &channel),
+        "submit-feedback",
+        json!({ "submission": submission }),
+    )
+    .unwrap();
+    let id = chat::feedback::message_id(report);
+    let read = app
+        .effect(&ChatEffect::ReadRoom {
+            message: Some(id.clone()),
+            channel: None,
+        })
+        .unwrap()
+        .value
+        .unwrap();
+    let message = tilo::message(&read, &id).expect("the report's message");
+    assert_eq!(message.channel, channel);
+    assert_eq!(
+        message.text,
+        "Saving does nothing\n1. The “Save” button in Files"
+    );
+    let attachment = message.attachment.expect("its picture");
+    assert_eq!(attachment.blob, picture);
+    assert_eq!(attachment.name, "report.png");
+    assert!(tilo::person(&read, &message.author).is_some(), "{read}");
+}

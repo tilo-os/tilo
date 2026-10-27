@@ -219,9 +219,18 @@ impl ui::search::SearchProvider for TestSearch {
 
     fn search_scopes(&self) -> Vec<ui::search::ScopeDecl> {
         vec![
-            ui::search::ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
-            ui::search::ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
-            ui::search::ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+            ui::search::ScopeDecl::new(
+                crate::actions::HISTORY_SCOPE,
+                crate::resource::CATALOG.t("browser-library-section-history"),
+            ),
+            ui::search::ScopeDecl::new(
+                crate::actions::BOOKMARKS_SCOPE,
+                crate::resource::CATALOG.t("browser-library-section-bookmarks"),
+            ),
+            ui::search::ScopeDecl::new(
+                crate::actions::DOWNLOADS_SCOPE,
+                crate::resource::CATALOG.t("browser-library-section-downloads"),
+            ),
         ]
     }
 }
@@ -239,7 +248,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn search_provider_pages_the_library_corpus_canonically() {
-        // Phase `full_corpus_is_cursor_paged_and_canonical`.
         {
             let mut history = crate::history::History::new();
             for index in 0..6_000 {
@@ -266,7 +274,6 @@ mod tests {
             assert!(second.results.len() <= 3);
         }
 
-        // Phase `stale_search_addresses_are_refused_after_a_corpus_change`.
         {
             let mut history = crate::history::History::new();
             history.record_at("https://stale.example.test", "Stale", 1);
@@ -283,7 +290,6 @@ mod tests {
             assert!(index.opened(&hit.action_id).is_none());
         }
 
-        // Phase `library_sections_are_scopes_that_admit_only_their_own_hits`.
         {
             use ui::tilo_resource::Resource as _;
 
@@ -323,7 +329,6 @@ mod tests {
             assert_eq!(narrowed.results[0].title, "Rust book");
         }
 
-        // Phase `completed_downloads_are_searchable_by_name_source_and_destination`.
         {
             let mut downloads = crate::downloads::Downloads::default();
             assert!(downloads.requested(

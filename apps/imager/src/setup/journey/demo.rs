@@ -96,24 +96,7 @@ mod tests {
         }
         assert_eq!(state(&mut app)["page"], "profile");
         advance(&mut app);
-        for effect in [
-            InstallerPreviewEffect::SetPreviewPassword {
-                value: "demo password only".into(),
-            },
-            InstallerPreviewEffect::SetPreviewConfirmation {
-                value: "demo password only".into(),
-            },
-        ] {
-            app.effect(&effect).unwrap();
-        }
-        advance(&mut app);
         assert_eq!(state(&mut app)["page"], "devices");
-        advance(&mut app);
-        assert_eq!(state(&mut app)["page"], "purpose");
-        app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: "computer".into(),
-        })
-        .unwrap();
         advance(&mut app);
         for page in ["belongings", "accounts", "storage", "review"] {
             assert_eq!(state(&mut app)["page"], page);
@@ -196,23 +179,8 @@ mod tests {
                     .unwrap();
                 }
                 advance(&mut app);
-                app.effect(&InstallerPreviewEffect::SetPreviewPassword {
-                    value: "demo password only".into(),
-                })
-                .unwrap();
-                app.effect(&InstallerPreviewEffect::SetPreviewConfirmation {
-                    value: "demo password only".into(),
-                })
-                .unwrap();
+                assert_eq!(state(&mut app)["page"], "devices");
                 advance(&mut app);
-                advance(&mut app);
-                if destination != "desktop" {
-                    app.effect(&InstallerPreviewEffect::ChoosePreview {
-                        choice: "computer".into(),
-                    })
-                    .unwrap();
-                    advance(&mut app);
-                }
                 for page in ["belongings", "accounts", "storage", "review"] {
                     assert_eq!(state(&mut app)["page"], page, "{destination}/{identity}");
                     advance(&mut app);

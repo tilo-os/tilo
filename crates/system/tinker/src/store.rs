@@ -62,7 +62,6 @@ pub struct Store {
 }
 
 impl Store {
-    /// Store rooted at an explicit path.
     pub fn at(root: impl Into<PathBuf>) -> Self {
         Store { root: root.into() }
     }
@@ -72,11 +71,6 @@ impl Store {
     /// `TILO_TINKER_ROOT` overrides, which is what the tests and the demo script
     /// use. Otherwise layers live under the user's data directory: per-user, on
     /// writable storage, and outside any path the OS image owns.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `TILO_TINKER_ROOT` is unset and neither
-    /// `XDG_DATA_HOME` nor `HOME` can be resolved.
     pub fn user() -> Result<Self> {
         if let Some(explicit) = std::env::var_os("TILO_TINKER_ROOT") {
             return Ok(Store::at(PathBuf::from(explicit)));
@@ -170,10 +164,6 @@ impl Store {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if no layer named `name` exists, or its metadata
-    /// file is not valid TOML for [`Layer`].
     pub fn load(&self, name: &str) -> Result<Layer> {
         let path = self.meta_path(name);
         let text = std::fs::read_to_string(&path)
@@ -367,7 +357,6 @@ mod tests {
 
     #[test]
     fn layers_are_created_promoted_and_renamed_without_clobbering() {
-        // Phase `a_created_layer_round_trips`.
         {
             let (_d, s) = store();
             s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
@@ -380,7 +369,6 @@ mod tests {
             assert!(s.work_dir("scratch").is_dir());
             assert!(s.home_dir("scratch").is_dir());
         }
-        // Phase `creating_twice_refuses_rather_than_clobbering`.
         {
             let (_d, s) = store();
             s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
@@ -389,7 +377,6 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("already exists"), "{err}");
         }
-        // Phase `promotion_is_retroactive_and_can_rename`.
         {
             let (_d, s) = store();
             s.create("scratch", "debian", LayerKind::Ephemeral, vec![])
@@ -409,7 +396,6 @@ mod tests {
             );
             assert!(s.load("scratch").is_err());
         }
-        // Phase `promoting_twice_is_not_an_error`.
         {
             let (_d, s) = store();
             s.create("a", "debian", LayerKind::Ephemeral, vec![])
@@ -419,7 +405,6 @@ mod tests {
             assert_eq!(again.kind, LayerKind::Kept);
             assert_eq!(again.note, "note");
         }
-        // Phase `renaming_rewrites_stack_references`.
         {
             let (_d, s) = store();
             s.create("bottom", "debian", LayerKind::Kept, vec![])
@@ -432,7 +417,6 @@ mod tests {
                 vec!["renamed".to_string()]
             );
         }
-        // Phase `listing_an_empty_store_is_empty_not_an_error`.
         {
             let d = tempfile::tempdir().unwrap();
             let s = Store::at(d.path().join("does-not-exist-yet"));
@@ -442,7 +426,6 @@ mod tests {
 
     #[test]
     fn stacks_reverts_and_names_are_contained() {
-        // Phase `stacking_on_a_missing_layer_is_refused`.
         {
             let (_d, s) = store();
             let err = s
@@ -450,7 +433,6 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("no such layer"), "{err}");
         }
-        // Phase `discard_refuses_to_pull_a_layer_out_from_under_a_stack`.
         {
             let (_d, s) = store();
             s.create("bottom", "debian", LayerKind::Kept, vec![])
@@ -466,7 +448,6 @@ mod tests {
             s.discard("bottom").unwrap();
             assert!(s.list().unwrap().is_empty());
         }
-        // Phase `reverting_one_path_leaves_the_rest_of_the_layer_alone`.
         {
             let (_d, s) = store();
             s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
@@ -478,20 +459,17 @@ mod tests {
             assert!(!s.upper_dir("a").join("etc/hosts").exists());
             assert!(s.upper_dir("a").join("etc/keepme").exists());
         }
-        // Phase `reverting_something_the_layer_never_touched_says_so`.
         {
             let (_d, s) = store();
             s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
             let err = s.revert_path("a", Path::new("/etc/nope")).unwrap_err();
             assert!(err.to_string().contains("did not change"), "{err}");
         }
-        // Phase `revert_paths_cannot_escape_the_layer`.
         {
             let (_d, s) = store();
             s.create("a", "debian", LayerKind::Kept, vec![]).unwrap();
             assert!(s.revert_path("a", Path::new("/../../etc/passwd")).is_err());
         }
-        // Phase `hostile_layer_names_are_refused`.
         {
             let (_d, s) = store();
             for bad in ["", ".hidden", "-flag", "a/b", "a b", "a;b", "..", "a\nb"] {

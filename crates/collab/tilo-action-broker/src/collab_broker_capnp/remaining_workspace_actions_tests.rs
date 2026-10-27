@@ -177,7 +177,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_custody() {
         request.target.address = tilo_actions::ActionAddress::new("keyboard-shortcuts", "rebind");
         let current = tree.clone();
         let execution = caller.clone();
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         EFFECT_BARRIER.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || match change {
                 "execution" => execution.retire_execution(),
@@ -342,11 +342,11 @@ fn fixture(
     *state.journal.lock().unwrap() = Ok(Some(
         super::super::invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
-    let caller = Caller::local_person("owner").in_room(workspace.room.to_string());
+    let caller = Caller::local_person("owner").in_room(workspace.room().to_string());
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_provider(&workspace.room.to_string()),
+            provider: tilo_actions::remote::workspace_provider(&workspace.room().to_string()),
             address: tilo_actions::ActionAddress::new("workspace", "inspect"),
         },
         argument: InvokeArgument::None,
@@ -421,7 +421,7 @@ fn registered_governance_keeps_original_uuid_context_and_terminal_owner() {
     let journal = guard.as_ref().unwrap().as_ref().unwrap();
     let record = journal
         .lookup(&super::super::InvocationKey {
-            room: workspace.room.to_string(),
+            room: workspace.room().to_string(),
             host: journal.host(),
             owner: owner.clone(),
             invocation: request.invocation,
@@ -452,7 +452,7 @@ fn registered_governance_keeps_original_uuid_context_and_terminal_owner() {
 fn registered_governance_does_not_upgrade_a_transport_label_into_custody() {
     let root = tempfile::tempdir().unwrap();
     let (state, service, workspace, _, request) = fixture(root.path());
-    let caller = Caller::authenticated([7; 32], [8; 32]).in_room(workspace.room.to_string());
+    let caller = Caller::authenticated([7; 32], [8; 32]).in_room(workspace.room().to_string());
     let actor = BrokerActor::for_caller(&caller);
     // Even a permission-bearing actor is not the caller's original certificate.
     let mut workspace = workspace;
@@ -580,7 +580,6 @@ fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
             let argument = request.argument.to_slot();
             request.target.address = tilo_actions::ActionAddress::new(resource, action);
             if !keyboard {
-                // Deleting a saved shortcut retains its destructive-action floor.
                 request.confirmation = Some(Confirmation::Confirmed);
             }
             let actor = BrokerActor::for_caller(&caller);

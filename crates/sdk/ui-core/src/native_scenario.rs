@@ -58,6 +58,9 @@ pub enum Input {
     Key {
         key: crate::synthetic_input::NativeKey,
     },
+    /// Find, as the platform types it: its command modifier (⌘ on macOS,
+    /// Ctrl elsewhere) held around one press of F.
+    Find {},
     /// A stylus tip touching down at `pressure` (`0.0..=1.0`): a pen sample
     /// with a pointer move, then a sample with the left press, as a tablet
     /// reports it.
@@ -109,6 +112,21 @@ impl Input {
                     .into_iter()
                     .map(|state| input::key_input(&key, state))
                     .collect()
+            }
+            Self::Find {} => {
+                let command = match crate::platform::PlatformConventions::default().platform() {
+                    crate::platform::Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
+                    _ => winit::keyboard::ModifiersState::CONTROL,
+                };
+                let key = winit::keyboard::Key::Character("f".into());
+                vec![
+                    winit::event::WindowEvent::ModifiersChanged(command.into()),
+                    input::key_input(&key, ElementState::Pressed),
+                    input::key_input(&key, ElementState::Released),
+                    winit::event::WindowEvent::ModifiersChanged(
+                        winit::keyboard::ModifiersState::empty().into(),
+                    ),
+                ]
             }
             Self::PenDown { x, y, pressure } => vec![
                 input::pen_sample(pressure),
@@ -168,7 +186,7 @@ impl Scenario {
                     x.is_finite() && y.is_finite() && (0.0..=1.0).contains(pressure)
                 }
                 Input::Wheel { dx, dy } => dx.is_finite() && dy.is_finite(),
-                Input::Character { .. } | Input::Key { .. } => true,
+                Input::Character { .. } | Input::Key { .. } | Input::Find {} => true,
             };
             if !finite {
                 return Err(format!(
@@ -193,10 +211,6 @@ fn parse(contents: &str) -> Result<Scenario, String> {
 }
 
 /// Loads a scenario and verifies any opted-in collector's exact source hash.
-///
-/// # Errors
-/// Returns an error for invalid gate configuration, unreadable scenario bytes,
-/// a mismatched gated source hash, or an invalid scenario.
 pub fn load_from_env() -> Result<Option<Scenario>, String> {
     let gate = GateConfig::from_env()?;
     let Some(path) = std::env::var_os("TILO_NATIVE_SCENARIO") else {
@@ -432,10 +446,6 @@ pub fn deadline(origin: Instant, interval_us: u64, index: usize) -> Result<Insta
 ///
 /// Joining this thread proves only delivery has ended, not that inputs were
 /// handled, changed application state, rendered, or appeared on a display.
-///
-/// # Errors
-/// Returns an error for an invalid timeline, opted-in gate configuration/source/
-/// descriptor, unsupported opted-in gate platform, or thread creation failure.
 pub fn spawn(
     scenario: Scenario,
     mut deliver: impl FnMut(Packet) -> bool + Send + 'static,
@@ -650,7 +660,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gate_releases_only_exact_current_step_approvals() {
-        // Case `exact_current_step_approvals_release_each_non_hover_once`.
         {
             let mut child = GateChild::start(1_000, |_| {});
             let first = child.request();
@@ -664,7 +673,6 @@ mod tests {
             assert_eq!(delivered_ids(&child.finish()), [0, 1, 2]);
         }
 
-        // Case `revoked_wrong_or_replayed_permits_never_release_the_pending_step`.
         {
             for field in [
                 "approved",
@@ -698,26 +706,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stalled_collector_cannot_release_click_after_old_twelve_second_cadence() {
-        let mut child = GateChild::start(12_000_000, |_| {});
-        tilo_test_env::wait_until("the fixture's initial hover", || {
-            !delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty()
-        });
-        // No collector reads or approval writes for longer than the original
-        // 12s cadence. Removing the producer gate delivers click1 in this gap.
-        std::thread::sleep(Duration::from_millis(12_250));
-        let _ = child.child.kill();
-        child.child.wait().unwrap();
-        assert_eq!(
-            delivered_ids(&std::fs::read_to_string(&child.output).unwrap()),
-            [0]
+    fn a_stalled_collector_never_releases_the_click() {
+        // The click waits on a permit the collector never writes: it expires
+        // and the producer stops instead of delivering ungated input.
+        let mut child = GateChild::start(1_000, |_| {});
+        let request = child.request();
+        assert_eq!(request["step_id"], 1);
+        let output = child.finish();
+        assert!(
+            output.contains(r#""event":"denied","step_id":1"#),
+            "{output}"
         );
+        assert_eq!(delivered_ids(&output), [0]);
     }
 
     #[cfg(unix)]
     #[test]
     fn gate_fails_closed_on_invalid_configuration_and_transport() {
-        // Case `invalid_gate_configuration_and_unverified_source_hash_fail_closed`.
         {
             for (field, value) in [
                 ("fd", serde_json::json!(-1)),
@@ -732,7 +737,6 @@ mod tests {
             }
         }
 
-        // Case `gate_rejects_non_socket_and_changed_scheduling_input`.
         {
             let mut malformed = GateChild::start(1_000, |config| {
                 *config = serde_json::json!("not a gate config")
@@ -751,7 +755,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn closed_malformed_oversized_or_expired_gate_never_delivers_non_hover() {
+    fn closed_or_malformed_gate_never_delivers_non_hover() {
         use std::io::Write;
         for bytes in [
             Vec::new(),
@@ -765,12 +769,6 @@ mod tests {
             child.socket.shutdown(std::net::Shutdown::Write).unwrap();
             assert_eq!(delivered_ids(&child.finish()), [0]);
         }
-        let mut child = GateChild::start(1_000, |_| {});
-        let request = child.request();
-        std::thread::sleep(Duration::from_millis(3_100));
-        let reply = serde_json::json!({"request":request,"approved":true});
-        let _ = writeln!(child.socket, "{reply}");
-        assert_eq!(delivered_ids(&child.finish()), [0]);
     }
 
     #[test]
@@ -800,7 +798,6 @@ mod tests {
 
     #[test]
     fn scheduling_keeps_deadlines_and_stops_on_a_closed_receiver() {
-        // Case `delayed_delivery_does_not_shift_future_deadlines`.
         {
             let observed = Arc::new(Mutex::new(Vec::new()));
             let output = observed.clone();
@@ -864,7 +861,6 @@ mod tests {
             }
         }
 
-        // Case `closed_receiver_stops_scheduling`.
         {
             let observed = Arc::new(Mutex::new(Vec::new()));
             let output = observed.clone();
@@ -881,7 +877,6 @@ mod tests {
 
     #[test]
     fn scenario_json_loads_validated_and_rejects_ambiguous_or_overflowing_input() {
-        // Case `loads_validated_json_with_optional_warmup`.
         {
             let loaded = parse(
                 r#"{"name":"hover","interval_us":16667,"steps":[{"kind":"hover","x":10,"y":20}]}"#,
@@ -903,7 +898,6 @@ mod tests {
             );
         }
 
-        // Case `keyboard_schema_preserves_unicode_and_rejects_ambiguous_input`.
         {
             let scenario = parse(r#"{"name":"typing","interval_us":16667,"steps":[{"kind":"character","value":"é"},{"kind":"key","key":"backspace"}]}"#).unwrap();
             assert_eq!(
@@ -920,7 +914,31 @@ mod tests {
             }
         }
 
-        // Case `pen_steps_load_and_reject_out_of_range_pressure`.
+        {
+            let scenario = parse(
+                r#"{"name":"find","interval_us":16667,"steps":[{"kind":"find"},{"kind":"character","value":"z"}]}"#,
+            )
+            .unwrap();
+            assert!(matches!(scenario.steps[0], Input::Find {}));
+            assert!(serde_json::from_str::<Input>(r#"{"kind":"find","key":"f"}"#).is_err());
+            #[cfg(feature = "native")]
+            {
+                let events = Input::Find {}.window_events();
+                assert_eq!(events.len(), 4);
+                let winit::event::WindowEvent::ModifiersChanged(held) = &events[0] else {
+                    panic!("the command modifier goes down first");
+                };
+                assert!(
+                    crate::platform::PlatformConventions::default()
+                        .command_modifier_down(held.state())
+                );
+                assert!(matches!(
+                    &events[3],
+                    winit::event::WindowEvent::ModifiersChanged(released) if released.state().is_empty()
+                ));
+            }
+        }
+
         {
             let scenario = parse(r#"{"name":"stroke","interval_us":8000,"steps":[{"kind":"pen_down","x":10,"y":20,"pressure":0.4},{"kind":"pen_move","x":12,"y":21,"pressure":0.9},{"kind":"pen_up","x":12,"y":21}]}"#).unwrap();
             assert!(matches!(
@@ -948,7 +966,6 @@ mod tests {
             assert!(invalid.validate().is_err());
         }
 
-        // Case `rejects_invalid_scenario_before_scheduling`.
         {
             let mut invalid = scenario();
             invalid.name = "  ".into();
@@ -985,7 +1002,6 @@ mod tests {
             }
         }
 
-        // Case `checked_timeline_rejects_overflow`.
         {
             let origin = crate::time::now();
             assert!(deadline(origin, u64::MAX, 2).is_err());

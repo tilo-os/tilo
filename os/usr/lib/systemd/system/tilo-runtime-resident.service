@@ -12,7 +12,7 @@ After=local-fs.target tilo-extension-activate.service
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/tilo-launcher runtime-resident
+ExecStart=/usr/libexec/tilo/tilo-launcher runtime-resident
 # Locking ~150 MB of file pages needs the limit raised; no capability does it.
 LimitMEMLOCK=infinity
 # Read once at boot, behind everything that is waiting on the disk.

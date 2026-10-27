@@ -83,6 +83,7 @@ impl Presence {
     }
 
     /// Hold the motion for `by` (time spent waiting on a full presenter).
+    #[track_caller]
     pub fn defer(&mut self, by: crate::time::Duration) {
         self.openness.defer(by);
     }
@@ -117,7 +118,6 @@ impl Presence {
         self.open || self.progress(now) > 0.0
     }
 
-    /// Whether it is still moving at `now`.
     #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.openness.is_moving(now)

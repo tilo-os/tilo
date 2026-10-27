@@ -17,6 +17,51 @@ use tilo_agent_participant::{Replica, Seed};
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 #[test]
+fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
+    use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
+    let catalogue = catalogue();
+    let app = "so.tilo.chat";
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let mut kept = automerge::AutoCommit::load(&snapshot).unwrap();
+    let current = stored_version(&kept);
+    assert!(current > 1, "Chat has changed its storage");
+    automerge::transaction::Transactable::put(
+        &mut kept,
+        automerge::ROOT,
+        VERSION_KEY,
+        automerge::ScalarValue::Uint(u64::from(current - 1)),
+    )
+    .unwrap();
+
+    // A host, a bot or an agent opens what the room kept: it is brought up
+    // to the app's version as a window brings it up.
+    let held = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "host",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![kept.save()],
+        },
+    )
+    .expect("an older record opens");
+    assert_eq!(held.read(stored_version), Some(current));
+}
+
+#[test]
 fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     use ui::permissions::{PermissionContext, Role};
     let catalogue = catalogue();
@@ -331,6 +376,43 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         "{key:?}"
     );
     assert_eq!((start, end), (5, 5), "a caret after its five characters");
+}
+
+/// An agent has nobody beside it to confirm a removal: one Undo takes back
+/// runs at once, so it can take back a clip it placed by mistake.
+#[test]
+fn an_agent_removes_a_clip_it_placed_without_being_asked() {
+    let mut agent = Replica::open(
+        &catalogue(),
+        "so.tilo.video-editor",
+        ROOM,
+        "editor",
+        tilo_agent_participant::ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap();
+    let mut run = |action: &str, arguments: serde_json::Value| {
+        let address = agent
+            .survey()
+            .into_iter()
+            .find(|operation| operation.address.action == action)
+            .unwrap_or_else(|| panic!("the project publishes {action}"))
+            .address;
+        let arguments = arguments.as_object().cloned().unwrap();
+        agent
+            .invoke(&address, &arguments, false)
+            .unwrap_or_else(|error| panic!("{action}: {error}"))
+            .value
+            .unwrap_or_default()
+    };
+    let media = run("add-title", serde_json::json!({ "text": "HARBOUR DAYS" }));
+    let clip = run(
+        "add-clip",
+        serde_json::json!({ "media": media["media"], "track": "V1", "at": 0, "in": 0, "out": 2 }),
+    );
+    let clip = clip["clip"].as_str().unwrap().to_owned();
+    run("remove-clip", serde_json::json!({ "clip": clip }));
+    assert!(!body(&agent).contains(&clip), "the clip is gone");
 }
 
 fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {

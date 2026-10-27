@@ -6,10 +6,16 @@ use std::{io, path::Path, sync::atomic::AtomicBool};
 pub struct ReviewedProfile {
     pub profile: Profile,
     pub label: String,
+    pub browser: crate::browser_inventory::BrowserKind,
+    pub installation: crate::browser_inventory::Installation,
+    pub exportable: bool,
     _private: (),
 }
 impl ReviewedProfile {
     pub fn validate(&self) -> io::Result<()> {
+        Err(crate::journey_media::Unsupported.into())
+    }
+    pub fn inventory(&self) -> io::Result<crate::browser_inventory::ProfileInventory> {
         Err(crate::journey_media::Unsupported.into())
     }
     #[cfg(any(test, feature = "test-support"))]

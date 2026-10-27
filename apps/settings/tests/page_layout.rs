@@ -58,7 +58,15 @@ fn walk(widget: &dyn Widget, width: f64, problems: &mut Vec<String>) {
         ));
     }
     if is_flex(widget.name()) && drawn(rect) {
-        let outer = rect.inflate(1.0, 1.0);
+        // A list row paints in its layout box grown by the row bleed (its hover
+        // and selection lift), and a control on its chevron column reaches
+        // into that bleed: the row's parts stay inside what it paints.
+        let bleed = if widget.name() == "ListRow" {
+            ui::chrome::row_bleed(&ui::Theme::dark())
+        } else {
+            0.0
+        };
+        let outer = rect.inflate(1.0 + bleed, 1.0);
         let placed: Vec<_> = children
             .iter()
             .filter(|child| drawn(child.get_rect()))

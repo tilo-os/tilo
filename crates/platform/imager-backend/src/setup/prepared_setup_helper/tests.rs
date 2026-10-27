@@ -112,6 +112,7 @@ fn headless_entry_authenticates_imports_and_retries_without_remint_or_secret_res
                 portable_home: None,
                 portable_flatpak: None,
                 browser: None,
+                mail: Vec::new(),
             }
         );
         assert!(
@@ -576,4 +577,56 @@ fn authenticate_completed_declaration_emits_exact_application_binding_without_im
     assert!(!root.join("tilo").exists());
     // This tests password-authenticated public declaration transport. Only the
     // genuine independent worker token may construct completed producer output.
+}
+
+#[test]
+fn unseal_handoff_refuses_a_sidecar_for_another_package_before_any_tpm_operation() {
+    use crate::setup::prepared_tpm::{
+        PCRS, PLATFORM_PCRS, RECEIVER_UID, SCHEMA, SealedPreparation, SignedTarget, b64,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let sidecar = directory.path().join("tpm-handoff.json");
+    let package = directory.path().join("prepared-setup.sealed");
+    fs::write(&package, b"the exact package the sidecar does not name").unwrap();
+    let policy = SignedTarget {
+        schema: SCHEMA,
+        generation: 1,
+        pcr_bank: "sha256".into(),
+        pcrs: PCRS.to_vec(),
+        platform_pcrs: PLATFORM_PCRS.to_vec(),
+        approved_policy: b64(&[1; 32]),
+        signature: b64(&[2; 256]),
+        target_uki_sha256: [3; 32],
+        authority_sha256: [4; 32],
+        label: "unseal preflight fixture".into(),
+    };
+    let mut sealed = SealedPreparation {
+        schema: SCHEMA,
+        policy,
+        source_public_key: [5; 32],
+        package_sha256: [6; 32],
+        receiver_uid: RECEIVER_UID,
+        receiver_tpm_name: b64(&[7; 32]),
+        key_name: b64(&[8; 32]),
+        sealed_public: b64(&[9; 32]),
+        sealed_private: b64(&[10; 32]),
+        policy_digest: b64(&[11; 32]),
+        seal_nonce: b64(&[12; 32]),
+        binding_sha256: String::new(),
+    };
+    sealed.seal_binding().unwrap();
+    fs::write(&sidecar, sealed.encode().unwrap()).unwrap();
+    let mut output = Vec::new();
+    let error = unseal_handoff(
+        [
+            OsString::from("--sidecar"),
+            sidecar.into_os_string(),
+            OsString::from("--package"),
+            package.into_os_string(),
+        ],
+        &mut output,
+    )
+    .expect_err("a sidecar naming another package must stop before the TPM");
+    assert!(error.to_string().contains("another package"));
+    assert!(output.is_empty());
 }

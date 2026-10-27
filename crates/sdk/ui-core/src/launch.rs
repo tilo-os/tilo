@@ -12,6 +12,20 @@ use crate::App;
 use crate::Theme;
 use crate::headless::{self, FrameHarness};
 
+#[cfg(feature = "native")]
+mod app_log;
+#[cfg(feature = "native")]
+mod capture_clock;
+mod capture_settings;
+#[cfg(feature = "native")]
+use app_log::init_app_log;
+pub use capture_settings::capture_appearance;
+#[cfg(feature = "native")]
+mod capture;
+#[cfg(feature = "native")]
+use capture::{capture_directory, capture_font_gate, first_frame};
+mod scenario;
+pub use scenario::HostSource;
 mod shot_frame;
 pub use shot_frame::ShotFrame;
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
@@ -95,6 +109,9 @@ pub struct LaunchArgs {
     /// `--history`: a capture shows History open, where the app has
     /// History.
     pub history: bool,
+    /// `--window-bar`: a capture is drawn as a desktop window shows the app,
+    /// under the window's bar with the app's slots in it.
+    pub window_bar: bool,
     /// `--search QUERY`: a capture shows this window's search open with
     /// `QUERY` typed, as the app's search launcher opens it.
     pub search: Option<String>,
@@ -179,6 +196,7 @@ pub struct LaunchSpec {
     allowed_live_options: &'static [&'static str],
     max_positionals: usize,
     scenarios: &'static [&'static str],
+    host_sources: &'static [HostSource],
     without_identity: bool,
 }
 
@@ -214,6 +232,7 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            host_sources: &[],
             without_identity: false,
         }
     }
@@ -228,13 +247,6 @@ impl LaunchSpec {
     pub fn runs_without_identity(mut self) -> Self {
         self.without_identity = true;
         self
-    }
-
-    /// Whether a launch while the workspace has no identity opens what works
-    /// without one ([`Self::runs_without_identity`]).
-    #[must_use]
-    pub fn opens_without_identity(&self) -> bool {
-        self.without_identity
     }
 
     /// The application this specification launches.
@@ -265,7 +277,8 @@ impl LaunchSpec {
     }
 
     /// Apply capture-only interactions after the normal factory and restoration.
-    /// Never runs for live/headless launches or native certification audits.
+    /// Runs for captures and for headless drives that name a scenario; never
+    /// for live launches or native certification audits.
     #[must_use]
     pub fn capture_scenario(mut self, scenario: ComponentCaptureScenario) -> Self {
         self.component_capture_scenario = Some(scenario);
@@ -291,8 +304,6 @@ impl LaunchSpec {
     }
 
     /// Prepare this definition using already authenticated host inputs.
-    /// # Errors
-    /// Returns argument, capability, binding, factory, or restoration failures.
     pub fn prepare_component(
         &self,
         args: &LaunchArgs,
@@ -413,6 +424,9 @@ pub enum LaunchError {
     HeadlessUnsupported,
     Scenario(String),
     Operation(String),
+    /// A capture would have set text in the host's faces instead of the
+    /// product's, because no root holds this build's font catalog.
+    SubstituteFont(String),
     /// The workspace the app was launched into has no identity selected, so
     /// it cannot join it. A live launch shows the window asking who is
     /// working there ([`crate::workspace_identity`]) instead of ending.
@@ -462,6 +476,7 @@ impl fmt::Display for LaunchError {
                 write!(f, "this application does not support --headless-drive")
             }
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
+            Self::SubstituteFont(problem) => write!(f, "refusing to capture: {problem}"),
             Self::IdentityRequired => f.write_str("no identity selected for this workspace"),
         }
     }
@@ -517,6 +532,7 @@ impl fmt::Debug for LaunchError {
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
             Self::IdentityRequired => f.write_str("IdentityRequired"),
+            Self::SubstituteFont(_) => f.write_str("SubstituteFont"),
         }
     }
 }
@@ -656,9 +672,6 @@ impl LaunchRecovery {
     }
 
     /// Take the owners out, on the launching thread.
-    ///
-    /// # Errors
-    /// Returns the recovery unchanged on any other thread.
     pub fn into_parts(
         mut self,
     ) -> Result<
@@ -679,17 +692,11 @@ impl LaunchRecovery {
     }
 
     /// The record store, taken out on the launching thread.
-    ///
-    /// # Errors
-    /// Returns the recovery unchanged on any other thread.
     pub fn into_record_store(self) -> Result<Option<crate::record::RecordStore>, Self> {
         self.into_parts().map(|(records, _)| records)
     }
 
     /// The close reports, taken out on the launching thread.
-    ///
-    /// # Errors
-    /// Returns the recovery unchanged on any other thread.
     pub fn into_close_reports(self) -> Result<Vec<crate::application::ComponentCloseReport>, Self> {
         self.into_parts().map(|(_, reports)| reports)
     }
@@ -750,7 +757,8 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("app-launch-start");
     tilo_process::raise_open_file_limit();
-    let _ = tracing_subscriber::fmt::try_init();
+    init_app_log();
+    crate::collaboration::install_channel_settings();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
 }
@@ -781,8 +789,9 @@ fn run_with_args_with_attachment(
         spec.max_positionals,
     )?;
     validate_spec_args(&args, spec)?;
-    // A capture shows the same date and time on every run.
-    if args.shots.is_some() || args.responsive_matrix.is_some() {
+    // A capture shows the same date and time on every run, and so does a
+    // drive built from a scenario's fixtures: it is staged as its capture.
+    if capture_clock::pins_the_clock(&args) {
         crate::clock::freeze_for_capture();
     }
     if let Some(scale) = args.device_scale {
@@ -830,20 +839,17 @@ fn capture_every_scenario(
     Ok(())
 }
 
-/// Create the directory a capture mode (`option`) writes its PNGs into.
-#[cfg(feature = "native")]
-fn capture_directory(directory: &std::path::Path, option: &str) -> Result<(), LaunchError> {
-    std::fs::create_dir_all(directory).map_err(|error| {
-        LaunchError::Operation(format!(
-            "could not create the {option} directory {}: {error}",
-            directory.display()
-        ))
-    })
-}
-
 /// Whether these arguments run the app in a live native window, rather than
 /// headless, as captures or as an audit.
 #[cfg(feature = "native")]
+/// A capture that could not set text in the product's faces is refused; on a
+/// build with no capture path there is nothing to refuse.
+#[cfg(not(feature = "native"))]
+fn capture_font_gate(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let _ = args;
+    Ok(())
+}
+
 fn opens_native_window(args: &LaunchArgs) -> bool {
     args.headless.is_none()
         && args.shots.is_none()
@@ -900,6 +906,7 @@ fn run_parsed(
     } else {
         None
     };
+    capture_font_gate(&args)?;
     if args.first_frame {
         return first_frame(spec, &args);
     }
@@ -931,7 +938,15 @@ fn run_parsed(
             let _entry = app.enter_wake_scope();
             crate::workspace_identity::await_choice();
         }
-        (*app).run();
+        if waits {
+            (*app).run();
+        } else {
+            // Later windows of this app in its room open here
+            // (`crate::window_door`), built as the first was.
+            let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
+            let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
+            (*app).run_windows(|_| {}, Some(open));
+        }
         if !crate::workspace_identity::take_chosen() {
             return Ok(());
         }
@@ -950,11 +965,17 @@ fn run_parsed(
         }
         DefinitionDispatch::Rendered(mut driver) => {
             if let Some(out) = &args.shots {
-                driver.prepare_component_output();
-                driver.render_png(out);
+                driver.write_shot(out, args.window_bar);
             } else if let Some(directory) = &args.responsive_matrix {
                 for (name, viewport) in RESPONSIVE_VIEWPORTS {
                     driver.resize_component_capture(viewport);
+                    // The frame is the window a person sees a moment after the
+                    // resize, not the first one it could draw: a scroll thumb
+                    // still fading out, or a page still drawn from the bitmap
+                    // of the width it had before, is a difference about the
+                    // capture rather than about the layout. Equal frames are
+                    // only evidence when both were taken the same moment in.
+                    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
                     driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
                 }
             }
@@ -967,61 +988,19 @@ fn run_parsed(
     Ok(())
 }
 
-/// `--first-frame`: the app constructed as a live launch constructs it, then
-/// its first frame synced, composed, laid out and drawn as its window would
-/// draw it ([`App::surface_frame`]), with no window, GPU or runtime. Prints
-/// the process's startup line (with `TILO_STARTUP_METRICS_PATH` set) and one
-/// `FIRST-FRAME-SCOPE` line per named scope the construction and the frame
-/// ran, so a cold launch can be measured one process at a time.
-#[allow(
-    clippy::print_stdout,
-    reason = "the measurement is this mode's output, as --native-audit prints its audit"
-)]
+/// The live app `args` launch, built as the process's first window was
+/// (`crate::window_door`); `None` when they launch no live window.
 #[cfg(feature = "native")]
-fn first_frame(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
-    struct Offscreen((u32, u32));
-    impl crate::app::AppSurface for Offscreen {
-        fn scale_factor(&self) -> f64 {
-            1.0
-        }
-        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
-            winit::dpi::PhysicalSize::new(self.0.0, self.0.1)
-        }
-        fn request_redraw(&self) {}
-        fn set_cursor(&self, _: winit::window::CursorIcon) {}
-    }
-    let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
-    let (constructed, construction) =
-        tilo_resource::profiling::observe(|| dispatch_definition(spec, args));
-    let DefinitionDispatch::Native(mut app) = constructed? else {
-        return Err(LaunchError::Operation(
-            "--first-frame constructs the live app".into(),
-        ));
-    };
-    tilo_startup_metrics::mark("first-frame-start");
-    let ((), frame) = tilo_resource::profiling::observe(|| {
-        let mut scene = vello::Scene::new();
-        app.surface_frame(&Offscreen(viewport), &mut scene);
-    });
-    tilo_startup_metrics::mark("first-frame-done");
-    if let Some(line) = tilo_startup_metrics::summary_line(spec.app_id) {
-        println!("{line}");
-    }
-    for (name, ns) in tilo_startup_metrics::events() {
-        println!("FIRST-FRAME-MARK name={name} us={}", ns / 1000);
-    }
-    for (stage, scopes) in [("construction", construction), ("frame", frame)] {
-        for scope in scopes {
-            println!(
-                "FIRST-FRAME-SCOPE stage={stage} phase={} us={} calls={}",
-                scope.phase,
-                scope.elapsed_ns / 1000,
-                scope.calls
-            );
-        }
-    }
-    app.close_components();
-    Ok(())
+pub(crate) fn dispatch_window(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+) -> Result<Option<App>, LaunchError> {
+    let mut args = args.clone();
+    args.positionals.clear();
+    dispatch_definition(spec, &args).map(|dispatched| match dispatched {
+        DefinitionDispatch::Native(app) => Some(*app),
+        _ => None,
+    })
 }
 
 /// Start building the process's font database in the background
@@ -1230,11 +1209,18 @@ fn dispatch_definition_with_manager(
         spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)
     })?;
     if let Some(headless) = &args.headless {
-        return Ok(DefinitionDispatch::Headless(headless::run_component(
-            headless,
-            component,
-            prepared.runner_inputs,
-        )));
+        // A drive that names a scenario was built from its fixtures; it is
+        // staged as its capture is, before the drive's actions.
+        let scenario = spec
+            .component_capture_scenario
+            .filter(|_| args.scenario.is_some());
+        return Ok(DefinitionDispatch::Headless(
+            headless::run_component_staged(headless, component, prepared.runner_inputs, |driver| {
+                scenario.map_or(Ok(()), |stage| {
+                    stage(driver, args).map_err(|e| e.to_string())
+                })
+            }),
+        ));
     }
     if args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit {
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
@@ -1333,31 +1319,7 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     if args.headless.is_some() && !spec.headless_enabled {
         return Err(LaunchError::HeadlessUnsupported);
     }
-    if let Some(scenario) = args.scenario.as_deref()
-        && !spec.scenarios.contains(&scenario)
-    {
-        return Err(LaunchError::Scenario(unknown_scenario(
-            scenario,
-            spec.scenarios,
-        )));
-    }
-    Ok(())
-}
-
-/// The refusal of an undeclared `--scenario`, listing the declared ones.
-fn unknown_scenario(name: &str, declared: &[&str]) -> String {
-    if declared.is_empty() {
-        format!("unknown screenshot scenario {name:?}; this app declares no scenarios")
-    } else {
-        format!(
-            "unknown screenshot scenario {name:?}; expected one of {}",
-            declared
-                .iter()
-                .map(|name| format!("{name:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    }
+    scenario::check(args, spec)
 }
 
 /// How long a capture waits for the window to settle (animations finished,
@@ -1381,15 +1343,20 @@ fn with_capture_letters(mut theme: Theme, explicit: Option<bool>) -> Theme {
     theme
 }
 
+/// The theme a capture asked for by name: `--theme`, else
+/// `TILO_SHOTS_THEME`.
+fn shot_theme_name(args: &LaunchArgs) -> Option<String> {
+    args.theme
+        .clone()
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
+}
+
 /// Resolve the palette, text scale, and motion policy used by screenshot
 /// capture. An explicit `--text-scale` wins over the
 /// `TILO_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = args
-        .theme
-        .clone()
-        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
+    let theme = shot_theme_name(args)
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
     // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
@@ -1397,7 +1364,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
-        .and_then(crate::tokens::PresenceHue::nearest)
+        .and_then(crate::tokens::nearest_presence_hue)
     {
         Some(hue) => theme.with_your_colour(hue),
         None => theme,
@@ -1632,6 +1599,12 @@ fn parse_args_extended(
                 }
                 parsed.history = true;
             }
+            "--window-bar" if inline.is_none() => {
+                if parsed.window_bar {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.window_bar = true;
+            }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
             crate::host_chrome::windows_items::LAUNCH_OPTION => {
@@ -1674,6 +1647,19 @@ fn parse_args_extended(
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
+    // A drive names its scenario in its spec or with `--scenario`.
+    if let Some(named) = parsed
+        .headless
+        .as_ref()
+        .and_then(|spec| spec.scenario.clone())
+    {
+        if parsed.scenario.as_ref().is_some_and(|flag| *flag != named) {
+            return Err(LaunchError::Scenario(
+                "--scenario and the drive's \"scenario\" name different scenarios".to_owned(),
+            ));
+        }
+        parsed.scenario = Some(named);
+    }
     // Every scenario is captured; naming one is a single `--shots`.
     if parsed.shots_dir.is_some() && parsed.scenario.is_some() {
         return Err(LaunchError::ConflictingModes);
@@ -1684,6 +1670,9 @@ fn parse_args_extended(
         && parsed.responsive_matrix.is_none()
     {
         return Err(LaunchError::ShotsOnly("--history".to_owned()));
+    }
+    if parsed.window_bar && parsed.shots.is_none() {
+        return Err(LaunchError::ShotsOnly("--window-bar".to_owned()));
     }
     if parsed.search.is_some()
         && parsed.shots.is_none()
@@ -1716,8 +1705,8 @@ fn parse_args_extended(
         if parsed.window.your_colour.is_some() {
             return Err(LaunchError::ShotsOnly("--your-colour".to_owned()));
         }
-        // A headless drive may name a scenario: it dumps that fixture's
-        // geometry, the counterpart of `--shots --scenario`.
+        // A headless drive may name a scenario: it is built from that
+        // scenario's fixtures and staged, as `--shots --scenario` is.
         if parsed.scenario.is_some() && parsed.headless.is_none() {
             return Err(LaunchError::ShotsOnly("--scenario".to_owned()));
         }
@@ -1820,6 +1809,26 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    /// A capture is what asks for frames or measurements; a viewport alone is
+    /// a size, and a live launch takes one too.
+    #[test]
+    fn a_capture_is_what_writes_frames() {
+        let is_capture = |argv: &[&str]| {
+            super::capture::captures_frames(&parse_args(&strings(argv), &[], &[]).unwrap())
+        };
+        assert!(is_capture(&["app", "--shots", "/tmp/a.png"]));
+        assert!(is_capture(&["app", "--shots-dir", "/tmp/dir"]));
+        assert!(is_capture(&["app", "--responsive-matrix", "/tmp/m"]));
+        assert!(is_capture(&["app", "--first-frame"]));
+        assert!(!is_capture(&["app"]));
+        // A size without a capture is not a capture, and the parser says so
+        // rather than quietly opening a window the size of a phone.
+        assert!(matches!(
+            parse_args(&strings(&["app", "--viewport=390x844"]), &[], &[]),
+            Err(LaunchError::ShotsOnly(_))
+        ));
+    }
+
     /// `run_parsed` starts the renderer preparation thread (Windows and Linux)
     /// and the runtime attachment exactly for these arguments.
     #[test]
@@ -1832,7 +1841,6 @@ mod tests {
 
     #[test]
     fn cli_parses_every_common_mode_and_preference() {
-        // Case `parses_both_common_argument_forms`.
         {
             let args = strings(&[
                 "app",
@@ -1854,7 +1862,6 @@ mod tests {
             );
         }
 
-        // Case `a_capture_can_stand_in_a_workspace_for_a_person`.
         {
             let args = strings(&[
                 "app",
@@ -1869,6 +1876,7 @@ mod tests {
                 crate::theme::WindowAppearance {
                     workspace_hue: Some(40.0),
                     your_colour: Some(crate::tokens::PresenceHue::Violet),
+                    corner_radius: None,
                 }
             );
             let theme = shot_theme(&LaunchArgs {
@@ -1886,7 +1894,6 @@ mod tests {
             }
         }
 
-        // Case `parses_responsive_matrix_and_pseudo_locale_as_common_audit_modes`.
         {
             let parsed = parse_args(
                 &strings(&[
@@ -1906,7 +1913,6 @@ mod tests {
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
         }
 
-        // Case `a_capture_takes_a_device_scale_and_the_distinct_letters_setting`.
         {
             let parsed = parse_args(
                 &strings(&[
@@ -1953,7 +1959,6 @@ mod tests {
             }
         }
 
-        // Case `shots_dir_captures_every_scenario_and_names_none`.
         {
             let parsed = parse_args(
                 &strings(&["app", "--shots-dir", "/tmp/gallery", "--viewport=640x480"]),
@@ -1974,7 +1979,6 @@ mod tests {
             }
         }
 
-        // Case `parses_headless_payload_without_process_exit`.
         {
             let args = strings(&[
                 "app",
@@ -1987,7 +1991,21 @@ mod tests {
             assert_eq!(spec.actions.len(), 1);
         }
 
-        // Case `parses_native_audit_as_an_exclusive_common_mode`.
+        // A drive names its scenario in its spec, or with the same flag.
+        {
+            let drive = |extra: &[&str]| {
+                let mut args = vec!["app", "--headless-drive", r#"{"scenario":"wide"}"#];
+                args.extend(extra);
+                parse_args(&strings(&args), &[], &[])
+            };
+            assert_eq!(drive(&[]).unwrap().scenario.as_deref(), Some("wide"));
+            assert!(drive(&["--scenario=wide"]).is_ok());
+            assert!(matches!(
+                drive(&["--scenario=tall"]),
+                Err(LaunchError::Scenario(_))
+            ));
+        }
+
         {
             let parsed = parse_args(
                 &strings(&[
@@ -2026,7 +2044,6 @@ mod tests {
             ));
         }
 
-        // Case `screenshot_text_scale_prefers_cli_then_compatibility_environment`.
         {
             for (cli, environment, expected) in [
                 (Some(2.0), Some("1.25"), 2.0),
@@ -2038,7 +2055,6 @@ mod tests {
             }
         }
 
-        // Case `screenshot_motion_preference_matches_live_app_truthy_values`.
         {
             for value in ["", "  ", "0", " false ", "FALSE"] {
                 assert!(
@@ -2057,7 +2073,6 @@ mod tests {
 
     #[test]
     fn cli_rejects_malformed_unknown_and_conflicting_arguments() {
-        // Case `rejects_malformed_and_zero_viewports`.
         {
             for value in ["wide", "800", "0x600", "800x0", "800xnope"] {
                 let args = strings(&["app", "--viewport", value]);
@@ -2068,7 +2083,6 @@ mod tests {
             }
         }
 
-        // Case `rejects_invalid_text_scales`.
         {
             for value in ["nope", "NaN", "0", "0.5", "2.1"] {
                 let args = strings(&["app", "--text-scale", value]);
@@ -2079,7 +2093,6 @@ mod tests {
             }
         }
 
-        // Case `rejects_unknown_missing_and_duplicate_arguments`.
         {
             assert!(matches!(
                 parse_args(&strings(&["app", "--mystery"]), &[], &[]),
@@ -2095,7 +2108,6 @@ mod tests {
             ));
         }
 
-        // Case `history_is_a_capture_option`.
         {
             let shot = parse_args(
                 &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
@@ -2107,6 +2119,12 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--history"]), &[], &[]),
                 Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
+            ));
+            let framed = strings(&["app", "--shots", "/tmp/a.png", "--window-bar"]);
+            assert!(parse_args(&framed, &[], &[]).unwrap().window_bar);
+            assert!(matches!(
+                parse_args(&strings(&["app", "--window-bar"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--window-bar"
             ));
             let shot = parse_args(
                 &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
@@ -2121,7 +2139,6 @@ mod tests {
             ));
         }
 
-        // Case `rejects_conflicting_modes_and_shot_options_in_live_mode`.
         {
             let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
             assert!(matches!(
@@ -2682,8 +2699,6 @@ mod tests {
         ))
     }
 
-    // USER REQUIREMENT (2026-10-19): "An app never exits because no identity
-    // is selected." and "It shows the app's window with an EmptyState".
     #[test]
     #[cfg(feature = "native")]
     fn a_launch_with_no_identity_selected_keeps_its_window_open_on_choosing_one() {
@@ -2772,7 +2787,7 @@ mod prepared_launch_tests {
         Ok(())
     }
 
-    fn prepare(
+    pub(super) fn prepare(
         definition: &crate::application::ApplicationDefinition,
         args: &LaunchArgs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
@@ -2938,7 +2953,6 @@ mod prepared_launch_tests {
 
     #[test]
     fn definition_preparation_resolves_wakes_scale_and_services_once() {
-        // Case `definition_final_audit_and_shot_preparation_resolve_queued_component_wakes`.
         {
             for mode in ["audit", "shots"] {
                 let temp = tempfile::tempdir().unwrap();
@@ -3023,7 +3037,6 @@ mod prepared_launch_tests {
             }
         }
 
-        // Case `definition_text_scale_overrides_before_all_runner_layouts`.
         {
             for mode in ["native", "headless", "shots", "matrix", "audit"] {
                 for cli_scale in [None, Some("0.75")] {
@@ -3083,7 +3096,6 @@ mod prepared_launch_tests {
             }
         }
 
-        // Case `native_services_are_discovered_only_by_the_selected_native_runner`.
         {
             for enabled in [false, true] {
                 for mode in ["native", "headless", "shots", "matrix", "audit"] {
@@ -3217,7 +3229,6 @@ mod prepared_launch_tests {
 
     #[test]
     fn definition_failures_keep_typed_errors_and_the_original_retry() {
-        // Case `definition_missing_host_fails_before_factory`.
         {
             let before = calls();
             let spec = LaunchSpec::from_definition(runner_probe_definition());
@@ -3229,7 +3240,6 @@ mod prepared_launch_tests {
             assert_eq!(calls(), before);
         }
 
-        // Case `capture_scenario_failure_closes_component_and_retains_failed_save_retry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
@@ -3292,7 +3302,6 @@ mod prepared_launch_tests {
             records.try_open_record(&checkout).unwrap();
             assert_eq!(body(&records, &checkout), "edited");
         }
-        // Case `definition_denied_and_invalid_preparation_preserve_typed_errors`.
         {
             static DENIED: std::sync::OnceLock<crate::application::ApplicationDefinition> =
                 std::sync::OnceLock::new();
@@ -3335,7 +3344,6 @@ mod prepared_launch_tests {
             }
         }
 
-        // Case `definition_headless_state_open_failure_is_durability_exit_with_original_bytes`.
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
@@ -3385,7 +3393,6 @@ mod prepared_launch_tests {
             assert_eq!(std::fs::read(&path).unwrap(), original);
         }
 
-        // Case `definition_audit_close_failure_is_operational_and_retains_original_retry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");

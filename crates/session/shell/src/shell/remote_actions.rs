@@ -149,7 +149,8 @@ impl BrokerActionHost {
             // their ordinary door; never sign their displayed actor text.
             return Ok(None);
         };
-        if let Some(session) = self.retained_session(caller)? {
+        let retained = self.retained_session(caller)?;
+        if let Some(session) = retained {
             return if session.has_certificate(&certificate) {
                 Ok(Some(session))
             } else {
@@ -323,8 +324,12 @@ impl ActionHost for BrokerActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        match self.retained_session(caller)? {
+    ) -> Pending<Result<(), ActionHostError>> {
+        let retained = match self.retained_session(caller) {
+            Ok(retained) => retained,
+            Err(error) => return Pending::ready(Err(error)),
+        };
+        match retained {
             Some(session) => {
                 let (host, certified) = session.host_and_caller();
                 host.cancel(certified, id)
@@ -347,6 +352,10 @@ impl ActionHost for BrokerActionHost {
                 host.broker.state().request_witness(&caller, None, &request)
             }
         })
+    }
+
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.broker.state().content_puts()
     }
 }
 
@@ -409,7 +418,7 @@ mod tests {
     ) {
         let mut workspace = Workspace::new(WorkspaceId(41), "Remote room");
         workspace.set_owner("a1".repeat(32));
-        let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
+        let route = CrdtRoute::app("so.tilo.files", workspace.room().to_string());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let broker = crate::shell::broker_services::test_broker_with_membership(tree.shared());
@@ -489,6 +498,7 @@ mod tests {
         struct WorkerOnly {
             ui_thread: std::thread::ThreadId,
             calls: std::sync::atomic::AtomicUsize,
+            on_ui_thread: std::sync::atomic::AtomicBool,
         }
         impl tilo_action_broker::services::LocalPersonServices for WorkerOnly {
             fn certificate(
@@ -496,7 +506,10 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<tilo_user_identity::DeviceCert, String> {
-                assert_ne!(std::thread::current().id(), self.ui_thread);
+                if std::thread::current().id() == self.ui_thread {
+                    self.on_ui_thread
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 self.calls
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Err("seat refused".into())
@@ -505,6 +518,7 @@ mod tests {
         let service = Arc::new(WorkerOnly {
             ui_thread: std::thread::current().id(),
             calls: std::sync::atomic::AtomicUsize::new(0),
+            on_ui_thread: std::sync::atomic::AtomicBool::new(false),
         });
         let broker =
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
@@ -532,6 +546,12 @@ mod tests {
             Err(ActionHostError::NotPermitted)
         ));
         assert_eq!(service.calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert!(
+            !service
+                .on_ui_thread
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "the certificate is never resolved on the calling thread"
+        );
     }
 
     #[test]
@@ -566,7 +586,7 @@ mod tests {
         let id = tilo_actions::InvocationId::new();
         assert!(host.observe(&native, &id).is_none());
         assert!(host.next_change(&native, &id).is_none());
-        let _ = host.cancel(&native, &id);
+        drop(host.cancel(&native, &id));
         assert_eq!(
             service.0.load(Ordering::Relaxed),
             0,
@@ -806,10 +826,19 @@ mod tests {
             assert_eq!(host.observe(&stranger(), &id), None);
 
             assert_eq!(
-                host.cancel(&stranger(), &id),
+                host.cancel(&stranger(), &id)
+                    .wait_timeout(std::time::Duration::from_secs(30))
+                    .ok()
+                    .flatten()
+                    .expect("the host answers"),
                 Err(ActionHostError::UnknownInvocation)
             );
-            host.cancel(&owner(), &id).expect("owner cancels");
+            host.cancel(&owner(), &id)
+                .wait_timeout(std::time::Duration::from_secs(30))
+                .ok()
+                .flatten()
+                .expect("the host answers")
+                .expect("owner cancels");
         }
     }
 }

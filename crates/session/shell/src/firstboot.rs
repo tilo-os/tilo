@@ -17,8 +17,8 @@ use std::time::Duration;
 use tilo_identity_host::provisioning::IdentityStorage;
 pub use tilo_identity_host::provisioning::{
     PRIMARY_IDENTITY_FILE, ProvisionOutcome, collaboration_identity_paths,
-    ensure_device_certificate_for_record, login_account_display_name, prepare_identity_directory,
-    verify_collaboration_identity,
+    device_certificate_clock_refusal, ensure_device_certificate_for_record,
+    login_account_display_name, prepare_identity_directory, verify_collaboration_identity,
 };
 use tilo_user_identity::IdentityPaths;
 
@@ -56,6 +56,27 @@ pub fn ensure_collaboration_identity(
     )
 }
 
+/// [`ensure_collaboration_identity`] for an identity that already exists,
+/// then whether this device's certificate is valid at the clock's reading.
+/// A certificate refused for the clock alone is reported as a
+/// [`tilo_user_identity::CertificateClockError`]: the identity is intact and
+/// the session waits for the clock, whether this device is the identity's
+/// first or one joined later.
+///
+/// # Errors
+///
+/// As [`ensure_collaboration_identity`], and the clock refusal.
+pub fn verify_existing_collaboration_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    let outcome = ensure_collaboration_identity(identity_dir, paths)?;
+    match device_certificate_clock_refusal(paths, tilo_clock::unix_now_ns()) {
+        Some(refusal) => Err(refusal.into_io()),
+        None => Ok(outcome),
+    }
+}
+
 /// Provision the native device with its authenticated installer name.
 ///
 /// # Errors
@@ -71,6 +92,105 @@ pub fn ensure_collaboration_identity_with_device_label(
         IDENTITY_STORAGE,
         label,
     )
+}
+
+/// The identity whose certificates this session renews, once
+/// [`keep_device_certificates_renewed`] started. Held while renewing, so
+/// renewals are made one at a time.
+static RENEWING: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Keep this device's expiring certificates for the identity in
+/// `identity_dir` renewed while the session runs
+/// ([`tilo_identity_host::provisioning::keep_device_certificates_renewed`]),
+/// on a thread of its own that sleeps until the next one is due. Started
+/// once per session; a session whose certificates never expire ends it at
+/// once. Called again, as when custody is provisioned anew, it tells a
+/// renewal waiting on what it failed on that custody changed.
+pub fn keep_device_certificates_renewed(identity_dir: &Path) {
+    use tilo_identity_host::provisioning::RENEWAL_CAUSES;
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        RENEWAL_CAUSES.changed();
+        return;
+    }
+    *RENEWING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(identity_dir.to_path_buf());
+    let identity_dir = identity_dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("tilo-device-certificate-renewal".into())
+        .spawn(move || {
+            let paths = collaboration_identity_paths();
+            tilo_identity_host::provisioning::keep_device_certificates_renewed(
+                &identity_dir,
+                &paths,
+                &SystemRenewalClock,
+                || {
+                    let _renewing = RENEWING
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    renew_device_certificates(&identity_dir, &paths)
+                },
+            );
+        });
+    if let Err(error) = spawned {
+        STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        tracing::warn!(%error, "could not start renewing this device's certificate");
+    }
+}
+
+/// Renew this device's certificates now when one is due, before something
+/// presents it to a host: a device that slept past the time it was due
+/// presents the renewal, not the certificate the host would refuse. Does
+/// nothing before [`keep_device_certificates_renewed`] started.
+///
+/// # Errors
+///
+/// As the provisioning that renews them.
+pub fn renew_due_device_certificates() -> std::io::Result<()> {
+    let renewing = RENEWING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(identity_dir) = renewing.as_deref() else {
+        return Ok(());
+    };
+    let paths = collaboration_identity_paths();
+    let renewed =
+        if tilo_identity_host::provisioning::next_device_certificate_renewal(identity_dir, &paths)
+            .is_some_and(|due| due <= tilo_clock::unix_now_ns())
+        {
+            renew_device_certificates(identity_dir, &paths)
+        } else {
+            Ok(())
+        };
+    drop(renewing);
+    renewed
+}
+
+/// Reissue what is due of this device's certificates for the identity in
+/// `identity_dir`, through the provisioning the session started with.
+fn renew_device_certificates(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
+    if tilo_identity_host::provisioning::is_throwaway_test_identity(identity_dir) {
+        ensure_throwaway_test_identity(identity_dir, paths).map(drop)
+    } else {
+        ensure_collaboration_identity(identity_dir, paths).map(drop)
+    }
+}
+
+/// The wall clock a running session renews its certificates by, and the
+/// changes it waits on ([`tilo_identity_host::provisioning::RENEWAL_CAUSES`]).
+struct SystemRenewalClock;
+impl tilo_identity_host::provisioning::RenewalClock for SystemRenewalClock {
+    fn now_ns(&self) -> u64 {
+        tilo_clock::unix_now_ns()
+    }
+    fn changes(&self) -> u64 {
+        tilo_identity_host::provisioning::RENEWAL_CAUSES.seen()
+    }
+    fn wait(&self, duration: Option<Duration>, seen: u64) -> bool {
+        tilo_identity_host::provisioning::RENEWAL_CAUSES.wait_past(seen, duration);
+        true
+    }
 }
 
 /// [`tilo_identity_host::provisioning::ensure_throwaway_test_identity`] in

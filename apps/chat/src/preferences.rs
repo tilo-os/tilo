@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
 
-/// The person's own Chat preferences.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatPreferences {
     /// The categories folded in the sidebar, by id.

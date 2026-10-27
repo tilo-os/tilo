@@ -375,9 +375,6 @@ impl<T> Clone for WakingSender<T> {
 impl<T> WakingSender<T> {
     /// Queue `message` and wake the owner to take it. A gone receiver (the
     /// window closed) is an error.
-    ///
-    /// # Errors
-    /// The message back when the receiving end is gone.
     pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
         self.sender.send(message)?;
         self.wake.wake();
@@ -438,7 +435,6 @@ mod tests {
 
     #[test]
     fn wakes_coalesce_before_binding_and_bind_only_once() {
-        // Case `queue_notifications_preserve_model_dirty_wakes_before_binding`.
         {
             for model_changed in [false, true] {
                 let mut scope = WakeScope::new();
@@ -459,7 +455,6 @@ mod tests {
             }
         }
 
-        // Case `pending_wakes_coalesce_before_the_sink_is_bound`.
         {
             let mut scope = WakeScope::new();
             let worker = scope.handle();
@@ -482,7 +477,6 @@ mod tests {
             assert!(scope.accepts(&rx.try_recv().unwrap()));
         }
 
-        // Case `binding_twice_cannot_replace_the_destination`.
         {
             let (mut scope, rx) = bound_scope();
             assert_eq!(
@@ -548,7 +542,6 @@ mod tests {
 
     #[test]
     fn handles_keep_their_owner_and_never_keep_a_scope_alive() {
-        // Case `captured_handles_keep_their_owner_across_threads_and_other_hosts`.
         {
             let (mut a, a_rx) = bound_scope();
             let (b, b_rx) = bound_scope();
@@ -570,7 +563,6 @@ mod tests {
             assert!(b.accepts(&b_rx.try_recv().unwrap()));
         }
 
-        // Case `detached_handles_never_attach_to_a_later_host`.
         {
             let detached = WakeHandle::new();
             let (scope, rx) = bound_scope();
@@ -586,7 +578,6 @@ mod tests {
             assert!(scope.accepts(&rx.try_recv().unwrap()));
         }
 
-        // Case `construction_under_a_dropped_owner_stays_closed_not_detached`.
         {
             let scope = WakeScope::new();
             let entry = scope.enter();
@@ -598,7 +589,6 @@ mod tests {
             assert!(WakeHandle::new().is_active());
         }
 
-        // Case `workers_and_queued_events_do_not_keep_a_scope_or_sink_alive`.
         {
             let resource = Arc::new(());
             let weak_resource = Arc::downgrade(&resource);
@@ -650,7 +640,6 @@ mod tests {
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
             assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
 
-            // Nested construction captures the inner route, then restores outer.
             let outer = {
                 let _entry = scope.enter();
                 let outer = WakeHandle::new();
@@ -736,7 +725,6 @@ mod tests {
 
     #[test]
     fn closing_rejects_stale_events_without_blocking_or_holding_the_lock() {
-        // Case `a_closed_mount_and_its_replacement_reject_the_old_queued_event`.
         {
             let (mut old, rx) = bound_scope();
             let old_handle = old.handle();
@@ -753,7 +741,6 @@ mod tests {
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
         }
 
-        // Case `close_does_not_wait_for_an_already_authorized_operation`.
         {
             let mut scope = WakeScope::new();
             let handle = scope.handle();
@@ -764,7 +751,6 @@ mod tests {
             scope.close(); // idempotent
         }
 
-        // Case `callbacks_run_outside_the_route_lock`.
         {
             let mut scope = WakeScope::new();
             let reentrant_handle = scope.handle();
@@ -787,7 +773,6 @@ mod tests {
 
     #[test]
     fn entry_masks_and_restores_the_outer_context_even_on_unwind() {
-        // Case `nested_entry_and_unwind_restore_the_previous_context`.
         {
             let (a, a_rx) = bound_scope();
             let (b, b_rx) = bound_scope();
@@ -808,7 +793,6 @@ mod tests {
             assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
         }
 
-        // Case `detached_entry_masks_an_outer_scope_and_restores_it`.
         {
             let (outer, rx) = bound_scope();
             let _outer = outer.enter();
@@ -826,7 +810,6 @@ mod tests {
             assert!(outer.accepts(&rx.try_recv().unwrap()));
         }
 
-        // Case `detached_entry_restores_an_outer_scope_after_unwind`.
         {
             let (outer, rx) = bound_scope();
             let _outer = outer.enter();

@@ -146,7 +146,6 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         live.set_modifiers(&["ctrl".into()]);
         live.key("Enter");
         live.set_modifiers(&[]);
-        // An empty nested paragraph provides a keyboard route out of the item.
         live.key("Enter");
         let outside = f
             .records

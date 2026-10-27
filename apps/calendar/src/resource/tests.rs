@@ -365,64 +365,39 @@ fn the_sample_calendar_opens_with_its_curated_notes() {
     assert!(notes.contains("Confirm the launch timeline."), "{notes}");
 }
 
+/// The view the window bar's switcher shows chosen.
+fn bar_view() -> Option<String> {
+    ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.views)
+        .map(|views| views.chosen)
+}
+
+/// Choose `view` in the window bar's switcher, as the desktop hands the
+/// press to the app, and let the app apply it.
+fn choose_view_in_bar(app: &mut TestApp<CalendarShell>, view: crate::model::View) {
+    let slot = crate::window_bar::view_slot(view);
+    assert!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.views)
+            .is_some_and(|views| views.choices.iter().any(|choice| choice.id == slot)),
+        "the window bar's switcher offers {slot}"
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: slot });
+    app.settle();
+}
+
+/// The views are the window bar's switcher: choosing one there navigates
+/// the live window at once and is no edit of the shared calendar.
 #[test]
-fn painted_view_strip_swipes_invoke_live_navigation_and_preserve_document() {
-    use winit::event::TouchPhase::{Cancelled, Ended, Started};
-    fn control(node: &ui::headless::InspectionNode, target: &str) -> Option<ui::a11y::AccessNode> {
-        fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
-            if node.action_target.as_deref() == Some(target) {
-                return Some(node.clone());
-            }
-            node.children.iter().find_map(|child| find(child, target))
-        }
-        node.semantics
-            .as_ref()
-            .and_then(|node| find(node, target))
-            .or_else(|| {
-                node.children
-                    .iter()
-                    .find_map(|child| control(child, target))
-            })
-    }
+fn the_bars_view_switcher_navigates_live_and_preserves_document() {
+    use crate::model::View;
     let mut app = TestApp::<CalendarShell>::new().unwrap();
     app.settle();
     let before = app.peer_document().get_heads();
-    let start = control(&app.harness().inspection().root, "calendar.view:week")
-        .unwrap()
-        .bounds
-        .unwrap()
-        .to_rect()
-        .center();
-    app.harness().touch(1, Started, start.x, start.y);
-    app.harness().touch(1, Ended, start.x - 90.0, start.y);
-    app.settle();
-    assert_eq!(
-        control(&app.harness().inspection().root, "calendar.view:week")
-            .unwrap()
-            .state
-            .checked,
-        Some(true)
-    );
-    app.harness().touch(2, Started, start.x, start.y);
-    app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
-    app.settle();
-    assert_eq!(
-        control(&app.harness().inspection().root, "calendar.view:week")
-            .unwrap()
-            .state
-            .checked,
-        Some(true)
-    );
-    app.harness().touch(3, Started, start.x, start.y);
-    app.harness().touch(3, Ended, start.x + 90.0, start.y);
-    app.settle();
-    assert_eq!(
-        control(&app.harness().inspection().root, "calendar.view:month")
-            .unwrap()
-            .state
-            .checked,
-        Some(true)
-    );
+    choose_view_in_bar(&mut app, View::Week);
+    assert_eq!(bar_view(), Some(crate::window_bar::view_slot(View::Week)));
+    choose_view_in_bar(&mut app, View::Month);
+    assert_eq!(bar_view(), Some(crate::window_bar::view_slot(View::Month)));
     assert_eq!(app.peer_document().get_heads(), before);
     assert!(!app.undo(), "view changes create no document undo step");
 }
@@ -498,6 +473,60 @@ fn agents_reach_every_item_verb_and_the_calendars() {
         .is_err(),
         "an event does not end before it starts"
     );
+}
+
+#[test]
+fn a_new_project_takes_the_next_colour_no_project_has() {
+    let mut calendar = Replica::<Calendar>::new();
+    let colours = |calendar: &Replica<Calendar>| -> Vec<Palette> {
+        calendar
+            .state()
+            .unwrap()
+            .projects
+            .iter()
+            .map(|project| project.color)
+            .collect()
+    };
+    for name in ["Work", "Personal", "Health"] {
+        calendar
+            .apply(Calendar::NEW_PROJECT.with(calendar::NewProject { name: name.into() }))
+            .unwrap();
+    }
+    assert_eq!(
+        colours(&calendar),
+        [Palette::Indigo, Palette::Emerald, Palette::Amber],
+        "each new project has its own colour"
+    );
+
+    // A colour a project gave up is the next one handed out.
+    let personal = calendar.state().unwrap().projects[1].id;
+    calendar
+        .apply_confirmed(Calendar::DELETE_PROJECT.with(key(personal)))
+        .unwrap();
+    calendar
+        .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
+            name: "Garden".into(),
+        }))
+        .unwrap();
+    assert!(colours(&calendar).contains(&Palette::Emerald));
+
+    // With every colour taken, the next goes round again.
+    for index in 0..Palette::ALL.len() - 3 {
+        calendar
+            .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
+                name: format!("Project {index}"),
+            }))
+            .unwrap();
+    }
+    let mut taken = colours(&calendar);
+    taken.sort_by_key(|palette| palette.index());
+    assert_eq!(taken, Palette::ALL, "every colour once before any twice");
+    calendar
+        .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
+            name: "One more".into(),
+        }))
+        .unwrap();
+    assert_eq!(colours(&calendar).last(), Some(&Palette::Indigo));
 }
 
 /// What is more than setting a field: a task's steps go with it, a deleted
@@ -726,16 +755,16 @@ fn calendar_display_choices_are_personal_settings() {
         .a11y_nodes()
         .into_iter()
         .find(|(_, node)| {
-            node.role() == ui::accesskit::Role::CheckBox
-                && node
-                    .label()
-                    .is_some_and(|label| label.contains(name.as_str()))
+            node.role() == ui::accesskit::Role::TreeItem
+                && node.toggled().is_some()
+                && node.label() == Some(name.as_str())
         })
         .map(|(id, _)| id)
-        .expect("the calendar's visibility checkbox");
+        .expect("the calendar's checked row in the sidebar");
     app.harness()
-        .perform_a11y_action(checkbox, &ui::a11y::Action::ToggleCheck)
-        .expect("toggle the checkbox");
+        .perform_a11y_action(checkbox, &ui::a11y::Action::Activate)
+        .expect("check the row");
+    app.settle();
     let display = app.settings::<crate::display::CalendarDisplay>().get();
     assert_eq!(display.visible.get(&calendar), Some(&false));
     assert!(
@@ -822,7 +851,7 @@ mod person_accounts {
 mod tasks_screen {
     use super::*;
     use tilo_actions::{ActionKind, OperationKind, RetryPolicy};
-    use ui::accesskit::{Node, NodeId, Role, Toggled};
+    use ui::accesskit::{Node, NodeId, Role};
 
     /// Effects run only in live mode; captures withhold effect runners.
     /// Seed the live test record through its published door.
@@ -858,6 +887,20 @@ mod tasks_screen {
             .a11y_nodes()
             .into_iter()
             .find(|(_, node)| node.label() == Some(name))
+    }
+
+    /// Choose the sidebar's place `name`, as a screen reader does.
+    fn choose_place(app: &mut TestApp<CalendarShell>, name: &str) {
+        let (id, _) = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == Role::TreeItem && node.label() == Some(name))
+            .unwrap_or_else(|| panic!("no place named {name} in the sidebar"));
+        app.harness()
+            .perform_a11y_action(id, &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("choose {name}: {error:?}"));
+        app.settle();
     }
 
     fn activate(app: &mut TestApp<CalendarShell>, name: &str) {
@@ -979,10 +1022,16 @@ mod tasks_screen {
         let mut app = sample_calendar();
         assert!(task_list(&mut app).is_none(), "Month shows no task list");
         assert!(
-            named(&mut app, "Tasks view").is_some(),
+            ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.views)
+                .is_some_and(|views| views
+                    .choices
+                    .iter()
+                    .any(|choice| choice.id
+                        == crate::window_bar::view_slot(crate::model::View::Tasks))),
             "the bar's Tasks tab is not the task list"
         );
-        activate(&mut app, "Show tasks in Today");
+        choose_place(&mut app, "Today");
 
         app.call("show-tasks", serde_json::json!({}))
             .expect("show-tasks");
@@ -1010,11 +1059,10 @@ mod tasks_screen {
         for (item, title) in items.iter().zip(&inbox) {
             assert!(item.starts_with(title.as_str()), "{item} names {title}");
         }
-        let (_, tab) = named(&mut app, "Tasks view").expect("the Tasks tab");
         assert_eq!(
-            tab.toggled(),
-            Some(Toggled::True),
-            "the Tasks tab is chosen"
+            bar_view(),
+            Some(crate::window_bar::view_slot(crate::model::View::Tasks)),
+            "the bar's Tasks tab is chosen"
         );
 
         for view in ["month", "week", "day", "agenda"] {
@@ -1032,8 +1080,8 @@ mod tasks_screen {
     #[test]
     fn the_tasks_tab_and_show_tasks_reach_the_same_list() {
         let mut by_tab = sample_calendar();
-        activate(&mut by_tab, "Show tasks in Inbox");
-        activate(&mut by_tab, "Tasks view");
+        choose_place(&mut by_tab, "Inbox");
+        choose_view_in_bar(&mut by_tab, crate::model::View::Tasks);
         let mut by_action = sample_calendar();
         by_action
             .call("show-tasks", serde_json::json!({}))
@@ -1074,6 +1122,83 @@ mod tasks_screen {
         );
         assert!(app.undo(), "adding a task is one undo step");
         assert!(app.state().tasks.is_empty());
+    }
+
+    /// A task the room refuses is withdrawn, and the status that said it
+    /// was added says the room did not keep it instead.
+    #[test]
+    fn a_task_the_room_refuses_is_not_said_to_be_added() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        app.shared_in_room().expect("shared");
+        app.call("show-tasks", serde_json::json!({}))
+            .expect("show-tasks");
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        activate(&mut app, "Add a task to Inbox");
+        app.harness().type_text("Buy milk");
+        app.harness().key("Enter");
+        app.settle();
+        assert!(app.room_publishes().expect("published"));
+        assert!(
+            named(&mut app, "Added Buy milk").is_none(),
+            "nothing is said done before the room answers"
+        );
+        let changes: Vec<[u8; 32]> = app.read_document(|doc| {
+            let mut doc = doc.clone();
+            doc.get_changes(&heads)
+                .into_iter()
+                .map(|change| change.hash().0)
+                .collect()
+        });
+        assert!(
+            app.refused_by_room(&changes, "This room doesn't allow that.")
+                .unwrap()
+        );
+        app.room_keeps();
+        assert!(app.state().tasks.is_empty(), "the refused task is gone");
+        assert!(named(&mut app, "Added Buy milk").is_none());
+        assert!(
+            named(
+                &mut app,
+                "Calendar didn't keep that: This room doesn't allow that."
+            )
+            .is_some(),
+            "the status says the room refused it"
+        );
+    }
+
+    /// In a calendar a room decides, a new task is said added only once the
+    /// room kept it, not when this device applied it.
+    #[test]
+    fn a_task_is_said_added_once_the_room_keeps_it() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        app.shared_in_room().expect("shared");
+        app.call("show-tasks", serde_json::json!({}))
+            .expect("show-tasks");
+        activate(&mut app, "Add a task to Inbox");
+        app.harness().type_text("Buy milk");
+        app.harness().key("Enter");
+        app.settle();
+        assert!(app.room_publishes().expect("published"));
+        assert!(named(&mut app, "Added Buy milk").is_none());
+        app.room_keeps();
+        assert!(
+            named(&mut app, "Added Buy milk").is_some(),
+            "the room kept it: it is said done"
+        );
+    }
+
+    /// In a calendar nobody else decides, a new task is said added at once.
+    #[test]
+    fn a_task_on_this_device_alone_is_said_added_at_once() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        app.call("show-tasks", serde_json::json!({}))
+            .expect("show-tasks");
+        activate(&mut app, "Add a task to Inbox");
+        app.harness().type_text("Buy milk");
+        app.harness().key("Enter");
+        app.settle();
+        app.settle();
+        assert!(named(&mut app, "Added Buy milk").is_some());
     }
 }
 
@@ -1117,4 +1242,68 @@ fn the_calendar_reads_its_events_and_one_in_full() {
         app.call("read", serde_json::json!({ "item": "nothing" }))
             .is_err()
     );
+}
+
+/// Moving an event's start keeps how long it lasts.
+#[test]
+fn set_start_moves_an_event_keeping_its_length() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    app.invoke(new_event(
+        "Planning",
+        "2026-09-08T09:00",
+        "2026-09-08T10:30",
+    ))
+    .expect("create");
+    let event = state_of(&app).events[0].clone();
+    app.call_on(
+        &crate::actions::event_resource_id(event.id),
+        "set-start",
+        serde_json::json!({ "start": "2026-09-10T14:00:00" }),
+    )
+    .expect("set-start");
+    let moved = state_of(&app).event(event.id).expect("event").clone();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+    assert_eq!(moved.start, at(day, 14, 0));
+    assert_eq!(moved.end, at(day, 15, 30));
+}
+
+/// An agent keeps the calendar, or one event, as an `.ics` in the room's
+/// content, without the attended file chooser Export ICS opens.
+#[test]
+fn export_ics_content_keeps_the_calendar_or_one_event_as_content() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    for (title, start, end) in [
+        ("Standup", "2026-09-08T09:00", "2026-09-08T09:15"),
+        ("Review", "2026-09-09T13:00", "2026-09-09T14:00"),
+    ] {
+        app.invoke(new_event(title, start, end)).expect("create");
+    }
+    let text = |app: &TestApp<CalendarShell>, answer: &serde_json::Value| {
+        let hash = ui::tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
+        String::from_utf8(app.content().read(hash).unwrap()).unwrap()
+    };
+    let all = app
+        .call("export-ics-content", serde_json::json!({}))
+        .expect("export")
+        .expect("an answer");
+    assert_eq!(all["events"], 2);
+    let ics = text(&app, &all);
+    assert!(ics.starts_with("BEGIN:VCALENDAR"), "{ics}");
+    assert!(ics.contains("SUMMARY:Standup") && ics.contains("SUMMARY:Review"));
+    let review = state_of(&app)
+        .events
+        .iter()
+        .find(|event| event.title == "Review")
+        .expect("review")
+        .id;
+    let one = app
+        .call(
+            "export-ics-content",
+            serde_json::json!({ "event": review.to_string() }),
+        )
+        .expect("export one")
+        .expect("an answer");
+    assert_eq!(one["events"], 1);
+    let ics = text(&app, &one);
+    assert!(ics.contains("SUMMARY:Review") && !ics.contains("SUMMARY:Standup"));
 }

@@ -3,6 +3,8 @@ discord-empty-body = Bridge a server with the Discord Bridge bot and its channel
 discord-bridge-server = Bridge a server
 discord-status-importing = Bringing in the server's channels. Nothing changes in Discord.
 discord-status-bridged = Messages go both ways between this room's Chat and the server.
+discord-voice-problem = Calls in the voice channels don't reach Discord: { $problem }
+discord-emoji-problem = The workspace's emoji don't reach Discord: { $problem }
 discord-channels = { $count ->
     [one] 1 channel
    *[other] { $count } channels
@@ -12,9 +14,13 @@ discord-linked-accounts = { $count ->
    *[other] { $count } linked accounts
 }
 discord-your-account = Your Discord account
-discord-link-explanation = Link your account so what you write in Discord shows up as you here.
-discord-link-account = Link my Discord account
-discord-link-code = In Discord, type /link with this code. It works for 10 minutes.
+discord-link-explanation = Link your Discord account from your profile card, or type /link in the Discord server, so what you write there shows up as you here.
+discord-link-elsewhere = In the Discord server, type /link to link from there.
+discord-offer-gone = This link was already used or has run out. Start again: type /link in the Discord server, or choose Connect Discord.
+discord-offer-expired = This link ran out after 10 minutes. Start again: type /link in the Discord server, or choose Connect Discord.
+discord-offer-not-yours = This link was started by another Tilo account. Sign in as that account, or start again.
+discord-not-bridged = This room isn't bridged to a Discord server yet.
+discord-no-sign-in = This room's host doesn't offer signing in with Discord. Type /link in the Discord server instead.
 
 ## Bridging a server.
 discord-setup-title = Bridge a Discord server
@@ -64,7 +70,14 @@ discord-ban = Banned a member from the Discord server
 discord-unban = Lifted a ban on the Discord server
 discord-set-overwrite = Changed a channel's permissions on Discord
 discord-fetch-asset = Fetched an attachment from Discord
-discord-begin-link = Asked to link a Discord account
+discord-set-sign-in = Changed how members sign in with Discord
+discord-begin-connect = Went to Discord to link an account
+discord-offer-link = Offered a Discord account for linking
+discord-offer-sign-in = Offered a Discord account signed in with from Tilo
+discord-answer-interaction = Answered a command on Discord
+discord-apply-emoji = Added or renamed an emoji on Discord
+discord-delete-emoji = Deleted an emoji on Discord
+discord-settle-emoji = Noted what became of an emoji on Discord
 discord-complete-link = Linked a Discord account
 discord-unlink = Unlinked a Discord account
 discord-rename-link = Updated a linked Discord account's names
@@ -72,6 +85,7 @@ discord-block-persona = Blocked a Discord user from the room
 discord-unblock-persona = Unblocked a Discord user
 discord-remember-avatar = Saved a Discord avatar
 discord-finish-import = Finished importing the server
+discord-report-voice = Said whether calls reach Discord
 
 ## History: changes to the server record.
 discord-guild-name = Renamed the server to { $new }
@@ -84,6 +98,8 @@ discord-guild-vanished = Updated the channels gone from Discord
 discord-guild-tilo-only = Changed the channels kept only in Tilo
 discord-guild-discord-only = Changed the channels kept only on Discord
 discord-guild-outbox = Updated the queue of changes for Discord
+discord-guild-voice-problem = Changed why calls don't reach Discord
+discord-guild-emoji-problem = Changed why the workspace's emoji don't reach Discord
 discord-d-channel-kind = Changed a Discord channel's type
 discord-d-channel-name = Renamed a Discord channel to { $new }
 discord-d-channel-parent = Moved a Discord channel to another category
@@ -101,11 +117,19 @@ discord-mapping-discord = Paired a Tilo item with another Discord item
 discord-mapping-origin = Changed where a paired item started
 discord-mapping-persona = Changed who a paired item speaks as
 discord-mapping-root = Changed the thread a paired item belongs to
+discord-mapping-picture = Changed the picture of an emoji on Discord
 discord-link-person = Linked a Discord account to someone else
 discord-link-linked-at = Updated when a Discord account was linked
 discord-link-user-name = Updated a linked Discord account's username
 discord-link-display-name = Updated the name a linked Discord account shows
-discord-pending-link-code-sha256 = Issued a new link code
-discord-pending-link-expires-ms = Changed when a link code expires
-discord-link-failure-window-start-ms = Started counting failed link attempts again
-discord-link-failure-count = Counted a failed link attempt
+discord-link-avatar = Updated a linked Discord account's picture
+discord-link-interaction = Noted the Discord command a link answers
+discord-link-offer-discord-user = Offered another Discord account
+discord-link-offer-user-name = Updated an offered Discord account's username
+discord-link-offer-display-name = Updated the name an offered Discord account shows
+discord-link-offer-avatar = Updated an offered Discord account's picture
+discord-link-offer-person = Changed who a Discord account is offered to
+discord-link-offer-interaction = Noted the Discord command an offer answers
+discord-link-offer-expires-ms = Changed when a link offer runs out
+discord-connect-state-sha256 = Started a new sign-in with Discord
+discord-connect-expires-ms = Changed when a sign-in with Discord runs out

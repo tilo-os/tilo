@@ -31,6 +31,10 @@ use tilo_locale::Currency;
 /// they sync converge on one first sheet rather than two.
 pub const FIRST_SHEET_ID: &str = "00000000-0000-4000-8000-000000000001";
 
+/// The name of a new workbook's first sheet.
+pub const FIRST_SHEET_NAME: &str = "Sheet1";
+/// The longest workbook title.
+pub const MAX_TITLE_CHARS: usize = 200;
 /// The longest sheet name.
 pub const MAX_SHEET_NAME_CHARS: usize = 100;
 /// How many tab colours the palette offers.
@@ -237,6 +241,12 @@ pub struct Sheet {
     pub cells: Grid<Cell>,
     /// Charts
     pub charts: Collection<Chart>,
+    /// Hidden
+    ///
+    /// The tab is not shown; its cells and the formulas reading them still
+    /// work, as a file that hid the sheet kept them.
+    #[model(default = false)]
+    pub hidden: bool,
 }
 
 impl Sheet {
@@ -248,6 +258,7 @@ impl Sheet {
             color: None,
             cells: Grid::new(),
             charts: Collection::new(),
+            hidden: false,
         }
     }
 
@@ -282,6 +293,7 @@ impl Sheet {
     pub fn snapshot_in(&self, layout: &Layout) -> SheetSnapshot {
         let mut snapshot = SheetSnapshot {
             name: self.name.0.clone(),
+            hidden: self.hidden,
             ..SheetSnapshot::default()
         };
         for (row, column, cell) in self.cells.cells() {
@@ -429,6 +441,17 @@ impl Sheet {
     pub fn is_blank(&self) -> bool {
         self.cells.cells().next().is_none() && self.charts.is_empty()
     }
+
+    /// Whether it is still the sheet a new workbook starts with: blank,
+    /// under its first name, neither coloured, hidden nor imported. A blank
+    /// sheet someone named ("Costs") is one they mean to fill.
+    pub fn is_untouched(&self) -> bool {
+        self.is_blank()
+            && self.name.0 == FIRST_SHEET_NAME
+            && self.color.is_none()
+            && self.source.is_none()
+            && !self.hidden
+    }
 }
 
 /// Where each row and column of a sheet is: the ids in order, and the
@@ -558,27 +581,115 @@ pub struct Workbook {
     pub comments: Collection<Comment>,
     /// Document settings
     pub settings: DocSettings,
+    /// Title
+    ///
+    /// What people call the spreadsheet; its first shown sheet names it
+    /// while it has none.
+    #[model(default = None)]
+    pub title: Option<String>,
 }
 
 impl Default for Workbook {
     /// A new workbook: one empty sheet.
     fn default() -> Self {
         let mut sheets = Collection::new();
-        sheets.push(Id::from_raw(FIRST_SHEET_ID), Sheet::named("Sheet1"));
+        sheets.push(Id::from_raw(FIRST_SHEET_ID), Sheet::named(FIRST_SHEET_NAME));
         Self {
             sheets,
             comments: Collection::new(),
             settings: DocSettings::default(),
+            title: None,
         }
     }
 }
+
+/// How many sheet names a refusal naming no sheet lists.
+const NAMED_SHEETS_LISTED: usize = 20;
 
 impl Workbook {
     fn valid(&self) -> Result<(), Refusal> {
         if self.sheets.is_empty() {
             return Err(Refusal::new("a workbook keeps at least one sheet"));
         }
+        if self.sheets.values().all(|sheet| sheet.hidden) {
+            return Err(Refusal::new("a workbook keeps at least one sheet shown"));
+        }
+        if let Some(title) = &self.title
+            && (title.trim().is_empty() || title.chars().count() > MAX_TITLE_CHARS)
+        {
+            return Err(Refusal::new("a workbook title has 1 to 200 characters"));
+        }
         Ok(())
+    }
+
+    /// The id of the sheet `key` names: its id, its item's resource id, or
+    /// its name (exactly, else ignoring case and surrounding space), so a
+    /// caller that knows a sheet by name needs no id.
+    ///
+    /// # Errors
+    /// Refuses a key that names no sheet, listing the sheets.
+    pub fn sheet_key(&self, key: &Id) -> Result<Id, Refusal> {
+        if self.sheets.get(key).is_some() {
+            return Ok(key.clone());
+        }
+        let text = key.as_str().trim();
+        if let Some((_, id)) = tilo_resource::items::item_of_resource::<Self>(text)
+            && self.sheets.get(&id).is_some()
+        {
+            return Ok(id);
+        }
+        let named = |exact: bool| {
+            self.sheets.iter().find(|(_, sheet)| {
+                if exact {
+                    sheet.name.0 == text
+                } else {
+                    sheet.name.0.trim().to_lowercase() == text.to_lowercase()
+                }
+            })
+        };
+        if let Some((id, _)) = named(true).or_else(|| named(false)) {
+            return Ok(id.clone());
+        }
+        let mut listed: Vec<String> = self
+            .sheets
+            .values()
+            .take(NAMED_SHEETS_LISTED)
+            .map(|sheet| format!("`{}`", sheet.name.0))
+            .collect();
+        if self.sheets.len() > NAMED_SHEETS_LISTED {
+            listed.push(format!(
+                "and {} more",
+                self.sheets.len() - NAMED_SHEETS_LISTED
+            ));
+        }
+        Err(Refusal::new(format!(
+            "no sheet `{text}`; the sheets are {}",
+            listed.join(", ")
+        )))
+    }
+
+    /// The cells of sheet `id` by position, with the workbook's other sheets
+    /// when its formulas read them.
+    pub fn snapshot_of(&self, id: &Id) -> Option<SheetSnapshot> {
+        let sheet = self.sheet(id)?;
+        let mut snap = sheet.snapshot();
+        if crate::formula::Book::needed(&snap.raw) {
+            let sheets = self
+                .sheets
+                .iter()
+                .map(|(other, sheet)| {
+                    let raw = if other == id {
+                        snap.raw.clone()
+                    } else {
+                        sheet.snapshot().raw
+                    };
+                    (sheet.name.0.clone(), raw)
+                })
+                .collect();
+            let own = self.sheets.position(id).unwrap_or_default();
+            snap.book = Some(std::sync::Arc::new(crate::formula::Book { sheets, own }));
+        }
+        Some(snap)
     }
 
     /// The sheet `id`.
@@ -615,11 +726,13 @@ impl Workbook {
             .unwrap_or_else(|| "Sheet".to_owned())
     }
 
-    /// Whether the workbook is still what a new one is: one sheet with
-    /// nothing in it.
+    /// Whether the workbook is still what a new one is: one untouched sheet
+    /// ([`Sheet::is_untouched`]), no comments and no title. An import or a
+    /// new sheet with content replaces it rather than leaving an empty first
+    /// tab; a renamed blank sheet is kept, so later steps still find it.
     pub fn is_blank(&self) -> bool {
         self.sheets.len() == 1
-            && self.sheets.values().all(Sheet::is_blank)
+            && self.sheets.values().all(Sheet::is_untouched)
             && self.comments.is_empty()
     }
 
@@ -640,6 +753,10 @@ pub struct SheetSnapshot {
     pub fmt: HashMap<Addr, CellFormat>,
     /// cells whose text is bold
     pub bold: HashSet<Addr>,
+    /// Whether the sheet is hidden.
+    pub hidden: bool,
+    /// The workbook's sheets, when formulas of this one read them.
+    pub book: Option<std::sync::Arc<crate::formula::Book>>,
 }
 
 /// A chart by position, as the sheet shows it.

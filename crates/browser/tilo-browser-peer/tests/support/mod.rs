@@ -31,6 +31,27 @@ use tilo_user_identity::{
 
 pub const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
+/// A test's scratch directory for a host's or a steward's state, removed
+/// with it. It is in memory where the system has one
+/// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), as `tilo-app`'s
+/// test profiles are. Every write still syncs as it does for a person, but a
+/// sync in memory costs nothing, where on a busy build node's shared disk one
+/// waited up to seconds for every other writer's data: a host's channel
+/// admission is a chain of synced writes (request, admission, acknowledgement),
+/// and a page's keys then took longer than the host waits for them. These
+/// tests prove what a page and a host do, not that a disk keeps data; the
+/// relay's durability tests keep the real disk.
+pub fn scratch_dir() -> tempfile::TempDir {
+    if let Some(memory) = tilo_paths::memory_temp_dir()
+        && let Ok(directory) = tempfile::Builder::new()
+            .prefix("browser-peer-test-")
+            .tempdir_in(memory)
+    {
+        return directory;
+    }
+    tempfile::tempdir().unwrap()
+}
+
 pub fn workspace() -> u64 {
     tilo_relay_protocol::room_workspace_id(ROOM).unwrap()
 }
@@ -104,6 +125,48 @@ pub async fn start_host_limiting(
     guests: &[[u8; 32]],
     limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
 ) -> TestHost {
+    start_host_serving(
+        root,
+        host,
+        state,
+        web_listen,
+        HostSettings {
+            plain_listen,
+            guests,
+            limits,
+            fetch_proxy: None,
+        },
+    )
+    .await
+}
+
+/// What a test host serves beyond its secure listener.
+#[derive(Default)]
+pub struct HostSettings<'a> {
+    /// Plain HTTP too, here.
+    pub plain_listen: Option<SocketAddr>,
+    /// People (user roots) its workspace admits, as a room admits guests.
+    pub guests: &'a [[u8; 32]],
+    /// The change and content budgets guests are held to.
+    pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+    /// The fetch proxy it serves its pages.
+    pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
+}
+
+/// A host serving what `settings` names.
+pub async fn start_host_serving(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    web_listen: SocketAddr,
+    settings: HostSettings<'_>,
+) -> TestHost {
+    let HostSettings {
+        plain_listen,
+        guests,
+        limits,
+        fetch_proxy,
+    } = settings;
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.to_path_buf(),
@@ -111,7 +174,6 @@ pub async fn start_host_limiting(
         ..Default::default()
     };
     if !guests.is_empty() {
-        // The host's handshake admits them, as it admits a room's members.
         cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
         };
@@ -151,6 +213,7 @@ pub async fn start_host_limiting(
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy,
         })
         .await
         .unwrap();
@@ -194,6 +257,7 @@ pub async fn start_room_host(
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await
         .unwrap();
@@ -353,6 +417,8 @@ pub struct Recording {
     pub largest_page: Arc<std::sync::atomic::AtomicUsize>,
     /// Every answer's bytes together.
     pub total: Arc<std::sync::atomic::AtomicUsize>,
+    /// Sessions the client opened.
+    pub sessions: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Recording {
@@ -361,6 +427,7 @@ impl Recording {
             inner,
             largest_page: Arc::default(),
             total: Arc::default(),
+            sessions: Arc::default(),
         })
     }
 }
@@ -374,6 +441,9 @@ impl tilo_browser_peer::HttpClient for Recording {
     ) -> tilo_browser_peer::HttpFuture<'_> {
         use std::sync::atomic::Ordering;
         let events = path.ends_with("/events");
+        if path.ends_with("/session/finish") {
+            self.sessions.fetch_add(1, Ordering::Relaxed);
+        }
         let answer = self.inner.post(path, session, body);
         Box::pin(async move {
             let answer = answer.await;
@@ -386,7 +456,6 @@ impl tilo_browser_peer::HttpClient for Recording {
     }
 }
 
-/// Wait for the next document event on `peer` and return its mutation.
 pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> DocumentMutation {
     wait_for("a document", || {
         pending.extend(peer.drain());

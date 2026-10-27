@@ -1,13 +1,13 @@
-//! Behaviour of the reader window.
-
 #![allow(clippy::float_cmp, reason = "tests assert exact values")]
 
 use super::*;
 use crate::model::{BlockKind, ContentBlock, Feed, Fetched};
 use automerge::ReadDoc as _;
 use ui::headless::Framed;
+use ui::portal::PortalOutcome;
 use ui::tilo_resource::Resource as _;
 use ui::widget::Widget;
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent};
 use winit::event::MouseScrollDelta;
 
 /// The sample library: the only place demo feeds come from.
@@ -62,7 +62,6 @@ fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     doc
 }
 
-/// The library `doc` holds.
 fn loaded(doc: &AutoCommit) -> Library {
     Library::read(doc).unwrap()
 }
@@ -198,24 +197,52 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     assert_eq!(loaded(&doc).feeds.len(), demo.core().store.feeds.len());
 }
 
+/// The reader's commands as the window's bar holds them.
+fn bar_actions() -> Vec<ToolbarAction> {
+    ui::window_toolbar::declared()
+        .map(|bar| bar.actions)
+        .unwrap_or_default()
+}
+
+fn bar_action(name: &str) -> ToolbarAction {
+    bar_actions()
+        .into_iter()
+        .find(|action| action.name == name)
+        .unwrap_or_else(|| panic!("{name} is in the window bar: {:?}", bar_actions()))
+}
+
 /// The empty library disables what has nothing to act on and offers one
-/// action in its empty state; the reader shows nothing beside it.
+/// action in its empty state; the bar offers no commands for an article
+/// that is not there.
 #[test]
 fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     let mut mounted = framed(FeedsApp::new());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
     settle(&mut mounted);
-    let controls = Framed::harness(&mounted).controls();
-    let control = |name: &str| {
-        controls
+    // Disabled, Refresh says why rather than doing nothing on a press.
+    let refresh = bar_action("There are no subscriptions to refresh");
+    assert!(!refresh.enabled);
+    assert!(
+        bar_actions()
             .iter()
-            .find(|c| c.name.as_deref() == Some(name))
-            .unwrap_or_else(|| panic!("{name} is a control"))
-    };
-    assert!(control("Refresh all feeds").disabled);
-    assert!(control("Mark all as read").disabled);
-    assert!(!control("Add subscription").disabled);
-    assert!(control("Star article").disabled);
-    let add = control("Add feed").bounds.expect("placed").center();
+            .all(|action| action.name != "Refresh all feeds"),
+        "with nothing subscribed, Refresh is not offered as if it could run"
+    );
+    assert!(!bar_action("Mark all as read").enabled);
+    assert!(bar_action("Add subscription").enabled);
+    for absent in ["Star article", "Open original article", "Reading settings"] {
+        assert!(
+            bar_actions().iter().all(|action| action.name != absent),
+            "{absent} is not offered without an article"
+        );
+    }
+    let controls = Framed::harness(&mounted).controls();
+    let add = controls
+        .iter()
+        .find(|c| c.name.as_deref() == Some("Add feed"))
+        .and_then(|c| c.bounds)
+        .expect("the empty state offers Add feed")
+        .center();
     Framed::harness_mut(&mut mounted).click_at(add.x, add.y);
     settle(&mut mounted);
     let (a, _) = Framed::split(&mut mounted);
@@ -224,6 +251,148 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
         Some(ModalIntent::AddSubscription),
         "the empty state's action opens the add dialog"
     );
+}
+
+#[test]
+fn an_open_article_offers_its_commands() {
+    let mut mounted = framed(FeedsApp::new_demo());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
+    settle(&mut mounted);
+    let star = bar_actions()
+        .into_iter()
+        .find(|action| action.name == "Star article" || action.name == "Remove star")
+        .expect("the open article can be starred");
+    assert!(star.enabled);
+}
+
+/// New folder heads the sidebar's Feeds, where folders are made, not the
+/// window bar, and opens its dialog from there.
+#[test]
+fn new_folder_heads_the_sidebars_feeds_and_opens_its_dialog() {
+    let mut mounted = framed(FeedsApp::new_demo());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
+    settle(&mut mounted);
+    let names: Vec<String> = bar_actions()
+        .iter()
+        .map(|action| action.name.clone())
+        .collect();
+    let drawn = Framed::harness(&mounted).controls();
+    assert!(
+        names.iter().all(|name| *name != "New folder"),
+        "New folder is the sidebar's, not the bar's: {names:?}"
+    );
+    let new_folder = drawn
+        .iter()
+        .find(|c| c.name.as_deref() == Some("New folder Feeds"))
+        .expect("the sidebar's Feeds heading holds New folder")
+        .id
+        .clone();
+    Framed::harness_mut(&mut mounted)
+        .operate_control(&new_folder, &ui::headless::ControlInput::Press)
+        .expect("New folder takes a press");
+    settle(&mut mounted);
+    assert_eq!(
+        mounted.modal.as_ref().map(|m| m.intent.clone()),
+        Some(ModalIntent::AddFolder),
+        "the sidebar's New folder opens its dialog"
+    );
+}
+
+/// The reader's commands are the window bar's: the window draws no header
+/// row of its own, the open article's commands lead, the library's follow
+/// in the bar's menu, and each runs from there.
+#[test]
+fn the_readers_commands_are_the_window_bars_and_run_from_it() {
+    let mut mounted = framed(FeedsApp::new_demo());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
+    settle(&mut mounted);
+    let names: Vec<String> = bar_actions()
+        .iter()
+        .map(|action| action.name.clone())
+        .collect();
+    let row: Vec<String> = bar_actions()
+        .into_iter()
+        .filter(|action| !action.menu)
+        .map(|action| action.name)
+        .collect();
+    let starred = mounted.core().open_article().is_some_and(|a| a.starred);
+    let star = if starred {
+        "Remove star"
+    } else {
+        "Star article"
+    };
+    assert_eq!(
+        row,
+        [star, "Open original article", "Reading settings"]
+            .map(str::to_owned)
+            .to_vec(),
+        "the open article's commands lead: {names:?}"
+    );
+    for in_menu in [
+        "Mark as read",
+        "Edit tags…",
+        "Refresh all feeds",
+        "Mark all as read",
+        "Add subscription",
+        "Import OPML…",
+        "Export OPML…",
+    ] {
+        let action = bar_action(in_menu);
+        assert!(action.menu, "{in_menu} is in the bar's menu");
+    }
+    assert!(
+        names.iter().all(|name| !name.contains("Search")),
+        "the bar's own search is the only one: {names:?}"
+    );
+    let drawn = Framed::harness(&mounted).controls();
+    for command in [
+        "Star article",
+        "Reading settings",
+        "Mark all as read",
+        "More",
+    ] {
+        assert!(
+            drawn.iter().all(|c| c.name.as_deref() != Some(command)),
+            "the window draws no {command} of its own"
+        );
+    }
+
+    // Reading settings opens its panel from the bar.
+    Framed::harness_mut(&mut mounted).press_window_slot(ToolbarEvent::Action {
+        id: bar_action("Reading settings").id,
+    });
+    settle(&mut mounted);
+    assert!(
+        mounted.settings_panel_open(),
+        "the bar opened the reading settings"
+    );
+
+    // Star flips the open article and the bar names what a press does now.
+    let starred = mounted.core().open_article().is_some_and(|a| a.starred);
+    let star = if starred {
+        "Remove star"
+    } else {
+        "Star article"
+    };
+    Framed::harness_mut(&mut mounted).press_window_slot(ToolbarEvent::Action {
+        id: bar_action(star).id,
+    });
+    settle(&mut mounted);
+    // The library presents the edit the press made, as it does each one.
+    let (a, st) = Framed::split(&mut mounted);
+    present(a, &st.doc);
+    settle(&mut mounted);
+    assert_eq!(
+        mounted.core().open_article().map(|a| a.starred),
+        Some(!starred),
+        "the bar's star flipped the article"
+    );
+    let now = if starred {
+        "Star article"
+    } else {
+        "Remove star"
+    };
+    assert_eq!(bar_action(now).on, !starred);
 }
 
 /// Refresh runs on a worker, drains without blocking the frame, persists in
@@ -280,7 +449,8 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
 
         tx.send(FetchResult::Failed {
             feed_id: Some(nth_feed(&a, 1)),
-            message: "unreachable".into(),
+            reason: RefreshFailure::Unreachable,
+            message: "request: connection refused".into(),
         })
         .unwrap();
         a.core_mut().drain_fetches_live();
@@ -403,14 +573,19 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             } else {
                 FetchResult::Failed {
                     feed_id: Some(f.clone()),
-                    message: "x".into(),
+                    reason: RefreshFailure::Refused { status: Some(503) },
+                    message: "HTTP 503".into(),
                 }
             };
             tx.send(result).unwrap();
         }
-        a.core_mut().drain_fetches_live();
-        assert!(!a.core().refresh.in_progress());
-        assert!(a.core().refresh.visible(), "the summary lingers");
+        // The monotonic clock is pinned, so the summary cannot age out
+        // between finishing and the check.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            a.core_mut().drain_fetches_live();
+            assert!(!a.core().refresh.in_progress());
+            assert!(a.core().refresh.visible(), "the summary lingers");
+        });
         assert!(
             a.core().refresh.status().contains("could not be refreshed"),
             "{}",
@@ -434,6 +609,59 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             "the rows start below the progress"
         );
     }
+}
+
+/// A refresh asked for while one runs fetches nothing twice and keeps its
+/// count, and a subscription added meanwhile joins it: the batch ends, and
+/// an agent's refresh is answered, only once every feed in flight is back.
+#[test]
+fn a_running_refresh_waits_for_every_feed_it_fetches() {
+    let mut a = app();
+    let mut doc = synced(&mut a);
+    let (worker, tx) = FetchWorker::for_test();
+    a.core_mut().worker = Some(worker);
+    let pending = |a: &FeedsApp| a.core().worker.as_ref().map_or(0, FetchWorker::pending);
+    let feeds: Vec<Id> = a.core().store.feeds.ids().cloned().collect();
+
+    assert!(dispatch(&mut a, &mut doc, &char_key("r")));
+    assert!(a.core().refresh.in_progress());
+    assert_eq!(pending(&a), feeds.len());
+    assert!(dispatch(&mut a, &mut doc, &char_key("r")));
+    assert_eq!(
+        pending(&a),
+        feeds.len(),
+        "no feed in flight is fetched again"
+    );
+    assert_eq!(a.core().refresh.total, feeds.len());
+
+    let url = "https://example.invalid/added-meanwhile.xml";
+    a.core_mut()
+        .subscribe(url, &mut ui::widget::Edits::lend(&mut doc));
+    present(&a, &doc);
+    let added = a.core().store.feed_at(url).expect("subscribed").id.clone();
+    assert_eq!(pending(&a), feeds.len() + 1, "the new feed is fetched");
+    assert_eq!(a.core().refresh.total, feeds.len() + 1);
+
+    let answered = |feed: &Id| FetchResult::Articles {
+        feed_id: feed.clone(),
+        title: None,
+        articles: vec![],
+        certificate_pin: None,
+    };
+    tx.send(answered(&added)).unwrap();
+    a.core_mut().drain_fetches_live();
+    assert!(
+        a.core().refresh.in_progress(),
+        "{}",
+        a.core().refresh.status()
+    );
+    for feed in &feeds {
+        tx.send(answered(feed)).unwrap();
+    }
+    a.core_mut().drain_fetches_live();
+    assert!(!a.core().refresh.in_progress());
+    assert_eq!(a.core().refresh.done, feeds.len() + 1);
+    assert_eq!(pending(&a), 0);
 }
 
 /// Reading settings, read and star state and places persist through the
@@ -568,7 +796,6 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
     check_add_dialog_an_empty_required_field_keeps_the_dialog_open();
 }
 
-/// Tags are edited through the canonical action and may be cleared.
 #[test]
 fn the_tag_editor_uses_the_canonical_action() {
     let mut a = app();
@@ -661,22 +888,28 @@ fn the_window_shell_adapts_to_its_width() {
 )]
 #[test]
 fn opml_portal_import_and_export_report_honestly() {
-    fn export_with(a: &FeedsApp, outcome: PortalOutcome) {
+    // The host reads and writes the chosen file as background work; pump it
+    // so its answer is there when the app next looks.
+    let work = ui::background::Pumped::new();
+    let _work = work.background().enter();
+    let export_with = |a: &FeedsApp, outcome: PortalOutcome| {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(outcome);
         ui::host::scoped(&services, || a.core_mut().export_opml());
+        work.run_pending();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);
         assert_eq!(picks[0].title(), "Export OPML");
-    }
-    fn import_with(a: &FeedsApp, outcome: PortalOutcome) {
+    };
+    let import_with = |a: &FeedsApp, outcome: PortalOutcome| {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(outcome);
         ui::host::scoped(&services, || a.core_mut().request_import());
+        work.run_pending();
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1);
         assert_eq!(picks[0].title(), "Import OPML");
-    }
+    };
 
     // --- phase: import adds every feed and persists; re-import adds none ---
     {
@@ -865,7 +1098,6 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     assert!(dispatch(a, doc, &WindowEvent::Focused(false)) || a.core().menu.is_none());
     assert!(a.core().menu.is_none());
 
-    // Mark all as read marks the feed's articles and persists.
     a.core_mut().apply_menu_action(
         MenuAction::MarkFeedRead(feed.clone()),
         &mut ui::widget::Edits::lend(doc),
@@ -874,17 +1106,15 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     assert_eq!(a.core().store.unread_for_feed(&feed), 0);
     assert_eq!(loaded(doc).unread_for_feed(&feed), 0);
 
-    // Unsubscribe is the host's to confirm: the window asks nothing of its
-    // own and removes nothing before the person agreed (resource tests
-    // confirm it through the host).
+    // Undo takes an unsubscription back, so it runs at once: no dialog of
+    // the window's own and nothing asked by the host (the resource tests
+    // drive it through the host, Undo included).
     a.core_mut().apply_menu_action(
-        MenuAction::Unsubscribe(feed.clone()),
+        MenuAction::Unsubscribe(feed),
         &mut ui::widget::Edits::lend(doc),
     );
     a.take_pending_modal();
     assert!(a.modal.is_none(), "the window asks nothing itself");
-    assert!(a.core().store.feed(&feed).is_some(), "not until confirmed");
-    assert!(loaded(doc).feed(&feed).is_some());
 
     // The menu stays inside a shrinking window and captures host undo.
     let other = nth_feed(a, 0);
@@ -939,11 +1169,15 @@ fn sidebar_counts_and_titles_follow_the_library() {
     a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
     assert_eq!(a.active_filter(), Filter::Feed(feed.clone()));
     let title = a.core().store.feed(&feed).unwrap().title.clone();
-    assert_eq!(a.titles.0, title);
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|bar| bar.location)
+            .map(|location| location.label),
+        Some(title),
+        "the window bar names the chosen feed"
+    );
 }
 
-/// The reading settings open under their button and their controls change
-/// the reader.
 #[test]
 fn reading_settings_open_under_their_button() {
     let mut a = app();
@@ -967,7 +1201,6 @@ fn reading_settings_open_under_their_button() {
     assert!(!a.settings_panel_open());
 }
 
-/// Lists scroll to their content and keep the open article in view.
 #[test]
 fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     let a = app();
@@ -1168,4 +1401,269 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
     );
     assert!(host.undo(), "the record owns the undo step");
     assert!(host.state().folders.is_empty());
+}
+
+/// Draw frames the way a window's host does after input: the frame the
+/// input asked for, then one more only while the app asks for it.
+fn pump_frames(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) {
+    host.harness().relayout();
+    for _ in 0..32 {
+        let schedule = host.harness().frame_schedule();
+        if !(schedule.needs_animation_frame || schedule.queued_work) {
+            return;
+        }
+        host.harness().relayout();
+    }
+}
+
+/// How wide the sidebar stands on screen, as the shell last laid it out.
+fn sidebar_width(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) -> f64 {
+    host.with_widget(|app: &mut FeedsApp| app.shell().geometry().sidebar_column.width())
+        .unwrap()
+}
+
+#[test]
+fn the_collapse_button_collapses_and_expands_the_sidebar() {
+    // Every motion reads as arrived: a frame that comes after the slide's
+    // whole time (a busy device), where the collapse lands in one tick.
+    let _arrived = ui::motion::testing::settled();
+    let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+    host.harness().present_in_window_bar();
+    pump_frames(&mut host);
+    let open = sidebar_width(&mut host);
+    assert!(open > 0.0, "a wide window docks its sidebar");
+    assert_eq!(
+        ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+        Some(true),
+        "the window bar offers Hide sidebar"
+    );
+    host.harness()
+        .press_window_slot(ToolbarEvent::ToggleSidebar);
+    pump_frames(&mut host);
+    assert!(
+        sidebar_width(&mut host) < 0.5,
+        "the bar's Hide sidebar collapsed the sidebar on screen"
+    );
+    assert_eq!(
+        ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+        Some(false),
+        "the window bar offers Show sidebar"
+    );
+    host.harness()
+        .press_window_slot(ToolbarEvent::ToggleSidebar);
+    pump_frames(&mut host);
+    assert!(
+        (sidebar_width(&mut host) - open).abs() < 0.5,
+        "the bar's Show sidebar expanded it again"
+    );
+}
+
+#[test]
+fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
+    let _arrived = ui::motion::testing::settled();
+    let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+    host.harness().present_in_window_bar();
+    pump_frames(&mut host);
+    let open = sidebar_width(&mut host);
+    assert!(open > 0.0);
+    host.harness()
+        .press_window_slot(ToolbarEvent::ToggleSidebar);
+    pump_frames(&mut host);
+    // The sidebar's shortcut is Command+Shift+L: Cmd on macOS, Ctrl elsewhere.
+    host.harness()
+        .set_modifiers(&["command".to_owned(), "shift".to_owned()]);
+    // Collapsed from the bar; the shortcut brings it back and takes it away.
+    host.harness().key("L");
+    pump_frames(&mut host);
+    assert!(
+        (sidebar_width(&mut host) - open).abs() < 0.5,
+        "the shortcut expanded it"
+    );
+    host.harness().key("L");
+    pump_frames(&mut host);
+    assert!(sidebar_width(&mut host) < 0.5, "the shortcut collapsed it");
+}
+
+/// In a half-width window, where the sidebar is a screen of its own, the
+/// window bar's Show sidebar brings it up from the article list: the places
+/// are not reachable only through Back.
+#[test]
+fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
+    let libraries: [(fn() -> FeedsApp, u32); 2] = [(FeedsApp::new, 640), (app, 640)];
+    for (library, width) in libraries {
+        let mut mounted = framed_at(library(), (width, 800));
+        Framed::harness_mut(&mut mounted).present_in_window_bar();
+        settle(&mut mounted);
+        assert_eq!(
+            mounted.shell().geometry().sidebar,
+            SidebarPlacement::Screen,
+            "{width} wide"
+        );
+        assert!(!mounted.shell().is_sidebar_open(), "{width} wide");
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+            Some(false),
+            "the bar offers Show sidebar {width} wide"
+        );
+        Framed::harness_mut(&mut mounted)
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        settle(&mut mounted);
+        assert!(
+            mounted.shell().is_sidebar_open(),
+            "Show sidebar showed the places {width} wide"
+        );
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+            Some(true),
+            "the bar's toggle now hides it {width} wide"
+        );
+    }
+}
+
+/// The sidebar row for `feed`, with its own status and second line.
+fn feed_row(core: &Core, feed: &Id) -> ui::widget::NavItem {
+    fn find(items: &[ui::widget::NavItem], id: &str) -> Option<ui::widget::NavItem> {
+        for item in items {
+            if item.id == id {
+                return Some(item.clone());
+            }
+            if let Some(found) = find(&item.children, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let id = crate::sidebar::nav_id(&Filter::Feed(feed.clone()));
+    core.nav_sections()
+        .iter()
+        .find_map(|section| find(&section.items, &id))
+        .unwrap_or_else(|| panic!("the sidebar holds {id}"))
+}
+
+/// A failed refresh of one subscription marks that row with an honest reason
+/// and leaves the others alone; its next success clears the mark. The batch
+/// summary stays a count.
+#[test]
+fn a_failed_subscription_says_so_in_its_own_row_until_it_refreshes() {
+    let mut a = app();
+    let _doc = synced(&mut a);
+    let (worker, tx) = FetchWorker::for_test();
+    a.core_mut().worker = Some(worker);
+    let failing = nth_feed(&a, 0);
+    let healthy = nth_feed(&a, 1);
+    // Neither row says anything before a refresh has failed.
+    assert_eq!(feed_row(&a.core(), &failing).status, None);
+    assert_eq!(feed_row(&a.core(), &healthy).status, None);
+
+    a.core_mut()
+        .refresh_feeds(&[failing.clone(), healthy.clone()]);
+    tx.send(FetchResult::Failed {
+        feed_id: Some(failing.clone()),
+        reason: RefreshFailure::Refused { status: Some(403) },
+        message: "HTTP 403".into(),
+    })
+    .unwrap();
+    tx.send(FetchResult::Articles {
+        feed_id: healthy.clone(),
+        title: None,
+        articles: vec![],
+        certificate_pin: None,
+    })
+    .unwrap();
+    a.core_mut().drain_fetches_live();
+
+    let marked = feed_row(&a.core(), &failing);
+    assert_eq!(
+        marked.status.as_ref().map(|status| status.row_status()),
+        Some(ui::widget::RowStatus::Error),
+        "the subscription that failed is marked"
+    );
+    assert_eq!(
+        marked.status_label, None,
+        "the reason itself is the second line, not a word beside the name"
+    );
+    assert_eq!(
+        marked.secondary.as_deref(),
+        Some("The site refused the request (HTTP 403)"),
+        "the row says why, and a refusal is not a network fault"
+    );
+    let untouched = feed_row(&a.core(), &healthy);
+    assert_eq!(
+        untouched.status, None,
+        "the subscription that answered is not marked"
+    );
+    assert_eq!(untouched.secondary, None);
+    // The batch summary is a count of the batch, and stays that.
+    assert_eq!(a.core().refresh.failed_feeds, 1);
+    assert!(
+        a.core().refresh.status().contains("could not be refreshed"),
+        "{}",
+        a.core().refresh.status()
+    );
+
+    // The next successful refresh of that subscription clears the mark.
+    a.core_mut().refresh_feeds(std::slice::from_ref(&failing));
+    tx.send(FetchResult::Articles {
+        feed_id: failing.clone(),
+        title: None,
+        articles: vec![],
+        certificate_pin: None,
+    })
+    .unwrap();
+    a.core_mut().drain_fetches_live();
+    let cleared = feed_row(&a.core(), &failing);
+    assert_eq!(cleared.status, None);
+    assert_eq!(cleared.secondary, None);
+    assert!(a.core().feed_failures.is_empty());
+}
+
+/// The failing subscription's row says why to assistive technology too: the
+/// list folds the row's second line and its error status into the description
+/// a screen reader hears.
+#[test]
+fn the_failing_rows_reason_reaches_assistive_technology() {
+    let mut a = app();
+    let _doc = synced(&mut a);
+    let (worker, tx) = FetchWorker::for_test();
+    a.core_mut().worker = Some(worker);
+    let failing = nth_feed(&a, 0);
+    let title = a
+        .core()
+        .store
+        .feed(&failing)
+        .map(|feed| feed.shown_title())
+        .expect("a bundled subscription");
+    a.core_mut().refresh_feeds(std::slice::from_ref(&failing));
+    tx.send(FetchResult::Failed {
+        feed_id: Some(failing),
+        reason: RefreshFailure::Unreachable,
+        message: "request: connection refused".into(),
+    })
+    .unwrap();
+    a.core_mut().drain_fetches_live();
+    // The sidebar's list is built from exactly these sections.
+    let list = ui::widget::NavList::new(a.core().nav_sections())
+        .with_id("feeds.sidebar")
+        .with_accessible_name("Subscriptions");
+    let tree = Widget::accessibility(&list).expect("the subscriptions are semantics");
+    let row = named_node(&tree, &title).unwrap_or_else(|| panic!("the row for {title:?}"));
+    let description = row.description.clone().unwrap_or_default();
+    assert!(
+        description.contains("Couldn't reach the site"),
+        "the row reads out why it failed: {description:?}"
+    );
+    assert!(
+        description.contains("Error"),
+        "and its status: {description:?}"
+    );
+}
+
+/// The first semantic node named `name`, at any depth.
+fn named_node<'a>(node: &'a AccessNode, name: &str) -> Option<&'a AccessNode> {
+    if node.name.as_deref() == Some(name) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| named_node(child, name))
 }

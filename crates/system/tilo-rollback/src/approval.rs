@@ -155,12 +155,6 @@ impl Approval {
     /// Check everything checkable without a TPM. Deliberately not a security boundary — the TPM
     /// is — this just catches mundane cases (wrong machine, corrupted file) with a diagnostic
     /// instead of an opaque policy failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the schema version, NV index, NV Name or target counter don't match
-    /// what's expected, or if the approval's policy digest doesn't match its stated target
-    /// counter.
     pub fn validate_for(&self, nv_index: u32, nv_name: &[u8]) -> Result<()> {
         if self.version != SCHEMA_VERSION {
             bail!(
@@ -438,13 +432,11 @@ mod tests {
 
     #[test]
     fn approvals_bind_one_target_index_and_machine() {
-        // Phase `an_approval_is_bound_to_one_target`.
         {
             let a = approved_policy(&name(), 5).unwrap();
             let b = approved_policy(&name(), 6).unwrap();
             assert_ne!(a, b, "each step must need its own approval");
         }
-        // Phase `an_approval_is_bound_to_one_index`.
         {
             let other = {
                 let mut v = vec![0x00, 0x0B];
@@ -456,11 +448,9 @@ mod tests {
                 approved_policy(&other, 5).unwrap()
             );
         }
-        // Phase `target_counter_zero_is_refused`.
         {
             assert!(approved_policy(&name(), 0).is_err());
         }
-        // Phase `validation_catches_an_approval_for_another_machine`.
         {
             let a = approval_for(5);
             assert!(a.validate_for(0x01D9_1100, &name()).is_ok());
@@ -477,7 +467,6 @@ mod tests {
                 .to_string();
             assert!(e.contains("NV index"), "{e}");
         }
-        // Phase `validation_catches_a_tampered_target`.
         {
             let mut a = approval_for(5);
             a.target_counter = 9;
@@ -491,7 +480,6 @@ mod tests {
 
     #[test]
     fn approval_bounds_and_directories_follow_enrolled_generations() {
-        // Phase `the_safe_bound_is_the_newest_enrolled_generation`.
         {
             let floor = counter::FloorState {
                 counter: 10,
@@ -501,7 +489,6 @@ mod tests {
             assert_eq!(r.floor_generation, 5);
             assert_eq!(r.safe_target_floor, 8);
         }
-        // Phase `with_nothing_enrolled_the_safe_bound_is_the_current_floor`.
         {
             let floor = counter::FloorState {
                 counter: 10,
@@ -510,13 +497,11 @@ mod tests {
             let r = build_request(1, &name(), floor, &[], 3).unwrap();
             assert_eq!(r.safe_target_floor, 5);
         }
-        // Phase `finding_and_discarding_work_by_target`.
         {
             let list = vec![approval_for(3), approval_for(4)];
             assert_eq!(find(&list, 4).unwrap().target_counter, 4);
             assert!(find(&list, 9).is_none());
         }
-        // Phase `approvals_round_trip_through_a_directory`.
         {
             let d = tempfile::tempdir().unwrap();
             let list = vec![approval_for(4), approval_for(3)];
@@ -527,12 +512,10 @@ mod tests {
             discard(d.path(), &back[0]);
             assert_eq!(load_all(d.path()).unwrap().len(), 1);
         }
-        // Phase `a_missing_directory_is_no_approvals_not_an_error`.
         {
             let d = tempfile::tempdir().unwrap();
             assert!(load_all(&d.path().join("nope")).unwrap().is_empty());
         }
-        // Phase `a_corrupt_approval_does_not_hide_the_good_ones`.
         {
             let d = tempfile::tempdir().unwrap();
             store(d.path(), &[approval_for(3)]).unwrap();

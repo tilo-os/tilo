@@ -24,7 +24,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::search::{SearchGroup, SearchResult, SearchRow};
+use crate::search::{
+    PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview, SearchResult, SearchRow,
+};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -45,7 +47,6 @@ const EMPTY_H: f64 = 92.0;
 /// selected row and its hovered neighbour keep one `s1` between them instead
 /// of fusing into one block (HIG §7 "nothing touches").
 const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
-const PREVIEW_H: f64 = 68.0;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
 /// multiply-add with no overflow trap, so it cannot panic regardless of
@@ -85,6 +86,12 @@ struct RowBands {
     three_line: f64,
     /// A thumbnail beside two lines.
     media: f64,
+    /// The preview band's heading line.
+    preview_title: f64,
+    /// One of the preview band's caption lines.
+    preview_line: f64,
+    /// The step between the preview band's parts, and its insets.
+    preview_gap: f64,
 }
 
 impl RowBands {
@@ -94,6 +101,9 @@ impl RowBands {
         two_line: ROW_H_TWO_LINE,
         three_line: ROW_H_TWO_LINE + ROW_H_ONE_LINE / 2.0,
         media: ROW_H_TWO_LINE,
+        preview_title: 22.0,
+        preview_line: 18.0,
+        preview_gap: 4.0,
     };
 
     /// Title (`base`) and subtitle (`sm`) lines plus one sibling step of
@@ -121,8 +131,34 @@ impl RowBands {
                 (title + gap + subtitle).max(thumbnail_size(theme).1),
                 pad,
             ),
+            preview_title: heading.max(Self::DEFAULT.preview_title),
+            preview_line: caption.max(Self::DEFAULT.preview_line),
+            preview_gap: gap.max(Self::DEFAULT.preview_gap),
         }
     }
+
+    /// The preview band `preview` takes: its parts one under another, with
+    /// a step between them and an `s2` inset above and below.
+    fn preview(&self, preview: &SearchPreview) -> f64 {
+        let parts = [
+            preview.title.as_ref().map(|_| self.preview_title),
+            (!preview.facts.is_empty()).then_some(self.preview_line),
+            (!preview.lines.is_empty())
+                .then(|| self.preview_line * line_count(preview.lines.len().min(PREVIEW_LINES))),
+            preview
+                .body
+                .as_ref()
+                .map(|_| self.preview_line * line_count(PREVIEW_BODY_LINES)),
+        ];
+        let shown: Vec<f64> = parts.into_iter().flatten().collect();
+        let gaps = self.preview_gap * line_count(shown.len().saturating_sub(1));
+        shown.iter().sum::<f64>() + gaps + 2.0 * PAD
+    }
+}
+
+/// `n` lines as a multiplier of a line's height.
+fn line_count(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// The results overlay. Populate it with [`set_groups`](Self::set_groups) each
@@ -142,6 +178,16 @@ pub struct SearchResultsView {
     bands: RowBands,
     /// More results are on their way: a "Searching…" row ends the list.
     loading: bool,
+    /// Room kept under the empty-state line for controls its owner places
+    /// inside the card (a confirmation's buttons).
+    empty_footer: f64,
+    /// The most the overlay may stand: rows past it scroll, under a preview
+    /// band that stays put.
+    max_height: Option<f64>,
+    /// How far the rows are scrolled up, in logical px.
+    scroll: f64,
+    /// The cursor moved: bring its row into view at the next layout.
+    reveal: bool,
 }
 
 impl SearchResultsView {
@@ -158,7 +204,17 @@ impl SearchResultsView {
             test_id: None,
             bands: RowBands::DEFAULT,
             loading: false,
+            empty_footer: 0.0,
+            max_height: None,
+            scroll: 0.0,
+            reveal: false,
         }
+    }
+
+    /// Keep `height` free under the empty-state line, for controls the
+    /// owner draws inside the card. The line stays centred above them.
+    pub fn set_empty_footer(&mut self, height: f64) {
+        self.empty_footer = height.max(0.0);
     }
 
     /// Show that more results are still coming: a loading row after the
@@ -203,6 +259,9 @@ impl SearchResultsView {
         if self.cursor >= self.flat.len() {
             self.cursor = self.flat.len().saturating_sub(1);
         }
+        // New results read from their top.
+        self.scroll = 0.0;
+        self.reveal = true;
         // Hover no longer maps to a known row until the pointer moves again.
         self.hover = None;
     }
@@ -243,6 +302,7 @@ impl SearchResultsView {
     pub fn set_cursor(&mut self, index: usize) {
         if !self.flat.is_empty() {
             self.cursor = index.min(self.flat.len().saturating_sub(1));
+            self.reveal = true;
         }
     }
 
@@ -255,6 +315,7 @@ impl SearchResultsView {
             .iter()
             .position(|&(group, row)| self.groups[group].results[row].action_id == id);
         self.cursor = index.unwrap_or(usize::MAX);
+        self.reveal = true;
         index.is_some()
     }
 
@@ -275,11 +336,16 @@ impl SearchResultsView {
         self.hover.and_then(at).or_else(|| at(self.cursor))
     }
 
-    fn has_previews(&self) -> bool {
+    /// The preview band under the list: as tall as the tallest preview any
+    /// listed row has, so moving between rows never moves the list; none
+    /// when no row has one.
+    fn preview_band(&self) -> f64 {
         self.groups
             .iter()
             .flat_map(|group| &group.results)
-            .any(|result| result.preview.is_some())
+            .filter_map(|result| result.preview.as_ref())
+            .map(|preview| self.bands.preview(preview))
+            .fold(0.0, f64::max)
     }
 
     pub fn selected_action_id(&self) -> Option<&str> {
@@ -291,6 +357,7 @@ impl SearchResultsView {
         if self.flat.is_empty() {
             return;
         }
+        self.reveal = true;
         if self.selected().is_none() {
             self.cursor = 0;
             return;
@@ -307,6 +374,7 @@ impl SearchResultsView {
         if self.flat.is_empty() {
             return;
         }
+        self.reveal = true;
         if self.selected().is_none() {
             self.cursor = self.flat.len() - 1;
             return;
@@ -334,13 +402,31 @@ impl SearchResultsView {
     /// For a free-floating overlay not driven by the layout pass.
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
+        if std::mem::take(&mut self.reveal) {
+            self.reveal_cursor();
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    /// The most the overlay may stand, or `None` for as tall as its rows:
+    /// past it the rows scroll and the preview band stays at the bottom.
+    pub fn set_max_height(&mut self, max: Option<f64>) {
+        self.max_height = max;
     }
 
     /// Falls back to an empty-state height with no results.
     pub fn desired_height(&self) -> f64 {
         if self.groups.is_empty() {
-            return EMPTY_H;
+            return EMPTY_H + self.empty_footer;
         }
+        let full = self.rows_height() + self.preview_band();
+        // However little room there is, a header and its first row show.
+        let least = PAD * 2.0 + self.bands.header + self.bands.two_line + self.preview_band();
+        self.max_height.map_or(full, |max| full.min(max.max(least)))
+    }
+
+    /// The rows' whole height, padding, headers and loading row included.
+    fn rows_height(&self) -> f64 {
         let mut h = PAD * 2.0;
         for g in &self.groups {
             h += self.bands.header;
@@ -351,10 +437,55 @@ impl SearchResultsView {
         if self.loading {
             h += self.bands.one_line;
         }
-        if self.has_previews() {
-            h += PREVIEW_H;
-        }
         h
+    }
+
+    /// Where the rows show: the card above its preview band.
+    fn list_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            (self.rect.y1 - self.preview_band()).max(self.rect.y0),
+        )
+    }
+
+    /// How far the rows can scroll before their end shows.
+    fn max_scroll(&self) -> f64 {
+        (self.rows_height() - self.list_rect().height()).max(0.0)
+    }
+
+    /// Scroll so the cursor's row shows whole, with its group's header when
+    /// it is the group's first row.
+    fn reveal_cursor(&mut self) {
+        let Some(row) = self
+            .plan()
+            .rows
+            .into_iter()
+            .find(|row| row.flat == self.cursor)
+        else {
+            return;
+        };
+        let list = self.list_rect();
+        let top = if row.ri == 0 {
+            row.rect.y0 - self.bands.header
+        } else {
+            row.rect.y0
+        };
+        if top < list.y0 + PAD {
+            self.scroll -= list.y0 + PAD - top;
+        } else if row.rect.y1 > list.y1 - PAD {
+            self.scroll += row.rect.y1 - (list.y1 - PAD);
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    /// Scroll the rows by `dy` logical px (positive moves down the list);
+    /// returns whether they moved.
+    fn scroll_by(&mut self, dy: f64) -> bool {
+        let before = self.scroll;
+        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll());
+        (self.scroll - before).abs() > f64::EPSILON
     }
 
     fn row_height(&self, r: &SearchResult) -> f64 {
@@ -394,7 +525,7 @@ impl SearchResultsView {
         let mut rows = Vec::new();
         let x0 = self.rect.x0 + ROW_INSET;
         let x1 = self.rect.x1 - ROW_INSET;
-        let mut y = self.rect.y0 + PAD;
+        let mut y = self.rect.y0 + PAD - self.scroll;
         let mut flat = 0usize;
         let header_h = self.bands.header;
         for (gi, g) in self.groups.iter().enumerate() {
@@ -420,6 +551,9 @@ impl SearchResultsView {
     }
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
+        if !self.list_rect().contains(p) {
+            return None;
+        }
         self.plan()
             .rows
             .into_iter()
@@ -511,36 +645,39 @@ impl SearchResultsView {
         )]
         let text_w = (row.rect.x1 - text_x - ROW_TEXT_X).max(0.0) as f32;
 
-        // Title and subtitle are measured with the width they are drawn at and
-        // centred as one block, so the icon (centred on the row) sits on the
+        // Title and subtitle each keep to one line, elided to the row's
+        // width: the row's height has room for one line of each, and a
+        // wrapped title ran into the subtitle beneath it. The block is
+        // centred as one, so the icon (centred on the row) sits on the
         // block's centre line whether or not a subtitle is present.
-        let (_, title_h) = tr.measure_style(
-            &result.title,
-            Some(text_w),
-            &title_style.clone().with_weight(TextWeight::Medium),
-        );
+        let title_style = title_style.with_weight(TextWeight::Medium);
+        let title = tr.elide_to_width_style(&result.title, text_w, &title_style);
+        let (_, title_h) = tr.measure_style(&title, None, &title_style);
         let gap = f64::from(tokens.spacing.s1);
-        let sub_h = result
+        let subtitle = result
             .subtitle
             .as_deref()
-            .map(|sub| f64::from(tr.measure_style(sub, Some(text_w), &sub_style).1));
+            .map(|sub| tr.elide_to_width_style(sub, text_w, &sub_style));
+        let sub_h = subtitle
+            .as_deref()
+            .map(|sub| f64::from(tr.measure_style(sub, None, &sub_style).1));
         let block_h = f64::from(title_h) + sub_h.map_or(0.0, |h| gap + h);
         let title_y = row.rect.y0 + ((row.rect.height() - block_h) / 2.0).max(0.0);
         tr.draw_style(
             scene,
-            &result.title,
+            &title,
             if selected {
                 selected_ink
             } else {
                 colors.text_primary
             },
             compose(transform, Affine::translate((text_x, title_y))),
-            Some(text_w),
-            &title_style.clone().with_weight(TextWeight::Medium),
+            None,
+            &title_style,
         );
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
-        if let Some(sub) = &result.subtitle {
+        if let Some(sub) = &subtitle {
             let sy = title_y + f64::from(title_h) + gap;
             let sub_col = if selected {
                 selected_ink
@@ -552,10 +689,25 @@ impl SearchResultsView {
                 sub,
                 sub_col,
                 compose(transform, Affine::translate((text_x, sy))),
-                Some(text_w),
+                None,
                 &sub_style,
             );
         }
+    }
+
+    /// Where the empty-state line is set: its left edge, the width it wraps
+    /// at and its style. A longer line (why a confirmation asks) wraps inside
+    /// the card, centred, rather than running past a narrow window's edges.
+    fn empty_frame(&self, theme: &Theme) -> (f64, f32, crate::text_render::TextStyle) {
+        let style = theme
+            .text(TextRole::Caption)
+            .with_align(crate::text_render::ParagraphAlign::Center);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "card widths are logical pixels well within f32 range"
+        )]
+        let width = (self.rect.width() - PAD * 2.0).max(1.0) as f32;
+        (self.rect.x0 + PAD, width, style)
     }
 
     fn draw_empty(
@@ -565,16 +717,15 @@ impl SearchResultsView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let style = theme.text(TextRole::Caption);
-        let (tw, th) = tr.measure_style(&self.empty_text, None, &style);
-        let cx = self.rect.center().x - f64::from(tw) / 2.0;
-        let cy = self.rect.center().y - f64::from(th) / 2.0;
+        let (x, width, style) = self.empty_frame(theme);
+        let (_, th) = tr.measure_style(&self.empty_text, Some(width), &style);
+        let cy = (self.rect.y1 - self.empty_footer + self.rect.y0) / 2.0 - f64::from(th) / 2.0;
         tr.draw_style(
             scene,
             &self.empty_text,
             theme.tokens.colors.text_dim,
-            compose(transform, Affine::translate((cx, cy))),
-            None,
+            compose(transform, Affine::translate((x, cy))),
+            Some(width),
             &style,
         );
     }
@@ -586,20 +737,21 @@ impl SearchResultsView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if !self.has_previews() {
+        let band = self.preview_band();
+        if band <= 0.0 {
             return;
         }
-        let Some(result) = self.preview_result() else {
-            return;
-        };
-        let Some(preview) = result.preview.as_deref() else {
+        let Some(preview) = self
+            .preview_result()
+            .and_then(|result| result.preview.as_ref())
+        else {
             return;
         };
         let rect = Rect::new(
             self.rect.x0 + ROW_INSET,
-            self.rect.y1 - PREVIEW_H,
+            self.rect.y1 - band,
             self.rect.x1 - ROW_INSET,
-            self.rect.y1 - PAD,
+            self.rect.y1,
         );
         crate::surface::separator(
             scene,
@@ -610,37 +762,94 @@ impl SearchResultsView {
             0.0,
             theme.tokens.colors.surfaces.base,
         );
-        let title_style = theme.text(TextRole::Subheading);
-        let body_style = theme.text(TextRole::Caption);
-        tr.draw_style(
-            scene,
-            "Preview",
-            theme.tokens.colors.text_dim,
-            compose(
-                transform,
-                Affine::translate((rect.x0 + 4.0, rect.y0 + 10.0)),
-            ),
-            None,
-            &title_style,
+        let colors = &theme.tokens.colors;
+        let heading = theme.text(TextRole::Subheading);
+        let caption = theme.text(TextRole::Caption);
+        let x = rect.x0 + ROW_TEXT_X;
+        let width = (rect.x1 - ROW_TEXT_X - x).max(0.0);
+        let (gap, title_h, line_h) = (
+            self.bands.preview_gap,
+            self.bands.preview_title,
+            self.bands.preview_line,
         );
-        let normalized = preview.split_whitespace().collect::<Vec<_>>().join(" ");
-        let available = (rect.width() - 8.0).max(0.0);
         #[allow(
             clippy::cast_possible_truncation,
-            reason = "bounded on-screen preview width"
+            reason = "a preview's width is a small on-screen pixel span"
         )]
-        let body = tr.elide_to_width_style(&normalized, available as f32, &body_style);
-        tr.draw_style(
-            scene,
-            &body,
-            theme.tokens.colors.text_primary,
-            compose(
+        let room = width as f32;
+        let body = preview.body.as_ref().map(|body| {
+            let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            tr.clamp_to_lines_style(&normalized, room, PREVIEW_BODY_LINES, &caption)
+        });
+        let mut y = rect.y0 + PAD;
+        if let Some(title) = &preview.title {
+            line(
+                scene,
                 transform,
-                Affine::translate((rect.x0 + 4.0, rect.y0 + 32.0)),
-            ),
-            None,
-            &body_style,
-        );
+                tr,
+                title,
+                colors.text_primary,
+                Point::new(x, y),
+                width,
+                &heading,
+            );
+            y += title_h + gap;
+        }
+        if !preview.facts.is_empty() {
+            // Facts stand in columns on one line, apart by a column gap,
+            // never chained with separators.
+            let column_gap = f64::from(theme.tokens.spacing.s4);
+            let mut fx = x;
+            for fact in &preview.facts {
+                let room = (x + width - fx).max(0.0);
+                if room <= 0.0 {
+                    break;
+                }
+                line(
+                    scene,
+                    transform,
+                    tr,
+                    fact,
+                    colors.text_dim,
+                    Point::new(fx, y),
+                    room,
+                    &caption,
+                );
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a fact's width is a small on-screen pixel span"
+                )]
+                let shown = tr.elide_to_width_style(fact, room as f32, &caption);
+                let (w, _) = tr.measure_style(&shown, None, &caption);
+                fx += f64::from(w) + column_gap;
+            }
+            y += line_h + gap;
+        }
+        // The item lines and the body, each with the step after it.
+        let mut parts: Vec<(Vec<String>, f64)> = Vec::new();
+        if !preview.lines.is_empty() {
+            let items = preview.lines.iter().take(PREVIEW_LINES).cloned().collect();
+            parts.push((items, line_h));
+        }
+        if let Some(body) = body {
+            parts.push((body, line_h));
+        }
+        for (lines, height) in parts {
+            for text in lines {
+                line(
+                    scene,
+                    transform,
+                    tr,
+                    &text,
+                    colors.text_primary,
+                    Point::new(x, y),
+                    width,
+                    &caption,
+                );
+                y += height;
+            }
+            y += gap;
+        }
     }
 }
 
@@ -1012,6 +1221,15 @@ impl Widget for SearchResultsView {
         }
 
         let plan = self.plan();
+        // Rows scrolled past the card's edge or under its preview band are
+        // cut off there.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &self.list_rect(),
+        );
         // Section headers: the kind in sentence case as a list section
         // header, with a trailing count.
         let header_style = theme.text(TextRole::Subheading);
@@ -1063,6 +1281,7 @@ impl Widget for SearchResultsView {
                 &style,
             );
         }
+        scene.pop_layer();
         self.draw_preview(scene, transform, text_renderer, theme);
     }
 
@@ -1071,6 +1290,21 @@ impl Widget for SearchResultsView {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
                 self.hover = self.row_at(self.last_cursor);
+            }
+            // A wheel over the rows scrolls them.
+            WindowEvent::MouseWheel { delta, .. }
+                if self.list_rect().contains(self.last_cursor) =>
+            {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        f64::from(*y) * -self.bands.two_line
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(p) => -p.y / ctx.scale_factor,
+                };
+                if self.scroll_by(dy) {
+                    self.hover = self.row_at(self.last_cursor);
+                    *ctx.handled = true;
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1169,10 +1403,9 @@ impl Widget for SearchResultsView {
                         .row
                         .as_ref()
                         .map(SearchRow::spoken)
-                        .iter()
-                        .chain(result.subtitle.iter())
-                        .chain(result.preview.iter())
-                        .cloned()
+                        .into_iter()
+                        .chain(result.subtitle.iter().cloned())
+                        .chain(result.preview.as_ref().map(SearchPreview::spoken))
                         .collect::<Vec<_>>()
                         .join(". ");
                     let mut node = AccessNode::new(Role::ListItem)
@@ -1296,7 +1529,6 @@ mod tests {
                 clippy::cast_sign_loss,
                 reason = "a small test surface"
             )]
-            // The system search panel floats over the desktop.
             let rgba = OffscreenRenderer::new(w as u32, h as u32)
                 .render(&scene, theme.tokens.colors.surfaces.base);
             #[allow(
@@ -1319,7 +1551,6 @@ mod tests {
                 theme.name
             );
 
-            // Hovered row against the bare panel ground beside its inset.
             let row = v
                 .plan()
                 .rows
@@ -1355,15 +1586,77 @@ mod tests {
         v
     }
 
+    /// More rows than the window has room for scroll inside the card: it
+    /// stops at its bound, the cursor's row is brought into view, a click
+    /// lands only on rows that show, and the preview band stays put.
+    #[test]
+    fn rows_past_the_cards_bound_scroll_under_a_fixed_preview() {
+        let mut v = SearchResultsView::new();
+        v.set_results(
+            (0..30)
+                .map(|n| {
+                    SearchResult::new("Feeds", format!("Feed {n}"), format!("f:{n}"))
+                        .with_preview(SearchPreview::titled(format!("Feed {n}")).fact("1 unread"))
+                })
+                .collect(),
+        );
+        let full = v.desired_height();
+        v.set_max_height(Some(300.0));
+        assert_eq!(v.desired_height(), 300.0, "the card stops at its bound");
+        assert!(full > 300.0);
+        v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+        let band = v.preview_band();
+        assert!(band > 0.0);
+        let list = v.list_rect();
+        assert_eq!(list.y1, 300.0 - band, "the band keeps the card's foot");
+        assert_eq!(v.row_at(Point::new(100.0, list.y1 + 1.0)), None);
+
+        // Up from the top wraps to the last row, which then shows whole.
+        v.move_up();
+        v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+        let plan = v.plan();
+        let last = plan.rows.last().unwrap();
+        assert_eq!(last.flat, 29);
+        assert!(last.rect.y1 <= v.list_rect().y1 && last.rect.y0 >= v.list_rect().y0);
+        assert_eq!(v.row_at(last.rect.center()), Some(29));
+        assert_eq!(v.list_rect().y1, list.y1, "the band never moves");
+
+        // A wheel back up shows the first row again, and stops at the top.
+        assert!(v.scroll_by(-10_000.0));
+        assert!(!v.scroll_by(-10.0));
+        assert_eq!(
+            v.row_at(v.plan().rows.first().unwrap().rect.center()),
+            Some(0)
+        );
+    }
+
+    /// Why a confirmation asks is a sentence, and a window may be narrow:
+    /// the line wraps inside the card and still fits its empty band.
+    #[test]
+    fn a_long_empty_line_wraps_inside_a_narrow_card() {
+        let theme = Theme::dark();
+        let mut view = SearchResultsView::new().with_empty_text(
+            "This workspace asks before \u{201c}Save\u{201d} reaches outside it, and you decide: confirm to go ahead.",
+        );
+        view.set_rect(Rect::new(10.0, 0.0, 250.0, EMPTY_H));
+        let (x, width, style) = view.empty_frame(&theme);
+        assert!(x >= view.rect.x0 && x + f64::from(width) <= view.rect.x1);
+        let mut text = TextRenderer::new();
+        let (wrapped_width, wrapped_height) =
+            text.measure_style(&view.empty_text, Some(width), &style);
+        let (_, line) = text.measure_style("Ag", None, &style);
+        assert!(wrapped_width <= width + 0.5, "{wrapped_width} > {width}");
+        assert!(wrapped_height > line * 1.5, "the sentence wraps");
+        assert!(f64::from(wrapped_height) <= EMPTY_H, "{wrapped_height}");
+    }
+
     #[test]
     fn result_groups_index_preview_and_size_the_panel() {
-        // Case `set_groups_builds_flat_index_and_clamps_cursor`.
         {
             let mut v = view_from("");
             assert_eq!(v.len(), 3, "two contacts + one app");
             v.set_cursor(99);
             assert_eq!(v.cursor(), v.len() - 1, "cursor clamps into range");
-            // Shrinking the list re-clamps.
             v.set_groups(vec![SearchGroup {
                 kind: "Apps".into(),
                 results: vec![SearchResult::new("Apps", "Calculator", "app:calc")],
@@ -1371,7 +1664,6 @@ mod tests {
             assert_eq!(v.cursor(), 0);
         }
 
-        // Case `preview_reserves_fixed_space_and_is_announced`.
         {
             let mut view = SearchResultsView::new();
             view.set_results(vec![
@@ -1396,7 +1688,38 @@ mod tests {
             );
         }
 
-        // Case `empty_results_show_empty_state_and_no_activation`.
+        // A preview with a heading, facts and items takes the room they need,
+        // the tallest one sets the band, and a reader hears all of it.
+        {
+            let mut view = SearchResultsView::new();
+            view.set_results(vec![
+                SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
+            ]);
+            let body_only = view.desired_height();
+            view.set_results(vec![
+                SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
+                SearchResult::new("Feeds", "Rust Blog", "feed").with_preview(
+                    crate::search::SearchPreview::titled("Rust Blog")
+                        .fact("blog.rust-lang.org")
+                        .fact("1 unread")
+                        .line("Announcing Rust 1.96.1")
+                        .line("A new era for the borrow checker"),
+                ),
+            ]);
+            let structured = view.desired_height();
+            assert!(
+                structured > body_only + view.bands.one_line,
+                "a heading, facts and items take more room than an excerpt: \
+                 {structured} vs {body_only}"
+            );
+            view.set_cursor(1);
+            assert_eq!(view.desired_height(), structured, "the band never moves");
+            let access = Widget::accessibility(&view).expect("result list semantics");
+            assert!(access.children[1].description.as_deref().is_some_and(|d| {
+                d.contains("blog.rust-lang.org. 1 unread") && d.contains("Announcing Rust")
+            }));
+        }
+
         {
             let mut v = SearchResultsView::new().with_empty_text("Nothing here");
             v.set_groups(vec![]);
@@ -1416,7 +1739,6 @@ mod tests {
             assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
         }
 
-        // Case `desired_height_grows_with_content`.
         {
             let empty = SearchResultsView::new().desired_height();
             let full = view_from("").desired_height();
@@ -1429,7 +1751,6 @@ mod tests {
 
     #[test]
     fn results_activate_from_keyboard_and_pointer() {
-        // Case `keyboard_navigation_wraps_and_enter_activates`.
         {
             let mut v = view_from("");
 
@@ -1450,7 +1771,6 @@ mod tests {
             dispatch(&mut v, &key(NamedKey::ArrowUp));
             assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
-            // Enter activates the highlighted row and drains once.
             v.set_cursor(0);
             dispatch(&mut v, &key(NamedKey::Enter));
             assert_eq!(
@@ -1461,7 +1781,6 @@ mod tests {
             assert_eq!(v.take_activated(), None, "activation drains after one read");
         }
 
-        // Case `clicking_a_row_selects_and_activates_it`.
         {
             let mut v = view_from("");
             // The plan is the same geometry draw uses; target the third row (the App).

@@ -307,7 +307,6 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
 /// stops the daemon and every federation dial task, but leaves peers to
 /// notice by timeout.
 pub struct Relay {
-    /// Iroh endpoint the daemon accepts on.
     pub endpoint: Endpoint,
     /// Iroh router that wires the ALPN → protocol handler.
     router: Router,
@@ -347,6 +346,10 @@ pub struct Relay {
     /// certified host retains the existing dynamic multi-workspace behavior.
     interactive_workspace_id: Option<u64>,
     interactive_owner_trust: Option<tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust>,
+    /// Sealing what the rooms it stewards hold in the clear, started when
+    /// its operator decided it ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    resealing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -423,7 +426,6 @@ pub struct RelayHandle {
 pub struct RelayIdentity {
     /// The user root pubkey the relay chains to.
     pub user_public_key: [u8; 32],
-    /// This device's signing key.
     pub device_signing_key: ed25519_dalek::SigningKey,
     /// This device's signed cert (issued by the user root).
     pub device_cert: DeviceCert,
@@ -928,9 +930,22 @@ impl Relay {
         if let (Some(governance), Some(rooms)) = (&governance, &rooms) {
             governance.attach(rooms.clone());
         }
+        #[cfg(feature = "agents")]
+        let mut resealing = None;
         #[cfg(any(feature = "agents", feature = "web"))]
         if let Some(rooms) = &rooms {
             handler.compactor.steward_with(Arc::new(rooms.clone()));
+            // What the rooms it stewards hold in the clear is sealed only
+            // once its operator decided it, recorded in its state.
+            #[cfg(feature = "agents")]
+            if crate::reseal::decided(&cfg.state_root) {
+                let (rooms, compactor) = (rooms.clone(), handler.compactor.clone());
+                rooms.reseal_existing();
+                compactor.reseal_existing();
+                resealing = Some(tokio::spawn(async move {
+                    rooms.reseal_stewarded(&compactor).await;
+                }));
+            }
         }
         let mut router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
@@ -1019,6 +1034,8 @@ impl Relay {
             workspaces,
             metrics,
             identity: live,
+            #[cfg(feature = "agents")]
+            resealing: std::sync::Mutex::new(resealing),
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
             peer_relay_tasks,
@@ -1038,10 +1055,6 @@ impl Relay {
 
     /// Install the original native owner's bounded refresh mailbox for one bound room.
     /// Replacing an installed owner requires closing/recreating this relay.
-    ///
-    /// # Errors
-    ///
-    /// Returns `String` if the inputs violate this operation's bounds or invariants.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the runtime guard borrows the registry handle and ends with this short scope, right after its only write"
@@ -1099,17 +1112,7 @@ impl Relay {
         if let Err(error) = self.router.shutdown().await {
             tracing::debug!(%error, "relay router shutdown task failed");
         }
-    }
-
-    /// Add a peer relay after startup — used by tests + the eventual
-    /// admin CLI. Same reconnect-with-backoff loop as the config-time
-    /// path.
-    pub fn add_peer_relay(&self, peer: PeerRelayConfig) {
-        let Some(node_id) = parse_iroh_node_id(&peer.iroh_node_id) else {
-            tracing::warn!(?peer.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
-            return;
-        };
-        self.add_peer_relay_at(EndpointAddr::new(node_id), peer.label, peer.priority);
+        self.compactor().stop().await;
     }
 
     /// Add a peer relay with a fully-resolved endpoint address —
@@ -1142,10 +1145,6 @@ impl Relay {
     /// delegation against this relay's user and confine the device to the
     /// delegated rooms from its next envelope on. Replaces an earlier
     /// delegation of the same device.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the delegation is not usable now.
     pub fn register_agent(
         &self,
         delegation: tilo_relay_protocol::delegation::Delegation,
@@ -1168,6 +1167,21 @@ impl Relay {
     /// what a peer needs to dial this relay.
     pub fn node_addr(&self) -> EndpointAddr {
         self.endpoint.addr()
+    }
+
+    /// Wait until the relay has sealed what the rooms it stewards held in
+    /// the clear when it started, if its operator decided it
+    /// ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    pub async fn resealed(&self) {
+        let task = self
+            .resealing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 
     /// The compactor keeping this relay's retained document channels short.
@@ -1255,12 +1269,8 @@ impl Relay {
     /// Let visitors watch `workspace_id` read-only as `spectators`: every
     /// device the spectator root certified reads the room's state and
     /// writes nothing, up to `spectators.seats` subscribed at once (see
-    /// [`crate::room_access`]). The spectator person must be a member of the
+    /// `crate::room_access`). The spectator person must be a member of the
     /// room, which is also what lets its devices through the handshake.
-    ///
-    /// # Errors
-    ///
-    /// The room is not open on this relay.
     pub async fn admit_spectators(
         &self,
         workspace_id: u64,

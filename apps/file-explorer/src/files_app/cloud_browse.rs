@@ -1,5 +1,6 @@
 //! Provider-backed browsing is deliberately not a synthetic filesystem mount.
-#[cfg(test)]
+// Every cancel scenario runs a real import, whose staging only Linux provides.
+#[cfg(all(test, target_os = "linux"))]
 #[path = "cloud_cancel_tests.rs"]
 mod cancel_tests;
 #[cfg(test)]
@@ -101,6 +102,46 @@ impl FileExplorerWidget {
         });
         self.structure_dirty = true;
         Ok(())
+    }
+
+    /// A capture's cloud folder: a made-up Drive account browsed into one of
+    /// its folders, staged as a page of entries would leave it. No account
+    /// store, vault or cloud service is read.
+    pub(super) fn debug_show_cloud_folder(&mut self) {
+        let account = crate::remote_accounts::RemoteAccount {
+            id: accounts::AccountId::from("shot-drive"),
+            kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
+            label: "Drive".into(),
+            host: "drive.google.com".into(),
+            health: crate::remote_accounts::RemoteAccountHealth::Healthy,
+            files_mode: accounts::cloud_types::FilesMode::Import,
+            mount: None,
+        };
+        self.startup_accounts = Some(vec![account]);
+        self.places_shown = None;
+        let entry = |id: &str, name: &str, kind: ImportKind| ImportEntry {
+            id: id.into(),
+            name: name.into(),
+            kind,
+            revision: Some("1".into()),
+            size: None,
+            content_writable: false,
+        };
+        self.leave_cloud_browse();
+        "shot-drive".clone_into(&mut self.cloud.account);
+        self.cloud.folder = Some("trip".into());
+        self.cloud.folder_label = Some("Trip to Lisbon".into());
+        self.cloud.entries = vec![
+            entry("tickets", "Train tickets.pdf", ImportKind::File),
+            entry("plan", "Itinerary", ImportKind::NativeExport),
+            entry("budget", "Budget", ImportKind::NativeExport),
+            entry("photos", "Photos", ImportKind::Folder),
+        ];
+        self.cloud.active = true;
+        self.entries.clear();
+        self.error = None;
+        self.is_loading = false;
+        self.structure_dirty = true;
     }
 
     pub(super) fn leave_cloud_browse(&mut self) {
@@ -346,16 +387,31 @@ impl FileExplorerWidget {
         }
     }
 
+    /// What a cloud folder is called where the window names its place: the
+    /// account, and the folder in it. `None` outside cloud mode.
+    pub(super) fn cloud_title(&self) -> Option<(String, Option<String>)> {
+        if !self.cloud.active {
+            return None;
+        }
+        let account = self
+            .remote_account(&self.cloud.account)
+            .map_or_else(|| t("files-cloud-title"), |account| account.label);
+        Some((account, self.cloud.folder_label.clone()))
+    }
+
+    /// Name the cloud folder in the content header, and give the header its
+    /// path and actions back after cloud mode. While the window's bar hosts
+    /// the header, the bar names the folder ([`Self::window_toolbar`]) and
+    /// the window draws no header to change.
     pub(super) fn refresh_cloud_header(&mut self) {
-        if self.cloud.active {
-            let account = self
-                .remote_account(&self.cloud.account)
-                .map_or_else(|| t("files-cloud-title"), |account| account.label);
-            let title = self
-                .cloud
-                .folder_label
-                .as_ref()
-                .map_or_else(|| account.clone(), |folder| format!("{account} / {folder}"));
+        if self.header_in_bar {
+            self.cloud.header_shown = false;
+            return;
+        }
+        if let Some((account, folder)) = self.cloud_title() {
+            let title =
+                folder.map_or_else(|| account.clone(), |folder| format!("{account} / {folder}"));
+            // window-bar: fallback, the bar names the folder while it hosts the window
             self.nav
                 .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
             self.nav.set_content_header("", vec![]);
@@ -364,7 +420,9 @@ impl FileExplorerWidget {
             let (leading, actions, toolbar) = crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
             self.update_toolbar();
+            // window-bar: fallback, the bar shows the path while it hosts the window
             self.nav.set_content_header_leading(Some(Box::new(leading)));
+            // window-bar: fallback, the bar holds the folder's actions while it hosts the window
             self.nav.set_content_header("", vec![Box::new(actions)]);
             self.cloud.header_shown = false;
         }

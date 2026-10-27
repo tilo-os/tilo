@@ -191,7 +191,7 @@ def validate_flatpak_inventory(raw, operation, handoff=None):
 def validate_migration(raw, handoff=None):
     """Secret-free consent and source binding, never a mount/copy authority."""
     required = {'schema', 'operation_id', 'categories', 'home'}
-    if not isinstance(raw, dict) or not required <= set(raw) or set(raw) - required - {'flatpak_inventory', 'home_policy', 'pending_computer_applications_scope'}:
+    if not isinstance(raw, dict) or not required <= set(raw) or set(raw) - required - {'flatpak_inventory', 'home_policy', 'pending_computer_applications_scope', 'deferred_handoff'}:
         raise Refusal('migration plan fields differ from schema 1')
     if (type(raw['schema']) is not int or raw['schema'] != 1
             or (handoff is not None and raw['operation_id'] != handoff['operation_id'])):
@@ -212,6 +212,20 @@ def validate_migration(raw, handoff=None):
     uid = _int(home['original_uid'], 'migration source uid')
     if uid > 0xffffffff:
         raise Refusal('migration source uid exceeds its range')
+    deferred = raw.get('deferred_handoff')
+    if deferred is not None:
+        if (not isinstance(deferred, dict)
+                or set(deferred) != {'schema', 'original_uid', 'journal_sha256'}
+                or type(deferred['schema']) is not int or deferred['schema'] != 1
+                or type(deferred['original_uid']) is not int
+                or deferred['original_uid'] != 1000
+                or deferred['original_uid'] != uid
+                or not isinstance(deferred['journal_sha256'], list)
+                or len(deferred['journal_sha256']) != 32
+                or any(type(byte) is not int or not 0 <= byte <= 255
+                       for byte in deferred['journal_sha256'])
+                or not any(deferred['journal_sha256'])):
+            raise Refusal('deferred source handoff is malformed')
     locator = home['relative']
     if not isinstance(locator, dict) or set(locator) != {'platform', 'units'} or locator['platform'] != 'Unix':
         raise Refusal('migration locator must be a native Linux relative path')

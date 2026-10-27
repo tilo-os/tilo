@@ -16,7 +16,7 @@ impl crate::services::AppActionGrants for LocalReportGrants {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
             .unwrap();
         assert!(workspace.revoke_grant(&tilo_action_policy::GrantId::new(grant)));
     }
@@ -110,7 +110,7 @@ async fn local_report_admission(
                 .host_workers
                 .lock()
                 .unwrap()
-                .get(&903)
+                .only(903)
                 .unwrap()
                 .clone();
             let raw: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
@@ -120,10 +120,12 @@ async fn local_report_admission(
                 directories: rig.directories.clone(),
                 channel_id: env.route.channel_key(),
                 peer_id: 903,
+                connection_id: 903,
                 verified_identity: identity.clone(),
                 record_kind: None,
                 route_access: RouteAccess::Own,
                 lease: None,
+                _hold: None,
             });
             let before_stale = receipt_barriers(&rig);
             assert!(matches!(
@@ -148,7 +150,7 @@ async fn local_report_admission(
                 "a retained pre-event revision must never authorize ordinary invocation"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             let mut request = crate::local_document_action::Request {
                 custody: Some(runtime_collab::committed_document::ConnectionSnapshot {
                     root: env.cert.user_public_key,
@@ -225,8 +227,47 @@ async fn local_report_admission(
                     "{field}: {error}"
                 );
                 assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
-                no_delivery(&rig).await;
+                no_delivery(&rig);
             }
+            // A connection no launcher vouched for is no worker. Nothing
+            // reported on it can be admitted, so the broker refuses
+            // definitively: the app stops holding the report (and the
+            // surface it was made under) instead of waiting forever.
+            let app_connection: channel_handle::Client =
+                capnp_rpc::new_client(CapnpChannelHandle {
+                    person_chat_views: std::cell::RefCell::default(),
+                    committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                    state: rig.state.clone(),
+                    directories: rig.directories.clone(),
+                    channel_id: env.route.channel_key(),
+                    peer_id: 904,
+                    connection_id: 904,
+                    verified_identity: identity.clone(),
+                    record_kind: None,
+                    route_access: RouteAccess::Own,
+                    lease: None,
+                    _hold: None,
+                });
+            let mut call = app_connection.admit_local_document_action_request();
+            call.get()
+                .set_request(&serde_json::to_vec(&request).unwrap());
+            let error = call
+                .send()
+                .promise
+                .await
+                .err()
+                .expect("a connection that is no host worker admits no report");
+            assert!(
+                error.to_string().contains(&format!(
+                    "{}{}",
+                    runtime_collab::LOCAL_DOCUMENT_REJECTED,
+                    runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING
+                )),
+                "{error}"
+            );
+            assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
+            no_delivery(&rig);
+            drop(app_connection);
             let mut wrong_revision = request.clone();
             wrong_revision.revision = "not-retained".into();
             wrong_revision.invocation = wrong_revision.bound_invocation().unwrap();
@@ -285,7 +326,7 @@ async fn local_report_admission(
                 );
                 assert_eq!(receipt_barriers(&rig).writes, before.writes);
                 assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(raw);
                 rig.stop().await;
                 return;
@@ -395,7 +436,7 @@ async fn local_report_admission(
             }
             assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             assert!(
                 !env.membership.write().workspaces[0].revoke_grant(&first_grant),
                 "first admission spends its one-use grant"
@@ -428,7 +469,7 @@ async fn local_report_admission(
                     .unwrap(),
                 observation.get_admission_json().unwrap()
             );
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             let mut substituted = request.clone();
             substituted.encoded.payload = b"null".to_vec();
             let mut retry = raw.admit_local_document_action_request();
@@ -512,7 +553,7 @@ async fn local_report_admission(
                     "eviction cannot permit content substitution"
                 );
                 assert_eq!(receipt_barriers(&rig), before_burst);
-                no_delivery(&rig).await;
+                no_delivery(&rig);
             }
             // Cached observations still consult current host custody, even if
             // the original connection and receipt are both retained.
@@ -522,7 +563,7 @@ async fn local_report_admission(
             assert!(revoked_retry.send().promise.await.is_err());
             *env.authority.certificate.lock().unwrap() = original_host;
             // An old endpoint must not silently inherit a missing/replaced host.
-            rig.state.host_workers.lock().unwrap().remove(&903);
+            rig.state.host_workers.lock().unwrap().remove(903);
             pin_dropped.set(true);
             let mut stale_retry = raw.admit_local_document_action_request();
             stale_retry.get().set_request(&bytes);
@@ -538,7 +579,7 @@ async fn local_report_admission(
                 .set_request(&serde_json::to_vec(&substituted).unwrap());
             assert!(stale.send().promise.await.is_err());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             drop(raw);
             rig.stop().await;
         })

@@ -243,9 +243,6 @@ pub struct Reader {
 
 impl Service {
     /// Create an unbound service. A host must establish identity explicitly.
-    ///
-    /// # Errors
-    /// The root is relative. Directory creation waits until the first write.
     pub fn new(root: PathBuf) -> io::Result<Self> {
         if !root.is_absolute() {
             return Err(invalid(

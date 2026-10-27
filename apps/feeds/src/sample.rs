@@ -40,12 +40,10 @@ pub fn store() -> Library {
     let now = ui::clock::local_now().timestamp();
     let mut s = Library::new();
 
-    // --- folders ---------------------------------------------------------
     let tech = folder(&mut s, "Technology");
     let science = folder(&mut s, "Science");
     let design = folder(&mut s, "Design");
 
-    // --- feeds -----------------------------------------------------------
     let rust = feed(
         &mut s,
         "Rust Blog",
@@ -103,7 +101,6 @@ pub fn store() -> Library {
         FeedKind::Gemini,
     );
 
-    // --- Rust Blog -------------------------------------------------------
     article(
         &mut s,
         SampleArticle::new(
@@ -244,7 +241,6 @@ pub fn store() -> Library {
         ),
     );
 
-    // --- Lobsters --------------------------------------------------------
     article(
         &mut s,
         SampleArticle::new(
@@ -281,7 +277,6 @@ pub fn store() -> Library {
         .read(),
     );
 
-    // --- Quanta ----------------------------------------------------------
     article(
         &mut s,
         SampleArticle::new(
@@ -321,7 +316,6 @@ pub fn store() -> Library {
         ),
     );
 
-    // --- NASA ------------------------------------------------------------
     article(
         &mut s,
         SampleArticle::new(
@@ -356,7 +350,6 @@ pub fn store() -> Library {
         .read(),
     );
 
-    // --- Smashing --------------------------------------------------------
     article(
         &mut s,
         SampleArticle::new(
@@ -395,7 +388,6 @@ pub fn store() -> Library {
         .read(),
     );
 
-    // --- Gemini capsule (gemtext-rendered body) --------------------------
     let gem_body = "# Antenna — aggregated gemlogs\n\nWelcome to Antenna, a feed of recent posts from across Geminispace.\n\n## Recent entries\n\n=> gemini://example.org/log/2026-06-30.gmi On writing small software\n=> gemini://another.capsule/posts/tea.gmi A defence of loose-leaf tea\n\nGemini is a lightweight internet protocol sitting between Gopher and the Web. Pages are written in gemtext:\n\n```\n# A heading\n* a list item\n=> gemini://link.example a link line\n```\n\n> Slow down. Read one thing at a time.\n\nThat's the whole format. No tracking, no ads, no JavaScript.";
     let gem_blocks = gemtext::to_blocks(gem_body);
     article(
@@ -524,7 +516,6 @@ fn article(s: &mut Library, fixture: SampleArticle<'_>) {
 mod tests {
     use super::*;
 
-    /// The sample store covers every demo surface and preserves article states and inferred tags.
     #[test]
     fn sample_store_covers_demo_surfaces_and_preserves_states() {
         // --- phase: sample_store_covers_every_demo_surface ---

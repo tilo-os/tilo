@@ -73,6 +73,16 @@ let tag = p.tags.insert(&"docs".to_owned());
 An edit replays, syncs, undoes and is named in history like any action, and
 applies at its path without reading the rest of the record. The model's
 `check` runs after it. `#[model(readonly)]` fields offer no edits.
+`#[model(trust = "sensitive")]` makes every edit of a field ask for
+confirmation first, whoever makes it (a change can expose the person);
+`#[model(trust = "weakening")]` also marks it privileged, so an agent or script
+acting for the person needs their own grant (any change can weaken their
+security). `#[model(weaker = ..)]` does so only for a change making the field
+weaker than it is now: `weaker = "higher", weakest = 0` for the screen lock's
+delay (longer or never asks, shorter does not), `weaker = true` for a switch
+that exposes when on, a list from the strongest to the weakest value for a
+choice. Every door reads the confirmation from the published field edit,
+without the app's code.
 
 ## 3. Verbs
 
@@ -107,8 +117,12 @@ impl Bookmarks {
   the record type).
 - A verb whose first parameter is `&Id` is also offered on each item, with
   the item bound.
-- `destructive` asks for confirmation from people; returning `Err` refuses
-  the verb and changes nothing.
+- `destructive` marks a deletion or overwrite. A verb that changes only the
+  document is undoable, so it runs at once and the app offers Undo (the
+  standard notice); only one Undo cannot take back asks people first. A
+  verb that also loses what Undo cannot bring back (an account's secret
+  every device forgets) adds `irreversible`, so it asks through every door.
+  Returning `Err` refuses the verb and changes nothing.
 - A verb runs again on every replica, so its body must not read a clock,
   randomness, files, the network, the environment or another process. Mint
   ids with `cx.id()`, read the time with `cx.now_ms()`, and take everything

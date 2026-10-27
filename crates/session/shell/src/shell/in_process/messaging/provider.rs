@@ -255,32 +255,20 @@ impl super::super::InProcessApps {
         }
     }
     pub(super) fn default_native_accounts(
-        &mut self,
+        &self,
         service: &str,
     ) -> Result<Vec<(String, accounts::person::PersonAccount)>, SendError> {
-        use accounts::person::PersonAccounts;
-        use tilo_resource::Resource as _;
-        let records = ui::record::person::PersonRecords::open(
-            &mut self.owners,
-            accounts::person::ACCOUNTS_OWNER,
-            self.author.clone(),
-        )
-        .map_err(|_| SendError::Unavailable)?;
-        let record = records
-            .open_original_record(ui::record::RecordKind::new(PersonAccounts::KIND), |doc| {
-                PersonAccounts::initialize(doc).map_err(|error| error.to_string())
+        let service = service.to_owned();
+        self.person_records
+            .read::<accounts::person::PersonAccounts, _>(move |state| {
+                state
+                    .accounts
+                    .iter()
+                    .filter(|(_, row)| row.enabled && row.type_id == service)
+                    .map(|(id, row)| (id.as_str().to_owned(), row.clone()))
+                    .collect()
             })
-            .map_err(|_| SendError::Unavailable)?;
-        let state = record
-            .read(PersonAccounts::read)
-            .ok_or(SendError::Unavailable)?
-            .map_err(|_| SendError::Unavailable)?;
-        Ok(state
-            .accounts
-            .iter()
-            .filter(|(_, row)| row.enabled && row.type_id == service)
-            .map(|(id, row)| (id.as_str().to_owned(), row.clone()))
-            .collect())
+            .map_err(|_| SendError::Unavailable)
     }
 }
 

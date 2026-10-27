@@ -76,6 +76,9 @@ pub struct EditableLabel {
     /// The text and style the last `measure` sized; the label needs measuring
     /// again only when either changed.
     measured: Option<(String, TextStyle)>,
+    /// A blank commit empties the value instead of keeping it: the label
+    /// names something that has a default to fall back to.
+    blank_clears: bool,
 }
 
 impl EditableLabel {
@@ -102,6 +105,7 @@ impl EditableLabel {
             placeholder: None,
             edit_request: None,
             measured: None,
+            blank_clears: false,
         }
     }
 
@@ -135,6 +139,15 @@ impl EditableLabel {
     #[must_use]
     pub fn edits_on_click(mut self) -> Self {
         self.edits_on_click = true;
+        self
+    }
+
+    /// Commit a blank entry as an empty value rather than keeping the one
+    /// before, for a name with a default behind it: clearing a tab's name
+    /// gives it back its window's own title.
+    #[must_use]
+    pub fn clears_on_blank(mut self) -> Self {
+        self.blank_clears = true;
         self
     }
 
@@ -285,14 +298,16 @@ impl EditableLabel {
         self.outcome = EditOutcome::None;
     }
 
-    /// A blank entry keeps the previous value. No-op when not editing.
+    /// A blank entry keeps the previous value, unless the label
+    /// [`Self::clears_on_blank`]. No-op when not editing.
     pub fn commit(&mut self) {
         if !self.editing {
             return;
         }
         let trimmed = self.input.value().trim().to_string();
-        let changed = !trimmed.is_empty() && trimmed != self.value;
-        if !trimmed.is_empty() {
+        let takes = !trimmed.is_empty() || self.blank_clears;
+        let changed = takes && trimmed != self.value;
+        if takes {
             self.value = trimmed;
         }
         self.editing = false;
@@ -928,5 +943,17 @@ mod tests {
         drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
         assert_eq!(el.take_outcome(), EditOutcome::Committed("Go".into()));
         assert_eq!(el.value(), "Go");
+    }
+
+    #[test]
+    fn a_label_that_clears_on_blank_commits_an_empty_value() {
+        let mut doc = AutoCommit::new();
+        let mut el = EditableLabel::new("Build").clears_on_blank();
+        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+        el.begin_edit();
+        drive(&mut el, &mut doc, &char_key(" "), no_mods());
+        drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
+        assert_eq!(el.take_outcome(), EditOutcome::Committed(String::new()));
+        assert_eq!(el.value(), "");
     }
 }

@@ -1,5 +1,7 @@
-//! The inspector in a narrow window: a drawer over the artwork that holds
-//! its controls and the layers, none of them cut off by the window's edge.
+//! The inspector in a narrow window, docked beside the artwork where the
+//! artwork keeps its least width and a sheet over it where it would not:
+//! either holds its controls and the layers, none of them cut off by the
+//! window's edge.
 
 use canvas::App;
 use ui::prelude::TestApp;
@@ -9,19 +11,28 @@ fn the_inspector_drawer_holds_its_controls_inside_the_window() {
     let mut app = TestApp::<App>::capture(Some("landscape")).expect("the scenario stages");
     let width = 600.0;
     app.harness().resize((600, 800)).expect("resizes");
-    let toggle = app
-        .harness()
-        .targets()
-        .into_keys()
-        .find(|name| name.ends_with("nav-shell-inspector"))
-        .expect("a narrow window offers the inspector toggle");
-    app.harness()
-        .click_named(&toggle)
-        .expect("the toggle opens");
+    // The tools' toggle is the window bar's slot now, not a control in a row
+    // of the app's own.
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert!(
+        declared
+            .actions
+            .iter()
+            .any(|action| action.id == "canvas.tools"),
+        "a narrow window offers the tools' toggle in its bar"
+    );
+    // At 600 px the artwork keeps its least width beside the inspector, so
+    // the inspector docks and stands open; only a closed one is opened.
+    if !app.harness().targets().contains_key("canvas-dock") {
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+                id: "canvas.tools".to_owned(),
+            });
+    }
     assert!(
         app.harness()
             .settle_for_capture(tilo_test_env::hang_bound()),
-        "the drawer settles"
+        "the inspector settles"
     );
     let targets = app.harness().targets();
     let own: Vec<_> = targets
@@ -71,33 +82,37 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
         add_picture.y0 > targets["canvas-welcome-new"].y1,
         "the touch import action is below the welcome, outside its scrolling viewport"
     );
-    let header: Vec<_> = targets
+    // The artwork has the window from its top edge: the row that used to hold
+    // the title, the menu and the zoom stands in the window bar now, and the
+    // controls it held are slots there rather than buttons over the artwork.
+    let canvas = targets.get("canvas").expect("the artwork pane");
+    assert!(
+        canvas.y0 <= 0.5,
+        "no row stands above the artwork on a phone: {canvas:?}"
+    );
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let ids: Vec<&str> = declared
+        .actions
         .iter()
-        .filter(|(name, rect)| {
-            (name.starts_with("canvas-zoom-")
-                || name.as_str() == "canvas-menu"
-                || name.ends_with("nav-shell-inspector")
-                || name.as_str() == "standalone-history-open")
-                && rect.height() > 0.0
+        .flat_map(|action| {
+            std::iter::once(action.id.as_str())
+                .chain(action.items.iter().map(|item| item.id.as_str()))
         })
         .collect();
-    assert!(
-        !header.is_empty(),
-        "the actual header exposes its mounted controls"
-    );
-    for (index, (name, rect)) in header.iter().enumerate() {
-        assert!(rect.x0 >= 0.0 && rect.x1 <= 390.0, "{name}: {rect:?}");
-        assert!(
-            rect.y1 < targets["canvas-welcome-close"].y0,
-            "header and welcome overlap: {name} {rect:?}"
-        );
-        for (other, other_rect) in &header[index + 1..] {
-            assert!(
-                rect.intersect(**other_rect).area().total_cmp(&0.0).is_eq(),
-                "header controls overlap: {name} {rect:?}; {other} {other_rect:?}"
-            );
-        }
+    for wanted in [
+        "canvas.menu",
+        "canvas.add-picture",
+        "canvas.zoom-in",
+        "canvas.zoom-out",
+        "canvas.zoom-fit",
+        "canvas.tools",
+    ] {
+        assert!(ids.contains(&wanted), "{wanted} is a slot in {ids:?}");
     }
+    assert!(
+        declared.location.is_some(),
+        "the artwork's title is the bar's location on a phone too"
+    );
 }
 
 #[test]
@@ -128,6 +143,36 @@ fn phone_tools_live_below_the_artwork_and_survive_rotation() {
         assert!(
             audit.is_certified(),
             "the mobile composition keeps every canonical action: {audit:#?}"
+        );
+    }
+}
+
+/// Every accessible name drawn in `root`'s tree.
+fn names(root: &dyn ui::widget::Widget, out: &mut Vec<String>) {
+    if let Some(name) = root.accessibility().and_then(|node| node.name) {
+        out.push(name);
+    }
+    for child in root.children() {
+        names(child, out);
+    }
+}
+
+/// The welcome offers a new artwork, opening one and the recent ones; it
+/// teaches no keys or tools, which the app shows where they are used.
+#[test]
+fn the_welcome_lists_no_shortcuts() {
+    let mut app = TestApp::<App>::capture_at(None, (1280, 800)).expect("blank artwork");
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key("canvas-welcome-new"),
+        "the welcome is up"
+    );
+    let mut shown = Vec::new();
+    names(app.harness().root_widget(), &mut shown);
+    for teaching in ["Press ?", "(B)", "(R, E, L)", "ask one to paint"] {
+        assert!(
+            shown.iter().all(|name| !name.contains(teaching)),
+            "the welcome teaches {teaching:?}: {shown:?}"
         );
     }
 }

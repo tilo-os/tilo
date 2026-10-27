@@ -54,10 +54,6 @@ pub struct OciSource {
 
 impl OciSource {
     /// Parse `host/repo[:tag]`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a reference without a host and a repository.
     pub fn parse(reference: &str) -> Result<Self> {
         let (registry, rest) = reference
             .split_once('/')
@@ -653,7 +649,6 @@ mod tests {
                 "no staging file may remain: {leftovers:?}"
             );
         }
-        // Phase `a_cached_package_past_the_ceiling_is_refused_before_it_is_read`.
         {
             let cached = dir.path().join("big.tapp");
             std::fs::write(&cached, &tapp).unwrap();

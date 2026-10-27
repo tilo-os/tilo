@@ -39,6 +39,7 @@ mod chrome;
 pub mod fetch;
 pub mod gemtext;
 pub mod html;
+pub mod i18n;
 mod list_pane;
 pub mod modal;
 pub mod model;
@@ -47,6 +48,7 @@ mod reader_pane;
 pub mod reader_theme;
 pub mod resource;
 pub mod sample;
+pub mod search;
 mod sidebar;
 
 pub use app::FeedsApp;

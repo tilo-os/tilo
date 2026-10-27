@@ -225,8 +225,9 @@ A variant can carry more than the architecture where names differ (`deb = "arm64
 (`tools/ci/publish/rehearsal`) that runs the chain every product runs, so a release can be
 proven on t without releasing anything anyone deploys:
 
-- every push to main publishes `registry.tilo.so/tilo/release-rehearsal:dev-<commit>` when its
-  inputs changed, and sets main's `release-rehearsal` pointer to the receipt;
+- `t dispatch publish-release-rehearsal --ref main` publishes
+  `registry.tilo.so/tilo/release-rehearsal:dev-<commit>` and sets main's `release-rehearsal`
+  pointer to the receipt (pushes to main don't, since nothing deploys it);
 - a tag `v0-rehearsal-<n>` runs it as a release, and nothing else runs on such a tag (the relay
   releases on version tags only, `v1.2.3`): `sign-release-rehearsal` exchanges a
   `sts.amazonaws.com` identity token for the signing role and signs the build's digest with the
@@ -261,29 +262,30 @@ serves it. To move one forward, put the new digest in that file and in the pins 
 
 | chain | build (no secrets) | sign (stable) | publish (main, development tag) | release (stable) |
 |---|---|---|---|---|
-| room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `publish-room-service`: `sha-<commit>`, signed, receipt |
-| web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
-| release rehearsal | `image-release-rehearsal` | `sign-release-rehearsal` (`v0-rehearsal-*` tags, dispatch) | `publish-release-rehearsal`: `dev-<commit>` | `publish-release-rehearsal`: `sha-<commit>`, signed, receipt, the `release-rehearsal` pointer |
+| room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service` (dispatch): `dev-<commit>` | `publish-room-service`: `sha-<commit>`, signed, receipt |
+| web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry` (dispatch): `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
+| release rehearsal | `image-release-rehearsal` | `sign-release-rehearsal` (`v0-rehearsal-*` tags, dispatch) | `publish-release-rehearsal` (dispatch): `dev-<commit>` | `publish-release-rehearsal`: `sha-<commit>`, signed, receipt, the `release-rehearsal` pointer |
 | mirrored images | | | `mirror-images`: the digests of `tools/ci/publish/mirrored-images.tsv` | |
-| ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`, `publish-ci-control`: `sha-<commit>` | (CI tooling, not a product) |
-| registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
-| relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
+| ci-fast | `image-ci-fast`, `image-ci-fast-smoke` | | `publish-ci-fast`: `sha-<commit>` | (CI tooling, not a product) |
+| registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | `sign-registry-server` | `publish-registry-server` (dispatch): `dev-<commit>` | `publish-registry-server`: `sha-<commit>`, signed, receipt for GitOps |
+| relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, and `latest` for a final version, signed |
 | env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
-| RPM snapshot | `image-rpms-x86_64`, `-aarch64`, `image-rpms` (their index), `provenance-rpms` (frozen-rpm-index/v1, the fingerprint) | `sign-rpms`: the index and both images, the index's provenance, with transparency log entries | | `publish-rpms`: `set-<fingerprint>` once, signed and attested |
-| kernel | `image-kernel-x86_64`, `-aarch64`, `kernel-acceptance-<arch>`, `provenance-kernel` (kernel-rpm/v1, binding the buildroot) | `sign-kernel`: both, with provenance and transparency log entries | | `publish-kernel`: `sha-<commit>-<arch>`, the `kernel` pointer; `pin-kernel` commits it to `os/kernel-snapshot.env` on main |
+| env tools | `env-tools-binaries-x86_64`, `-aarch64`, `env-tools-x86_64`, `-aarch64` (every tool sealed for the runtime's publisher with a placeholder signature); `image-env-tools-preview` (the image of the unsigned builds); on stable `env-tools-plan` first, after `release-env-runtime`: the tag, and nothing built where it is published | `seal-env-tools` (publisher identity over the built tools, compiling nothing; the catalogs rewritten to name the signed ids), `sign-env-tools` (with a transparency log entry; `image-env-tools` between them) | | `publish-env-tools`: `<runtime tag>-<catalog fingerprint>` once, signed |
+| RPM snapshot | `image-rpms-x86_64`, `-aarch64`, `image-rpms` (their index), `provenance-rpms` (frozen-rpm-index/v1, the fingerprint) | `sign-rpms`: the index and both images, the index's provenance, with transparency log entries | `mirror-base`: the pinned Fedora bootc base copied into registry.tilo.so while upstream serves it, before the builds | `publish-rpms`: `set-<fingerprint>` once, signed and attested |
+| kernel | `image-kernel-cache-<arch>` (the compiler cache, keyed by the buildroot), `image-kernel-x86_64`, `-aarch64` (through it; FROM the buildroot of the machine it builds on), `kernel-acceptance-<arch>` (on the kernel's architecture), `provenance-kernel` (kernel-rpm/v1, binding the buildroot and the build architecture) | `sign-kernel`: both, with provenance and transparency log entries | | `publish-kernel`: `sha-<commit>-<arch>` once, the `kernel` pointer; `pin-kernel` commits it to `os/kernel-snapshot.env` on main |
 | kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `publish-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
-| CI builder | `image-ci-builder-x86_64`, `-aarch64`, `image-ci-builder` (their index); in each candidate `canary-ci-builder-cache-cold-<arch>`, `-cache-warm-<arch>` (t's compiler cache, written by one job and read back by another) and `canary-ci-builder-browser-<arch>` | `sign-ci-builder`: the index and both images | `sign-dev-ci-builder` (development key), `publish-ci-builder`: `dev-<commit>`, `dev-<commit>-<arch>` | `publish-ci-builder`: `<commit>`, `<rust channel>`, signed; `latest` stays with build-ci-builder.yml until the cutover |
-| release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools`: index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |
-| local model catalog | `model-catalog-compiler` | `sign-model-catalog`, `review-speech-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog in generic packages |
+| CI builder | `image-ci-builder-x86_64`, `-aarch64`, `image-ci-builder` (their index); in each candidate `canary-ci-builder-cache-cold-<arch>`, `-cache-warm-<arch>` (t's compiler cache, written by one job and read back by another) and `canary-ci-builder-browser-<arch>`, all of which gate signing and publishing | `sign-ci-builder`: the index and both images, with transparency log entries | `sign-dev-ci-builder` (development key), `publish-ci-builder`: `dev-<commit>`, `dev-<commit>-<arch>` | `publish-ci-builder`: `<commit>`, `<rust channel>`, signed; `latest` is not moved yet |
+| release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools` (dispatch): index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |
+| local model catalog | `model-catalog-compiler`, `local-model-runtime-*` (the runtimes, stable) | `sign-model-catalog`, `review-model-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog and the runtime archives in generic packages |
 | cloud deploy | | | | `cloud-deploy` (stable, and dispatch on stable): after `publish-room-service` and `publish-web-entry`, commits their receipts' digests to the GitOps repository's main as the deploy target there says, waits until the services report their new build and stay healthy, and otherwise commits the previous digests back; a dry run while the target says `rollout = false` |
 | canonical verifier bundles | `verifier-bundle-<arch>` (`on = ["dispatch"]`, `t outputs`) | | | (reviewed and uploaded by hand) |
 | apps | `apps-build-x86_64`, `apps-build-aarch64`: every app of the default collection, packaged with throwaway keys, smoke-tested | `sign-apps-x86_64`, `sign-apps-aarch64`: the publisher identities over the built binaries, compiling nothing | | `publish-apps` (package token): tapps, collections, runtime objects, the `app-collection` pointer; `submit-apps` (publisher identity): the registry entries |
 | engine | `engine-build-x86_64`, `engine-build-aarch64`: the pinned CEF host and the release tools, sealed with throwaway keys (from a committed tree) | `sign-engine-x86_64`, `sign-engine-aarch64`: the runtime and app publisher identities over the built files, compiling nothing | | `upload-engine` (package token): the runtime package `so.tilo.runtime.chromium`; `submit-engine` (publisher identity): its registry entry |
-| desktop | `desktop-preflight` (packaging inputs), `desktop-package-amd64`, `desktop-package-arm64` (privileged) | | | `publish-desktop-payload`: the OS payloads, the `desktop-payload` pointer |
-| macOS | `runtime-macos` (main), `sdk-macos`, `apps-macos` (nightly), `runtime-macos-app` (dispatch, ad hoc signed) | | | |
+| desktop | `desktop-preflight` (packaging inputs), `desktop-package-amd64`, `desktop-package-arm64` (privileged), `host-session-e2e` (the amd64 RPMs logged into on stock Fedora under KVM; stable and dispatch) | | | `publish-desktop-payload` (after `host-session-e2e`): the OS payloads, the `desktop-payload` pointer |
+| macOS | `vm-macos`, `runtime-macos` (main and stable), `sdk-macos`, `apps-macos` (idle main and stable), `runtime-macos-app` (dispatch, ad hoc signed) | | | |
 | Windows ARM64 | `windows-arm64-tilo-vm`, `windows-arm64-imager` (dispatch, cross-built) | | | |
 | Windows compatibility payloads | `image-fex-buildroot` (aarch64), `image-fex-x86-sdk`, `image-fex-payload-context` (the verified FEX source), `image-fex-payload` (aarch64); `image-wine-tools`, then in it as micro-VM steps `wine-source` (the verified Wine source), `wine-resolve-x86_64`, `-i686` (Mock's build dependencies), `wine-build-x86_64`, `-i686` (Wine rebuilt offline), `image-wine-paired` (both targets' RPMs merged) and `image-windows-guest` (the pair signed with a key made for the run, the guest assembled) | | `publish-fex-payload` (dispatch, after `publish-fex-buildroot` and `publish-fex-x86-sdk`, which it names): the `fex-payload-candidate` pointer; `publish-windows-guest` (dispatch, after `publish-wine-tools`, with every image the guest names): the `windows-guest-candidate` pointer | (development candidates only) |
-| OS development images | `os-image-x86_64`, `-aarch64` (os/Containerfile, no LTO, apps and desktop of the commit; `t outputs`; installed from the run's `image-rpms-<arch>`, unsigned, while the package set has no published snapshot), `nightly-os-image-<arch>` (nightly: the image checked inside, then installed onto a disk and booted to the greeter), `os-dev-image-<arch>` (os/Containerfile.dev on it), `os-board-lenovo-83ed`, `os-board-orangepi-3b-v2-1` (os/Containerfile.board on the aarch64 dev image, sealed) | | `publish-os-board-<board>` (dispatch): `tilo-vm:main-<commit7>-<board>`, and `tilo-vm:<board>-ci` moved forward along main; tilo-ci and the generic tilo-vm: not yet | (releases: not written yet) |
+| OS images | `os-assembler-<arch>` (the image the OS actions run in), `os-base-<arch>`, `os-builder-<arch>`, `os-tools-<arch>`, `os-chromium-<arch>` (the browser's engine, keyed by its own sources), `os-compile-<arch>` (os/image/compile.sh in the OS builder, with t's compiler cache, leaving the browser's engine to `os-chromium-<arch>`, which the image layer takes beside it), `os-layer-<layer>-<arch>` (one per layer of os/image/layers.toml, keyed by what its piece reads), `os-image-<arch>` (the layers composed, an OCI layout; no LTO, apps and desktop of the commit; `t outputs`; installed from the run's `image-rpms-<arch>`, unsigned, while the package set has no published snapshot), `os-dev-image-<arch>` (os/Containerfile.dev on it), `os-dev-gate-<arch>` (the dev image installed, booted to the greeter and updated live under KVM: the dev channel's gate), `os-acceptance-<arch>` (stable, idle and dispatch: the gate's disk's devices and desktop under KVM), `os-board-lenovo-83ed`, `os-board-orangepi-3b-v2-1` (os/Containerfile.board on the aarch64 dev image, sealed, and its flashable disk); the release image: `os-compile-release-<arch>` (thin LTO), its `release` layers, `os-release-image-<arch>`, `os-release-seal-<arch>` (stable and dispatch: checked inside, installed, which seals it, and booted to the greeter), `os-release-reproduce-<arch>` (built again from `os-release-recompile-<arch>`, without caches, to the same bytes), `os-release-rehearsal-<arch>` (the signing and publishing with throwaway keys into an OCI layout); a board's release image (`release_boards` in os/image/layers.toml: the Lenovo 83ED): its `board` layers built again with its hardware profile, `os-release-image-lenovo-83ed`, `os-release-seal-lenovo-83ed` (checked inside and installed, which seals it; not booted, QEMU cannot boot the board's device tree), `os-release-reproduce-lenovo-83ed`, `os-release-rehearsal-lenovo-83ed` | `sign-os-boot-<arch>` (the UKIs' EFI signatures and the PCR 11 prediction, KMS), `os-release-<arch>` (verified and added, with SBOM and provenance), `sign-os-release` (release key, provenance and freshness attestations); the same for the board: `sign-os-boot-lenovo-83ed`, `os-release-lenovo-83ed` (provenance binding the board, its hardware definition and firmware), `sign-os-release-lenovo-83ed`; development key: `sign-dev-os-<arch>`, `sign-dev-os-board-<board>` (main only) | | `publish-os-dev-<arch>` (idle and dispatch on main): `tilo-ci:main-<commit7>-<arch>`, the signed `tilo-vm:main-<commit7>-ci-<arch>` with `tilo-vm:<arch>-ci` moved forward, `tilo-vm:main-<commit7>-ci` and its disk, `latest` moved forward; `publish-os-board-<board>` (idle and dispatch on main): the signed `tilo-vm:main-<commit7>-<board>`, `tilo-vm:<board>-ci` and the board's flashable disk moved forward along main | `publish-os-release` (dispatch on stable or `v*`): `tilo:gen<N>` once, `<version>`, `latest`; `publish-os-release-lenovo-83ed` (dispatch on stable or `v*`, with `REGISTRY_TOKEN`: the forge's registry takes no identity token): `code.tilo.so/tilo/tilo:lenovo-83ed-<commit>` and `lenovo-83ed-gen<N>` of the board's own series once, then `lenovo-83ed-latest` |
 | system-extension manifests | `extension-manifests-x86_64`, `-aarch64` (daily and dispatch, resolved inside each published image) | `publish-extension-manifests` (extension-manifest key) | | |
 
 `t test image-room-service` builds the image from your tree exactly as a release would, without
@@ -293,9 +295,9 @@ builds.
 
 ## Moved to t
 
-Forgejo Actions no longer runs for this repository. A workflow is deleted once its checks have
-built on t from a working tree (`t test`) and their trusted half has passed from main, stable or a
-tag; the evidence is the run on prod t.
+Forgejo Actions no longer runs for this repository, so a workflow is deleted once t's checks do
+its work. Where their trusted half has passed from main, stable or a tag, the evidence is the run
+on prod t.
 
 Deleted:
 
@@ -304,27 +306,52 @@ Deleted:
 | `release-registry-server.yml` | `image-registry-server`, `publish-registry-server` | `publish-registry-server` on main 291d4d45c1 pushed `tilo-registry-server:sha-291d4d45c1…` |
 | `build-release-tools.yml` | `image-release-tools-x86_64`, `-aarch64`, `image-release-tools`, `publish-release-tools` | builds in r5072cc14f4; `publish-release-tools` on main 0fcb7c612d pushed the index `sha-0fcb7c612d…` |
 | `release-verifier-bundles.yml` | `verifier-bundle-x86_64`, `-aarch64` (dispatch) | rfad5de2f14, r352e0cb508 |
-| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | `publish-ci-fast` and `publish-ci-control` on main ad95cf21a4, after the smoke test |
+| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-fast-smoke`, `publish-ci-fast` (ci-control, which only `build-image.yml` ran in, retired with it) | `publish-ci-fast` and `publish-ci-control` on main ad95cf21a4, after the smoke test |
 | `room-service-image.yml` | `image-room-service-context`, `image-room-service` (its smoke test on the archive), `sign-room-service`, `publish-room-service` | the image and its test r3d39f0a8e5; `publish-room-service` on main a38941e29a; the release chain on rehearsal tags |
 | `web-entry.yml` | `image-web-entry-context`, `image-web-entry` (smoke test on the archive), `carry-web-entry` (stable: carries the version production serves), `sign-web-entry`, `publish-web-entry` | `publish-web-entry` on main ad95cf21a4; context, image and carry re77dfb7adf; the release chain on rehearsal tags |
 | `build-windows-compat.yml` | the windows-compat chain (`image-wine-tools`, `wine-*`, `image-wine-paired`, `image-windows-guest`, `image-fex-*`, `sign-fex-payload`, `publish-*`) | dispatches on main: r766c31687a (FEX payload, signed with the development key), r5b5e69f29c (windows guest); both pointers set |
-| `ci-development-signing.yml` | `development-signing-context-<arch>`, `development-signing-<arch>` (micro-VM steps, on main when what they read changes) | ref31a8cb9a, both architectures |
+| `ci-development-signing.yml` | `development-signing-context-<arch>`, `development-signing-<arch>` (micro-VM steps, on stable and dispatched) | ref31a8cb9a, both architectures |
 | `extension-manifests.yml` | `extension-manifests-<arch>`, `publish-extension-manifests` (daily and dispatched on main) | r7b7f62f1ce: resolved on both architectures, signed through TiloTExtensionManifestSigner, published with `TILO_PACKAGES_TOKEN` |
-
-Still here, with what is missing:
-
-| workflow | checks on t | passed on t | missing |
-|---|---|---|---|
-| `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `publish-relay` (version tags) | `rpm-snapshot`, `image-relay` | a version tag |
-| `build-env-runtime.yml` | `rpm-snapshot`, `image-env-runtime-tree-*`, `env-runtime-packer`, `env-runtime-preview`, `image-env-runtime-preview`, `seal-env-runtime`, `image-env-runtime`, `sign-env-runtime`, `release-env-runtime` | both trees, packer, throwaway seal and index | a stable run |
-| `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `publish-kernel-buildroot`, `pin-kernel-buildroot` | both architectures; `pin-kernel-buildroot` on main | a stable run |
-| `build-ci-builder.yml` | `image-ci-builder-*` and their canaries | both architectures | canaries on the compile cache, signing and promotion |
-| `build-rpms.yml` | `image-rpms-*` | both architectures | signing with SLSA provenance and promotion |
-| `build-kernel.yml` | `image-kernel-*`, `kernel-acceptance-*` | builds and acceptance on both architectures (re81dd6df90) | signing with provenance, publication and the pin |
-| `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `publish-legacy-guest`, `pin-legacy-guest` | image and end-to-end test (r8673ba882c); the pin on main | a stable run |
-| `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries and catalogs on both architectures (r8673ba882c) | publication: the tools are sealed inside the build, so publishing re-signs them with the publisher identity and rewrites the catalog |
-| `resolve-builder.yml` | none needed | | a reusable workflow other workflows call; retires with its callers |
-| `inspect-rpm-signing.yml` | none | | inspects the signing broker on the Forgejo runner; retires with `release-desktop.yml` |
+| `check.yml` | the `test/<package>`, `test-x86_64/<package>`, `clippy/<package>`, `check/<package>` and `goldens/<package>` families, `suite-<group>`, `security`, `workspace-layout`, `certify`, `example-scenarios`, `android`, `wasm`, `web-examples`, `vendored`, `pins`, `portable`, `visual-goldens`, `app-sizes-<arch>` | checks in t.toml; Forgejo Actions no longer runs |
+| `lint.yml` | `fmt`, `hakari`, `changes`, `policy/<step>`, `app-lints`, `deny`, `machete` | checks in t.toml; Forgejo Actions no longer runs |
+| `app-sdk.yml` | `sdk-policy`, `sdk-linux`, `sdk-web`, `sdk-web-size` | checks in t.toml; Forgejo Actions no longer runs |
+| `sdk-native-envelope.yml` | `sdk-envelope` | checks in t.toml; Forgejo Actions no longer runs |
+| `web-size-native-envelope.yml` | `web-size-envelope-bundle`, `web-size-envelope` | checks in t.toml; Forgejo Actions no longer runs |
+| `wasm-check-qualification.yml` | `wasm`, `web-examples` | checks in t.toml; Forgejo Actions no longer runs |
+| `security-isolation.yml` | `security-isolation` | checks in t.toml; Forgejo Actions no longer runs |
+| `ci-render-counters.yml` | `render-counters` | checks in t.toml; Forgejo Actions no longer runs |
+| `standalone-app.yml` | `standalone-app` | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-apps-macos.yml` | `sdk-macos`, `apps-macos` | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-runtime-macos.yml` | `runtime-macos` | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-windows-arm64.yml` | `windows-arm64-tilo-vm`, `windows-arm64-imager` (dispatch, cross-built: [Windows](#windows)) | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-visual-baselines.yml` | `visual-baselines` | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-mounted-reopen.yml` | `mounted-reopen` | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-source-metadata.yml` | none: it existed for check.yml's affected-package planner, which went with it | retired with the planner |
+| `dev-policy-profile.yml` | `policy-profile` | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-source-blobs.yml` | `source-blobs` | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-focused-test.yml` | `t test test/<package> --test <target>`, `check/<package>`, `clippy/<package>` ([t.md](t.md)) | checks in t.toml; Forgejo Actions no longer runs |
+| `dev-ci-checkout.yml` | none: it measured checkouts on Forgejo runners | obsolete |
+| `dev-imager-windows-native.yml` | none: a scaffold for a Windows runner that was never enabled | obsolete |
+| `inspect-rpm-signing.yml` | none: it inspected the signing broker's client on a Forgejo runner | obsolete |
+| `ci-weekly-quality.yml` | `weekly-warnings`, `weekly-clippy`, `weekly-docs`, `weekly-release`, `weekly-latency` | checks in t.toml; Forgejo Actions no longer runs |
+| `perf-room-capacity.yml` | `perf-room-capacity` | checks in t.toml; Forgejo Actions no longer runs |
+| `browser-auth-e2e.yml` | `browser-auth-e2e` | checks in t.toml; Forgejo Actions no longer runs |
+| `ci-nightly.yml` | `nightly-fuzz`, `nightly-workspace-test`, `nightly-arm64-workspace-test`, `nightly-arm64-goldens`, `nightly-live-music`, `nightly-check`, `nightly-arm64-check`, `nightly-arm64-certify`, `nightly-examples`, `nightly-arm64-examples`, `nightly-ignored`, `nightly-arm64-ignored`, with `vendored`, `fmt`, `certify`, `workspace-layout` and the goldens | checks in t.toml; Forgejo Actions no longer runs |
+| `ci-staging-loop.yml` | `staging-loop` | checks in t.toml; Forgejo Actions no longer runs |
+| `release-local-model-catalog.yml` | `model-catalog-compiler`, `review-speech-catalog`, `sign-model-catalog`, `publish-model-catalog` (dispatch on stable) | checks in t.toml; Forgejo Actions no longer runs |
+| `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `publish-relay` (version tags) | `rpm-snapshot` and `image-relay` passed; checks in t.toml; Forgejo Actions no longer runs |
+| `build-buildroots.yml` | `image-kernel-buildroot-<arch>`, `sign-kernel-buildroot`, `publish-kernel-buildroot`, `pin-kernel-buildroot` | both architectures built; `pin-kernel-buildroot` ran on main; checks in t.toml; Forgejo Actions no longer runs |
+| `build-env-runtime.yml` | `image-env-runtime-tree-<arch>`, `env-runtime-packer`, `env-runtime-preview`, `image-env-runtime-preview`, `seal-env-runtime`, `image-env-runtime`, `sign-env-runtime`, `release-env-runtime` | both trees, the packer, a throwaway seal and the index built; checks in t.toml; Forgejo Actions no longer runs |
+| `build-kernel.yml` | `image-kernel-<arch>`, `kernel-acceptance-<arch>`, `provenance-kernel`, `sign-kernel`, `publish-kernel`, `pin-kernel` | builds and acceptance on both architectures (re81dd6df90); checks in t.toml; Forgejo Actions no longer runs |
+| `build-legacy-guest.yml` | `legacy-guest-agent`, `image-legacy-guest`, `legacy-guest-e2e-binaries`, `legacy-guest-e2e`, `sign-legacy-guest`, `publish-legacy-guest`, `pin-legacy-guest` | image and end-to-end test (r8673ba882c), the pin on main; checks in t.toml; Forgejo Actions no longer runs |
+| `build-ci-builder.yml` | `image-ci-builder-<arch>`, `image-ci-builder`, `canary-ci-builder-*-<arch>`, `sign-ci-builder`, `sign-dev-ci-builder`, `publish-ci-builder` | both architectures built; checks in t.toml; Forgejo Actions no longer runs |
+| `build-rpms.yml` | `image-rpms-<arch>`, `image-rpms`, `provenance-rpms`, `sign-rpms`, `publish-rpms`, `rpm-snapshot` | both architectures built; checks in t.toml; Forgejo Actions no longer runs |
+| `host-session-e2e.yml` | `host-session-e2e` (needs `desktop-package-amd64`; records each RPM's SHA-256 in `source.json`), which `publish-desktop-payload` needs on stable; the replay of another run's RPMs is the cached lane | dispatched on main (r8b02906d73): not passed yet, since `desktop-package-amd64` fails in its arch, nix and fedora-44 userspaces (the Fedora app store refuses the Browser without its pinned engine runtime) |
+| `release-imager-winget.yml` | `imager-winget-acceptance` (every six hours and dispatch, `cache = false`), with the site token as the secret `TILO_SITE_TOKEN` instead of a broker lease | skipped by t ("needs secret TILO_SITE_TOKEN, which this server does not have") until the server config has it (rf0c329cba6); the run itself refuses to start without it |
+| `ci-filesystem.yml` | `real-fuse`, `real-fuse-privileged`, `files-ux`, `native-tier1`; the cloud-source conformance suite's server layers as `cloud-conformance-build`, `cloud-servers` (containers in a micro-VM step) and `cloud-live` (live accounts, nightly) | `cloud-servers` r0e79c3d184 (38 tests against real WebDAV and Nextcloud); `cloud-live` dispatched on main r24d0e7c476 (38 tests against the live accounts) |
+| `ci-legacy-apps.yml` | `legacy-apps-build`, `legacy-apps` (nightly and dispatched, micro-VM step) | r0e79c3d184: GNOME Text Editor, Qt 6 and LibreOffice Writer passed |
+| `build-env-tools.yml` | `env-tools-binaries-<arch>`, `env-tools-<arch>`, `env-tools-plan`, `seal-env-tools`, `image-env-tools`, `image-env-tools-preview`, `sign-env-tools`, `publish-env-tools` | binaries and catalogs on both architectures (r8673ba882c), sealed for the publisher and imaged from a working tree (r26f07821f0); checks in t.toml; Forgejo Actions no longer runs |
+| `resolve-builder.yml` | none: a reusable workflow that looked the CI builder up for the workflows above, retired with the last of them; `tools/ci/resolve_builder.py` stays for `release-apps.yml` | obsolete |
 
 ## Inventory
 
@@ -341,56 +368,52 @@ fixed credentials in the server config, limited by reference and node, only wher
 |---|---|---|---|---|---|
 | ~~`room-service-image.yml`~~ | push main (paths), PR build only, dispatch | `GITHUB_TOKEN` (registry push) | x86_64, Docker buildx | `tilo/room-service:sha-<sha>`, digest receipt | moved to t (above) |
 | ~~`web-entry.yml`~~ | push main (paths), PR, dispatch | `GITHUB_TOKEN` | x86_64, Docker buildx; reads the version production serves | `tilo/web-entry:sha-<sha>` carrying the replaced image's version (`container/carry.sh`), receipt | moved to t (above) |
-| `build-ci-builder.yml` | weekly, push main (paths), dispatch | `COSIGN_KEY_REF`, `AWS_SIGNING_ROLE_ARN` (OIDC), `GITHUB_TOKEN` | x86_64 and arm64 natively, buildx with gha cache, canary jobs that run inside the candidate image | `tilo/tilo-builder:<sha>`, `:<rust>`, `:latest`, signed index | per-arch builds, sign on the release node, publish; the canary jobs become checks whose `image` is the candidate, which t can't express yet (see gaps) |
-| `release-relay.yml` | push main and `v*` (paths), PR, dispatch | Cosign via OIDC, `GITHUB_TOKEN` | x86_64, buildx with host network for the compiler cache; waits for `build-rpms.yml` by polling the Forgejo API | `tilo/tilo-relay:<semver>`, signed, on tags only | build `FROM` the RPM snapshot (a `needs` on the snapshot check instead of polling), sign and release on `tag:v*` |
-| `build-rpms.yml` | push main (paths), dispatch | Cosign via OIDC, `GITHUB_TOKEN` | x86_64 and arm64, Docker daemon | `tilo/rpms:set-<fingerprint>` signed index with SLSA provenance | build per arch, sign with provenance, publish; published once per fingerprint (cached by inputs) |
-| `build-buildroots.yml` | push main (paths), dispatch | Cosign via OIDC, `RELEASE_TOKEN` | per kind and arch, buildx | `tilo/tilo-kernel-buildroot`, and a pull request pinning `os/kernel-buildroot-snapshot.env` | build, sign, publish; the pin pull request needs Git and a push credential (see gaps) |
-| `build-kernel.yml` | push main and `v*`, PR, dispatch | Cosign via OIDC, `RELEASE_TOKEN` | `disk-100g` x86_64 and arm64, KVM to boot the kernel and probe Secure Boot | `tilo/tilo-kernel` tags per arch, signed with provenance, pin pull request | build, then a privileged VM test check (`/dev/kvm`), sign, publish |
-| `build-legacy-guest.yml` | push main (paths), PR, dispatch | Cosign via OIDC, `RELEASE_TOKEN` | `disk-100g` x86_64, root podman, loop devices, KVM | `tilo/legacy-guest` signed, pin pull request | `privileged = true` on `disk-100g` nodes for the disk image and its boot test |
-| `build-env-runtime.yml` | every 4 hours, push main (paths), dispatch | Cosign via OIDC, `GITHUB_TOKEN`, `TAPP_PUBLISHER_IDENTITY` (raw Ed25519 identity) | x86_64 and arm64, Docker daemon | `tilo/env-runtime:set-<fp>`, sealed with the tapp publisher identity, signed | the schedule disappears: the check is cached by inputs, so it publishes once per fingerprint; sealing is a signing check holding the publisher identity |
-| `build-env-tools.yml` | every 6 hours, push main (paths), dispatch | as env-runtime | privileged container, loop-mounted ext4 | `tilo/env-tools:<runtime>-<catalog>` signed | `privileged = true` build, sign, publish |
+| ~~`build-ci-builder.yml`~~ | weekly, push main (paths), dispatch | `COSIGN_KEY_REF`, `AWS_SIGNING_ROLE_ARN` (OIDC), `GITHUB_TOKEN` | x86_64 and arm64 natively, buildx with gha cache, canary jobs that run inside the candidate image | `tilo/tilo-builder:<sha>`, `:<rust>`, `:latest`, signed index | moved to t (above) |
+| ~~`release-relay.yml`~~ | push main and `v*` (paths), PR, dispatch | Cosign via OIDC, `GITHUB_TOKEN` | x86_64, buildx with host network for the compiler cache; waits for `build-rpms.yml` by polling the Forgejo API | `tilo/tilo-relay:<semver>`, signed, on tags only | moved to t (above) |
+| ~~`build-rpms.yml`~~ | push main (paths), dispatch | Cosign via OIDC, `GITHUB_TOKEN` | x86_64 and arm64, Docker daemon | `tilo/rpms:set-<fingerprint>` signed index with SLSA provenance | moved to t (above) |
+| ~~`build-buildroots.yml`~~ | push main (paths), dispatch | Cosign via OIDC, `RELEASE_TOKEN` | per kind and arch, buildx | `tilo/tilo-kernel-buildroot`, and a pull request pinning `os/kernel-buildroot-snapshot.env` | moved to t (above) |
+| ~~`build-kernel.yml`~~ | push main and `v*`, PR, dispatch | Cosign via OIDC, `RELEASE_TOKEN` | `disk-100g` x86_64 and arm64, KVM to boot the kernel and probe Secure Boot | `tilo/tilo-kernel` tags per arch, signed with provenance, pin pull request | moved to t (above) |
+| ~~`build-legacy-guest.yml`~~ | push main (paths), PR, dispatch | Cosign via OIDC, `RELEASE_TOKEN` | `disk-100g` x86_64, root podman, loop devices, KVM | `tilo/legacy-guest` signed, pin pull request | moved to t (above) |
+| ~~`build-env-runtime.yml`~~ | every 4 hours, push main (paths), dispatch | Cosign via OIDC, `GITHUB_TOKEN`, `TAPP_PUBLISHER_IDENTITY` (raw Ed25519 identity) | x86_64 and arm64, Docker daemon | `tilo/env-runtime:set-<fp>`, sealed with the tapp publisher identity, signed | moved to t (above) |
+| ~~`build-env-tools.yml`~~ | every 6 hours, push main (paths), dispatch | as env-runtime | privileged container, loop-mounted ext4 | `tilo/env-tools:<runtime>-<catalog>` signed | moved to t (above) |
 | ~~`build-windows-compat.yml`~~ | dispatch | Cosign via OIDC, `GITHUB_TOKEN` | Docker daemon, `disk-100g` Windows guest, arm64 FEX | `wine-tools`, `wine-paired`, `tilo-fex-*-candidate`, signed FEX payload | moved to t (above) |
 
 ### The OS
 
 | workflow | trigger | secrets and variables | runner needs | outputs | on t |
 |---|---|---|---|---|---|
-| `build-image.yml` (Release / OS) | `v*` tags; dispatch (release, boards, firmware, app collection, desktop payload); called by `os-dev*.yml` for development builds | Cosign via OIDC; `RUNTIME_BUNDLE_SIGNING_KEY`, `TAPP_PUBLISHER_IDENTITY`, `DEV_APP_PUBLISHER_IDENTITY` (raw keys); `REGISTRY_TOKEN`; the EFI/PCR signer program `TILO_PCR_PREDICTION_SIGNER` on release runners; repository variables for the app collection and desktop payload | x86_64 and arm64 natively, buildx, root podman, loop and FUSE, KVM for the install and boot gates, 100 GiB scratch | development: `tilo-ci`, `tilo-vm` tags and disks; release: `tilo:gen<N>`, `:<semver>`, `:latest`, signed with SBOM, SLSA and freshness attestations, board images | development builds on main (`on = ["main"]`, no secrets but a development push token); releases on `stable` and `tag:v*`: per-arch builds (`privileged`, `/dev/kvm`, `disk-100g`), a signing check for Cosign, and one for EFI/PCR that uses the KMS keys instead of a program on the runner |
-| `os-dev.yml`, `os-dev-x86.yml`, `os-dev-arm.yml` | PR with a label, dispatch | none (called workflows get no OIDC) | as above | development images | `t test` of the development build check; no wrapper workflows |
-| `dev-disk.yml` | dispatch, also from build-image | `GITHUB_TOKEN`, `REGISTRY_TOKEN` | `disk-100g` both arches, KVM | `tilo-vm` disks and `latest` (from main or `v*` only) | a dispatch check |
-| `os-dev-installer.yml`, `dev-disk-boot-diagnostic.yml` | dispatch | none | arm64/`disk-100g`, KVM, loop | artifacts only | dispatch checks with `outputs` (`t outputs`) |
-| ~~`extension-manifests.yml`~~ | daily, dispatch from Release / OS | `REGISTRY_TOKEN`; Cosign through a separate role and key for extension manifests (OIDC) | podman with the OS image, both arches | signed manifests in generic packages | moved to t (above) |
+| ~~`build-image.yml` (Release / OS)~~ | `v*` tags; dispatch (release, boards, firmware, app collection, desktop payload); called by `os-dev*.yml` for development builds | Cosign via OIDC; `RUNTIME_BUNDLE_SIGNING_KEY`, `TAPP_PUBLISHER_IDENTITY`, `DEV_APP_PUBLISHER_IDENTITY` (raw keys); `REGISTRY_TOKEN`; the EFI/PCR signer program `TILO_PCR_PREDICTION_SIGNER` on release runners; repository variables for the app collection and desktop payload | x86_64 and arm64 natively, buildx, root podman, loop and FUSE, KVM for the install and boot gates, 100 GiB scratch | development: `tilo-ci`, `tilo-vm` tags and disks; release: `tilo:gen<N>`, `:<semver>`, `:latest`, signed with SBOM, SLSA and freshness attestations, board images | moved to t: the `os-*` checks build, `os-dev-gate-<arch>`, `os-acceptance-<arch>` and `os-release-seal-<arch>` gate, `publish-os-dev-<arch>` and `publish-os-board-<board>` publish development images and disks, `publish-os-release` the signed release and `publish-os-release-lenovo-83ed` the Lenovo board's (above); not ported: the rechunked layout (os/dev/rechunk-image.sh needs a BuildKit builder, which t does not provide) |
+| ~~`os-dev.yml`, `os-dev-x86.yml`, `os-dev-arm.yml`~~ | PR with a label, dispatch | none (called workflows get no OIDC) | as above | development images | retired: `os-dev-image-<arch>` builds the development image |
+| ~~`dev-disk.yml`~~ | dispatch | `GITHUB_TOKEN`, `REGISTRY_TOKEN` | `disk-100g` both arches, KVM | `tilo-vm` disks and `latest` (from main or `v*` only) | retired: `publish-os-dev-<arch>` publishes the gated dev disks |
+| `os-dev-installer.yml`, `dev-disk-boot-diagnostic.yml` | dispatch | none | arm64/`disk-100g`, KVM, loop | artifacts only | `dev-installer-medium-<arch>` builds the self-install medium without capture or signing inputs (`t outputs`); the Windows-direct variants still need their own checks |
+| ~~`extension-manifests.yml`~~ | daily, dispatch | `TILO_PACKAGES_TOKEN`; an identity token for the extension-manifest audience, whose role holds the KMS key | podman with the OS image, both arches | signed manifests in generic packages | retired: `extension-manifests-<arch>` resolves and `publish-extension-manifests` signs and publishes, on t's issuer and audience (`tilo-extension-manifests`, above) |
 
 ### Apps, desktop and models
 
 | workflow | trigger | secrets and variables | runner needs | outputs | on t |
 |---|---|---|---|---|---|
-| `release-apps.yml` | push main (paths); `apps-v*` tags validate only; dispatch | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` (raw keys), OIDC token as Forgejo API credential, writes repository variables `TILO_APP_COLLECTION_*` | x86_64 and arm64 builds in the builder image, llvmpipe smoke tests | tapps and collections in generic packages, registry entries at apps.tilo.so, the runtime package | the release chain is declared (above): on stable, from the full default collection, its release sequence the commit's time (above every run number used so far). `publish-apps` sets the `app-collection` pointer (`channel.json`: each architecture's collection URL and digest, the builder and the source), which replaces `TILO_APP_COLLECTION_*`. The workflow stays until the OS build reads that pointer instead of the variables, since `build-image.yml` still takes its apps from them. The Browser's engine runtime, which apps name in `optional-runtimes` and the collections don't carry, is its own chain (`engine-build-*`, `sign-engine-*`, `upload-engine`, `submit-engine`, tools/apps/t-engine-release.sh), released from the same stable commit. Not ported: affected-app selection and reuse of the prior collection's members (they need the pointer), the coordinator qualification, the Signal-provider-only dispatch and the run 97894 recovery |
-| `release-desktop.yml` | PR preflight, weekly, `desktop-v*` tags, dispatch | `REGISTRY_TOKEN`, `RELEASE_TOKEN`; RPM signing through a broker on the runner (OIDC) | distribution containers, a full clone for Nix | packages, a Forgejo release on tags, the OS payload and its repository variables | `desktop-preflight` is ported, but for the login wrapper's refusals, which need a user created in a throwaway container. The package lanes run each userspace in its own container, so `desktop-package-amd64` and `-arm64` are `privileged = true` (`dist/ci/package-lane.sh`). `publish-desktop-payload` publishes the Fedora lanes' OS payloads from stable and sets the `desktop-payload` pointer, which replaces `TILO_DESKTOP_PAYLOAD_*`. RPM signing: [below](#rpm-signing). Still in the workflow: the signed release on `desktop-v*` tags (it needs the RPM signer), host-session-e2e on the built RPMs, and the weekly payload from main |
-| `host-session-e2e.yml` | called by release-desktop, dispatch, PR | none | `disk-100g` x86_64, KVM | test result | a check needing the RPM build, `requires = ["/dev/kvm", "disk-100g"]` |
-| `release-local-model-catalog.yml` | dispatch on main | `TILO_MODEL_CATALOG_SIGNING_KEY` (raw seed), `REGISTRY_TOKEN` | builder image | signed catalog in generic packages | shadowed on t: dispatch checks on stable (above) |
+| `release-apps.yml` | push main (paths); `apps-v*` tags validate only; dispatch | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` (raw keys), OIDC token as Forgejo API credential, writes repository variables `TILO_APP_COLLECTION_*` | x86_64 and arm64 builds in the builder image, llvmpipe smoke tests | tapps and collections in generic packages, registry entries at apps.tilo.so, the runtime package | the release chain is declared (above): on stable, from the full default collection, its release sequence the commit's time (above every run number used so far). `publish-apps` sets the `app-collection` pointer (`channel.json`: each architecture's collection URL and digest, the builder and the source), which replaces `TILO_APP_COLLECTION_*`. The workflow stays until a release OS image reads that pointer instead of the variables. The Browser's engine runtime, which apps name in `optional-runtimes` and the collections don't carry, is its own chain (`engine-build-*`, `sign-engine-*`, `upload-engine`, `submit-engine`, tools/apps/t-engine-release.sh), released from the same stable commit. Not ported: affected-app selection and reuse of the prior collection's members (they need the pointer), the coordinator qualification, the Signal-provider-only dispatch and the run 97894 recovery |
+| `release-desktop.yml` | PR preflight, weekly, `desktop-v*` tags, dispatch | `REGISTRY_TOKEN`, `RELEASE_TOKEN`; RPM signing through a broker on the runner (OIDC) | distribution containers, a full clone for Nix | packages, a Forgejo release on tags, the OS payload and its repository variables | `desktop-preflight` is ported, but for the login wrapper's refusals, which need a user created in a throwaway container. The package lanes run each userspace in its own container, so `desktop-package-amd64` and `-arm64` are `privileged = true` (`dist/ci/package-lane.sh`). `publish-desktop-payload` publishes the Fedora lanes' OS payloads from stable and sets the `desktop-payload` pointer, which replaces `TILO_DESKTOP_PAYLOAD_*`. RPM signing: [below](#rpm-signing). The login test is `host-session-e2e`, which the payload's publication needs. Still in the workflow: the signed release on `desktop-v*` tags (it needs the RPM signer) and the weekly payload from main |
+| ~~`host-session-e2e.yml`~~ | called by release-desktop, dispatch, PR | none | `disk-100g` x86_64, KVM | test result | moved to t (above) |
+| ~~`release-local-model-catalog.yml`~~ | dispatch on main | `TILO_MODEL_CATALOG_SIGNING_KEY` (raw seed), `REGISTRY_TOKEN` | builder image | signed catalog in generic packages | moved to t (above) |
 | ~~`release-verifier-bundles.yml`~~ | dispatch | none | x86_64 and arm64 | artifacts | ported: `verifier-bundle-<arch>` (above) |
-| `perf-scheduled.yml`, `vm-acceptance.yml` (results) | daily | `REGISTRY_TOKEN` to append results | various | `tilo-perf-results` packages | scheduled checks with `cache = false` and a token that may only write that package |
+| ~~`perf-scheduled.yml`, `vm-acceptance.yml`~~ (results) | daily | `REGISTRY_TOKEN` to append results | various | `tilo-perf-results` packages | retired: `perf-<group>` and `perf-scheduled`, `vm-acceptance` and `vm-acceptance-perf`, with `cache = false` and `TILO_PACKAGES_TOKEN`; the prebuilt cohort is `vm-acceptance-cohort` |
 | ~~`cloud-promotion.yml`~~ | weekly drift report, dispatch | `INFRA_PROMOTION_TOKEN` | Git history | a promotion pull request on the infra repository | replaced by `cloud-deploy`, which deploys every new stable head through the forge's API, so it pushes nothing itself |
-| `check.yml` (`checks` job) | push main | `REGISTRY_TOKEN` as a Git write token | | the CI receipt as a Git note | t's own commit statuses replace the receipt |
+| ~~`check.yml`~~ (`checks` job) | push main | `REGISTRY_TOKEN` as a Git write token | | the CI receipt as a Git note | t's own commit statuses replace the receipt |
 
 ### The imager
 
 | workflow | trigger | secrets and variables | runner needs | outputs | on t |
 |---|---|---|---|---|---|
 | `release-imager.yml` | `imager-v*` tags (signed release); dispatch (unsigned rehearsal) | brokers on the runners, each leased with OIDC: OpenPGP signing for Linux, Authenticode for Windows, Developer ID and notarization for macOS, GitHub App tokens for the public release repository, Homebrew tap and winget, a site token; Cosign; `REGISTRY_TOKEN`; the EFI/PCR signer | Linux x86_64 and arm64 with KVM and a render node, macOS on both arches, Windows on both arches | the GitHub release in `tilo-os/releases`, Homebrew, winget pull request, site downloads, installer media | Linux and macOS jobs as checks (`requires = ["os=macos", …]`), each signing step a separate check on `tag:imager-v*`; brokers become fixed credentials as secrets for release nodes; Windows: below |
-| `release-imager-winget.yml` | every 6 hours | site token through the broker | Linux | the site's download state | scheduled check, `cache = false` |
+| ~~`release-imager-winget.yml`~~ | every 6 hours | site token through the broker | Linux | the site's download state | moved to t (above) |
 | `release-runtime-macos.yml` | dispatch (disabled) | macOS broker, update key | macOS arm64 | artifacts | shadowed on t, unsigned: `runtime-macos-app` (dispatch); Developer ID signing needs a release-only Mac and `dist/macos/build-app.sh` split into build and sign (dist/macos/README.md) |
 
 ### Not publishing
 
-These only build or test and become ordinary or `default = false` checks (several already are,
-see `t.toml`): `check.yml`, `lint.yml`, `browser-auth-e2e.yml`, `ci-filesystem.yml`
-(its live cloud tests use credentials for test servers: secrets on `main` without `nodes`),
-`ci-legacy-apps.yml`, `ci-nightly.yml`, `ci-staging-loop.yml`,
-`ci-weekly-quality.yml`, `ci-development-signing.yml`, `dev-*.yml`, `inspect-rpm-signing.yml`,
-`sdk-native-envelope.yml`, `standalone-app.yml`,
-`wasm-check-qualification.yml`, `web-size-native-envelope.yml`, `resolve-builder.yml`.
+These only build or test, and become ordinary or `default = false` checks. Those t's checks
+already run are deleted (the table [above](#moved-to-t)). Still here:
+`dev-disk-boot-diagnostic.yml`.
 
 ## Identity tokens and secrets
 
@@ -401,7 +424,7 @@ them is t's server config; what they may do is the other side's:
 
 | audience | refs | accepted by |
 |---|---|---|
-| `registry.tilo.so` | `main`, `stable`, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags |
+| `registry.tilo.so` | any branch, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags, and from any other branch only to `tilo/tilo-vm-ref` (per-ref dev images), so no branch moves the tags devices follow in `tilo/tilo-vm` |
 | `sts.amazonaws.com` | `stable`, `tag:v*`, `tag:desktop-v*`, `tag:imager-v*` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
 
 More roles trust t's issuer the same way, each with its own keys:
@@ -410,7 +433,7 @@ More roles trust t's issuer the same way, each with its own keys:
 |---|---|---|
 | `TiloTPackageSigner` | `sts.amazonaws.com`; `stable`, `desktop-v*` and `imager-v*` tags | `alias/tilo-rpm-signing` (RSA 4096, digests only), `alias/tilo-authenticode-signing` (RSA 3072) |
 | `TiloTExtensionManifestSigner` | `tilo-extension-manifests`; `main` | `alias/tilo-extension-manifests` |
-| `TiloTDevSigner` | `tilo-dev-signing`; `main` | `alias/tilo-dev-signing` (P-256), development candidates only, never trusted for releases |
+| `TiloTDevSigner` | `tilo-dev-signing`; any branch | `alias/tilo-dev-signing` (P-256), development candidates only, never trusted for releases |
 
 The key reference (`COSIGN_KEY_REF`) and the role (`AWS_SIGNING_ROLE_ARN`) are not secret; the
 signing checks set them in `t.toml`. What has no OpenID Connect verifier yet stays a secret in
@@ -420,10 +443,12 @@ t's server config (sops-encrypted in the infra repository), none in this reposit
 |---|---|---|
 | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` | `stable`, `tag:*` | the app and runtime publisher identities, for the app and OS chains |
 | `DEV_APP_PUBLISHER_IDENTITY` | `main` | the development app publisher identity, for development app collections from main |
-| `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable`, `tag:*` | the local model catalog's signing seed: `sign-model-catalog`, `review-speech-catalog` |
-| `REGISTRY_TOKEN` | `stable`, `tag:*` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
+| `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable`, `tag:*` | the local model catalog's signing seed: `sign-model-catalog`, `review-model-catalog` |
+| `REGISTRY_TOKEN` | `stable`, `tag:*` | a Forgejo token that may write packages, which do not take t's identity tokens: `publish-model-catalog`, and the Lenovo board's release in the forge's container registry, `publish-os-release-lenovo-83ed` |
 | `INFRA_PROMOTION_TOKEN` | `stable` | the bot t-infra-promotion's token, which may write the infra repository: `cloud-deploy` reads the deploy target and commits the pins it moves |
-| `TILO_PACKAGES_TOKEN` | `main` | the bot t-packages' token, which may only write tilo's generic packages: extension manifests, performance results |
+| `TILO_LIVE_WEBDAV_URL`, `TILO_LIVE_WEBDAV_USER`, `TILO_LIVE_WEBDAV_PASSWORD`, `TILO_LIVE_NEXTCLOUD_URL`, `TILO_LIVE_NEXTCLOUD_USER`, `TILO_LIVE_NEXTCLOUD_PASSWORD` | `main` | the cloud-source conformance suite's live WebDAV and Nextcloud test accounts: `cloud-live`, which fails while any is missing |
+| `TILO_PACKAGES_TOKEN` | `main` | the bot t-packages' token, which may only write tilo's generic packages: extension manifests, performance results. Performance runs record their results on every reference listed here (`perf-scheduled`, `vm-acceptance-perf`), so adding `stable` records stable's |
+| `TILO_SITE_TOKEN` | `main` | a token of the website bot that may push the site repository (`tilo/site`), whose forge takes no identity token from t: `imager-winget-acceptance` |
 
 `sign-apps-*` and `sign-engine-*` take `TAPP_PUBLISHER_IDENTITY` and `RUNTIME_BUNDLE_SIGNING_KEY`,
 `submit-apps` and `submit-engine` only `TAPP_PUBLISHER_IDENTITY` (registry entries are signed by the
@@ -521,20 +546,19 @@ copies the artifacts in over SSH and runs the scripts.
 
 **What is not ported.** The release job also takes the desktop and release catalogs from the
 `catalog` job and publishes the WinGet pull request (`publish-winget.sh`); those belong to the
-imager's release chain on t. Until then these checks run beside the Forgejo workflows as a shadow, which stay as they are.
-Once a release tag has produced signed artifacts on t that match the Windows runners', a
-prepared cutover (with sign-off) can drop the build, test, package and sign steps of
-`release-imager.yml`'s `windows` job (keeping only what still needs Windows, above), and
-`dev-windows-arm64.yml` with `.forgejo/actions/setup-windows-arm64-cross`.
+imager's release chain on t. Until then these checks run beside `release-imager.yml`'s
+`windows` job as a shadow. Once a release tag has produced signed artifacts on t that match the
+Windows runners', a prepared cutover (with sign-off) can drop that job's build, test, package and
+sign steps, keeping only what still needs Windows (above). The ARM64 development builds are
+`windows-arm64-tilo-vm` and `windows-arm64-imager` (dispatch, cross-built).
 
 ## What t doesn't do yet
 
 - **Repository variables as channels.** `TILO_APP_COLLECTION_*` and `TILO_DESKTOP_PAYLOAD_*` are
   written by one workflow and read by the next. On t a release check publishes a pointer (a
   receipt in the package registry, or a tag), and the consumer resolves it.
-- **Cross-workflow polling.** `await-rpm-snapshot.sh` and Release / OS poll Forgejo for other
-  runs; on t the consumer `needs` the producer, which is cached when its fingerprint is
-  published.
+- **Cross-workflow polling.** On Forgejo a consumer polled for another workflow's runs; on t
+  the consumer `needs` the producer, which is cached when its fingerprint is published.
 - **Inputs from a cargo package's dependencies.** A `[[check]]` lists its input globs by hand;
   the context builds use the workflows' path filters.
 - **Service containers and Docker daemons** are gone: images build with buildah, and tests that

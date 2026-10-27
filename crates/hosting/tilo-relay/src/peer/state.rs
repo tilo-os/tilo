@@ -7,7 +7,7 @@ use super::{
     AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, RelayTrust, ReplayCatchup,
     ReplayPendingTarget, RoomOperation, SessionCtx, SharedWorkspace,
     checkpoint_prefix_recovery_allowed, current_session, enqueue_checkpoint_prefix, enqueue_state,
-    mpsc, over_change_limit, room_access, trace_native_publication,
+    lost_session, mpsc, over_change_limit, room_access, trace_native_publication,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -626,9 +626,7 @@ pub(super) async fn handle_delta(
         // subscriber; a follow-up write must close rather than refuse twice.
         let runtime = ws.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(PeerError::Protocol(
-                "subscriber authorization changed".into(),
-            ));
+            return Err(lost_session(&runtime, peer, session, RoomOperation::State));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -705,25 +703,39 @@ pub(super) async fn tell_governor(
 }
 
 /// Why the room refuses `env`, `author`'s change, when it writes the room's
-/// shared desktop ([`crate::rooms::Rooms::decide_desktop_write`]); `None` for
-/// any other change, and in a room this relay does not govern.
+/// shared layout: its topology or its shared desktop
+/// ([`crate::rooms::Rooms::decide_layout_write`]); `None` for any other
+/// change, and in a room this relay does not govern.
 pub(super) async fn desktop_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
 ) -> Option<String> {
     let body = governor_notice(env)?;
-    if !crate::rooms::writes_desktop(&body) {
+    if !crate::rooms::writes_desktop(&body) && !writes_topology(&body) {
         return None;
     }
     let authority = ws.lock().await.room_authority.clone()?;
     let reason = authority
         .rooms()?
-        .decide_desktop_write(authority.room(), author, &body)
+        .decide_layout_write(authority.room(), author, &body)
         .await
         .err()?;
-    tracing::warn!(%reason, device = %hex::encode(author), "refused a shared desktop change");
+    if reason == crate::rooms::LAYOUT_REFUSAL {
+        tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
+    } else {
+        tracing::warn!(%reason, device = %hex::encode(author), "refused a shared layout change");
+    }
     Some(reason)
+}
+
+/// Whether `body` is a change to some room's document (`SyncResp`), told
+/// apart without decoding the changes it carries.
+fn writes_topology(body: &[u8]) -> bool {
+    matches!(
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
+        Ok(neighbour_wire::NeighbourMsg::SyncResp { .. })
+    )
 }
 
 /// What the room's governor follows of `env`, a member's state change: its
@@ -779,9 +791,7 @@ pub(super) async fn handle_delta_prefix(
         }
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(PeerError::Protocol(
-                "subscriber authorization changed".into(),
-            ));
+            return Err(lost_session(&runtime, peer, session, RoomOperation::State));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,

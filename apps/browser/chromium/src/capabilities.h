@@ -3,6 +3,7 @@
 #include "include/cef_permission_handler.h"
 #include "include/cef_request_context.h"
 #include "site_policy.h"
+#include "download_name.h"
 #include "download_slots.h"
 #include "download_space.h"
 #include "include/base/cef_callback.h"
@@ -12,6 +13,7 @@
 #include <functional>
 #include <deque>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 #include <unistd.h>
@@ -43,14 +45,23 @@ class Downloads final : public CefDownloadHandler {
     for(int id:slots_.EarlyForOwner(tab)) CancelEarly(id,"cancelled","");
     return std::any_of(transfers_.begin(),transfers_.end(),[tab](const auto& entry){return entry.second.owner==tab && entry.second.approved;});
   }
-  static std::string FileName(std::string name) {
-    for(auto& c:name) if(c=='\\') c='/';
-    name=std::filesystem::path(name).filename().string();
-    for(auto& c:name) if(static_cast<unsigned char>(c)<32 || c==127) c='_';
-    if(name.empty() || name=="." || name=="..") name="download";
-    if(name.size()>180) name="download";
-    return name;
+  static std::string FileName(std::string name) {return DownloadFileName(std::move(name));}
+  // An extension asked for `url` to be downloaded (`chrome.downloads`), on
+  // `owner`'s page, under `name` when it is not empty. The download it
+  // starts asks the person as any other does; `done` learns its id once it
+  // started, or why it did not.
+  using Started=std::function<void(int,const std::string&)>;
+  void Expect(int owner,std::string url,std::string name,Started done) {
+    if(!accepting_) {done(0,"Downloads are turned off");return;}
+    if(expected_.size()>=kDownloadLimit) {done(0,"Too many downloads are starting");return;}
+    const int key=++expected_sequence_;
+    expected_.push_back({key,owner,std::move(url),std::move(name),std::move(done)});
+    // A server that never answers starts no download.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int key){self->Unexpect(key,"The download did not start");},CefRefPtr<Downloads>(this),key),60000);
   }
+  // The download's file, once it is complete; empty for any other.
+  std::string CompletedPath(int id) const {auto found=completed_.find(id);return found==completed_.end()?std::string():found->second;}
+  bool Known(int id) const {return transfers_.count(id) || early_.count(id) || terminal_.count(id);}
   bool CanDownload(CefRefPtr<CefBrowser> browser,const CefString& url,const CefString& method) override {
     const int owner=owner_(browser);if(!accepting_ || !owner || !eligible_(owner)) return false;
     provenance_.Record(owner,url.ToString(),method.ToString());
@@ -59,9 +70,18 @@ class Downloads final : public CefDownloadHandler {
   bool OnBeforeDownload(CefRefPtr<CefBrowser> browser,CefRefPtr<CefDownloadItem> item,const CefString& suggested,CefRefPtr<CefBeforeDownloadCallback> callback) override {
     const int id=item->GetId();
     if(terminal_.count(id))return true;
-    const int owner=owner_(browser);const auto url=item->GetURL().ToString();auto name=FileName(suggested);
+    const int owner=owner_(browser);const auto url=item->GetURL().ToString();
     const bool retryable=provenance_.TakeRetryable(owner,item->GetOriginalUrl().ToString(),url);
     auto early=early_.find(id);const bool staged=early!=early_.end();
+    // A download staged before this was matched to its request then: another
+    // request for the same address waits for a download of its own.
+    auto expected=staged?std::nullopt:TakeExpected(owner,item);
+    std::string chosen=staged?early->second.chosen:std::string();
+    if(expected && !expected->name.empty()) chosen=FileName(expected->name);
+    const auto name=chosen.empty()?FileName(suggested):chosen;
+    // Told once the outcome below is known, as Chrome calls back once its
+    // download has started.
+    struct Tell {std::optional<Expected> expected;int id;~Tell(){if(expected)expected->done(id,"");}} tell{std::move(expected),id};
     const bool source_valid=accepting_ && owner && eligible_(owner);
     const bool owner_capacity=staged || (source_valid && can_reserve_(owner));
     if(!source_valid || !owner_capacity) {
@@ -78,7 +98,7 @@ class Downloads final : public CefDownloadHandler {
     if(!slots_.Admit(id)) {TerminalWithoutTransfer(id,name,url,retryable,"failed","Download limit reached (32 active transfers)");return true;}
     const bool was_busy=OwnerBusy(owner);
     slots_.Promote(id);
-    Transfer transfer;if(staged){transfer=early->second;early_.erase(early);}transfer.owner=owner;transfer.before=callback;transfer.name=name;transfer.url=url;transfer.retryable=retryable;
+    Transfer transfer;if(staged){transfer=early->second;early_.erase(early);}transfer.owner=owner;transfer.before=callback;transfer.name=name;transfer.chosen=chosen;transfer.url=url;transfer.retryable=retryable;
     transfers_[id]=std::move(transfer);
     OwnerStateChanged(owner,was_busy);
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("url",url);d->SetString("name",name);emit_("download_prompt",d);Changed();
@@ -135,17 +155,12 @@ class Downloads final : public CefDownloadHandler {
         const std::string state=item->IsComplete()?"complete":item->IsCanceled()?"cancelled":"failed";
         Finish(id,state,state=="failed"?InterruptMessage(item->GetInterruptReason()):"");return;
       }
-      if(item->IsInProgress()) {
-        const int owner=owner_(browser);
-        if(!accepting_ || !owner || !eligible_(owner) || !can_reserve_(owner)) {
-          callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download owner unavailable");return;
-        }
-        if(!slots_.Stage(id,owner)){callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download limit reached (32 active transfers)");return;}
-        const bool was_busy=OwnerBusy(owner);
-        Transfer transfer;transfer.owner=owner;transfer.active=callback;Merge(transfer,item);early_[id]=std::move(transfer);
-        OwnerStateChanged(owner,was_busy);
-        Changed();
-      }
+      // An extension's request this download answers learns its id however
+      // it goes, as Chrome names a download that failed as it started.
+      const int owner=owner_(browser);
+      auto expected=TakeExpected(owner,item);
+      Stage(owner,id,item,callback,expected?expected->name:std::string());
+      if(expected) expected->done(id,"");
       return;
     }
     auto& transfer=it->second;transfer.owner=owner_(browser);Merge(transfer,item);
@@ -167,6 +182,20 @@ class Downloads final : public CefDownloadHandler {
     const std::string state=item->IsComplete()?"complete":item->IsCanceled()?"cancelled":"failed";
     Finish(id,state,state=="failed"?InterruptMessage(item->GetInterruptReason()):"");
   }
+  // A download Chromium reports before asking where to save it.
+  void Stage(int owner,int id,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback,const std::string& chosen) {
+    if(!item->IsInProgress()) return;
+    if(!accepting_ || !owner || !eligible_(owner) || !can_reserve_(owner)) {
+      callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download owner unavailable");return;
+    }
+    if(!slots_.Stage(id,owner)){callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download limit reached (32 active transfers)");return;}
+    const bool was_busy=OwnerBusy(owner);
+    Transfer transfer;transfer.owner=owner;transfer.active=callback;
+    if(!chosen.empty()) transfer.chosen=FileName(chosen);
+    Merge(transfer,item);early_[id]=std::move(transfer);
+    OwnerStateChanged(owner,was_busy);
+    Changed();
+  }
   static std::string InterruptMessage(cef_download_interrupt_reason_t reason) {
     if(reason==CEF_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE) return "Not enough space to finish the download";
     return "Chromium interrupted download ("+std::to_string(reason)+")";
@@ -177,6 +206,7 @@ class Downloads final : public CefDownloadHandler {
   }
   void CancelAll() {
     accepting_=false;
+    while(!expected_.empty()) Unexpect(expected_.front().key,"Downloads are turned off");
     std::vector<int> staged;for(const auto& entry:early_)staged.push_back(entry.first);
     for(int id:staged)CancelEarly(id,"cancelled","");
     std::vector<int> ids;for(const auto& entry:transfers_)ids.push_back(entry.first);
@@ -186,12 +216,35 @@ class Downloads final : public CefDownloadHandler {
   }
   void Close() {CancelAll();}
  private:
-  struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;std::string space_error;};
+  // `chosen`: the name an extension asked for, which the download keeps.
+  struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,chosen,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;std::string space_error;};
   struct RetryRecord {std::string url;bool retryable=false;};
+  struct Expected {int key=0;int owner=0;std::string url,name;Started done;};
+  static constexpr size_t kDownloadLimit=DownloadSlots::kLimit;
+  // The extension's request this download answers: the first on its page
+  // for the address it asked for, where it went first or where it went in
+  // the end (a redirect). A fragment is never fetched.
+  static std::string Unfragmented(std::string url) {const auto at=url.find('#');if(at!=std::string::npos)url.resize(at);return url;}
+  std::optional<Expected> TakeExpected(int owner,CefRefPtr<CefDownloadItem> item) {
+    if(expected_.empty())return std::nullopt;
+    const auto original=Unfragmented(item->GetOriginalUrl().ToString()),url=Unfragmented(item->GetURL().ToString());
+    for(auto it=expected_.begin();it!=expected_.end();++it) {
+      const auto wanted=Unfragmented(it->url);
+      if(it->owner!=owner || (wanted!=original && wanted!=url)) continue;
+      auto found=std::move(*it);expected_.erase(it);return found;
+    }
+    return std::nullopt;
+  }
+  void Unexpect(int key,const std::string& error) {
+    for(auto it=expected_.begin();it!=expected_.end();++it) {
+      if(it->key!=key) continue;
+      auto done=std::move(it->done);expected_.erase(it);done(0,error);return;
+    }
+  }
   static void Merge(Transfer& transfer,CefRefPtr<CefDownloadItem> item) {
     // The consent callback supplies the destination name. Later item updates
     // can report only Chromium's fallback, even after that filename was saved.
-    if(!transfer.before && !transfer.approved)transfer.name=FileName(item->GetSuggestedFileName());
+    if(!transfer.before && !transfer.approved)transfer.name=transfer.chosen.empty()?FileName(item->GetSuggestedFileName()):transfer.chosen;
     if(!item->GetURL().empty())transfer.url=item->GetURL();if(!item->GetFullPath().empty())transfer.path=item->GetFullPath();
     if(item->GetReceivedBytes()>0 || !transfer.received)transfer.received=item->GetReceivedBytes();if(item->GetTotalBytes()>0 || !transfer.total)transfer.total=item->GetTotalBytes();
   }
@@ -200,7 +253,7 @@ class Downloads final : public CefDownloadHandler {
   }
   void Remember(int id,const Transfer& transfer) {
     history_[id]={transfer.url,transfer.retryable};terminal_.insert(id);terminal_order_.push_back(id);
-    while(terminal_order_.size()>100){int old=terminal_order_.front();terminal_order_.pop_front();terminal_.erase(old);history_.erase(old);}
+    while(terminal_order_.size()>100){int old=terminal_order_.front();terminal_order_.pop_front();terminal_.erase(old);history_.erase(old);completed_.erase(old);}
   }
   void OwnerStateChanged(int owner,bool was_busy) {
     const bool busy=OwnerBusy(owner);
@@ -214,6 +267,7 @@ class Downloads final : public CefDownloadHandler {
     auto it=transfers_.find(id);if(it==transfers_.end())return;
     auto transfer=it->second;const bool was_busy=OwnerBusy(transfer.owner);
     transfers_.erase(it);slots_.Settle(id);Remember(id,transfer);
+    if(state=="complete" && !transfer.path.empty()) completed_[id]=transfer.path;
     EmitState(id,transfer,state,error);
     OwnerStateChanged(transfer.owner,was_busy);
     Changed();
@@ -238,6 +292,7 @@ class Downloads final : public CefDownloadHandler {
   bool accepting_=true;
   DownloadSlots slots_;std::map<int,Transfer> transfers_,early_;std::map<int,RetryRecord> history_;std::set<int> terminal_;std::deque<int> terminal_order_;
   DownloadProvenance provenance_;
+  std::deque<Expected> expected_;int expected_sequence_=0;std::map<int,std::string> completed_;
   IMPLEMENT_REFCOUNTING(Downloads);
 };
 // Pending prompts belong to one live page. Device grants and revocation use
@@ -263,32 +318,61 @@ class Capabilities final : public CefPermissionHandler {
     int id=++sequence_;permissions_[id]={nullptr,callback,permissions,0,context,origin};
     Prompt(id,origin,PermissionNames(permissions,true));return true;
   }
+  // The engine asks the person about `origin`'s request for `permissions`, as
+  // a page's own request is asked: the answer reaches `answer`.
+  void AskEngine(const std::string& origin,const std::string& permissions,std::function<void(bool)> answer) {
+    // As many requests as a page's own prompts may leave waiting; past that the
+    // answer is no rather than a request nothing will ever settle.
+    if(permissions_.size()>=32) {answer(false);return;}
+    int id=++sequence_;permissions_[id]={nullptr,nullptr,0,0,nullptr,origin,std::move(answer)};
+    Prompt(id,origin,permissions);
+  }
   void OnDismissPermissionPrompt(CefRefPtr<CefBrowser>,uint64_t prompt,cef_permission_request_result_t) override {
     for(auto it=permissions_.begin();it!=permissions_.end();++it) if(it->second.prompt && it->second.prompt==prompt) {int id=it->first;permissions_.erase(it);Closed(id);break;}
   }
-  void PermissionDecision(int id,bool allow) {
-    auto it=permissions_.find(id);if(it==permissions_.end()) return;
-    auto p=it->second;permissions_.erase(it);
-    if(p.permission) p.permission->Continue(allow?CEF_PERMISSION_RESULT_ACCEPT:CEF_PERMISSION_RESULT_DENY);
-    if(p.media) {
-      // A different tab may revoke the origin while this prompt is pending.
-      allow=allow && !MediaBlocked(p.context,p.origin,p.mask);
-      if(allow) {
-        for(const auto& device:kMediaSettings) if(p.mask & device.mask)
-          p.context->SetContentSetting(p.origin,p.origin,device.type,CEF_CONTENT_SETTING_VALUE_ALLOW);
-        p.media->Continue(p.mask);
-      } else p.media->Cancel();
-    }
-    Closed(id);
+  // `dismissed`: set aside unanswered (Escape, a click elsewhere, no answer
+  // in time), which Chromium does not remember as a block, so the site may
+  // ask again. A refusal is remembered, for the camera and microphone as for
+  // any other permission, until the person has the site ask again.
+  void PermissionDecision(int id,bool allow,bool dismissed=false) {
+    Settle(id,allow?CEF_PERMISSION_RESULT_ACCEPT:dismissed?CEF_PERMISSION_RESULT_DISMISS:CEF_PERMISSION_RESULT_DENY);
   }
+  // The questions no one answered are withdrawn: the page moved on, its tab
+  // closed, or its permissions were blocked. That is no refusal, so nothing
+  // is remembered for the site.
   void Close() {
-    while(!permissions_.empty()) PermissionDecision(permissions_.begin()->first,false);
+    while(!permissions_.empty()) Settle(permissions_.begin()->first,CEF_PERMISSION_RESULT_IGNORE);
   }
  private:
   struct MediaSetting {uint32_t mask;cef_content_setting_types_t type;};
   inline static constexpr MediaSetting kMediaSettings[]={
     {CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE,CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_MIC},
     {CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE,CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA}};
+  void Settle(int id,cef_permission_request_result_t result) {
+    auto it=permissions_.find(id);if(it==permissions_.end()) return;
+    auto p=it->second;permissions_.erase(it);
+    if(p.engine) {p.engine(result==CEF_PERMISSION_RESULT_ACCEPT);Closed(id);return;}
+    if(p.permission) p.permission->Continue(result);
+    if(p.media) {
+      // A different tab may revoke the origin while this prompt is pending.
+      if(result==CEF_PERMISSION_RESULT_ACCEPT && !MediaBlocked(p.context,p.origin,p.mask)) {
+        SetMedia(p,CEF_CONTENT_SETTING_VALUE_ALLOW);
+        p.media->Continue(p.mask);
+      } else {
+        if(result==CEF_PERMISSION_RESULT_DENY) SetMedia(p,CEF_CONTENT_SETTING_VALUE_BLOCK);
+        p.media->Cancel();
+      }
+    }
+    Closed(id);
+  }
+  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;
+    // A request the engine made on the page's behalf, answered here rather
+    // than by Chromium: the engine's own geolocation has no Chromium prompt.
+    std::function<void(bool)> engine;};
+  static void SetMedia(const Permission& p,cef_content_setting_values_t value) {
+    for(const auto& device:kMediaSettings) if(p.mask & device.mask)
+      p.context->SetContentSetting(p.origin,p.origin,device.type,value);
+  }
   static bool MediaBlocked(CefRefPtr<CefRequestContext> context,const std::string& origin,uint32_t mask) {
     for(const auto& device:kMediaSettings) if((mask & device.mask) && context->GetContentSetting(origin,origin,device.type)==CEF_CONTENT_SETTING_VALUE_BLOCK) return true;
     return false;
@@ -300,10 +384,9 @@ class Capabilities final : public CefPermissionHandler {
   }
   void Prompt(int id,const CefString& origin,const std::string& permissions) {
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("origin",origin);d->SetString("permissions",permissions);emit_("permission_prompt",d);
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->PermissionDecision(id,false);},CefRefPtr<Capabilities>(this),id),60000);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->PermissionDecision(id,false,true);},CefRefPtr<Capabilities>(this),id),60000);
   }
   void Closed(int id) {auto d=CefDictionaryValue::Create();d->SetInt("id",id);emit_("permission_closed",d);}
-  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;};
   Emit emit_;int sequence_=0;
   std::map<int,Permission> permissions_;
   IMPLEMENT_REFCOUNTING(Capabilities);

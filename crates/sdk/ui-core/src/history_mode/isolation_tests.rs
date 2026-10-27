@@ -1,4 +1,3 @@
-//! Real retained controls and owner operation polling exercise the host boundary.
 use super::host_tests::registration;
 use super::*;
 use crate::widget::{AppModel, ModelPath};
@@ -223,7 +222,8 @@ impl Widget for LiveOwner {
         dyn crate::undo::UndoControl,
         dyn crate::undo::LocalUndo,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn name(&self) -> &str {
@@ -268,9 +268,13 @@ impl Widget for LiveOwner {
     fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
         self.local_events.set(self.local_events.get() + 1);
     }
+}
+
+impl crate::widget::ResourceOperations for LiveOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.type_id.to_owned()].into_iter().collect()
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -292,6 +296,7 @@ impl Widget for LiveOwner {
         self.active = Some(invocation);
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,

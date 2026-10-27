@@ -24,7 +24,6 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
             surface_id: 3,
         };
         assert_eq!(canonical_app_id(&foreign).as_deref(), Some("org.gimp.GIMP"));
-        assert_eq!(canonical_app_id(&TileContent::WorkspaceActivity), None);
     }
     // Phase `a_bound_record_is_routed_and_cannot_be_rebound`.
     {
@@ -45,6 +44,7 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
                     label: "Notes".into(),
                     note: String::new(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,

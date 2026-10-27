@@ -65,7 +65,10 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
     const MESSAGES: usize = 10;
     let (mut governor, mut replica, a, now) = governor_and_replica(MESSAGES);
     let source = a.verifying_key().to_bytes();
-    let messages = governor.signed_snapshots(&a, now).unwrap();
+    let messages = governor
+        .publication_mut()
+        .signed_snapshots(&a, now)
+        .unwrap();
     assert_eq!(messages.len(), MESSAGES);
     replica
         .receive(source, governor.room_message(), now)

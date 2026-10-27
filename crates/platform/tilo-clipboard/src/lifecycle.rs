@@ -181,6 +181,10 @@ impl ClipboardBackend for Session {
         self.admit()
             .is_some_and(|backend| backend.set_secret_text(text))
     }
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        self.admit()
+            .is_some_and(|backend| backend.set_rich_text(html, plain))
+    }
     fn text(&self, target: ClipboardTarget) -> Option<String> {
         self.admit()?.text(target)
     }

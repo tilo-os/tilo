@@ -1,5 +1,7 @@
 //! Room-policy leaves shared by the shell and certified browser peer.
 mod admit;
+mod adopt;
+pub mod base;
 pub(crate) mod delivery_policy;
 pub(crate) mod key_hex;
 pub mod media;
@@ -10,6 +12,7 @@ pub use admit::{
     AdmittedRoom, AuthorityPin, ContentOwnership, RoomAdmission, RoomRefusal, Standing, Writer,
     admit_room_changes, check_candidate,
 };
+pub use adopt::adopt_room;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
@@ -19,7 +22,7 @@ use tilo_automerge::ReadTyped as _;
 /// decoded form: equality is the byte-exact comparison
 /// [`governance_unchanged`] needs, so a non-governor cannot slip a changed but
 /// undecodable (or re-encoded) row past it. Decoded views of the same document
-/// state live on its cache ([`crate::cached_document::CachedDocument::policy`]).
+/// state live on its cache (`crate::cached_document::CachedDocument::policy`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomGovernance {
     /// The structural owner's person key (`owner`).
@@ -110,15 +113,10 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
 pub struct IdentityRow {
     /// The governed device certificate.
     pub device_cert: tilo_user_identity::DeviceCert,
-    /// The revocations the row publishes.
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
 /// Decode one [`RoomGovernance::identities`] row exactly as admission does.
-///
-/// # Errors
-///
-/// Returns the decode error if the bytes are not a governed identity row.
 pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
     let identity: crate::state::GovernedIdentity = serde_json::from_slice(bytes)?;
     Ok(IdentityRow {
@@ -241,10 +239,6 @@ pub fn extract_governed_fields(
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
 /// Changes with absent dependencies remain queued, as with `apply_changes`.
-///
-/// # Errors
-///
-/// Returns an error if a change is malformed or refused by isolated admission.
 pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
     // Each entry is one complete change chunk; their concatenation is ordinary
     // storage, admitted like any other untrusted document mutation.

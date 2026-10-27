@@ -127,11 +127,13 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
         let mut baseline = None;
         for key in [
             None,
-            Some("history-local-action-unsigned"),
-            Some("history-local-action-pending"),
+            Some("history-local-action-not-saved"),
+            Some("history-sync-offline"),
             None,
         ] {
-            let status = key.map(crate::i18n::I18nManager::lookup_plain);
+            let status = key
+                .map(crate::i18n::I18nManager::lookup_plain)
+                .map(crate::widget::WindowStatus::says);
             history.set_sync_status(status.clone());
             let mut tree = taffy::TaffyTree::new();
             let mut nodes = std::collections::HashMap::new();
@@ -162,7 +164,10 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
                 .children()
                 .into_iter()
                 .filter_map(Widget::accessibility)
-                .any(|node| node.name.as_deref() == status.as_deref() && status.is_some());
+                .any(|node| {
+                    node.name.as_deref() == status.as_ref().map(|s| s.text.as_str())
+                        && status.is_some()
+                });
             assert_eq!(
                 published,
                 status.is_some(),
@@ -274,7 +279,7 @@ fn replacing_admitted_history_controls_reports_structure_dirty() {
         "an admitted composition is clean"
     );
 
-    history.set_sync_status(Some("Syncing".into()));
+    history.set_sync_status(Some(crate::widget::WindowStatus::says("Syncing")));
     assert!(
         history.take_structure_dirty(),
         "the admitted toolbar was replaced"
@@ -352,9 +357,6 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
                 .contains("Notebook: first")
         );
         let targets = driver.targets();
-        // USER REQUIREMENT (2026-10-19): History is "a right-side panel per
-        // window or active tab"; selecting an entry "previews that state in
-        // place".
         assert!(
             targets["history-preview"].x1 <= targets["activity_timeline"].x0,
             "wide activity is a panel at the trailing side, the preview in place beside it"
@@ -1502,6 +1504,11 @@ impl Widget for CheckedCompositionRoot {
         self.inner.children_mut()
     }
 
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.inner.as_ref());
+        true
+    }
+
     fn name(&self) -> &str {
         "checked-composition-root"
     }
@@ -1633,7 +1640,7 @@ fn history_host_messages_exist_in_every_shipped_language() {
         ("owner", "owner".into()),
         ("action", "app/action".into()),
         ("arguments", "{}".into()),
-        ("phrase", "CONFIRM".into()),
+        ("phrase", "nvme0n1".into()),
         ("file", "brief.md".into()),
         ("revision", "r1".into()),
         ("identity", "abcdef".into()),
@@ -1829,7 +1836,6 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
     }
 }
 
-/// The text at `key` of `doc`'s root, if it holds text.
 fn root_text(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
     doc.get(ROOT, key)
         .ok()
@@ -1837,9 +1843,6 @@ fn root_text(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
         .and_then(|(value, _)| value.as_str().map(str::to_owned))
 }
 
-// USER REQUIREMENT (2026-10-19): "A right-side panel per window or active tab
-// ... Selecting an entry previews that state in place (read-only), with
-// Restore or Restore just this change."
 #[test]
 fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_own() {
     let mut state = State::new();
@@ -1909,7 +1912,6 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
     );
 }
 
-// USER REQUIREMENT (2026-10-19): "grouping of actions in named groups".
 #[test]
 fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
     let (mut driver, target, _) = versioned_driver((900, 650));

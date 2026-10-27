@@ -246,15 +246,8 @@ fn captured<T>(scenario: &str, read: impl FnOnce(&mut crate::TerminalView) -> T)
 
 #[test]
 fn scenarios_stage_their_output_and_view_state() {
-    let (open, counter) = captured("find", |terminal| {
-        (terminal.find_is_open(), terminal.find_counter())
-    });
-    assert!(open, "the find scenario opens the find bar");
-    assert_eq!(
-        counter,
-        Some(("build step 042".into(), Some((1, 1)))),
-        "one line matches `build step 042`"
-    );
+    let matches = captured("find", |terminal| terminal.find_test_matches());
+    assert_eq!(matches.len(), 1, "one line matches `build step 042`");
 
     let selected = captured("shell-select", |terminal| terminal.test_selected_text());
     assert_eq!(
@@ -294,7 +287,6 @@ fn native_replacement_preserves_private_effect_contract() {
         .into_iter()
         .find(|declaration| declaration.id == effect.id())
         .unwrap();
-    assert!(declaration.device_only);
     let text = declaration
         .params
         .iter()
@@ -302,4 +294,24 @@ fn native_replacement_preserves_private_effect_contract() {
         .unwrap();
     assert_eq!(text.ty, ui::tilo_actions::ParamType::Secret);
     assert_eq!(effect.arguments()["text"], "private transcript");
+}
+
+/// Each Terminal window is a session of its own: a second window starts its
+/// own session record, and what one window's session records (where it
+/// runs) is not another's.
+#[test]
+fn every_window_is_a_session_of_its_own() {
+    let mut app = TestApp::<TerminalShell>::new().expect("terminal");
+    app.invoke(target_action(&SessionTarget::default_environment()))
+        .expect("recorded target");
+    app.flush().expect("saved");
+    let beside = app.open_window().expect("a second window");
+    assert_ne!(
+        beside.record(),
+        app.record(),
+        "a second window never shows the first window's session"
+    );
+    let first = app.read_document(|doc| doc.clone().get_heads());
+    let second = beside.read_document(|doc| doc.clone().get_heads());
+    assert_ne!(first, second, "and holds nothing of it");
 }

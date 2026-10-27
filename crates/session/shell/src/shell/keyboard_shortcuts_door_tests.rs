@@ -45,9 +45,11 @@ impl Door {
             std::os::unix::fs::PermissionsExt::from_mode(0o700),
         )
         .expect("owner-only socket directory");
-        let mut workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Desk");
-        workspace.set_room(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"));
+        let mut workspace = crate::shell::state::Workspace::in_room(
+            crate::shell::state::WorkspaceId(1),
+            crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
+            "Desk",
+        );
         workspace.set_owner(OWNER.to_string());
         // A helper the owner admits to the room and lets change Notes, and
         // holds no Settings grant.
@@ -87,7 +89,6 @@ impl Door {
         }
     }
 
-    /// Every row `caller` is offered under `parent`.
     fn rows(&self, caller: &Caller, parent: Option<&str>) -> Vec<(String, String, String)> {
         answer(self.host.query(
             caller,

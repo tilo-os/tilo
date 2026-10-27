@@ -548,3 +548,78 @@ fn a_workbench_of_version_one_opens_with_every_draft_program() {
     assert_eq!(draft.name, "File receipts");
     assert!(draft.replaces_saved);
 }
+
+/// New drafts that would share a name are numbered, as new layers and
+/// sheets are, so the list tells them apart.
+#[test]
+fn new_drafts_with_one_name_are_numbered() {
+    let mut replica = Replica::<Workbench>::new();
+    for _ in 0..3 {
+        replica
+            .apply(Workbench::NEW_DRAFT.with("New shortcut"))
+            .unwrap();
+    }
+    replica.apply(Workbench::NEW_DRAFT.with("Tidy")).unwrap();
+    let mut names: Vec<String> = replica
+        .state()
+        .unwrap()
+        .drafts
+        .values()
+        .map(|draft| draft.name.clone())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["New shortcut", "New shortcut 2", "New shortcut 3", "Tidy"]
+    );
+}
+
+#[test]
+fn a_draft_or_a_saved_shortcut_duplicates_into_a_new_unsaved_variant() {
+    let (mut replica, id) = with_draft();
+    replica
+        .apply(Workbench::ADD_STEP.with((id.clone(), String::new(), invoke("list"))))
+        .unwrap();
+    let original = replica.state().unwrap().drafts.get(&id).cloned().unwrap();
+    replica
+        .apply(Workbench::DUPLICATE_DRAFT.with(id.clone()))
+        .unwrap();
+    let copy = replica
+        .state()
+        .unwrap()
+        .drafts
+        .iter()
+        .find(|(key, draft)| **key != id && draft.name == "Tidy copy")
+        .map(|(_, draft)| draft.clone())
+        .expect("a duplicate of the draft");
+    assert_eq!(copy.program(), original.program());
+    assert_ne!(copy.shortcut_id, original.shortcut_id);
+    assert!(!copy.replaces_saved);
+    replica
+        .apply(Workbench::DUPLICATE_DRAFT.with(id.clone()))
+        .unwrap();
+    assert!(
+        replica
+            .state()
+            .unwrap()
+            .drafts
+            .values()
+            .any(|draft| draft.name == "Tidy copy 2"),
+        "duplicates are numbered so they can be told apart"
+    );
+
+    let saved = original.shortcut(Vec::new());
+    replica
+        .apply(Workbench::DUPLICATE_SHORTCUT.with(serde_json::to_value(&saved).unwrap()))
+        .unwrap();
+    let duplicated = replica
+        .state()
+        .unwrap()
+        .drafts
+        .values()
+        .find(|draft| draft.name == "Tidy copy 3" && !draft.replaces_saved)
+        .cloned()
+        .expect("a duplicate of the saved shortcut");
+    assert_eq!(duplicated.program(), original.program());
+    assert_ne!(duplicated.shortcut_id, saved.id);
+}

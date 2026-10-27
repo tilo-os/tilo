@@ -9,8 +9,7 @@
 //! families, style, weight, width), with the identity of every file and
 //! directory it was built from. A later process that finds every one of
 //! them unchanged builds the same database from the index alone: it parses
-//! no font and hashes nothing, and maps a font's file only when a face of it
-//! is first shaped.
+//! no font and hashes nothing.
 //!
 //! Identity is the device, inode, size, modification and change times. A
 //! catalog font whose identity is the one it had when it was hashed holds
@@ -21,13 +20,10 @@
 //! ignored and the database is built as before; a process that may write
 //! the index then records the new one.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
 use cosmic_text::fontdb;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tilo_files::native::checked::Identity;
-use tilo_files::native::mapped::MappedFile;
 
 /// Bumped whenever what an index records, or how a database is made from
 /// it, changes.
@@ -193,22 +189,16 @@ pub(crate) fn load(path: &Path, roots: &[PathBuf]) -> Option<fontdb::Database> {
     Some(database(&index))
 }
 
-/// The database `index` records: its faces in order, each file mapped only
-/// when one of its faces is first used.
+/// The database `index` records, its faces in order.
 fn database(index: &Index) -> fontdb::Database {
     let mut db = fontdb::Database::new();
-    let data: Vec<Arc<dyn AsRef<[u8]> + Send + Sync>> = index
-        .files
-        .iter()
-        .map(|file| Arc::new(LazyMap::new(file.path.clone())) as _)
-        .collect();
     for face in &index.faces {
-        let (Some(file), Some(data)) = (index.files.get(face.file), data.get(face.file)) else {
+        let Some(file) = index.files.get(face.file) else {
             continue;
         };
         db.push_face_info(fontdb::FaceInfo {
             id: fontdb::ID::dummy(),
-            source: fontdb::Source::SharedFile(file.path.clone(), Arc::clone(data)),
+            source: fontdb::Source::File(file.path.clone()),
             index: face.index,
             families: face
                 .families
@@ -318,33 +308,6 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
     })
 }
 
-/// A font file's bytes, mapped the first time they are read: a database
-/// made from an index holds hundreds of files, of which a launch shapes
-/// with a handful. A file that cannot be mapped reads as empty (a face of
-/// it then fails to load, as an unreadable file does).
-struct LazyMap {
-    path: PathBuf,
-    map: std::sync::OnceLock<Option<MappedFile>>,
-}
-
-impl LazyMap {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            map: std::sync::OnceLock::new(),
-        }
-    }
-}
-
-impl AsRef<[u8]> for LazyMap {
-    fn as_ref(&self) -> &[u8] {
-        self.map
-            .get_or_init(|| MappedFile::open(&self.path).ok())
-            .as_ref()
-            .map_or(&[], AsRef::as_ref)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,8 +332,6 @@ mod tests {
         files
     }
 
-    /// A database made from an index is the one that was recorded, face by
-    /// face, and reads the same bytes.
     #[test]
     fn a_recorded_database_reads_back_face_for_face() {
         let dir = tempfile::tempdir().unwrap();
@@ -439,25 +400,21 @@ mod tests {
         store(&index_path, &roots, &root, &db);
         assert!(load(&index_path, &roots).is_some());
 
-        // A font rewritten in place.
         let bytes = std::fs::read(&first).unwrap();
         std::fs::write(&first, &bytes).unwrap();
         assert!(load(&index_path, &roots).is_none(), "a rewritten font");
         store(&index_path, &roots, &root, &db);
         assert!(load(&index_path, &roots).is_some());
 
-        // A font added beside the others.
         std::fs::write(fonts.join("added.ttf"), &bytes).unwrap();
         assert!(load(&index_path, &roots).is_none(), "an added font");
         store(&index_path, &roots, &root, &db);
 
-        // Another catalog root in front of the one it loaded from.
         let front = dir.path().join("front");
         std::fs::create_dir_all(&front).unwrap();
         let in_front = vec![front, fonts.clone()];
         assert!(load(&index_path, &in_front).is_none(), "a root in front");
 
-        // Another build's index.
         let mut other: Index =
             serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         other.build = "another".into();

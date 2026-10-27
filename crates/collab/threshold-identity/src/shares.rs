@@ -86,7 +86,6 @@ pub struct RecoveryShare {
     /// The `t` in t-of-n at generation time, carried so the recovery flow
     /// can sanity-check the share belongs to the group being restored into.
     pub threshold: u16,
-    /// The `n` in t-of-n.
     pub total_shares: u16,
     /// The group public key, so `import_recovery_share` can refuse a
     /// mnemonic belonging to a different group.
@@ -128,7 +127,7 @@ impl RecoveryShare {
             )
         })?;
         Ok(Self {
-            mnemonic,
+            mnemonic: mnemonic.to_string(),
             share_index: identifier_to_u16(kp.identifier()),
             threshold: *kp.min_signers(),
             total_shares,

@@ -41,9 +41,19 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
         tilo_test_env::recv("release of the observed native read deadline", &release_rx);
     });
     tilo_test_env::recv("actual native workspace writer acquisition", &held_rx);
-    // The host still performs every fresh membership/certificate check.
-    // The UI caller does not consume input or force an owner merge here.
-    let observed = tilo_test_env::within("the original read deadline to close readiness", async {
+    // An idle reader asks the hung owner nothing and arms no timer: the hang
+    // is met by the next ask. The app asks for its whole read again (as an
+    // owner being rebuilt does); the reader withdraws readiness and Opens,
+    // and that Open meets the hung owner.
+    assert_eq!(
+        target
+            .code
+            .app
+            .controlled_request_committed_reads_for_test(),
+        1,
+        "the mounted Code route takes the ask"
+    );
+    let observed = tilo_test_env::within("the ask to close readiness", async {
         loop {
             let observed = phase(target);
             if observed["committed_read_ready"] == false {
@@ -53,6 +63,14 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
         }
     })
     .await;
+    // Past the Open's two-second deadline the reader renews its read
+    // generation rather than failing the route, however long the owner hangs.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        phase(target)["committed_read_ready"],
+        false,
+        "no read is ready while the owner hangs"
+    );
     let connected = target.code.app.collaboration_is_connected();
     release_tx.send(()).unwrap();
     writer.join().unwrap();
@@ -62,11 +80,11 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
     );
     assert_eq!(
         observed["committed_read_ready"], false,
-        "the old read epoch must withdraw readiness before renewal"
+        "the ask must withdraw readiness before renewal"
     );
     assert!(
         connected,
-        "one read deadline must preserve the original authenticated root"
+        "an Open past its deadline must preserve the original authenticated root"
     );
     let expected = format!("{BODY}// committed after the original read deadline\n");
     commit_edit(device, &owner, BODY, &expected);

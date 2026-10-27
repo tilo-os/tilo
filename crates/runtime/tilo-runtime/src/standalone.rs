@@ -5,11 +5,11 @@
 //! desktop. The desktop session hosts the same brokers with its native
 //! adapters (launcher, governance, durable owner, peer network). Here the
 //! profile launches its installed apps through the platform launcher
-//! ([`crate::apps`]), records the grants people give apps for other apps'
+//! (`crate::apps`), records the grants people give apps for other apps'
 //! actions in its own workspace, owns its room's documents durably
-//! ([`owner`]), local to this machine, joins rooms a Tilo device or cloud
-//! host governs ([`joined`]), serves route keys for both
-//! ([`channels`]) and routes offloadable actions through the person's home
+//! (`owner`), local to this machine, joins rooms a Tilo device or cloud
+//! host governs (`joined`), serves route keys for both
+//! (`channels`) and routes offloadable actions through the person's home
 //! relay when one retains its room ([`crate::offload`]); every other host
 //! service is absent,
 //! and the broker answers as it does for any host that does not provide one.
@@ -33,7 +33,7 @@ mod workspace;
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
-use joined::Joined;
+use joined::{Joined, Refusal};
 use owner::{AdoptedRoom, RecordCreation, RoomOwner};
 use rooms::{Owners, Rooms};
 use std::{
@@ -352,23 +352,44 @@ impl AdmittedRuntimeSession {
         }
     }
 
-    fn check(&self, caller: &Caller, joined: &Joined) -> Result<(), ActionHostError> {
-        let now = self
-            .policy_time
-            .now_ns()
-            .map_err(|_| ActionHostError::NotPermitted)?;
-        tilo_user_identity::verify_device_cert_at(self.admission.certificate(), now)
-            .map_err(|_| ActionHostError::NotPermitted)?;
+    /// Whether this call may run as the run's caller, now.
+    ///
+    /// A refusal says why it can be acted on: a run that ended is ended for
+    /// good, a caller this run was not admitted for is a stranger, and a
+    /// check that could not be made (a certificate read or its validity
+    /// check that failed this once) refuses only this call, whose error
+    /// tells the agent to retry. Every refusal is logged with its cause;
+    /// none logs identity material.
+    fn check(&self, caller: &Caller, joined: &Joined) -> Result<(), Refusal> {
+        let now = match self.policy_time.now_ns() {
+            Ok(now) => now,
+            Err(error) => {
+                tracing::warn!(%error, "the action door cannot read the policy clock");
+                return Err(Refusal::Unavailable {
+                    reason: "the policy clock is unavailable".into(),
+                });
+            }
+        };
+        let verified = tilo_user_identity::verify_device_cert_at(self.admission.certificate(), now);
+        if let Err(error) = verified {
+            tracing::warn!(%error, "the admitted run's device certificate does not verify now");
+            return Err(Refusal::Unavailable {
+                reason: format!("the device certificate does not verify ({error})"),
+            });
+        }
         if caller
             != self
                 .projection
                 .as_ref()
                 .unwrap_or_else(|| self.admission.caller())
-            || self.admission.check(joined).is_err()
         {
-            return Err(ActionHostError::NotPermitted);
+            tracing::warn!(
+                caller = ?caller.principal(),
+                "a caller this run was not admitted for tried to act as it"
+            );
+            return Err(Refusal::Stranger);
         }
-        Ok(())
+        self.admission.check(joined)
     }
 
     fn guarded<T: Send + 'static>(
@@ -380,13 +401,16 @@ impl AdmittedRuntimeSession {
         let session = Arc::clone(self);
         let (complete, pending) = tilo_actions::remote::pending();
         answer.then(move |result| {
-            let result = session.check(&caller, &joined).and_then(|()| {
-                result.unwrap_or_else(|| {
-                    Err(ActionHostError::Unavailable {
-                        reason: "action door closed".into(),
+            let result = session
+                .check(&caller, &joined)
+                .map_err(ActionHostError::from)
+                .and_then(|()| {
+                    result.unwrap_or_else(|| {
+                        Err(ActionHostError::Unavailable {
+                            reason: "action door closed".into(),
+                        })
                     })
-                })
-            });
+                });
             complete.complete(result);
         });
         pending
@@ -408,12 +432,15 @@ impl RuntimeActionHost {
                 .map_err(io::Error::other)?;
             let caller = admission.caller().clone();
             // The MCP client is an agent the person's device hands this
-            // session to; the admission stays the person's.
+            // session to; the admission stays the person's. Its name is part
+            // of the durable owner, so people are shown a short label for it
+            // instead of the whole run id.
             let agent = crate::mcp::agent_id(&caller);
             let qualified = host
                 .broker
                 .certified_local_agent_host(&caller, admission.presentation(), &agent)
                 .map_err(io::Error::other)?;
+            let label = crate::mcp::agent_label(&agent);
             admission.check(&host.joined).map_err(io::Error::other)?;
             let session_host = RuntimeActionHost {
                 broker: host.broker.clone(),
@@ -423,11 +450,11 @@ impl RuntimeActionHost {
                     policy_time: policy_time.clone(),
                     host: qualified,
                     admission,
-                    agent: Some(agent),
+                    agent: Some(agent.clone()),
                     projection: None,
                 })),
             };
-            crate::mcp::McpServer::admitted(session_host, caller)
+            Ok(crate::mcp::McpServer::admitted(session_host, caller)?.with_agent_run(agent, label))
         })
     }
 
@@ -489,8 +516,8 @@ impl ActionHost for RuntimeActionHost {
                     .state()
                     .action_query(&on_this_device(caller), &query);
             }
-            if let Err(error) = session.check(caller, &self.joined) {
-                return Pending::ready(Err(error));
+            if let Err(refusal) = session.check(caller, &self.joined) {
+                return Pending::ready(Err(refusal.into()));
             }
             if query
                 .provider
@@ -521,8 +548,8 @@ impl ActionHost for RuntimeActionHost {
             return Pending::ready(Err(refused));
         }
         if let Some(session) = &self.session {
-            if let Err(error) = session.check(caller, &self.joined) {
-                return Pending::ready(Err(error));
+            if let Err(refusal) = session.check(caller, &self.joined) {
+                return Pending::ready(Err(refusal.into()));
             }
             return session.host.invoke(session.admission.caller(), request);
         }
@@ -572,8 +599,8 @@ impl ActionHost for RuntimeActionHost {
         if session.agent.is_none() {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         }
-        if let Err(error) = session.check(caller, &self.joined) {
-            return Pending::ready(Err(error));
+        if let Err(refusal) = session.check(caller, &self.joined) {
+            return Pending::ready(Err(refusal.into()));
         }
         session.host.confirm(session.admission.caller(), request)
     }
@@ -582,13 +609,15 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> Pending<Result<(), ActionHostError>> {
         if let Some(session) = &self.session {
-            session.check(caller, &self.joined)?;
+            if let Err(refusal) = session.check(caller, &self.joined) {
+                return Pending::ready(Err(refusal.into()));
+            }
             return session.host.cancel(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
-            return Err(ActionHostError::UnknownInvocation);
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
         }
         self.broker
             .state()

@@ -37,11 +37,8 @@ use crate::{NativeCommittedView, NativeFenceSubscription, NativeWorkspaceOwner};
 /// The voice channel a call is bound to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Channel {
-    /// The chat app.
     pub app: String,
-    /// The chat record holding the channel.
     pub record: String,
-    /// The voice channel.
     pub channel: String,
 }
 
@@ -99,10 +96,6 @@ impl Participation {
     /// Join the call bound to `channel` in `room` over the room's relay
     /// `session`, opening it when none is active. `check` vets the device's
     /// custody.
-    ///
-    /// # Errors
-    /// The device is no member, the channel is no voice channel, or the
-    /// session is gone.
     pub fn open(
         owner: NativeWorkspaceOwner,
         room: RoomId,
@@ -142,6 +135,77 @@ impl Participation {
             getrandom::fill(&mut request).map_err(|error| error.to_string())?;
             Phase::Starting(request)
         };
+        // A call starts muted: the microphone opens only when the person
+        // unmutes, and everyone sees it muted until then.
+        let muted = Showing {
+            muted: true,
+            ..Showing::default()
+        };
+        let participation = Self::joining(owner, room, workspace, device, phase, call, muted);
+        match (phase, call) {
+            (Phase::Starting(request), _) => session.voice_call(
+                request,
+                CallOperation::Open {
+                    app_id: channel.app.clone(),
+                    record_id: channel.record.clone(),
+                    channel_id: channel.channel.clone(),
+                },
+            ),
+            (_, Some(call)) => session.voice_join(call, None),
+            (_, None) => return Err("governed call missing".into()),
+        }
+        .map_err(|_| "the room's relay session is gone")?;
+        Ok(participation)
+    }
+
+    /// Join `room`'s window carrier
+    /// ([`tilo_relay_protocol::voice::windows_call`]) over the room's relay
+    /// `session`: the call on which its member devices publish the windows
+    /// of host programs they run and view each other's. It needs no governed
+    /// call; the governor grants it while the room shares its layout.
+    /// `check` vets the device's custody.
+    pub fn open_windows(
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        session: &RelayCoeditSession,
+        check: impl Fn(&NativeCommittedView) -> Result<(), String>,
+    ) -> Result<Arc<Self>, String> {
+        let (workspace, device) = owner.with_current(room, |view| {
+            check(view)?;
+            view.peer()
+                .permissions(view.device().device_public_key, SystemTime::now())?;
+            Ok((view.workspace(), view.device().device_public_key))
+        })?;
+        if session.workspace_id() != workspace {
+            return Err("the session belongs to another room".into());
+        }
+        let call = tilo_relay_protocol::voice::windows_call(&room.to_string());
+        let participation = Self::joining(
+            owner,
+            room,
+            workspace,
+            device,
+            Phase::Joining,
+            Some(call),
+            Showing::default(),
+        );
+        session
+            .voice_join(call, None)
+            .map_err(|_| "the room's relay session is gone")?;
+        Ok(participation)
+    }
+
+    /// A participation in `phase` showing `showing`, fenced by its room's
+    /// custody.
+    fn joining(
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        workspace: u64,
+        device: [u8; 32],
+        phase: Phase,
+        call: Option<[u8; 32]>,
+        showing: Showing,
+    ) -> Arc<Self> {
         let participation = Arc::new(Self {
             owner,
             room,
@@ -159,7 +223,7 @@ impl Participation {
                 refused: None,
                 carrier: None,
                 generation: 0,
-                showing: Showing::default(),
+                showing,
             }),
             changed: tokio::sync::Notify::new(),
             stops: Mutex::new(Stops::default()),
@@ -181,20 +245,7 @@ impl Participation {
                     }
                 }));
         *participation.fence.lock() = Some(fence);
-        match (phase, call) {
-            (Phase::Starting(request), _) => session.voice_call(
-                request,
-                CallOperation::Open {
-                    app_id: channel.app.clone(),
-                    record_id: channel.record.clone(),
-                    channel_id: channel.channel.clone(),
-                },
-            ),
-            (_, Some(call)) => session.voice_join(call, None),
-            (_, None) => return Err("governed call missing".into()),
-        }
-        .map_err(|_| "the room's relay session is gone")?;
-        Ok(participation)
+        participation
     }
 
     /// The room's relay workspace.
@@ -292,9 +343,6 @@ impl Participation {
 
     /// Repeat the join as this participation's heartbeat, after `check`
     /// vets the device's custody again; a failed check ends it.
-    ///
-    /// # Errors
-    /// The participation ended, the check failed or the session is gone.
     pub fn heartbeat(
         &self,
         session: &RelayCoeditSession,
@@ -328,11 +376,8 @@ impl Participation {
     }
 
     /// Show `showing` besides this participation's voice from now on (its
-    /// camera, a shared screen), and tell the governor over `session` when
+    /// camera, a shared screen, whether it is muted), and tell the governor over `session` when
     /// granted; without a session the next heartbeat or rejoin tells it.
-    ///
-    /// # Errors
-    /// The participation ended or the session is gone.
     pub fn show(
         &self,
         session: Option<&RelayCoeditSession>,
@@ -374,9 +419,6 @@ impl Participation {
     /// Join again over `session`, a new connection to the room's relay. The
     /// current grant stays until the governor grants the new participation;
     /// its carrier then no longer matches and is replaced.
-    ///
-    /// # Errors
-    /// The participation ended or the session is gone.
     pub fn rejoin(&self, session: &RelayCoeditSession) -> Result<(), String> {
         self.live()?;
         let call = {
@@ -498,7 +540,6 @@ impl Participation {
         Ok(Some(connection))
     }
 
-    /// The generation of the current carrier.
     #[must_use]
     pub fn carrier_generation(&self) -> Option<u64> {
         self.state
@@ -565,7 +606,6 @@ impl Participation {
             .ok_or_else(|| "the participation ended".into())
     }
 
-    /// Whether the participation is leaving.
     #[must_use]
     pub fn leaving(&self) -> bool {
         self.leaving.load(Ordering::SeqCst)
@@ -579,9 +619,6 @@ impl Participation {
 
     /// Read the current grant while the participation is live, its device
     /// still a member and its last grant unexpired.
-    ///
-    /// # Errors
-    /// Any of those no longer holds, or `read` fails.
     pub fn inspect_current<T>(
         &self,
         read: impl FnOnce(u64, &VoiceGrant) -> Result<T, String>,

@@ -65,8 +65,8 @@ static DISK_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
 /// it protects, so a poisoned lock is treated the same as a healthy
 /// one rather than wedging every future caller in this process.
 /// What an install under way has done so far, as `app install
-/// --progress-lines` reports it, for the card standing in the place its
-/// window will open in.
+/// --progress-lines` reports it, for the window waiting on it to say how
+/// much has arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InstallProgress {
     Downloading { received: u64, total: Option<u64> },
@@ -92,13 +92,22 @@ pub(crate) fn install_progress(package_id: &str) -> Option<InstallProgress> {
     })
 }
 
+/// Record what `package_id`'s install has done, waking the compositor when
+/// that changed: the window waiting on the install says how much arrived.
 pub(crate) fn set_install_progress(package_id: &str, progress: Option<InstallProgress>) {
-    with_install_progress(|all| {
-        all.retain(|(package, _)| package != package_id);
+    let changed = with_install_progress(|all| {
+        let before = all
+            .iter()
+            .position(|(package, _)| package == package_id)
+            .map(|at| all.remove(at).1);
         if let Some(progress) = progress {
             all.push((package_id.to_owned(), progress));
         }
+        before != progress
     });
+    if changed {
+        crate::shell::wake_compositor();
+    }
 }
 
 /// One `--progress-lines` line; anything else is not progress.
@@ -177,9 +186,10 @@ fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>,
 /// Run `f` on the session's launches still opening, recovering from
 /// poisoning as [`lock_catalogue`] does.
 fn with_pending_launches<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
-    let session = launcher::LaunchSession::current();
-    let mut pending = session.opening_launches.lock_recover();
-    f(&mut pending)
+    launcher::LaunchSession::with(|session| {
+        let mut pending = session.opening_launches.lock_recover();
+        f(&mut pending)
+    })
 }
 
 /// The same search the launcher does for `tilo-launcher`, including its
@@ -244,11 +254,6 @@ pub(crate) fn install_service_package(package: &str) -> std::io::Result<()> {
 
 /// Split out from the subprocess so the wire contract is assertable
 /// without spawning anything.
-///
-/// # Errors
-///
-/// Returns the underlying parse error (as a message) if `stdout` is
-/// not valid JSON or doesn't match [`CatalogueListing`]'s shape.
 pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {
     serde_json::from_str(stdout).map_err(|e| e.to_string())
 }
@@ -360,6 +365,8 @@ struct SharedState {
     flathub_read: Option<(u64, String)>,
     blocks_stamp: Option<u64>,
     checked_at: Option<Instant>,
+    /// Staged by a capture: the files on disk never replace it.
+    staged: bool,
 }
 
 static SHARED: Mutex<Option<SharedState>> = Mutex::new(None);
@@ -394,11 +401,12 @@ pub fn shared_generation() -> u64 {
 /// Look again at the files behind the shared catalogue when that is due,
 /// on a worker, and read whichever changed.
 pub fn refresh_shared() {
-    let due = SHARED
-        .lock_recover()
-        .as_ref()
-        .and_then(|state| state.checked_at)
-        .is_none_or(|at| at.elapsed() >= SHARED_RECHECK);
+    let due = SHARED.lock_recover().as_ref().is_none_or(|state| {
+        !state.staged
+            && state
+                .checked_at
+                .is_none_or(|at| at.elapsed() >= SHARED_RECHECK)
+    });
     if !due || SHARED_CHECKING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -418,29 +426,39 @@ pub fn refresh_shared() {
             let sources = app_catalogue::appstream::cached_sources();
             let read = (app_catalogue::appstream::cache_stamp(&sources), locale);
             let flathub = (flathub_read.as_ref() != Some(&read)).then(|| {
-                std::sync::Arc::new(app_catalogue::appstream::load_all(&sources, &read.1))
+                let mut entries = app_catalogue::appstream::load_all(&sources, &read.1);
+                let other = other_processor_flathub(&entries);
+                entries.extend(other);
+                std::sync::Arc::new(entries)
             });
-            let block_stamp = app_catalogue::block::current_stamp();
-            let blocks = (blocks_stamp != Some(block_stamp))
+            let blocks_now = app_catalogue::block::current_stamp();
+            let blocks = (blocks_stamp != Some(blocks_now))
                 .then(|| std::sync::Arc::new(app_catalogue::BlockList::load()));
-            let changed = flathub.is_some() || blocks.is_some();
+            let mut changed = flathub.is_some() || blocks.is_some();
             {
                 let mut guard = SHARED.lock_recover();
-                let state = guard.get_or_insert_with(|| SharedState {
-                    catalogue: SharedCatalogue::default(),
-                    flathub_read: None,
-                    blocks_stamp: None,
-                    checked_at: None,
-                });
-                if let Some(flathub) = flathub {
-                    state.catalogue.flathub = flathub;
-                    state.flathub_read = Some(read);
+                // A capture staged its catalogue while this read was under way.
+                if guard.as_ref().is_some_and(|state| state.staged) {
+                    changed = false;
+                } else {
+                    let state = guard.get_or_insert_with(|| SharedState {
+                        catalogue: SharedCatalogue::default(),
+                        flathub_read: None,
+                        blocks_stamp: None,
+                        checked_at: None,
+                        staged: false,
+                    });
+                    if let Some(flathub) = flathub {
+                        state.catalogue.flathub = flathub;
+                        state.flathub_read = Some(read);
+                    }
+                    if let Some(blocks) = blocks {
+                        state.catalogue.blocks = blocks;
+                        state.blocks_stamp = Some(blocks_now);
+                    }
+                    state.checked_at = Some(Instant::now());
                 }
-                if let Some(blocks) = blocks {
-                    state.catalogue.blocks = blocks;
-                    state.blocks_stamp = Some(block_stamp);
-                }
-                state.checked_at = Some(Instant::now());
+                drop(guard);
             }
             if changed {
                 SHARED_REVISION.fetch_add(1, Ordering::Release);
@@ -450,6 +468,47 @@ pub fn refresh_shared() {
         });
     if spawned.is_err() {
         SHARED_CHECKING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The most a listing of another processor's Flathub apps may print.
+const OTHER_PROCESSOR_LISTING_LIMIT: usize = 4 * 1024 * 1024;
+/// How long that listing, read from the summary Flatpak keeps, may take.
+const OTHER_PROCESSOR_LISTING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Flathub's apps built only for another processor (Steam, Spotify and
+/// hundreds more are built for `x86_64` alone), listed from the summary
+/// Flatpak keeps for it: found by search and saying they are not available
+/// for this device, rather than vanishing. Flatpak caches `AppStream`
+/// metadata for this machine's processor only, so this is the one place
+/// that knows them. Read when Flathub's metadata is, on the same worker.
+fn other_processor_flathub(
+    native: &[app_catalogue::CatalogueEntry],
+) -> Vec<app_catalogue::CatalogueEntry> {
+    let Some(arch) = app_catalogue::flathub::other_processor() else {
+        return Vec::new();
+    };
+    let flatpak = std::path::Path::new("/usr/bin/flatpak");
+    if cfg!(test) || !flatpak.exists() {
+        return Vec::new();
+    }
+    let mut command = std::process::Command::new(flatpak);
+    command
+        .env("LC_ALL", "C")
+        .args(app_catalogue::flathub::listing_args(arch));
+    match bounded_command::run_prepared(
+        command,
+        None,
+        OTHER_PROCESSOR_LISTING_LIMIT,
+        OTHER_PROCESSOR_LISTING_TIMEOUT,
+    ) {
+        Ok(output) if output.status.success() => app_catalogue::flathub::other_processor_apps(
+            &String::from_utf8_lossy(&output.stdout),
+            native,
+        ),
+        // No summary kept for it yet (the hourly app update fetches one):
+        // nothing more to find this time.
+        _ => Vec::new(),
     }
 }
 
@@ -466,9 +525,10 @@ pub fn stage_for_shots(apps: Vec<CatalogueApp>, flathub: Vec<app_catalogue::Cata
             flathub: std::sync::Arc::new(flathub),
             blocks: std::sync::Arc::default(),
         },
-        flathub_read: Some((u64::MAX, String::new())),
-        blocks_stamp: Some(u64::MAX),
+        flathub_read: None,
+        blocks_stamp: None,
         checked_at: Some(Instant::now()),
+        staged: true,
     });
     SHARED_REVISION.fetch_add(1, Ordering::Release);
 }
@@ -725,7 +785,6 @@ static FLATHUB_INSTALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Reading Flatpak's configured sources is local and quick.
 const FLATPAK_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Whether `app_id` is being installed from Flathub.
 pub(crate) fn installing_from_flathub(app_id: &str) -> bool {
     FLATHUB_INSTALLS
         .lock_recover()
@@ -744,7 +803,7 @@ pub(crate) fn install_flathub_and_open(
 ) {
     {
         let mut installs = FLATHUB_INSTALLS.lock_recover();
-        if installs.iter().any(|id| *id == app_id) {
+        if installs.contains(&app_id) {
             return;
         }
         installs.push(app_id.clone());
@@ -885,27 +944,29 @@ mod tests {
         assert_eq!(parse_progress_line("progress downloading many -"), None);
 
         let package = "so.tilo.test.progress-lines";
+        // The install stays running until the test has seen its progress and
+        // removes the hold.
+        let hold = tempfile::NamedTempFile::new().unwrap();
         let mut command = std::process::Command::new("sh");
         command.args([
             "-c",
             "echo 'Finding the app' >&2; echo 'progress downloading 5 10' >&2; \
-             sleep 2; echo 'app: the store is unreachable' >&2; exit 1",
+             while [ -e \"$1\" ]; do sleep 0.01; done; \
+             echo 'app: the store is unreachable' >&2; exit 1",
+            "sh",
         ]);
+        command.arg(hold.path());
         let worker = std::thread::spawn(move || run_install_reporting(command, package));
-        let deadline = Instant::now() + Duration::from_millis(1500);
-        let mut seen = None;
-        while seen.is_none() && Instant::now() < deadline {
-            seen = install_progress(package);
-            std::thread::yield_now();
-        }
+        let seen = tilo_test_env::wait_for("the install's progress", || install_progress(package));
         assert_eq!(
             seen,
-            Some(InstallProgress::Downloading {
+            InstallProgress::Downloading {
                 received: 5,
                 total: Some(10),
-            }),
+            },
             "the bytes are known while the install still runs"
         );
+        hold.close().unwrap();
         let output = worker.join().unwrap().expect("the install ran");
         assert_eq!(
             install_progress(package),

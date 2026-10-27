@@ -194,9 +194,6 @@ impl ApplicationImport {
     /// Independently re-attest package, staged bytes, exact deployed commits,
     /// original approved signature keys and target repository bindings.
     /// Existing user refs are preserved; conflicting refs require a new review.
-    /// # Errors
-    /// Refuses changed inputs, user-ref conflicts, missing signatures/dependencies
-    /// or partial native operations. No completed status is synthesized on failure.
     pub fn restore(
         &mut self,
         runner: &impl OfflineRunner,

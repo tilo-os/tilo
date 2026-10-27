@@ -36,10 +36,6 @@ fn pool() -> Result<&'static JobPool, std::io::Error> {
 }
 
 /// Run `op` on an I/O thread and await its result.
-///
-/// # Errors
-///
-/// `op`'s error, or an error when the I/O pool is unavailable.
 pub async fn run<R, F>(op: F) -> std::io::Result<R>
 where
     F: FnOnce() -> std::io::Result<R> + Send + 'static,
@@ -79,10 +75,6 @@ pub async fn write(path: impl Into<PathBuf>, contents: Vec<u8>) -> std::io::Resu
 }
 
 /// Read up to `len` bytes at `offset`. Returns fewer only at end of file.
-///
-/// # Errors
-///
-/// The underlying positioned-read error.
 pub async fn read_at(file: Arc<File>, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
     run(move || {
         let mut buffer = vec![0_u8; len];
@@ -102,11 +94,6 @@ pub async fn read_at(file: Arc<File>, offset: u64, len: usize) -> std::io::Resul
     .await
 }
 
-/// Write all of `data` at `offset`.
-///
-/// # Errors
-///
-/// The underlying positioned-write error.
 pub async fn write_all_at(file: Arc<File>, offset: u64, data: Vec<u8>) -> std::io::Result<()> {
     run(move || {
         let mut written = 0_usize;

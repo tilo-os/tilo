@@ -21,10 +21,6 @@ thread_local! {
 /// earlier load, each with its panic message: `[{"tab", "message"}]`. They
 /// show the message instead of running their application. Replaces the
 /// previous set; call before mounting.
-///
-/// # Errors
-///
-/// Rejects text that is not such a list.
 #[wasm_bindgen]
 pub fn quarantine_windows(entries: &str) -> Result<(), JsValue> {
     #[derive(serde::Deserialize)]
@@ -45,15 +41,36 @@ pub fn quarantine_windows(entries: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// What `tab` shows in place of an application that crashed an earlier load.
-pub(crate) fn quarantined(tab: u64, title: &str) -> Option<ui::widget::TileContent> {
+/// What `tab` shows in place of an application that crashed an earlier load:
+/// what happened, and a Reopen button that runs `reopen` once the window is
+/// out of quarantine.
+pub(crate) fn quarantined(
+    tab: u64,
+    title: &str,
+    mut reopen: impl FnMut() + 'static,
+) -> Option<ui::widget::TileContent> {
     let message = QUARANTINE.with_borrow(|quarantine| quarantine.get(&tab).cloned())?;
-    Some(ui::widget::TileContent::Notice {
-        title: title.to_owned(),
-        detail: format!(
-            "This app stopped with an error and was closed to keep the rest of the desktop running: {message}. Close the window, or open the app again."
-        ),
-    })
+    // The panic's own words are for whoever debugs it, not for the person
+    // whose window it took: they read what happened and what to do.
+    web_sys::console::warn_1(&format!("{title} was closed after it panicked: {message}").into());
+    let notice = tilo_desktop_surface::crashed_app::CrashedApp::new(title, move || {
+        forget(tab);
+        reopen();
+    });
+    Some(ui::widget::TileContent::App(Box::new(notice)))
+}
+
+/// Take `tab` out of quarantine, here and in the page's record of crashed
+/// windows, so the next build of the window runs its application again.
+fn forget(tab: u64) {
+    QUARANTINE.with_borrow_mut(|quarantine| quarantine.remove(&tab));
+    if let Ok(listener) = Reflect::get(
+        &js_sys::global(),
+        &JsValue::from_str("__tiloForgetCrashedWindow"),
+    ) && let Some(listener) = listener.dyn_ref::<Function>()
+    {
+        let _ = listener.call1(&JsValue::NULL, &JsValue::from_str(&tab.to_string()));
+    }
 }
 
 static PANICKED: AtomicBool = AtomicBool::new(false);

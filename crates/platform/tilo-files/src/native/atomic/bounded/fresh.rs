@@ -16,11 +16,6 @@ pub struct OwnerOnlyProvisioning {
 impl OwnerOnlyProvisioning {
     /// Ordinary `OwnerOnly` validation may allocate in native directory services.
     /// It is intentionally separate from all bounded operation claims.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] when the directory is not currently
-    /// owner-only.
     pub fn admit(directory: StorageDirectory) -> Result<Self, AdmissionError> {
         match directory.validate_privacy(crate::native::atomic::Privacy::OwnerOnly) {
             Ok(()) => Ok(Self { directory }),
@@ -169,11 +164,6 @@ impl FreshChildError {
         }
     }
     /// Retry normalization and commit of retained created custody.
-    ///
-    /// # Errors
-    ///
-    /// Returns `self` unchanged when no created child is retained, or a new
-    /// error when normalization or commit fails again.
     pub fn retry_normalize_and_commit(mut self) -> Result<BoundedOwnerDirectory, Self> {
         if self
             .custody
@@ -201,11 +191,6 @@ impl FreshPrivateChild {
     /// ACL on macOS, private mode with preserved POSIX ACLs on Linux. Sync child
     /// and original parent and verify the exact name before returning. Failure
     /// retains native custody; dropping it leaves an explicitly incomplete child.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FreshChildError`] retaining this custody when the binding
-    /// changed, the child is not empty, or a barrier fails.
     pub fn normalize_and_commit(mut self) -> Result<BoundedOwnerDirectory, FreshChildError> {
         let result = self.normalize_inner();
         match result {

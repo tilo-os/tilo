@@ -1,7 +1,7 @@
 //! The one menu behind the top bar's workspace name: everything about where
 //! the person is, in one place. Which workspace (the others, to switch to),
 //! where it is hosted, joining or leaving one, renaming it, the overview and
-//! a new desk.
+//! a new strip.
 //!
 //! [`WorkspaceMenuModel`] is what the host knows when the menu opens; the
 //! menu is a [`ContextMenu`] of it, and what the person chose comes back as a
@@ -49,10 +49,8 @@ pub struct WorkspaceMenuModel {
     pub host: Option<String>,
     /// Join a workspace, leave this one, start a new one.
     pub actions: Vec<WorkspaceAction>,
-    /// The person may rename the workspace.
     pub can_rename: bool,
-    /// The person may add a desk to it.
-    pub can_add_desk: bool,
+    pub can_add_strip: bool,
 }
 
 /// What the person chose.
@@ -62,7 +60,7 @@ pub enum WorkspaceMenuChoice {
     Switch(String),
     Rename,
     Overview,
-    NewDesk,
+    NewStrip,
     /// The host's own command, by id.
     Action(String),
 }
@@ -125,10 +123,10 @@ impl WorkspaceMenu {
                 .with_icon(crate::topbar::TopBarChrome::overview_glyph_icon()),
             Some(WorkspaceMenuChoice::Overview),
         ));
-        if model.can_add_desk {
+        if model.can_add_strip {
             rows.push((
-                MenuItem::selection(t("workspace-menu-new-desk")).with_icon(Icon::Plus),
-                Some(WorkspaceMenuChoice::NewDesk),
+                MenuItem::selection(t("workspace-menu-new-strip")).with_icon(Icon::Plus),
+                Some(WorkspaceMenuChoice::NewStrip),
             ));
         }
         rows
@@ -291,7 +289,7 @@ mod tests {
                 },
             ],
             can_rename: false,
-            can_add_desk: true,
+            can_add_strip: true,
         }
     }
 
@@ -307,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_lists_workspaces_host_actions_overview_and_a_new_desk() {
+    fn the_menu_lists_workspaces_host_actions_overview_and_a_new_strip() {
         let menu = opened(&model());
         assert!(menu.is_open());
         let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
@@ -320,7 +318,7 @@ mod tests {
                 "Join a workspace…",
                 "Leave",
                 "Overview",
-                "New desk",
+                "New strip",
             ]
         );
         assert!(
@@ -343,7 +341,7 @@ mod tests {
         for (label, choice) in [
             ("Home", Some(WorkspaceMenuChoice::Switch("2".into()))),
             ("Overview", Some(WorkspaceMenuChoice::Overview)),
-            ("New desk", Some(WorkspaceMenuChoice::NewDesk)),
+            ("New strip", Some(WorkspaceMenuChoice::NewStrip)),
             (
                 "Leave",
                 Some(WorkspaceMenuChoice::Action("leave-workspace".into())),

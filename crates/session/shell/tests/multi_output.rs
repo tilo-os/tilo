@@ -529,3 +529,35 @@ fn the_pointer_crosses_a_2x_to_1x_seam_at_an_offset_on_the_matching_logical_row(
         (1279.0, 100.0)
     );
 }
+
+#[test]
+fn a_slow_pointer_crosses_the_seam_in_both_directions() {
+    use shell::compositor::backend::layout::{logical_to_scene, move_pointer, placements};
+    let outputs = output_fixture("mixed-scale-offset").expect("fixture");
+    let p = placements(&outputs);
+    // A careful hand moves less than half a logical pixel per event: on the
+    // 2x panel that is under one physical pixel. Every such step must carry
+    // the pointer on, across the seam onto the monitor and back again,
+    // rather than snapping it back to the last whole pixel before the edge.
+    let step = 0.3;
+    let mut pointer = (1279.0, 400.0);
+    for _ in 0..10 {
+        pointer = move_pointer(&p, pointer, (step, 0.0));
+    }
+    assert!(
+        (pointer.0 - 1282.0).abs() < 1e-9 && pointer.1 == 400.0,
+        "ten slow steps right travel three logical pixels onto the monitor: {pointer:?}"
+    );
+    let monitor = output(&outputs, 1);
+    assert!(
+        logical_to_scene(&p, pointer).0 >= f64::from(monitor.position.0),
+        "and it is drawn on the monitor"
+    );
+    for _ in 0..20 {
+        pointer = move_pointer(&p, pointer, (-step, 0.0));
+    }
+    assert!(
+        (pointer.0 - 1276.0).abs() < 1e-9,
+        "twenty slow steps left come back onto the panel: {pointer:?}"
+    );
+}

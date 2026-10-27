@@ -47,7 +47,6 @@ fn step(id: &str) -> Option<&'static str> {
         .map(|(_, step)| step)
 }
 
-/// Whether `id` is one of these identity steps.
 pub(super) fn is_identity_action(id: &str) -> bool {
     step(id).is_some()
 }
@@ -124,7 +123,6 @@ mod tests {
                 "{id} takes an enforced confirmation"
             );
         }
-        // Revocation keeps its own action, running the same engine step.
         let revoke = super::super::Action::ALL
             .iter()
             .find(|action| action.id == "identity.device.revoke")

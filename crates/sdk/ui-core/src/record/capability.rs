@@ -33,12 +33,10 @@ pub trait RecordScoped: Widget {
 const REFUSAL: &str =
     "This application cannot release retained work from its current document owner";
 
-/// `widget`'s record intent.
 pub fn record_intent(widget: &(impl Widget + ?Sized)) -> Option<super::RecordCheckout> {
     capability::<dyn RecordScoped>(widget)?.record_intent()
 }
 
-/// Tell `widget` which record it is.
 pub fn set_record_scope(widget: &mut (impl Widget + ?Sized), record: &super::RecordId) {
     if let Some(scoped) = capability_mut::<dyn RecordScoped>(widget) {
         scoped.set_record_scope(record);
@@ -46,9 +44,6 @@ pub fn set_record_scope(widget: &mut (impl Widget + ?Sized), record: &super::Rec
 }
 
 /// Release `widget`'s record-owned work; opaque roots refuse.
-///
-/// # Errors
-/// Returns the widget's refusal.
 pub fn release_record_scope(widget: &mut (impl Widget + ?Sized)) -> Result<(), String> {
     capability_mut::<dyn RecordScoped>(widget)
         .map_or_else(|| Err(REFUSAL.into()), RecordScoped::release_record_scope)

@@ -17,12 +17,12 @@
 //!   Backspace at document start), not an error.
 //! - An edit that creates a block whose id is minted at apply time (Enter,
 //!   a multi-paragraph paste) returns a view with a
-//!   [`PendingCaret`](super::participant::PendingCaret); it resolves through
-//!   [`ParticipantView::settle`] once the envelope is applied, and every
+//!   [`PendingCaret`](crate::actions::participant::PendingCaret); it resolves through
+//!   [`ParticipantView::settle`](crate::actions::participant::ParticipantView::settle) once the envelope is applied, and every
 //!   function here settles its input first.
 //!
 //! The same logic backs the root operations published on
-//! `word-processor.document` ([`add_operations`]): each operation resolves a
+//! `word-processor.document` (`add_operations`): each operation resolves a
 //! small *target* from the invoker's view at tree-build time and its build
 //! closure finishes the same computation from the arguments, so an operation
 //! invoked through Ctrl+K or by an agent encodes byte-for-byte what the
@@ -87,7 +87,6 @@ pub type EditResult = Result<EditOutcome, EditingError>;
 pub enum DeleteDirection {
     /// Backspace.
     Backward,
-    /// Delete.
     Forward,
 }
 
@@ -178,7 +177,6 @@ pub enum CaretTarget {
     },
     DocumentStart,
     DocumentEnd,
-    /// End of the caret's current block.
     BlockEnd,
 }
 
@@ -957,11 +955,6 @@ impl PasteTarget {
 
 /// Typing: replace the selection, or insert at the caret; the caret advances
 /// past the inserted text and the selection collapses.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn type_text(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(TypeTarget::new(&r).build(text))
@@ -971,11 +964,6 @@ pub fn type_text(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditRe
 /// back into a paragraph. Replaces a non-empty selection first (two
 /// envelopes, like the keyboard). The caret lands in the new block once the
 /// split is applied ([`ParticipantView::settle`]).
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn new_paragraph(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     new_paragraph_in(view, doc, None)
 }
@@ -1052,11 +1040,6 @@ pub fn new_paragraph_in(
 /// into a paragraph at its start. A larger `count` (≤ [`MAX_ERASE_COUNT`])
 /// is Shift+Arrow `count` times then Backspace: one `ReplaceSelection` over
 /// that extent, a paragraph join counting as one character.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn delete(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1070,11 +1053,6 @@ pub fn delete(
 /// Toggle one inline mark on the selection (on unless it already covers every
 /// selected span). Super/subscript, like the toolbar, cover the whole caret
 /// block without a selection and clear their sibling when turned on.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn toggle_mark(view: &ParticipantView, doc: &AutoCommit, mark: InlineMark) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).toggle(mark))
@@ -1082,11 +1060,6 @@ pub fn toggle_mark(view: &ParticipantView, doc: &AutoCommit, mark: InlineMark) -
 
 /// Set a valued inline mark (font, size, colour, highlight) on the selection,
 /// or the whole caret block without one.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn set_mark(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1098,22 +1071,12 @@ pub fn set_mark(
 }
 
 /// Remove one inline mark from the selection, or the whole caret block.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn clear_mark(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).set(name, None))
 }
 
 /// Set paragraph kind/level/ordered on the selected blocks, or the caret block.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn set_paragraph_style(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1124,11 +1087,6 @@ pub fn set_paragraph_style(
 }
 
 /// Apply a named document style to the selected blocks, or the caret block.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn apply_named_style(view: &ParticipantView, doc: &AutoCommit, style: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(StyleTarget::new(&r).named(style))
@@ -1136,11 +1094,6 @@ pub fn apply_named_style(view: &ParticipantView, doc: &AutoCommit, style: &str) 
 
 /// Paste text or Markdown over the selection or at the caret
 /// (`PasteFragment`); the caret lands after the pasted content.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn paste(view: &ParticipantView, doc: &AutoCommit, content: &PasteContent) -> EditResult {
     let blocks = clip_blocks(content)?;
     let r = resolve(view, doc)?;
@@ -1148,11 +1101,6 @@ pub fn paste(view: &ParticipantView, doc: &AutoCommit, content: &PasteContent) -
 }
 
 /// Move (and collapse) the caret. View-only: returns no envelopes.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn move_caret(view: &ParticipantView, doc: &AutoCommit, to: &CaretTarget) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1182,11 +1130,6 @@ fn selected(base: &ParticipantView, anchor: ViewPoint, caret: ViewPoint) -> Part
 }
 
 /// Select an explicit range (anchor at `start`, caret at `end`). View-only.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn select_range(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1200,11 +1143,6 @@ pub fn select_range(
 }
 
 /// Select one whole block. View-only.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1214,11 +1152,6 @@ pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> Ed
 }
 
 /// Select the whole region (Ctrl+A). View-only.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1233,11 +1166,6 @@ pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
 /// Find bar), filling the view's bounded hits (≤ 64) and selecting the first
 /// hit as the Find bar does. An empty query clears Find. View-only; the
 /// existing `search-hit#go-to` then selects another hit.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
 pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult {
     if query.len() > MAX_FIND_QUERY_BYTES {
         return Err(EditingError::Invalid(format!(
@@ -1414,11 +1342,6 @@ pub fn large_selection(view: &ParticipantView, doc: &AutoCommit) -> bool {
 /// Set formatting on the selection whatever it has now: a toggle mark
 /// (`strong`, `em`, …) `on` or off, or a valued mark (`font`, `size`,
 /// `color`, `highlight`) to `value`.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for an unknown mark, a missing `on` or
-/// `value`, no caret, or a toggle mark without a selection to format.
 pub fn set_format(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1445,10 +1368,6 @@ pub fn set_format(
 
 /// Remove one inline format, valued or toggled, from the selection or the
 /// caret paragraph.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for an unknown mark or no caret.
 pub fn clear_format(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
     if !VALUED_MARKS.contains(&name) && InlineMark::from_name(name).is_none() {
         return Err(EditingError::Invalid("unknown mark".into()));
@@ -1462,10 +1381,6 @@ fn context(view: &ParticipantView, doc: &AutoCommit) -> Result<WpResourceCtx, Ed
 }
 
 /// Align the caret paragraph `left`, `center`, `right` or `justify`.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for another alignment or no caret.
 pub fn align(view: &ParticipantView, doc: &AutoCommit, align: &str) -> EditResult {
     if !matches!(align, "left" | "center" | "right" | "justify") {
         return Err(EditingError::Invalid(
@@ -1485,11 +1400,6 @@ pub fn align(view: &ParticipantView, doc: &AutoCommit, align: &str) -> EditResul
 }
 
 /// Insert an empty table of `rows` by `columns` after the caret paragraph.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for no caret or a size outside Writer's
-/// limits.
 pub fn insert_table_here(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1514,10 +1424,6 @@ pub fn insert_table_here(
 }
 
 /// Start a new page at the caret.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for no caret.
 pub fn insert_page_break(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     let ctx = context(view, doc)?;
     Ok((
@@ -1531,11 +1437,6 @@ pub fn insert_page_break(view: &ParticipantView, doc: &AutoCommit) -> EditResult
 
 /// Link the selected text to `target`: a web address, a mail address or a
 /// `#bookmark` in the document.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for an unsafe target, no caret or no
-/// selection.
 pub fn set_hyperlink(view: &ParticipantView, doc: &AutoCommit, target: &str) -> EditResult {
     let target = target.trim();
     if !valid_hyperlink_target(target) {
@@ -1559,10 +1460,6 @@ pub fn set_hyperlink(view: &ParticipantView, doc: &AutoCommit, target: &str) -> 
 
 /// Replace the selection with `text` (empty deletes it); the caret lands
 /// after the text.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for no caret or no selection.
 pub fn replace_selection(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
     let r = resolve(view, doc)?;
     if r.selection.is_none() {
@@ -1572,11 +1469,6 @@ pub fn replace_selection(view: &ParticipantView, doc: &AutoCommit, text: &str) -
 }
 
 /// The one-paragraph range a comment on the selection is about.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] outside the body, without a selection, or
-/// for a selection across paragraphs.
 pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, EditingError> {
     let ctx = context(view, doc)?;
     let selection = ctx.selection.ok_or(EditingError::NeedsSelection)?;
@@ -1595,17 +1487,15 @@ pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, E
     })
 }
 
-/// Place the image `hash`, kept in `content`, at the caret.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] for content not on this machine or no caret.
+/// Place the image `hash` (or its `tilo.content:<hash>` address), kept in
+/// `content`, at the caret.
 pub fn place_image(
     view: &ParticipantView,
     doc: &AutoCommit,
     content: &tilo_content::ContentStore,
     hash: &str,
 ) -> EditResult {
+    let hash = tilo_actions::content_hash(hash.trim()).unwrap_or(hash);
     let bytes = content.read(hash).ok_or_else(|| {
         EditingError::Invalid(format!("content `{hash}` is not available on this machine"))
     })?;
@@ -1690,8 +1580,6 @@ mod tests {
             payload: reason.into().into_bytes(),
         }
     }
-
-    // ---- fixtures ----------------------------------------------------------
 
     /// A bound widget whose body holds `paragraphs`; returns the body ids.
     fn writer(paragraphs: &[&str]) -> (ui::State, crate::WordProcessorWidget, Vec<String>) {
@@ -2117,8 +2005,6 @@ mod tests {
         ]
     }
 
-    // ---- keyboard parity ---------------------------------------------------
-
     #[test]
     fn typing_enter_and_erase_match_the_widget_envelopes_byte_for_byte() {
         let (mut state, mut wp, ids) = writer(&["alpha", "beta", "gamma"]);
@@ -2443,8 +2329,6 @@ mod tests {
         let _ = ContextRequirement::Caret;
     }
 
-    // ---- views, settling and streaming -------------------------------------
-
     #[test]
     fn enter_lands_in_the_new_block_once_applied_and_typing_follows() {
         let (mut state, _, ids) = writer(&["hello world"]);
@@ -2458,7 +2342,6 @@ mod tests {
         let new_block = order(&state.doc)[1].clone();
         assert_eq!(settled.caret, ViewPoint::new(&new_block, 0));
         assert!(settled.pending.is_none());
-        // Typing from the unsettled view resolves the same caret.
         let (typed, _) = type_text(&next, &state.doc, "big ").unwrap();
         apply_all(&mut state.doc, &typed);
         assert_eq!(texts(&state.doc), ["hello", "big  world"]);
@@ -2707,7 +2590,6 @@ mod tests {
         assert_eq!(found.find.hits.len(), 2);
         assert_eq!(found.find.query, "HELLO");
         assert_eq!(found.selection(doc).unwrap().end, 5);
-        // The found view's tree offers the hits and a selection edit.
         let tree = root(&found, doc);
         assert!(
             published_for(&found.ctx(doc).unwrap(), doc)
@@ -2897,7 +2779,6 @@ mod tests {
             new_paragraph(&at("gone", 0), doc).unwrap_err(),
             EditingError::NoCaret
         );
-        // An offset past the end is clamped like the widget's caret.
         let (actions, next) = type_text(&at(&ids[0], 99), doc, "!").unwrap();
         assert_eq!(
             actions,
@@ -3073,31 +2954,16 @@ mod tests {
         doc.commit();
         let doc = &doc;
         let view = at(&ids[400], 4);
-        // The two sides are measured in alternating rounds and each keeps its
-        // fastest round, so load from tests running alongside cannot inflate
-        // one side only.
-        let mut local = std::time::Duration::MAX;
-        let mut scans = std::time::Duration::MAX;
-        for _ in 0..5 {
-            let started = ui::time::now();
-            for _ in 0..30 {
-                type_text(&view, doc, "x").unwrap();
-                delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
-                delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
-            }
-            local = local.min(started.elapsed());
-            let started = ui::time::now();
-            for _ in 0..20 {
-                let c = crate::model::open(doc).unwrap();
-                std::hint::black_box(tilo_doc::model::region_blocks_in_order(
-                    doc,
-                    &c,
-                    tilo_doc::model::Region::Body,
-                ));
-            }
-            scans = scans.min(started.elapsed());
+        let scans = tilo_doc::model::ordered_keys_scan_count();
+        for _ in 0..30 {
+            type_text(&view, doc, "x").unwrap();
+            delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
+            delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
         }
-        // 90 local keystrokes cost less than 20 region scans would.
-        assert!(local < scans, "keystrokes {local:?} vs 20 scans {scans:?}");
+        assert_eq!(
+            tilo_doc::model::ordered_keys_scan_count(),
+            scans,
+            "a keystroke inside a block listed the document's paragraphs"
+        );
     }
 }

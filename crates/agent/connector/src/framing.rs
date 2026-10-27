@@ -29,9 +29,6 @@ pub fn write_frame<W: Write, T: Serialize>(out: &mut W, message: &T) -> std::io:
 }
 
 /// The next message, or `None` at the end of the stream.
-///
-/// # Errors
-/// The stream failed, a line is too long, or it is not a message.
 pub fn read_frame<R: BufRead, T: DeserializeOwned>(input: &mut R) -> std::io::Result<Option<T>> {
     decode(wire_frame::read_line(input, MAX_FRAME_BYTES)?)
 }

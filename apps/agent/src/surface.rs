@@ -1,6 +1,6 @@
 //! What the room's apps currently have open, and what may be done to it.
 //!
-//! An app on the Tilo action model publishes a [`Resource`] tree and the
+//! An app on the Tilo action model publishes a [`Resource`](tilo_actions::Resource) tree and the
 //! operations each resource exports (`docs/action-model-recipe.md`), and
 //! [`tilo_actions::door`] turns a live tree into inert, stably-addressed
 //! descriptors the agent can perform. The agent queries that tree each time,
@@ -22,7 +22,7 @@
 //!
 //! ## Authority
 //!
-//! A denied operation is **absent** from [`offers`], not marked unavailable
+//! A denied operation is **absent** from [`offers`](Catalogue::offers), not marked unavailable
 //! in it. The question asked is the shell's own gate: `Write` on
 //! `(app, action)`, resolved against the agent's capability set and denied
 //! unless something explicitly permits. It runs again at dispatch, because a
@@ -76,10 +76,47 @@ pub const APP_RESOURCE: &str = "app";
 /// The stable kind tag on that resource, shared across every app.
 pub const APPLICATION_KIND: &str = "applications.app";
 
-/// The app `address` would open, or `None` when it opens nothing.
+/// The resource prefix of an open of a document the room already has:
+/// `record.<app id>.<record id>#open`. Opening it puts that document's
+/// operations on the list; `app.<app id>#open` creates a new one.
+pub const RECORD_OPEN_PREFIX: &str = "record.";
+
+/// The address that opens `record`, a document of `app_id` the room
+/// already has.
+pub fn open_record_address(app_id: &str, record: &str) -> ActionAddress {
+    ActionAddress::new(
+        format!("{RECORD_OPEN_PREFIX}{app_id}.{record}"),
+        OPEN_ACTION,
+    )
+}
+
+/// The app and record an open of an existing document names
+/// ([`open_record_address`]), or `None` when `address` is no such open.
+///
+/// An app id is dotted and never holds a `:`; a record id names its scheme
+/// before a `:` (`uuid:…`) and may hold dots after it. So the record starts
+/// at the last `.` before the first `:`, or, for a record id without a
+/// scheme, at the last `.`.
+pub fn opens_record(address: &ActionAddress) -> Option<(&str, &str)> {
+    if address.action != OPEN_ACTION {
+        return None;
+    }
+    let rest = address.resource.strip_prefix(RECORD_OPEN_PREFIX)?;
+    let head = rest.split_once(':').map_or(rest, |(head, _)| head);
+    let (app_id, record) = rest.split_at_checked(head.rfind('.')?)?;
+    let record = record.strip_prefix('.')?;
+    (!app_id.is_empty() && !record.is_empty()).then_some((app_id, record))
+}
+
+/// The app `address` would open, or `None` when it opens nothing: a new
+/// document of it (`app.<app id>#open`, `<namespace>.app#open`), or one the
+/// room already has ([`opens_record`]).
 pub fn opens(address: &ActionAddress) -> Option<&str> {
     if address.action != OPEN_ACTION {
         return None;
+    }
+    if let Some((app_id, _)) = opens_record(address) {
+        return Some(app_id);
     }
     if let Some(app_id) = address.resource.strip_prefix("app.") {
         return (!app_id.is_empty()).then_some(app_id);
@@ -179,6 +216,16 @@ impl Offer {
     /// produced some.
     pub fn wants_content(&self) -> bool {
         self.content_param().is_some()
+    }
+
+    /// Whether performing it answers with content another operation takes:
+    /// its declared result is a `tilo.content` resource.
+    pub fn produces_content(&self) -> bool {
+        matches!(
+            &self.descriptor.contract.result,
+            tilo_actions::ResultSpec::Resource { resource_kind }
+                if resource_kind == tilo_actions::CONTENT_RESOURCE_KIND
+        )
     }
 
     /// The parameter content another operation produced is carried under:
@@ -351,7 +398,7 @@ pub struct ResourceFacts {
 /// reading two different rooms.
 #[derive(Clone, Debug, Default)]
 pub struct Catalogue {
-    /// Everything the agent may perform. Denied is absent, as in [`offers`].
+    /// Everything the agent may perform. Denied is absent, as in [`offers`](Self::offers).
     pub offers: Vec<Offer>,
     /// Every resource the room's apps publish, gate or no gate: showing a
     /// resource is non-destructive and needs no permission, acting on one
@@ -871,13 +918,11 @@ mod tests {
 
     #[test]
     fn offer_addresses_round_trip_and_stay_distinct_per_publisher() {
-        // Case `an_address_with_a_path_in_it_round_trips`.
         {
             let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
             assert_eq!(decode_address(&encode_address(&a)), Some(a));
         }
 
-        // Case `duplicate_addresses_from_two_live_publishers_remain_distinct`.
         {
             let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
                 provider: peer_id.to_string(),
@@ -924,7 +969,6 @@ mod tests {
             );
         }
 
-        // Case `broker_prefixed_shell_launch_is_still_recognised_as_an_open`.
         {
             let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
             let offer = Offer {
@@ -957,7 +1001,6 @@ mod tests {
         reason = "each case keeps its original fixture and assertions"
     )]
     fn a_quoted_literal_is_the_value_that_tells_same_verb_operations_apart() {
-        // Case `one_quoted_literal_is_an_argument_and_two_are_not`.
         {
             assert_eq!(
                 quoted_literal(r#"rename it to "launch.md""#),
@@ -973,7 +1016,6 @@ mod tests {
             assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
         }
 
-        // Case `a_supplied_value_tells_two_same_verb_operations_apart`.
         {
             let offers = vec![
                 offer(
@@ -1104,8 +1146,6 @@ mod tests {
             }
         }
     }
-
-    // -- telling two operations of one verb apart -------------------------
 
     fn offer(
         app: &'static str,

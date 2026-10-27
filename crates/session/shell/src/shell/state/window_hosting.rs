@@ -67,7 +67,15 @@ impl WorkspaceTree {
 
     /// Forget launches whose tab is gone or now shows another app.
     pub(crate) fn prune_package_launches(&mut self) {
-        Self::prune_package_launches_of(&self.desktop, &mut self.package_launches);
+        if self.archived_workspaces.is_empty() {
+            Self::prune_package_launches_of(&self.desktop, &mut self.package_launches);
+            return;
+        }
+        // An archived workspace's windows keep what is theirs.
+        let mut held = self.desktop.clone();
+        held.workspaces
+            .extend(self.archived_workspaces.iter().cloned());
+        Self::prune_package_launches_of(&held, &mut self.package_launches);
     }
 
     /// Drop the launches in `launches` whose tab is gone from `desktop` or
@@ -108,6 +116,7 @@ mod tests {
                     id,
                     title: format!("Window {}", id.saturating_sub(10)),
                     tile,
+                    app_title: None,
                 })
                 .collect(),
             active_tab: 10,

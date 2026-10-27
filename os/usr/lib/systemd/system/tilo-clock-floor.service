@@ -1,0 +1,10 @@
+[Unit]
+Description=Record the authenticated wall time as the clock floor for the next boot
+Documentation=man:systemd(1)
+# The floor lives on /var; chrony answers whether the time is authenticated.
+RequiresMountsFor=/var/lib/systemd
+After=chronyd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-clock-floor

@@ -93,10 +93,6 @@ impl NearbySendState {
 
     /// The app submits no certificate/trust assertion. Those are collected
     /// on the compositor-owned verification sheet for this one attempt.
-    ///
-    /// # Errors
-    /// Returns a localized error if lab availability, Unix source-path
-    /// representation or the bounded literal endpoint is invalid.
     pub fn send_airdrop(&mut self, path: &Path, address: String, port: u16) -> Result<(), String> {
         if !self.airdrop_available {
             return Err(crate::i18n::t("files-airdrop-unavailable"));
@@ -956,7 +952,6 @@ mod tests {
             answer(&mut state, request_id, idle.clone()).is_empty(),
             "an empty idle roster must not open chrome"
         );
-        // A renewed handle or progress inside one percent is announced too.
         let request_id = announce(&mut state);
         assert!(
             answer(&mut state, request_id, idle).is_empty(),

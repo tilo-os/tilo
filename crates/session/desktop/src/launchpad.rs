@@ -30,6 +30,22 @@ use ui::TextRole;
 
 pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 
+/// Whether any launchpad request (a card or "Open an app") waits in `doc`
+/// for the host to take, read without taking it.
+pub fn requested(doc: &automerge::AutoCommit, root: &ObjId) -> bool {
+    std::iter::once(LaunchpadChoice::OpenApp)
+        .chain(LaunchpadAction::ALL.into_iter().map(LaunchpadChoice::Card))
+        .any(|choice| is_requested(doc, root, &choice))
+}
+
+fn is_requested(doc: &automerge::AutoCommit, root: &ObjId, choice: &LaunchpadChoice) -> bool {
+    matches!(
+        doc.get(root, choice.path()),
+        Ok(Some((Value::Scalar(value), _)))
+            if matches!(value.as_ref(), ScalarValue::Boolean(true))
+    )
+}
+
 /// Whether "Open an app" was chosen, cleared from `doc` so it fires once.
 pub fn take_open_app(doc: &mut ui::widget::Edits<'_>, root: &ObjId) -> bool {
     consume_launchpad(doc, root, LaunchpadChoice::OpenApp)
@@ -148,12 +164,19 @@ impl LaunchpadAction {
         }
     }
 
-    fn detail(self) -> String {
+    /// What the card does, in the words the workspace's scope makes true:
+    /// a private workspace has nobody to write or talk with yet.
+    fn detail(self, scope: WorkspaceScope) -> String {
+        let private = scope == WorkspaceScope::Private;
         match self {
+            Self::Chat if private => t("launchpad-discuss-detail-private"),
             Self::Chat => t("launchpad-discuss-detail"),
+            Self::Notes if private => t("launchpad-notes-detail-private"),
             Self::Notes => t("launchpad-notes-detail"),
             Self::Tasks => t("launchpad-tasks-detail"),
+            Self::Meet if private => t("launchpad-meet-detail-private"),
             Self::Meet => t("launchpad-meet-detail"),
+            Self::Invite if private => t("launchpad-invite-detail-private"),
             Self::Invite => t("launchpad-invite-detail"),
             Self::Activity => t("launchpad-activity-detail"),
         }
@@ -251,11 +274,7 @@ fn consume_launchpad(
     root: &ObjId,
     choice: LaunchpadChoice,
 ) -> bool {
-    if !matches!(
-        edits.doc().get(root, choice.path()),
-        Ok(Some((Value::Scalar(value), _)))
-            if matches!(value.as_ref(), ScalarValue::Boolean(true))
-    ) {
+    if !is_requested(edits.doc(), root, &choice) {
         return false;
     }
     let action = ConsumeLaunchpad {
@@ -294,9 +313,23 @@ pub struct CollaborationLaunchpad {
     /// What this widget painted last differs from what it would paint now.
     dirty: bool,
     copy: LaunchpadCopy,
+    scope: WorkspaceScope,
     actions: ui::action_host::ActionHost,
     targets: ui::widget::PaintedTargets,
     target_geometry: Option<([Rect; 6], Rect)>,
+}
+
+/// Who sees what is made in the workspace the launchpad is shown in, which
+/// is what its words about sharing must say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkspaceScope {
+    /// Only the person themselves.
+    Private,
+    /// The people invited to it.
+    #[default]
+    Shared,
+    /// Anyone who joins: a public or community workspace.
+    Public,
 }
 
 /// Words a host puts in place of the launchpad's own: a desktop in the
@@ -341,6 +374,7 @@ impl CollaborationLaunchpad {
             ),
             dirty: true,
             copy: LaunchpadCopy::default(),
+            scope: WorkspaceScope::default(),
             actions: ui::action_host::ActionHost::new(),
             targets: ui::widget::PaintedTargets::new(),
             target_geometry: None,
@@ -355,18 +389,31 @@ impl CollaborationLaunchpad {
         self
     }
 
+    /// Say what the workspace shown in is: private, shared or public.
+    pub fn set_scope(&mut self, scope: WorkspaceScope) {
+        if scope != self.scope {
+            self.scope = scope;
+            self.dirty = true;
+        }
+    }
+
     fn title(&self) -> String {
-        self.copy
-            .title
-            .clone()
-            .unwrap_or_else(|| t("launchpad-title"))
+        self.copy.title.clone().unwrap_or_else(|| {
+            t(match self.scope {
+                WorkspaceScope::Private => "launchpad-title-private",
+                WorkspaceScope::Shared | WorkspaceScope::Public => "launchpad-title",
+            })
+        })
     }
 
     fn subtitle(&self) -> String {
-        self.copy
-            .subtitle
-            .clone()
-            .unwrap_or_else(|| t("launchpad-subtitle"))
+        self.copy.subtitle.clone().unwrap_or_else(|| {
+            t(match self.scope {
+                WorkspaceScope::Private => "launchpad-subtitle-private",
+                WorkspaceScope::Shared => "launchpad-subtitle",
+                WorkspaceScope::Public => "launchpad-subtitle-public",
+            })
+        })
     }
 
     fn keyboard_hint(&self) -> String {
@@ -411,6 +458,15 @@ impl CollaborationLaunchpad {
         Self::card_geometry(self.presentation_rect())
     }
 
+    /// The card drawn at `p`.
+    pub fn action_at(&self, p: Point) -> Option<LaunchpadAction> {
+        LaunchpadAction::ALL
+            .iter()
+            .zip(self.card_rects)
+            .find(|(_, rect)| rect.contains(p))
+            .map(|(action, _)| *action)
+    }
+
     /// The cards and the "Open an app" button by stable name
     /// (`launchpad:notes`, `launchpad:open-app`, ...), as laid out in the
     /// last frame, so a driver can press them like a person would.
@@ -438,7 +494,12 @@ impl CollaborationLaunchpad {
         };
         let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
         match state.apply(&mut self.actions, LAUNCHPAD_ACTION_TYPE, &action, context) {
-            Ok(()) => true,
+            Ok(()) => {
+                // The compositor's session log keeps this target
+                // (tilo_startup_metrics::INPUT_ROUTE_TARGET).
+                tracing::info!(target: "tilo::input_route", card = action.choice.path(), "launchpad card activated");
+                true
+            }
             Err(error) => {
                 tracing::warn!(%error, "launchpad action refused");
                 false
@@ -772,11 +833,14 @@ impl Widget for CollaborationLaunchpad {
                 None,
             );
             let (_, label_h) = text.measure(&label, base, None);
-            let (_, detail_h) = text.measure(&action.detail(), caption, None);
+            let (_, detail_h) = text.measure(&action.detail(self.scope), caption, None);
             let detail_y = (16.0 + f64::from(label_h) + 6.0).max(47.0);
             if detail_y + f64::from(detail_h) + 6.0 <= rect.height() {
-                let detail =
-                    text.elide_to_width(&action.detail(), caption, (rect.width() - 72.0) as f32);
+                let detail = text.elide_to_width(
+                    &action.detail(self.scope),
+                    caption,
+                    (rect.width() - 72.0) as f32,
+                );
                 text.draw_text(
                     scene,
                     &detail,
@@ -911,7 +975,7 @@ impl Widget for CollaborationLaunchpad {
                             AccessNode::new(Role::Button)
                                 .with_name(action.label())
                                 .with_bounds(bounds)
-                                .with_description(action.detail())
+                                .with_description(action.detail(self.scope))
                                 .with_action_target(action.path())
                                 .with_state(
                                     AccessState::new()
@@ -996,6 +1060,33 @@ mod tests {
     }
 
     use ui::synthetic_input::mouse_release;
+
+    #[test]
+    fn the_sharing_copy_follows_the_workspace_scope() {
+        let mut pad = CollaborationLaunchpad::new();
+        pad.set_scope(WorkspaceScope::Private);
+        assert_eq!(pad.subtitle(), t("launchpad-subtitle-private"));
+        assert_ne!(
+            pad.subtitle(),
+            t("launchpad-subtitle"),
+            "a private workspace is never said to be shared with everyone"
+        );
+        assert_eq!(
+            LaunchpadAction::Notes.detail(WorkspaceScope::Private),
+            t("launchpad-notes-detail-private")
+        );
+        pad.set_scope(WorkspaceScope::Shared);
+        assert_eq!(pad.subtitle(), t("launchpad-subtitle"));
+        assert_eq!(pad.title(), t("launchpad-title"));
+        pad.set_scope(WorkspaceScope::Public);
+        assert_eq!(pad.subtitle(), t("launchpad-subtitle-public"));
+        let copy = LaunchpadCopy {
+            subtitle: Some("Welcome".into()),
+            ..LaunchpadCopy::default()
+        };
+        let hosted = CollaborationLaunchpad::new().with_copy(copy);
+        assert_eq!(hosted.subtitle(), "Welcome", "a host's own words still win");
+    }
 
     #[test]
     fn app_opener_waits_for_pointer_release_and_cancelled_drag_does_not_open() {

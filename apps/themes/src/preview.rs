@@ -19,17 +19,33 @@ use ui::widget::TaffyTreeExt;
 pub enum Show {
     /// A window on the desktop, with a floating panel over it.
     Desktop,
+    /// A list row surface with selection and presence.
+    List,
+    /// A dialog over the window it asks about.
+    Dialog,
     /// The twelve presence colours.
     Presence,
 }
 
-/// A preview of one theme document.
+/// How tall a [`ThemePreview`] stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Height {
+    /// A fixed height in logical pixels, at the full width it is given.
+    Fixed(f32),
+    /// As tall as the miniature's proportions make it at the width it is
+    /// given, so it scales with its tile.
+    Proportional,
+}
+
 pub struct ThemePreview {
     theme: ui::Theme,
     show: Show,
     label: String,
     rect: Rect,
-    height: f32,
+    height: Height,
+    /// It sits inside a card: its corners follow the card's, inset by the
+    /// card's padding.
+    in_card: bool,
     id: Option<String>,
 }
 
@@ -44,17 +60,41 @@ impl ThemePreview {
             theme: theme.with_your_colour(PresenceHue::Violet),
             show: Show::Desktop,
             rect: Rect::ZERO,
-            height,
+            height: Height::Fixed(height),
+            in_card: false,
             id: None,
         }
     }
 
+    /// A miniature desktop in `document` that fills the width of the card
+    /// it leads at the miniature's own proportions: it grows and shrinks
+    /// with the card, and its corners are the card's, inset by its padding.
+    #[must_use]
+    pub fn tile(document: &ThemeDocument) -> Self {
+        Self {
+            height: Height::Proportional,
+            in_card: true,
+            ..Self::new(document, 0.0)
+        }
+    }
+
+    /// Show a list surface, or a dialog, or the presence colours.
+    #[must_use]
+    pub fn show(mut self, show: Show) -> Self {
+        self.show = show;
+        self.label = match show {
+            Show::Desktop => format!("Preview of {}", self.theme.name),
+            Show::List => format!("List preview of {}", self.theme.name),
+            Show::Dialog => format!("Dialog preview of {}", self.theme.name),
+            Show::Presence => format!("Presence colours of {}", self.theme.name),
+        };
+        self
+    }
+
     /// The presence colours of `document` instead of the desktop.
     #[must_use]
-    pub fn presence(mut self) -> Self {
-        self.show = Show::Presence;
-        self.label = format!("Presence colours of {}", self.theme.name);
-        self
+    pub fn presence(self) -> Self {
+        self.show(Show::Presence)
     }
 
     #[must_use]
@@ -71,14 +111,32 @@ impl Widget for ThemePreview {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let scale = theme.ui_scale;
-        let style = Style {
-            size: TaffySize {
-                width: percent(1.0_f32),
-                height: length(self.height * scale),
+        let style = match self.height {
+            Height::Fixed(height) => Style {
+                size: TaffySize {
+                    width: percent(1.0_f32),
+                    height: length(height * theme.ui_scale),
+                },
+                flex_shrink: 0.0,
+                ..Style::default()
             },
-            flex_shrink: 0.0,
-            ..Style::default()
+            Height::Proportional => {
+                let (cw, ch) = crate::draw::CANVAS;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "the canvas is a small fixed proportion"
+                )]
+                let ratio = (cw / ch) as f32;
+                Style {
+                    size: TaffySize {
+                        width: percent(1.0_f32),
+                        height: ui::taffy::Dimension::auto(),
+                    },
+                    aspect_ratio: Some(ratio),
+                    flex_shrink: 0.0,
+                    ..Style::default()
+                }
+            }
         };
         taffy.widget_leaf(style, node_map, self)
     }
@@ -100,7 +158,7 @@ impl Widget for ThemePreview {
             Show::Presence => {
                 crate::draw::presence_strip(scene, transform, self.rect, &self.theme);
             }
-            Show::Desktop => {
+            Show::List | Show::Dialog | Show::Desktop => {
                 let (cw, ch) = crate::draw::CANVAS;
                 let scale = (self.rect.width() / cw).min(self.rect.height() / ch);
                 let size = (cw * scale, ch * scale);
@@ -109,7 +167,12 @@ impl Widget for ThemePreview {
                     self.rect.y0 + (self.rect.height() - size.1) / 2.0,
                 );
                 let frame = Rect::from_origin_size(origin, size);
-                let radius = f64::from(theme.tokens.radii.control);
+                let radii = &theme.tokens.radii;
+                let radius = f64::from(if self.in_card {
+                    radii.concentric(radii.tile, theme.tokens.spacing.rhythm.section)
+                } else {
+                    radii.control
+                });
                 scene.push_layer(
                     Fill::NonZero,
                     BlendMode::default(),
@@ -117,7 +180,12 @@ impl Widget for ThemePreview {
                     transform,
                     &RoundedRect::from_rect(frame, radius),
                 );
-                crate::draw::miniature(
+                let miniature = match self.show {
+                    Show::List => crate::draw::miniature_list,
+                    Show::Dialog => crate::draw::miniature_dialog,
+                    _ => crate::draw::miniature,
+                };
+                miniature(
                     scene,
                     transform * Affine::translate(origin.to_vec2()) * Affine::scale(scale),
                     text_renderer,

@@ -81,6 +81,9 @@ pub struct MediaFrameSource {
     /// The instant each source was last asked for, so a forward step can be
     /// told from a jump.
     served: HashMap<MediaId, u64>,
+    /// Only accepted seeks may suppress a retry: a pipeline still opening
+    /// can refuse the first request before it has prerolled.
+    accepted_seeks: HashMap<MediaId, u64>,
     /// Did the composite currently being resolved put a decoded picture on at
     /// least one layer? Reset by `begin_frame`, so it describes this frame and
     /// not a frame from a minute ago.
@@ -91,6 +94,9 @@ pub struct MediaFrameSource {
     /// Cleared the moment it produces a picture, so a damaged region does
     /// not accumulate against a file that otherwise plays.
     failures: HashMap<MediaId, u32>,
+    /// Responsive polling is not a failed seek: allow a whole decode window
+    /// before counting a miss, regardless of the display's repaint rate.
+    failure_started: HashMap<MediaId, ui::time::Instant>,
     /// Sources written off as undecodable: asked for, repeatedly, and never
     /// answered. Nothing is requested for these again.
     undecodable: HashSet<MediaId>,
@@ -115,6 +121,21 @@ pub struct MediaFrameSource {
 /// source does not, and takes a real seek.
 const ROLL_AHEAD_MS: u64 = 2_000;
 
+/// The whole millisecond to ask a decoder for when the picture starting at
+/// `seconds` is wanted, rounded up rather than down.
+///
+/// Frames rarely start on a whole millisecond: at 30 fps the 62nd begins at
+/// 2066.67 ms, and 2066 still falls inside the picture before it. A seek
+/// there is answered, correctly, with that earlier picture, stamped with the
+/// segment start of 2066 because the decoder clips it to where the seek
+/// landed — so nothing downstream can tell it apart from the frame asked
+/// for, and an export repeats a frame and drops the next. Rounding up stays
+/// within the frame that starts at `seconds`, which lasts far longer than
+/// the millisecond added.
+fn source_ms(seconds: f64) -> u64 {
+    (seconds.max(0.0) * 1000.0).ceil() as u64
+}
+
 impl MediaFrameSource {
     /// Index `project`'s decodable media and open nothing yet — sessions are
     /// created on first use and pruned when they go idle.
@@ -132,9 +153,11 @@ impl MediaFrameSource {
             slot: 0,
             last: HashMap::new(),
             served: HashMap::new(),
+            accepted_seeks: HashMap::new(),
             served_real: false,
             rolling: HashSet::new(),
             failures: HashMap::new(),
+            failure_started: HashMap::new(),
             undecodable: HashSet::new(),
             attempts: 0,
             fetch,
@@ -155,6 +178,11 @@ impl MediaFrameSource {
     /// stall on a fixed cadence forever.
     pub fn is_undecodable(&self, media: MediaId) -> bool {
         self.undecodable.contains(&media)
+    }
+
+    /// A non-blocking seek still needs polling, even while playback is paused.
+    pub fn has_pending_frames(&self) -> bool {
+        self.failure_started.keys().any(|id| self.may_serve(*id))
     }
 
     /// Whether `media` may still be served a decoded picture: it has bytes
@@ -190,8 +218,14 @@ impl MediaFrameSource {
             let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
             // A clip trimmed to run past its source's end holds the last
             // frame there: that is the picture, so it is what is asked for.
-            let last_frame_ms = (item.duration > 0.0)
-                .then(|| ((item.duration - 1.0 / fps).max(0.0) * 1000.0) as u64);
+            // A still has one picture, at its start, however long its clip
+            // runs: asking a single-frame file for a later instant finds
+            // nothing, and the layer would draw its representative fill.
+            let last_frame_ms = if item.kind == crate::model::MediaKind::Image {
+                Some(0)
+            } else {
+                (item.duration > 0.0).then(|| source_ms(item.duration - 1.0 / fps))
+            };
             sources.insert(
                 item.id,
                 (
@@ -215,9 +249,13 @@ impl MediaFrameSource {
         self.sources = Self::index(project);
         self.last.retain(|id, _| self.sources.contains_key(id));
         self.served.retain(|id, _| self.sources.contains_key(id));
+        self.accepted_seeks
+            .retain(|id, _| self.sources.contains_key(id));
         self.rolling.retain(|id| self.sources.contains_key(id));
         self.demoted.retain(|id| self.sources.contains_key(id));
         self.failures.retain(|id, _| self.sources.contains_key(id));
+        self.failure_started
+            .retain(|id, _| self.sources.contains_key(id));
         // A write-off is forgotten when the item leaves the bin, so
         // re-importing the file asks the decoder again rather than
         // inheriting a verdict about a project the user has since changed.
@@ -349,6 +387,7 @@ impl MediaFrameSource {
             // fall back for this one.
             FramePayload::Dmabuf(image) => {
                 if self.demoted.insert(media) {
+                    self.accepted_seeks.remove(&media);
                     tracing::info!(
                         "video: {media} cannot be imported ({}), decoding it in software instead",
                         image.describe(),
@@ -366,6 +405,39 @@ impl MediaFrameSource {
             },
         );
         Some(painted)
+    }
+}
+
+impl MediaFrameSource {
+    /// The picture at `target_ms` if it has landed, never waiting. One seek
+    /// is issued per target: reissuing it on every repaint flushes an
+    /// in-flight decode before its preroll can land, leaving a paused
+    /// preview blank.
+    fn responsive_frame(
+        &mut self,
+        s: &mut media::session::EngineSession,
+        media: MediaId,
+        target_ms: u64,
+    ) -> Option<Arc<Frame>> {
+        if let Some(f) = s.cached_frame_at(target_ms) {
+            return Some(f);
+        }
+        if self.accepted_seeks.get(&media) != Some(&target_ms)
+            && s.engine().seek_with(target_ms, media::SeekMode::Accurate)
+        {
+            self.accepted_seeks.insert(media, target_ms);
+        }
+        s.poll_into_cache();
+        s.cached_frame_at(target_ms).or_else(|| {
+            // An accurate seek returns the picture covering the target, not
+            // necessarily one whose own PTS falls in the request's rounded
+            // cache bucket. The blocking session path aliases this picture
+            // to the request too; use the accepted generation here rather
+            // than waiting forever for an exact PTS.
+            (self.accepted_seeks.get(&media) == Some(&target_ms) && s.engine().frame_is_current())
+                .then(|| s.engine().latest().cloned().map(Arc::new))
+                .flatten()
+        })
     }
 }
 
@@ -391,7 +463,7 @@ impl FrameSource for MediaFrameSource {
             self.missing.push((media, source_time));
             return None;
         }
-        let target_ms = (source_time.max(0.0) * 1000.0) as u64;
+        let target_ms = source_ms(source_time);
         let target_ms = last_frame_ms.map_or(target_ms, |last| target_ms.min(last));
         self.attempts += 1;
         let fetch = self.fetch;
@@ -440,28 +512,25 @@ impl FrameSource for MediaFrameSource {
                     } else {
                         // Either a jump, or the roll did not reach the
                         // target in time — fall back to the exact seek,
-                        // which always lands on the right picture.
-                        self.rolling.remove(&media);
+                        // which lands on the right picture. Stop the roll
+                        // first: a running pipeline keeps delivering frames
+                        // decoded for where it was, and the seek wants the
+                        // one picture a paused pipeline prerolls. The next
+                        // step ahead starts it again.
+                        if self.rolling.remove(&media) {
+                            s.engine().pause();
+                        }
                         s.frame_at(target_ms, timeout)
                     }
                 }
-                Fetch::Responsive => {
-                    if let Some(f) = s.cached_frame_at(target_ms) {
-                        Some(f)
-                    } else {
-                        // Ask the pipeline to move, pump it once, and take
-                        // whatever has landed. Never blocks.
-                        s.engine().seek_ms(target_ms);
-                        s.poll_into_cache();
-                        s.cached_frame_at(target_ms)
-                    }
-                }
+                Fetch::Responsive => self.responsive_frame(&mut s, media, target_ms),
             }
         };
 
         if let Some(f) = frame {
             // It answered, so whatever it missed before was transient.
             self.failures.remove(&media);
+            self.failure_started.remove(&media);
             // Already painted this exact picture for this source? Reuse
             // the texture rather than uploading it again.
             if let Some(last) = self.last.get(&media)
@@ -473,6 +542,11 @@ impl FrameSource for MediaFrameSource {
                 return Some(texture);
             }
             let painted = self.paint(device, queue, media, &f);
+            if painted.is_none() {
+                self.failure_started
+                    .entry(media)
+                    .or_insert_with(ui::time::now);
+            }
             self.served_real |= painted.is_some();
             if painted.is_none() {
                 self.missing.push((media, source_time));
@@ -491,17 +565,77 @@ impl FrameSource for MediaFrameSource {
             // seek landing near a damaged GOP; a file that answers
             // nowhere is not media this editor can play, and retrying it
             // costs a full frame timeout every frame forever.
-            let n = self.failures.entry(media).or_insert(0);
-            *n += 1;
-            if *n >= crate::thumbnail::FAILURES_BEFORE_GIVING_UP {
-                self.undecodable.insert(media);
-                self.rolling.remove(&media);
+            let now = ui::time::now();
+            let since = self.failure_started.entry(media).or_insert(now);
+            if fetch == Fetch::Exact || now.duration_since(*since) >= timeout {
+                *since = now;
+                let n = self.failures.entry(media).or_insert(0);
+                *n += 1;
+                if *n >= crate::thumbnail::FAILURES_BEFORE_GIVING_UP {
+                    self.undecodable.insert(media);
+                    self.rolling.remove(&media);
+                }
             }
             let texture = self.last.get(&media).map(|l| l.texture.clone());
             if texture.is_some() {
                 self.slot += 1;
             }
             texture
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MediaFrameSource, source_ms};
+    use crate::model::{MediaItem, MediaKind, Project};
+
+    #[test]
+    fn a_still_is_asked_for_its_one_picture_wherever_its_clip_is() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let mut project = Project::new("Stills");
+        let mut item = |name: &str, kind: MediaKind| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"bytes").expect("a local file");
+            let item = MediaItem {
+                id: uuid::Uuid::new_v4(),
+                name: name.into(),
+                kind,
+                duration: 5.0,
+                fps: 30.0,
+                path: path.to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            let id = item.id;
+            project.media.push(item);
+            id
+        };
+        let still = item("Harbour.png", MediaKind::Image);
+        let footage = item("Harbour.mp4", MediaKind::Video);
+        let index = MediaFrameSource::index(&project);
+        assert_eq!(
+            index[&still].2,
+            Some(0),
+            "a still's picture is at its start"
+        );
+        assert!(
+            index[&footage].2.is_some_and(|last| last > 4000),
+            "footage holds its last frame: {:?}",
+            index[&footage].2
+        );
+    }
+
+    #[test]
+    fn a_frame_is_asked_for_inside_itself_not_inside_the_one_before() {
+        for fps in [24.0, 25.0, 29.97, 30.0, 60.0] {
+            for n in 0..600u32 {
+                let start = f64::from(n) / fps;
+                let ms = source_ms(start) as f64 / 1000.0;
+                assert!(
+                    ms >= start - 1e-9 && ms < start + 1.0 / fps,
+                    "frame {n} at {fps} fps starts at {start}s but is asked for at {ms}s"
+                );
+            }
         }
     }
 }

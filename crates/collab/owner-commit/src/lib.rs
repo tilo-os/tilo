@@ -7,9 +7,7 @@ pub use policy_basis::{PrivatePolicyBasis, canonical_owner, governance_revision}
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 use tilo_peer_state::{
-    document_import::ImportAction,
-    workspace_membership::WorkspaceMembershipCommand,
-    workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand},
+    document_import::ImportAction, workspace_membership::WorkspaceMembershipCommand,
 };
 
 pub type CommitFuture = Pin<Box<dyn Future<Output = Result<OwnerCommitReceipt, String>> + Send>>;
@@ -50,13 +48,10 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         action: ImportAction,
     },
-    /// Typed mutation of the room-owned Task Center state. The broker retains
-    /// the authentic person or pinned-host authority; arguments never choose it.
-    WorkspaceTaskCommand {
-        invocation: uuid::Uuid,
-        authority: WorkspaceTaskAuthority,
-        command: WorkspaceTaskCommand,
-    },
+    /// Retired room task command: tasks are the Tasks app's issues. It keeps
+    /// the variants after it at their encoded positions, and every binding of
+    /// it is refused.
+    RetiredWorkspaceTask,
     /// Original authenticated person command; governor signing custody is
     /// supplied out of band by the installed owning host, never by arguments.
     WorkspaceMembershipCommand {
@@ -81,10 +76,9 @@ pub enum CommitTarget {
     DocumentImport {
         invocation: uuid::Uuid,
     },
-    WorkspaceTaskCommand {
-        device: [u8; 32],
-        invocation: uuid::Uuid,
-    },
+    /// Retired with [`CommitOperation::RetiredWorkspaceTask`]; keeps the
+    /// targets after it at their encoded positions.
+    RetiredWorkspaceTask,
     WorkspaceMembershipCommand {
         device: [u8; 32],
         invocation: uuid::Uuid,
@@ -126,6 +120,9 @@ impl OwnerCommitRequest {
             CommitOperation::RetiredAgentRuntime => {
                 return Err("agent runtime owner commits are retired".into());
             }
+            CommitOperation::RetiredWorkspaceTask => {
+                return Err("room task owner commits are retired".into());
+            }
             CommitOperation::DesktopCommand {
                 invocation,
                 caller,
@@ -153,11 +150,6 @@ impl OwnerCommitRequest {
                 caller,
                 action,
             } => import_binding(*invocation, caller, action)?,
-            CommitOperation::WorkspaceTaskCommand {
-                invocation,
-                authority,
-                command,
-            } => task_binding(*invocation, authority, command)?,
             CommitOperation::WorkspaceMembershipCommand {
                 invocation,
                 caller,
@@ -227,29 +219,6 @@ fn membership_binding(
         postcard::to_allocvec(&(invocation, caller, command)).map_err(|error| error.to_string())?,
     ))
 }
-fn task_binding(
-    invocation: uuid::Uuid,
-    authority: &WorkspaceTaskAuthority,
-    command: &WorkspaceTaskCommand,
-) -> Result<(CommitTarget, Vec<u8>), String> {
-    let certificate = authority.certificate();
-    if invocation.is_nil() {
-        return Err("invalid workspace task invocation".into());
-    }
-    if let WorkspaceTaskAuthority::Agent { agent_id, .. } = authority
-        && (agent_id.is_empty() || agent_id.len() > 256)
-    {
-        return Err("workspace task agent identity is malformed".into());
-    }
-    Ok((
-        CommitTarget::WorkspaceTaskCommand {
-            device: certificate.device_public_key,
-            invocation,
-        },
-        postcard::to_allocvec(&(invocation, authority, command))
-            .map_err(|error| error.to_string())?,
-    ))
-}
 /// The target and committed basis of a document import request.
 fn import_binding(
     invocation: uuid::Uuid,
@@ -266,10 +235,6 @@ fn import_binding(
 }
 impl OwnerCommitReceipt {
     /// Check that this receipt answers `request` exactly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt's binding, generation or scope does not match.
     pub fn validate_for(&self, request: &OwnerCommitRequest) -> Result<(), String> {
         if self.binding != request.binding()?
             || self.generation == 0
@@ -315,10 +280,6 @@ pub trait OwnerCommitService: Send + Sync {
         self.commit(request)
     }
     /// Whether the owner can currently accept commits.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic when the owner is unavailable.
     fn health(&self) -> Result<(), String>;
 }
 
@@ -345,13 +306,7 @@ mod tests {
             encoded(&CommitTarget::DesktopCommand { invocation }),
             [vec![2, 16], vec![7; 16]].concat()
         );
-        assert_eq!(
-            encoded(&CommitTarget::WorkspaceTaskCommand {
-                device: [9; 32],
-                invocation,
-            }),
-            [vec![5], vec![9; 32], vec![16], vec![7; 16]].concat()
-        );
+        assert_eq!(encoded(&CommitTarget::RetiredWorkspaceTask), vec![5]);
         assert_eq!(
             encoded(&CommitTarget::WorkspaceMembershipCommand {
                 device: [9; 32],

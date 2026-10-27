@@ -208,6 +208,34 @@ fn main() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all({dir}): {e}"))?;
     let dir = PathBuf::from(dir);
 
+    for (visual, name) in [
+        (OnboardingVisualState::Recovery, "choose"),
+        (OnboardingVisualState::RecoveryNearby, "nearby"),
+        (OnboardingVisualState::RecoveryRestore, "file"),
+        (OnboardingVisualState::RecoveryKeyTyping, "key-typing"),
+        (OnboardingVisualState::RecoveryKeyTypo, "key-typo"),
+        (OnboardingVisualState::RecoveryKeyReady, "key-ready"),
+        (OnboardingVisualState::RecoveryKeyDifferent, "key-different"),
+        (OnboardingVisualState::Backup, "setup-backup"),
+        (OnboardingVisualState::BackupRecoveryKey, "setup-write-down"),
+        (
+            OnboardingVisualState::BackupRecoveryKeyWritten,
+            "setup-written",
+        ),
+        (OnboardingVisualState::Protect, "setup-protect"),
+    ] {
+        shoot_visual(
+            &Theme::dark(),
+            &dir.join(format!("recovery-{name}-1280x800.png")),
+            visual,
+            1280,
+            800,
+        )?;
+    }
+    if std::env::var_os("ONBOARDING_SHOTS_RECOVERY_ONLY").is_some() {
+        return Ok(());
+    }
+
     // The Fedora/rpm-ostree host-session path is reviewed at the three common
     // laptop sizes that motivated this harness. Include the acknowledgement
     // state separately because it changes both the checkbox and primary

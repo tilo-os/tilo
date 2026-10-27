@@ -142,7 +142,7 @@ const RESTORED_APP: &str = "org.tilo.test.restored-dmabuf";
 /// A tab saved from the last session, still showing its opening card, which
 /// the next window of [`RESTORED_APP`] binds into: what restoring a window at
 /// shell start leaves for the relaunched app.
-fn restore_a_saved_tab(h: &mut Harness) -> shell::shell::state::TabId {
+fn restore_a_saved_tab(h: &Harness) -> shell::shell::state::TabId {
     use shell::shell::state::TileContent;
     use shell::shell::tab_binding::{self, Placement};
     let target = {
@@ -171,6 +171,7 @@ fn restore_a_saved_tab(h: &mut Harness) -> shell::shell::state::TabId {
                 };
             }
         }
+        drop(tree);
         tab
     };
     // The opening card was laid out, so the window is configured to its
@@ -218,7 +219,7 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool, gpu_after_commit: 
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm_base = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
     h.pump();
-    let target = restore_a_saved_tab(&mut h);
+    let target = restore_a_saved_tab(&h);
 
     let qh = h.queue.handle();
     let surface = compositor.create_surface(&qh, ());
@@ -253,6 +254,7 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool, gpu_after_commit: 
                     && matches!(&tab.tile, shell::shell::state::TileContent::Foreign { surface_id, .. } if *surface_id == id)),
             "the window took its saved tab"
         );
+        drop(tree);
     }
     shell::compositor::foreign::flush_configures(&mut h.state);
     h.pump();

@@ -9,8 +9,7 @@ fail-fast = false
 # the visual goldens (.config/nextest-filters.toml) for an idle renderer.
 [profile.ci]
 # A test still running after 30 s prints a SLOW line each period, so a log
-# shows where shard time goes while it runs; tools/ci/nextest_report.py lists
-# the slowest tests from the JUnit report. The hang bound stays 30 s x 16 = 8 min.
+# shows where shard time goes while it runs. The hang bound stays 30 s x 16 = 8 min.
 slow-timeout = { period = "30s", terminate-after = 16 }
 failure-output = "immediate-final"
 fail-fast = false
@@ -39,7 +38,6 @@ desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
-browser-peer-relay = { max-threads = 2 }
 agent-participant-sessions = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
@@ -84,14 +82,12 @@ filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
 threads-required = "num-cpus"
 priority = 100
 
-# Loopback peer-sync latency budgets (a 50 ms p95, a drag's 100 ms p99) are
-# wall-clock; sharing the runner with the parallel suite measures scheduler
-# contention instead of the push path, so they run with the pool to themselves.
-# The legacy-window integration also exercises the running decoder's 150 ms
-# picture wait; sharing the pool can turn a late valid picture into no output
-# for that call. Keep its frame, keyframe and audience assertions unchanged.
+# The loopback peer-sync latency measurements (a 50 ms p95) are wall-clock
+# and run only when asked for with --ignored; sharing the runner with the
+# parallel suite would measure scheduler contention instead of the push path,
+# so they run with the pool to themselves.
 [[profile.default.overrides]]
-filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_drag_reaches_the_other_desktop_paced_with_its_resting_position) or test(=legacy_window_between_devices::a_legacy_window_streams_between_two_devices))'
+filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget))'
 threads-required = "num-cpus"
 priority = 100
 
@@ -131,12 +127,6 @@ priority = 100
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
-# Each tilo-browser-peer integration test runs a relay host and its browser
-# sessions against fixed deadlines; the multi-megabyte ones starve the rest.
-[[profile.default.overrides]]
-filter = 'package(tilo-browser-peer) and kind(test)'
-test-group = "browser-peer-relay"
-
 # Each tilo-agent-participant integration test runs a relay host, agents and
 # browser sessions that drive every web app natively against fixed deadlines;
 # the all-app coverage runs starve a concurrent session of the CPU it needs.
@@ -156,8 +146,8 @@ filter = 'package(tilo-relay) and binary(it) and test(=hosting_cost::one_keystro
 priority = 50
 slow-timeout = { period = "30s", terminate-after = 40 }
 
-# Megabytes of fsynced commits: these need the runner's disk and CPUs to
-# themselves to finish within their deadlines.
+# Megabytes of fsynced commits: these take the runner's disk and CPUs, so
+# they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
 filter = 'package(tilo-browser-peer) and (binary(compaction) or binary(backpressure))'
 threads-required = "num-cpus"

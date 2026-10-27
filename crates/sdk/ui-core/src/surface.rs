@@ -647,6 +647,20 @@ pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill:
     );
 }
 
+/// Clip what is painted next to the inside of a [`card`] at `rect` with
+/// `radius`, until the caller's `scene.pop_layer()`: content held past the
+/// card's edge (a dragged marker, a scrolled drawing) is cut there instead
+/// of spilling over what surrounds the card.
+pub fn push_card_clip(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64) {
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &RoundedRect::from_rect(snap(rect), radius),
+    );
+}
+
 /// [`card`] for a translucent `fill` (an accent wash, a hover tint): the
 /// edge derives from what the eye sees — `fill` composited over `ground` —
 /// not from the wash's own RGB. A 16 % accent wash on a light panel is
@@ -751,6 +765,61 @@ pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     );
 }
 
+/// How wide the selected edge is: twice the rest edge, so it reads as the
+/// same outline made heavier.
+#[must_use]
+pub fn selected_edge_width(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0) * 2.0
+}
+
+/// The selected object's edge, in place of the rest edge [`card`] paints:
+/// at the same position, a heavier line in the accent drawn wholly inside
+/// the surface's outline. One outline, with no gap and no ring outside it.
+/// Every selectable card or tile marks its selected state with it.
+pub fn selected_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let rect = snap(rect);
+    let width = selected_edge_width(theme);
+    if rect.width() <= width || rect.height() <= width {
+        return;
+    }
+    let half = width / 2.0;
+    scene.stroke(
+        &Stroke::new(width),
+        transform,
+        theme.tokens.colors.intent.accent,
+        None,
+        &RoundedRect::from_rect(rect.inset(-half), (radius - half).max(0.0)),
+    );
+}
+
+/// [`card`], or for the selected one its fill with the [`selected_edge`] in
+/// place of the rest edge.
+pub fn selectable_card(
+    scene: &mut Scene,
+    transform: Affine,
+    (rect, radius): (Rect, f64),
+    fill: Color,
+    selected: bool,
+    theme: &Theme,
+) {
+    if !selected {
+        card(scene, transform, rect, radius, fill);
+        return;
+    }
+    let rect = snap(rect);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    selected_edge(scene, transform, rect, radius, theme);
+}
+
 /// The boundary of authored content, independent of the pixels inside it.
 #[derive(Clone, Copy, Debug)]
 pub enum ContentFrame {
@@ -840,6 +909,23 @@ pub enum ContentEdge {
 /// third of it.
 pub(crate) const CONTENT_FADE_PX: f64 = 24.0;
 
+/// Where [`content_edge_fade`] paints over the viewport `rect` toward
+/// `edge`: what a scroller copies under it is not what the fade shows.
+#[must_use]
+pub fn content_edge_fade_band(rect: Rect, edge: ContentEdge) -> Rect {
+    let along = match edge {
+        ContentEdge::Top | ContentEdge::Bottom => rect.height(),
+        ContentEdge::Leading | ContentEdge::Trailing => rect.width(),
+    };
+    let reach = CONTENT_FADE_PX.min(along / 3.0).max(0.0);
+    match edge {
+        ContentEdge::Top => Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
+        ContentEdge::Bottom => Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
+        ContentEdge::Leading => Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
+        ContentEdge::Trailing => Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
+    }
+}
+
 /// Fade content out toward `edge` of the viewport `rect`: the `ground` the
 /// content is drawn on, opaque at the edge and clear a short way in, eased
 /// so it has no start line. Paint it over the content, and only while
@@ -853,35 +939,15 @@ pub fn content_edge_fade(
     edge: ContentEdge,
     ground: Color,
 ) {
-    let along = match edge {
-        ContentEdge::Top | ContentEdge::Bottom => rect.height(),
-        ContentEdge::Leading | ContentEdge::Trailing => rect.width(),
-    };
-    let reach = CONTENT_FADE_PX.min(along / 3.0);
-    if reach <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+    let band = content_edge_fade_band(rect, edge);
+    if band.width() <= 0.0 || band.height() <= 0.0 {
         return;
     }
-    let (band, strong, clear) = match edge {
-        ContentEdge::Top => (
-            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
-            (rect.x0, rect.y0),
-            (rect.x0, rect.y0 + reach),
-        ),
-        ContentEdge::Bottom => (
-            Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
-            (rect.x0, rect.y1),
-            (rect.x0, rect.y1 - reach),
-        ),
-        ContentEdge::Leading => (
-            Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
-            (rect.x0, rect.y0),
-            (rect.x0 + reach, rect.y0),
-        ),
-        ContentEdge::Trailing => (
-            Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
-            (rect.x1, rect.y0),
-            (rect.x1 - reach, rect.y0),
-        ),
+    let (strong, clear) = match edge {
+        ContentEdge::Top => ((rect.x0, rect.y0), (rect.x0, band.y1)),
+        ContentEdge::Bottom => ((rect.x0, rect.y1), (rect.x0, band.y0)),
+        ContentEdge::Leading => ((rect.x0, rect.y0), (band.x1, rect.y0)),
+        ContentEdge::Trailing => ((rect.x1, rect.y0), (band.x0, rect.y0)),
     };
     const STOPS: usize = 7;
     let stops: [vello::peniko::ColorStop; STOPS] = std::array::from_fn(|i| {
@@ -940,7 +1006,6 @@ mod tests {
                 "{edge:?}"
             );
         }
-        // A viewport too small to fade paints nothing.
         let mut scene = Scene::new();
         content_edge_fade(
             &mut scene,
@@ -972,7 +1037,6 @@ mod tests {
 
     #[test]
     fn edges_and_chips_register_on_every_preset_surface() {
-        // Case `edge_on_registers_on_every_preset_surface`.
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let s = &theme.tokens.colors.surfaces;
@@ -1008,7 +1072,6 @@ mod tests {
             );
         }
 
-        // Case `edge_on_starts_at_the_control_hairline_where_that_already_registers`.
         {
             // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
             let grey = Color::from_rgb8(0x80, 0x80, 0x80);
@@ -1018,7 +1081,6 @@ mod tests {
             );
         }
 
-        // Case `a_translucent_wash_takes_its_edge_from_the_composited_surface`.
         {
             // A 16 % accent wash over the light panel is still a light surface.
             for theme in [Theme::light(), Theme::dark()] {
@@ -1040,9 +1102,7 @@ mod tests {
             }
         }
 
-        // Case `a_separator_occupies_one_whole_pixel_row`.
         {
-            // A whole-pixel centre and a half-pixel centre both land on one row.
             let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
             assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
             assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
@@ -1054,7 +1114,6 @@ mod tests {
             );
         }
 
-        // Case `edge_on_memo_returns_the_derived_answer`.
         {
             // The memo must be transparent: the same surface asked twice (and
             // many distinct surfaces cycling through the slots) always yields
@@ -1081,7 +1140,6 @@ mod tests {
             }
         }
 
-        // Case `panel_edge_registers_on_the_panel_ground_in_every_preset`.
         {
             for (name, theme) in [
                 ("dark", Theme::dark()),
@@ -1096,7 +1154,6 @@ mod tests {
                         "{name}: the panel border must register on the panel ground"
                     );
                 } else {
-                    // The design language's inner hairline, exactly.
                     assert_eq!(border, theme.tokens.elevation.floating_edge, "{name}");
                     assert!(edge_delta(border, ground) > 0.005, "{name}: it registers");
                 }
@@ -1116,7 +1173,6 @@ mod tests {
             );
         }
 
-        // Case `card_edge_is_one_pixel_inside_rect`.
         {
             let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
             let outline = edge_outline(rect, 12.0);
@@ -1157,7 +1213,6 @@ mod tests {
 
     #[test]
     fn shadow_sprites_are_cached_bounded_and_circular() {
-        // Case `sprite_is_cached_per_tint`.
         {
             let a = sprites_for(0, 0, 0);
             let b = sprites_for(0, 0, 0);
@@ -1172,7 +1227,6 @@ mod tests {
             );
         }
 
-        // Case `sprite_cache_is_bounded_and_evicted_sprites_remain_alive`.
         {
             let mut cache = HashMap::new();
             let retained = cached_sprites(&mut cache, (0, 0, 0));
@@ -1238,7 +1292,6 @@ mod tests {
             let s = build_shadow_sprites(0, 0, 0);
             let n = SHADOW_SPRITE_SIZE;
             for x in [0, 1, n / 4, n / 2, (3 * n) / 4, n - 1] {
-                // Innermost row of the corner = the edge profile in x.
                 assert_eq!(
                     alpha_at(&s.corner, x, 0),
                     alpha_at(&s.edge, x, 0),
@@ -1337,8 +1390,6 @@ mod tests {
             };
             let at = render_token_shadow(400, 400, rect, radius, &token);
 
-            // Corner arc centre, and the point where the arc meets the
-            // outward diagonal.
             let cc = 250.0 - radius;
             let k = std::f64::consts::FRAC_1_SQRT_2;
             for d in [2.0_f64, 5.0, 9.0, 14.0] {
@@ -1368,7 +1419,6 @@ mod tests {
                     color: Color::from_rgba8(255, 255, 255, a),
                 };
                 let at = render_token_shadow(400, 400, rect, radius, &token);
-                // Just outside the flat right edge, where coverage is ~half.
                 at(251.0, 200.0)
             };
             let full = peak(255);
@@ -1720,7 +1770,6 @@ mod tests {
             }
         }
 
-        // Case `degenerate_inputs_are_noops`.
         {
             let mut scene = Scene::new();
             // Zero-area rect, zero intensity, zero spread — must not panic

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use collab_types::inbound::OpAdmission;
 use collab_types::{
     Admission, Ed25519PublicKey, EncryptionMetadata, MlsGovernanceAction, MlsGovernanceContext,
     MlsGovernanceFrameV1,
@@ -62,6 +63,31 @@ impl ChannelGate {
     }
 }
 
+/// The verdict on an op for `channel` from the gates that govern it there,
+/// one implementation for every endpoint that decides: a sealed op is sealed
+/// because the channel requires it, and cleartext is refused by any gate
+/// that refuses it. Otherwise cleartext is admitted once the endpoint knows
+/// the channel's whole governance state (`governance_known`), where no gate
+/// means the channel is not encrypted; until then there is no verdict and
+/// the op waits.
+pub fn admission(
+    gates: impl IntoIterator<Item = ChannelGate>,
+    governance_known: bool,
+    channel: collab_types::ChannelId,
+    encryption: Option<&EncryptionMetadata>,
+) -> OpAdmission {
+    if encryption.is_some() {
+        return OpAdmission::EncryptionRequired;
+    }
+    if !gates.into_iter().all(|gate| gate.accepts(None, channel)) {
+        OpAdmission::EncryptionRequired
+    } else if governance_known {
+        OpAdmission::CleartextAdmitted
+    } else {
+        OpAdmission::Unstated
+    }
+}
+
 /// Outcome of [`GovernanceJournal::append_mirrored`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MirrorAppend {
@@ -105,11 +131,6 @@ pub struct GovernanceJournal {
 impl GovernanceJournal {
     /// Open and integrity-check a journal. Corruption never produces an empty
     /// replacement journal; only a genuinely absent file starts empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for I/O, decoding, version, hash-chain, signature, or
-    /// dangling-delivery failures.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let too_large = Error::InvalidState("governance journal exceeds 256 MiB".into());
@@ -248,10 +269,6 @@ impl GovernanceJournal {
     /// Validate against the caller's live authoritative membership snapshot,
     /// then atomically append the frame and every required targeted delivery.
     /// The MLS payload remains opaque in `frame`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when validation fails or the atomic write fails.
     pub fn enqueue(
         &mut self,
         frame: MlsGovernanceFrameV1,
@@ -338,11 +355,6 @@ impl GovernanceJournal {
     /// A frame already present is [`MirrorAppend::Duplicate`]; one whose
     /// predecessor has not arrived yet is [`MirrorAppend::OutOfOrder`] and
     /// is not stored. Neither is an error, so redelivery is harmless.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a frame of another channel, one not signed by
-    /// `steward`, a bad signature, or a failed atomic write.
     pub fn append_mirrored(
         &mut self,
         channel: collab_types::ChannelId,
@@ -395,10 +407,6 @@ impl GovernanceJournal {
     /// whole ratchet tree, so a channel with hundreds of members cost every
     /// newcomer all their Welcomes. A device behind the head now finds a
     /// frame it cannot apply, asks again, and is admitted afresh.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the atomic write fails.
     pub fn compact(&mut self) -> Result<()> {
         let Some(head) = self.state.frames.last() else {
             return Ok(());
@@ -429,11 +437,6 @@ impl GovernanceJournal {
     /// A mirror holding `frames`, as [`ChannelMember`](crate::ChannelMember)
     /// exported them: each signed by `steward`, chained as a compacted or
     /// rebased journal may be. Kept in memory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a frame of another channel or steward, a bad
-    /// signature, or a broken chain.
     pub fn mirrored(
         channel: collab_types::ChannelId,
         steward: Ed25519PublicKey,
@@ -472,11 +475,6 @@ impl GovernanceJournal {
     /// which a joining device neither needs nor is sent. The channel was
     /// created encrypted (every stewarded channel starts with a genesis
     /// frame), so the plaintext gate stays closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a frame of another channel, one not signed by
-    /// `steward`, a bad signature, or a failed atomic write.
     pub fn rebase(
         &mut self,
         channel: collab_types::ChannelId,
@@ -591,11 +589,6 @@ impl GovernanceJournal {
     /// frame up to and including `through`. Returns how many deliveries it
     /// completed; an acknowledgement that completes nothing new writes
     /// nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `through` is not in the journal or the atomic
-    /// write fails.
     pub fn acknowledge_through(
         &mut self,
         recipient: Ed25519PublicKey,
@@ -652,10 +645,6 @@ impl GovernanceJournal {
     }
 
     /// Durably mark an exact endpoint delivery complete.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown delivery or failed atomic write.
     pub fn acknowledge(
         &mut self,
         digest: [u8; 32],
@@ -730,5 +719,41 @@ mod gate_tests {
         assert!(!gate.accepts_history(None, channel));
         let other = EncryptionMetadata::content_key(3, ChannelId::new(), ContentRetention::Delta);
         assert!(!gate.accepts_history(Some(&other), channel));
+    }
+
+    #[test]
+    fn cleartext_waits_until_governance_is_known_unless_a_gate_refuses_it() {
+        use collab_types::inbound::OpAdmission;
+        let channel = ChannelId::new();
+        let open = ChannelGate::default();
+        let required = ChannelGate {
+            encryption_required: true,
+            head_epoch: None,
+        };
+        assert_eq!(
+            super::admission([], false, channel, None),
+            OpAdmission::Unstated
+        );
+        assert_eq!(
+            super::admission([open], false, channel, None),
+            OpAdmission::Unstated
+        );
+        assert_eq!(
+            super::admission([required], false, channel, None),
+            OpAdmission::EncryptionRequired
+        );
+        assert_eq!(
+            super::admission([], true, channel, None),
+            OpAdmission::CleartextAdmitted
+        );
+        assert_eq!(
+            super::admission([open, required], true, channel, None),
+            OpAdmission::EncryptionRequired
+        );
+        let sealed = EncryptionMetadata::content_key(1, channel, ContentRetention::Delta);
+        assert_eq!(
+            super::admission([], false, channel, Some(&sealed)),
+            OpAdmission::EncryptionRequired
+        );
     }
 }

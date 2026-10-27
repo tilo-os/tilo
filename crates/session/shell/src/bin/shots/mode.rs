@@ -85,6 +85,42 @@ pub mod offscreen {
             }
             println!("  wrote {}", path.display());
         }
+
+        fn film(
+            &mut self,
+            driver: &mut ShellDriver,
+            prefix: &str,
+            frames: Vec<scenario::film::FilmFrame>,
+        ) {
+            // Frames render on the ground the live compositor clears to, so a
+            // film reads as the screen did.
+            let ground = driver.ground();
+            let mut described = Vec::with_capacity(frames.len());
+            for frame in frames {
+                let name = frame
+                    .index
+                    .map_or_else(|| "before".to_owned(), |i| format!("{i:03}"));
+                let path = self.dir.join(format!("{prefix}-{name}.png"));
+                self.renderer.set_backdrop(frame.backdrop);
+                self.renderer.render_png(&frame.scene, ground, &path);
+                described.push(serde_json::json!({
+                    "index": frame.index,
+                    "ms": frame.index.map(|_| frame.at.as_secs_f64() * 1000.0),
+                    "late_ms": frame.late.as_secs_f64() * 1000.0,
+                    "animation_owners": frame.owners,
+                }));
+            }
+            let count = described.len();
+            let path = self.dir.join(format!("{prefix}.json"));
+            let json = serde_json::json!({ "hz": 60, "frames": described });
+            match serde_json::to_vec_pretty(&json) {
+                Ok(bytes) => match std::fs::write(&path, bytes) {
+                    Ok(()) => println!("  wrote {} ({count} frames)", path.display()),
+                    Err(error) => eprintln!("shots: write {}: {error}", path.display()),
+                },
+                Err(error) => eprintln!("shots: film {prefix}: {error}"),
+            }
+        }
     }
 
     /// Run a scenario through the offscreen renderer. When `per_frame`
@@ -274,6 +310,7 @@ pub mod recording {
             encoder: &mut encoder,
             file: &mut file,
             frames_per_step,
+            fps,
             first_unit: None,
             error: None,
         };
@@ -303,6 +340,8 @@ pub mod recording {
         pub encoder: &'a mut VideoEncoder,
         pub file: &'a mut Mp4Recording,
         pub frames_per_step: u32,
+        /// The video's frame rate: a film's 60 Hz frames are taken at it.
+        pub fps: u32,
         first_unit: Option<Vec<u8>>,
         /// Set by [`Self::encode_current`] on failure when called through
         /// [`SnapshotSink::capture`], whose signature can't return `Result`;
@@ -315,15 +354,51 @@ pub mod recording {
             let scene = driver.paint();
             self.renderer.set_backdrop(driver.take_backdrop());
             let rgba = self.renderer.render_rgba_resilient(&scene);
-            for _ in 0..self.frames_per_step {
+            self.encode_times(&rgba, u64::from(self.frames_per_step))
+        }
+
+        fn encode_times(&mut self, rgba: &[u8], times: u64) -> Result<(), String> {
+            for _ in 0..times {
                 let units = self
                     .encoder
-                    .encode(&rgba)
+                    .encode(rgba)
                     .map_err(|e| format!("encode in recording mode: {e}"))?;
                 write_units(self.file, &mut self.first_unit, units)?;
             }
             Ok(())
         }
+
+        /// Encode a film's frames at the video's own rate, so its motion
+        /// plays at the pace it ran: each 60 Hz frame is shown for the video
+        /// frames that fall within it (every other one at 30 fps).
+        fn encode_film(&mut self, frames: Vec<scenario::film::FilmFrame>) -> Result<(), String> {
+            let mut shown: u64 = 0;
+            for (index, frame) in frames.into_iter().enumerate() {
+                if frame.index.is_none() {
+                    // The scene before the cue: the step before it showed it.
+                    continue;
+                }
+                let ended = u64::try_from(index).unwrap_or(u64::MAX);
+                let due = film_frames_due(ended, self.fps);
+                if due <= shown {
+                    continue;
+                }
+                self.renderer.set_backdrop(frame.backdrop);
+                let rgba = self.renderer.render_rgba_resilient(&frame.scene);
+                self.encode_times(&rgba, due.saturating_sub(shown))?;
+                shown = due;
+            }
+            Ok(())
+        }
+    }
+
+    /// The video frames due by the end of a film's `ended`-th 60 Hz frame
+    /// at `fps`.
+    pub(super) fn film_frames_due(ended: u64, fps: u32) -> u64 {
+        ended
+            .saturating_mul(u64::from(fps))
+            .checked_div(u64::from(scenario::film::HZ))
+            .unwrap_or(0)
     }
 
     fn write_units(
@@ -351,6 +426,17 @@ pub mod recording {
             // those videos jumping from the curve's first state to its
             // last with nothing in between.
             if let Err(e) = self.encode_current(driver) {
+                self.error.get_or_insert(e);
+            }
+        }
+
+        fn film(
+            &mut self,
+            _driver: &mut ShellDriver,
+            _prefix: &str,
+            frames: Vec<scenario::film::FilmFrame>,
+        ) {
+            if let Err(e) = self.encode_film(frames) {
                 self.error.get_or_insert(e);
             }
         }
@@ -430,7 +516,7 @@ pub mod window {
             let mut sink = NullSink;
             scenario::run(&mut driver, scenario, &mut sink);
             let chrome = driver.chrome();
-            let saved = persist::save_tree_to(&chrome.tree(), &path);
+            let saved = persist::save_shared_tree_to(&chrome.tree_handle(), &path);
             drop(chrome);
             if let Err(e) = saved {
                 eprintln!("shots: pre-roll persist failed: {e}");
@@ -455,7 +541,7 @@ pub mod window {
             .workspaces
             .iter()
             .find(|w| w.id == tree.desktop.active)
-            .map(|w| w.room.to_string())
+            .map(|w| w.room().to_string())
         {
             app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room }));
         }
@@ -476,6 +562,22 @@ mod tests {
     use tilo_callstream::surface_decoder::VideoDecoder;
 
     use super::super::scenario::lookup;
+
+    /// A film recorded at 60 Hz plays at the pace it ran at any video rate:
+    /// a second of film is a second of video.
+    #[test]
+    fn a_film_plays_at_the_pace_it_ran_at_any_frame_rate() {
+        for fps in [24, 30, 60, 120] {
+            assert_eq!(
+                recording::film_frames_due(60, fps),
+                u64::from(fps),
+                "one second of film at {fps} fps"
+            );
+        }
+        assert_eq!(recording::film_frames_due(1, 30), 0, "every other frame");
+        assert_eq!(recording::film_frames_due(2, 30), 1);
+        assert_eq!(recording::film_frames_due(1, 120), 2, "each frame twice");
+    }
 
     /// Recording mode must produce a non-empty MP4 whose content decodes
     /// to a real (non-uniform, non-black) frame — the negative regression
@@ -519,6 +621,36 @@ mod tests {
              output isn't reaching the encoder"
         );
         let _ = fs::remove_file(&tmp);
+    }
+
+    /// Shots render at a laptop's 2560x1600 at scale 2, alone and beside a
+    /// 2560x1440 monitor at scale 1, with Quick Settings open over its
+    /// blurred backdrop. The backdrop's render used to hold the renderer's
+    /// one counter readback, so the frame over it was never measured: it
+    /// overflowed unseen on every attempt and the run panicked ("Vello did
+    /// not produce two consecutive overflow-free screenshot renders").
+    #[test]
+    fn a_2560x1600_at_scale_2_render_succeeds_with_quick_settings_open() {
+        for arrangement in ["2560x1600@2", "2560x1600@2,2560x1440@1"] {
+            let outputs =
+                shell::compositor::backend::headless::resolve_output_arrangement(arrangement)
+                    .expect("arrangement");
+            let viewport = shell::compositor::backend::combined_geometry(&outputs);
+            let dir = std::env::temp_dir()
+                .join(format!("shots-hidpi-{}-{arrangement}", std::process::id()));
+            offscreen::run_scenes(
+                &["qs-wifi".to_owned(), "desktop".to_owned()],
+                &dir,
+                viewport,
+                Some(&outputs),
+            )
+            .expect("the scenes render");
+            for scene in ["qs-wifi", "desktop"] {
+                let png = fs::read(dir.join(format!("{scene}.png"))).expect("the shot is written");
+                assert!(!png.is_empty(), "{arrangement}: {scene} is a picture");
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     /// The desktop a scenario boots opens its apps as their own components:

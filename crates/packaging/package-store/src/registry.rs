@@ -9,7 +9,7 @@
 //!
 //! Rows written before payloads moved into the content store have the same
 //! shape with the tree under `payloads/<app-id>`; they stay readable, and
-//! [`crate::PackageStore`] moves them into the content-addressed layout once.
+//! `PackageStore` moves them into the content-addressed layout once.
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +38,6 @@ impl Pinning {
     }
 }
 
-/// One installed package.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledPackage {
     /// Reverse-DNS app id, from the manifest's `[package].id`.
@@ -61,10 +60,10 @@ pub struct InstalledPackage {
     /// Pinned packages are kept under size pressure.
     #[serde(default)]
     pub pinned: bool,
-    /// Unix seconds of install.
     #[serde(default)]
     pub installed_at: u64,
-    /// Unix seconds of the last launch (or install); orders eviction.
+    /// Unix seconds of the last launch (or the first install; an update
+    /// keeps it); orders eviction.
     #[serde(default)]
     pub last_used: u64,
     /// Attestor id when an attestor chain vouched for the package; empty
@@ -210,7 +209,6 @@ impl Registry {
         self.entries.is_empty()
     }
 
-    /// The row for `app_id`.
     pub fn find(&self, app_id: &str) -> Option<&InstalledPackage> {
         self.entries.iter().find(|entry| entry.id == app_id)
     }

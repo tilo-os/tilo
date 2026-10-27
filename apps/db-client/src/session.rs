@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
+use crate::i18n::{t, t_args, text};
 use crate::model::{
     ConnectionProfile, DatabaseSchema, QueryResult, RelationKind, RelationRef, TableInfo,
 };
@@ -32,11 +33,20 @@ pub enum MainTab {
 }
 
 impl MainTab {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            MainTab::Query => "Query",
-            MainTab::Data => "Data",
-            MainTab::Structure => "Structure",
+            MainTab::Query => t("db-tab-query"),
+            MainTab::Data => t("db-tab-data"),
+            MainTab::Structure => t("db-tab-structure"),
+        }
+    }
+
+    /// The tab's id in the window bar's view switcher.
+    pub fn view_id(self) -> &'static str {
+        match self {
+            MainTab::Query => "db.view.query",
+            MainTab::Data => "db.view.data",
+            MainTab::Structure => "db.view.structure",
         }
     }
 
@@ -75,7 +85,6 @@ pub struct Session {
     /// Saved connection profiles shown in the sidebar: the workspace's
     /// `root["connections"]` as last presented.
     pub connections: Vec<ConnectionProfile>,
-    /// Index into `connections` of the active connection.
     pub active: usize,
     /// Whether a live engine is currently open on the worker for the active
     /// connection (reflected by the sidebar status dot).
@@ -93,9 +102,7 @@ pub struct Session {
     pub tab: MainTab,
     /// Status banner.
     pub status: RunStatus,
-    /// Pagination offset for the Data tab.
     pub data_offset: usize,
-    /// Page size for the Data tab.
     pub data_page_size: usize,
     /// Bumped whenever a fresh query / data result lands, so the grids rebind.
     pub query_gen: usize,
@@ -190,8 +197,6 @@ impl Session {
         s
     }
 
-    // ---- worker plumbing -------------------------------------------------
-
     /// Fold every reply the worker has ready into the session, without
     /// blocking. Call once per frame.
     pub fn drain(&mut self) {
@@ -212,6 +217,16 @@ impl Session {
 
     /// Whether the worker still has work in flight (drives the app's
     /// `needs_animation_frame`, so results land without extra input).
+    /// What the status line says now, whichever kind of news it is.
+    pub fn status_message(&self) -> &str {
+        match &self.status {
+            RunStatus::Idle => "",
+            RunStatus::Busy(message) | RunStatus::Ok(message) | RunStatus::Error(message) => {
+                message
+            }
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.worker.busy()
     }
@@ -254,7 +269,7 @@ impl Session {
         self.status = if self.active_connection().is_some_and(|c| c.is_sample) {
             RunStatus::Idle
         } else {
-            RunStatus::Ok(format!("Connected to {name}"))
+            RunStatus::Ok(t_args("db-connected", &[("name", text(&name))]))
         };
     }
 
@@ -283,7 +298,9 @@ impl Session {
                 self.active_query = None;
             }
             if was_active && self.active_connection_id() == Some(connection_id) {
-                self.status = RunStatus::Idle;
+                // The person stopped it: say the query was cancelled rather
+                // than going quiet as if it had never run.
+                self.status = RunStatus::Ok(t("db-cancelled"));
             }
             return;
         }
@@ -373,8 +390,6 @@ impl Session {
         }
     }
 
-    // ---- connection management ------------------------------------------
-
     /// Remember a connection's password for this session only (never persisted
     /// and never written to the shared document).
     pub fn remember_password(&mut self, id: Uuid, password: String) {
@@ -385,7 +400,6 @@ impl Session {
         }
     }
 
-    /// Whether the session holds a password for connection `id`.
     pub fn knows_password(&self, id: Uuid) -> bool {
         self.passwords.contains_key(&id)
     }
@@ -420,14 +434,13 @@ impl Session {
             self.set_schema(DatabaseSchema::default());
             return;
         };
-        // Clear the previous connection's view state up front.
         self.connected = false;
         self.active_query = None;
         self.cancelled_query = None;
         self.query_result = None;
         self.data_result = None;
         self.set_schema(DatabaseSchema::default());
-        self.status = RunStatus::Busy(format!("Connecting to {}…", profile.name));
+        self.status = RunStatus::Busy(t_args("db-connecting", &[("name", text(&profile.name))]));
         self.worker.request(DbRequest::Connect(Box::new(profile)));
     }
 
@@ -496,8 +509,6 @@ impl Session {
         id
     }
 
-    // ---- introspection accessors ----------------------------------------
-
     /// The active connection profile, or `None` when there are no saved
     /// connections yet (a fresh live session).
     pub fn active_connection(&self) -> Option<&ConnectionProfile> {
@@ -521,16 +532,16 @@ impl Session {
     /// result is folded in by [`drain`](Self::drain).
     pub fn run_query(&mut self, sql: &str) {
         if self.active_connection().is_none() {
-            self.status = RunStatus::Error("No live connection".into());
+            self.status = RunStatus::Error(t("db-no-connection"));
             return;
         }
-        self.status = RunStatus::Busy("Running…".into());
+        self.status = RunStatus::Busy(t("db-running"));
         let Some(connection_id) = self.active_connection_id() else {
-            self.status = RunStatus::Error("No live connection".into());
+            self.status = RunStatus::Error(t("db-no-connection"));
             return;
         };
         if self.active_query.is_some() {
-            self.status = RunStatus::Error("A query is already running".into());
+            self.status = RunStatus::Error(t("db-query-running"));
             return;
         }
         let Some(generation) = self.next_query_generation.checked_add(1) else {
@@ -539,8 +550,7 @@ impl Session {
             // counter wraps could let a late reply for an ancient query
             // acquire ownership of a newly-started one, so exhaustion fails
             // closed and asks for a fresh process instead.
-            self.status =
-                RunStatus::Error("Query identity space exhausted; restart Database Client".into());
+            self.status = RunStatus::Error(t("db-identity-exhausted"));
             return;
         };
         self.next_query_generation = generation;
@@ -562,7 +572,7 @@ impl Session {
         };
         if self.worker.cancel_query(connection_id, generation) == CancelQueryResult::Requested {
             self.cancelled_query = Some((connection_id, generation));
-            self.status = RunStatus::Busy("Cancelling query…".into());
+            self.status = RunStatus::Busy(t("db-cancelling"));
             true
         } else {
             false
@@ -631,8 +641,7 @@ mod tests {
     use super::*;
     use crate::model::Engine;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     /// Sessions start empty, open `SQLite` for real, load tables and report unreachable servers honestly.
     #[test]
@@ -726,7 +735,6 @@ mod tests {
             let b = ConnectionProfile::new("B", Engine::MySql);
             s.set_connections(vec![a.clone(), b.clone()]);
             s.active = 1; // B is active
-            // A reorder that keeps both keeps B active by id.
             s.set_connections(vec![b.clone(), a.clone()]);
             assert_eq!(s.active_connection().unwrap().id, b.id);
             // Removing the active one resets to the first + clears view state.
@@ -806,7 +814,7 @@ mod tests {
             assert!(s.active_query.is_none());
             assert!(matches!(
                 s.status,
-                RunStatus::Error(ref message) if message.contains("identity space exhausted")
+                RunStatus::Error(ref message) if message.contains("counter is exhausted")
             ));
         }
 
@@ -818,7 +826,7 @@ mod tests {
              SELECT sum(x) FROM n",
         );
             let mut requested = false;
-            let deadline = ui::time::now() + HANG_BOUND;
+            let deadline = ui::time::now() + hang_bound();
             while ui::time::now() < deadline {
                 if s.cancel_in_flight_query() {
                     requested = true;
@@ -829,7 +837,11 @@ mod tests {
             assert!(requested, "the worker must publish the active SQLite query");
             s.block_until_idle();
             assert!(!s.busy());
-            assert!(matches!(s.status, RunStatus::Idle));
+            assert!(
+                matches!(s.status, RunStatus::Ok(ref message) if message.contains("cancelled")),
+                "the status says the query was cancelled: {:?}",
+                s.status
+            );
         }
 
         // --- phase: stale_table_page_is_ignored_after_selection_changes ---

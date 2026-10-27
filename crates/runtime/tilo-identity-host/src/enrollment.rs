@@ -9,8 +9,10 @@
 //!
 //! * the token is genuine, unexpired and grants the shape of its
 //!   [`EnrollmentRole`];
-//! * its issuer is this identity's device, was certified and allowed to admit
-//!   devices both when the token was minted and now, and is not revoked;
+//! * its issuer is this identity's device, was certified both when the token
+//!   was minted and now, and is not revoked; it must be allowed to admit
+//!   devices unless the person's devices that hold the identity's key
+//!   approved the certificate themselves ([`Certifier::Approved`]);
 //! * its nonce has never been redeemed, recorded durably in the one
 //!   [`NonceStore`] before the certificate leaves this function.
 
@@ -81,18 +83,15 @@ fn refused(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
 }
 
-/// Check that `issuer` may have minted `token` and may still admit devices:
-/// it belongs to the token's identity, is the device that signed the token,
-/// was valid when the token was minted and is valid now, may admit devices,
-/// and is not revoked.
-///
-/// # Errors
-///
-/// Returns a `PermissionDenied` error naming the first rule `issuer` breaks.
+/// Check that `issuer` may have minted `token`: it belongs to the token's
+/// identity, is the device that signed the token, was valid when the token
+/// was minted and is valid now, and is not revoked. When it `admits` the
+/// device on its own authority it must also be allowed to admit devices.
 pub fn check_issuer(
     token: &EnrollmentToken,
     issuer: &DeviceCert,
     issuer_revoked: bool,
+    admits: bool,
     now_ns: u64,
 ) -> io::Result<()> {
     if issuer.user_public_key != token.user_public_key {
@@ -104,7 +103,7 @@ pub fn check_issuer(
     verify_device_cert_at(issuer, token.issued_at_ns)
         .map_err(|error| refused(format!("issuer at the token's issue time: {error}")))?;
     verify_device_cert_at(issuer, now_ns).map_err(|error| refused(error.to_string()))?;
-    if !issuer.capabilities.can_admit_devices || issuer_revoked {
+    if issuer_revoked || (admits && !issuer.capabilities.can_admit_devices) {
         return Err(refused("issuer is revoked or cannot admit devices"));
     }
     Ok(())
@@ -235,6 +234,27 @@ pub struct Redemption<'a> {
 /// Signs a certificate digest with the identity's root.
 pub type RootSign<'a> = &'a dyn Fn(&[u8]) -> io::Result<[u8; 64]>;
 
+/// Where a redeemed certificate's root signature comes from.
+#[derive(Clone, Copy)]
+pub enum Certifier<'a> {
+    /// The root this device holds signs it, so its issuer must be allowed to
+    /// admit devices.
+    Root(RootSign<'a>),
+    /// The person's devices that hold the identity's key signed exactly this
+    /// certificate, each after asking the person
+    /// ([`crate::certification_ceremony`]); the issuer only introduced the
+    /// device.
+    Approved(&'a DeviceCert),
+}
+
+impl Certifier<'_> {
+    /// Whether the issuer admits the device on its own authority.
+    #[must_use]
+    pub const fn issuer_admits(&self) -> bool {
+        matches!(self, Self::Root(_))
+    }
+}
+
 /// Redeem `request` for a root-signed certificate.
 ///
 /// With a `fleet`, the issuer comes from it (or `local_issuer`), revocation
@@ -253,7 +273,7 @@ pub fn redeem(
     fleet: Option<&DeviceFleetStore>,
     nonces: &NonceStore,
     request: &Redemption<'_>,
-    sign: RootSign<'_>,
+    certifier: Certifier<'_>,
 ) -> io::Result<DeviceCert> {
     let token = request.token;
     verify_enrollment_token(token, request.now_ns).map_err(|error| refused(error.to_string()))?;
@@ -270,22 +290,31 @@ pub fn redeem(
         ));
     }
     if let Some(fleet) = fleet {
-        return fleet.redeem_locked(nonces, request, sign);
+        return fleet.redeem_locked(nonces, request, certifier);
     }
     let issuer = request
         .local_issuer
         .ok_or_else(|| refused("issuer not enrolled"))?;
-    check_issuer(token, issuer, false, request.now_ns)?;
+    check_issuer(
+        token,
+        issuer,
+        false,
+        certifier.issuer_admits(),
+        request.now_ns,
+    )?;
     if nonces.is_consumed(&token.nonce)? {
         return Err(refused("enrollment token has already been consumed"));
     }
-    let cert = certify(request, sign)?;
+    let cert = certify(request, certifier)?;
     nonces.claim(&token.nonce, request.device_public_key)?;
     Ok(cert)
 }
 
 /// The root-signed certificate `request` asks for, verified.
-pub(crate) fn certify(request: &Redemption<'_>, sign: RootSign<'_>) -> io::Result<DeviceCert> {
+pub(crate) fn certify(
+    request: &Redemption<'_>,
+    certifier: Certifier<'_>,
+) -> io::Result<DeviceCert> {
     let mut cert = DeviceCert {
         user_public_key: request.token.user_public_key,
         device_public_key: request.device_public_key,
@@ -295,9 +324,27 @@ pub(crate) fn certify(request: &Redemption<'_>, sign: RootSign<'_>) -> io::Resul
         expires_at_ns: None,
         signature: [0; 64],
     };
-    let digest = tilo_user_identity::device_cert_signing_digest(&cert)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    cert.signature = sign(&digest)?;
+    match certifier {
+        Certifier::Root(sign) => {
+            let digest = tilo_user_identity::device_cert_signing_digest(&cert)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            cert.signature = sign(&digest)?;
+        }
+        Certifier::Approved(approved) => {
+            if approved.user_public_key != cert.user_public_key
+                || approved.device_public_key != cert.device_public_key
+                || approved.device_label != cert.device_label
+                || approved.capabilities != cert.capabilities
+                || approved.expires_at_ns.is_some()
+                || approved.issued_at_ns > request.now_ns
+            {
+                return Err(refused(
+                    "the certificate the person's devices approved is for another device",
+                ));
+            }
+            cert = approved.clone();
+        }
+    }
     // A root other than the token's identity cannot produce a signature that
     // verifies under the token's user key.
     verify_device_cert(&cert).map_err(|error| refused(error.to_string()))?;
@@ -403,7 +450,7 @@ mod tests {
                 valid_from_ns: now,
                 local_issuer: None,
             },
-            &sign,
+            Certifier::Root(&sign),
         )
         .expect("broker redemption");
         assert_eq!(cert.capabilities, DeviceCapabilities::member());
@@ -451,7 +498,7 @@ mod tests {
                     .iter()
                     .find(|cert| cert.device_public_key == token.issuer_device_public_key),
             },
-            &sign,
+            Certifier::Root(&sign),
         );
         assert_eq!(
             replay
@@ -501,7 +548,7 @@ mod tests {
             issued_at_ns: now + 10,
             ..issuer.clone()
         });
-        let error = check_issuer(&token, &not_yet_valid, false, now + 20)
+        let error = check_issuer(&token, &not_yet_valid, false, true, now + 20)
             .expect_err("an issuer not yet certified at the token's issue time");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("issue time"), "{error}");
@@ -517,33 +564,152 @@ mod tests {
                 valid_from_ns: now + 20,
                 local_issuer: Some(&not_yet_valid),
             },
-            &sign,
+            Certifier::Root(&sign),
         )
         .expect_err("the broker's entry point applies the same rule");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
-        // Expired by the time the token is redeemed.
         let expired = resigned(DeviceCert {
             expires_at_ns: Some(now + 2),
             ..issuer.clone()
         });
-        assert!(check_issuer(&token, &expired, false, now + 1).is_ok());
+        assert!(check_issuer(&token, &expired, false, true, now + 1).is_ok());
         assert_eq!(
-            check_issuer(&token, &expired, false, now + 3)
+            check_issuer(&token, &expired, false, true, now + 3)
                 .expect_err("an issuer expired at redemption")
                 .kind(),
             io::ErrorKind::PermissionDenied
         );
 
         // Revoked, or never allowed to admit.
-        assert!(check_issuer(&token, &issuer, true, now).is_err());
+        assert!(check_issuer(&token, &issuer, true, true, now).is_err());
         let mut member = issuer;
         member.capabilities = DeviceCapabilities::member();
-        assert!(check_issuer(&token, &resigned(member), false, now).is_err());
+        assert!(check_issuer(&token, &resigned(member), false, true, now).is_err());
         assert!(
             !store.nonces().is_consumed(&token.nonce).expect("marker"),
             "a refused redemption spends nothing"
         );
+    }
+
+    /// A device that may not admit introduces a new device whose
+    /// certificate the person's key holders approved: the approval admits
+    /// it, for exactly that device, and never a revoked one.
+    #[test]
+    fn an_approved_certificate_admits_through_a_device_that_cannot_admit() {
+        let fixture = fixture();
+        let store = &fixture.store;
+        let now = fixture.issued_at_ns;
+        let (_, token) = fixture.mint();
+        let (root, _) = store.identity(&fixture.identity_id).expect("root");
+        let signed = |mut cert: DeviceCert| {
+            let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("digest");
+            cert.signature = root.sign(&digest).expect("sign");
+            cert
+        };
+        let mut member = store
+            .load(&fixture.identity_id)
+            .expect("fleet")
+            .certificates
+            .into_iter()
+            .find(|cert| cert.device_public_key == token.issuer_device_public_key)
+            .expect("issuer");
+        member.capabilities = DeviceCapabilities::member();
+        let member = signed(member);
+        let approved = signed(DeviceCert {
+            user_public_key: token.user_public_key,
+            device_public_key: device(61),
+            device_label: "Tablet".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now,
+            expires_at_ns: None,
+            signature: [0; 64],
+        });
+        let redemption = |device_public_key, label| Redemption {
+            token: &token,
+            role: EnrollmentRole::PersonalDevice,
+            device_public_key,
+            label,
+            now_ns: now,
+            valid_from_ns: now,
+            local_issuer: Some(&member),
+        };
+        let refuse = |error: io::Error| assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        refuse(
+            redeem(
+                None,
+                &store.nonces(),
+                &redemption(device(61), "Tablet"),
+                Certifier::Root(&|_| Ok([0; 64])),
+            )
+            .expect_err("a member may not admit with a root of its own"),
+        );
+        refuse(
+            redeem(
+                None,
+                &store.nonces(),
+                &redemption(device(62), "Tablet"),
+                Certifier::Approved(&approved),
+            )
+            .expect_err("an approval names its device"),
+        );
+        refuse(
+            redeem(
+                None,
+                &store.nonces(),
+                &redemption(device(61), "Laptop"),
+                Certifier::Approved(&approved),
+            )
+            .expect_err("an approval names its label"),
+        );
+        assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
+        let cert = redeem(
+            None,
+            &store.nonces(),
+            &redemption(device(61), "Tablet"),
+            Certifier::Approved(&approved),
+        )
+        .expect("the approved certificate admits");
+        assert_eq!(cert, approved);
+        assert!(store.nonces().is_consumed(&token.nonce).expect("marker"));
+    }
+
+    #[test]
+    fn a_revoked_device_is_not_admitted_again() {
+        let fixture = fixture();
+        let store = &fixture.store;
+        let now = fixture.issued_at_ns;
+        let (encoded, _) = fixture.mint();
+        store
+            .complete_enrollment(
+                &fixture.identity_id,
+                &encoded,
+                EnrollmentRole::PersonalDevice,
+                device(71),
+                "Lost phone",
+                now,
+            )
+            .expect("enrolled");
+        store
+            .revoke(
+                &fixture.identity_id,
+                device(71),
+                tilo_user_identity::RevocationReason::Lost,
+                now + 1,
+            )
+            .expect("revoked");
+        let (encoded, _) = fixture.mint();
+        let error = store
+            .complete_enrollment(
+                &fixture.identity_id,
+                &encoded,
+                EnrollmentRole::PersonalDevice,
+                device(71),
+                "Found phone",
+                now + 2,
+            )
+            .expect_err("revocation wins over a later enrollment");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]

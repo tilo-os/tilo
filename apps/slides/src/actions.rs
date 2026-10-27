@@ -11,7 +11,9 @@
 use ui::tilo_resource::{Atom, Edit, Id, Resource, Stamped, items};
 
 use crate::deck::{self, Deck, DeckAction, ElementData, SlideData};
-use crate::model::{Background, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
+use crate::model::{
+    Background, DeckLook, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign,
+};
 
 /// The deck's action: a field edit or a verb, stamped with when it was
 /// authored.
@@ -44,13 +46,11 @@ pub fn element_resource_id(slide: &str, element: &str) -> String {
     )
 }
 
-/// The paths of slide `slide`.
 #[must_use]
 pub fn slide_paths(slide: &str) -> <deck::Slide as ui::tilo_resource::Model>::Paths<Deck> {
     Deck::paths().slides.item(&Id::from(slide))
 }
 
-/// The paths of element `element` on slide `slide`.
 #[must_use]
 pub fn element_paths(
     slide: &str,
@@ -59,7 +59,6 @@ pub fn element_paths(
     slide_paths(slide).elements.item(&Id::from(element))
 }
 
-/// Set the deck's title.
 #[must_use]
 pub fn set_deck_title_action(title: impl Into<String>) -> Action {
     edit(Deck::paths().title.replace(title.into()))
@@ -71,13 +70,17 @@ pub fn set_deck_palette_action(palette: PaletteKind) -> Action {
     edit(Deck::paths().palette.set(palette))
 }
 
-/// Set slide `slide`'s layout.
+/// Set whether the deck looks light or dark.
+#[must_use]
+pub fn set_deck_look_action(look: DeckLook) -> Action {
+    edit(Deck::paths().look.set(look))
+}
+
 #[must_use]
 pub fn set_slide_layout_action(slide: &str, layout: Layout) -> Action {
     edit(slide_paths(slide).layout.set(layout))
 }
 
-/// Set slide `slide`'s background.
 #[must_use]
 pub fn set_slide_background_action(slide: &str, background: Background) -> Action {
     edit(slide_paths(slide).background.set(background))
@@ -92,7 +95,6 @@ pub fn move_slide_action(slide: &str, position: usize) -> Action {
     }))
 }
 
-/// Insert slide `slide`, whole, at `at`.
 #[must_use]
 pub fn insert_slide_action(at: usize, slide: &Slide) -> Action {
     stamped(DeckAction::InsertSlide(deck::deck::InsertSlide {
@@ -101,7 +103,6 @@ pub fn insert_slide_action(at: usize, slide: &Slide) -> Action {
     }))
 }
 
-/// Delete slide `slide`.
 #[must_use]
 pub fn delete_slide_action(slide: &str) -> Action {
     stamped(DeckAction::DeleteSlide(deck::deck::DeleteSlide {
@@ -109,12 +110,12 @@ pub fn delete_slide_action(slide: &str) -> Action {
     }))
 }
 
-/// Replace the whole deck with `deck`.
 #[must_use]
 pub fn replace_deck_action(deck: &crate::model::Deck) -> Action {
     stamped(DeckAction::ReplaceDeck(deck::deck::ReplaceDeck {
         title: deck.title.clone(),
         palette: deck.palette,
+        look: Some(deck.look),
         slides: deck.slides.iter().map(SlideData::of).collect(),
     }))
 }
@@ -128,7 +129,16 @@ pub fn add_element_action(slide: &str, element: &Element) -> Action {
     }))
 }
 
-/// Delete element `element` of slide `slide`.
+/// Place `element` (as the clipboard carries it) on slide `slide`: the pasted
+/// element, under the id it carries.
+#[must_use]
+pub fn paste_element_action(slide: &str, element: &ElementData) -> Action {
+    stamped(DeckAction::InsertElement(deck::deck::InsertElement {
+        slide: Id::from(slide),
+        element: element.clone(),
+    }))
+}
+
 #[must_use]
 pub fn delete_element_action(slide: &str, element: &str) -> Action {
     stamped(DeckAction::DeleteElement(deck::deck::DeleteElement {
@@ -218,6 +228,18 @@ pub fn restyle_action(slide: &str, element: &Element, style: &Style) -> Action {
     })
 }
 
+/// Make every paragraph of text box `element` of slide `slide` a bulleted
+/// list (`Some(false)`), a numbered one (`Some(true)`), or paragraphs again
+/// (`None`). `None` when the box holds no paragraph the document names.
+#[must_use]
+pub fn list_action(slide: &str, element: &Element, list: Option<bool>) -> Option<Action> {
+    element_paths(slide, &element.id)
+        .body
+        .perform(&deck::list_all(&element.rich_blocks(), list))
+        .ok()
+        .map(edit)
+}
+
 /// One rich-text op on the words of text box `element` of slide `slide`.
 ///
 /// # Panics
@@ -243,20 +265,20 @@ pub fn edit_text_action(
 /// The template for a freshly-created slide, shared by the toolbar's "New slide"
 /// button and the palette's "Add slide" so both insert the identical
 /// structure. Fresh ids are minted on each call (a new slide is genuinely new).
+///
+/// Its text boxes are empty: the editor prompts for a title and text, typing
+/// replaces the prompt rather than appending to stock words, and a
+/// presentation shows nothing until they are written.
 pub fn new_slide_template() -> Slide {
     let mut s = Slide::new(Layout::TitleContent);
-    s.add(Element::text("New slide", 96.0, 90.0, 1088.0, 76.0, 54.0).with(|e| e.bold = true));
+    s.add(Element::text("", 96.0, 90.0, 1088.0, 76.0, 54.0).with(|e| e.bold = true));
     s.add(
         Element::shape(ElementKind::Rect, 96.0, 188.0, 150.0, 8.0).with(|e| {
             e.fill = "accent".into();
             e.radius = 4.0;
         }),
     );
-    s.add(
-        Element::text("Add your content…", 96.0, 230.0, 900.0, 300.0, 32.0).with(|e| {
-            e.fill = "text-dim".into();
-        }),
-    );
+    s.add(Element::text("", 96.0, 230.0, 900.0, 300.0, 32.0));
     s
 }
 
@@ -272,14 +294,10 @@ pub fn authored_slide(title: Option<&str>, body: Option<&str>, layout: Option<La
         .elements
         .iter_mut()
         .filter(|element| element.kind == ElementKind::Text);
-    for (index, (element, text)) in texts.zip([title, body]).enumerate() {
+    for (element, text) in texts.zip([title, body]) {
         let Some(text) = text else { continue };
         element.text = text.to_owned();
         element.blocks.clear();
-        if index == 1 && layout != Some(Layout::Title) {
-            // The template's body is a dimmed placeholder; real content is not.
-            element.fill = "text".into();
-        }
     }
     slide
 }

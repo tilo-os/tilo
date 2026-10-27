@@ -56,7 +56,6 @@ async fn certified_jobs_lifecycle_uses_exact_certificate_owner_and_live_session(
             assert!(foreign.status(id).is_none());
             assert!(!foreign.can_cancel(id));
             assert!(foreign.cancel(id).is_err());
-            // Another execution of the exact device can inspect and cancel its job.
             let resumed = rig
                 .state
                 .certified_action_lifecycle(&caller.clone().in_new_execution(), &evidence)

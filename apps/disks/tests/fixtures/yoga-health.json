@@ -1,0 +1,19 @@
+{
+  "nvme0n1": {
+    "supported": true,
+    "updated": 1792637448,
+    "failing": false,
+    "warnings": [],
+    "temperature_c": 43,
+    "power_on_hours": 2294,
+    "power_cycles": 376,
+    "percent_used": 5,
+    "available_spare": 100,
+    "spare_threshold": 10,
+    "bytes_written": 44492143104000,
+    "bytes_read": 42203914752000,
+    "media_errors": 0,
+    "unsafe_shutdowns": 50,
+    "self_test": "success"
+  }
+}

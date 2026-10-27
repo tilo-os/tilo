@@ -3,12 +3,13 @@
 //! response buffers. Legacy RPC bodies are a compatibility input, not a second
 //! provider implementation.
 use super::*;
+use agent_provider_config::OpenAiApi;
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use rig_core::completion::{CompletionRequest, CompletionResponse};
 use rig_core::error::ProviderError;
 use rig_core::http_client::{self as http, HttpClientExt, LazyBody, MultipartForm};
-use rig_core::providers::{anthropic, openai};
+use rig_core::providers::{anthropic, chatgpt, openai};
 use rig_core::streaming::{Item, PartKind, StreamEvent};
 
 #[cfg(test)]
@@ -20,6 +21,9 @@ mod provider_conformance_tests;
 #[cfg(test)]
 #[path = "rig_stream_tests.rs"]
 pub(super) mod stream_tests;
+#[cfg(test)]
+#[path = "subscription_rig_tests.rs"]
+mod subscription_tests;
 #[cfg(test)]
 #[path = "rig_tests.rs"]
 mod tests;
@@ -118,6 +122,8 @@ struct GatewayHttp {
     profile: ProviderProfile,
     model: String,
     streaming: bool,
+    /// The `OpenAI` API the turn goes through; `None` for Anthropic.
+    api: Option<OpenAiApi>,
     target: crate::openai::Target,
     retry_refusals: bool,
     stream_end: StreamEnd,
@@ -148,8 +154,14 @@ impl GatewayHttp {
             .map_err(|_| {
                 http::Error::instance(std::io::Error::other("invalid request encoding"))
             })?;
-        let body = outbound_body(&self.profile, &self.model, body, self.streaming)
-            .map_err(|_| http::Error::instance(std::io::Error::other("invalid request body")))?;
+        let body = outbound_body(
+            &self.profile,
+            &self.model,
+            body,
+            self.streaming,
+            self.api == Some(OpenAiApi::Responses),
+        )
+        .map_err(|_| http::Error::instance(std::io::Error::other("invalid request body")))?;
         let body = self.target.shape(body);
         if !self.retry_refusals {
             return self
@@ -180,23 +192,14 @@ impl GatewayHttp {
             .timeout(budget)
             .headers(headers.clone())
             .json(body);
-        let response = outgoing.send().await.map_err(|error| ProviderFailure {
-            model_error: crate::openai::Failure::transport(error.is_timeout(), error.is_connect())
-                .model_error(),
-            why: if error.is_timeout() {
-                "provider request timed out"
-            } else {
-                "provider transport failed"
-            }
-            .into(),
-            again: if error.is_timeout() || error.is_connect() {
-                Again::Soon(None)
-            } else {
-                Again::Never
-            },
-            outcome_unknown: !error.is_builder() && !error.is_connect(),
-            unprocessed: error.is_connect(),
-            status: None,
+        let response = outgoing.send().await.map_err(|error| {
+            // Content-free: what failed, never the URL or the error's text.
+            eprintln!(
+                "tilo-model-gateway: provider transport failed model={} cause={}",
+                log_token(&self.model),
+                send_cause(&error)
+            );
+            send_failure(&error)
         })?;
         let status = response.status();
         *self
@@ -210,6 +213,14 @@ impl GatewayHttp {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
             let detail = error_body(response).await;
+            // The provider's own words may quote the key: only its error's
+            // identifiers are logged, and only when they look like one.
+            eprintln!(
+                "tilo-model-gateway: provider refused model={} status={}{}",
+                log_token(&self.model),
+                status.as_u16(),
+                crate::openai::error_fields(&detail)
+            );
             let classified = crate::openai::Failure::from_http(
                 status.as_u16(),
                 &String::from_utf8_lossy(&detail),
@@ -249,6 +260,83 @@ impl GatewayHttp {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(failure);
         http::Error::instance(std::io::Error::other("provider transport failed"))
+    }
+}
+
+/// What a request that got no response means. A connection that could
+/// not be made (no address, refused, its TLS handshake failed) and a
+/// request the client handed back unwritten ([`never_sent`]) provably
+/// reached no provider: those are asked again. A connection lost after
+/// the request was written may have been taken, so its outcome is unknown.
+pub(super) fn send_failure(error: &reqwest::Error) -> ProviderFailure {
+    let unsent = error.is_connect() || never_sent(error);
+    ProviderFailure {
+        model_error: crate::openai::Failure::transport(error.is_timeout(), unsent).model_error(),
+        why: if error.is_timeout() {
+            "provider request timed out"
+        } else {
+            "provider transport failed"
+        }
+        .into(),
+        again: if error.is_timeout() || unsent {
+            Again::Soon(None)
+        } else {
+            Again::Never
+        },
+        outcome_unknown: !error.is_builder() && !unsent,
+        unprocessed: unsent,
+        status: None,
+    }
+}
+
+/// Whether the HTTP client gave the request back before writing any of it:
+/// hyper cancels a request whose connection closed before it was sent. It
+/// sends one again by itself only on a reused connection, so on a new one
+/// the cancellation reaches here.
+fn never_sent(error: &reqwest::Error) -> bool {
+    hyper_cause(error).is_some_and(hyper::Error::is_canceled)
+}
+
+/// The hyper error under a reqwest one, if any.
+fn hyper_cause(error: &reqwest::Error) -> Option<&hyper::Error> {
+    let mut cause = std::error::Error::source(error);
+    while let Some(error) = cause {
+        if let Some(hyper) = error.downcast_ref::<hyper::Error>() {
+            return Some(hyper);
+        }
+        cause = error.source();
+    }
+    None
+}
+
+/// A word for why a request got no response, for the log: whether its
+/// connection failed, or was lost before or after the request went out.
+fn send_cause(error: &reqwest::Error) -> &'static str {
+    let reset = || {
+        let mut cause = std::error::Error::source(error);
+        while let Some(error) = cause {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionReset)
+            {
+                return true;
+            }
+            cause = error.source();
+        }
+        false
+    };
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if never_sent(error) {
+        "not_sent"
+    } else if hyper_cause(error).is_some_and(hyper::Error::is_incomplete_message) {
+        "closed_before_response"
+    } else if reset() {
+        "reset"
+    } else {
+        "other"
     }
 }
 
@@ -447,6 +535,7 @@ pub(super) async fn legacy(
         profile: profile.clone(),
         model: model.clone(),
         streaming: streaming.is_some(),
+        api: provider_transform::speaks_responses(profile).then_some(OpenAiApi::Responses),
         target: crate::openai::Target::Standard,
         retry_refusals,
         stream_end: Arc::default(),
@@ -463,6 +552,7 @@ pub(super) async fn legacy(
         .await
         .map(|mut response| {
             if profile.protocol == ProviderProtocol::OpenAiCompatible
+                && !provider_transform::speaks_responses(profile)
                 && let Some(object) = response.raw.as_object_mut()
             {
                 object.insert("object".into(), "chat.completion".into());
@@ -473,6 +563,173 @@ pub(super) async fn legacy(
                 .take()
                 .unwrap_or_else(|| response.raw.to_string())
         })
+}
+
+/// Neutral history keeps the opaque extension, not Rig's provider origin.
+/// Bind only these native call items to the selected Chat codec, which
+/// rebuilds ids, names and arguments while replaying the extra fields.
+fn bind_native_calls_to_chat(request: &mut CompletionRequest, model: &str) {
+    for turn in &mut request.chat_history {
+        if let message::Message::Assistant(turn) = turn
+            && turn.content.iter().any(|block| {
+                matches!(block, message::AssistantContent::ToolCall(_))
+                    && block
+                        .native_item()
+                        .and_then(|item| item.get("extra_content"))
+                        .is_some()
+            })
+        {
+            turn.origin = Some(message::Origin::new(
+                "openai.chat",
+                openai::PROVIDER_NAME,
+                model.to_owned(),
+            ));
+        }
+    }
+}
+
+/// Where `profile`'s neutral turns are sent.
+fn turn_url(profile: &ProviderProfile) -> String {
+    if provider_transform::openai_api(profile) == Some(OpenAiApi::Responses) {
+        provider_transform::responses_url(profile)
+    } else {
+        provider_url(profile)
+    }
+}
+
+/// The key under which a neutral block keeps its `OpenAI` Responses item id
+/// and, for reasoning, its ciphertext.
+const RESPONSES_EXTRA: &str = "openai_responses";
+/// The most ciphertext one replayed reasoning item may carry.
+const MAX_REASONING_CIPHERTEXT: usize = 1 << 20;
+
+/// `value` when it is a Responses item id with `prefix` (`rs_`, `fc_`).
+fn responses_id<'a>(value: Option<&'a serde_json::Value>, prefix: &str) -> Option<&'a str> {
+    value.and_then(serde_json::Value::as_str).filter(|id| {
+        id.len() <= 64
+            && id.starts_with(prefix)
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
+}
+
+/// `value` when it is reasoning ciphertext.
+fn ciphertext(value: Option<&serde_json::Value>) -> Option<&str> {
+    value.and_then(serde_json::Value::as_str).filter(|text| {
+        !text.is_empty()
+            && text.len() <= MAX_REASONING_CIPHERTEXT
+            && text.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+            })
+    })
+}
+
+/// The neutral history's Responses ids, kept as opaque extensions, rebound
+/// to the items the provider issued, so a stateless request (`store:
+/// false`) carries each turn's encrypted reasoning with the call or message
+/// it led to. Every item is rebuilt from checked fields: a caller's
+/// extension can name an id and a ciphertext, never another kind of item.
+fn bind_responses_turns(request: &mut CompletionRequest, model: &str) {
+    if let Some(params) = request
+        .additional_params
+        .get_or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    {
+        if let Some(effort) = params.remove("reasoning_effort") {
+            params.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+        }
+        params.insert("store".into(), false.into());
+    }
+    for turn in &mut request.chat_history {
+        let message::Message::Assistant(turn) = turn else {
+            continue;
+        };
+        let mut bound = false;
+        for block in &mut turn.content {
+            let extra = block
+                .native_item()
+                .and_then(|item| item.pointer(&format!("/extra_content/{RESPONSES_EXTRA}")))
+                .cloned();
+            let item = match block {
+                message::AssistantContent::ToolCall(call) => {
+                    call.native = None;
+                    let extra = extra.as_ref();
+                    responses_id(extra.and_then(|extra| extra.get("id")), "fc_").map(|id| {
+                        serde_json::json!({
+                            "type": "function_call",
+                            "id": id,
+                            "call_id": call.id.to_string(),
+                            "name": call.function.name.as_str(),
+                            "arguments": call.function.arguments_value().to_string(),
+                        })
+                    })
+                }
+                message::AssistantContent::Reasoning(reasoning) => {
+                    reasoning.native = None;
+                    let extra = extra.as_ref();
+                    responses_id(extra.and_then(|extra| extra.get("id")), "rs_")
+                        .zip(ciphertext(extra.and_then(|extra| extra.get("encrypted_content"))))
+                        .map(|(id, ciphertext)| {
+                            let summary: Vec<_> = (!reasoning.text.is_empty())
+                                .then(|| {
+                                    serde_json::json!({"type": "summary_text", "text": reasoning.text})
+                                })
+                                .into_iter()
+                                .collect();
+                            serde_json::json!({
+                                "type": "reasoning",
+                                "id": id,
+                                "summary": summary,
+                                "encrypted_content": ciphertext,
+                            })
+                        })
+                }
+                _ => None,
+            };
+            if let Some(item) = item {
+                *block = block.clone().with_native(item);
+                bound = true;
+            }
+        }
+        if bound {
+            turn.origin = Some(message::Origin::new(
+                "openai.responses",
+                openai::PROVIDER_NAME,
+                model.to_owned(),
+            ));
+        }
+    }
+}
+
+/// A Responses item's id and, for reasoning, ciphertext, as the neutral
+/// extension [`bind_responses_turns`] reads back.
+fn responses_extra(block: &message::AssistantContent) -> Option<serde_json::Value> {
+    let item = block.native_item()?;
+    let extra = match block {
+        message::AssistantContent::ToolCall(_) => {
+            serde_json::json!({"id": responses_id(item.get("id"), "fc_")?})
+        }
+        message::AssistantContent::Reasoning(_) => serde_json::json!({
+            "id": responses_id(item.get("id"), "rs_")?,
+            "encrypted_content": ciphertext(item.get("encrypted_content"))?,
+        }),
+        _ => return None,
+    };
+    Some(serde_json::json!({ RESPONSES_EXTRA: extra }))
+}
+
+/// `request`'s history bound to the wire `transport` speaks; whether that
+/// is `OpenAI`'s own Responses API, as a key (not a sign-in) reaches it.
+fn bind_history(transport: &GatewayHttp, request: &mut CompletionRequest) -> bool {
+    let api_responses = transport.api == Some(OpenAiApi::Responses)
+        && !provider_transform::speaks_responses(&transport.profile);
+    if api_responses {
+        bind_responses_turns(request, &transport.model);
+    } else if transport.profile.protocol == ProviderProtocol::OpenAiCompatible {
+        bind_native_calls_to_chat(request, &transport.model);
+    }
+    api_responses
 }
 
 async fn execute(
@@ -499,31 +756,37 @@ async fn execute(
         })
         .collect::<Result<_, ProviderFailure>>()?;
     let budget = transport.budget;
-    // Neutral history keeps the opaque extension, not Rig's provider origin.
-    // Bind only these native call items to the selected Chat codec, which
-    // rebuilds ids, names and arguments while replaying the extra fields.
-    if transport.profile.protocol == ProviderProtocol::OpenAiCompatible {
-        for turn in &mut request.chat_history {
-            if let message::Message::Assistant(turn) = turn
-                && turn.content.iter().any(|block| {
-                    matches!(block, message::AssistantContent::ToolCall(_))
-                        && block
-                            .native_item()
-                            .and_then(|item| item.get("extra_content"))
-                            .is_some()
-                })
-            {
-                turn.origin = Some(message::Origin::new(
-                    "openai.chat",
-                    openai::PROVIDER_NAME,
-                    transport.model.clone(),
-                ));
-            }
-        }
-    }
+    let api_responses = bind_history(&transport, &mut request);
     let result = async {
         let model = transport.model.clone();
         match transport.profile.protocol {
+            // A ChatGPT sign-in reaches the subscription backend, which
+            // speaks Responses only, always streamed and never stored.
+            ProviderProtocol::OpenAiCompatible
+                if provider_transform::speaks_responses(&transport.profile) =>
+            {
+                let provider =
+                    openai::OpenAIConfig::with_key(&chatgpt::DIALECT, secret.unwrap_or_default());
+                run(
+                    provider.connect(transport.clone()).responses(model),
+                    request,
+                    streaming,
+                    transport.body.is_none(),
+                    &transport.stream_end,
+                )
+                .await
+            }
+            ProviderProtocol::OpenAiCompatible if api_responses => {
+                let provider = openai::OpenAIConfig::new(secret.unwrap_or_default());
+                run(
+                    provider.connect(transport.clone()).responses(model),
+                    request,
+                    streaming,
+                    transport.body.is_none(),
+                    &transport.stream_end,
+                )
+                .await
+            }
             ProviderProtocol::OpenAiCompatible => {
                 let provider = openai::OpenAIConfig::new(secret.unwrap_or_default());
                 run(
@@ -648,10 +911,11 @@ pub(super) async fn host_complete(
     execute(
         GatewayHttp {
             client: client.clone(),
-            endpoint: provider_url(profile),
+            endpoint: turn_url(profile),
             profile: profile.clone(),
             model: model.into(),
             streaming: false,
+            api: provider_transform::openai_api(profile),
             target,
             retry_refusals: false,
             stream_end: Arc::default(),
@@ -670,17 +934,37 @@ pub(super) async fn host_complete(
     .await
 }
 
+/// A neutral reasoning block, its opaque provider state kept as an
+/// extension for the wire that issued it to bind.
+fn reasoning_block(
+    text: String,
+    extra: Option<serde_json::Value>,
+) -> Result<message::AssistantContent, ModelError> {
+    let block = message::AssistantContent::Reasoning(message::Reasoning::new(text));
+    match extra {
+        None => Ok(block),
+        Some(extra) if extra.is_object() => {
+            Ok(block.with_native(serde_json::json!({"extra_content": extra})))
+        }
+        Some(_) => Err(ModelError::new(neutral::ErrorKind::InvalidRequest)),
+    }
+}
+
+const fn tool_choice(choice: neutral::ToolChoice) -> message::ToolChoice {
+    match choice {
+        neutral::ToolChoice::Auto => message::ToolChoice::Auto,
+        neutral::ToolChoice::Required => message::ToolChoice::Required,
+        neutral::ToolChoice::None => message::ToolChoice::None,
+    }
+}
+
 pub(super) fn neutral_request(
     request: neutral::ModelRequest,
 ) -> Result<CompletionRequest, ModelError> {
     let mut result = CompletionRequest::new("gateway request");
     result.chat_history.clear();
     result.max_tokens = Some(u64::from(request.max_output_tokens));
-    result.tool_choice = Some(match request.tool_choice {
-        neutral::ToolChoice::Auto => message::ToolChoice::Auto,
-        neutral::ToolChoice::Required => message::ToolChoice::Required,
-        neutral::ToolChoice::None => message::ToolChoice::None,
-    });
+    result.tool_choice = Some(tool_choice(request.tool_choice));
     let name = |name: String| {
         message::ToolName::new(name)
             .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidRequest))
@@ -718,11 +1002,13 @@ pub(super) fn neutral_request(
                         ..Default::default()
                     }));
                 }
-                (neutral::Role::Assistant, neutral::Content::Reasoning { text }) => {
-                    assistant.push(message::AssistantContent::Reasoning(
-                        message::Reasoning::new(text),
-                    ));
-                }
+                (
+                    neutral::Role::Assistant,
+                    neutral::Content::Reasoning {
+                        text,
+                        extra_content,
+                    },
+                ) => assistant.push(reasoning_block(text, extra_content)?),
                 (neutral::Role::Assistant, neutral::Content::ToolCall(call)) => {
                     call.validate()
                         .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidRequest))?;
@@ -775,10 +1061,22 @@ pub(super) fn neutral_request(
 }
 
 fn refused(response: &CompletionResponse) -> bool {
+    let part_refuses = |part: &serde_json::Value| {
+        part.get("type").and_then(serde_json::Value::as_str) == Some("refusal")
+    };
     response
         .raw
-        .pointer("/choices/0/message/refusal")
-        .is_some_and(|value| !value.is_null())
+        .get("output")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("content").and_then(serde_json::Value::as_array))
+        .flatten()
+        .any(part_refuses)
+        || response
+            .raw
+            .pointer("/choices/0/message/refusal")
+            .is_some_and(|value| !value.is_null())
         || response
             .raw
             .pointer("/choices/0/message/content")
@@ -811,8 +1109,10 @@ pub(super) fn neutral_response(
     if response.error.is_some() || response.aborted.is_some() {
         return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
     }
+    let responses = response.origin.api.as_str() == "openai.responses";
     let mut content = Vec::new();
     for block in response.choice {
+        let extra = responses.then(|| responses_extra(&block)).flatten();
         match block {
             message::AssistantContent::Text(text) => {
                 content.push(neutral::Content::Text { text: text.text });
@@ -829,14 +1129,16 @@ pub(super) fn neutral_response(
                         .as_ref()
                         .and_then(|native| native.item.get("extra_content"))
                         .filter(|extra| extra.is_object())
-                        .cloned(),
+                        .cloned()
+                        .or(extra),
                     input: serde_json::Value::Object(call.function.arguments),
                 }));
             }
             message::AssistantContent::Reasoning(reasoning) => {
-                if !reasoning.text.is_empty() {
+                if !reasoning.text.is_empty() || extra.is_some() {
                     content.push(neutral::Content::Reasoning {
                         text: reasoning.text,
+                        extra_content: extra,
                     });
                 }
             }
@@ -845,7 +1147,10 @@ pub(super) fn neutral_response(
             }
         }
     }
-    if content.is_empty() && stop_reason == neutral::StopReason::EndTurn {
+    let said_nothing = content
+        .iter()
+        .all(|block| matches!(block, neutral::Content::Reasoning { text, .. } if text.is_empty()));
+    if said_nothing && stop_reason == neutral::StopReason::EndTurn {
         return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
     }
     let response = neutral::ModelResponse {
@@ -858,6 +1163,12 @@ pub(super) fn neutral_response(
             input_tokens: response.usage.input_tokens.unwrap_or_default(),
             output_tokens: response.usage.output_tokens.unwrap_or_default(),
             total_tokens: response.usage.total_tokens.unwrap_or_default(),
+            cached_input_tokens: response.usage.cached_input_tokens.unwrap_or_default(),
+            cache_write_tokens: response
+                .usage
+                .cache_creation_input_tokens
+                .unwrap_or_default(),
+            reasoning_tokens: response.usage.reasoning_tokens.unwrap_or_default(),
         },
     };
     // Refusal and truncation remain explicit, non-dispatchable responses.
@@ -889,10 +1200,11 @@ pub(super) async fn complete(
         .map_err(|_| ModelError::new(neutral::ErrorKind::TimedOut))?;
     let transport = GatewayHttp {
         client: client.clone(),
-        endpoint: provider_url(&profile),
+        endpoint: turn_url(&profile),
         profile: profile.clone(),
         model: call.model_id.into(),
         streaming: call.stream,
+        api: provider_transform::openai_api(&profile),
         target: crate::openai::Target::Standard,
         authenticated: secret.is_some(),
         budget,

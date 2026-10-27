@@ -87,7 +87,7 @@ fn picture_note(images: u32) -> (TestApp<NotesShell>, PageId) {
     );
     for source in &sources {
         let drawn = crate::framework_support::surface(&mut app, |notes| {
-            notes.image_decoded_for_test(source)
+            notes.image_decoded_for_test(source, tilo_test_env::hang_bound())
         });
         assert!(drawn, "{source} never decoded");
     }

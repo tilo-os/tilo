@@ -145,3 +145,47 @@ fn directory_resolution_without_a_revision_reads_the_directory_as_it_is_now() {
         "the resolution names the revision it read, which the broker binds the admission to"
     );
 }
+
+/// A snapshot asks every resource's publisher what discloses it in one walk
+/// of the widget tree, and hears what asking resource by resource hears:
+/// the strict component's probe by its follow-up, the other by its view.
+#[test]
+fn directory_snapshot_finds_every_disclosure_in_one_walk() {
+    let mut fixture = ActionFixture::broker();
+    let resources = fixture.app.publication_resources();
+    let batched = fixture.app.directory_explicit_visibilities(&resources);
+    let mut each = std::collections::HashMap::new();
+    let mut pending: Vec<&tilo_actions::Resource> = resources.iter().collect();
+    while let Some(resource) = pending.pop() {
+        if let Some(address) = fixture.app.directory_explicit_visibility(resource) {
+            each.insert(resource.id.as_str().to_owned(), address);
+        }
+        pending.extend(resource.children.iter());
+    }
+    assert!(!each.is_empty(), "the fixture discloses a probe explicitly");
+    assert_eq!(batched, each);
+    capture_bound_directory(&mut fixture);
+    let alias = fixture
+        .app
+        .actions
+        .bound_publication
+        .alias(&fixture.bindings[1], "bound:probe")
+        .unwrap();
+    let snapshot = fixture
+        .app
+        .actions
+        .action_directory_snapshot
+        .clone()
+        .unwrap();
+    let row = snapshot
+        .roots
+        .iter()
+        .find(|row| row.resource == alias && row.action.is_none())
+        .unwrap();
+    assert_eq!(
+        row.visibility
+            .as_ref()
+            .map(|visibility| visibility.action.as_str()),
+        Some("follow-up")
+    );
+}

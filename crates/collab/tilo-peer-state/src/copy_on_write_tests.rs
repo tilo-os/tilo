@@ -60,6 +60,7 @@ pub(crate) fn incremental(
     doc.put(ROOT, "typed", "a").unwrap();
     doc.commit_edit("fixture", "typed");
     author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()
 }

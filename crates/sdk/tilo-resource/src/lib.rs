@@ -94,8 +94,9 @@
 //! permissions, history or undo. `APPLY` is for surfaces, agents and
 //! scripts, never a palette row; each value's own
 //! [`risk`](tilo_actions::Action::risk) decides whether it needs
-//! confirmation, so a destructive typed edit is confirmed exactly as a
-//! declared destructive action is.
+//! confirmation, so a destructive typed edit is treated exactly as a
+//! declared destructive action is: what Undo takes back runs at once and
+//! offers Undo, and only what it cannot is confirmed.
 
 // The derives name this crate by its path, here as in an app.
 extern crate self as tilo_resource;
@@ -111,6 +112,8 @@ pub mod content;
 mod cow;
 #[cfg(feature = "chrono")]
 mod dates;
+mod search_preview;
+pub use search_preview::SearchPreview;
 pub mod delta;
 pub mod derived;
 mod describe;
@@ -129,6 +132,7 @@ pub mod model;
 pub mod order;
 pub mod ordered;
 pub mod path;
+pub mod reactions;
 pub mod reader;
 pub mod replica;
 pub mod resource;
@@ -140,6 +144,8 @@ pub mod storage;
 pub mod surface;
 pub mod table;
 pub mod text;
+pub mod unreadable;
+mod upsert;
 mod value;
 pub mod vocabulary;
 
@@ -168,23 +174,30 @@ pub use model::{
     load_slot, read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use ordered::{Arranged, Ordered};
-pub use path::{Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
+pub use path::{At, Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
+pub use reactions::{
+    Reaction, ReactionGroup, Reactions, Reactor, custom_emoji_name, reaction_emoji,
+    valid_custom_emoji_name,
+};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, NoAction, Place, Resource,
-    ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText,
-    SearchWeight, SharedRecord, bind_declaration, build_action, child_by_id, declaration_spec,
-    default_search, encode, need_of, origin_now_ms, publish, publish_head, reset_type_schemas,
-    scope_contains, spec_kind, with_origin_clock,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NoAction,
+    Place, Resource, ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape,
+    SearchText, SearchWeight, SharedRecord, bind_declaration, build_action, child_by_id,
+    declaration_spec, default_search, encode, head_inputs, need_of, origin_now_ms, publish,
+    publish_head, publish_head_of, reset_type_schemas, scope_contains, spec_kind,
+    with_origin_clock,
 };
 pub use schema::JsonSchema;
-pub use shape::{FieldShape, Shape, StoredText, absent_scalar, stored_text};
+pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
+pub use tilo_action_policy::edits::Weaker;
 pub use tilo_actions::Availability;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
+pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
 /// Items the generated code refers to. Not part of the public API.
@@ -194,8 +207,9 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, ChangeKind, OperationKind,
-        PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec, RiskLevel,
+        ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
+        HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec,
+        RiskLevel,
     };
 
     pub use crate::apply_cache::forget_all;
@@ -300,8 +314,14 @@ pub mod __private {
         pub label: &'static str,
         pub description: &'static str,
         pub kind: ActionKind,
+        /// Whether one invocation's kind is decided by its arguments
+        /// (`#[action(local = path)]`); `kind` is then the least it is.
+        pub by_arguments: bool,
         pub field: Option<&'static str>,
         pub destructive: bool,
+        /// It also loses what Undo cannot bring back
+        /// (`#[action(irreversible)]`).
+        pub irreversible: bool,
         /// A change about the record rather than to it
         /// (`#[action(housekeeping)]`).
         pub housekeeping: bool,
@@ -310,6 +330,8 @@ pub mod __private {
         pub incoming_message: bool,
         /// How its change is undone.
         pub undo: VerbUndo,
+        /// Who listings offer it to (`#[action(audience = "agents")]`).
+        pub audience: tilo_actions::Audience,
         pub collects: Option<&'static str>,
         /// The parameter the content it collects arrives as.
         pub content: Option<&'static str>,
@@ -440,6 +462,7 @@ pub mod __private {
             build,
         );
         decl.kind = verb.kind;
+        decl.by_arguments = verb.by_arguments;
         decl.writes = crate::footprint::declared(verb.shape, verb.item_field, verb.writes);
         // What the description says beyond its first line, the label.
         let description = verb
@@ -453,12 +476,18 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
+        if verb.irreversible {
+            decl.tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
+        }
         if verb.housekeeping {
             decl.tags.push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
         }
         if verb.incoming_message {
             decl.tags
                 .push(tilo_actions::INCOMING_MESSAGE_TAG.to_owned());
+        }
+        if let Some(tag) = verb.audience.tag() {
+            decl.tags.push(tag.to_owned());
         }
         if verb.undo == VerbUndo::Compensation {
             decl.tags
@@ -825,6 +854,21 @@ pub mod __private {
         }
     }
 
+    /// The byte argument `name` taken from `args`, decoded by `decode`
+    /// ([`crate::content::bytes`]): inline, or by a content reference.
+    ///
+    /// # Errors
+    /// Why the argument is missing or not bytes.
+    pub fn bytes_arg<T>(
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        name: &'static str,
+        decode: fn(serde_json::Value) -> Result<T, serde_json::Error>,
+    ) -> Result<T, serde_json::Error> {
+        use serde::de::Error as _;
+        args.remove(name)
+            .map_or_else(|| Err(serde_json::Error::missing_field(name)), decode)
+    }
+
     /// The action name and arguments of an action's JSON form
     /// (`{"action": .., "args": ..}`, the arguments `null` when absent).
     ///
@@ -896,5 +940,4 @@ pub mod __private {
     }
 }
 
-/// Bounded observations of named scopes on this thread.
 pub mod profiling;

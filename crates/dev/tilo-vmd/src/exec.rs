@@ -270,7 +270,6 @@ mod tests {
             "XDG_RUNTIME_DIR".to_owned(),
             runtime.path().display().to_string(),
         );
-        // Phase `the_published_name_fills_the_gap`.
         {
             let mut env = vec![runtime_env.clone()];
             add_published_wayland_display(&mut env);
@@ -282,14 +281,12 @@ mod tests {
                 ]
             );
         }
-        // Phase `a_display_already_in_the_environment_is_kept`.
         {
             let own = ("WAYLAND_DISPLAY".to_owned(), "wayland-7".to_owned());
             let mut env = vec![runtime_env.clone(), own.clone()];
             add_published_wayland_display(&mut env);
             assert_eq!(env, [runtime_env, own]);
         }
-        // Phase `nothing_published_adds_nothing`.
         {
             let empty = tempfile::tempdir().unwrap();
             let bare = (
@@ -304,7 +301,6 @@ mod tests {
 
     #[test]
     fn exec_runs_in_the_session_as_the_slot_user_bounded_and_streamed() {
-        // Phase `the_command_joins_the_session_namespace_as_the_slot_user`.
         {
             let env = session_env(
                 b"HOME=/home/tds-a\0XDG_RUNTIME_DIR=/run/user/1001\0SECRET=x\0\
@@ -358,9 +354,7 @@ mod tests {
                 .collect::<Vec<_>>()
             );
         }
-        // Phase `env_runs_the_command_with_the_session_environment`.
         env_runs_the_command_with_the_session_environment();
-        // Phase `output_streams_and_the_exit_status_passes_through`.
         {
             let (out, err) = (Sink::default(), Sink::default());
             let ended = run_bounded(
@@ -376,7 +370,6 @@ mod tests {
             assert_eq!(out.0.lock().unwrap().as_slice(), b"out\n");
             assert_eq!(err.0.lock().unwrap().as_slice(), b"err\n");
         }
-        // Phase `runs_are_bounded_in_time_and_output`.
         {
             let out = Sink::default();
             let ended = run_bounded(
@@ -391,18 +384,22 @@ mod tests {
             assert_eq!(ended.code(), 125);
             assert_eq!(out.0.lock().unwrap().len(), 1000);
 
-            let started = Instant::now();
-            let ended = run_bounded(
-                sh("exec sleep 30"),
-                Duration::from_millis(300),
-                1000,
-                Sink::default(),
-                Sink::default(),
-            )
-            .unwrap();
+            // A child that never ends on its own: the run ends only by
+            // killing it once its time is up.
+            let (done, ended) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let ended = run_bounded(
+                    sh("exec sleep infinity"),
+                    Duration::from_millis(300),
+                    1000,
+                    Sink::default(),
+                    Sink::default(),
+                );
+                let _ = done.send(ended);
+            });
+            let ended = tilo_test_env::recv("the timed-out run to end", &ended).unwrap();
             assert_eq!(ended, Ended::TimedOut);
             assert_eq!(ended.code(), 124);
-            assert!(started.elapsed() < Duration::from_secs(10));
         }
     }
 }

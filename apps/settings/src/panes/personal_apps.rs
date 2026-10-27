@@ -23,6 +23,15 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{note, rows, section, setting_row, setting_row_described, untitled};
 
+crate::effects::effect_family!(DefaultAppsEffect => answer);
+
+crate::area::pane_area!(DefaultAppsArea);
+
+/// The window's [`DefaultAppsArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DefaultAppsArea> {
+    app.areas().find()
+}
+
 /// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
 /// The most apps one kind lists.
@@ -101,7 +110,7 @@ pub(crate) fn answer(
     };
     let resource =
         parse_kind(&kind).ok_or_else(|| format!("`{kind}` is not a kind of file or link"))?;
-    let area = app.default_apps();
+    let area = crate::panes::personal_apps::area(app).ok_or_else(crate::area::missing)?;
     let resolver = DefaultAppResolver::new(area.candidates());
     PersonalDefaults::default()
         .set(resource, package.clone(), &resolver)
@@ -191,7 +200,7 @@ impl DefaultAppsArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.candidates.get().is_some()
     }
@@ -435,9 +444,12 @@ impl PersonalAppsPane {
 /// trip to the shell, so it runs off the UI thread.
 fn open_workspace_defaults() -> Result<(), String> {
     crate::device_read::off_ui_thread();
-    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-        route: os_actions::WorkspaceSettingsRoute::AppsFiles,
-    })
+    os_actions::open_tool(
+        os_actions::ToolIntent::WorkspaceSettings {
+            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+        },
+        None,
+    )
 }
 
 /// Read real installed manifests. A type only appears if an installed GUI app
@@ -492,13 +504,16 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 
 impl Widget for PersonalAppsPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        // A relayout keeps the choosers; a changed choice rebuilds them, as
+        // each names the app it shows.
         if self.prefs.refresh() {
             self.show();
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
 
-    crate::panes::composed_pane!();
+    crate::panes::composed_pane!(kept);
 
     fn name(&self) -> &'static str {
         "PersonalAppsPane"

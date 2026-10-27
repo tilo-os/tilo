@@ -19,7 +19,8 @@ pub struct DesktopConfig {
 pub struct FlatpakShareConfig {
     /// Video bitrate cap in kbps.
     pub max_bitrate_kbps: u32,
-    /// Software encoders clamp this to 30 fps; hardware encoders do not.
+    /// The rate a changing window streams at where no display reports its
+    /// refresh; elsewhere it follows the display the window is on.
     pub target_fps: u32,
     pub encoder: EncoderChoice,
     /// HDR uses AV1 or HEVC Main10 when a hardware 10-bit encoder is
@@ -61,7 +62,7 @@ pub enum EncoderChoice {
 }
 
 /// Read `$XDG_CONFIG_HOME/tilo-desktop/desktop.toml`, else the image's
-/// [`SYSTEM_CONFIG`], else the defaults. A file that does not parse is
+/// `SYSTEM_CONFIG`, else the defaults. A file that does not parse is
 /// reported and skipped rather than quietly read as the defaults.
 pub fn load_config() -> DesktopConfig {
     let user = tilo_paths::config_dir().map(|dir| dir.join("tilo-desktop").join("desktop.toml"));

@@ -438,6 +438,16 @@ pub enum FilesEffect {
         #[param("The drive's id, as its row names it")]
         drive: String,
     },
+    /// Uninstall.
+    ///
+    /// Uninstalls an app listed in the Applications place, or, for a part of
+    /// the system, removes it from the person's apps. The shell asks the
+    /// person first, in its own sheet, and does nothing unless they agree.
+    #[effect(row)]
+    UninstallApp {
+        #[param("The app's row in the Applications place")]
+        app: String,
+    },
 }
 
 /// `effect` bound to its row, published as `id` labelled `label`: the ids

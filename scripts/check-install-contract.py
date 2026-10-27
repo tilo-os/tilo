@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 import tomllib
 
@@ -79,18 +78,17 @@ linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "li
 assert "smithay-clipboard" in linux_clipboard_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
-# Standalone host-session runs build the same immutable app store as releases.
-# Exercise the actual preflight shell before any checkout/download/build step:
-# an absent authority must fail immediately, without weakening staging checks.
-host_session_workflow = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_text()
-host_rpms = host_session_workflow.split("  rpms:\n", 1)[1].split("  host-session:\n", 1)[0]
-assert "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}" in host_rpms
-preflight, expensive_steps = host_rpms.split("      # A full clone", 1)
-assert "if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}" in preflight
-assert "Fetch the env-runtime environment image" in expensive_steps
-assert "dist/ci/run-package-job.sh" in expensive_steps
-owner_preflight = preflight.split("      - name: Validate the app-store registry owner\n", 1)[1]
-owner_check = textwrap.dedent(owner_preflight.split("        run: |\n", 1)[1])
+# The package lanes build the same immutable app store as releases. Exercise the lane's own
+# preflight before it fetches or compiles anything: an absent authority must fail at once,
+# without weakening the staging checks (dist/rpm/stage-app-store.sh).
+package_lane = (ROOT / "dist/ci/package-lane.sh").read_text()
+lane_preflight, lane_expensive = package_lane.split("\nrequire_registry_owner\n", 1)
+assert "bash dist/ci/fetch-package-env-runtime.sh" in lane_expensive
+assert "dist/ci/run-package-job.sh" in lane_expensive
+assert "fetch-package-env-runtime" not in lane_preflight
+assert "run-package-job" not in lane_preflight
+owner_check = "require_registry_owner() {" + lane_preflight.split("require_registry_owner() {", 1)[1]
+owner_check += "\nrequire_registry_owner\n"
 for owner, accepted in (
     (None, False),
     ("", False),
@@ -106,7 +104,19 @@ for owner, accepted in (
     if owner is not None:
         check_env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
     result = subprocess.run(["bash", "-c", owner_check], env=check_env, capture_output=True)
-    assert (result.returncode == 0) == accepted, "host-session registry-owner preflight"
+    assert (result.returncode == 0) == accepted, "package-lane registry-owner preflight"
+
+# Stable publishes the desktop payload only from RPMs that logged in on stock Fedora: the login
+# test takes the amd64 lane's packages, and the payload's publication needs it.
+desktop_checks = {
+    check["name"]: check
+    for matrix in tomllib.loads((ROOT / "tools/ci/products.toml").read_text())["matrix"]
+    if matrix["family"] == "desktop"
+    for check in matrix["check"]
+}
+assert desktop_checks["host-session-e2e"]["needs"] == ["desktop-package-amd64"]
+assert "stable" in desktop_checks["host-session-e2e"]["on"]
+assert "host-session-e2e" in desktop_checks["publish-desktop-payload"]["needs"]
 
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
@@ -137,7 +147,7 @@ assert "isolated broker" in packaging_docs
 assert "desktop-rpm-broker.md" in packaging_docs
 assert "TILO_RPM_SIGNING_FINGERPRINT" in session_workflow
 package_job = session_workflow.split("  package:\n", 1)[1].split("  sign-rpm:\n", 1)[0]
-signing_job = session_workflow.split("  sign-rpm:\n", 1)[1].split("  host-session-e2e:\n", 1)[0]
+signing_job = session_workflow.split("  sign-rpm:\n", 1)[1].split("  publish-os-payload:\n", 1)[0]
 assert "    needs: validate\n" in package_job
 assert "secrets.TILO_RPM_SIGNING" not in session_workflow
 assert "enable-openid-connect" not in package_job
@@ -148,8 +158,7 @@ assert "dist/rpm/sign-rpms.sh signed-fedora" in signing_job
 assert "vars.TILO_RPM_SIGNING_FINGERPRINT" in signing_job
 validation = session_workflow.split("  validate:\n", 1)[1].split("  package:\n", 1)[0]
 assert 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' in validation
-assert "needs: [validate, package, sign-rpm, host-session-e2e]" in session_workflow
-assert "'signed-fedora-44-amd64' || 'fedora-44-amd64'" in session_workflow
+assert "needs: [validate, package, sign-rpm]" in session_workflow
 rpm_job = (ROOT / "dist/ci/run-package-job.sh").read_text()
 assert "--env TILO_RPM_SIGNING" not in rpm_job
 assert "ACTIONS_ID_TOKEN_REQUEST_" in rpm_job

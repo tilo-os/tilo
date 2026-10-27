@@ -24,12 +24,10 @@ pub const GRAM_WIDTH: usize = 3;
 
 /// Marks the start of a field value.
 pub(crate) const VALUE_START: char = '\u{1}';
-/// Marks the start of a word.
 pub(crate) const WORD_START: char = '\u{2}';
 /// Marks the end of a field value. Values end with two, so every scalar of
 /// the value starts a full gram.
 pub(crate) const VALUE_END: char = '\u{3}';
-/// Marks the end of a word.
 pub(crate) const WORD_END: char = '\u{4}';
 
 fn is_marker(scalar: char) -> bool {
@@ -292,7 +290,6 @@ mod tests {
             ['e', WORD_END, ' ', WORD_START, 'd', 'u']
         );
         assert_eq!(marked("\u{2}x", false), [' ', WORD_START, 'x']);
-        // Letters and digits are separate words.
         assert_eq!(marked("v2", false), ['v', WORD_END, WORD_START, '2']);
     }
 

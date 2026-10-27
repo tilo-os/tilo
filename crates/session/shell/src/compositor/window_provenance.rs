@@ -16,7 +16,7 @@ fn current_peer(client: &ClientState, room: &str, package: &str) -> Option<(u32,
     }
     let pid = client.pid?;
     let start = client.pid_start_time?;
-    (crate::shell::launcher::proc_stat(pid)?.1 == start).then_some((pid, start))
+    (crate::shell::host_runtime::proc_stat(pid)?.1 == start).then_some((pid, start))
 }
 
 struct Window {
@@ -45,7 +45,7 @@ impl State {
                 else {
                     continue;
                 };
-                let Some(record) = tree.local_app_record(tab.id, workspace.room, app_id) else {
+                let Some(record) = tree.local_app_record(tab.id, workspace.room(), app_id) else {
                     continue;
                 };
                 if candidates.len() == MAX_WINDOWS {
@@ -53,7 +53,7 @@ impl State {
                     continue;
                 }
                 candidates.push(Window {
-                    room: workspace.room,
+                    room: workspace.room(),
                     tab: tab.id,
                     surface: *surface_id,
                     package: app_id.clone(),
@@ -68,7 +68,7 @@ impl State {
     fn window_is_current(&self, window: &Window) -> bool {
         let tree = self.workspace_tree.read();
         let current = tree.local_app_record(window.tab, window.room, &window.package) == Some(window.record)
-            && tree.workspaces.iter().filter(|workspace| workspace.room == window.room)
+            && tree.workspaces.iter().filter(|workspace| workspace.room() == window.room)
                 .flat_map(|workspace| &workspace.strips).flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs).any(|tab| tab.id == window.tab && matches!(&tab.tile, TileContent::Foreign {surface_id, ..} if *surface_id == window.surface));
         drop(tree);
@@ -150,7 +150,7 @@ mod tests {
         let room = "authenticated-room";
         let package = "so.tilo.calculator";
         let pid = std::process::id();
-        let (_, start) = crate::shell::launcher::proc_stat(pid).expect("actual kernel process");
+        let (_, start) = crate::shell::host_runtime::proc_stat(pid).expect("actual kernel process");
         let make = || ClientState {
             package_id: Some(package.into()),
             workspace_id: Some(room.into()),

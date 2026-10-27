@@ -126,7 +126,6 @@ mod tests {
 
     #[test]
     fn content_lanes_and_control_bars_reflow_and_collapse_safely() {
-        // Case `focused_lane_is_centered_wide_and_fluid_compact`.
         {
             let lane = FocusedContentLane::new();
             assert_eq!(
@@ -139,13 +138,11 @@ mod tests {
             );
         }
 
-        // Case `invalid_custom_metrics_collapse_safely`.
         {
             let lane = FocusedContentLane::new().max_width(-1.0).gutter(-1.0);
             assert_eq!(lane.layout(Rect::new(0.0, 0.0, 400.0, 600.0)).width(), 0.0);
         }
 
-        // Case `responsive_control_bar_reflows_and_uses_the_same_reserved_height`.
         {
             let policy = ResponsiveControlBar::new(880.0).wrapped_min_width(440.0);
             assert_eq!(policy.height(1000.0), CONTROL_BAR_SINGLE_ROW_HEIGHT);

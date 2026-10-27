@@ -168,7 +168,6 @@ mod tests {
 
     #[test]
     fn synthetic_keys_decode_strictly_and_emit_text_only_on_press() {
-        // Case `character_text_is_emitted_only_on_press`.
         {
             let key = Key::Character("é".into());
             for (state, expected_text) in [
@@ -191,7 +190,6 @@ mod tests {
             }
         }
 
-        // Case `named_keys_decode_strictly_and_map_to_keyboard_events`.
         {
             for (name, named) in [
                 ("enter", NamedKey::Enter),

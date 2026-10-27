@@ -103,10 +103,6 @@ impl<R: BufRead, W: Write> Session<R, W> {
 
     /// The broker entry point: check canonical account and current linking,
     /// then persist the exact operation before the first stream write.
-    ///
-    /// # Errors
-    /// Refuses stale/revoked/wrong authority without writing. Transport errors
-    /// retain the journal's uncertainty and at-most-one initial-write boundary.
     pub fn send_checked<J: SendJournal>(
         &mut self,
         context: &mut SendContext<'_, J>,
@@ -159,10 +155,6 @@ impl<R: BufRead, W: Write> Session<R, W> {
     }
 
     /// Send on exactly this account after the host's durable gate has opened.
-    ///
-    /// # Errors
-    /// Refuses wrong-account requests and unavailable journals before writing.
-    /// Any failure after reservation returns uncertainty and forbids retry.
     pub fn send<J: SendJournal>(
         &mut self,
         journal: &mut J,

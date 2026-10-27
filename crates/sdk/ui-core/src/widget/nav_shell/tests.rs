@@ -2,9 +2,15 @@ use super::*;
 use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::widget::Text;
+use std::cell::Cell;
 use std::rc::Rc as SharedRc;
 
+mod adaptive;
+mod band;
 mod capabilities;
+mod hosted;
+mod inspector_sheet;
+mod nothing_listed;
 
 /// A pane that fills what it is given and counts the input it receives.
 struct Probe {
@@ -157,10 +163,6 @@ fn document_shell() -> NavShell {
     notes_shell().content_kind(ContentKind::Document)
 }
 
-// USER REQUIREMENT (2026-10-18): "it darkens out the actual content on the
-// right and i cant have content+sidebar at the same time … on very small
-// screens the sidebar OR app content should obviously be displayed full
-// screen"
 /// At any width the shell picks the layout in which everything shown is
 /// usable: docked while the sidebar fits beside the content's real minimum,
 /// one column at a time below that, and a drawer only for a content-primary
@@ -234,8 +236,6 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
     assert!(m.sidebar_min + m.list_min <= 600.0);
 }
 
-// USER REQUIREMENT (2026-10-18): "the files app cant actually be resised to
-// just phone width"
 /// The narrowest window is the compact layout's: one column at a time at
 /// phone width, the content's minimum where that is wider.
 #[test]
@@ -262,7 +262,6 @@ fn the_minimum_window_width_is_the_compact_layouts() {
                 shell.minimum_width() <= 360.0 * f64::from(theme.text_growth()),
                 "phone width"
             );
-            // At that width the compact layout shows something whole.
             let width = shell.minimum_width().ceil();
             #[allow(
                 clippy::cast_possible_truncation,
@@ -315,8 +314,6 @@ fn layout_changes_have_hysteresis() {
     );
 }
 
-// USER REQUIREMENT (2026-10-18): "on very small screens the sidebar OR app
-// content should obviously be displayed full screen"
 /// A window opened narrow has no place to keep yet, so it opens on a list,
 /// whole screen: the content's own list where it has one, else the sidebar.
 /// Never the content, which nothing has chosen.
@@ -346,8 +343,6 @@ fn a_fresh_narrow_window_opens_on_its_list() {
     assert_eq!(g.sidebar_column.width(), 360.0, "the pages fill the screen");
 }
 
-// USER REQUIREMENT (2026-10-18): "on very small screens the sidebar OR app
-// content should obviously be displayed full screen"
 /// Narrowing a docked window keeps the person's place: they land on the
 /// page they were on, Back goes to the list, and widening docks again with
 /// the same page open.
@@ -391,11 +386,14 @@ fn the_open_page_is_kept_across_docked_push_and_docked() {
     assert_eq!(g.stack, Vec::<NavPane>::new());
 }
 
-/// A live resize across the docking threshold moves the columns from where
-/// they stood instead of jumping: narrowing, the page slides from beside the
-/// sidebar to fill the window; widening, the sidebar slides back in.
+/// A resize across the docking threshold lands in the layout its new rect
+/// asks for, on the frame that rect is laid out in: narrowing, the content
+/// fills the window; widening, the sidebar is docked beside it. Nothing is
+/// carried over from the layout the window had at its old size, so the frame
+/// a window narrowed to a phone's width draws is the frame a window opened at
+/// that width draws (`--responsive-matrix` compares the two).
 #[test]
-fn a_resize_across_the_threshold_moves_the_columns_from_where_they_stood() {
+fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0)
@@ -407,40 +405,32 @@ fn a_resize_across_the_threshold_moves_the_columns_from_where_they_stood() {
     let point = docked.content_column.center();
     h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
     h.dispatch_to_root(&crate::synthetic_input::mouse_press());
-    let docked_x = geometry(&h).content_column.x0;
-    assert!(docked_x > 0.0);
+    assert!(geometry(&h).content_column.x0 > 0.0);
 
     // Narrower than the sidebar beside the page's minimum.
     h.relayout_at((400, 700)).expect("narrow");
     let g = geometry(&h);
     assert_eq!(g.sidebar, SidebarPlacement::Screen);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    assert!(
-        g.content_column.x0 > docked_x / 2.0 && g.content_column.x0 <= docked_x + 0.5,
-        "the page sets out from where it stood beside the sidebar: {} vs {docked_x}",
-        g.content_column.x0
+    assert_eq!(
+        (g.content_column.x0, g.content_column.width()),
+        (0.0, 400.0),
+        "the page fills the window on the frame the window narrowed, not a slide later"
     );
-    assert!(h.root::<NavShell>().needs_animation_frame(), "and slides");
-    settle(&mut h, 400, 700);
-    assert_eq!(geometry(&h).content_column.x0, 0.0, "to fill the window");
+    assert_eq!(g.size_class, crate::tokens::Breakpoint::Compact);
 
-    // Wider again: the sidebar the person was not looking at slides in.
+    // Wider again: the sidebar is docked beside the content at once.
     h.relayout_at((1280, 700)).expect("wide");
     let g = geometry(&h);
     assert_eq!(g.sidebar, SidebarPlacement::Docked);
-    assert!(
-        g.sidebar_column.width() < docked.sidebar_column.width(),
-        "the sidebar slides in rather than appearing"
-    );
-    assert!(h.root::<NavShell>().needs_animation_frame());
-    settle(&mut h, 1280, 700);
-    assert_eq!(geometry(&h).sidebar_column, docked.sidebar_column);
+    assert_eq!(g.sidebar_column, docked.sidebar_column);
+    assert_eq!(g.content_column, docked.content_column);
 }
 
-/// Under reduced motion nothing slides across a layout switch: the page
-/// stands in its new place at once and fades in there.
+/// Under reduced motion nothing slides across a layout switch either: the
+/// page stands in its new place at once.
 #[test]
-fn under_reduced_motion_a_layout_switch_fades_instead_of_sliding() {
+fn under_reduced_motion_a_resize_switched_layout_stands_at_once() {
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0);
@@ -455,11 +445,40 @@ fn under_reduced_motion_a_layout_switch_fades_instead_of_sliding() {
     let shell = h.root::<NavShell>();
     assert_eq!(shell.geometry().content_column.x0, 0.0, "no slide");
     assert!(
-        shell.switch_fade.progress(crate::time::now()) < 1.0,
-        "the page fades in"
+        !shell.switch_columns.contains(&true),
+        "and no column it has to fade in"
     );
-    assert!(shell.switch_columns[Column::Content.index()]);
-    assert!(shell.needs_animation_frame());
+    assert_eq!(
+        shell.switch_fade.progress(crate::time::now()),
+        1.0,
+        "the layout is there, not arriving"
+    );
+}
+
+/// The class a shell shows is the rect's, held through the hysteresis band so
+/// a window resting on a threshold does not flutter.
+#[test]
+fn the_shell_reports_the_size_class_of_the_rect_it_laid_out_in() {
+    let theme = Theme::dark();
+    let m = theme.tokens.metrics;
+    let (compact, _wide) = crate::tokens::Breakpoint::thresholds(&m);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "small positive widths"
+    )]
+    let px = |w: f64| w.round() as u32;
+    let mut h = harness(files_shell(), 1280, 700, theme);
+    settle(&mut h, 1280, 700);
+    assert_eq!(geometry(&h).size_class, crate::tokens::Breakpoint::Wide);
+    settle(&mut h, px(compact), 700);
+    assert_eq!(
+        geometry(&h).size_class,
+        crate::tokens::Breakpoint::Medium,
+        "a window narrowed to the compact threshold keeps one column beside a docked sidebar"
+    );
+    settle(&mut h, 390, 700);
+    assert_eq!(geometry(&h).size_class, crate::tokens::Breakpoint::Compact);
 }
 
 /// Keyboard focus survives a switch to one column at a time: a person
@@ -543,7 +562,6 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                     g.stack
                 );
             }
-            // Every shown body sits under the one header row.
             for id in ["sidebar", "overview", "content"] {
                 if let Some(rect) = child_rect(&h, id) {
                     assert!(
@@ -657,8 +675,6 @@ fn a_toolbar_in_a_header_behind_the_drawer_settles() {
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
 
-// USER REQUIREMENT (2026-10-18): "it darkens out the actual content on the
-// right"
 /// A content-primary app's drawer floats over the document without a scrim:
 /// the document stays visible and exposed, and a press on it puts the
 /// drawer away without reaching it.
@@ -832,6 +848,62 @@ fn the_system_shortcut_toggles_the_sidebar() {
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
 
+/// Frames as a window's host draws them: the one an input asked for, then
+/// more only while the shell asks.
+fn pump(h: &mut FrameHarness, w: u32, height: u32) {
+    h.relayout_at((w, height)).expect("layout");
+    for _ in 0..32 {
+        let shell = h.root::<NavShell>();
+        if !shell.needs_animation_frame() {
+            return;
+        }
+        h.relayout_at((w, height)).expect("layout");
+    }
+}
+
+/// A toggle that lands in one tick (a key, or the first frame after a
+/// busy device let the whole slide's time pass) is laid out on screen: the
+/// shell asks its host for the frame that lays the landed pose out, and
+/// the one that drops what that pose hides.
+#[test]
+fn a_toggle_that_lands_at_once_reaches_the_screen() {
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>()
+        .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+    settle(&mut h, 1280, 800);
+    let open = geometry(&h).sidebar_column.width();
+    assert!(open > 0.0);
+    let key = crate::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
+    let modifiers = winit::event::Modifiers::from(
+        winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+    );
+    assert!(h.dispatch_to_root_with(&key, &modifiers));
+    pump(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).sidebar_column.width() < 0.5,
+        "the shortcut collapsed the sidebar on screen: {:?}",
+        geometry(&h).sidebar_column
+    );
+    assert!(h.dispatch_to_root_with(&key, &modifiers));
+    pump(&mut h, 1280, 800);
+    assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
+
+    // A press whose next frame comes after the slide's whole time.
+    let _arrived = crate::motion::testing::settled();
+    let toggle = geometry(&h).toggle.center();
+    h.click_at(toggle.x, toggle.y);
+    pump(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).sidebar_column.width() < 0.5,
+        "the button collapsed the sidebar on screen"
+    );
+    let toggle = geometry(&h).toggle.center();
+    h.click_at(toggle.x, toggle.y);
+    pump(&mut h, 1280, 800);
+    assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
+}
+
 #[test]
 fn the_toggle_names_what_it_does_for_the_palette_and_agents() {
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
@@ -897,7 +969,7 @@ fn dragging_the_trailing_edge_resizes_and_below_its_minimum_hides() {
 }
 
 #[test]
-fn the_inspector_docks_beside_the_content_and_floats_when_narrow() {
+fn the_inspector_docks_beside_the_content_and_rises_as_a_sheet_when_narrow() {
     let shell = NavShell::new()
         .content(Probe::boxed("content").0)
         .inspector(Probe::boxed("inspector").0);
@@ -914,11 +986,11 @@ fn the_inspector_docks_beside_the_content_and_floats_when_narrow() {
 
     settle(&mut h, 600, 800);
     let g = geometry(&h);
-    assert_eq!(g.inspector, InspectorPlacement::Drawer);
+    assert_eq!(g.inspector, InspectorPlacement::Sheet);
     assert_eq!(
         g.inspector_column,
         Rect::ZERO,
-        "closed by default when it floats"
+        "closed by default as a sheet"
     );
     h.root_mut::<NavShell>().toggle_inspector();
     settle(&mut h, 600, 800);
@@ -936,6 +1008,45 @@ fn a_column_without_a_shell_has_no_header_row() {
         child_rect(&h, "content"),
         Some(Rect::new(0.0, 0.0, 1024.0, 700.0))
     );
+}
+
+/// A header row stands over a column only while that column's header
+/// holds something: beside a docked sidebar's titled header, an empty
+/// content header leaves the content at the window's top, and the row
+/// comes back over it once the header has a title.
+#[test]
+fn an_empty_content_header_holds_no_row_beside_the_sidebars() {
+    for (title, holds) in [("", false), ("Draft", true)] {
+        let mut shell = notes_shell().content_header(title, Vec::new());
+        shell.set_sidebar_toggle_in_window_bar(true);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert_eq!(g.sidebar, SidebarPlacement::Docked);
+        assert!(
+            g.sidebar_header().height() > 0.0,
+            "{title:?}: the sidebar keeps its header"
+        );
+        let content = child_rect(&h, "content").expect("the content is laid out");
+        if holds {
+            assert!((g.content_header().height() - g.header_height).abs() < 1e-9);
+            assert!(
+                (content.y0 - g.header_height).abs() < 1e-9,
+                "{title:?}: the content starts under its header"
+            );
+        } else {
+            assert_eq!(
+                g.content_header(),
+                Rect::ZERO,
+                "{title:?}: no content header"
+            );
+            assert!(
+                content.y0.abs() < 1e-9,
+                "{title:?}: the content starts at the top, at {}",
+                content.y0
+            );
+        }
+    }
 }
 
 #[test]
@@ -1027,6 +1138,69 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
 }
 
 #[test]
+fn a_status_the_person_can_act_on_has_its_button_beside_it_in_the_row() {
+    const NOT_SAVED: &str = "Couldn't save this change to your history";
+    let mut resource = tilo_actions::Resource::new("test.unsaved", "test.unsaved", NOT_SAVED);
+    resource.actions.push(
+        tilo_actions::ActionSpec::operation(
+            "retry",
+            "Retry",
+            tilo_actions::OperationKind::Effect,
+            "test.unsaved.retry",
+            &(),
+        )
+        .unwrap(),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&resource, "retry").unwrap();
+    let status =
+        crate::widget::WindowStatus::says(NOT_SAVED).with_action(crate::widget::StatusAction {
+            label: "Retry".into(),
+            binding,
+        });
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    h.root_mut::<NavShell>()
+        .set_history_control(Some(HistoryControl::Closed));
+    assert!(h.root_mut::<NavShell>().set_sync_status(Some(&status)));
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    let button = h
+        .root::<NavShell>()
+        .children()
+        .into_iter()
+        .find(|child| child.test_id() == Some(crate::widget::STATUS_ACTION_ID))
+        .map(|child| (child.get_rect(), child.name()))
+        .expect("a button beside the status");
+    let (button, name) = button;
+    assert_eq!(name, "Button", "a design-system button, not painted text");
+    assert!(button.width() > 0.0 && button.y1 <= g.header_height);
+    assert!(button.x1 <= g.history.x0, "{button:?} before History {g:?}");
+    let text = h
+        .root::<NavShell>()
+        .children()
+        .into_iter()
+        .find(|child| child.name() == "HeaderStatus")
+        .map(|child| child.get_rect())
+        .unwrap();
+    assert!(text.width() > 0.0, "the message still shows");
+    assert!(
+        text.x1 <= button.x0,
+        "the message {text:?} reads before its button {button:?}"
+    );
+
+    // Saying something else with no button takes the button away.
+    let offline = crate::widget::WindowStatus::says("Working offline");
+    assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
+    settle(&mut h, 1280, 800);
+    assert!(
+        h.root::<NavShell>()
+            .children()
+            .into_iter()
+            .all(|child| child.test_id() != Some(crate::widget::STATUS_ACTION_ID)),
+        "no button without something to do"
+    );
+}
+
+#[test]
 fn sync_status_reads_as_quiet_text_before_the_rows_trailing_controls() {
     const OFFLINE: &str = "Working offline. Changes will sync when you're back.";
     let status = |h: &FrameHarness| {
@@ -1037,7 +1211,8 @@ fn sync_status_reads_as_quiet_text_before_the_rows_trailing_controls() {
             .map(|child| (child.get_rect(), child.accessibility()))
     };
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-    assert!(h.root_mut::<NavShell>().set_sync_status(Some(OFFLINE)));
+    let offline = crate::widget::WindowStatus::says(OFFLINE);
+    assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
     h.root_mut::<NavShell>()
         .set_history_control(Some(HistoryControl::Closed));
     settle(&mut h, 1280, 800);
@@ -1059,23 +1234,12 @@ fn sync_status_reads_as_quiet_text_before_the_rows_trailing_controls() {
         rect.x0 >= g.content_column.x0,
         "stays in the content column's row"
     );
-    let slot = h.root::<NavShell>().header_status_slot();
-    assert!(slot.width() > 0.0, "room is left for a save status");
-    assert!(
-        slot.x1 < rect.x0 && slot.y1 <= g.header_height,
-        "{slot:?} sits in the row before the sync status {rect:?}"
-    );
 
     assert!(h.root_mut::<NavShell>().set_sync_status(None));
     settle(&mut h, 1280, 800);
     assert!(
         status(&h).and_then(|(_, node)| node).is_none(),
         "nothing to announce"
-    );
-    let slot = h.root::<NavShell>().header_status_slot();
-    assert!(
-        slot.x1 <= g.history.x0 && slot.x1 > rect.x0,
-        "without a sync status the save status takes its place: {slot:?}"
     );
 }
 
@@ -1229,6 +1393,31 @@ fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
         );
         assert!(geometry(&h).overview_column.width() > 0.0);
     }
+}
+
+#[test]
+fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
+    // An app whose content is only a placeholder shows its list: narrowed,
+    // the list stays in front rather than a blank screen pushed over it.
+    let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
+    settle(&mut h, 1600, 800);
+    h.root_mut::<NavShell>().show(NavPane::Overview);
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    let list = geometry(&h).overview_column;
+    assert!(list.width() > 0.0 && list.x0 >= 0.0, "{list:?}");
+    // A press on the list reaches the list, not a screen in front of it.
+    let point = list.center();
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    h.dispatch_to_root(&crate::synthetic_input::mouse_release());
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+
+    // Otherwise the page the app opened stays in front.
+    let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
+    settle(&mut h, 1600, 800);
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
 }
 
 #[test]
@@ -1501,7 +1690,7 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
         .content(Probe::boxed("content").0)
         .inspector(inspector);
     let mut h = harness(shell, 600, 534, Theme::dark());
-    assert!(h.settle_for_capture(crate::time::Duration::from_secs(1)));
+    assert!(h.settle_for_capture(tilo_test_env::hang_bound()));
     let shell = h.root::<NavShell>();
     assert!(!shell.is_inspector_open());
     assert!(!shell.needs_animation_frame());
@@ -1511,7 +1700,7 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
         "the hidden animation is retained"
     );
     h.root_mut::<NavShell>().open_inspector();
-    assert!(h.settle_for_capture(crate::time::Duration::from_secs(1)));
+    assert!(h.settle_for_capture(tilo_test_env::hang_bound()));
     let shell = h.root::<NavShell>();
     assert!(shell.is_inspector_open());
     assert!(
@@ -1520,33 +1709,64 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
     );
 }
 
+/// A notice is the window bar's: it shows there in the location's place,
+/// leaves on its own, and paints nothing over the window.
 #[test]
-fn a_toast_floats_over_the_bottom_corner_and_a_click_dismisses_it() {
+fn a_toast_is_the_window_bars_notice_and_paints_nothing_over_the_window() {
+    use crate::window_toolbar::{ToolbarNotice, notice, notify};
+    notify(None);
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>().mark_drawn();
-    h.root_mut::<NavShell>().toast("Saved", ToastKind::Success);
-    assert!(h.root::<NavShell>().needs_redraw(), "a new notice repaints");
-    settle(&mut h, 1280, 800);
-    let card = h.root::<NavShell>().toasts.get_rect();
-    assert!(
-        card.width() > 0.0 && card.x1 < 1280.0 && card.y1 < 800.0 && card.y0 > 400.0,
-        "the notice sits inside the window's bottom trailing corner: {card:?}"
-    );
-    assert_eq!(h.root::<NavShell>().toast_text(), Some("Saved"));
-    let announced = h
-        .root::<NavShell>()
-        .children()
-        .last()
-        .and_then(|child| child.accessibility())
-        .and_then(|node| node.value);
+    let theme = Theme::dark();
+    let mut text = crate::font_catalog::fixture_renderer();
+    let shell = h.root_mut::<NavShell>();
+    let _ = present_shell(shell, &mut text, &theme, 1.0);
+    let _ = present_shell(shell, &mut text, &theme, 1.0);
+    shell.toast("Saved", ToastKind::Success);
     assert_eq!(
-        announced.as_deref(),
-        Some("Saved"),
-        "a live region announces it"
+        notice(),
+        Some(ToolbarNotice::new("Saved", ToastKind::Success)),
+        "the window's bar shows the notice"
     );
-    h.click_at(card.center().x, card.center().y);
-    assert_eq!(h.root::<NavShell>().toast_text(), None);
+    assert_eq!(shell.toast_text(), Some("Saved"));
+    let (_, damage) = present_shell(shell, &mut text, &theme, 1.0);
+    assert!(
+        damage.is_empty(),
+        "nothing is painted over the window: {damage:?}"
+    );
+    shell.dismiss_toast();
+    assert_eq!(notice(), None, "taken down, it leaves the bar");
+    assert_eq!(shell.toast_text(), None);
+}
+
+/// A notice's button stands in the window's bar; pressing it there reports
+/// the notice once and takes it down.
+#[test]
+fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
+    use crate::window_toolbar::{ToolbarEvent, notice, notify};
+    notify(None);
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    let shell = h.root_mut::<NavShell>();
+    shell.toast_with_action("Deleted Groceries", ToastKind::Info, "undo-2", "Undo");
+    let shown = notice().expect("the bar shows the notice");
+    let button = shown.actions.into_iter().next().expect("with its button");
+    assert_eq!(button.name, "Undo");
+    crate::window_toolbar::deliver(ToolbarEvent::Action { id: button.id });
+    assert!(
+        crate::window_toolbar::take_events().is_empty(),
+        "the press is the notice's, not among the app's slot events"
+    );
+    settle(&mut h, 1280, 800);
+    let shell = h.root_mut::<NavShell>();
+    assert_eq!(
+        shell.take_toast_action().as_deref(),
+        Some("Deleted Groceries"),
+        "the press names the notice"
+    );
+    assert_eq!(shell.take_toast_action(), None, "once");
+    assert_eq!(shell.toast_text(), None, "and it goes");
+    assert_eq!(notice(), None, "from the bar too");
 }
 
 /// One frame of the shell as a host presents it at `scale`: its widgets and
@@ -1571,111 +1791,6 @@ fn present_shell(
         .map(|rect| transform.transform_rect_bbox(rect).inflate(1.0, 1.0))
         .collect();
     (scene, damage)
-}
-
-/// Repaint `after` over `before` only where `damage` says, and require the
-/// pixels of a full render of `after`.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the test's window is a few megapixels at scale 2"
-)]
-fn assert_sparse_equals_full(
-    (before, after): (&Scene, &Scene),
-    damage: &[Rect],
-    theme: &Theme,
-    (size, label): ((f64, f64), &str),
-) {
-    let (width, height) = (size.0.round() as u32, size.1.round() as u32);
-    let background = theme.tokens.colors.surfaces.content;
-    let mut retained = crate::offscreen::OffscreenRenderer::new(width, height);
-    let mut full = crate::offscreen::OffscreenRenderer::new(width, height);
-    let _ = retained.render(before, background);
-    let rasterized = retained.render_damage_regions_gpu_wait(after, background, damage);
-    assert!(
-        rasterized < u64::from(width).saturating_mul(u64::from(height)),
-        "{label}: the damage must exercise a sparse render: {damage:?}"
-    );
-    let expected = full.render(after, background);
-    let differing = retained
-        .readback_current()
-        .chunks_exact(4)
-        .zip(expected.chunks_exact(4))
-        .filter(|(actual, expected)| {
-            actual
-                .iter()
-                .zip(*expected)
-                .any(|(a, e)| a.abs_diff(*e) > 1)
-        })
-        .count();
-    assert_eq!(
-        differing, 0,
-        "{label}: the sparse repaint must equal a full render; damage {damage:?}"
-    );
-}
-
-/// A notice that comes and goes repaints the card and its shadow where it
-/// was and is, nothing else: the card's real painted bounds, not the
-/// window, and never short of its shadow. Every theme, at 100 % and 200 %.
-#[test]
-fn a_toast_damages_its_card_and_shadow_where_it_was_and_is() {
-    let (w, h_px) = (1280, 800);
-    for scale in [1.0, 2.0] {
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high contrast", Theme::high_contrast()),
-        ] {
-            let label = format!("{name} at {scale}x");
-            let mut h = harness(mail_shell(), w, h_px, theme.clone());
-            settle(&mut h, w, h_px);
-            let mut text = crate::font_catalog::fixture_renderer();
-            let shell = h.root_mut::<NavShell>();
-            let size = (f64::from(w) * scale, f64::from(h_px) * scale);
-            // The first frame at this scale and renderer; then one with no
-            // change, which must damage nothing, or this observes nothing.
-            let _ = present_shell(shell, &mut text, &theme, scale);
-            let (before, quiet) = present_shell(shell, &mut text, &theme, scale);
-            assert!(
-                quiet.is_empty(),
-                "{label}: a settled shell damages nothing: {quiet:?}"
-            );
-
-            shell.toast("Saved", ToastKind::Success);
-            let (shown, damage) = present_shell(shell, &mut text, &theme, scale);
-            let card = shell.toasts.get_rect();
-            let painted = crate::widget::floating_surface::painted_bounds(card, &theme);
-            assert_eq!(
-                damage,
-                [Affine::scale(scale)
-                    .transform_rect_bbox(painted)
-                    .inflate(1.0, 1.0)],
-                "{label}: a new notice damages its card and shadow ({card:?})"
-            );
-            assert_sparse_equals_full(
-                (&before, &shown),
-                &damage,
-                &theme,
-                (size, &format!("{label}: showing")),
-            );
-
-            shell.dismiss_toast();
-            let (gone, damage) = present_shell(shell, &mut text, &theme, scale);
-            assert_eq!(
-                damage,
-                [Affine::scale(scale)
-                    .transform_rect_bbox(painted)
-                    .inflate(1.0, 1.0)],
-                "{label}: a dismissed notice damages where it was"
-            );
-            assert_sparse_equals_full(
-                (&shown, &gone),
-                &damage,
-                &theme,
-                (size, &format!("{label}: dismissing")),
-            );
-        }
-    }
 }
 
 /// Maximized, the window's controls join the header row at its trailing end:
@@ -1851,10 +1966,6 @@ fn notes_shell_with_search() -> NavShell {
         .content_header("", actions)
 }
 
-// USER REQUIREMENT (2026-10-19): "one top bar with all the options for that
-// app in context ... search next to the app title" and "apps shouldnt be
-// responsible for rendering a top bar" -- one search control per window: the
-// bar's, never a second one in the app's header.
 #[test]
 fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() {
     // Case `told_before_the_first_build`.
@@ -2044,5 +2155,374 @@ fn a_push_from_a_known_origin_moves_as_that_origin_does() {
     assert!(
         slides_after_push(|shell| shell.show_from(NavPane::Content, MotionSource::Pointer)),
         "a person's click slides the content in"
+    );
+}
+
+/// A shell whose toolbar is its window bar's slots draws no header row, at
+/// any width, whatever titles and actions it was given; its own buttons
+/// become slots and run from the bar.
+#[test]
+fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() {
+    use crate::window_toolbar::ToolbarEvent;
+    let shell = mail_shell().with_window_toolbar();
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    assert_eq!(
+        g.header_height, 0.0,
+        "no header row beside the window's bar"
+    );
+    assert_eq!(g.toggle, Rect::ZERO);
+    assert_eq!(child_rect(&h, "content").map(|r| r.y0 < 1.0), Some(true));
+    let toolbar = h.root::<NavShell>().window_toolbar();
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's toggle is a slot"
+    );
+    assert!(
+        toolbar.leading.is_empty(),
+        "a wide window has nowhere to go back to"
+    );
+    assert!(
+        h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::ToggleSidebar)
+    );
+    settle(&mut h, 1280, 800);
+    assert!(!h.root::<NavShell>().is_sidebar_open());
+    assert!(
+        !h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::Action { id: "app".into() }),
+        "the app's own actions are the app's"
+    );
+
+    // Narrow: the panes are pushed over one another, and Back is a slot.
+    settle(&mut h, 560, 800);
+    let front = h.root::<NavShell>().front_pane();
+    assert_ne!(front, NavPane::Sidebar, "a pushed pane is in front");
+    let g = geometry(&h);
+    assert_eq!(g.header_height, 0.0);
+    assert_eq!(g.back, Rect::ZERO, "no Back button of the shell's own");
+    let toolbar = h.root::<NavShell>().window_toolbar();
+    assert_eq!(
+        toolbar.leading.first().map(|action| action.id.as_str()),
+        Some(super::window_toolbar::WINDOW_BACK)
+    );
+    assert!(
+        h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::Action {
+                id: super::window_toolbar::WINDOW_BACK.into()
+            })
+    );
+    settle(&mut h, 560, 800);
+    assert_ne!(
+        h.root::<NavShell>().front_pane(),
+        front,
+        "the bar's Back pops the pane in front"
+    );
+}
+
+/// An app that declares no slots of its own gets them from its shell: while the
+/// desktop's bar hosts the window, the column in front names the window's
+/// location, the headers' buttons are the bar's actions and run from it, and
+/// the shell draws no header row.
+#[test]
+fn a_hosted_shell_hands_its_header_to_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared, deliver};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_click(move || count.set(count.get() + 1));
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(add)])
+        .overview_header("Inbox", Vec::new())
+        .content_header(
+            "Design review",
+            vec![Box::new(crate::widget::Row::new().push(Box::new(
+                Button::icon_only("mail.reply", Icon::Reply, "Reply"),
+            )))],
+        );
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).header_height > 0.0,
+        "with no desktop bar, the header row stands"
+    );
+    assert_eq!(declared(), None, "and the shell declares nothing");
+
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(
+        geometry(&h).header_height,
+        0.0,
+        "no header row under the bar"
+    );
+    let toolbar = declared().expect("the shell declares the window's slots");
+    assert_eq!(
+        toolbar
+            .location
+            .as_ref()
+            .map(|location| location.label.as_str()),
+        Some("Design review"),
+        "the content in front names the window"
+    );
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's toggle is a slot"
+    );
+    let action = toolbar
+        .actions
+        .iter()
+        .find(|action| action.name == "New mailbox")
+        .expect("the header's button is the bar's action");
+    assert_eq!(action.icon, "plus");
+    assert!(!action.menu, "a button with an icon stands in the row");
+    assert!(
+        toolbar
+            .actions
+            .iter()
+            .any(|action| action.id == "mail.reply"),
+        "a row of buttons gives its buttons"
+    );
+    deliver(ToolbarEvent::Action {
+        id: action.id.clone(),
+    });
+    settle(&mut h, 1280, 800);
+    assert_eq!(pressed.get(), 1, "the bar's press runs the button");
+}
+
+/// A header the bar cannot show (a fill of the app's own beside the title)
+/// keeps its row under the bar, and the shell declares nothing; a window
+/// where another part declares the slots keeps its row too.
+#[test]
+fn a_header_the_bar_cannot_show_keeps_its_row() {
+    use crate::window_toolbar::{WindowToolbar, declare, declared};
+    let shell = mail_shell().content_header_leading(Box::new(Text::new("Path")));
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert!(geometry(&h).header_height > 0.0);
+    assert_eq!(declared(), None);
+    drop(h);
+
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(geometry(&h).header_height, 0.0);
+    let app = WindowToolbar {
+        sidebar: Some(false),
+        ..WindowToolbar::default()
+    };
+    declare(Some(app.clone()));
+    settle(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).header_height > 0.0,
+        "the shell steps aside for the app's own slots"
+    );
+    assert_eq!(
+        declared(),
+        Some(app.bounded()),
+        "and leaves them as declared"
+    );
+}
+
+/// A header button bound to an action, as framework apps build theirs, runs
+/// when pressed in the window's bar, though the shell lays no header row out
+/// under it. A column the shell does not have offers none of its buttons, as
+/// its header row would show none.
+#[test]
+fn a_header_action_runs_from_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_own_device_effect(move || count.set(count.get() + 1));
+    let compose = Button::icon_only("mail.compose", Icon::Plus, "Compose");
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(add)])
+        .overview_header("Inbox", vec![Box::new(compose)])
+        .content_header("Design review", Vec::new());
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    h.set_permission_ctx(crate::permissions::PermissionContext::member(
+        "ada",
+        crate::permissions::Role::Editor,
+    ));
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    let toolbar = declared().expect("the shell declares the window's slots");
+    let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"mail.new-mailbox"), "{ids:?}");
+    assert!(
+        !ids.contains(&"mail.compose"),
+        "a column the shell does not have offers no buttons: {ids:?}"
+    );
+
+    h.press_window_slot(ToolbarEvent::Action {
+        id: "mail.new-mailbox".into(),
+    });
+    h.idle();
+    assert!(
+        h.control_failures().is_empty(),
+        "{:?}",
+        h.control_failures()
+    );
+    assert_eq!(h.refusal_shown(), None);
+    assert_eq!(pressed.get(), 1, "the bar's press runs the button's action");
+}
+
+/// A host that runs several apps on one thread (the browser desktop) shows
+/// each in a window of its own: every window's shell declares that window's
+/// slots, and one declaring never makes another step aside, keep a header
+/// row under its bar and leave its old slots there.
+#[test]
+fn each_window_on_one_thread_keeps_its_own_shells_slots() {
+    use crate::hosted_window::HostedWindow;
+    use crate::window_toolbar::enter;
+    let windows = [HostedWindow::new(), HostedWindow::new()];
+    let mut harnesses: Vec<FrameHarness> = windows
+        .iter()
+        .map(|window| {
+            let _scope = enter(Some(window));
+            let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+            h.present_in_window_bar();
+            settle(&mut h, 1280, 800);
+            h
+        })
+        .collect();
+    for _ in 0..2 {
+        for (window, h) in windows.iter().zip(&mut harnesses) {
+            let _scope = enter(Some(window));
+            settle(h, 1280, 800);
+        }
+    }
+    for (i, (window, h)) in windows.iter().zip(&harnesses).enumerate() {
+        assert!(
+            window.declared().is_some(),
+            "window {i}'s shell declares its slots"
+        );
+        assert_eq!(
+            geometry(h).header_height,
+            0.0,
+            "window {i} draws no header row under its bar"
+        );
+    }
+}
+
+/// A window's app built anew (its code arrived, its tile was rebuilt) after
+/// the one before was let go outside that window: the new shell declares
+/// the window's slots, and the bar shows none of the old shell's.
+#[test]
+fn a_shell_built_anew_in_its_window_takes_the_bar_over() {
+    use crate::hosted_window::HostedWindow;
+    use crate::window_toolbar::enter;
+    let window = HostedWindow::new();
+    let first = {
+        let _scope = enter(Some(&window));
+        let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+        h.present_in_window_bar();
+        settle(&mut h, 1280, 800);
+        h
+    };
+    assert!(window.declared().is_some(), "the first shell declares");
+    drop(first);
+    let _scope = enter(Some(&window));
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    settle(&mut h, 1280, 800);
+    assert!(window.declared().is_some(), "the new shell declares");
+    assert_eq!(
+        geometry(&h).header_height,
+        0.0,
+        "the new shell draws no header row under its bar"
+    );
+}
+
+/// A content that continues on another device and answers a diagnostic
+/// input with its own state.
+struct ResumableContent(crate::widget::Spacer);
+
+impl crate::widget::Decorator for ResumableContent {
+    type Inner = crate::widget::Spacer;
+
+    fn inner(&self) -> &crate::widget::Spacer {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut crate::widget::Spacer {
+        &mut self.0
+    }
+
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::widget::Continuable>() {
+            request.provide::<dyn crate::widget::Continuable>(self);
+        }
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn crate::widget::Continuable>() {
+            request.provide::<dyn crate::widget::Continuable>(self);
+        }
+    }
+
+    fn native_input_snapshot(
+        &self,
+        _state: &AppModel,
+        _path: &ModelPath,
+    ) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "caret_line": 3 }))
+    }
+}
+
+impl crate::widget::Continuable for ResumableContent {
+    fn continuation_metadata(
+        &self,
+        _state: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        Some(crate::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: b"line 3".to_vec(),
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        true
+    }
+}
+
+#[test]
+fn the_shell_continues_and_reports_input_as_its_content() {
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Box::new(ResumableContent(crate::widget::Spacer::new())));
+    let mut h = harness(shell, 900, 600, Theme::dark());
+    settle(&mut h, 900, 600);
+    let document = automerge::AutoCommit::new();
+    let metadata =
+        crate::widget::capability::capability::<dyn crate::widget::Continuable>(h.root_widget())
+            .and_then(|continuable| continuable.continuation_metadata(&document, &automerge::ROOT))
+            .expect("the content's continuation");
+    assert_eq!(metadata.bytes, b"line 3");
+    assert!(
+        crate::widget::capability::capability_mut::<dyn crate::widget::Continuable>(
+            h.root_mut::<NavShell>()
+        )
+        .is_some()
+    );
+    assert_eq!(
+        h.native_input_snapshot(),
+        Some(serde_json::json!({ "caret_line": 3 }))
     );
 }

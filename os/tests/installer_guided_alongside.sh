@@ -27,9 +27,13 @@ if [ "$dev_fstype" != devtmpfs ]; then
 fi
 
 # The helper hands its geometry and GPT JSON questions to the compiled
-# installer helper; run this checkout's build of it.
-cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-install-helpers --bin tilo-staging-handoff
-staging_handoff="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-staging-handoff"
+# installer helper; run this checkout's build of it, or the one
+# TILO_STAGING_HANDOFF_BIN names.
+staging_handoff="${TILO_STAGING_HANDOFF_BIN:-}"
+if [ -z "$staging_handoff" ]; then
+  cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-install-helpers --bin tilo-staging-handoff
+  staging_handoff="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-staging-handoff"
+fi
 
 tmp="$(mktemp -d)"
 loop=""

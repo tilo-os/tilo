@@ -23,33 +23,18 @@ pub struct Observation {
 
 pub trait Output: Send {
     /// Submit at most 20 ms of stereo 48 kHz S16 PCM, with bounded backpressure.
-    ///
-    /// # Errors
-    /// Returns a terminal service, device or capacity failure.
     fn write(&mut self, samples: &[i16]) -> Result<Observation, String>;
     /// Read actual host device progress.
-    ///
-    /// # Errors
-    /// Returns a service or device failure.
     fn observation(&mut self) -> Result<Observation, String>;
     /// Last host observation, without waiting for an RPC or decoder lock.
     fn cached_observation(&self) -> Observation;
     /// Terminal host failure observed by the output worker, without waiting.
     fn cached_error(&self) -> Option<String>;
     /// Pause this output only.
-    ///
-    /// # Errors
-    /// Returns a service or device failure.
     fn pause(&mut self, paused: bool) -> Result<(), String>;
     /// Drop queued PCM before a seek or replacement.
-    ///
-    /// # Errors
-    /// Returns a service or device failure.
     fn flush(&mut self) -> Result<(), String>;
     /// Set this application's stream gain.
-    ///
-    /// # Errors
-    /// Returns a service or device failure.
     fn volume(&mut self, percent: u8) -> Result<(), String>;
     /// Fence this exact output generation; safe to repeat.
     fn close(&mut self);
@@ -84,9 +69,6 @@ pub fn install(factory: Arc<dyn Factory>) {
 }
 
 /// Open an output-only local stream.
-///
-/// # Errors
-/// Returns unavailable until the host installs an admitted route.
 pub fn open() -> Result<Box<dyn Output>, String> {
     let factory = FACTORY
         .get_or_init(|| Mutex::new(None))

@@ -34,7 +34,7 @@ use ui::theme::Theme;
 use ui::tilo_resource::ActionDecl;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
+use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
     AudiencePresentationProvider, ColorPicker, Dropdown, FullscreenProvider, NumberInput,
     PageSidebar, PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
@@ -46,8 +46,8 @@ use crate::deck::Deck as DeckRecord;
 
 use crate::help_overlay::HelpOverlay;
 use crate::model::{
-    Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
-    SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, starter_deck,
+    Background, Deck, DeckLook, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind,
+    SLIDE_H, SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, starter_deck,
 };
 use crate::overview_grid::OverviewGrid;
 use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
@@ -246,8 +246,6 @@ pub(super) enum Hit {
     NewSlide,
     DuplicateSlide,
     DeleteSlide,
-    Present,
-    Overview,
     OpenSlide(usize),
     Insert(ElementKind),
     SelectSlide(usize),
@@ -257,6 +255,8 @@ pub(super) enum Hit {
     OpenFillPicker,
     ToggleBold,
     ToggleItalic,
+    /// A bulleted list, or a numbered one when `true`.
+    ToggleList(bool),
     SetAlign(TextAlign),
     BringFront,
     SendBack,
@@ -265,13 +265,9 @@ pub(super) enum Hit {
     SetLayout(Layout),
     SetBackground(Background),
     SetPalette(PaletteKind),
+    /// Make the deck light or dark.
+    SetLook(DeckLook),
     EditNotes,
-    /// Toggle the collapsible slide rail (narrow-window hamburger).
-    ToggleRail,
-    /// Toggle the collapsible inspector (narrow-window properties flap).
-    ToggleInspector,
-    /// Toggle the toolbar's insert-tool overflow ("More") menu.
-    ToggleToolbarMenu,
     OpenLayoutMenu,
 }
 
@@ -291,6 +287,55 @@ struct RoutedEvent<'a, 'doc> {
     taffy: &'a TaffyTree<()>,
 }
 
+/// How the editor's slide is scaled.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum SlideZoom {
+    /// As large as the pane allows: what the editor opens at.
+    #[default]
+    Fit,
+    /// A zoom the person chose, in screen px per slide unit (1.0 is the
+    /// slide at its design size).
+    Pinned(f64),
+}
+
+impl SlideZoom {
+    /// The steps a zoom in or out lands on, from the fit scale upward.
+    pub(crate) const STEPS: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0];
+
+    /// The zoom's own name: "Fit to window", or the percentage.
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::Fit => tr("slides-zoom-fit"),
+            Self::Pinned(scale) => format!("{:.0}%", scale * 100.0),
+        }
+    }
+
+    /// One step larger, or smaller, than `current`, within the steps.
+    pub(crate) fn step(self, current: f64, forward: bool) -> Self {
+        let steps = Self::STEPS;
+        let found = if forward {
+            steps
+                .iter()
+                .copied()
+                .find(|step| *step > current + 0.001)
+                .unwrap_or(steps[steps.len() - 1])
+        } else {
+            steps
+                .iter()
+                .rev()
+                .copied()
+                .find(|step| *step < current - 0.001)
+                .unwrap_or(steps[0])
+        };
+        Self::Pinned(found)
+    }
+
+    /// Whether the zoom is the fitted one: nothing was chosen.
+    pub(crate) fn is_fit(self) -> bool {
+        matches!(self, Self::Fit)
+    }
+}
+
 impl RoutedEvent<'_, '_> {
     /// The event context a routed child widget sees, reporting into `handled`.
     fn event_ctx<'b>(&'b mut self, handled: &'b mut bool) -> ui::widget::EventCtx<'b> {
@@ -307,16 +352,6 @@ impl RoutedEvent<'_, '_> {
     }
 }
 
-/// The words of one text box being edited on the canvas: the SDK editor,
-/// embedded where the box is drawn and laid out at the slide's size, editing
-/// the element's rich-text body, each edit a field edit of the deck at the
-/// body's path.
-struct TextBoxEditor {
-    slide_id: String,
-    element_id: String,
-    host: Embedded<RichTextSurface<RichTextField>>,
-}
-
 /// The editor of slide `slide`'s speaker notes, each edit a field edit of
 /// them through `deck`.
 fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<TextInput, DeckRecord> {
@@ -328,47 +363,6 @@ fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<Text
         deck.clone(),
         actions::slide_paths(slide).notes,
     )
-}
-
-impl TextBoxEditor {
-    fn open(
-        doc: &AutoCommit,
-        slide_id: &str,
-        element: &Element,
-        deck: &Dispatcher<DeckRecord>,
-    ) -> Self {
-        let body = crate::deck::body_object(doc, slide_id, &element.id);
-        let field = RichTextField::view_only(move |doc| {
-            body.clone()
-                .filter(|body| tilo_doc::model::open(doc, body).is_ok())
-        });
-        let surface = RichTextSurface::field(field)
-            .with_editor(render::text_box_editor(element))
-            .with_submit(SubmitKey::ModEnter);
-        let mut editor = Self {
-            slide_id: slide_id.to_owned(),
-            element_id: element.id.clone(),
-            host: Embedded::new(surface),
-        };
-        editor.attach(deck);
-        let surface = editor.host.widget_mut();
-        surface.present_from(doc);
-        surface.set_focus(true);
-        surface
-            .editor_mut()
-            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
-        editor
-    }
-
-    /// Edit through the deck's dispatcher.
-    fn attach(&mut self, deck: &Dispatcher<DeckRecord>) {
-        let (slide, element) = (self.slide_id.clone(), self.element_id.clone());
-        self.host.widget_mut().source_mut().attach(
-            deck.child::<tilo_document::RichText>(&actions::slide_resource_id(&slide), move |op| {
-                actions::edit_text_action(&slide, &element, op)
-            }),
-        );
-    }
 }
 
 /// The slides an opener may show, and the ones asked for since the last
@@ -404,9 +398,6 @@ pub struct SlidesApp {
     sel: Option<Id>,
     editing_text: bool,
     editing_notes: bool,
-    /// Inline deck-title rename in progress (toolbar title clicked). Typing
-    /// splices into the CRDT title; Enter/Esc/clicking away commits.
-    editing_title: bool,
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
     /// Local routing policy selected from the presentation resource actions.
@@ -445,6 +436,14 @@ pub struct SlidesApp {
     text_edit_select_all: bool,
     /// Where the text box being edited is drawn, in window coordinates.
     text_edit_box: Rect,
+    /// The press that opened the selected text box for editing, at a point
+    /// in the window, pressed this many times (two for a double-click): the
+    /// box's editor takes it once the event is through, so the caret lands
+    /// where the person pressed.
+    opening_press: Option<(Point, u8)>,
+    /// How many fingers are on the window: while any is, the presses
+    /// arriving are a finger's taps and drags.
+    fingers_down: u8,
 
     /// Every edit of the deck goes through the resource's dispatcher as a
     /// deck's action.
@@ -475,6 +474,17 @@ pub struct SlidesApp {
     /// pointer hit testing and accessibility bounds, so large-text mode is a
     /// layout state rather than a draw-only override.
     text_scale: f32,
+    /// How the slide is scaled in the editor: fitted to the pane, as it opens,
+    /// or a zoom the person chose — a slide is 13 cm of design at 1.0, and
+    /// reading 9 pt body copy off a fitted 16:9 page in a 13-inch window is
+    /// not possible.
+    slide_zoom: SlideZoom,
+    /// How far the zoomed slide is moved from the pane's centre, in screen px
+    /// along each axis, clamped so the slide can always be reached whole.
+    slide_pan: (f64, f64),
+    /// The pane the slide is drawn in, as the last frame measured it: what a
+    /// zoom and the wheel clamp the pan against.
+    slide_pane: std::cell::Cell<(f64, f64)>,
     /// Width breakpoint between the docked and overlay rail layouts. A field
     /// (not a constant) so `--shots` can force a narrow layout deterministically.
 
@@ -495,9 +505,6 @@ pub struct SlidesApp {
     rail_scroll: f64,
     /// Vertical scroll offset (px) of the slide-sorter overview grid.
     overview: OverviewGrid,
-    /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
-    /// pointer policy; document actions returned by it are applied here.
-    toolbar_menu_open: bool,
     layout_picker: Dropdown,
     demo_open_rail: bool,
     demo_open_inspector: bool,
@@ -511,10 +518,6 @@ pub struct SlidesApp {
     /// and paints its bar, and the wheel over the panel scrolls it. Without
     /// this a 2× inspector in a short window simply ran past the viewport.
     inspector_scroll: Scrollable,
-    /// Tooltip for the control under the pointer, refreshed on every pointer
-    /// move. Cached because [`Widget::tooltip`] hands out a borrow and the
-    /// text is a fluent lookup, not a `'static` literal.
-    tooltip_text: Option<String>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Notice,
@@ -533,10 +536,6 @@ pub struct SlidesApp {
     /// popover over the inspector when the user picks a custom fill.
     fill_picker: ColorPicker,
     fill_picker_open: bool,
-    /// Inline deck-title editor — the shared single-line [`ui::widget::TextInput`]
-    /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
-    /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
-    title_input: TextInput,
     /// The current slide's speaker notes, each edit a field edit of the
     /// slide's notes. The shared editor owns multiline layout, selection,
     /// clipboard, scrolling and IME; `editing_notes` only owns the
@@ -559,6 +558,10 @@ pub struct SlidesApp {
     /// frame (once the rail geometry is known) so a headless capture shows the
     /// floating ghost + reflow gap. Never set on a live launch.
     demo_reorder: bool,
+    /// `--shots`-only: open the words' menu on the text box being edited
+    /// once its words are laid out, on its first word, or at the end of its
+    /// first line (`Some(true)`). Never set on a live launch.
+    demo_words_menu: Option<bool>,
     /// `--shots`-only: stage a thumbnail drag dropped over the red dashed
     /// delete zone on the first drawn frame, so a headless capture shows the
     /// armed "Drop to delete" target. Never set on a live launch.
@@ -600,7 +603,6 @@ impl SlidesApp {
             sel: None,
             editing_text: false,
             editing_notes: false,
-            editing_title: false,
             presentation: Presentation::default(),
             presentation_target: ui::fullscreen::FullscreenTarget::Largest,
             help_overlay: HelpOverlay::default(),
@@ -613,24 +615,27 @@ impl SlidesApp {
             text_editor: None,
             text_edit_select_all: false,
             text_edit_box: Rect::ZERO,
+            opening_press: None,
+            fingers_down: 0,
             dispatch,
             rail_drawer: Self::new_drawers().0,
             inspector_drawer: Self::new_drawers().1,
             last_flap_tick: ui::time::now(),
             flap_uninitialised: true,
             text_scale: 1.0,
+            slide_zoom: SlideZoom::default(),
+            slide_pan: (0.0, 0.0),
+            slide_pane: std::cell::Cell::new((0.0, 0.0)),
             deck_rev: 0,
             images: ImageStore::new(content.clone()),
             content,
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
-            toolbar_menu_open: false,
             layout_picker: Self::new_layout_picker(),
             demo_open_rail: false,
             demo_open_inspector: false,
             chrome_metrics: ChromeMetrics::fallback(),
             inspector_scroll: Scrollable::new_vertical().always_visible(),
-            tooltip_text: None,
             io_toast: Notice::default(),
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
@@ -642,10 +647,6 @@ impl SlidesApp {
             fill_picker: ColorPicker::new(Theme::default().tokens.colors.text_primary),
             fill_picker_open: false,
             fill_picker_needs_init: false,
-            title_input: TextInput::local()
-                .with_kind(ui::widget::TextInputKind::Name)
-                .with_plain_chrome()
-                .with_id("slides-title"),
             notes_preview: TextInput::local()
                 .multiline(true)
                 .with_text_role(ui::TextRole::Body)
@@ -656,6 +657,7 @@ impl SlidesApp {
             notes_caret_to_end: false,
             demo_menu: None,
             demo_reorder: false,
+            demo_words_menu: None,
             demo_delete_zone: false,
         }
     }
@@ -731,14 +733,6 @@ impl SlidesApp {
     /// drag in progress.
     fn stage_content(&mut self, shot: &str) {
         match shot {
-            // The inline deck-title rename in progress, with a live
-            // selection in the title field.
-            "rename" => {
-                self.cur_slide = 1;
-                self.begin_title_edit();
-                self.title_input.set_selection(0, 9);
-                self.bootstrapped = true;
-            }
             // The speaker-notes editor focused, its caret shown.
             "notes_edit" => {
                 self.cur_slide = 1;
@@ -750,13 +744,6 @@ impl SlidesApp {
             // deck theme pill readable at the default width.
             "slide_props" => {
                 self.cur_slide = 1;
-                self.sel = None;
-                self.bootstrapped = true;
-            }
-            // The toolbar overflow ("More") menu, opened: every insert tool
-            // stays reachable even when the bar can't show them all.
-            "toolbar_menu" => {
-                self.open_tools_menu();
                 self.sel = None;
                 self.bootstrapped = true;
             }
@@ -810,6 +797,14 @@ impl SlidesApp {
             "edit_text" => {
                 self.select_first_text_on_second_slide();
                 self.begin_text_edit(true);
+                self.bootstrapped = true;
+            }
+            // The words' menu open on a word of the text box being edited.
+            // At the end of a line in a narrow window: kept inside it.
+            "words_menu" | "words_menu_edge" => {
+                self.select_first_text_on_second_slide();
+                self.begin_text_edit(false);
+                self.demo_words_menu = Some(shot == "words_menu_edge");
                 self.bootstrapped = true;
             }
             // A thumbnail dragged onto the armed delete zone.
@@ -922,8 +917,6 @@ impl SlidesApp {
         self.rail_drawer.layout()
     }
 
-    // --- the presented deck -------------------------------------------------
-
     /// Show the deck the resource holds now: an edit of this participant's,
     /// a collaborator's, an undo or a restore. While a gesture is in flight
     /// its preview stays on screen, and the deck is shown once it ends.
@@ -1013,11 +1006,11 @@ impl SlidesApp {
         self.slide()?.element(id)
     }
 
-    fn palette(&self, theme: &Theme) -> Palette {
-        Palette::resolve(self.deck.palette, theme)
+    /// The deck's own colours: its palette in its stored look, never the
+    /// UI theme, so the deck looks the same on every screen.
+    fn palette(&self) -> Palette {
+        Palette::resolve(self.deck.palette, self.deck.look)
     }
-
-    // --- action dispatch ----------------------------------------------------
 
     /// Submit one edit of the deck through the resource's dispatcher, as
     /// every control, the palette and an agent do: it is checked against
@@ -1092,12 +1085,83 @@ impl SlidesApp {
         declarations
     }
 
-    // --- rail scroll geometry ----------------------------------------------
-
     /// The inspector column's painted rect this frame (the same geometry
     /// `compute_chrome` uses), for pointer tests that need only the panel.
     fn inspector_rect(&self) -> Rect {
         self.inspector_drawer.sidebar_rect()
+    }
+
+    /// Whether the pointer is over the slide's canvas in the editor: not the
+    /// slide list, not the properties, and not the chrome around them.
+    fn in_editor_canvas(&self) -> bool {
+        if self.mode != Mode::Edit {
+            return false;
+        }
+        let chrome = self.compute_chrome();
+        let reach = self.chrome_metrics.s6;
+        chrome
+            .slide_dest
+            .inflate(reach, reach)
+            .contains(self.last_mouse)
+            && !self.rail_rect().contains(self.last_mouse)
+            && !(self.inspector_open() && self.inspector_rect().contains(self.last_mouse))
+    }
+
+    /// Zoom the slide one step in (`direction` above zero) or out, from the
+    /// size it shows at now. The fitted size is the floor, so Ctrl+0 and two
+    /// steps back always bring the whole slide into view.
+    pub(crate) fn zoom_slide(&mut self, direction: f64) {
+        if direction == 0.0 {
+            return;
+        }
+        let current = self.compute_chrome().scale;
+        self.slide_zoom = self.slide_zoom.step(current, direction > 0.0);
+        self.clamp_slide_pan();
+    }
+
+    /// Show the whole slide in the pane again.
+    pub(crate) fn zoom_slide_to_fit(&mut self) {
+        self.slide_zoom = SlideZoom::Fit;
+        self.slide_pan = (0.0, 0.0);
+    }
+
+    /// Zoom to `scale`, where `None` fits the slide to the pane.
+    pub(crate) fn zoom_slide_to(&mut self, scale: Option<f64>) {
+        match scale {
+            Some(scale) => self.slide_zoom = SlideZoom::Pinned(scale),
+            None => self.slide_zoom = SlideZoom::Fit,
+        }
+        self.clamp_slide_pan();
+    }
+
+    /// Move a zoomed slide by `(dx, dy)` screen px, as the wheel does,
+    /// stopping where its edge reaches the pane's. Returns whether it moved: a
+    /// fitted slide, or one already at its edge, has nowhere to go and leaves
+    /// the wheel to whoever is below.
+    pub(crate) fn pan_slide(&mut self, dx: f64, dy: f64) -> bool {
+        if self.slide_zoom.is_fit() {
+            return false;
+        }
+        let before = self.slide_pan;
+        self.slide_pan = (self.slide_pan.0 + dx, self.slide_pan.1 + dy);
+        self.clamp_slide_pan();
+        self.slide_pan != before
+    }
+
+    /// Keep the slide's pan inside what the pane does not show: a zoomed slide
+    /// can be moved as far as its own overflow, and no further.
+    fn clamp_slide_pan(&mut self) {
+        let (avail_w, avail_h) = self.slide_pane.get();
+        let SlideZoom::Pinned(scale) = self.slide_zoom else {
+            self.slide_pan = (0.0, 0.0);
+            return;
+        };
+        let reach_x = ((SLIDE_W * scale - avail_w) / 2.0).max(0.0);
+        let reach_y = ((SLIDE_H * scale - avail_h) / 2.0).max(0.0);
+        self.slide_pan = (
+            self.slide_pan.0.clamp(-reach_x, reach_x),
+            self.slide_pan.1.clamp(-reach_y, reach_y),
+        );
     }
 
     /// The rail's painted rect, resolved from the current width + flap reveal.
@@ -1192,8 +1256,6 @@ impl SlidesApp {
         }
     }
 
-    // --- geometry -----------------------------------------------------------
-
     // --- mouse → slide coords ----------------------------------------------
     #[allow(
         clippy::unused_self,
@@ -1206,7 +1268,7 @@ impl SlidesApp {
     }
 
     fn handles_of(&self, dest: Rect, s: f64, el: &Element) -> Vec<(Handle, Rect)> {
-        let er = render::element_dest(dest, s, el);
+        let er = self.element_frame(dest, s, el);
         // Anchor the handles on a rect outset from the content by
         // the theme's related spacing, so each handle sits *outside* the element and
         // can never overlap the content (e.g. the first glyph of a left-anchored
@@ -1246,31 +1308,13 @@ impl SlidesApp {
             .collect()
     }
 
-    // --- actions ------------------------------------------------------------
-
     fn apply_hit(&mut self, hit: Hit) {
-        // Any action other than toggling the overflow menu itself dismisses it
-        // (picking a tool from it, or any other toolbar action).
-        if !matches!(hit, Hit::ToggleToolbarMenu) {
-            self.toolbar_menu_open = false;
-            self.ctx_menu.close();
-        }
+        self.ctx_menu.close();
         match hit {
-            Hit::ToggleToolbarMenu => self.open_tools_menu(),
             Hit::OpenLayoutMenu => self.open_layout_picker(),
             Hit::NewSlide => self.new_slide(),
             Hit::DuplicateSlide => self.duplicate_slide(),
             Hit::DeleteSlide => self.delete_slide(),
-            Hit::Present => self.enter_present(),
-            Hit::Overview => {
-                self.mode = if self.mode == Mode::Overview {
-                    Mode::Edit
-                } else {
-                    Mode::Overview
-                };
-                self.editing_text = false;
-                self.editing_notes = false;
-            }
             Hit::OpenSlide(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
                 self.sel = None;
@@ -1309,18 +1353,9 @@ impl SlidesApp {
                     self.set_sel_f64("stroke_width", 4.0);
                 }
             }
-            Hit::ToggleBold => {
-                if let Some(el) = self.selected_element() {
-                    let v = !el.bold;
-                    self.set_sel_bool("bold", v);
-                }
-            }
-            Hit::ToggleItalic => {
-                if let Some(el) = self.selected_element() {
-                    let v = !el.italic;
-                    self.set_sel_bool("italic", v);
-                }
-            }
+            Hit::ToggleBold => self.toggle_mark(ui::widget::marks::Mark::Bold),
+            Hit::ToggleItalic => self.toggle_mark(ui::widget::marks::Mark::Italic),
+            Hit::ToggleList(ordered) => self.toggle_list(ordered),
             Hit::SetAlign(a) => self.set_sel_str("align", a.as_str()),
             Hit::BringFront => self.restack(true),
             Hit::SendBack => self.restack(false),
@@ -1339,9 +1374,10 @@ impl SlidesApp {
             Hit::SetPalette(p) => {
                 self.submit(&actions::set_deck_palette_action(p));
             }
+            Hit::SetLook(look) => {
+                self.submit(&actions::set_deck_look_action(look));
+            }
             Hit::EditNotes => self.begin_notes_edit(),
-            Hit::ToggleRail => self.toggle_rail_flap(),
-            Hit::ToggleInspector => self.toggle_inspector_flap(),
         }
     }
 
@@ -1392,6 +1428,95 @@ impl SlidesApp {
         };
         self.restyle(&style);
     }
+    /// Toggle `mark` as the toolbar's button does: over the selected words
+    /// while a text box is being edited, through the shared editor exactly
+    /// as its shortcut does; over every word of a selected box otherwise.
+    fn toggle_mark(&mut self, mark: ui::widget::marks::Mark) {
+        if let Some(editor) = self.editing_words() {
+            // The editor's change is written in this frame's settle pass.
+            editor.host.widget_mut().editor_mut().toggle_mark(mark);
+            return;
+        }
+        let Some(el) = self.selected_element() else {
+            return;
+        };
+        let on = !mark_covers(&el.rich_blocks(), &mark);
+        self.set_sel_bool(
+            if mark == ui::widget::marks::Mark::Italic {
+                "italic"
+            } else {
+                "bold"
+            },
+            on,
+        );
+    }
+
+    /// Toggle a bulleted list, or a numbered one when `ordered`: over the
+    /// selected paragraphs while a text box is being edited, through the
+    /// shared editor; over every paragraph of a selected box otherwise.
+    fn toggle_list(&mut self, ordered: bool) {
+        if let Some(editor) = self.editing_words() {
+            editor.host.widget_mut().editor_mut().toggle_list(ordered);
+            return;
+        }
+        let Some((slide, el)) = self.selected_text_box() else {
+            return;
+        };
+        let on = !el
+            .rich_blocks()
+            .iter()
+            .all(|block| listed(&block.kind, ordered));
+        if let Some(action) = actions::list_action(&slide, &el, on.then_some(ordered)) {
+            self.submit(&action);
+        }
+    }
+
+    fn editing_words(&mut self) -> Option<&mut TextBoxEditor> {
+        self.editing_text_box()?;
+        self.text_editor.as_mut().filter(|editor| editor.focused)
+    }
+
+    /// Whether the toolbar shows `mark` as on: over the selected words (or
+    /// for the text typed next) while a box is being edited, over all of a
+    /// selected box's words otherwise.
+    fn mark_on(&self, mark: &ui::widget::marks::Mark) -> bool {
+        if self.editing_text
+            && let Some(editor) = self.text_editor.as_ref().filter(|editor| editor.focused)
+        {
+            return editor
+                .host
+                .widget()
+                .editor()
+                .active_marks()
+                .iter()
+                .any(|active| active.same_kind(mark));
+        }
+        self.selected_element()
+            .is_some_and(|el| el.kind == ElementKind::Text && mark_covers(&el.rich_blocks(), mark))
+    }
+
+    /// Whether the toolbar shows the list (numbered when `ordered`) as on:
+    /// for the paragraph with the caret while a box is being edited, for
+    /// all of a selected box's paragraphs otherwise.
+    fn list_on(&self, ordered: bool) -> bool {
+        if self.editing_text
+            && let Some(editor) = self.text_editor.as_ref().filter(|editor| editor.focused)
+        {
+            return editor
+                .host
+                .widget()
+                .editor()
+                .focused_kind()
+                .is_some_and(|kind| listed(kind, ordered));
+        }
+        self.selected_element().is_some_and(|el| {
+            let blocks = el.rich_blocks();
+            el.kind == ElementKind::Text
+                && !blocks.is_empty()
+                && blocks.iter().all(|block| listed(&block.kind, ordered))
+        })
+    }
+
     fn set_sel_bool(&self, key: &str, v: bool) {
         self.restyle(&if key == "italic" {
             actions::Style::Italic(v)
@@ -1461,7 +1586,13 @@ impl SlidesApp {
         };
         self.submit(&actions::add_element_action(&slide_id, &el));
         self.sel = Some(id);
-        self.editing_text = false;
+        // A new text box opens with its stock words selected, so what is
+        // typed next replaces them.
+        if kind == ElementKind::Text {
+            self.begin_text_edit(true);
+        } else {
+            self.editing_text = false;
+        }
     }
 
     /// Ask the person for a picture with the host's chooser (the app never
@@ -1650,6 +1781,49 @@ impl SlidesApp {
         self.sel = Some(id);
     }
 
+    /// Put the chosen element on the clipboard; `cut` also takes it off the
+    /// slide, so a shape moves rather than being copied twice.
+    pub(crate) fn copy_selected(&mut self, cut: bool) {
+        let Some(element) = self.selected_element().cloned() else {
+            return;
+        };
+        let clip = clipboard::Clip::of(&element);
+        ui::text_selection::clipboard_copy(&clip.text());
+        if cut {
+            self.delete_element();
+        }
+        self.io_toast.show(
+            tr(if cut {
+                "slides-toast-cut-element"
+            } else {
+                "slides-toast-copied-element"
+            }),
+            ToastKind::Info,
+        );
+    }
+
+    /// Place what the clipboard holds on the slide shown, as copies with ids
+    /// of their own. Clipboard text that is not a slide element is left to
+    /// whoever asked for it: pasting words into a text box is the box's job.
+    pub(crate) fn paste_elements(&mut self) {
+        let Some(text) = ui::text_selection::clipboard_paste() else {
+            return;
+        };
+        let Some(clip) = clipboard::Clip::read(&text) else {
+            return;
+        };
+        let Some(slide) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        let mut last = None;
+        for element in clip.pasted(|| uuid::Uuid::new_v4().to_string()) {
+            last = Some(element.id.clone());
+            self.submit(&actions::paste_element_action(&slide, &element));
+        }
+        self.sel = last;
+        self.editing_text = false;
+    }
+
     fn delete_element(&mut self) {
         if let (Some(id), Some(slide)) = (self.sel.clone(), self.slide().map(|s| s.id.clone())) {
             self.submit(&actions::delete_element_action(&slide, &id));
@@ -1745,31 +1919,6 @@ impl SlidesApp {
         self.mode == Mode::Present
     }
 
-    // --- text editing -------------------------------------------------------
-
-    /// Start renaming the deck title inline via the shared [`TextInput`] (caret
-    /// at the end, ready for full selection editing).
-    fn begin_title_edit(&mut self) {
-        self.editing_title = true;
-        self.editing_text = false;
-        self.editing_notes = false;
-        self.sel = None;
-        self.title_input.set_text(&self.deck.title);
-        // `set_text` clamps but doesn't advance the caret, so park it at the end.
-        self.title_input.set_cursor_pos(self.deck.title.len());
-        Widget::set_focus(&mut self.title_input, true);
-    }
-
-    /// Commit the inline title rename: flush any pending edit to the CRDT and
-    /// blur the field.
-    fn commit_title_edit(&mut self) {
-        if let Some(t) = self.title_input.take_dirty() {
-            self.submit(&crate::actions::set_deck_title_action(t));
-        }
-        self.editing_title = false;
-        Widget::set_focus(&mut self.title_input, false);
-    }
-
     /// Show the current slide's speaker notes in the notes editor, edited
     /// through the deck's dispatcher as that slide's notes. Moving to
     /// another slide rebinds it; otherwise a collaborator's edit folds in
@@ -1805,7 +1954,9 @@ impl SlidesApp {
             chrome.inspector_body.width() as f32,
             chrome.inspector_content_h as f32,
         );
-        if let Some(notes) = chrome.notes_box {
+        if let Some(notes) = chrome.notes_box
+            && chrome.inspector.contains(notes.center())
+        {
             let overflow = (notes.y1 - chrome.inspector_body.y1).max(0.0);
             self.inspector_scroll
                 .set_offset_y(self.inspector_scroll.offset_y() + overflow as f32);
@@ -1815,72 +1966,6 @@ impl SlidesApp {
     fn end_notes_edit(&mut self) {
         self.editing_notes = false;
         Widget::set_focus(self.notes.control_mut(), false);
-    }
-
-    /// The rect the inline title editor occupies in the toolbar.
-    fn title_input_rect(&self, chrome: &Chrome) -> Rect {
-        let m = &self.chrome_metrics;
-        let pad = m.field_pad;
-        let x1 = chrome
-            .buttons
-            .iter()
-            .filter(|b| b.rect.y0 < chrome.toolbar.y1 && b.rect.x0 > chrome.title_pos.x)
-            .map(|b| b.rect.x0 - m.s2)
-            .fold(chrome.toolbar.x1 - m.s3, f64::min);
-        Rect::new(
-            chrome.title_pos.x - pad,
-            chrome.title_rect.y0,
-            x1.max(chrome.title_pos.x + m.target),
-            chrome.title_rect.y1,
-        )
-    }
-
-    /// Route an event to the inline title [`TextInput`] while renaming. Returns
-    /// `true` if the event was consumed. Enter / Esc commit; a press outside the
-    /// field commits and falls through so the click still acts.
-    fn route_title_edit(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
-        if !self.editing_title {
-            return false;
-        }
-        let chrome = self.compute_chrome();
-        let rect = self.title_input_rect(&chrome);
-        self.title_input.apply_layout_external(rect);
-
-        match routed.event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(
-                    position.x / routed.scale_factor,
-                    position.y / routed.scale_factor,
-                );
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                self.commit_title_edit();
-                return true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if !rect.inflate(4.0, 8.0).contains(self.last_mouse) => {
-                // Click away commits, then falls through so the click still acts.
-                self.commit_title_edit();
-                return false;
-            }
-            _ => {}
-        }
-        let mut h = false;
-        self.title_input
-            .handle_event(routed.event, &mut routed.event_ctx(&mut h));
-        // The rename is one edit, submitted when it is committed.
-        true
     }
 
     /// Route the inspector notes box through its notes editor, whose every
@@ -1931,43 +2016,22 @@ impl SlidesApp {
         input_handled
     }
 
-    // --- drawing ------------------------------------------------------------
-
     /// The canvas slide itself: drop shadow, the rendered slide, its
     /// border, the selection ring/handles or live text caret+selection, the
     /// snap guides, and the caption underneath. No-op while the deck has no
     /// current slide.
-    fn draw_editor_canvas(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chrome: &Chrome,
-        pal: &Palette,
-    ) {
+    fn draw_editor_canvas(&self, ctx: &mut PaintCtx<'_>, chrome: &Chrome, assets: DeckAssets<'_>) {
         let Some(slide) = self.slide() else { return };
-        let radius = f64::from(theme.tokens.radii.control);
+        let radius = f64::from(ctx.theme.tokens.radii.control);
         // The text box being edited draws its words through its editor.
         let editing = self
             .text_editor
             .as_ref()
             .filter(|_| self.editing_text)
             .map(|editor| editor.element_id.as_str());
-        render::draw_slide_except(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            DeckAssets {
-                palette: pal,
-                images: &self.images,
-            },
-            slide,
-            chrome.slide_dest,
-            radius,
-            editing,
-            true,
-        );
-        self.draw_editor_selection_chrome(scene, t, theme, chrome);
-        self.draw_editor_guides(scene, t, theme, chrome);
+        render::draw_slide_except(ctx, assets, slide, chrome.slide_dest, radius, editing, true);
+        self.draw_editor_selection_chrome(ctx.scene, ctx.transform, ctx.theme, chrome);
+        self.draw_editor_guides(ctx.scene, ctx.transform, ctx.theme, chrome);
     }
 
     /// The selection ring + resize handles around the selected element, or
@@ -2105,7 +2169,7 @@ impl SlidesApp {
             // Seed the picker with the element's current fill on the first frame
             // it's open (now that we hold the theme to resolve a colour role).
             if self.fill_picker_needs_init {
-                let mut pal = self.palette(theme);
+                let mut pal = self.palette();
                 if let Some(slide) = self.slide() {
                     pal = pal.on(slide.background);
                 }
@@ -2129,22 +2193,6 @@ impl SlidesApp {
             );
             self.fill_picker.draw(scene, t, tr, &local, presence);
         }
-    }
-
-    /// Draw the inline title [`TextInput`] over the toolbar while renaming.
-    fn draw_title_input(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        chrome: &Chrome,
-    ) {
-        let _ = theme;
-        let rect = self.title_input_rect(chrome);
-        self.title_input.apply_layout_external(rect);
-        self.title_input.draw(scene, t, tr, theme, presence);
     }
 
     pub(super) fn draw_notes(
@@ -2185,14 +2233,12 @@ impl SlidesApp {
         self.presentation.draw(scene, t, tr, theme, &frame);
     }
 
-    // --- overview (slide-sorter) -------------------------------------------
-
     fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>, f64) {
         self.overview.geometry(self.rect, self.deck.slides.len())
     }
 
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let palette = self.palette(theme);
+        let palette = self.palette();
         // A slide's type is sized in slide units, whatever the reader's text
         // scale; the cards' own text is set in its roles.
         self.overview.draw(
@@ -2204,22 +2250,9 @@ impl SlidesApp {
             DeckAssets {
                 palette: &palette,
                 images: &self.images,
+                presence: None,
             },
         );
-        let (buttons, title, title_max) = self.overview_header();
-        let style = theme.text(ui::TextRole::Heading);
-        let shown = tr.elide_to_width_style(&self.deck.title, title_max as f32, &style);
-        tr.draw_style(
-            scene,
-            &shown,
-            theme.tokens.colors.text_primary,
-            t * Affine::translate((title.x, title.y)),
-            None,
-            &style,
-        );
-        for button in &buttons {
-            self.draw_button(scene, t, tr, theme, &palette, button);
-        }
     }
 }
 
@@ -2268,8 +2301,6 @@ impl SlidesApp {
             Hit::NewSlide => "slides.control.new-slide".into(),
             Hit::DuplicateSlide => "slides.control.duplicate-slide".into(),
             Hit::DeleteSlide => "slides.control.delete-slide".into(),
-            Hit::Present => "slides.control.present".into(),
-            Hit::Overview => "slides.control.overview".into(),
             Hit::OpenSlide(index) | Hit::SelectSlide(index) => {
                 self.deck.slides.get(*index).map_or_else(
                     || format!("slides.slide-index:{index}"),
@@ -2282,6 +2313,8 @@ impl SlidesApp {
             Hit::OpenFillPicker => "slides.control.custom-fill".into(),
             Hit::ToggleBold => "slides.control.bold".into(),
             Hit::ToggleItalic => "slides.control.italic".into(),
+            Hit::ToggleList(false) => "slides.control.bulleted-list".into(),
+            Hit::ToggleList(true) => "slides.control.numbered-list".into(),
             Hit::SetAlign(align) => format!("slides.control.align:{}", align.as_str()),
             Hit::BringFront => "slides.control.bring-front".into(),
             Hit::SendBack => "slides.control.send-back".into(),
@@ -2292,11 +2325,9 @@ impl SlidesApp {
                 format!("slides.control.background:{}", background.as_str())
             }
             Hit::SetPalette(palette) => format!("slides.control.palette:{}", palette.as_str()),
+            Hit::SetLook(look) => format!("slides.control.look:{}", look.as_str()),
             Hit::EditNotes => "slides.control.edit-notes".into(),
-            Hit::ToggleRail => "slides.control.toggle-slides".into(),
-            Hit::ToggleInspector => "slides.control.toggle-properties".into(),
             Hit::OpenLayoutMenu => "slides.control.layout-menu".into(),
-            Hit::ToggleToolbarMenu => "slides.control.more-tools".into(),
         }
     }
 
@@ -2322,16 +2353,6 @@ impl SlidesApp {
                 Role::Button,
                 tr("slides-a11y-delete-slide"),
                 AccessState::new().disabled(self.deck.slides.len() <= 1),
-            ),
-            Hit::Present => (
-                Role::Button,
-                tr("slides-a11y-start-presentation"),
-                AccessState::new(),
-            ),
-            Hit::Overview => (
-                Role::ToggleButton,
-                tr("slides-a11y-slide-overview"),
-                AccessState::new().checked(self.mode == Mode::Overview),
             ),
             Hit::OpenSlide(index) | Hit::SelectSlide(index) => (
                 Role::Button,
@@ -2373,12 +2394,21 @@ impl SlidesApp {
             Hit::ToggleBold => (
                 Role::ToggleButton,
                 tr("slides-a11y-bold"),
-                AccessState::new().checked(selected.is_some_and(|element| element.bold)),
+                AccessState::new().checked(self.mark_on(&ui::widget::marks::Mark::Bold)),
             ),
             Hit::ToggleItalic => (
                 Role::ToggleButton,
                 tr("slides-a11y-italic"),
-                AccessState::new().checked(selected.is_some_and(|element| element.italic)),
+                AccessState::new().checked(self.mark_on(&ui::widget::marks::Mark::Italic)),
+            ),
+            Hit::ToggleList(ordered) => (
+                Role::ToggleButton,
+                tr(if *ordered {
+                    "slides-a11y-numbered-list"
+                } else {
+                    "slides-a11y-bulleted-list"
+                }),
+                AccessState::new().checked(self.list_on(*ordered)),
             ),
             Hit::SetAlign(align) => (
                 Role::RadioButton,
@@ -2436,44 +2466,21 @@ impl SlidesApp {
                 ),
                 AccessState::new().checked(self.deck.palette == *palette),
             ),
+            Hit::SetLook(look) => (
+                Role::RadioButton,
+                tr_args(
+                    "slides-a11y-deck-look",
+                    &[("name", ArgValue::from(look.label()))],
+                ),
+                AccessState::new().checked(self.deck.look == *look),
+            ),
             Hit::EditNotes => (
                 Role::Button,
                 tr("slides-a11y-edit-notes"),
                 AccessState::new(),
             ),
-            Hit::ToggleRail => (
-                Role::ToggleButton,
-                tr("slides-a11y-slides-panel"),
-                AccessState::new().checked(self.rail_open()),
-            ),
-            Hit::ToggleInspector => (
-                Role::ToggleButton,
-                tr("slides-a11y-properties-panel"),
-                AccessState::new().checked(self.inspector_open()),
-            ),
             Hit::OpenLayoutMenu => (Role::Button, tr("slides-a11y-layout"), AccessState::new()),
-            Hit::ToggleToolbarMenu => (
-                Role::Button,
-                tr("slides-a11y-more-tools"),
-                AccessState::new().expanded(self.toolbar_menu_open),
-            ),
         }
-    }
-
-    fn tooltip_at(&self, point: Point) -> Option<String> {
-        let chrome = self.compute_chrome();
-        chrome
-            .buttons
-            .iter()
-            .chain(chrome.overflow.iter())
-            .find(|button| button.rect.contains(point))
-            .and_then(|button| match button.hit {
-                Hit::ToggleRail => Some(tr("slides-tip-toggle-slides")),
-                Hit::ToggleInspector => Some(tr("slides-tip-toggle-properties")),
-                Hit::Overview => Some(tr("slides-tip-overview")),
-                Hit::ToggleToolbarMenu => Some(tr("slides-tip-more-tools")),
-                _ => None,
-            })
     }
 }
 
@@ -2571,11 +2578,16 @@ impl AudiencePresentationProvider for SlidesApp {
 impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::AudiencePresentationProvider
+        dyn ui::widget::AudiencePresentationProvider,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
+        // An open's or a save's result says so in the window's bar while it
+        // lasts.
+        self.io_toast.expire();
+        self.io_toast.publish();
         self.adopt_deferred();
         let opened = std::mem::take(&mut self.opened.borrow_mut().requests);
         for slide in opened {
@@ -2670,7 +2682,11 @@ impl Widget for SlidesApp {
                     chrome.inspector_body.width() as f32,
                     chrome.inspector_content_h as f32,
                 );
-                self.draw_editor(scene, transform, text_renderer, theme, &chrome);
+                self.draw_editor(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    &chrome,
+                    presence,
+                );
                 self.draw_inspector_widgets(
                     scene,
                     transform,
@@ -2679,16 +2695,6 @@ impl Widget for SlidesApp {
                     presence,
                     &chrome,
                 );
-                if self.editing_title {
-                    self.draw_title_input(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        presence,
-                        &chrome,
-                    );
-                }
             }
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
@@ -2698,15 +2704,9 @@ impl Widget for SlidesApp {
         // flag, suppress the overlay, and swallow all later navigation keys.
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
-        self.io_toast.paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.rect,
-            ToastAnchor::BottomCenter,
-        );
-        // Right-click context menu floats above everything else.
+        // The words' menu and the right-click context menu float above
+        // everything else.
+        self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -2727,6 +2727,11 @@ impl Widget for SlidesApp {
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
             || self.page_sidebar.is_dragging()
+            // The words being edited animate as any text field's do.
+            || self
+                .text_editor
+                .as_ref()
+                .is_some_and(|editor| self.editing_text && editor.host.needs_animation_frame())
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -2738,6 +2743,20 @@ impl Widget for SlidesApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // The press that opens a box is taken up within its own event.
+        self.opening_press = None;
+        // The toolkit delivers a finger's taps and drags as pointer events
+        // before its contact update; the contact only says a finger is down.
+        if let WindowEvent::Touch(touch) = event {
+            use winit::event::TouchPhase;
+            match touch.phase {
+                TouchPhase::Started => self.fingers_down = self.fingers_down.saturating_add(1),
+                TouchPhase::Ended | TouchPhase::Cancelled => {
+                    self.fingers_down = self.fingers_down.saturating_sub(1);
+                }
+                TouchPhase::Moved => {}
+            }
+        }
         // A restore replaces the notes' text object; the first event may
         // precede the sync that follows it.
         if self.editing_notes {
@@ -2772,6 +2791,13 @@ impl Widget for SlidesApp {
             *ctx.handled = true;
             return;
         }
+        // The words being edited take a secondary press on them (their own
+        // menu) and every pointer event while that menu is open.
+        if self.words_take_menu_event(routed.event) {
+            self.route_text_edit(&mut routed, ctx.handled);
+            *ctx.handled = true;
+            return;
+        }
         // A right-press (re)opens a context menu — handled before the modal
         // routing so it works even while another menu is already up.
         if let WindowEvent::MouseInput {
@@ -2788,17 +2814,15 @@ impl Widget for SlidesApp {
             *ctx.handled = true;
             return;
         }
-        // The inline title editor owns input while renaming.
-        if self.route_title_edit(&mut routed) {
-            *ctx.handled = true;
-            return;
-        }
         // The inspector's embedded widgets (font-size field, fill picker) get
         // first refusal on events over them.
         if self.route_inspector_widgets(&mut routed) {
             *ctx.handled = true;
             return;
         }
+        // Typing on a selected text box writes into it, as in other
+        // presentation editors: the letters are words, never shortcuts.
+        self.begin_typing_into_selection(routed.event, routed.modifiers);
         // The text box being edited owns the keyboard and its own pointer.
         if self.route_text_edit(&mut routed, ctx.handled) {
             return;
@@ -2809,6 +2833,7 @@ impl Widget for SlidesApp {
             routed.modifiers,
             ctx.handled,
         );
+        self.open_at_press(&mut routed);
     }
 
     fn name(&self) -> &'static str {
@@ -2946,7 +2971,6 @@ impl Widget for SlidesApp {
         let controls = chrome
             .buttons
             .iter()
-            .chain(chrome.overflow.iter())
             .filter(|button| self.rect.contains(button.rect.center()))
             .filter_map(|button| {
                 let target = self.semantic_target(&button.hit);
@@ -2995,11 +3019,12 @@ impl Widget for SlidesApp {
                             .focusable(true)
                             .selected(self.sel.as_deref() == Some(element.id.as_str())),
                     )
+                    .with_children(self.words_access_node(&element.id).into_iter().collect())
                 })
                 .collect()
         });
 
-        let mut children = vec![
+        let children = vec![
             AccessNode::new(Role::Toolbar)
                 .with_name("Slides controls")
                 .with_children(controls),
@@ -3015,7 +3040,6 @@ impl Widget for SlidesApp {
                 .with_name(format!("Slide {} canvas", self.cur_slide + 1))
                 .with_children(elements),
         ];
-        children.extend(self.io_toast.access_node());
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
@@ -3026,13 +3050,42 @@ impl Widget for SlidesApp {
         )
     }
 
+    /// An assistive technology operates the words being edited, through
+    /// the node `Self::words_access_node` gave them.
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let words = ui::a11y::hash_key(&WORDS_ACCESS_KEY);
+        let Some(at) = key_path.iter().position(|&key| key == words) else {
+            return false;
+        };
+        let Some(editor) = self.editing_words() else {
+            return false;
+        };
+        let rest = key_path.get(at + 1..).unwrap_or_default();
+        editor.host.perform_action(action, rest, state, path)
+    }
+
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
+        // The words being edited name their own parts.
+        if !target.starts_with("slides.")
+            && let Some(editor) = self.editing_words()
+            && editor
+                .host
+                .perform_semantic_action(target, action, state, path)
+        {
+            return true;
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -3088,7 +3141,6 @@ impl Widget for SlidesApp {
         let hit = chrome
             .buttons
             .iter()
-            .chain(chrome.overflow.iter())
             .find(|button| self.semantic_target(&button.hit) == target)
             .map(|button| button.hit.clone());
         if let Some(hit) = hit {
@@ -3103,11 +3155,58 @@ impl Widget for SlidesApp {
         if self.editing_notes {
             return self.notes.control().cursor_shape(point);
         }
+        // The words being edited show the text beam, as in any text field.
+        if self.editing_text
+            && self.text_edit_box.contains(point)
+            && let Some(editor) = &self.text_editor
+        {
+            return editor
+                .host
+                .cursor_shape(point)
+                .or(Some(winit::window::CursorIcon::Text));
+        }
         None
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip_text.as_deref()
+    /// A finger's drag on something on the canvas moves, resizes or
+    /// selects it as the mouse's does; a finger held on a slide in the list
+    /// picks it up to move it. A tap clicks and a hold reaches the menu, as
+    /// everywhere. Elsewhere a drag scrolls.
+    fn touch_claim(&self, point: Point) -> ui::TouchClaim {
+        if self.canvas_takes_finger(point) {
+            ui::TouchClaim::Drag
+        } else if self.rail_takes_held_finger(point) {
+            ui::TouchClaim::HoldDrag
+        } else {
+            ui::TouchClaim::Pointer
+        }
+    }
+
+    /// What the person did in the window's bar runs, and the bar's slots
+    /// follow the editor. Then the edit that typing or a toolbar left for
+    /// after the event: the formatting a keystroke closed, a mark the
+    /// toolbar set on the selection. The words' editor writes it now, in
+    /// this frame.
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.run_window_toolbar();
+        if self.editing_text
+            && let Some(editor) = self.text_editor.as_mut()
+        {
+            editor.host.settle(edits, path);
+        }
+    }
+
+    /// The words being edited wake the editor when a spelling mark settles
+    /// or the word under the caret has a suggestion; a file notice wakes it
+    /// to leave.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.text_editor
+            .as_ref()
+            .filter(|_| self.editing_text)
+            .and_then(|editor| editor.host.next_wake_deadline())
+            .into_iter()
+            .chain(self.io_toast.deadline())
+            .min()
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -3122,9 +3221,30 @@ impl Widget for SlidesApp {
     }
 
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        // A text box being edited takes the input method too, so composed
+        // text (and, on the web, the page's text field) reaches it.
+        if self.editing_text
+            && let Some(editor) = &self.text_editor
+        {
+            return editor
+                .host
+                .ime_content()
+                .or(Some(ui::ime::InputContent::TEXT));
+        }
         self.editing_notes
             .then(|| self.notes.control().ime_content())
             .flatten()
+    }
+
+    /// A text box and the speaker notes take line feeds as text: the input
+    /// method may commit several lines into them.
+    fn ime_multiline(&self) -> bool {
+        if self.editing_text
+            && let Some(editor) = &self.text_editor
+        {
+            return editor.host.ime_multiline();
+        }
+        self.editing_notes && self.notes.control().ime_multiline()
     }
 
     /// Keep receiving pointer events for the whole of a canvas move/resize or a
@@ -3155,6 +3275,22 @@ impl SlidesApp {
                 self.enter_present();
             }
             SlidesEffect::EndPresentation => self.exit_present(),
+            SlidesEffect::ShowSlideList { shown } => {
+                if shown {
+                    self.mode = Mode::Edit;
+                }
+                if self.rail_open() != shown {
+                    self.toggle_rail_flap();
+                }
+            }
+            SlidesEffect::ShowProperties { shown } => {
+                if shown {
+                    self.mode = Mode::Edit;
+                }
+                if self.inspector_open() != shown {
+                    self.toggle_inspector_flap();
+                }
+            }
             SlidesEffect::OpenSlide { slide } => {
                 let idx = self.slide_index(&slide)?;
                 self.mode = Mode::Edit;
@@ -3181,6 +3317,10 @@ impl SlidesApp {
             SlidesEffect::ReadDeck => {
                 return Ok(Effected::value(crate::outline::of_deck(&self.deck)));
             }
+            SlidesEffect::ImportPptxContent { content } => {
+                return self.import_pptx_content(&content, cx);
+            }
+            SlidesEffect::ExportPptxContent => return self.export_pptx_content(cx),
         }
         Ok(Effected::done())
     }
@@ -3259,7 +3399,6 @@ impl SlidesApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
-                self.tooltip_text = self.tooltip_at(p);
                 if self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open() {
                     // Feed the shared rail's reorder controller / menu hover; the
                     // gap + hover track the cursor. (The rail's list geometry is
@@ -3280,7 +3419,7 @@ impl SlidesApp {
                 ElementState::Released => self.on_release(handled),
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_wheel(*delta, scale_factor, handled);
+                self.on_wheel(*delta, scale_factor, modifiers.state(), handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3367,6 +3506,30 @@ impl SlidesApp {
                     let _ = self.page_sidebar.take_events();
                 }
             }
+        }
+        // `--shots`-only: the words' menu, on the first word of the box
+        // being edited, once its words are laid out.
+        if let Some(at_end) = self.demo_words_menu
+            && let Some(editor) = self.text_editor.as_mut()
+            && editor.words_h.is_some()
+        {
+            let surface = editor.host.widget_mut();
+            if let Some(line) = surface
+                .editor()
+                .blocks()
+                .first()
+                .map(|block| block.line.get_rect())
+            {
+                let x = if at_end {
+                    line.x1 - 8.0
+                } else {
+                    line.x0 + 24.0
+                };
+                surface
+                    .editor_mut()
+                    .open_text_menu(Point::new(x, line.center().y));
+            }
+            self.demo_words_menu = None;
         }
         // `--shots`-only: stage a live reorder drag so the capture shows the
         // floating ghost + the reflowed drop gap.
@@ -3616,10 +3779,10 @@ impl SlidesApp {
         self.on_press_editor(p, handled);
     }
 
-    /// `on_press` in `Mode::Edit`: the shared rail's own context menu and the
-    /// toolbar overflow menu are modal while open (handled first, ahead of
-    /// all other chrome); otherwise buttons, the title, the overlay scrim,
-    /// the thumbnail rail and the canvas are tried in pointer-priority order.
+    /// `on_press` in `Mode::Edit`: the shared rail's own context menu is
+    /// modal while open (handled first, ahead of all other chrome);
+    /// otherwise buttons, the overlay scrim, the thumbnail rail and the
+    /// canvas are tried in pointer-priority order.
     fn on_press_editor(&mut self, p: Point, handled: &mut bool) {
         let chrome = self.compute_chrome();
 
@@ -3627,13 +3790,7 @@ impl SlidesApp {
             return;
         }
 
-        // A click anywhere but the title itself commits an in-flight rename.
-        if self.editing_title && !chrome.title_rect.contains(p) {
-            self.editing_title = false;
-        }
-
-        // Buttons first (the hamburger toggle lives here, so it wins over the
-        // scrim dismissal below).
+        // Buttons first, ahead of the scrim dismissal below.
         for b in &chrome.buttons {
             if b.rect.contains(p) {
                 let hit = b.hit.clone();
@@ -3641,13 +3798,6 @@ impl SlidesApp {
                 *handled = true;
                 return;
             }
-        }
-        // Deck title → inline rename (the title sits between the hamburger and
-        // the centre tool group, so it never overlaps a button).
-        if chrome.title_rect.contains(p) {
-            self.begin_title_edit();
-            *handled = true;
-            return;
         }
         // Scrim dismissal: with an overlay flap open, a click in the dimmed body
         // (outside both panels) closes whichever flap is open — like tapping the
@@ -3696,10 +3846,9 @@ impl SlidesApp {
         }
     }
 
-    /// The two modal-while-open menus a press can land on: the shared rail's
-    /// own context menu, and the toolbar overflow dropdown. Returns `true`
-    /// (and sets `*handled` as appropriate) when the press was consumed by
-    /// either, so [`Self::on_press_editor`] should stop.
+    /// The modal-while-open menu a press can land on: the shared rail's own
+    /// context menu. Returns `true` (and sets `*handled`) when the press was
+    /// consumed by it, so [`Self::on_press_editor`] should stop.
     fn on_press_editor_menus(&mut self, _chrome: &Chrome, p: Point, handled: &mut bool) -> bool {
         // The shared rail's own context menu is modal while open: the press
         // picks one of its rows or dismisses it, ahead of all other chrome.
@@ -3724,11 +3873,14 @@ impl SlidesApp {
         {
             for (h, hr) in self.handles_of(dest, s, &el) {
                 if hr.contains(p) {
+                    // A text box resizes from the size it shows, grown to
+                    // its words.
+                    let shown_h = self.element_frame(dest, s, &el).height() / s.max(0.0001);
                     self.drag = Drag::Resize {
                         id: el.id.clone(),
                         handle: h,
                         start: self.to_slide(dest, s, p),
-                        orig: (el.x, el.y, el.w, el.h),
+                        orig: (el.x, el.y, el.w, shown_h),
                     };
                     *handled = true;
                     return;
@@ -3741,7 +3893,7 @@ impl SlidesApp {
             let mut z: Vec<&Element> = slide.elements.iter().collect();
             z.sort_by(|a, b| b.z.cmp(&a.z).then_with(|| b.id.cmp(&a.id)));
             for el in z {
-                let er = render::element_dest(dest, s, el);
+                let er = self.element_frame(dest, s, el);
                 if er.inflate(2.0, 2.0).contains(p) {
                     picked = Some(el.id.clone());
                     break;
@@ -3755,10 +3907,16 @@ impl SlidesApp {
                 .is_some_and(|e| e.kind == ElementKind::Text);
             // Double-click = same element, pressed again quickly and near
             // the first press.
+            // A finger's second tap lands within a tap's slop of its first.
+            let slop = if self.fingers_down > 0 {
+                ui::gesture::TouchGestureArena::TAP_SLOP
+            } else {
+                6.0
+            };
             let double = self.last_click.as_ref().is_some_and(|(cid, t, cp)| {
                 cid == &id
                     && t.elapsed() < ui::gesture::multi_click_interval()
-                    && cp.distance(p) < 6.0
+                    && cp.distance(p) < slop
             });
             self.last_click = Some((id.clone(), ui::time::now(), p));
             self.editing_notes = false;
@@ -3771,11 +3929,19 @@ impl SlidesApp {
                 return;
             }
 
+            let blank = self
+                .slide()
+                .and_then(|sl| sl.element(&id))
+                .is_some_and(Element::is_blank_text);
             self.sel = Some(id.clone());
-            if double && is_text {
+            if is_text && (double || blank) {
                 // A deliberate double-click opens the text for editing and
-                // selects the word under the point.
+                // selects the word under the point; an empty box (one showing
+                // its prompt) opens on the first click, ready for its words.
+                // The box's editor takes the press once this event is
+                // through ([`Self::open_at_press`]).
                 self.begin_text_edit(false);
+                self.opening_press = Some((p, if double { 2 } else { 1 }));
             } else {
                 // Single press: select AND arm a move so a selected element
                 // can be dragged on the very first grab (the reported bug was
@@ -3810,7 +3976,8 @@ impl SlidesApp {
         let mut z: Vec<&Element> = slide.elements.iter().collect();
         z.sort_by(|a, b| b.z.cmp(&a.z).then_with(|| b.id.cmp(&a.id)));
         for el in z {
-            if render::element_dest(dest, s, el)
+            if self
+                .element_frame(dest, s, el)
                 .inflate(2.0, 2.0)
                 .contains(p)
             {
@@ -4139,7 +4306,13 @@ impl SlidesApp {
     /// Vertical mouse-wheel scrolling for the two scrollable surfaces: the
     /// edit-mode thumbnail rail (only while the pointer is over it) and the
     /// slide-sorter overview grid.
-    fn on_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64, handled: &mut bool) {
+    fn on_wheel(
+        &mut self,
+        delta: MouseScrollDelta,
+        scale_factor: f64,
+        modifiers: ui::winit::keyboard::ModifiersState,
+        handled: &mut bool,
+    ) {
         // Positive wheel deltas scroll the content up (toward the start), so we
         // subtract from the offset.
         let dy = match delta {
@@ -4157,6 +4330,17 @@ impl SlidesApp {
                     self.sync_page_rail();
                     if self.page_sidebar.on_wheel(-dy) {
                         self.rail_scroll = self.page_sidebar.scroll();
+                        *handled = true;
+                    }
+                } else if self.in_editor_canvas() {
+                    // Over the slide itself: the wheel moves a zoomed slide,
+                    // and with the command modifier it zooms toward the step
+                    // above or below where it is — a slide a person zoomed in
+                    // to read is one they can also move.
+                    if modifiers.control_key() || modifiers.super_key() {
+                        self.zoom_slide(if dy > 0.0 { 1.0 } else { -1.0 });
+                        *handled = true;
+                    } else if self.pan_slide(0.0, dy) {
                         *handled = true;
                     }
                 } else if self.inspector_open() && self.inspector_rect().contains(self.last_mouse) {
@@ -4197,7 +4381,7 @@ impl SlidesApp {
 
         // The help overlay owns every key while visible. It can be opened from
         // any non-text context; active editors reserve `?` for typing.
-        let allow_help = !self.editing_text && !self.editing_notes && !self.editing_title;
+        let allow_help = !self.editing_text && !self.editing_notes;
         if self.help_overlay.on_key(key, allow_help) {
             *handled = true;
             return;
@@ -4236,11 +4420,11 @@ impl SlidesApp {
             return;
         }
 
-        // Text editing intercepts most keys. Speaker notes and title rename are
-        // consumed earlier by their shared `TextInput`s; they reach here only
-        // for shortcuts the fields intentionally leave to the toolkit (notably
+        // Text editing intercepts most keys. Speaker notes are consumed
+        // earlier by their shared `TextInput`; they reach here only for
+        // shortcuts the field intentionally leaves to the toolkit (notably
         // global undo/redo).
-        if self.editing_text || self.editing_notes || self.editing_title {
+        if self.editing_text || self.editing_notes {
             self.on_key_editing_text(key, handled);
             return;
         }
@@ -4312,14 +4496,12 @@ impl SlidesApp {
         }
     }
 
-    /// Keys the focused text (a text box, the speaker notes, the deck-title
-    /// rename) left alone: Escape ends editing; everything else (global
+    /// Keys the focused text (a text box, the speaker notes) left alone: Escape ends editing; everything else (global
     /// undo and redo) falls through to the toolkit.
     fn on_key_editing_text(&mut self, key: &Key, handled: &mut bool) {
         if matches!(key, Key::Named(NamedKey::Escape)) {
             self.end_text_edit();
             self.editing_notes = false;
-            self.editing_title = false;
             *handled = true;
         }
     }
@@ -4425,6 +4607,32 @@ impl SlidesApp {
             *handled = true;
             return;
         }
+        // The zoom chords every app shares: the slide has a size of its own.
+        if ctrl && matches!(lc.as_str(), "=" | "+" | "-" | "0") {
+            match lc.as_str() {
+                "=" | "+" => self.zoom_slide(1.0),
+                "-" => self.zoom_slide(-1.0),
+                _ => self.zoom_slide_to_fit(),
+            }
+            *handled = true;
+            return;
+        }
+        // Copy, cut and paste an element: a shape moves between slides, and
+        // what is pasted is the element itself, not a picture of it.
+        if ctrl && matches!(lc.as_str(), "c" | "x" | "v") {
+            match lc.as_str() {
+                "c" => self.copy_selected(false),
+                "x" => self.copy_selected(true),
+                _ => self.paste_elements(),
+            }
+            *handled = true;
+            return;
+        }
+        // A chord the app does not use is the window's, not a plain letter:
+        // Ctrl+P is not "start presenting".
+        if ctrl {
+            return;
+        }
         match lc.as_str() {
             "n" => {
                 self.new_slide();
@@ -4494,181 +4702,13 @@ impl SlidesApp {
     }
 }
 
-impl SlidesApp {
-    /// Start editing the selected text box's words; `select_all` selects
-    /// them all once the editor opens.
-    fn begin_text_edit(&mut self, select_all: bool) {
-        self.editing_text = true;
-        self.editing_notes = false;
-        self.text_edit_select_all = select_all;
-    }
-
-    /// Stop editing the text box: its editor closes on the next sync.
-    fn end_text_edit(&mut self) {
-        self.editing_text = false;
-        self.text_drag = false;
-        self.text_editor = None;
-    }
-
-    /// The text box being edited and its slide, when there is one.
-    fn editing_text_box(&self) -> Option<(String, Element)> {
-        if !self.editing_text || self.mode != Mode::Edit {
-            return None;
-        }
-        let slide = self.slide()?;
-        let element = slide.element(self.sel.as_deref()?)?;
-        (element.kind == ElementKind::Text).then(|| (slide.id.clone(), element.clone()))
-    }
-
-    /// Open the editor for the text box being edited, close it when editing
-    /// ended, and bring it up to date with the document.
-    fn ensure_text_editor(&mut self, doc: &AutoCommit) {
-        let Some((slide_id, element)) = self.editing_text_box() else {
-            self.text_editor = None;
-            self.text_drag = false;
-            return;
-        };
-        let current = self
-            .text_editor
-            .as_ref()
-            .is_some_and(|editor| editor.slide_id == slide_id && editor.element_id == element.id);
-        if !current {
-            self.text_editor = Some(TextBoxEditor::open(
-                doc,
-                &slide_id,
-                &element,
-                &self.dispatch,
-            ));
-        }
-        let select_all = std::mem::take(&mut self.text_edit_select_all);
-        if let Some(editor) = self.text_editor.as_mut() {
-            editor.host.sync(doc, &automerge::ROOT);
-            if select_all {
-                editor.host.widget_mut().editor_mut().select_all();
-            }
-        }
-    }
-
-    /// Give the text box being edited its keyboard and pointer events.
-    /// Returns whether the event was the box's.
-    fn route_text_edit(&mut self, routed: &mut RoutedEvent<'_, '_>, handled: &mut bool) -> bool {
-        if self.editing_text_box().is_none() {
-            return false;
-        }
-        let keyboard = matches!(
-            routed.event,
-            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-        );
-        let pointer = match routed.event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.text_edit_box.contains(self.last_mouse),
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.text_drag,
-            _ => false,
-        };
-        // The pointer's position always reaches the box, so a press lands
-        // where it was last seen.
-        let moved = matches!(routed.event, WindowEvent::CursorMoved { .. });
-        if !keyboard && !pointer && !moved {
-            return false;
-        }
-        self.ensure_text_editor(routed.state);
-        let Some(editor) = self.text_editor.as_mut() else {
-            return false;
-        };
-        let mut consumed = false;
-        editor.host.handle_event(
-            routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut consumed,
-        );
-        editor.host.sync(routed.state.doc(), routed.path);
-        let outcome = editor.host.widget_mut().take_outcome();
-        match routed.event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } => self.text_drag = true,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                ..
-            } => self.text_drag = false,
-            _ => {}
-        }
-        if outcome.is_some() {
-            // Escape or Ctrl+Enter: done with the words, the box stays selected.
-            debug_assert!(matches!(
-                outcome,
-                Some(FieldOutcome::Submit | FieldOutcome::Cancel)
-            ));
-            self.end_text_edit();
-            consumed = true;
-        }
-        if keyboard || pointer {
-            // Keys the editor left alone (global undo) fall through to the host.
-            *handled |= consumed || pointer;
-            return true;
-        }
-        false
-    }
-
-    /// Paint the text box being edited: its editor, laid out at the slide's
-    /// size and drawn where the box is, in the box's colour.
-    fn draw_text_editor(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chrome: &Chrome,
-        pal: &Palette,
-    ) {
-        let Some((_, element)) = self.editing_text_box() else {
-            return;
-        };
-        let background = self.slide().map(|slide| slide.background);
-        let Some(editor) = self.text_editor.as_mut() else {
-            return;
-        };
-        if editor.element_id != element.id {
-            return;
-        }
-        let palette = background.map_or(*pal, |background| pal.on(background));
-        let color = palette.resolve_role(&element.fill).unwrap_or(palette.text);
-        let surface = editor.host.widget_mut();
-        surface.editor_mut().set_body_size(element.font_size as f32);
-        surface
-            .editor_mut()
-            .set_text_align(render::text_align(element.align));
-        editor.host.set_text_color(Some(color));
-        let content_h = editor
-            .host
-            .layout(render::text_box_rect(&element), theme, tr);
-        editor.host.set_transform(render::text_box_transform(
-            chrome.slide_dest,
-            chrome.scale,
-            &element,
-            content_h,
-        ));
-        editor.host.draw(scene, t, tr, theme, &PresenceCtx::empty());
-        self.text_edit_box = render::element_dest(chrome.slide_dest, chrome.scale, &element);
-    }
-}
-
 /// The inspector's "Custom · #rrggbb" fill button face.
 fn custom_colour_hex(hex: &str) -> String {
     tr_args("slides-custom-colour-hex", &[("hex", ArgValue::from(hex))])
 }
+
+#[path = "app/content_files.rs"]
+mod content_files;
 
 #[cfg(test)]
 #[path = "app/bench.rs"]
@@ -4698,6 +4738,14 @@ mod tests_text;
 #[path = "app/tests_files.rs"]
 mod tests_files;
 
+#[cfg(test)]
+#[path = "app/tests_editing.rs"]
+mod tests_editing;
+
+#[cfg(test)]
+#[path = "app/tests_look.rs"]
+mod tests_look;
+
 impl SlidesApp {
     fn new_layout_picker() -> Dropdown {
         let mut picker = Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
@@ -4713,32 +4761,14 @@ impl SlidesApp {
     }
 }
 
-impl SlidesApp {
-    fn open_tools_menu(&mut self) {
-        let chrome = self.compute_chrome();
-        let Some(more) = chrome
-            .buttons
-            .iter()
-            .find(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
-            .map(|b| b.rect)
-        else {
-            return;
-        };
-        let rows: Vec<_> = chrome
-            .overflow
-            .iter()
-            .filter_map(|button| match &button.kind {
-                ButtonKind::Tool { label, .. } => Some(Some((label.clone(), button.hit.clone()))),
-                _ => None,
-            })
-            .collect();
-        self.open_menu_at(Point::new(more.x0, more.y1), &rows);
-        self.toolbar_menu_open = true;
-    }
-}
-
+mod clipboard;
 mod editor_chrome;
-use editor_chrome::{ButtonKind, Chrome, ChromeMetrics};
+mod text_box;
+mod window_bar;
+#[cfg(test)]
+use editor_chrome::ButtonKind;
+use editor_chrome::{Chrome, ChromeMetrics};
+use text_box::{TextBoxEditor, WORDS_ACCESS_KEY, listed, mark_covers};
 
 impl SlidesApp {
     fn open_layout_picker(&mut self) {
@@ -4754,13 +4784,13 @@ impl SlidesApp {
 impl SlidesApp {
     fn selection_frame(&self, dest: Rect, scale: f64, el: &Element) -> Rect {
         let m = &self.chrome_metrics;
-        let er = render::element_dest(dest, scale, el);
+        let er = self.element_frame(dest, scale, el);
         // Room a handle needs beyond the frame line, plus a clear gap.
         let reach = m.target * 0.25 / 2.0 + m.s1;
         let (mut left, mut top, mut right, mut bottom) = (m.s2, m.s2, m.s2, m.s2);
         if let Some(slide) = self.slide() {
             for other in slide.elements.iter().filter(|other| other.id != el.id) {
-                let or = render::element_dest(dest, scale, other);
+                let or = self.element_frame(dest, scale, other);
                 if er.intersect(or).area() > 0.0 {
                     continue;
                 }
@@ -4813,6 +4843,7 @@ impl SlidesApp {
                     DeckAssets {
                         palette: pal,
                         images,
+                        presence: None,
                     },
                     slide,
                     rect,
@@ -4858,51 +4889,5 @@ impl SlidesApp {
             self.apply_hit(Hit::SetLayout(*layout));
         }
         true
-    }
-}
-
-impl SlidesApp {
-    fn overview_header(&self) -> (Vec<editor_chrome::UiButton>, Point, f64) {
-        let m = &self.chrome_metrics;
-        let header = self.overview.header(self.rect);
-        let control_y = header.y0 + (header.height() - m.control_h) / 2.0;
-        let present_label = tr("slides-present");
-        let present_w = m.width(
-            &present_label,
-            editor_chrome::Measure::Button { icon: true },
-        );
-        let present = Rect::new(
-            header.x1 - m.s6 - present_w,
-            control_y,
-            header.x1 - m.s6,
-            control_y + m.control_h,
-        );
-        let toggle = self.chip(header, present.x0 - m.s2 - m.target);
-        let buttons = vec![
-            editor_chrome::UiButton {
-                rect: toggle,
-                kind: ButtonKind::Icon {
-                    icon: Icon::LayoutGrid,
-                    name: tr("slides-a11y-slide-overview"),
-                    active: true,
-                },
-                hit: Hit::Overview,
-            },
-            editor_chrome::UiButton {
-                rect: present,
-                kind: ButtonKind::Command {
-                    label: present_label,
-                    icon: Some(Icon::Play),
-                    role: ui::widget::ButtonRole::Primary,
-                },
-                hit: Hit::Present,
-            },
-        ];
-        let title = Point::new(
-            header.x0 + m.s6,
-            header.y0 + (header.height() - m.lh_heading) / 2.0,
-        );
-        let title_max = (toggle.x0 - m.s4 - title.x).max(0.0);
-        (buttons, title, title_max)
     }
 }

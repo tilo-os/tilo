@@ -58,11 +58,6 @@ struct EndpointBinding<'a> {
 
 impl NamedShareEnvelopeV1 {
     /// Bind a named-person invite to the endpoint that will deliver it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the invite, issuer, endpoint, or resulting
-    /// envelope is invalid or exceeds its encoded size bound.
     pub fn bind_at(
         endpoint: EndpointAddr,
         invite: FileInviteV1,
@@ -110,11 +105,6 @@ impl NamedShareEnvelopeV1 {
     }
 
     /// Validate this envelope for `local_person` at `now_ms`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid, expired, misaddressed, incorrectly
-    /// signed, or oversized envelopes.
     pub fn validate_for_at(
         &self,
         local_person: Ed25519PublicKey,
@@ -211,11 +201,6 @@ impl NamedShareOutbox {
     }
 
     /// Durably enqueue an envelope for a bounded set of certified devices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid input, collisions, capacity exhaustion, or
-    /// persistence failure.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the lock is held across persist so the file and the in-memory map change together"
@@ -285,11 +270,6 @@ impl NamedShareOutbox {
     }
 
     /// Persist one delivery attempt and optional successful recipient device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown grant, an unlisted device, or a
-    /// persistence failure.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the lock is held across persist so the file and the in-memory map change together"
@@ -409,11 +389,6 @@ impl std::fmt::Debug for NamedShareInboxProtocol {
 
 impl NamedShareInboxProtocol {
     /// Construct an inbox protocol after checking its local identities agree.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint, device certificate, and inbox human
-    /// do not describe the same local identity.
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
@@ -504,10 +479,6 @@ pub struct NamedShareDeliveryClient {
 
 impl NamedShareDeliveryClient {
     /// Construct a delivery client for the certified local endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint does not match the certified device.
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
@@ -524,11 +495,6 @@ impl NamedShareDeliveryClient {
     }
 
     /// Deliver an envelope to one certified recipient endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on authentication, transport, recipient, protocol, or
-    /// timeout failure.
     pub async fn deliver(
         &self,
         recipient: EndpointAddr,
@@ -686,11 +652,6 @@ impl NamedShareInbox {
     }
 
     /// Validate and durably accept an envelope addressed to this inbox.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid input, collisions, capacity exhaustion, or
-    /// persistence failure.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the lock is held across persist so the file and the in-memory map change together"
@@ -918,7 +879,6 @@ mod tests {
 
     #[test]
     fn named_inbox_and_outbox_are_durable_idempotent_and_subject_bound() {
-        // Phase `durable_inbox_is_idempotent_private_and_subject_bound`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("inbox.json");
@@ -949,7 +909,6 @@ mod tests {
                 );
             }
         }
-        // Phase `bearer_invite_is_never_admitted_to_named_inbox`.
         {
             let person = Ed25519PublicKey::from_bytes(
                 ed25519_dalek::SigningKey::from_bytes(&[9; 32])
@@ -962,7 +921,6 @@ mod tests {
             };
             assert!(entry.validate_for_at(person, NOW).is_err());
         }
-        // Phase `outbox_survives_offline_attempt_and_restart_until_acceptance`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("outbox.json");
@@ -1040,6 +998,9 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_delivery_is_durable_idempotent_and_human_bound() {
+        // The invite and envelope are valid for wall-clock windows; the wall
+        // clock stands still here, so a slow run cannot outlast them.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let owner = party(21).await;
         let recipient = party(22).await;
         let temp = tempfile::tempdir().unwrap();

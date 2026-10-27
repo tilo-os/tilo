@@ -251,7 +251,6 @@ impl Steward {
             .is_none_or(|(_, before)| !before.within(readers))
     }
 
-    /// Hand over `readers`, those of governance `generation`.
     pub(super) fn hand_over(&self, generation: u64, readers: &Readers) {
         let mut handed = self.handed_over();
         if handed
@@ -262,10 +261,6 @@ impl Steward {
         }
     }
 
-    /// The readers of the newer of governance `generation`, whose readers
-    /// are `taken`, and the generation handed over last. An admission reads
-    /// the room before it waits for the channels; a governance change
-    /// handed over meanwhile let in devices whose requests it now takes.
     pub(super) fn readers(&self, generation: u64, taken: Readers) -> Readers {
         match &*self.handed_over() {
             Some((handed, readers)) if *handed > generation => readers.clone(),
@@ -530,7 +525,6 @@ mod tests {
         // handed over since; one that read the newest keeps its own.
         assert_eq!(steward.readers(1, readers(&[1])), readers(&[1, 2]));
         assert_eq!(steward.readers(2, readers(&[1])), readers(&[1]));
-        // An older generation handed over late replaces nothing.
         steward.hand_over(1, &readers(&[1]));
         assert_eq!(steward.readers(0, Readers::default()), readers(&[1, 2]));
     }
@@ -559,14 +553,12 @@ mod tests {
         assert!(steward.moves_channels(&denied));
         steward.hand_over(2, &denied);
         assert!(!steward.moves_channels(&denied));
-        // Lifting the Deny, or letting another device in, moves nothing.
         assert!(!steward.moves_channels(&room));
         assert!(!steward.moves_channels(&Readers::new(
             devices(&[1, 2, 3]),
             HashMap::from([(payroll, devices(&[2]))]),
             BTreeSet::new(),
         )));
-        // Withholding a second record from the device moves them again.
         assert!(steward.moves_channels(&Readers::new(
             devices(&[1, 2]),
             HashMap::from([(payroll, devices(&[2])), (notes, devices(&[2]))]),
@@ -711,7 +703,6 @@ mod tests {
         let draft = ChannelRoute::new("notes", "draft");
         let unknown = ChannelRoute::new("notes", "plan").channel("room");
         let (payroll_channel, draft_channel) = (payroll.channel("room"), draft.channel("room"));
-        // As `withheld_record_readers` decides it with both routes known.
         let allowed = Readers::new(
             BTreeSet::from([key(&denied), key(&other)]),
             HashMap::from([
@@ -745,7 +736,6 @@ mod tests {
                     .unwrap();
             }
         }
-        // A route that hashes to another channel is a forgery.
         let forged = access_request(&member.join("forged"), &other, unknown, 1);
         assert!(
             stewardship
@@ -796,7 +786,6 @@ mod tests {
         drop(steward);
 
         assert_eq!(open().routes(), vec![payroll]);
-        // A file swapped for another channel's route proves nothing.
         let budget = ChannelRoute::new("finance", "budget");
         std::fs::write(
             Routes::path(&dir, channel),

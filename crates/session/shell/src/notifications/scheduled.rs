@@ -442,6 +442,9 @@ impl ScheduleStore {
                 IncomingNotification {
                     dbus_id: bridge.alloc_id(),
                     app_name: entry.app.clone(),
+                    app_icon: None,
+                    desktop_entry: None,
+                    image_data: None,
                     summary: entry.title.clone(),
                     body: entry.body.clone(),
                     actions: Vec::new(),
@@ -707,7 +710,7 @@ mod tests {
         let workspace = tree.desktop.active_workspace().expect("synthetic room");
         let caller = Owner {
             caller: PortalCaller::new(workspace.id, "so.tilo.clocks"),
-            room: workspace.room.to_string(),
+            room: workspace.room().to_string(),
         };
         let mut store = ScheduleStore::open(path).expect("private store");
         let mut args = alarm_args("alarm", due, repeat);
@@ -1175,7 +1178,7 @@ mod tests {
         std::thread::spawn(move || {
             let _ = read_tx.send(bridge.snoozed_alarms(&room));
         });
-        let snoozed = read.recv_timeout(std::time::Duration::from_secs(10));
+        let snoozed = read.recv_timeout(tilo_test_env::hang_bound());
         drop(held);
         let snoozed = snoozed.expect("reading pending snoozes waited for the store lock");
         assert_eq!(snoozed.len(), 1, "the committed snooze is pending");
@@ -1402,7 +1405,9 @@ mod tests {
                 ScheduledAction::Snooze,
             )
             .expect("host request");
-        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        // The ledger holds no deadline, so only the request can wake the
+        // parked worker.
+        let result = tilo_test_env::within("the worker's snooze receipt", async {
             loop {
                 if let Some(result) = fixture.bridge.take_scheduled_action_result(request) {
                     break result;
@@ -1413,9 +1418,7 @@ mod tests {
         .await;
         worker.abort();
         let _ = worker.await;
-        result
-            .expect("worker must answer instead of waiting for another deadline")
-            .expect("durable commit");
+        result.expect("durable commit");
         let persisted = ScheduleStore::open(Some(path)).expect("actual stored ledger");
         assert_eq!(
             persisted.next_at_ms(),
@@ -1564,7 +1567,7 @@ mod tests {
     #[test]
     fn delivery_uses_the_current_room_mapping_and_parks_deleted_rooms() {
         let workspace = crate::shell::state::Workspace::new(WorkspaceId(7), "Alarm room");
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let (workspaces, _) = crate::portal::GrantStoreHandle::test_with_workspace(workspace);
         let owner = Owner {
             caller: PortalCaller::new(WorkspaceId(99), "so.tilo.clocks"),

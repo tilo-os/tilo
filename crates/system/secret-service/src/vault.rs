@@ -126,7 +126,6 @@ pub struct Collection {
     pub items: BTreeMap<String, Item>,
 }
 
-/// Whether an identity may use the store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Access {
     Allowed,

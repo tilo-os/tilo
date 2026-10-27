@@ -1,6 +1,3 @@
-//! Drives a real `tilo-vmd rpc` subprocess through the production client
-//! over stdio pipes, as `tilo-vm` does over SSH, against a temporary state
-//! root with the side-effect-free `record` apply backend.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -30,7 +27,7 @@ impl Daemon {
     }
 
     fn spawn_with(root: &std::path::Path, apply: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+        let mut child = Command::new(tilo_test_env::package_binary!("tilo-vmd"))
             .args([
                 "rpc",
                 "--apply",
@@ -140,7 +137,6 @@ fn slot_and_kernel_lifecycles_over_stdio() {
             .unwrap();
         assert!(!again.created, "create is idempotent");
 
-        // A multi-chunk upload lands as one content-addressed layer.
         let big = vec![7_u8; tilo_vm_protocol::UPLOAD_CHUNK_BYTES * 2 + 17];
         let v1 = import(client, "shell", &tarball("usr/bin/shell", &big));
         assert_eq!(import(client, "shell", &tarball("usr/bin/shell", &big)), v1);
@@ -220,7 +216,6 @@ fn slot_and_kernel_lifecycles_over_stdio() {
             error.hint
         );
 
-        // Into the vm slot it refreshes sysext, restarts its units and every slot session.
         let vm = client
             .call(Swap {
                 slot: "vm".into(),
@@ -336,7 +331,6 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         assert_eq!(gc.removed_generations, ["agent-a/2"]);
         assert!(gc.removed_layers.is_empty());
         assert!(gc.storage.layers_bytes > 0);
-        // What stayed for its age is named, with when it becomes eligible.
         assert_eq!(gc.min_age_seconds, 3600);
         let kept = gc
             .kept_young
@@ -464,9 +458,8 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
     // Phase `malformed_lines_get_error_responses`.
     {
         use std::io::{BufRead, Write};
-        // Raw lines, bypassing the typed client.
         let root = tempfile::tempdir().unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+        let mut child = Command::new(tilo_test_env::package_binary!("tilo-vmd"))
             .args(["rpc", "--apply", "record", "--root"])
             .arg(root.path())
             .stdin(Stdio::piped())
@@ -752,7 +745,6 @@ fn the_device_slot_is_the_machines_own_session() {
                 error.hint
             );
         }
-        // Other slots on the same machine are ordinary slots.
         let created = client
             .call(SlotCreate {
                 name: "agent-a".into(),
@@ -773,7 +765,6 @@ fn chunked_upload_preserves_verified_layer_and_cache() {
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::spawn(root.path());
     daemon.client.hello("upload-ack-test").unwrap();
-    // Send multiple chunks and leave a short final chunk.
     let data = vec![83_u8; tilo_vm_protocol::UPLOAD_CHUNK_BYTES * 5 + 17];
     let bytes = tarball("usr/bin/shell", &data);
     let hash = import(&mut daemon.client, "shell", &bytes);
@@ -911,7 +902,7 @@ fn binary_upload_cancellation_cleans_partial_files_and_keeps_rpc_aligned() {
 
 /// Runs one of tilo-vmd's boot-time commands against `root`, as its unit does.
 fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+    Command::new(tilo_test_env::package_binary!("tilo-vmd"))
         .args([step, "--apply", "record", "--manifest", "/nonexistent"])
         .args(["--base", "/nonexistent", "--booted", booted])
         .arg("--root")

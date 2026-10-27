@@ -38,6 +38,7 @@ mod body;
 pub mod capability;
 pub mod index_publication;
 mod ordinals;
+mod preview;
 mod provider;
 mod query;
 pub mod rank;
@@ -48,6 +49,7 @@ mod row;
 pub mod testing;
 
 pub use body::{BodyPiece, SearchBody, SearchBodySource};
+pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
     DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll,

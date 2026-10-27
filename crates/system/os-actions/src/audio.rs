@@ -4,10 +4,6 @@ use crate::process::{run, run_capture};
 
 /// Set the default audio sink volume to `pct` percent. `pct` is clamped
 /// to `[0, 100]`.
-///
-/// # Errors
-///
-/// Returns an error message if `wpctl` is not installed or the command fails.
 pub fn set_volume(pct: f32) -> Result<(), String> {
     // wpctl takes a fraction like `0.50` or `50%`. We use the fraction
     // form to avoid locale-dependent `%` handling in shells.
@@ -56,19 +52,11 @@ fn is_dummy_sink(inspect: &str) -> bool {
 
 /// Toggle the default audio sink's mute state via
 /// `wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle`.
-///
-/// # Errors
-///
-/// Returns an error message if `wpctl` is not installed or the command fails.
 pub fn toggle_mute() -> Result<(), String> {
     run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
 }
 
 /// Explicitly set the mute state on the default audio sink.
-///
-/// # Errors
-///
-/// Returns an error message if `wpctl` is not installed or the command fails.
 pub fn set_mute(muted: bool) -> Result<(), String> {
     let arg = if muted { "1" } else { "0" };
     run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", arg])

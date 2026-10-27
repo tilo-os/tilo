@@ -1,5 +1,3 @@
-//! Method defaults and manual intent exercise the same console/control door as
-//! the disk screen, including refreshes and replacement devices.
 use super::*;
 
 fn occupied(filesystem: &str) -> Disk {

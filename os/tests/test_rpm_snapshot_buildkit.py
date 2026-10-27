@@ -6,10 +6,10 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-import subprocess
 import tarfile
 import unittest
 from unittest.mock import patch
+from urllib.error import URLError
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/verify-rpm-snapshot-buildkit.py"
@@ -64,11 +64,13 @@ class SnapshotManifestTests(unittest.TestCase):
         self.fetched = []
 
         def read(command, **kwargs):
-            self.commands.append(command)
-            if command[:3] == ["docker", "buildx", "imagetools"]:
-                return served[command[-1].rsplit("@", 1)[1]]
             self.assertTrue(command[1].endswith("derive-rpm-package-set.py"))
             return "example-package\n"
+
+        def manifest_of(registry, repository, manifest_digest):
+            self.commands.append((registry, repository, manifest_digest))
+            self.assertEqual((registry, repository), ("code.example", "tilo/rpms"))
+            return served[manifest_digest]
 
         def fetch(registry, repository, blob_digest, size):
             self.fetched.append((registry, repository, blob_digest, size))
@@ -80,8 +82,36 @@ class SnapshotManifestTests(unittest.TestCase):
 
         with patch.object(VERIFY.platform, "machine", return_value=host), \
              patch.object(VERIFY.subprocess, "check_output", side_effect=read), \
+             patch.object(VERIFY, "fetch_manifest", side_effect=manifest_of), \
              patch.object(VERIFY, "fetch_blob", side_effect=fetch):
             VERIFY.verify(ref)
+
+    def test_a_single_platform_snapshot_is_checked_by_its_configuration(self):
+        data = layer({"repo/tilo-direct-package-specs.txt": "example-package\n"})
+        for arch, accepted in (("amd64", True), ("arm64", False)):
+            config = json.dumps({"architecture": arch, "os": "linux"}).encode()
+            manifest = json.dumps({
+                "mediaType": OCI_MANIFEST,
+                "config": {"digest": digest(config), "size": len(config)},
+                "layers": [{"mediaType": GZIP_LAYER, "digest": digest(data), "size": len(data)}],
+            }).encode()
+            blobs = {digest(config): config, digest(data): data}
+
+            def fetch(registry, repository, blob_digest, size):
+                payload = blobs[blob_digest]
+                self.assertEqual(len(payload), size)
+                return payload
+
+            with self.subTest(arch=arch), \
+                 patch.object(VERIFY.platform, "machine", return_value="x86_64"), \
+                 patch.object(VERIFY.subprocess, "check_output", return_value="example-package\n"), \
+                 patch.object(VERIFY, "fetch_manifest", return_value=manifest), \
+                 patch.object(VERIFY, "fetch_blob", side_effect=fetch):
+                if accepted:
+                    VERIFY.verify("code.example/tilo/rpms@" + digest(manifest))
+                else:
+                    with self.assertRaisesRegex(ValueError, "not a native linux/amd64"):
+                        VERIFY.verify("code.example/tilo/rpms@" + digest(manifest))
 
     def test_reads_only_the_metadata_layer(self):
         for host in ("x86_64", "aarch64"):
@@ -122,10 +152,9 @@ class SnapshotManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match the current Containerfiles"):
                 self.check(files={"repo/tilo-direct-package-specs.txt": "old-package\n"})
         with self.subTest(phase="registry_failure_is_fatal"):
-            with patch.object(VERIFY.subprocess, "check_output",
-                              side_effect=subprocess.CalledProcessError(1, ["docker"])), \
+            with patch.object(VERIFY, "fetch_manifest", side_effect=URLError("unreachable")), \
                  patch.object(VERIFY.platform, "machine", return_value="x86_64"), \
-                 self.assertRaises(subprocess.CalledProcessError):
+                 self.assertRaises(OSError):
                 VERIFY.verify("code.example/tilo/rpms@sha256:" + "a" * 64)
 
     def test_compressed_metadata_cannot_expand_without_bound(self):
@@ -147,12 +176,10 @@ class SnapshotManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no regular package manifest"):
             self.check(files={"../" + VERIFY.MANIFEST_PATH: "example-package\n"})
 
-    def test_workflows_verify_before_building(self):
-        for name in ("build-image.yml", "release-relay.yml"):
-            workflow = (SCRIPT.parents[2] / ".forgejo/workflows" / name).read_text()
-            with self.subTest(workflow=name):
-                self.assertIn('run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"\n', workflow)
-                self.assertNotIn('verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"', workflow)
+    def test_the_relay_image_verifies_its_snapshot_before_building(self):
+        build = (SCRIPT.parents[2] / "tools/ci/publish/relay-build.sh").read_text()
+        verify = build.index('python3 os/dev/verify-rpm-snapshot-buildkit.py "$rpms_ref"\n')
+        self.assertLess(verify, build.index("bash tools/ci/publish/oci-build.sh"))
 
 
 if __name__ == "__main__":

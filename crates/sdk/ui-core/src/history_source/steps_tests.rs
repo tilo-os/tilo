@@ -278,8 +278,9 @@ fn a_change_is_classified_from_its_own_operations_as_its_diff_reads_it() {
 }
 
 /// How long classifying the newest change of a document holding `count`
-/// marks takes, at best of several reads.
-fn classify_newest(count: usize) -> std::time::Duration {
+/// marks takes, at best of several reads, and the operations and root-key
+/// lookups one classification does.
+fn classify_newest(count: usize) -> (std::time::Duration, (usize, usize)) {
     let mut doc = document();
     doc.set_actor(ActorId::from(ALICE));
     let map = marks(&mut doc);
@@ -293,14 +294,18 @@ fn classify_newest(count: usize) -> std::time::Duration {
     recolour(&mut doc, ALICE, "m0", "blue");
     let newest = every_version(&doc).pop().unwrap();
     let document = doc.committed_document();
-    (0..5)
+    KIND_WORK.with(|work| work.set((0, 0)));
+    assert!(matches!(kind_in(document, &newest), Kind::Edit));
+    let work = KIND_WORK.with(std::cell::Cell::get);
+    let fastest = (0..5)
         .map(|_| {
             let start = std::time::Instant::now();
             assert!(matches!(kind_in(document, &newest), Kind::Edit));
             start.elapsed()
         })
         .min()
-        .unwrap()
+        .unwrap();
+    (fastest, work)
 }
 
 #[test]
@@ -466,20 +471,37 @@ fn exact_restore_root_selection_is_whole_value_and_legacy_ambiguity_is_refused()
 }
 
 #[test]
+fn classifying_a_change_does_the_same_work_however_large_the_document() {
+    let (_, small) = classify_newest(50);
+    let (_, large) = classify_newest(20_000);
+    assert_eq!(
+        small,
+        (1, 1),
+        "one recolour reads its one operation and looks up its one object"
+    );
+    assert_eq!(
+        large, small,
+        "operations read and root keys looked up beside 20,000 marks and beside 50"
+    );
+}
+
+#[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 fn classifying_a_change_costs_the_same_however_large_the_document() {
-    let small = classify_newest(50);
-    let large = classify_newest(20_000);
+    let (small, _) = classify_newest(50);
+    let (large, _) = classify_newest(20_000);
+    eprintln!("classifying one recolour: {small:?} beside 50 marks, {large:?} beside 20,000");
     assert!(
         large <= small * 4 + std::time::Duration::from_micros(200),
         "classifying one recolour took {large:?} beside 20,000 marks and {small:?} beside 50"
     );
 }
 
-/// An agent working a native workspace task stamps its steps with the task
-/// group, so undo naming that task finds them, while the person's own scope
-/// still counts them as theirs only when no agent run holds them.
+/// An agent running an issue stamps its steps with the run's group, so undo
+/// naming that run finds them, and the agent's own undo inside the run is
+/// scoped to it; the person's own scope never counts a run's steps as theirs.
 #[test]
-fn a_named_run_owns_the_steps_of_an_agent_run_or_a_workspace_task() {
+fn a_named_run_owns_the_steps_of_an_agent_run_or_a_task_run() {
     let version = |group: Option<(&str, &str)>| Version {
         hash: ChangeHash([0; 32]),
         actor: ActorId::from(ALICE).to_hex_string(),
@@ -495,5 +517,10 @@ fn a_named_run_owns_the_steps_of_an_agent_run_or_a_workspace_task() {
     assert!(!Scope::Run("task:8".into()).owns(&task));
     assert!(!Scope::Run("issue:7".into()).owns(&issue));
     assert!(!scope(ALICE).owns(&agent));
+    assert!(!scope(ALICE).owns(&task));
     assert!(scope(ALICE).owns(&issue));
+    assert_eq!(
+        Scope::of(task.context.as_ref(), "alice"),
+        Scope::Run("task:7".into())
+    );
 }

@@ -24,7 +24,6 @@ pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 /// How a file of some extension is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reading {
-    /// Markdown, read as it is.
     Markdown,
     /// A document format this build has a codec for.
     Document,
@@ -45,11 +44,6 @@ pub fn reading(ext: &str) -> Reading {
 
 /// The document `bytes` of a file with extension `ext` hold, and the binary
 /// content (pictures) it names.
-///
-/// # Errors
-///
-/// The bytes are over [`MAX_DOCUMENT_BYTES`], are not text where text is
-/// expected, or the format's codec refuses them.
 pub fn import(ext: &str, bytes: &[u8]) -> Result<(Document, ContentInputs), CodecError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(CodecError::Unsupported(format!(
@@ -116,10 +110,6 @@ pub fn markdown_of(ext: &str, bytes: &[u8]) -> Result<String, CodecError> {
 
 /// `document` written as a file with extension `ext`: Markdown, plain text
 /// (one line a paragraph), or a document format this build exports.
-///
-/// # Errors
-///
-/// No codec of this build writes `ext`, or the codec fails.
 pub fn export(
     document: &Document,
     content: &dyn tilo_content::ContentSource,

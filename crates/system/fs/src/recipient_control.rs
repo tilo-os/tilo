@@ -133,11 +133,6 @@ impl RecipientControlServer {
 
     /// Serve streams with a hard global task bound. A permit is acquired
     /// before accept, so overload cannot create an unbounded task queue.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when accepting a connection or acquiring a task slot
-    /// fails.
     pub async fn serve(self: Arc<Self>, listener: UnixListener) -> std::io::Result<()> {
         let slots = Arc::new(Semaphore::new(MAX_RECIPIENT_CONTROL_CONNECTIONS));
         loop {
@@ -341,10 +336,6 @@ where
 }
 
 /// Write one bounded recipient-control request frame.
-///
-/// # Errors
-///
-/// Returns an error when encoding or writing the frame fails.
 pub async fn write_recipient_control_request(
     stream: &mut UnixStream,
     request: &RecipientControlRequestV1,
@@ -353,11 +344,6 @@ pub async fn write_recipient_control_request(
 }
 
 /// Read one bounded recipient-control response frame.
-///
-/// # Errors
-///
-/// Returns an error for I/O, malformed, oversized, or unexpectedly absent
-/// response data.
 pub async fn read_recipient_control_response(
     stream: &mut UnixStream,
 ) -> std::io::Result<RecipientControlResponseV1> {
@@ -379,11 +365,6 @@ pub async fn read_recipient_control_response(
 
 /// One-shot client helper. Secret-bearing requests are never formatted by this
 /// API and live only in the caller-owned request and stream frame.
-///
-/// # Errors
-///
-/// Returns an error when connecting, writing the request, or reading the
-/// response fails.
 pub async fn request_recipient_control(
     socket: impl AsRef<Path>,
     request: &RecipientControlRequestV1,
@@ -519,7 +500,6 @@ mod tests {
                 })
             ));
         }
-        // Phase `invalid_collision_and_oversized_frames_are_finite`.
         {
             let temp = tempfile::tempdir().unwrap();
             let store = Arc::new(
@@ -708,7 +688,6 @@ mod tests {
             ));
             server_task.abort();
         }
-        // Phase `admission_starts_an_isolated_mount_and_reports_only_its_public_path`.
         {
             use std::os::unix::fs::PermissionsExt;
             let temp = tempfile::tempdir().unwrap();

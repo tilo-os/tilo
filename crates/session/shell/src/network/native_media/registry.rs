@@ -43,6 +43,9 @@ impl Registry {
             None => Err("native device identity unavailable".into()),
             Some(identity) => match command.operation {
                 Operation::Open { owner, target } => self.open(owner, &target, identity, sessions),
+                Operation::OpenWindows { owner, room } => {
+                    self.open_windows(owner, room, identity, sessions)
+                }
                 Operation::Heartbeat { ticket } => self
                     .known(&ticket)
                     .and_then(|()| {
@@ -209,6 +212,30 @@ impl Registry {
     }
 }
 
+impl Registry {
+    /// Join `room`'s window carrier as this device.
+    fn open_windows(
+        &mut self,
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        identity: &HostIdentity,
+        sessions: Sessions<'_>,
+    ) -> Result<Reply, String> {
+        if self.tickets.len() >= 16 {
+            return Err("native media capacity".into());
+        }
+        let workspace = owner.with_current(room, |view| {
+            check_identity(view, identity)?;
+            Ok(view.workspace())
+        })?;
+        let session = sessions(workspace).ok_or(NOT_CONNECTED)?;
+        let ticket =
+            Ticket::open_windows(owner, room, &session, |view| check_identity(view, identity))?;
+        self.tickets.push(Arc::downgrade(&ticket));
+        Ok(Reply::Opened(ticket))
+    }
+}
+
 fn check_identity(view: &NativeCommittedView, identity: &HostIdentity) -> Result<(), String> {
     let now = tilo_clock::try_unix_now_ns().ok_or("native clock precedes epoch")?;
     let (cert, entries) = identity.current_native_material(view.workspace())?;
@@ -228,15 +255,25 @@ fn check_identity(view: &NativeCommittedView, identity: &HostIdentity) -> Result
 }
 
 /// Who is in the active calls of record `record` of app `app`, one roster
-/// per voice channel with anyone in it, sorted by channel; each person once,
-/// with whose camera is on and who shares a screen (on any of their devices).
+/// per voice channel with anyone in it or a bridge on it, sorted by
+/// channel; each person once, with whose camera is on and who shares a
+/// screen (on any of their devices), who is muted or deafened (on every
+/// device they are in the call on), and the people a bridge carries in as
+/// its guests.
 pub(super) fn rosters_of(calls: &[CallSummary], app: &str, record: &str) -> Vec<Roster> {
+    use runtime_collab::native_media::Guest;
     use std::collections::{BTreeMap, BTreeSet};
     #[derive(Default)]
     struct Channel {
         people: BTreeSet<String>,
         cameras: BTreeSet<String>,
         screens: BTreeSet<String>,
+        guests: BTreeMap<String, Guest>,
+        bridges: BTreeSet<String>,
+        /// Heard on some device: not muted, whatever their others say.
+        unmuted: BTreeSet<String>,
+        /// Hearing the call on some device: not deafened.
+        hearing: BTreeSet<String>,
     }
     let mut by_channel: BTreeMap<&str, Channel> = BTreeMap::new();
     for call in calls
@@ -245,12 +282,32 @@ pub(super) fn rosters_of(calls: &[CallSummary], app: &str, record: &str) -> Vec<
     {
         let channel = by_channel.entry(call.channel_id.as_str()).or_default();
         for participant in &call.participants {
+            if let Some(bridged) = &participant.bridged {
+                channel.bridges.insert(bridged.service.clone());
+                if let Some(id) = super::authority::call_id(participant) {
+                    channel.guests.entry(id.clone()).or_insert_with(|| Guest {
+                        id,
+                        name: bridged.name.clone(),
+                        avatar: bridged.avatar.clone(),
+                        service: bridged.service.clone(),
+                        linked: bridged.linked.map(hex::encode),
+                        muted: participant.showing.muted,
+                    });
+                }
+                continue;
+            }
             let person = hex::encode(participant.user_public_key);
             if participant.showing.camera {
                 channel.cameras.insert(person.clone());
             }
             if participant.showing.screen {
                 channel.screens.insert(person.clone());
+            }
+            if !participant.showing.muted {
+                channel.unmuted.insert(person.clone());
+            }
+            if !participant.showing.deafened {
+                channel.hearing.insert(person.clone());
             }
             channel.people.insert(person);
         }
@@ -259,10 +316,25 @@ pub(super) fn rosters_of(calls: &[CallSummary], app: &str, record: &str) -> Vec<
         .into_iter()
         .map(|(channel, people)| Roster {
             channel_id: channel.to_owned(),
+            muted: people.people.difference(&people.unmuted).cloned().collect(),
+            // Deafened is muted too: someone heard anywhere is neither.
+            deafened: people
+                .people
+                .difference(&people.unmuted)
+                .filter(|person| !people.hearing.contains(*person))
+                .cloned()
+                .collect(),
             people: people.people.into_iter().collect(),
             cameras: people.cameras.into_iter().collect(),
             screens: people.screens.into_iter().collect(),
+            // A guest the room names in a way the toolkit refuses is left
+            // out rather than costing everyone the roster.
+            guests: people.guests.into_values().filter(Guest::valid).collect(),
+            bridges: people.bridges.into_iter().collect(),
         })
-        .filter(|roster| !roster.people.is_empty() && roster.valid())
+        .filter(|roster| {
+            !(roster.people.is_empty() && roster.guests.is_empty() && roster.bridges.is_empty())
+                && roster.valid()
+        })
         .collect()
 }

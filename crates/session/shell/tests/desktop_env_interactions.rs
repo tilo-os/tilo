@@ -63,6 +63,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
             kind: AppKind::Other("Test".into()),
             label: format!("G{gid}"),
         },
+        app_title: None,
     };
     let groups: Vec<WindowGroup> = group_ids
         .iter()
@@ -81,11 +82,10 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
         name: "Main".into(),
         window_groups: groups,
     };
-    let ws = Workspace {
-        strips: vec![strip],
-        // Everything else comes from the builder, so a field added to
-        // `Workspace` does not break this fixture.
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip];
+        workspace
     };
 
     let mut active_strip = HashMap::new();
@@ -495,10 +495,12 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
             "and by exactly the dragged distance",
         );
 
+        // Alone on its strip the default width takes the strip, so what is
+        // saved is the width on screen, not two thirds of the strip.
         host.tick_pending_width_harvest_for_tests();
         assert_approx_eq!(
             width_in_tree(&chrome),
-            boot_px + 120.0,
+            on_screen_before + 120.0,
             "the new width must persist into the tree so it survives a restart",
         );
         let _ = &layout;
@@ -626,6 +628,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
                         kind: AppKind::Other("T".into()),
                         label: "A".into(),
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 2,
@@ -634,6 +637,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
                         kind: AppKind::Other("T".into()),
                         label: "B".into(),
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 3,
@@ -642,6 +646,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
                         kind: AppKind::Other("T".into()),
                         label: "C".into(),
                     },
+                    app_title: None,
                 },
             ];
             g.active_tab = 1;
@@ -997,7 +1002,6 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "the client stands under the bar: {app:?}",
         );
 
-        // At rest, with the pointer in the app, Restore stands in the bar.
         cursor(&mut host, &layout2, maximized.center());
         paint_group(&mut host, &layout2, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
@@ -1107,6 +1111,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
                 kind: AppKind::Other(label.into()),
                 label: label.into(),
             },
+            app_title: None,
         };
         let group_300 = WindowGroup {
             id: 300,
@@ -1124,13 +1129,14 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             maximized: false,
             focus_history: Vec::new(),
         };
-        let ws_b = Workspace {
-            strips: vec![Strip {
+        let ws_b = {
+            let mut workspace = Workspace::new(ws_b_id, "Second");
+            workspace.strips = vec![Strip {
                 id: strip_b,
                 name: "Main".into(),
                 window_groups: vec![group_300, group_400],
-            }],
-            ..Workspace::new(ws_b_id, "Second")
+            }];
+            workspace
         };
         tree.desktop.workspaces.push(ws_b);
         tree.desktop.active_strip.insert(ws_b_id, strip_b);
@@ -1193,17 +1199,16 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
     // view — `adopt_toplevel` creates and focuses a group before it has a
     // rect.
     {
-        // One group as wide as the strip's usable width fills it, so a second
-        // starts past the right edge — the geometry a newly launched app
-        // lands in. (`Wide` is half of it; it filled the strip only while a
-        // workspace wheel took a quarter of the display beside it.)
-        let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
-        tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(2000);
+        // Two windows fill the display, so a third opened after the second
+        // starts past the right edge. It lands beside the second, and the
+        // strip pans to show the two whole. (A window opened beside a lone
+        // one shares the display with it, so nothing would pan.)
+        let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let layout = lay_out_host(&mut host);
         let _ = &layout;
 
-        // Splice in a second group and focus it the way adoption does, before
+        // Splice in a third group and focus it the way adoption does, before
         // any layout pass has given it a rect.
         let new_group = {
             let st = chrome.borrow();
@@ -1220,6 +1225,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
                             kind: AppKind::Other("Launched".into()),
                             label: "Launched".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: tab_id,
                     width: WindowWidth::Normal,
@@ -1237,7 +1243,8 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
         let _ = Widget::take_structure_dirty(&mut host);
         host.tick_scroll_active_into_view_for_tests();
         let _layout = lay_out_host(&mut host);
-        // Frame two: the group now has a rect, so the pan must happen.
+        // Frame two: the group now has its place, though its slot is still
+        // growing from nothing, so the pan must happen.
         host.tick_scroll_active_into_view_for_tests();
         // The pan is eased on the snap curve, not teleported — advance the
         // per-frame tick past the curve's duration so the motion settles before
@@ -1295,7 +1302,6 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
             row_rect.x1,
         );
 
-        // Focus the off-screen group, then run the focus-follow reconcile.
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
@@ -1659,7 +1665,7 @@ fn on_screen_rects(host: &mut ShellOverlayHost, strip_id: StripId) -> Vec<vello:
 }
 
 fn widths_of(rects: &[vello::kurbo::Rect]) -> Vec<f64> {
-    rects.iter().map(|r| r.width()).collect()
+    rects.iter().map(vello::kurbo::Rect::width).collect()
 }
 
 /// What one drag did: the windows before it, while the pointer was still
@@ -1773,10 +1779,6 @@ fn grip(
 const LEADING: ui::widget::WindowEdge = ui::widget::WindowEdge::Leading;
 const TRAILING: ui::widget::WindowEdge = ui::widget::WindowEdge::Trailing;
 
-// USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-// currently have open, it just pushes the apps next to it further away, it
-// does not need to resize them. i can resize as i want, it doesnt change the
-// actual size of any other app."
 #[test]
 fn the_focused_windows_left_edge_is_the_seam_and_resizes_only_that_window() {
     // Files (the middle window, in use) grabbed on its left edge where it
@@ -1802,10 +1804,6 @@ fn the_focused_windows_left_edge_is_the_seam_and_resizes_only_that_window() {
     }
 }
 
-// USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-// currently have open, it just pushes the apps next to it further away, it
-// does not need to resize them. i can resize as i want, it doesnt change the
-// actual size of any other app."
 #[test]
 fn middle_window_edges_resize_only_it_and_zero_sum_with_shift() {
     // The middle window is the one in use, so both its seams are its edges.
@@ -1823,8 +1821,6 @@ fn middle_window_edges_resize_only_it_and_zero_sum_with_shift() {
     assert_resized(&o, [0.0, 40.0, -40.0], "middle window right edge, shift");
 }
 
-// USER REQUIREMENT (2026-10-18): the window in use wins the seam; elsewhere
-// "i can resize as i want, it doesnt change the actual size of any other app."
 #[test]
 fn focus_wins_the_seam_and_an_unfocused_seam_is_split_down_the_middle() {
     // The first window in use owns its whole seam with the second, so the

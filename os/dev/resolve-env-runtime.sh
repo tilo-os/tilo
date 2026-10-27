@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Resolve this checkout's env-runtime environment image by fingerprint.
 #
-# The fingerprint is the SHA-256 of os/Containerfile.env-runtime: its package
-# list and version are the whole definition of a runtime, and every tool
-# image is bound to one exact runtime, so a runtime changes only when that
-# file does. Looks up registry.tilo.so/tilo/env-runtime:set-<fingerprint>,
+# The fingerprint is the SHA-256 of os/Containerfile.env-runtime (its package
+# list and version are the whole definition of a runtime) followed by the
+# line `package-format <N>`, the package format its .tapp is packed in. Every
+# tool image is bound to one exact runtime, so a runtime changes only when one
+# of the two does. Looks up registry.tilo.so/tilo/env-runtime:set-<fingerprint>,
 # checks its Cosign signature against keys/cosign.pub, and prints the
 # digest-pinned reference.
 #
@@ -44,7 +45,15 @@ if [ "$mode" = version ]; then
   exit 0
 fi
 
-fingerprint="$(sha256sum "$definition" | cut -d' ' -f1)"
+# The runtime travels as a .tapp, and a device reads packages of exactly one
+# format (registry-types' PACKAGE_FORMAT_VERSION; docs/architecture/compatibility.md).
+# The format is part of the fingerprint, so a format change is a new runtime:
+# until one is published, images ship none and environments fetch it on first use.
+format_source="$repo/crates/packaging/registry-types/src/lib.rs"
+package_format="$(sed -n 's/^pub const PACKAGE_FORMAT_VERSION: u32 = \([0-9][0-9]*\);$/\1/p' "$format_source")"
+[[ "$package_format" =~ ^[0-9]+$ ]] \
+  || { printf 'resolve-env-runtime: %s names no PACKAGE_FORMAT_VERSION\n' "$format_source" >&2; exit 1; }
+fingerprint="$({ cat "$definition"; printf 'package-format %s\n' "$package_format"; } | sha256sum | cut -d' ' -f1)"
 tag="set-$fingerprint"
 tagged="registry.tilo.so/tilo/env-runtime:$tag"
 

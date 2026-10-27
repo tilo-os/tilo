@@ -6,6 +6,7 @@ use super::{
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
 use tilo_lock::MutexRecover as _;
+use tilo_sort::CompactSort as _;
 #[derive(Clone, Default)]
 pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
@@ -78,7 +79,6 @@ impl Reads {
         let current = !self.closed() && rows.values().any(|gate| {
             matches!(gate, Gate::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
         });
-        // Serialize a positive publication with close's gate withdrawal.
         ready.swap(current, Ordering::AcqRel) != current
     }
     /// How many readiness changes happened so far; pass it to
@@ -87,12 +87,16 @@ impl Reads {
         *self.5.changes.lock_recover()
     }
     /// Wait until a readiness change after `seen`, or `bound` elapses.
-    pub(super) fn wait_progress(&self, seen: u64, bound: Duration) {
+    /// Returns whether the change came.
+    pub(super) fn wait_progress(&self, seen: u64, bound: Duration) -> bool {
         let changes = self.5.changes.lock_recover();
-        let _ = self
+        let (changes, waited) = self
             .5
             .changed
-            .wait_timeout_while(changes, bound, |changes| *changes == seen);
+            .wait_timeout_while(changes, bound, |changes| *changes == seen)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(changes);
+        !waited.timed_out()
     }
     pub(super) fn progressed(&self) {
         let mut changes = self.5.changes.lock_recover();
@@ -146,7 +150,7 @@ impl Reads {
             .clone())
     }
     pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
-        keys.sort();
+        keys.compact_sort();
         keys.dedup();
         if let Ok(mut owners) = self.4.lock() {
             *owners = Some(keys);
@@ -701,14 +705,10 @@ mod tests {
         let seen = reads.progress();
         let waiter = {
             let reads = reads.clone();
-            std::thread::spawn(move || {
-                let started = std::time::Instant::now();
-                reads.wait_progress(seen, Duration::from_secs(30));
-                started.elapsed()
-            })
+            std::thread::spawn(move || reads.wait_progress(seen, tilo_test_env::hang_bound()))
         };
         reads.stage("route", &ready, read).unwrap();
-        assert!(waiter.join().unwrap() < Duration::from_secs(30));
+        assert!(waiter.join().unwrap(), "staging woke the waiting owner");
         assert!(reads.initial("route").is_some());
     }
     #[test]
@@ -716,9 +716,7 @@ mod tests {
         let reads = Reads::default();
         let seen = reads.progress();
         reads.legacy("route").unwrap();
-        let started = std::time::Instant::now();
-        reads.wait_progress(seen, Duration::from_secs(30));
-        assert!(started.elapsed() < Duration::from_secs(30));
+        assert!(reads.wait_progress(seen, tilo_test_env::hang_bound()));
         assert!(reads.publishable("route"));
     }
     #[tokio::test]
@@ -778,7 +776,6 @@ mod tests {
             &ByteBudget::new(),
             async |request| {
                 assert!(matches!(request, Request::Cancel { capture: 1, .. }));
-                // A loaded broker answers in hundreds of milliseconds.
                 tokio::time::sleep(Duration::from_millis(900)).await;
                 Ok(Reply::Cancelled)
             },
@@ -1372,13 +1369,6 @@ const MERGE_RECHECK: Duration = Duration::from_millis(100);
 /// `Await` keeps failing.
 const READ_RECHECK: Duration = Duration::from_millis(200);
 
-/// How long a reader waits for a change before it confirms its read with an
-/// Open anyway. Every change it depends on ends the wait at once; this only
-/// bounds how long a broker that stopped answering (a wedged owner) goes
-/// unnoticed, which the Open's own deadline then turns into the renewal it
-/// always was. 2 requests per 30 s instead of 5 per second.
-const AWAIT_KEEPALIVE: Duration = Duration::from_secs(30);
-
 /// What ended a reader's wait for its committed read to change.
 #[derive(Debug, PartialEq, Eq)]
 enum Woke {
@@ -1388,8 +1378,6 @@ enum Woke {
     /// Something on this side changed: the route closed or was replaced,
     /// or the owner asked for a fresh read.
     Local,
-    /// Nothing changed for [`AWAIT_KEEPALIVE`]: confirm the read.
-    Keepalive,
     /// The wait failed or was answered with something other than `Stale`:
     /// the next Open decides.
     Refused,
@@ -1400,6 +1388,13 @@ enum Woke {
 /// (`None` after `Unavailable`), or until something on this side changes.
 /// The answer is never a read: the caller Opens, under its delivery turn,
 /// and only that Open publishes readiness or hands out bytes.
+///
+/// No clock ends the wait. An owner that stops answering matters only to a
+/// reader that asks it something, and every ask has its deadline: the Open
+/// that follows any wake (a change, the owner asking for a fresh read, a
+/// route replaced) gives up after two seconds and renews the read as it
+/// always did. A read nobody asks about arms no timer, so an idle app's
+/// shovel sleeps; a hang meanwhile is met by the next ask.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -1425,11 +1420,10 @@ async fn until_stale(
     };
     tokio::select! {
         () = &mut local => Woke::Local,
-        reply = tokio::time::timeout(AWAIT_KEEPALIVE, channel.committed_document(&request)) => {
+        reply = channel.committed_document(&request) => {
             match reply {
-                Ok(Ok(Reply::Stale)) => Woke::Stale,
-                Ok(_) => Woke::Refused,
-                Err(_) => Woke::Keepalive,
+                Ok(Reply::Stale) => Woke::Stale,
+                _ => Woke::Refused,
             }
         }
     }

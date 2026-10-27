@@ -23,8 +23,9 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use support::{Dialer, Origin};
+use tilo_clock::{Clock as _, ManualClock};
 use tilo_moq::relay::{
     Denied, Direction, LoopbackRelay, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
 };
@@ -60,7 +61,7 @@ fn shared_ingress_route_requires_exact_raw_authority_and_target() {
 
 #[test]
 fn isolated_proof_endpoint_rejects_nonloopback_binding() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_moq-proof"))
+    let output = std::process::Command::new(tilo_test_env::package_binary!("moq-proof"))
         .args([
             "--bind",
             "0.0.0.0:443",
@@ -80,7 +81,9 @@ fn isolated_proof_endpoint_rejects_nonloopback_binding() {
 struct Permit {
     publish: String,
     subscribe: Vec<String>,
-    expires: Instant,
+    /// Milliseconds on `clock` at which the grant lapses.
+    expires: u64,
+    clock: Arc<ManualClock>,
     active: Arc<AtomicBool>,
 }
 
@@ -93,7 +96,7 @@ impl SessionAuthorization for Permit {
     }
     fn current(&self, direction: Direction, namespace: &str) -> bool {
         self.active.load(Ordering::SeqCst)
-            && Instant::now() < self.expires
+            && self.clock.now_ms() < self.expires
             && match direction {
                 Direction::Publish => namespace == self.publish,
                 Direction::Subscribe => self.subscribe.iter().any(|name| name == namespace),
@@ -103,19 +106,17 @@ impl SessionAuthorization for Permit {
 
 struct Authority {
     active: Arc<AtomicBool>,
+    /// The grants' clock: it moves only when a test advances it.
+    clock: Arc<ManualClock>,
 }
 
 impl RelayAuthority for Authority {
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         // Explicit isolated test identities. No workspace claim is made.
         let (publish, subscribe, ttl) = match proof {
-            b"isolated-a" => ("opaque-call/a", "opaque-call/b", Duration::from_secs(30)),
-            b"isolated-b" => ("opaque-call/b", "opaque-call/a", Duration::from_secs(30)),
-            b"isolated-expiry" => (
-                "opaque-call/expires",
-                "opaque-call/a",
-                Duration::from_millis(250),
-            ),
+            b"isolated-a" => ("opaque-call/a", "opaque-call/b", 30_000),
+            b"isolated-b" => ("opaque-call/b", "opaque-call/a", 30_000),
+            b"isolated-expiry" => ("opaque-call/expires", "opaque-call/a", 250),
             _ => return Err(Denied),
         };
         let mut subscriptions = vec![subscribe.into()];
@@ -125,31 +126,49 @@ impl RelayAuthority for Authority {
         Ok(Arc::new(Permit {
             publish: publish.into(),
             subscribe: subscriptions,
-            expires: Instant::now() + ttl,
+            expires: self.clock.now_ms() + ttl,
+            clock: self.clock.clone(),
             active: self.active.clone(),
         }))
     }
 }
 
+/// Poll `done` on this test's runtime until it holds, bounded by the hang
+/// bound. These tests run on one thread, which a blocking wait would stall.
+async fn until(what: &str, mut done: impl FnMut() -> bool) {
+    tilo_test_env::within(what, async {
+        while !done() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+}
+
 fn setup() -> (Dialer, Arc<AtomicBool>, LoopbackRelay) {
+    let (dialer, active, _clock, relay) = setup_with_clock();
+    (dialer, active, relay)
+}
+
+fn setup_with_clock() -> (Dialer, Arc<AtomicBool>, Arc<ManualClock>, LoopbackRelay) {
     let active = Arc::new(AtomicBool::new(true));
+    let clock = Arc::new(ManualClock::new(0));
     let relay = LoopbackRelay::start(Arc::new(Authority {
         active: active.clone(),
+        clock: clock.clone(),
     }))
     .unwrap();
     let dialer = Dialer::new(&relay.endpoint, &relay.fingerprints);
-    (dialer, active, relay)
+    (dialer, active, clock, relay)
 }
 
 #[tokio::test]
 async fn exact_voice_route_accepts_and_rejects_other_routes_and_queries() {
-    let (dialer, _active, _relay) = setup();
+    let (dialer, _active, relay) = setup();
     let admitted = dialer.connect(b"isolated-a", None, None).await.unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), admitted.closed())
-            .await
-            .is_err()
-    );
+    until("the exact route's session accepted", || {
+        relay.counters().accepted == 1
+    })
+    .await;
     drop(admitted);
     for path in [
         "/moq",
@@ -251,44 +270,45 @@ async fn real_webtransport_relays_bidirectional_exact_voice_objects_and_reconnec
 
 #[tokio::test]
 async fn denied_proof_expiry_and_active_revocation_close_real_sessions() {
-    let (dialer, active, _relay) = setup();
+    let (dialer, active, clock, relay) = setup_with_clock();
     assert!(dialer.connect(b"wrong-proof", None, None).await.is_err());
+    // The grants' clock stands still until the test moves it, so a valid
+    // short-lived grant is admitted and stays open however slow the run.
     let expired = dialer
         .connect(b"isolated-expiry", None, None)
         .await
         .unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), expired.closed())
-            .await
-            .is_err(),
-        "valid short-lived grant must initially stay open"
-    );
-    let _ = tokio::time::timeout(Duration::from_secs(2), expired.closed())
-        .await
-        .expect("expired forwarding stops");
     let admitted = dialer.connect(b"isolated-a", None, None).await.unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), admitted.closed())
-            .await
-            .is_err(),
-        "valid grant must initially stay open"
-    );
+    until("both grants admitted", || relay.counters().accepted == 2).await;
+    assert_eq!(relay.counters().expired, 0);
+    clock.advance(250);
+    tilo_test_env::within("expired forwarding stops", expired.closed()).await;
+    assert_eq!(relay.counters().expired, 1, "only the expired grant lapsed");
     active.store(false, Ordering::SeqCst);
-    let _ = tokio::time::timeout(Duration::from_secs(1), admitted.closed())
-        .await
-        .expect("revocation stops established forwarding within one second");
+    tilo_test_env::within("revocation stops established forwarding", admitted.closed()).await;
+    assert_eq!(relay.counters().expired, 2);
 }
 
 #[tokio::test]
 async fn a_publish_grant_does_not_authorize_descendants_or_changed_namespaces() {
     let (dialer, _active, _relay) = setup();
     let (incoming, outgoing) = (Origin::new(), Origin::new());
+    let mut announced = incoming.producer.consume().announced();
+    // The publisher announces the granted namespace and two it may not
+    // publish (one below it, one beside it) at once, before it connects.
     let mut publications = Vec::new();
-    {
-        let (broadcast, mut track) = outgoing.publish("opaque-call/a");
-        track
-            .write_frame(moq_net::Timestamp::ZERO, voice(0))
-            .unwrap();
+    for path in [
+        "opaque-call/a/child",
+        "opaque-call/a-other",
+        "opaque-call/a",
+    ] {
+        let (broadcast, mut track) = outgoing.publish(path);
+        let frame = if path == "opaque-call/a" {
+            voice(0)
+        } else {
+            voice(99)
+        };
+        track.write_frame(moq_net::Timestamp::ZERO, frame).unwrap();
         publications.push((broadcast, track));
     }
     let subscriber = dialer
@@ -300,55 +320,44 @@ async fn a_publish_grant_does_not_authorize_descendants_or_changed_namespaces() 
         .await
         .unwrap();
     assert_eq!(read(&incoming, "opaque-call/a").await, voice(0));
-    let mut announced = incoming.producer.consume().announced();
-    for path in ["opaque-call/a/child", "opaque-call/a-other"] {
-        let (broadcast, mut track) = outgoing.publish(path);
-        track
-            .write_frame(moq_net::Timestamp::ZERO, voice(99))
+    // A newer object on the granted namespace crosses the same relay hops
+    // after its announcements did.
+    let (_, track) = publications.last_mut().unwrap();
+    track
+        .write_frame(moq_net::Timestamp::ZERO, voice(1))
+        .unwrap();
+    tilo_test_env::within("the newer object relayed", async {
+        let broadcast = incoming.broadcast("opaque-call/a").await;
+        let mut track = broadcast
+            .track("audio")
+            .unwrap()
+            .subscribe(None)
+            .await
             .unwrap();
-        publications.push((broadcast, track));
-    }
-    // Only the exact granted namespace is ever announced to the subscriber...
-    let seen = tokio::time::timeout(Duration::from_millis(250), async {
-        let mut seen = Vec::new();
-        while let Some(update) = announced.next().await {
-            seen.push(update.prefix.as_str().to_owned());
+        loop {
+            let mut group = track.recv_group().await.unwrap().expect("voice group");
+            let frame = group.read_frame().await.unwrap().expect("voice object");
+            if frame.payload.as_ref() == voice(1) {
+                return;
+            }
         }
-        seen
     })
     .await;
-    if let Ok(seen) = seen {
-        assert!(seen.iter().all(|path| path == "opaque-call/a"), "{seen:?}");
+    // Only the exact granted namespace was ever announced to the subscriber.
+    let mut seen = Vec::new();
+    while let Some(update) = announced.try_next() {
+        seen.push(update.prefix.as_str().to_owned());
     }
-    // ...and nothing published below or beside it reaches the subscriber.
-    let child = incoming.broadcast("opaque-call/a/child").await;
-    if let Ok(mut track) = child.track("audio").unwrap().subscribe(None).await {
-        let delivered = tokio::time::timeout(Duration::from_millis(250), async {
-            let mut group = track.recv_group().await.ok()??;
-            group.read_frame().await.ok()?
-        })
-        .await;
-        assert!(
-            !matches!(delivered, Ok(Some(frame)) if frame.payload.as_ref() == voice(99)),
-            "changed namespace was relayed"
-        );
-    }
-    assert!(
-        tokio::time::timeout(
-            Duration::from_millis(250),
-            incoming.broadcast("opaque-call/a-other")
-        )
-        .await
-        .is_err(),
-        "changed namespace was relayed"
-    );
+    assert!(seen.iter().all(|path| path == "opaque-call/a"), "{seen:?}");
+    assert!(!seen.is_empty(), "the granted namespace was announced");
     drop((publisher, subscriber));
 }
 
 #[tokio::test]
 async fn unauthorized_publisher_cannot_attach_media_before_admission() {
-    let (dialer, _active, _relay) = setup();
+    let (dialer, _active, relay) = setup();
     let (incoming, outgoing) = (Origin::new(), Origin::new());
+    let mut announced = incoming.producer.consume().announced();
     let (_broadcast, mut track) = outgoing.publish("opaque-call/a");
     track
         .write_frame(moq_net::Timestamp::ZERO, voice(0))
@@ -363,13 +372,15 @@ async fn unauthorized_publisher_cannot_attach_media_before_admission() {
             .await
             .is_err()
     );
+    // The refused session ended in admission: it never ran a `MoQ` session,
+    // so nothing it published could reach the relay origin.
+    until("the refused publisher counted", || {
+        relay.counters().rejected == 1
+    })
+    .await;
+    assert_eq!(relay.counters().accepted, 1, "only the subscriber runs");
     assert!(
-        tokio::time::timeout(
-            Duration::from_millis(250),
-            incoming.broadcast("opaque-call/a")
-        )
-        .await
-        .is_err(),
+        announced.try_next().is_none(),
         "unauthorized media reached the relay origin"
     );
     // An authorized publication subsequently proves the observer and carrier.
@@ -436,12 +447,35 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
         relay.counters().dropped > 0,
         "invalid datagram was not refused"
     );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), a_session.closed())
+    // The publisher session outlived the invalid datagram: a later one of its
+    // bundles is still relayed after it.
+    let later = tilo_test_env::within("a bundle after the invalid one", async {
+        let broadcast = b_sub.broadcast("opaque-call/a").await;
+        let mut track = broadcast
+            .track("audio")
+            .unwrap()
+            .subscribe(None)
             .await
-            .is_err(),
-        "an invalid datagram must not close the publisher session"
-    );
+            .unwrap();
+        loop {
+            at.append_datagram(moq_net::Timestamp::ZERO, vec![0u8; 40])
+                .unwrap();
+            let newest = 2 * sent.len() as u64 + 2;
+            let mut bundle = voice(newest);
+            bundle.extend_from_slice(&voice(newest - 1));
+            at.append_datagram(moq_net::Timestamp::ZERO, bundle.clone())
+                .unwrap();
+            sent.push(bundle);
+            if let Ok(Ok(Some(datagram))) =
+                tokio::time::timeout(Duration::from_millis(50), track.recv_datagram()).await
+            {
+                break datagram.payload.to_vec();
+            }
+        }
+    })
+    .await;
+    assert!(sent.contains(&later));
+    assert_eq!(relay.counters().expired, 0);
     drop((a_session, b_session));
 }
 
@@ -587,8 +621,10 @@ async fn measure(
 /// #3940: the relay's egress for one forwarded voice stream, measured on
 /// a real QUIC connection (UDP payload bytes plus 28 bytes of IPv4/UDP
 /// header per datagram) at the subscriber. Run with `--nocapture` for the
-/// table.
+/// table. A measurement: real-time pacing, ACK timing and the redundancy the
+/// relay adds once it sees loss on a loaded machine all move the numbers.
 #[tokio::test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 async fn forwarded_voice_costs_its_opus_bitrate_while_speaking_and_almost_nothing_while_silent() {
     let (dialer, _active, _relay) = setup();
     let (a_pub, b_sub) = (Origin::new(), Origin::new());

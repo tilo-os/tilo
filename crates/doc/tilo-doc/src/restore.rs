@@ -25,6 +25,7 @@ use automerge::{
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
 use tilo_resource::history::commit_stamped_with_message;
+use tilo_sort::CompactSort as _;
 
 /// Write into `doc`'s open transaction the operations that take its current
 /// state to the state it had at `target`, whose changes `doc` must hold.
@@ -44,7 +45,7 @@ pub fn restore_to_heads(
     expand: ExpandMark,
 ) -> Result<bool, DocError> {
     let mut target = target.to_vec();
-    target.sort_unstable();
+    target.compact_sort();
     target.dedup();
     if target
         .iter()
@@ -332,8 +333,8 @@ fn same_state(doc: &AutoCommit, target: &[ChangeHash]) -> Result<bool, DocError>
             ObjType::Map | ObjType::Table => {
                 let mut keys = doc.keys(&now).collect::<Vec<_>>();
                 let mut selected = doc.keys_at(&then, target).collect::<Vec<_>>();
-                keys.sort_unstable();
-                selected.sort_unstable();
+                keys.compact_sort();
+                selected.compact_sort();
                 if keys != selected {
                     return Ok(false);
                 }

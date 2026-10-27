@@ -65,7 +65,6 @@ const MEMBER_GRACE: Duration = Duration::from_secs(30);
 /// One room as [`LegacyWindows::advertise`] reads it.
 #[derive(Clone, Debug, Default)]
 pub struct RoomViewers {
-    /// The room's workspace.
     pub workspace_id: u64,
     /// The members in its live plane now, each by its browser session.
     pub members: Vec<[u8; 32]>,
@@ -208,8 +207,8 @@ impl LegacyWindows {
     /// `MediaCapabilities`, the codecs every member watching each room the
     /// session is in decodes. A member that never said counts as H.264 only;
     /// one that decodes no video watches none and does not count. Sent when
-    /// it changes and every [`ADVERT_EVERY`]. Sessions no longer listed are
-    /// forgotten, and members out of every room for [`MEMBER_GRACE`].
+    /// it changes and every `ADVERT_EVERY`. Sessions no longer listed are
+    /// forgotten, and members out of every room for `MEMBER_GRACE`.
     pub fn advertise(
         &self,
         rooms: &[RoomViewers],
@@ -286,6 +285,7 @@ impl LegacyWindows {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(identity.clone()),
                     revocations: Vec::new(),
+                    successions: Vec::new(),
                 });
             }
             messages.push(NeighbourMsg::MediaCapabilities {
@@ -661,7 +661,7 @@ impl LegacyWindows {
     /// The presence payloads that ask each session for a keyframe of a
     /// stream that lost a unit on the way here, so members watching it
     /// recover without waiting for the session's periodic keyframe. Asked
-    /// again every [`KEYFRAME_RETRY`] until a keyframe arrives; the session
+    /// again every `KEYFRAME_RETRY` until a keyframe arrives; the session
     /// rate-limits what it forces.
     pub fn keyframe_requests(
         &self,
@@ -704,6 +704,7 @@ impl LegacyWindows {
                             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                             cert: Box::new(identity.clone()),
                             revocations: Vec::new(),
+                            successions: Vec::new(),
                         },
                     );
                 }
@@ -735,7 +736,7 @@ impl LegacyWindows {
 
     /// Whether the publishing device is still subscribed to the room. A
     /// static window sends no frames, so its session leaving, not silence,
-    /// ends its streams; a reconnect shorter than [`DEPARTURE`] does not.
+    /// ends its streams; a reconnect shorter than `DEPARTURE` does not.
     pub fn present(&self, workspace_id: u64, device: [u8; 32], here: bool, now: Instant) {
         let mut rooms = self.rooms();
         let Some(state) = rooms.get_mut(&workspace_id) else {
@@ -896,6 +897,7 @@ impl LegacyWindows {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(identity.clone()),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             });
         }
         for event in events {
@@ -1026,8 +1028,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A granted stream becomes an index and keyframe-headed groups on the
-    /// live relay, as a member receives them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn granted_streams_reach_a_live_member_as_an_index_and_keyframe_groups() {
         let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
@@ -1114,7 +1114,6 @@ mod tests {
             (0, DELTA.as_slice())
         );
 
-        // Revoking the grant ends the stream for members.
         observe(&bridge, &grant(7, host, "revoked"));
         bridge.maintain(now);
         let emptied = tilo_test_env::within("the emptied index", async {
@@ -1365,7 +1364,6 @@ mod tests {
             &presence(SESSION, &grant(1, 42, "granted")),
         );
         bridge.observe_presence(WORKSPACE, SESSION, USER, &presence(SESSION, &start(1)));
-        // Another device speaking for the session.
         bridge.observe_presence(
             WORKSPACE,
             [9; 32],
@@ -1711,7 +1709,6 @@ mod tests {
         let sent = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
         assert_eq!(sent[0].3, labels(&["h264"]));
 
-        // Bounded, and nothing once the bridge closed.
         for member in 0..MAX_MEMBERS {
             let mut key = [0; 32];
             key[..8].copy_from_slice(&(member as u64).to_be_bytes());

@@ -142,11 +142,162 @@ impl Instruction {
 /// The answer that means "no exported action does what was asked".
 pub const NOTHING_FITS: &str = "none";
 
+/// The one content hash `previous` produced: the argument a step that
+/// carries is given.
+///
+/// # Errors
+///
+/// Why `previous` cannot feed a content input: it produced nothing, more
+/// than one resource, or a resource that is not `tilo.content`.
+pub fn carried_content(previous: &tilo_actions::ActionOutput) -> Result<&str, String> {
+    match previous.resources.as_slice() {
+        [] => Err("the previous action produced no content resource".into()),
+        [resource] => tilo_actions::content_hash(resource).ok_or_else(|| {
+            "the previous action produced a resource that is not tilo.content".into()
+        }),
+        _ => Err("the previous action must produce exactly one content resource".into()),
+    }
+}
+
+/// The arguments a step is invoked with: `planned` as written, or — when
+/// the operation carries content under the parameter `carries`
+/// ([`crate::surface::Offer::content_param`]) — with that input bound to
+/// what the immediately preceding action produced. With nothing before it,
+/// a content address the plan names outright (an image a step of an
+/// earlier task exported) is taken as it is.
+///
+/// # Errors
+///
+/// Why a content-consuming step cannot run: there is no preceding action
+/// result, or it does not name exactly one piece of content.
+pub fn carried_arguments(
+    planned: &serde_json::Map<String, serde_json::Value>,
+    carries: Option<&str>,
+    previous: Option<&tilo_actions::ActionOutput>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let Some(param) = carries else {
+        return Ok(planned.clone());
+    };
+    let hash = match previous.map(carried_content) {
+        Some(Ok(hash)) => hash.to_owned(),
+        unfed => named_content(planned, param).ok_or_else(|| match unfed {
+            Some(Err(error)) => error,
+            _ => "a content-consuming action has no preceding action result".to_string(),
+        })?,
+    };
+    let mut arguments = planned.clone();
+    // A model-authored value is replaced: the descriptor says the value is
+    // carried, so only the preceding application may supply it.
+    arguments.insert(param.to_owned(), serde_json::Value::String(hash));
+    Ok(arguments)
+}
+
+/// The content hash `planned` names outright under `param`: a
+/// `tilo.content:` address of a well-formed hash, not a placeholder.
+#[must_use]
+pub fn named_content(
+    planned: &serde_json::Map<String, serde_json::Value>,
+    param: &str,
+) -> Option<String> {
+    planned
+        .get(param)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !is_content_placeholder(text))
+        .and_then(tilo_actions::content_hash)
+        .map(str::to_owned)
+}
+
+/// What a plan writes for content a step before it in the same task
+/// produces (a picture an export makes), whose address no plan can know
+/// before that step has run.
+pub const LATEST_CONTENT: &str = "tilo.content:latest";
+
+/// The length of a content hash: BLAKE3 in lower-case hex, as the content
+/// store derives every address.
+const CONTENT_HASH_CHARS: usize = 64;
+
+/// Bind every content placeholder among `arguments` to `latest`, the
+/// address of the content the task's latest content-producing step made:
+/// [`LATEST_CONTENT`], or any `tilo.content:` address whose hash is not one
+/// (`tilo.content:<export>`, a name the model made up). An address naming
+/// real content is kept. Returns how many it bound.
+pub fn bind_latest_content(
+    arguments: &mut serde_json::Map<String, serde_json::Value>,
+    latest: &str,
+) -> usize {
+    arguments
+        .values_mut()
+        .map(|value| bind_placeholders(value, latest))
+        .sum()
+}
+
+/// [`bind_latest_content`] within one value, however deep.
+fn bind_placeholders(value: &mut serde_json::Value, latest: &str) -> usize {
+    match value {
+        serde_json::Value::String(text) if is_content_placeholder(text) => {
+            latest.clone_into(text);
+            1
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| bind_placeholders(item, latest))
+            .sum(),
+        serde_json::Value::Object(fields) => fields
+            .values_mut()
+            .map(|field| bind_placeholders(field, latest))
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// Whether `text` stands for content rather than naming it: a
+/// `tilo.content:` address without a well-formed hash.
+fn is_content_placeholder(text: &str) -> bool {
+    text.trim()
+        .strip_prefix("tilo.content:")
+        .is_some_and(|hash| {
+            !(hash.len() == CONTENT_HASH_CHARS
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -- Instruction::Perform, and the floor that reaches it -------------
+    /// A plan names content an earlier step makes by placeholder; the
+    /// placeholder, however the model wrote it, becomes that content, and
+    /// an address that names content outright is kept.
+    #[test]
+    fn content_placeholders_bind_to_the_latest_content() {
+        let latest = format!("tilo.content:{}", "a".repeat(64));
+        let kept = format!("tilo.content:{}", "b".repeat(64));
+        let mut arguments = serde_json::json!({
+            "src": LATEST_CONTENT,
+            "images": ["tilo.content:<export-result>", kept],
+            "style": {"background": " tilo.content:hero "},
+            "upper": format!("tilo.content:{}", "C".repeat(64)),
+            "title": "Meet Lumo",
+            "count": 3,
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        assert_eq!(bind_latest_content(&mut arguments, &latest), 4);
+        assert_eq!(arguments["src"], latest.as_str());
+        assert_eq!(arguments["images"][0], latest.as_str());
+        assert_eq!(arguments["images"][1], kept.as_str());
+        assert_eq!(arguments["style"]["background"], latest.as_str());
+        assert_eq!(
+            arguments["upper"],
+            latest.as_str(),
+            "upper-case hex is no address the store derives"
+        );
+        assert_eq!(arguments["title"], "Meet Lumo");
+        assert_eq!(arguments["count"], 3);
+    }
 
     /// An offer built from a real descriptor, so what these tests check is
     /// what a gate checks against a real survey.
@@ -200,7 +351,6 @@ mod tests {
         reason = "each case keeps its original fixture and assertions"
     )]
     fn an_instruction_resolves_only_to_a_surveyed_bound_and_confirmed_operation() {
-        // Case `an_operation_that_collects_content_is_not_asked_for_words`.
         {
             let offers = vec![offer(
                 "word-processor",
@@ -225,7 +375,6 @@ mod tests {
             );
         }
 
-        // Case `text_collecting_operations_need_a_literal_or_are_refused`.
         {
             let offers = vec![offer(
                 "files",
@@ -280,7 +429,6 @@ mod tests {
             );
         }
 
-        // Case `structured_answers_preserve_types_and_are_bound_before_dispatch`.
         {
             let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
             rich.descriptor.params = vec![
@@ -322,7 +470,6 @@ mod tests {
             ));
         }
 
-        // Case `consequential_actions_require_and_strip_explicit_confirmation_metadata`.
         {
             let mut destructive = offer(
                 "files",
@@ -375,7 +522,6 @@ mod tests {
             );
         }
 
-        // Case `phrase_confirmation_must_match_exactly_before_an_instruction_can_dispatch`.
         {
             let phrase = "delete all archived messages";
             let mut destructive =
@@ -418,6 +564,4 @@ mod tests {
             );
         }
     }
-
-    // -- Sequences: Plan, Step, clauses -----------------------------------
 }

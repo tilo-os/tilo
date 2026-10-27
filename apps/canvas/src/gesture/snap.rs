@@ -112,7 +112,6 @@ mod tests {
     fn a_box_snaps_its_edges_and_centre_to_others() {
         let others = [Rect::new(0.0, 0.0, 100.0, 100.0)];
         let snap = snap_rect(Rect::new(103.0, 48.0, 153.0, 98.0), &others, 5.0);
-        // Left edge onto the other's right edge, bottom onto its bottom.
         assert_eq!(snap.offset, Vec2::new(-3.0, 2.0));
         assert!(
             snap.guides

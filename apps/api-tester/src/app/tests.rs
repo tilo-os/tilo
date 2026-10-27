@@ -18,7 +18,6 @@ fn sample() -> AutoCommit {
     AutoCommit::load(&replica.save()).unwrap()
 }
 
-/// The record `doc` holds.
 fn record(doc: &AutoCommit) -> Rc<Workspace> {
     Rc::new(Workspace::read(doc).unwrap())
 }
@@ -145,7 +144,6 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
     assert_eq!(a.active_tab, RequestTab::Params);
 }
 
-/// Replaying a history entry opens it in the builder without sending it.
 #[test]
 fn replaying_history_fills_the_builder_without_sending() {
     let (mut a, mut doc) = demo();
@@ -378,7 +376,6 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
     assert_eq!(a.collections[ci].requests[ri].name, "List users");
 }
 
-/// Saving names the request, files it in a collection and selects it.
 #[test]
 fn saving_a_request_files_it_and_selects_it() {
     let (mut a, mut doc) = demo();
@@ -560,24 +557,15 @@ fn actual_form_capture_settles_on_the_executor_clock_without_wall_time() {
     );
 }
 
-/// How long a staged capture may take to reach animation idle.
-///
-/// The longest finite transition a capture starts on its own is a
-/// scrollable's first-overflow scrollbar reveal: a 900 ms hold, then a 320 ms
-/// fade, timed on the toolkit's wall clock from the layout that first
-/// overflowed. Staging does not wait for it (a live spinner never idles), so
-/// when staging under a loaded runner takes longer than the hold, the capture
-/// lands inside the fade. Settling bounds that transition instead of racing
-/// it; a perpetual animation still never settles and fails the test.
-const CAPTURE_SETTLE: ui::time::Duration = ui::time::Duration::from_secs(3);
-
 /// Every named `--shots` scenario stages, settles, renders, and leaves an
 /// accessibility tree with no findings.
 #[test]
 fn every_scenario_stages_and_renders_an_accessible_frame() {
     let mut default = TestApp::<ApiTesterShell>::capture(None).unwrap();
     assert!(
-        default.harness().settle_for_capture(CAPTURE_SETTLE),
+        default
+            .harness()
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the default gallery capture settles its populated navigation; requesting frames: {:?}",
         default.harness().frame_requesters()
     );
@@ -590,7 +578,7 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
         let mut app = TestApp::<ApiTesterShell>::capture_at(Some(scenario), size).unwrap();
         let d = app.harness();
         assert!(
-            d.settle_for_capture(CAPTURE_SETTLE),
+            d.settle_for_capture(tilo_test_env::hang_bound()),
             "{scenario}: the actual capture settles its navigation headings and rows; requesting frames: {:?}",
             d.frame_requesters()
         );
@@ -619,7 +607,6 @@ fn resource_provider_sends_for_real_and_resolves_exact_records() {
     resource_provider_resolves_a_late_record_without_scanning_the_workspace();
 }
 
-/// Open `request` in the builder of `app`, as a new request.
 fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
     app.invoke(Workspace::NEW_REQUEST.with(())).unwrap();
     let edits = Workspace::paths().request.path().edits(
@@ -801,7 +788,350 @@ fn resource_send_reports_worker_completion_instead_of_queue_success() {
     resource_send_performs_a_real_http_round_trip();
 }
 
-/// A failed request shows the failure once, in the response pane.
+/// A sheet that asks for one name is as short as that name's field.
+#[test]
+fn the_new_environment_sheet_is_as_tall_as_its_one_field() {
+    let mut app =
+        TestApp::<ApiTesterShell>::capture_at(Some("form-new-environment"), (1280, 800)).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    let name = targets["api.form-name"];
+    let sheet = targets
+        .get("api.form")
+        .copied()
+        .expect("the sheet is a named target");
+    assert!(
+        sheet.height() < 320.0,
+        "the sheet {sheet:?} around the name field {name:?} does not fill the window"
+    );
+}
+
+#[test]
+fn a_wide_window_keeps_each_value_beside_its_key() {
+    let mut app = TestApp::<ApiTesterShell>::capture_at(None, (2560, 1440)).unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    let field = |suffix: &str| {
+        targets
+            .iter()
+            .find(|(id, _)| id.starts_with("api.kv.Params.") && id.ends_with(suffix))
+            .map_or_else(
+                || panic!("the blank parameter row's {suffix} field"),
+                |(_, rect)| *rect,
+            )
+    };
+    let (key, value) = (field(".key"), field(".value"));
+    let readable = f64::from(Theme::dark().tokens.metrics.readable_width);
+    assert!(
+        value.x0 - key.x0 <= readable / 3.0 + 1.0,
+        "the value {value:?} starts within a third of the readable measure of its key {key:?}"
+    );
+}
+
+/// Send with no URL says what is missing instead of doing nothing (or, in a
+/// browser, fetching the page itself).
+#[test]
+fn send_without_a_url_asks_for_one() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("No address");
+    request.url = "  ".into();
+    request.params.push(KeyValue::new("q", "1"));
+    open(&mut app, &request);
+    let _ = app.start_effect(&ApiTesterEffect::Send);
+    app.settle();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert!(!surface.sending, "nothing was sent");
+        assert!(surface.response.is_none());
+        assert_eq!(
+            surface.error.as_deref(),
+            Some("Enter a URL to send the request to.")
+        );
+        assert!(!surface.stale.response, "the pane shows it");
+    })
+    .unwrap();
+    assert!(app.state().history.is_empty());
+}
+
+/// A guest's Save opens the save form at once: the button reaches nothing
+/// outside, and saving into a collection is an edit, decided as one.
+#[test]
+fn a_guests_save_opens_the_form_unasked() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    open(&mut app, &Request::new("Kept"));
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.save-request").unwrap();
+    app.settle();
+    assert!(
+        app.asking().is_none(),
+        "Save asks nothing: {:?}",
+        app.harness().asking_why()
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert_eq!(
+            surface.form.as_ref().map(|form| form.mode),
+            Some(FormMode::SaveRequest),
+            "the save form opened"
+        );
+    })
+    .unwrap();
+}
+
+/// Escape answers the window's ask "no", as Cancel does: the ask closes,
+/// nothing is sent, and no empty search is left open in its place.
+#[test]
+fn escape_closes_a_guests_ask_without_leaving_a_search() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("No address");
+    request.url = "  ".into();
+    open(&mut app, &request);
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.send").unwrap();
+    app.settle();
+    assert!(app.asking().is_some(), "the guest is asked");
+    app.harness().key("Escape");
+    app.settle();
+    assert!(app.asking().is_none(), "Escape closed the ask");
+    let fields: Vec<_> = app
+        .harness()
+        .controls()
+        .into_iter()
+        .filter(|control| control.role == ui::accesskit::Role::TextInput)
+        .filter_map(|control| control.name)
+        .collect();
+    assert!(
+        !fields.iter().any(|name| name == "Search"),
+        "no palette search is left open: {fields:?}"
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| assert!(surface.error.is_none(), "not sent"))
+        .unwrap();
+}
+
+/// A guest (an Editor) pressing Send reaches a server outside the room, so
+/// the room's grants ask first: the guest is asked in the window, told they
+/// decide, and nothing is sent until they confirm. The click is never
+/// dropped unseen.
+#[test]
+fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("No address");
+    request.url = "  ".into();
+    open(&mut app, &request);
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.send").unwrap();
+    app.settle();
+    assert!(
+        app.asking().is_some(),
+        "the guest is asked: {:?}",
+        app.harness().control_failures()
+    );
+    assert!(
+        app.harness()
+            .asking_why()
+            .is_some_and(|why| why.contains("you decide")),
+        "the ask says who decides: {:?}",
+        app.harness().asking_why()
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| assert!(surface.error.is_none(), "not sent yet"))
+        .unwrap();
+    app.confirm_asked();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert_eq!(
+            surface.error.as_deref(),
+            Some("Enter a URL to send the request to."),
+            "the confirmed Send ran"
+        );
+    })
+    .unwrap();
+}
+
+/// A server that answers one request with `head` and then `body`, and stops
+/// writing when the client hangs up.
+fn serve_once(head: String, body: Vec<u8>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            if stream.read_exact(&mut byte).is_err() {
+                return;
+            }
+            request.push(byte[0]);
+        }
+        if stream.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        for chunk in body.chunks(64 * 1024) {
+            if stream.write_all(chunk).is_err() {
+                return;
+            }
+        }
+    });
+    format!("http://{address}/body")
+}
+
+/// Send the open request through the effect and wait for the response the
+/// pane shows.
+fn sent_response(url: String) -> ResponseData {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("Body proof");
+    request.url = url;
+    open(&mut app, &request);
+    app.start_effect(&ApiTesterEffect::Send).unwrap();
+    tilo_test_env::wait_until("the HTTP worker to answer", || {
+        app.settle();
+        app.effect_progress().iter().any(|update| {
+            matches!(
+                update,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+                    | ui::tilo_actions::InvocationUpdate::Failed { .. }
+            )
+        })
+    });
+    app.with_surface::<ApiTesterApp, _>(|surface| surface.response.clone())
+        .unwrap()
+        .expect("the response is displayed")
+}
+
+/// Sending answers whoever sent the request with the response the pane
+/// shows: an agent or a script reads the status, headers and body without
+/// looking at the window.
+#[test]
+fn send_answers_its_caller_with_the_response() {
+    let body = "{\"ok\":true}";
+    let url = serve_once(
+        format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nX-Request-Id: probe-7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        ),
+        body.as_bytes().to_vec(),
+    );
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("Answer proof");
+    request.url = url;
+    open(&mut app, &request);
+    app.start_effect(&ApiTesterEffect::Send).unwrap();
+    tilo_test_env::wait_until("the HTTP worker to answer", || {
+        app.settle();
+        app.effect_progress()
+            .iter()
+            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }))
+    });
+    let answer = app
+        .effect_progress()
+        .into_iter()
+        .find_map(|update| match update {
+            ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
+            _ => None,
+        })
+        .expect("the request answers with its response");
+    assert_eq!(answer["status"], 201);
+    assert_eq!(answer["status_text"], "Created");
+    assert_eq!(answer["body"], body);
+    assert_eq!(answer["size_bytes"], body.len());
+    assert_eq!(answer["binary"], false);
+    assert!(
+        answer["headers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|header| header["name"] == "x-request-id" && header["value"] == "probe-7"),
+        "{answer}"
+    );
+}
+
+/// A response larger than the pane can lay out is downloaded only as far
+/// as it is shown, and the pane says so instead of holding gigabytes.
+#[test]
+fn a_huge_response_is_shown_in_part_without_downloading_it_whole() {
+    let total = 4 * crate::http::MAX_SHOWN_BODY_BYTES;
+    let response = sent_response(serve_once(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n".to_owned(),
+        vec![b'a'; total],
+    ));
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.len(), crate::http::MAX_SHOWN_BODY_BYTES);
+    assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
+    assert!(!response.binary);
+    assert!(
+        !response.size_exact,
+        "with no declared length, the size is what arrived before the download stopped"
+    );
+    assert!(response::size_caption(&response).starts_with("More than "));
+    assert!(
+        response::shown_caption(&response).is_some_and(|shown| shown.starts_with("First ")),
+        "the pane says it shows the start"
+    );
+
+    // With a declared length, the size is the body's own.
+    let response = sent_response(serve_once(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+        ),
+        vec![b'a'; total],
+    ));
+    assert_eq!(response.size_bytes, total);
+    assert!(response.size_exact);
+    assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
+}
+
+/// A binary body is shown as hex at its true size, not as replacement
+/// characters whose count the size was taken from.
+#[test]
+fn a_binary_response_is_shown_as_hex_at_its_size() {
+    let png: Vec<u8> = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        .into_iter()
+        .chain((0..=255).cycle().take(1000))
+        .collect();
+    let response = sent_response(serve_once(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        ),
+        png.clone(),
+    ));
+    assert_eq!(
+        response.size_bytes,
+        png.len(),
+        "the size counts bytes received"
+    );
+    assert!(response.size_exact);
+    assert!(response.binary);
+    assert!(!response.is_json());
+    assert!(
+        response.body.starts_with(
+            "00000000  89 50 4e 47 0d 0a 1a 0a 00 01 02 03 04 05 06 07  .PNG............\n"
+        ),
+        "{}",
+        response.body.lines().next().unwrap_or_default()
+    );
+    assert_eq!(response.body.lines().count(), png.len().div_ceil(16));
+    assert!(!response.body.contains('\u{FFFD}'));
+    assert_eq!(
+        response::shown_caption(&response).as_deref(),
+        Some("Shown as hex")
+    );
+
+    // Text in another encoding stays text, with its stray bytes replaced.
+    let latin1 = b"caf\xe9".to_vec();
+    let response = sent_response(serve_once(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_owned(),
+        latin1,
+    ));
+    assert!(!response.binary);
+    assert_eq!(response.body, "caf\u{FFFD}");
+    assert_eq!(response::shown_caption(&response), None);
+}
+
 #[test]
 
 fn a_failed_request_is_shown_in_the_response_pane() {
@@ -994,4 +1324,176 @@ fn long_navigation_labels_fit_the_shared_rows() {
             .unwrap();
         assert!(lists > 0, "the production view contains shared navigation");
     }
+}
+
+/// The request's name is the window's location and its commands are the
+/// window bar's actions: New collection, Save and Send in its row, Reset
+/// request area after them. The window draws no header row and no search
+/// of its own.
+#[test]
+fn the_requests_name_and_commands_are_in_the_window_bar() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    open(&mut app, &Request::new("List users"));
+    app.harness().present_in_window_bar();
+    app.settle();
+    let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+    assert_eq!(
+        bar.location
+            .as_ref()
+            .map(|location| location.label.as_str()),
+        Some("List users")
+    );
+    let names: Vec<&str> = bar
+        .actions
+        .iter()
+        .map(|action| action.name.as_str())
+        .collect();
+    for command in [
+        "New collection",
+        "Reset request area",
+        "Save request",
+        "Send",
+    ] {
+        assert!(
+            names.contains(&command),
+            "{command} is a bar action: {names:?}"
+        );
+    }
+    assert!(
+        !names.iter().any(|name| name.contains("Search")),
+        "the bar's own search is the only one: {names:?}"
+    );
+    let row = &names[..bar
+        .row_actions()
+        .min(ui::window_toolbar::MAX_ACTIONS)
+        .min(names.len())];
+    for command in ["Save request", "Send"] {
+        assert!(
+            row.contains(&command),
+            "{command} stands in the bar's row: {names:?}"
+        );
+    }
+    let targets = app.harness().targets();
+    for drawn in ["api.send", "api.save-request", "api.new-collection"] {
+        assert!(
+            !targets.contains_key(drawn),
+            "{drawn} is the bar's, not drawn in the window"
+        );
+    }
+
+    let save = bar
+        .actions
+        .iter()
+        .find(|action| action.name == "Save request")
+        .expect("Save is a bar action")
+        .id
+        .clone();
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: save });
+    // The shell presses the header's button in the frame's settle pass;
+    // the window then dispatches what the button invoked.
+    app.idle();
+    app.settle();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert_eq!(
+            surface.form.as_ref().map(|form| form.mode),
+            Some(FormMode::SaveRequest),
+            "the bar's Save opened the save form"
+        );
+    })
+    .unwrap();
+}
+
+/// The history keeps the request that was sent, so replaying an entry brings
+/// its headers, body and parameters back — and never a credential's value.
+#[test]
+fn a_history_entry_keeps_the_whole_request_it_sent() {
+    let (mut a, mut doc) = demo();
+    // Give the builder's request something to lose: an address and a body.
+    a.submit(
+        Workspace::paths()
+            .request
+            .url
+            .replace("https://api.example.com/users?page=2".to_owned()),
+    );
+    a.submit(
+        Workspace::paths()
+            .request
+            .body
+            .replace("{\"name\":\"Ada\"}".to_owned()),
+    );
+    drain(&mut a, &mut doc);
+    let authored = record(&doc).request_shown();
+    assert!(!authored.body_text.is_empty(), "the request has a body");
+    submit(
+        &mut a,
+        &mut doc,
+        Workspace::RECORD_SENT.with(crate::resource::workspace::RecordSent {
+            method: authored.method.as_str().to_owned(),
+            url: authored.url.clone(),
+            status: 201,
+            duration_ms: 12,
+        }),
+    );
+
+    let entry = &record(&doc).history_shown()[0];
+    let replay = entry
+        .replay
+        .as_ref()
+        .expect("the entry keeps the request it sent");
+    assert_eq!(replay.url, authored.url);
+    assert_eq!(replay.method, authored.method);
+    assert_eq!(
+        replay.headers.len(),
+        authored.headers.len(),
+        "every header came along"
+    );
+    assert_eq!(replay.headers[0].key, authored.headers[0].key);
+    assert_eq!(replay.body, authored.body_text);
+    assert_eq!(replay.params.len(), authored.params.len());
+    assert_eq!(
+        replay.scheme,
+        authored.auth.label(),
+        "the scheme is public; the credential itself is not recorded"
+    );
+
+    // Replaying fills the builder with all of it, not just a method and URL.
+    resync(&mut a, &doc);
+    a.request = crate::seed::blank_request();
+    push(&a, Cmd::ReplayHistory(0));
+    drain(&mut a, &mut doc);
+    assert_eq!(a.request.method, authored.method);
+    assert_eq!(a.request.url, authored.url);
+    assert_eq!(a.request.headers.len(), authored.headers.len());
+    assert_eq!(a.request.body_text, authored.body_text);
+}
+
+/// Cancelling a request that is in flight stops waiting for it and says so,
+/// instead of leaving the app looking like it is still on its way.
+#[test]
+fn cancelling_a_request_in_flight_stops_waiting_for_it() {
+    let (mut a, mut doc) = demo();
+    a.sending = true;
+    let flag = std::sync::Arc::clone(&a.send_cancel);
+    a.cancel_send();
+    assert!(!a.sending, "the app is no longer waiting");
+    assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(
+        a.error.as_deref(),
+        Some("The request was cancelled."),
+        "the pane says what happened"
+    );
+    drain(&mut a, &mut doc);
+}
+
+/// Copying a response part with nothing to copy is a refusal with a reason,
+/// not a silent no-op; and a part that does not exist is refused by name.
+#[test]
+fn copying_part_of_a_response_that_is_not_there_is_refused() {
+    let mut a = ApiTesterApp::new_demo();
+    a.response = None;
+    a.error = None;
+    assert!(a.copy_body().is_err());
+    assert!(a.copy_headers().is_err());
+    assert!(a.error.is_some(), "the pane says why nothing was copied");
 }

@@ -74,8 +74,7 @@ fn deferred_native_and_driver_confirmation_mint_once_only_at_handler() {
                 expected,
                 "control and repeated confirmation preparation must be inert"
             );
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 expected + 1,
@@ -99,8 +98,7 @@ fn deferred_changed_draft_and_current_permission_refuse_without_building() {
             } else {
                 host.revoke();
             }
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(calls.load(Ordering::SeqCst), 0, "{native}:{change}");
             assert!(ledger.borrow().is_empty());
         }
@@ -115,15 +113,13 @@ fn deferred_history_retains_draft_without_mint_and_checks_on_resume() {
             let ledger = widget.ledger.clone();
             let mut host = Host::new(native, managed(Box::new(widget)));
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.activate("History");
             if changed {
                 domain.store(1, Ordering::SeqCst);
             }
             host.activate("History");
             assert_eq!(calls.load(Ordering::SeqCst), 0);
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 usize::from(!changed),
@@ -143,8 +139,7 @@ fn deferred_actual_component_close_refuses_before_mint() {
         let mut host = Host::new(native, guard.managed(root));
         host.activate("Emit request");
         guard.close();
-        host.value("CONFIRM");
-        host.activate("Confirm");
+        host.activate("Run fixture");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(ledger.borrow().is_empty());
     }
@@ -172,8 +167,7 @@ fn deferred_semantic_tree_publishes_inert_address_and_uses_confirmation_door() {
     assert!(app.invoke_semantic_action(&id, "run", None).unwrap());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     layout(app);
-    host.value("CONFIRM");
-    host.activate("Confirm");
+    host.activate("Run fixture");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
 }

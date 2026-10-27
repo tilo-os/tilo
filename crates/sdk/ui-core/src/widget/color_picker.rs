@@ -138,6 +138,8 @@ pub struct ColorPicker {
     b_slider_rect: Rect,
     preview_rect: Rect,
     drag_target: Option<DragTarget>,
+    /// The finger dragging the field, hue strip or a channel slider.
+    touch: crate::widget::SliderTouch,
     last_cursor: Point,
     is_focused: bool,
     /// Local-mode `TextInput` sitting under the preview swatch, holding the
@@ -188,6 +190,7 @@ impl ColorPicker {
             b_slider_rect: Rect::ZERO,
             preview_rect: Rect::ZERO,
             drag_target: None,
+            touch: crate::widget::SliderTouch::default(),
             last_cursor: Point::ZERO,
             is_focused: false,
             hex_input: TextInput::local()
@@ -1137,6 +1140,41 @@ impl Widget for ColorPicker {
                     *ctx.handled = true;
                 }
             }
+            // A finger drags the field, the hue strip and the channel
+            // sliders as the pointer held down does.
+            WindowEvent::Touch(touch) => {
+                use crate::widget::SliderTouchStep;
+                let mut finger = self.touch;
+                let step = finger.step(touch, ctx.scale_factor, |point| {
+                    self.target_at(point).is_some()
+                });
+                self.touch = finger;
+                match step {
+                    SliderTouchStep::Press(point) => {
+                        self.last_cursor = point;
+                        if self.hex_input.is_focused() {
+                            self.hex_input.set_focus(false);
+                        }
+                        self.drag_target = self.target_at(point);
+                        *ctx.focus_target = Some(ctx.node_id);
+                        *ctx.handled = true;
+                        self.apply_drag(point);
+                        self.sync_input();
+                    }
+                    SliderTouchStep::Move(point) => {
+                        if self.drag_target.is_some() {
+                            self.apply_drag(point);
+                            self.sync_input();
+                        }
+                        *ctx.handled = true;
+                    }
+                    SliderTouchStep::Release => {
+                        self.drag_target = None;
+                        *ctx.handled = true;
+                    }
+                    SliderTouchStep::Ignored => {}
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -1183,7 +1221,12 @@ impl Widget for ColorPicker {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.drag_target.is_some()
+        self.drag_target.is_some() || self.touch.is_active()
+    }
+
+    /// A finger on the field, the hue strip or a channel slider drags it.
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.target_at(point).is_some()
     }
 
     fn name(&self) -> &'static str {
@@ -1387,6 +1430,43 @@ mod tests {
 
     use crate::synthetic_input::mouse_release;
 
+    fn finger(phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(x, y),
+            force: None,
+            id: 5,
+        })
+    }
+
+    #[test]
+    fn a_finger_drags_the_colour_pickers_channel_sliders() {
+        use winit::event::TouchPhase;
+        let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
+        let r = p.r_slider_rect;
+        let y = f64::midpoint(r.y0, r.y1);
+        assert!(Widget::claims_raw_touch(&p, Point::new(r.center().x, y)));
+
+        assert!(dispatch(
+            &mut p,
+            &finger(TouchPhase::Started, r.x0 + 1.0, y)
+        ));
+        assert!(p.color().r() <= 5, "the finger lands at the left end");
+        assert!(Widget::wants_pointer_capture(&p));
+        assert!(dispatch(
+            &mut p,
+            &finger(TouchPhase::Moved, r.x1 - 1.0, y + 80.0)
+        ));
+        assert!(p.color().r() >= 250, "got {}", p.color().r());
+        assert!(dispatch(
+            &mut p,
+            &finger(TouchPhase::Ended, r.x1 - 1.0, y + 80.0)
+        ));
+        assert!(!Widget::wants_pointer_capture(&p));
+        assert_eq!(p.color().g(), 80, "only the dragged channel moved");
+    }
+
     #[test]
     fn picker_surfaces_edit_hue_saturation_value_and_rgb() {
         /// Drag the hue strip vertically. The starting colour is a red-ish
@@ -1442,7 +1522,6 @@ mod tests {
                 "top-right SV click must yield high value — got v={v_tr}",
             );
 
-            // Either channel dropping below the post-TR reading proves the click landed.
             let bl_x = p.sv_rect.x0 + 1.0;
             let bl_y = p.sv_rect.y1 - 1.0;
             dispatch(&mut p, &cursor_moved(bl_x, bl_y));
@@ -1559,7 +1638,6 @@ mod tests {
             let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
             assert_eq!(p.take_changed(), None, "no edit → take_changed is None");
 
-            // A real drag through the production handle_event path.
             let r_x = p.r_slider_rect.x1 - 1.0;
             let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
             dispatch(&mut p, &cursor_moved(r_x, r_y));

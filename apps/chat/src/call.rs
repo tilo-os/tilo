@@ -64,6 +64,10 @@ pub struct CallState {
     /// has no local screen-capture producer, so production never sets it; it
     /// is cleared on every join/leave and staged only by screenshot scenarios.
     pub sharing: bool,
+    /// Who the docked call shows large: the last other person the call
+    /// heard, kept until someone else speaks, so the tile does not flip
+    /// back and forth between two people taking turns.
+    pub featured: Option<String>,
 }
 
 impl Default for CallState {
@@ -78,6 +82,7 @@ impl Default for CallState {
             deafened: false,
             audio_only: true,
             sharing: false,
+            featured: None,
         }
     }
 }
@@ -94,7 +99,7 @@ impl CallState {
         self.active
             .then(|| ui::floating_surface::FloatingSurfaceRequest {
                 id: format!("chat-call:{}", self.channel),
-                title: "Active call".into(),
+                title: crate::i18n::t("chat-call-active"),
                 role: ui::floating_surface::FloatingRole::ActiveCall,
                 source: ui::floating_surface::FloatingSource::AppElement {
                     app_id: "so.tilo.chat".into(),
@@ -122,6 +127,7 @@ impl CallState {
         self.muted = true;
         self.audio_only = true;
         self.sharing = false;
+        self.featured = None;
     }
 
     /// End the call and clear transient overlay layout.
@@ -132,6 +138,7 @@ impl CallState {
         self.sharing = false;
         self.muted = true;
         self.audio_only = true;
+        self.featured = None;
     }
 
     /// Whether to auto-expand the participant list for `n` participants.

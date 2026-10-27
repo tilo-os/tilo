@@ -30,11 +30,13 @@
 //! app can be the source of a drag rather than only its target. It offers
 //! bytes for the same reason the receive side prefers them: the app on
 //! the other end is confined, and a path from this one's namespace means
-//! nothing in that one's.
+//! nothing in that one's. A file's bytes are read when a receiver asks
+//! for them, on the thread that writes the pipe ([`DragData::File`]), so
+//! starting a drag never reads a file, however large, on the app's thread.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use calloop::channel::{self, Channel, Sender};
 use sctk::compositor::SurfaceData;
@@ -465,7 +467,30 @@ static DRAG_SEAT: Mutex<Option<DragSeat>> = Mutex::new(None);
 /// loop long after the call that started the drag returned.
 struct Outgoing {
     source: ObjectId,
-    offers: Vec<(String, Vec<u8>)>,
+    offers: Vec<(String, Arc<DragData>)>,
+}
+
+/// What one mime type of an outgoing drag carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DragData {
+    /// These bytes.
+    Bytes(Vec<u8>),
+    /// The content of this file. It is opened and streamed into the pipe
+    /// when a receiver asks for it, on the thread that writes the pipe,
+    /// never on the thread that started the drag.
+    File(PathBuf),
+}
+
+impl DragData {
+    /// Write the content into `pipe`.
+    fn write_to(&self, pipe: &mut impl Write) -> std::io::Result<()> {
+        match self {
+            Self::Bytes(bytes) => pipe.write_all(bytes),
+            Self::File(path) => {
+                std::io::copy(&mut std::fs::File::open(path)?, pipe).map(|_| ())
+            },
+        }
+    }
 }
 
 static OUTGOING: Mutex<Vec<Outgoing>> = Mutex::new(Vec::new());
@@ -502,7 +527,7 @@ pub fn clear_drag_seat() {
 /// name, but it is never the only offer.
 ///
 /// Returns whether the request was sent.
-pub fn start_drag(surface: &WlSurface, serial: u32, offers: Vec<(String, Vec<u8>)>) -> bool {
+pub fn start_drag(surface: &WlSurface, serial: u32, offers: Vec<(String, DragData)>) -> bool {
     if offers.is_empty() {
         return false;
     }
@@ -527,7 +552,7 @@ pub fn start_drag(surface: &WlSurface, serial: u32, offers: Vec<(String, Vec<u8>
         .unwrap_or_else(|e| e.into_inner())
         .push(Outgoing {
             source: source.id(),
-            offers,
+            offers: offers.into_iter().map(|(mime, data)| (mime, Arc::new(data))).collect(),
         });
     seat.device.start_drag(Some(&source), surface, None, serial);
     true
@@ -563,26 +588,26 @@ impl DataSourceHandler for WinitState {
         pipe: WritePipe,
     ) {
         let id = source.id();
-        let bytes = {
+        let data = {
             let out = OUTGOING.lock().unwrap_or_else(|e| e.into_inner());
             out.iter()
                 .find(|o| o.source == id)
                 .and_then(|o| o.offers.iter().find(|(m, _)| *m == mime))
-                .map(|(_, b)| b.clone())
+                .map(|(_, data)| Arc::clone(data))
         };
-        let Some(bytes) = bytes else {
+        let Some(data) = data else {
             tracing::warn!("a receiver asked for {mime}, which this drag never offered");
             return;
         };
         // On a thread, for the same reason the read side is: a payload
         // bigger than the pipe buffer blocks until the receiver drains
         // it, and the receiver may well be waiting on an event this loop
-        // has not dispatched yet.
+        // has not dispatched yet. A file is read there too, as it streams.
         let _ = std::thread::Builder::new()
             .name("winit-dnd-write".into())
             .spawn(move || {
                 let mut pipe = pipe;
-                if let Err(err) = pipe.write_all(&bytes) {
+                if let Err(err) = data.write_to(&mut pipe) {
                     tracing::warn!("writing a dragged {mime} to the receiver failed: {err}");
                 }
             });
@@ -614,6 +639,24 @@ mod tests {
 
     fn mimes(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_dragged_file_streams_its_content_when_it_is_written() {
+        let path = std::env::temp_dir()
+            .join(format!("winit-drag-data-{}.bin", std::process::id()));
+        let content: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        std::fs::write(&path, &content).unwrap();
+        let data = DragData::File(path.clone());
+        let mut pipe = Vec::new();
+        data.write_to(&mut pipe).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(pipe, content);
+        let mut pipe = Vec::new();
+        assert!(DragData::File(path).write_to(&mut pipe).is_err(), "a file gone by then fails");
+        let mut pipe = Vec::new();
+        DragData::Bytes(b"abc".to_vec()).write_to(&mut pipe).unwrap();
+        assert_eq!(pipe, b"abc");
     }
 
     #[test]

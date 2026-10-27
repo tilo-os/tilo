@@ -202,7 +202,6 @@ system = "required@2"
             "system@2 (this system provides system@1)"
         );
         assert!(unmet(Some(&os(2, 1)), &manifest).is_empty());
-        // An optional service is spoken at its version where it is there.
         let runtime_moved = unmet(Some(&os(2, 2)), &manifest);
         assert_eq!(
             runtime_moved[0].to_string(),
@@ -211,7 +210,6 @@ system = "required@2"
         assert!(tilo_app_package::interfaces::package_is_behind(
             &runtime_moved
         ));
-        // A host that declares nothing judges nothing.
         assert!(unmet(None, &manifest).is_empty());
     }
 

@@ -56,8 +56,8 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     // Bytes that were only read count as durable once the store's thread has
     // synced them, so a reopened note can read "Saving…" for a moment. It
     // must turn "Saved" by itself: run frames only as the live host would
-    // (the status's own wake deadline) until it does.
-    let saved = idle(&mut app, std::time::Duration::from_secs(10), |app| {
+    // (the store's wake once its thread is done) until it does.
+    let saved = idle(&mut app, tilo_test_env::hang_bound(), |app| {
         save_labels(app) == ["Saved"]
     });
     assert!(
@@ -67,9 +67,10 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     );
 }
 
-/// Run frames only when the live host would: for queued work, an animation
-/// or a due wake deadline, each followed by the idle pass that hands edits to
-/// the record's writer. Returns once `until` holds or `budget` runs out.
+/// Run frames only when the live host would: for queued work (a wake the
+/// record's store raised once a write landed among it), an animation or a
+/// due wake deadline, each followed by the idle pass that hands edits to the
+/// record's writer. Returns once `until` holds or `budget` runs out.
 fn idle(
     app: &mut TestApp<NotesShell>,
     budget: std::time::Duration,
@@ -98,8 +99,7 @@ fn idle(
     }
 }
 
-/// Keys arrive one by one, slower than the status bubble lingers and faster
-/// than the writer's debounce, so the status reads "Saving…" from the first
+/// Keys arrive one by one, faster than the writer's debounce, so the status reads "Saving…" from the first
 /// key to the last. The write then lands on the store's own thread with no
 /// further input, and the status still moves to "Saved".
 #[test]
@@ -117,7 +117,7 @@ fn a_note_typed_key_by_key_reads_saved_once_its_write_lands() {
             "autosave announces nothing"
         );
     }
-    let saved = idle(&mut app, std::time::Duration::from_secs(10), |app| {
+    let saved = idle(&mut app, tilo_test_env::hang_bound(), |app| {
         save_labels(app) == ["Saved"]
     });
     assert!(
@@ -128,21 +128,23 @@ fn a_note_typed_key_by_key_reads_saved_once_its_write_lands() {
 }
 
 /// Assistive technology hears what the screen shows: autosave cycling
-/// between "Saving…" and "Saved" is silent, a failed save is announced, and
-/// so is the save that ends it, once.
+/// between "Saving…" and "Saved" is silent, a failed save is said in the
+/// window's bar (its notice is a polite live region), and so is the save
+/// that ends it, once. The note's own tree announces nothing.
 #[test]
 fn only_a_failed_save_and_its_recovery_are_announced() {
     use ui::record::RecordSaveStatus;
     use ui::widget::Widget;
-    fn announced(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+    fn live(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
         if node.live.is_some() {
             out.push(node.name.clone().unwrap_or_default());
         }
         for child in &node.children {
-            announced(child, out);
+            live(child, out);
         }
     }
     ui::i18n::I18nManager::init("en-US");
+    ui::window_toolbar::notify(None);
     let mut doc = automerge::AutoCommit::new();
     read::initialize(&mut doc);
     doc.commit();
@@ -150,22 +152,32 @@ fn only_a_failed_save_and_its_recovery_are_announced() {
         notes::NotesApp::from_document(&doc, &ui::permissions::UserId("me".into())).unwrap();
     let status = ui::LocalState::new(RecordSaveStatus::Saved);
     app.follow_save_status(status.clone());
+    let mut said = None;
+    // What the bar newly says after the save state changes.
     let mut hear = |state: RecordSaveStatus| {
         status.set(state);
         app.sync(&doc, &automerge::ROOT);
-        let mut out = Vec::new();
-        announced(&app.accessibility().unwrap(), &mut out);
-        out
+        let mut own = Vec::new();
+        live(&app.accessibility().unwrap(), &mut own);
+        assert_eq!(
+            own,
+            Vec::<String>::new(),
+            "the note announces nothing itself"
+        );
+        let now = ui::window_toolbar::notice().map(|notice| notice.text);
+        let news = (now != said).then(|| now.clone()).flatten();
+        said = now;
+        news.into_iter().collect::<Vec<_>>()
     };
     for state in
         std::iter::repeat_n([RecordSaveStatus::Saving, RecordSaveStatus::Saved], 3).flatten()
     {
         assert_eq!(hear(state), Vec::<String>::new(), "autosave is silent");
     }
-    assert_eq!(
-        hear(RecordSaveStatus::Failed("disk failure".into())),
-        ["Save failed"],
-        "a failed save is announced"
+    let failed = hear(RecordSaveStatus::Failed("disk failure".into()));
+    assert!(
+        matches!(failed.as_slice(), [text] if text.starts_with("Save failed")),
+        "a failed save is announced: {failed:?}"
     );
     assert_eq!(
         hear(RecordSaveStatus::Saving),

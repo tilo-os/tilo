@@ -133,11 +133,6 @@ impl ConsoleServer {
     }
 
     /// Start serving one endpoint on background threads.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the socket directory is not private to this
-    /// user, a non-socket occupies the socket path, or binding fails.
     pub fn serve(&self, endpoint: &Endpoint, waker: Waker) -> io::Result<()> {
         match endpoint {
             Endpoint::Socket(path) => self.serve_socket(path, waker),
@@ -211,10 +206,6 @@ impl ConsoleServer {
     }
 
     /// Answer every request line on one connection until it closes.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error that ended the connection, if any.
     pub fn serve_stream(
         &self,
         reader: impl Read,
@@ -369,7 +360,6 @@ mod tests {
 
     #[test]
     fn console_server_answers_only_through_its_owner_and_never_hangs() {
-        // Phase `loopback_submission_is_answered_by_the_owner`.
         {
             let server = ConsoleServer::new();
             let answer = server.submit(r#"{"op":"state_dump"}"#);
@@ -382,7 +372,6 @@ mod tests {
             assert_eq!(answer.recv().unwrap(), "ok");
             assert!(server.take_pending().is_empty());
         }
-        // Phase `a_private_socket_round_trips_lines_through_the_owner`.
         {
             let runtime = tempfile::tempdir().unwrap();
             std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700))
@@ -415,7 +404,6 @@ mod tests {
             assert!(replies[0].contains("state_dump"), "{replies:?}");
             assert!(replies[1].contains("actions_enumerate"), "{replies:?}");
         }
-        // Phase `a_shared_or_foreign_socket_directory_is_refused`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let dir = runtime.path().join("tilo-console");
@@ -433,7 +421,6 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         }
-        // Phase `a_stream_answers_each_line_and_stops_at_oversized_input`.
         {
             let server = ConsoleServer::new();
             let (mut client, host) = UnixStream::pair().unwrap();
@@ -460,7 +447,6 @@ mod tests {
             assert!(line.contains("too long"), "{line}");
             serving.join().unwrap().unwrap();
         }
-        // Phase `an_unanswered_request_times_out_rather_than_hanging_forever`.
         {
             // Dropping the pending entry closes its reply channel immediately,
             // which the listener reports instead of waiting out the timeout.

@@ -23,8 +23,8 @@ use git2::{
 
 use crate::diff::{language_for, parse_unified};
 use crate::model::{
-    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, RefKind, RefLabel,
-    Remote, RepoModel, Stash, Tag,
+    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, FileDiff, RefKind,
+    RefLabel, Remote, RepoModel, Stash, Tag,
 };
 
 /// How many commits to walk for the history view. Bounded so a huge repo
@@ -223,7 +223,6 @@ fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, stag
 
     for (path, raw) in raw_by_path {
         let mut fd = parse_unified(&path, &language_for(&path), &raw);
-        // Mark new/deleted from delta status if the textual markers missed it.
         if let Some(delta) = find_delta(diff, &path) {
             match delta {
                 Delta::Added | Delta::Untracked => fd.is_new = true,
@@ -550,7 +549,6 @@ pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let rel = Path::new(file);
     if let Some(head_commit) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
-        // Reset just this path in the index to its HEAD blob.
         repo.reset_default(Some(head_commit.as_object()), [rel])
             .with_context(|| format!("git reset HEAD -- {file}"))?;
     } else {
@@ -827,6 +825,49 @@ pub fn checkout_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What to do with uncommitted work when a branch is checked out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckoutPlan {
+    /// Take the edits along: git's own behaviour when nothing conflicts.
+    Carry,
+    /// Park them on the stash first, so the working tree is clean.
+    Stash,
+}
+
+/// Switch branches, deciding what becomes of uncommitted work *before* the
+/// tree is touched.
+///
+/// [`CheckoutPlan::Stash`] parks the changes on the stash and reports its
+/// short id; if the checkout then fails, they are put back, so a failed
+/// switch never leaves the person's edits in neither place.
+///
+/// # Errors
+///
+/// Returns an error if the branch does not exist, the checkout would
+/// overwrite uncommitted work, or the stash could not be made.
+pub fn checkout_branch_planned(
+    path: &Path,
+    name: &str,
+    plan: CheckoutPlan,
+) -> anyhow::Result<Option<String>> {
+    match plan {
+        CheckoutPlan::Carry => {
+            checkout_branch(path, name)?;
+            Ok(None)
+        }
+        CheckoutPlan::Stash => {
+            let stashed = stash_save(path, &format!("before switching to {name}"))?;
+            if let Err(error) = checkout_branch(path, name) {
+                // Put the work back where it was: a switch that failed must
+                // not also have hidden the edits.
+                let _ = stash_apply(path, 0);
+                return Err(error.context("the uncommitted changes were put back"));
+            }
+            Ok(Some(stashed))
+        }
+    }
+}
+
 /// Create a new local branch at HEAD (or at `start_point` if given) and,
 /// when `checkout` is true, switch to it. Mirrors `git branch <name>` /
 /// `git checkout -b <name>`.
@@ -883,6 +924,254 @@ pub fn delete_branch(path: &Path, name: &str) -> anyhow::Result<()> {
         .delete()
         .with_context(|| format!("delete branch {name}"))?;
     Ok(())
+}
+
+/// Which version of a conflicted file to keep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictSide {
+    /// Our side of the merge (index stage 2).
+    Ours,
+    /// Their side (index stage 3).
+    Theirs,
+}
+
+/// What each side of a conflicted file brings, so the choice can name what
+/// it costs before it is made: the lines each side has that the other does
+/// not. Keeping one side discards the other's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConflictCost {
+    /// Lines only our side has: what keeping *theirs* discards.
+    pub ours: usize,
+    /// Lines only their side has: what keeping *ours* discards.
+    pub theirs: usize,
+}
+
+impl ConflictCost {
+    /// The lines lost by keeping `side`.
+    #[must_use]
+    pub const fn discards(self, side: ConflictSide) -> usize {
+        match side {
+            ConflictSide::Ours => self.theirs,
+            ConflictSide::Theirs => self.ours,
+        }
+    }
+}
+
+/// What keeping each side of `file` would discard: the lines of the side
+/// that loses.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the file has no
+/// conflict in the index, or a side's content cannot be read.
+pub fn conflict_cost(path: &Path, file: &str) -> anyhow::Result<ConflictCost> {
+    let repo = open(path)?;
+    let index = repo.index()?;
+    let blob_of = |stage: i32| -> anyhow::Result<Vec<u8>> {
+        let entry = index.get_path(Path::new(file), stage).ok_or_else(|| {
+            anyhow!(
+                "{file} has no {} side — it is not a conflict in both directions",
+                if stage == 2 { "our" } else { "their" }
+            )
+        })?;
+        Ok(repo.find_blob(entry.id)?.content().to_vec())
+    };
+    let ours = blob_of(2)?;
+    let theirs = blob_of(3)?;
+    cost_between(&repo, file, &ours, &theirs)
+}
+
+/// The lines each of two versions has that the other does not, as git's own
+/// diff counts them: ours → theirs adds what only theirs has, and removes
+/// what only ours has.
+fn cost_between(
+    repo: &Repository,
+    file: &str,
+    ours: &[u8],
+    theirs: &[u8],
+) -> anyhow::Result<ConflictCost> {
+    let old = repo.find_blob(repo.blob(ours)?)?;
+    let new = repo.find_blob(repo.blob(theirs)?)?;
+    let mut opts = DiffOptions::new();
+    opts.context_lines(0);
+    // A line the diff adds is one only their side has; a line it removes is
+    // one only ours has.
+    let mut cost = ConflictCost::default();
+    let mut count = |_delta: git2::DiffDelta<'_>,
+                     _hunk: Option<git2::DiffHunk<'_>>,
+                     line: git2::DiffLine<'_>| {
+        match line.origin() {
+            '+' => cost.theirs = cost.theirs.saturating_add(1),
+            '-' => cost.ours = cost.ours.saturating_add(1),
+            _ => {}
+        }
+        true
+    };
+    repo.diff_blobs(
+        Some(&old),
+        Some(file),
+        Some(&new),
+        Some(file),
+        Some(&mut opts),
+        None,
+        None,
+        None,
+        Some(&mut count),
+    )?;
+    Ok(cost)
+}
+
+/// Resolve a conflicted file by keeping one side: the chosen stage's
+/// content is written to the working tree and staged, which clears the
+/// file's conflict. The other side is discarded — the merge is still in
+/// progress, so its `MERGE_HEAD` keeps the history that produced both.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the file has no
+/// such side in the index (it is not conflicted that way), or the write
+/// fails.
+pub fn resolve_conflict(path: &Path, file: &str, side: ConflictSide) -> anyhow::Result<()> {
+    let repo = open(path)?;
+    let mut index = repo.index()?;
+    let stage = match side {
+        ConflictSide::Ours => 2,
+        ConflictSide::Theirs => 3,
+    };
+    let entry = index.get_path(Path::new(file), stage).ok_or_else(|| {
+        anyhow!(
+            "{file} has no {} side to keep",
+            match side {
+                ConflictSide::Ours => "our",
+                ConflictSide::Theirs => "their",
+            }
+        )
+    })?;
+    let blob = repo.find_blob(entry.id)?;
+    let workdir = repo.workdir().context("bare repository")?;
+    let full = workdir.join(file);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&full, blob.content()).with_context(|| format!("write {file}"))?;
+    // Adding the path stages the resolved content and drops the conflict's
+    // stage entries, which is what "resolved" means to git.
+    index
+        .add_path(Path::new(file))
+        .with_context(|| format!("stage the resolved {file}"))?;
+    index.write()?;
+    Ok(())
+}
+
+/// The files `commit` changed against its first parent (the empty tree for a
+/// root commit), each with its added and removed line counts.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or the commit cannot
+/// be read.
+pub fn commit_files(path: &Path, commit: &str) -> anyhow::Result<Vec<FileChange>> {
+    let repo = open(path)?;
+    let commit = repo
+        .revparse_single(commit)
+        .with_context(|| format!("no such commit {commit}"))?
+        .peel_to_commit()?;
+    let new_tree = commit.tree()?;
+    let parent_tree = match commit.parent(0) {
+        Ok(parent) => Some(parent.tree()?),
+        Err(_) => None,
+    };
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&new_tree), None)
+        .context("diff the commit against its parent")?;
+    Ok(files_of(&diff, &repo))
+}
+
+/// One file's diff in `commit`, against the commit's first parent.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or the commit cannot
+/// be read.
+pub fn commit_file_diff(path: &Path, commit: &str, file: &str) -> anyhow::Result<FileDiff> {
+    let repo = open(path)?;
+    let commit = repo
+        .revparse_single(commit)
+        .with_context(|| format!("no such commit {commit}"))?
+        .peel_to_commit()?;
+    let new_tree = commit.tree()?;
+    let parent_tree = match commit.parent(0) {
+        Ok(parent) => Some(parent.tree()?),
+        Err(_) => None,
+    };
+    let mut opts = DiffOptions::new();
+    opts.context_lines(3);
+    opts.pathspec(file);
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&new_tree), Some(&mut opts))
+        .context("diff the commit's file against its parent")?;
+    let mut fd;
+    let mut raw = String::new();
+    diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+        let origin = line.origin();
+        if matches!(origin, '+' | '-' | ' ') {
+            raw.push(origin);
+        }
+        raw.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+        true
+    })
+    .context("read the commit's diff")?;
+    fd = parse_unified(file, &language_for(file), &raw);
+    if let Some(delta) = diff.deltas().next() {
+        match delta.status() {
+            Delta::Added | Delta::Untracked => fd.is_new = true,
+            Delta::Deleted => fd.is_deleted = true,
+            _ => {}
+        }
+    }
+    Ok(fd)
+}
+
+/// The changed files of `diff`, with their line counts.
+fn files_of(diff: &git2::Diff, repo: &Repository) -> Vec<FileChange> {
+    let mut files = Vec::new();
+    for (index, delta) in diff.deltas().enumerate() {
+        let path = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if path.is_empty() {
+            continue;
+        }
+        let kind = match delta.status() {
+            Delta::Added | Delta::Untracked => ChangeKind::Added,
+            Delta::Deleted => ChangeKind::Deleted,
+            Delta::Renamed => ChangeKind::Renamed,
+            _ => ChangeKind::Modified,
+        };
+        let (additions, deletions) = git2::Patch::from_diff(diff, index)
+            .ok()
+            .flatten()
+            .and_then(|patch| patch.line_stats().ok())
+            .map_or((0, 0), |(_, added, removed)| (added, removed));
+        let old_path = delta
+            .old_file()
+            .path()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|old| *old != path);
+        files.push(FileChange {
+            path,
+            old_path,
+            area: ChangeArea::Staged,
+            kind,
+            additions: u32::try_from(additions).unwrap_or(u32::MAX),
+            deletions: u32::try_from(deletions).unwrap_or(u32::MAX),
+        });
+    }
+    let _ = repo;
+    files
 }
 
 /// Fetch refs from a remote (default `origin`, else the first configured
@@ -1175,10 +1464,6 @@ pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>
 
 /// Create a new branch and linked checkout at an explicitly chosen revision.
 /// Never overwrite a branch or an existing path, and never switch the caller's HEAD.
-///
-/// # Errors
-/// Invalid paths, branches or revisions fail. If checkout creation fails after
-/// creating its branch, that branch is retained and the error states this.
 pub fn create_worktree(
     path: &Path,
     destination: &Path,

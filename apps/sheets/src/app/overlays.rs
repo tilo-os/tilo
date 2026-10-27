@@ -6,29 +6,24 @@
 //! `ColorSwatchPicker`, the settings an immediate-mode modal sheet
 //! (`modal_dialog`) with chips and a segmented control inside, and the palette
 //! a `CommandPalette` over the modal scrim. All of them paint in the window's
-//! top layer (`Widget::draw_overlay`), so they sit above the grid, the bars and
-//! the status bubble.
+//! top layer (`Widget::draw_overlay`), so they sit above the grid and the bars.
 
 use super::{
     Affine, ContextMenu, Currency, DATE_STYLES, MenuItem, MenuRow, Point, PresenceCtx, Rect, Scene,
     SettingChip, SettingKind, SettingsPanel, SheetsApp, TAB_MENU_ACTIONS, TAB_PALETTE_LEN,
     TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent, tab_action_label,
 };
-use ui::num::f64_of_usize;
 use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
 use ui::widget::{
     ChipFace, ChipLead, ColorSwatch, ColorSwatchPicker, ControlSize, EventCtx, MenuItem as Row,
     SegmentedFace, SegmentedStyle,
 };
 
-/// A row of the sheet-tab menu.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum TabMenuRow {
-    /// One of the plain tab actions.
     Act(TabAction),
     /// Open the colour popover for the tab.
     PickColour,
-    /// Clear the tab's colour.
     ClearColour,
 }
 
@@ -54,8 +49,6 @@ const SETTINGS_NOTE: &str =
     "These settings apply to this workbook only. Default follows your system settings.";
 
 impl SheetsApp {
-    // --- the command menus ---------------------------------------------------
-
     /// The File menu's rows: New sheet, then the three imports, then the
     /// three exports.
     pub(super) fn file_menu_rows() -> Vec<MenuRow> {
@@ -101,6 +94,8 @@ impl SheetsApp {
     pub(super) fn close_overlays(&mut self) {
         self.tab_menu.close();
         self.tab_menu_target = None;
+        self.cell_menu.close();
+        self.cell_menu_target = None;
         self.tab_colour.close();
         self.settings_panel = SettingsPanel::None;
         self.pending.redraw = true;
@@ -128,8 +123,6 @@ impl SheetsApp {
             .find(|(_, i)| *i == idx)
             .map_or(self.add_tab_rect, |(rect, _)| *rect)
     }
-
-    // --- the sheet-tab menu --------------------------------------------------
 
     /// Open the right-click menu for sheet tab `idx`, closing any other
     /// overlay first.
@@ -274,13 +267,17 @@ impl SheetsApp {
         }
     }
 
-    // --- routing -------------------------------------------------------------
-
     /// Route an event to whatever floats over the sheet. A floating surface is
-    /// modal: while one is open it takes every event. The command bar's own
-    /// menus go with the bar, which takes the event first. Returns whether
-    /// the event was consumed.
+    /// modal: while one is open it takes every event. Returns whether the
+    /// event was consumed.
     pub(super) fn route_overlays(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        if self.cell_menu.is_open() {
+            self.cell_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            self.drain_cell_menu(&mut ctx.state);
+            *ctx.handled = true;
+            return true;
+        }
         if self.tab_colour.is_open() {
             self.tab_colour
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
@@ -295,13 +292,8 @@ impl SheetsApp {
             *ctx.handled = true;
             return true;
         }
-        // The palette and the settings sheet are modal over the bar too.
-        !self.palette.is_open()
-            && self.settings_panel == SettingsPanel::None
-            && self.route_command_bar(event, ctx)
+        false
     }
-
-    // --- the document-settings sheet ------------------------------------------
 
     /// The choices of a settings strip: "Default" (inherit) first, then each
     /// style in display order.
@@ -388,15 +380,19 @@ impl SheetsApp {
             let strip = Self::setting_strip(strip_kind);
             let labels: Vec<&str> = strip.iter().map(|(label, _)| *label).collect();
             let wanted = SegmentedFace::intrinsic_width(&labels, ControlSize::Small, tr, theme);
-            let total = wanted.min(width);
-            let each = total / f64_of_usize(strip.len().max(1));
+            // The shared partition gives a long label ("Language") the room
+            // it needs instead of cutting it to an equal share.
+            let rects = SegmentedFace::partition(
+                Rect::new(0.0, y, wanted.min(width), y + strip_h),
+                &labels,
+                ControlSize::Small,
+                tr,
+                theme,
+            );
             let cells = strip
                 .iter()
-                .enumerate()
-                .map(|(i, (_, kind))| {
-                    let x0 = each * f64_of_usize(i);
-                    (*kind, Rect::new(x0, y, x0 + each, y + strip_h))
-                })
+                .zip(rects)
+                .map(|((_, kind), rect)| (*kind, rect))
                 .collect();
             blocks.push(SettingsBlock::Strip(cells));
             y += strip_h + group;
@@ -410,6 +406,25 @@ impl SheetsApp {
         ));
         y += f64::from(note_h);
         (blocks, y)
+    }
+
+    /// The date strip's segment rects when the settings body is `width` wide.
+    #[cfg(test)]
+    pub(super) fn settings_strip_rects(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        width: f64,
+    ) -> Vec<Rect> {
+        Self::settings_blocks(tr, theme, width)
+            .0
+            .into_iter()
+            .find_map(|block| match block {
+                SettingsBlock::Strip(cells) => {
+                    Some(cells.into_iter().map(|(_, rect)| rect).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 
     /// Lay the settings sheet out and remember where everything landed, so a
@@ -564,7 +579,6 @@ impl SheetsApp {
         true
     }
 
-    /// The option under `p` in the settings sheet.
     pub(super) fn setting_chip_at(&self, p: Point) -> Option<SettingKind> {
         self.settings_sheet
             .as_ref()?
@@ -573,8 +587,6 @@ impl SheetsApp {
             .find(|option| option.rect.contains(p))
             .map(|option| option.kind)
     }
-
-    // --- the top layer ---------------------------------------------------------
 
     /// Paint everything that floats, in the window's top layer.
     pub(super) fn paint_overlays(
@@ -585,11 +597,9 @@ impl SheetsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let outer = presence.push_viewport(self.float_bounds());
-        self.toolbar
-            .draw_overlay(scene, transform, tr, theme, presence);
-        presence.pop_viewport(outer);
         self.tab_menu
+            .draw_overlay(scene, transform, tr, theme, presence);
+        self.cell_menu
             .draw_overlay(scene, transform, tr, theme, presence);
         if self.tab_colour.is_open() {
             self.sync_tab_colour_picker(theme);

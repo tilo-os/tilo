@@ -22,7 +22,7 @@
 //! reported as such rather than guessed at.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use ui::time::Duration;
 
@@ -95,6 +95,12 @@ impl Chooser {
     /// The provider this chooser asks, when it has one.
     pub fn selection(&self) -> Option<&ProviderSelection> {
         self.provider.as_ref().map(|provider| &provider.selection)
+    }
+
+    /// Whether the model this chooser asks sees pictures.
+    pub fn sees(&self) -> bool {
+        self.selection()
+            .is_some_and(|selection| selection.model.vision)
     }
 
     /// `enabled` false forces the keyword vocabulary — for a run that must be
@@ -202,35 +208,39 @@ impl Chooser {
     }
 
     /// Start one streamed turn. Its events arrive on the returned channel,
-    /// ending with exactly one [`TurnEvent::Finished`].
+    /// ending with exactly one [`TurnEvent::Finished`]; dropping the
+    /// returned [`TurnStop`] stops the turn.
     pub fn start_turn(
         &self,
         body: Value,
         timeout: Duration,
         turn: usize,
-    ) -> std::sync::mpsc::Receiver<TurnEvent> {
-        let trace = tilo_model_gateway::PlanTrace {
+    ) -> (std::sync::mpsc::Receiver<TurnEvent>, TurnStop) {
+        let trace = tilo_model_client::PlanTrace {
             id: self.trace.load(Ordering::Relaxed),
             turn: u32::try_from(turn).unwrap_or(u32::MAX),
         };
-        if let Some(turns) = &self.turns {
+        let stop = TurnStop::default();
+        let rx = if let Some(turns) = &self.turns {
             turns.start(TurnRequest {
                 body,
                 timeout,
                 trace: Some(trace),
+                stop: Arc::clone(&stop.0),
             })
         } else {
             let (tx, rx) = std::sync::mpsc::channel();
             let _ = tx.send(TurnEvent::Finished(Err("no model transport".into())));
             rx
-        }
+        };
+        (rx, stop)
     }
 
     /// Whether a live call is possible at all. Cheap to ask, and worth
     /// logging at startup so an operator knows before the beat which path
     /// this run will take.
     pub fn is_live(&self) -> bool {
-        self.enabled && self.provider.is_some() && tilo_model_gateway::available()
+        self.enabled && self.provider.is_some() && tilo_model_client::available()
     }
 
     /// Decide through the live resource/action catalogue. There is no
@@ -239,11 +249,6 @@ impl Chooser {
     /// in one model turn; the read-only discovery tools reach what the
     /// summary leaves out. The model can finish only by submitting `plan`
     /// with native JSON argument values, naming only ids it was shown.
-    ///
-    /// # Errors
-    ///
-    /// Returns the deterministic fallback route when model discovery is
-    /// disabled, unavailable, invalid, exhausted, or misses its deadline.
     pub fn choose_actions(
         &self,
         rest: &str,
@@ -272,9 +277,6 @@ impl Chooser {
     }
 
     /// Observe presentation without granting deltas authority to act.
-    ///
-    /// # Errors
-    /// Returns the fallback route when model access or validated planning fails.
     pub fn choose_actions_observed(
         &self,
         rest: &str,
@@ -288,7 +290,7 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if !tilo_model_gateway::available() {
+            if !tilo_model_client::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_actions_provider(provider, rest, catalogue, most_steps, live, observe)
@@ -297,7 +299,7 @@ impl Chooser {
         };
         match answer {
             Ok(answer) => {
-                self.mark(tilo_model_gateway::TraceEvent::PlanReady, 0);
+                self.mark(tilo_model_client::TraceEvent::PlanReady, 0);
                 // Operation ids and counts only: no task text or argument values.
                 tracing::info!(
                     trace = format!("{:016x}", self.trace.load(Ordering::Relaxed)),
@@ -308,7 +310,7 @@ impl Chooser {
                 Ok(answer)
             }
             Err(AskError::Failed(error)) => {
-                self.mark(tilo_model_gateway::TraceEvent::PlanFailed, 0);
+                self.mark(tilo_model_client::TraceEvent::PlanFailed, 0);
                 fallback(Fallback::Failed(error))
             }
         }
@@ -318,7 +320,7 @@ impl Chooser {
     /// the gateway's log (a managed agent's own stderr is discarded). Best
     /// effort and cheap: one local frame; an older gateway's refusal is
     /// ignored.
-    pub fn mark(&self, event: tilo_model_gateway::TraceEvent, step: usize) {
+    pub fn mark(&self, event: tilo_model_client::TraceEvent, step: usize) {
         let id = self.trace.load(Ordering::Relaxed);
         tracing::info!(
             trace = format!("{id:016x}"),
@@ -326,10 +328,10 @@ impl Chooser {
             step,
             "model timing mark"
         );
-        if id == 0 || self.provider.is_none() || !tilo_model_gateway::available() {
+        if id == 0 || self.provider.is_none() || !tilo_model_client::available() {
             return;
         }
-        let trace = tilo_model_gateway::PlanTrace {
+        let trace = tilo_model_client::PlanTrace {
             id,
             turn: u32::try_from(step).unwrap_or(u32::MAX),
         };
@@ -364,7 +366,7 @@ impl Chooser {
             let mut previews = NeutralPreviews::default();
             let mut scanners = BTreeMap::new();
             let mut reply = String::new();
-            let response = tilo_model_gateway::complete_streaming(
+            let response = tilo_model_client::complete_streaming(
                 &provider.selection.profile_id,
                 &provider.selection.model.id,
                 request,
@@ -444,7 +446,7 @@ impl Chooser {
 #[cfg(test)]
 type PostTurn<'a> = dyn FnMut(
         Value,
-        tilo_model_gateway::PlanTrace,
+        tilo_model_client::PlanTrace,
         &mut dyn FnMut(StreamSignal<'_>),
     ) -> Result<String, AskError>
     + 'a;
@@ -480,7 +482,7 @@ impl ActionDecision<'_> {
         for turn in 0..MAX_ACTION_TURNS {
             let body = dialect.body(self.selection, &messages, self.most_steps);
             let turn_began = ui::time::now();
-            let trace = tilo_model_gateway::PlanTrace {
+            let trace = tilo_model_client::PlanTrace {
                 id: trace_id,
                 turn: u32::try_from(turn).unwrap_or(u32::MAX),
             };
@@ -632,7 +634,6 @@ pub struct FirstTurn {
 }
 
 impl FirstTurn {
-    /// The whole turn as one text.
     pub fn text(&self) -> String {
         format!("{}{}", self.operations, self.task)
     }
@@ -889,7 +890,7 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
         "content": message.get("content").cloned().unwrap_or(Value::Null),
         "tool_calls": tool_calls,
     });
-    if let Some(reasoning) = tilo_model_gateway::openai::reasoning_content(message)?
+    if let Some(reasoning) = tilo_model_client::validation::reasoning_content(message)?
         && let Some(object) = assistant.as_object_mut()
     {
         object.insert(
@@ -936,6 +937,26 @@ pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Reveal
     }
 }
 
+/// [`action_user_turn`] for a planner whose records keep publishing
+/// resources as a task runs (clips, sheets, messages): at most `most`
+/// operations, with look-alike resources in one line and every resource
+/// `rest` names listed whatever the cap
+/// ([`tools::catalogue_summary_with`]). `rest` is the request with what the
+/// task's steps answered, so an id an earlier step returned may be planned.
+pub fn action_user_turn_listing(
+    rest: &str,
+    catalogue: &Catalogue,
+    revealed: &mut Revealed,
+    most: usize,
+) -> FirstTurn {
+    let named = tools::Naming::in_text(rest);
+    let summary = tools::catalogue_summary_with(catalogue, revealed, most, Some(&named));
+    FirstTurn {
+        operations: format!("Operations published right now:\n\n{summary}\n"),
+        task: format!("The instruction asks for:\n\n{}\n", rest.trim()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Streamed loop turns
 // ---------------------------------------------------------------------------
@@ -945,8 +966,8 @@ pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Reveal
 pub enum TurnEvent {
     Neutral(agent_provider_config::protocol::StreamEvent),
     /// An intermediate gateway frame: `event` is
-    /// [`tilo_model_gateway::EVENT_TOOL_CALL_DELTA`] or
-    /// [`tilo_model_gateway::EVENT_TOOL_CALL`], `output` its JSON.
+    /// [`tilo_model_client::EVENT_TOOL_CALL_DELTA`] or
+    /// [`tilo_model_client::EVENT_TOOL_CALL`], `output` its JSON.
     Frame {
         event: String,
         output: String,
@@ -960,7 +981,21 @@ pub enum TurnEvent {
 pub struct TurnRequest {
     pub body: Value,
     pub timeout: Duration,
-    pub trace: Option<tilo_model_gateway::PlanTrace>,
+    pub trace: Option<tilo_model_client::PlanTrace>,
+    /// Set once the loop has let go of the turn: the transport stops it.
+    pub stop: Arc<AtomicBool>,
+}
+
+/// Held by whoever wants a turn's answer: dropping it (a stopped task, a
+/// turn the loop lets go of) stops the turn, so a provider call nobody
+/// will read is not paid for to its end.
+#[derive(Debug, Default)]
+pub struct TurnStop(Arc<AtomicBool>);
+
+impl Drop for TurnStop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Runs a turn somewhere else — normally on its own thread over the model
@@ -989,8 +1024,8 @@ struct MarkState {
     over: bool,
     /// Held marks with the Unix ms at which each happened.
     pending: Vec<(
-        tilo_model_gateway::PlanTrace,
-        tilo_model_gateway::TraceEvent,
+        tilo_model_client::PlanTrace,
+        tilo_model_client::TraceEvent,
         u64,
     )>,
 }
@@ -999,13 +1034,13 @@ impl MarkState {
     /// Send the held marks, each with the time it happened, in order.
     fn flush(&mut self) {
         for (trace, event, at) in std::mem::take(&mut self.pending) {
-            let _ = tilo_model_gateway::trace_at(trace, event, Some(at));
+            let _ = tilo_model_client::trace_at(trace, event, Some(at));
         }
     }
 }
 
 impl MarkGate {
-    fn mark(&self, trace: tilo_model_gateway::PlanTrace, event: tilo_model_gateway::TraceEvent) {
+    fn mark(&self, trace: tilo_model_client::PlanTrace, event: tilo_model_client::TraceEvent) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
@@ -1017,7 +1052,7 @@ impl MarkGate {
             return;
         }
         // Held across the call so a turn cannot start on the channel mid-mark.
-        let _ = tilo_model_gateway::trace(trace, event);
+        let _ = tilo_model_client::trace(trace, event);
     }
 
     /// A turn takes the channel; its ticket for [`Self::release`]. Marks the
@@ -1086,7 +1121,8 @@ impl TurnTransport for GatewayTurns {
                     >(request.body.clone())
                     {
                         let mut previews = NeutralPreviews::default();
-                        tilo_model_gateway::complete_streaming(
+                        let stop = &request.stop;
+                        tilo_model_client::complete_streaming_until(
                             &profile_id,
                             &model_id,
                             neutral,
@@ -1095,11 +1131,12 @@ impl TurnTransport for GatewayTurns {
                                 let _ = tx.send(TurnEvent::Neutral(event.clone()));
                                 if let Some(output) = previews.frame(event) {
                                     let _ = tx.send(TurnEvent::Frame {
-                                        event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
+                                        event: tilo_model_client::EVENT_TOOL_CALL_DELTA.into(),
                                         output,
                                     });
                                 }
                             },
+                            &|| stop.load(Ordering::Relaxed),
                         )
                         .map(|response| serde_json::json!(response).to_string())
                         .inspect_err(|error| {
@@ -1134,7 +1171,9 @@ impl TurnTransport for GatewayTurns {
 #[derive(Clone, Debug)]
 pub struct Conversation {
     history: agent_provider_config::protocol::Conversation,
-    directions: Vec<(usize, String)>,
+    /// Turns of the person's (directions, pictures shown) placed after the
+    /// history message at each index.
+    directions: Vec<(usize, agent_provider_config::protocol::Message)>,
     first: Option<FirstTurn>,
     #[cfg(test)]
     legacy: Option<LegacyConversation>,
@@ -1192,14 +1231,8 @@ impl Conversation {
         if let Some(first) = &self.first {
             first.apply_to(&mut request);
         }
-        for (offset, (index, text)) in self.directions.iter().enumerate() {
-            request.messages.insert(
-                index + offset,
-                agent_provider_config::protocol::Message::text(
-                    agent_provider_config::protocol::Role::User,
-                    text,
-                ),
-            );
+        for (offset, (index, message)) in self.directions.iter().enumerate() {
+            request.messages.insert(index + offset, message.clone());
         }
         serde_json::json!(request)
     }
@@ -1262,8 +1295,41 @@ impl Conversation {
             legacy.push_user(text);
             return;
         }
-        self.directions
-            .push((self.history.messages().len(), text.into()));
+        self.directions.push((
+            self.history.messages().len(),
+            agent_provider_config::protocol::Message::text(
+                agent_provider_config::protocol::Role::User,
+                text,
+            ),
+        ));
+    }
+
+    /// Show the model `pictures` (media type, bytes), introduced by `note`,
+    /// after the results that answered with them.
+    pub fn push_pictures(&mut self, note: &str, pictures: Vec<(String, Vec<u8>)>) {
+        use agent_provider_config::protocol::{Content, Message, Role};
+        use base64::Engine as _;
+        #[cfg(test)]
+        if let Some(legacy) = &mut self.legacy {
+            legacy.push_user(note);
+            return;
+        }
+        let mut content = vec![Content::Text { text: note.into() }];
+        content.extend(
+            pictures
+                .into_iter()
+                .map(|(media_type, bytes)| Content::Image {
+                    media_type,
+                    base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                }),
+        );
+        self.directions.push((
+            self.history.messages().len(),
+            Message {
+                role: Role::User,
+                content,
+            },
+        ));
     }
 
     pub fn len(&self) -> usize {
@@ -1341,10 +1407,6 @@ impl LegacyConversation {
     }
 
     /// The assistant turn and its tool calls, in call order.
-    ///
-    /// # Errors
-    ///
-    /// When the body is unreadable, a refusal, or carries no tool call.
     pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
         let (assistant, calls) = match self.dialect {
             Dialect::Anthropic => anthropic_calls(body)?,
@@ -1839,7 +1901,6 @@ mod tests {
         assert_eq!(messages[4]["tool_call_id"], "call_2");
         assert_eq!(messages[4]["content"], "listed");
 
-        // The plan call is the final answer.
         let plan_turn = serde_json::json!({
             "choices": [{"message": {"tool_calls": [
                 {"id": "call_3", "type": "function", "function": {"name": tools::PLAN, "arguments": "{\"steps\":[],\"why\":\"x\",\"then\":null}"}}
@@ -1942,13 +2003,13 @@ mod tests {
     #[test]
     fn a_late_release_never_frees_the_channel_a_later_turn_holds() {
         let gate = MarkGate::default();
-        let trace = tilo_model_gateway::PlanTrace { id: 1, turn: 0 };
+        let trace = tilo_model_client::PlanTrace { id: 1, turn: 0 };
         let held = |gate: &MarkGate| {
             let state = gate.state.lock().unwrap();
             (state.busy, state.pending.len())
         };
         let first = gate.acquire();
-        gate.mark(trace, tilo_model_gateway::TraceEvent::ActionSubmitted);
+        gate.mark(trace, tilo_model_client::TraceEvent::ActionSubmitted);
         assert_eq!(
             held(&gate),
             (true, 1),
@@ -1965,7 +2026,7 @@ mod tests {
             (true, 0),
             "the next turn still owns the channel"
         );
-        gate.mark(trace, tilo_model_gateway::TraceEvent::ActionSettled);
+        gate.mark(trace, tilo_model_client::TraceEvent::ActionSettled);
         assert_eq!(held(&gate), (true, 1));
         // A turn whose Plan is not over (abandoned, still streaming) keeps
         // its marks from the channel when another turn starts.
@@ -1976,6 +2037,83 @@ mod tests {
         gate.plan_over(third);
         gate.release(third);
         assert_eq!(held(&gate), (false, 0), "released: sent, channel free");
+    }
+
+    /// A task stopped while its planning turn streams lets go of the turn.
+    /// The turn's provider call used to run to its end, billed, holding the
+    /// agent's one gateway channel from the next task's turns: dropping its
+    /// [`TurnStop`] now has the gateway stop it.
+    #[cfg(unix)]
+    #[test]
+    fn a_turn_the_loop_lets_go_of_is_stopped_at_the_gateway() {
+        use std::os::fd::AsRawFd as _;
+        use tilo_model_client::{Frame, Request, Response, read_frame, write_frame};
+        let reply = |output: String| Response {
+            ok: true,
+            output: Some(output),
+            configured: None,
+            error: None,
+            model_error: None,
+            event: None,
+        };
+        let (app, mut gateway) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(
+            tilo_model_client::SERVICE_FD_ENV,
+            app.as_raw_fd().to_string(),
+        );
+        let (started_by, started) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            gateway
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            assert!(matches!(frame.value, Request::CancellationSupported));
+            write_frame(&mut gateway, &reply("cancel-v1".into())).unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancellable { id, request } = frame.value else {
+                panic!("a loop turn is a cancellable operation");
+            };
+            assert!(matches!(*request, Request::Complete { .. }));
+            started_by.send(()).unwrap();
+            // The provider works on; nothing comes until the stop.
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancel { id: stopped } = frame.value else {
+                panic!("the abandoned turn is stopped");
+            };
+            write_frame(&mut gateway, &reply(format!("cancelled:{stopped}"))).unwrap();
+            stopped == id
+        });
+        let turns = GatewayTurns {
+            profile_id: "hosted".into(),
+            model_id: "model".into(),
+            marks: Arc::default(),
+        };
+        let body = serde_json::to_value(
+            agent_provider_config::protocol::Conversation::new("system", "hello")
+                .request(Vec::new(), 64),
+        )
+        .unwrap();
+        let stop = TurnStop::default();
+        let rx = turns.start(TurnRequest {
+            body,
+            timeout: Duration::from_secs(30),
+            trace: None,
+            stop: Arc::clone(&stop.0),
+        });
+        tilo_test_env::recv("the turn reaching the gateway", &started);
+        drop(stop);
+        let finished = loop {
+            if let TurnEvent::Finished(result) = tilo_test_env::recv("the turn's end", &rx) {
+                break result;
+            }
+        };
+        assert!(finished.is_err(), "a stopped turn has no answer");
+        assert!(
+            server.join().unwrap(),
+            "the stop names the turn's operation"
+        );
+        drop(env);
     }
 
     const PROTOCOLS: [agent_provider_config::ProviderProtocol; 2] = [
@@ -2171,7 +2309,6 @@ mod tests {
         for (body, same) in openai.iter().zip(&anthropic) {
             assert!(!body.to_string().contains("cache_control"), "{body}");
             assert!(body["messages"][1]["content"].is_string(), "{body}");
-            // The same words, joined.
             assert_eq!(first_user_turn(body), first_user_turn(same));
             assert!(first_user_turn(body).starts_with(operations));
         }
@@ -2328,21 +2465,25 @@ mod tests {
     }
 }
 
-/// Decode only the launcher's explicit nonsecret profile/model/protocol tuple.
-/// Endpoint, bearer credentials and vault references never enter this contract.
-///
-/// # Errors
-///
-/// Returns a description of the first violation when `value` is not exactly
-/// that tuple or names an unknown protocol or model.
+/// Decode only the launcher's explicit nonsecret profile/model/protocol tuple,
+/// and whether the model sees pictures. Endpoint, bearer credentials and
+/// vault references never enter this contract.
 pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, String> {
     let object = value
         .as_object()
         .ok_or("managed provider must be an object")?;
-    if object.len() != 3
-        || !object
-            .keys()
-            .all(|key| matches!(key.as_str(), "profile_id" | "model_id" | "protocol"))
+    let vision = match object.get("vision") {
+        None => false,
+        Some(Value::Bool(vision)) => *vision,
+        Some(_) => return Err("invalid managed provider field".into()),
+    };
+    if object.len() != 3 + usize::from(object.contains_key("vision"))
+        || !object.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "profile_id" | "model_id" | "protocol" | "vision"
+            )
+        })
     {
         return Err("unsupported managed provider fields".into());
     }
@@ -2366,7 +2507,10 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
         profile_id,
         endpoint: String::new(),
         protocol,
-        model: agent_provider_config::ModelDescriptor::new(field("model_id")?),
+        model: agent_provider_config::ModelDescriptor {
+            vision,
+            ..agent_provider_config::ModelDescriptor::new(field("model_id")?)
+        },
         credential: None,
     })
 }
@@ -2382,6 +2526,12 @@ mod managed_tests {
         assert_eq!(selected.model.id, "claude-1");
         assert!(selected.credential.is_none());
         assert!(selected.endpoint.is_empty());
+        assert!(!selected.model.vision);
+        let mut seeing = value.clone();
+        seeing["vision"] = serde_json::json!(true);
+        assert!(managed_provider_selection(&seeing).unwrap().model.vision);
+        seeing["vision"] = serde_json::json!("yes");
+        assert!(managed_provider_selection(&seeing).is_err());
         for extra in ["api_key", "endpoint", "credential"] {
             let mut changed = value.clone();
             changed[extra] = serde_json::json!("disallowed");
@@ -2872,7 +3022,6 @@ pub mod plan_stream {
         fn whole_arguments_yield_every_followed_field_once_done() {
             let seen = scan(&[ARGS]);
             assert_eq!(finals(&seen), expected());
-            // The values agree with a real JSON parser.
             let parsed: serde_json::Value = serde_json::from_str(ARGS).unwrap();
             assert_eq!(parsed["reply"], expected()[0].1);
             assert_eq!(parsed["steps"][0]["arguments"]["text"], expected()[2].1);

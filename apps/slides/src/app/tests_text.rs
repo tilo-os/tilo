@@ -1,7 +1,6 @@
-//! Words on the deck: the deck title renamed in the toolbar, speaker notes,
-//! and text boxes edited on the canvas — each through the deck's dispatcher,
-//! so typing is attributed, undone a word or a rename at a time, and refused
-//! for someone who may only view. Also the help overlay and what the
+//! Words on the deck: speaker notes and text boxes edited on the canvas —
+//! each through the deck's dispatcher, so typing is attributed, undone a
+//! word at a time, and refused for someone who may only view. Also the help overlay and what the
 //! editor tells assistive technology.
 
 use winit::keyboard::ModifiersState;
@@ -110,10 +109,6 @@ fn edit_caret(app: &SlidesApp) -> usize {
         .map_or(0, |block| block.line.cursor_pos())
 }
 
-fn title(bench: &Bench) -> String {
-    bench.deck().title
-}
-
 fn notes(bench: &Bench) -> String {
     bench.deck().slides[0].notes.clone()
 }
@@ -129,107 +124,6 @@ fn editing_notes(words: &str) -> Bench {
     bench
 }
 
-/// The inline title editor starts, selects/replaces and commits one rename.
-#[test]
-fn title_rename_edits_and_commits_to_the_deck() {
-    // Case `clicking_the_toolbar_title_starts_a_rename_and_enter_commits_it`.
-    {
-        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        let title0 = title(&bench);
-        let p = bench.read(|app| {
-            let p = app.compute_chrome().title_rect.center();
-            assert!(
-                app.rect.contains(p),
-                "the title click target is in the window"
-            );
-            p
-        });
-        bench.click(p);
-        assert!(
-            bench.read(|app| app.editing_title),
-            "clicking the title enters inline rename"
-        );
-        type_chars(&mut bench, "!?");
-        assert!(
-            !bench.read(|app| app.help_overlay.is_visible()),
-            "'?' while renaming types into the title, not the help overlay"
-        );
-        assert_eq!(
-            title(&bench),
-            title0,
-            "the rename is not written while typing"
-        );
-        named(&mut bench, NamedKey::Enter);
-        assert!(
-            !bench.read(|app| app.editing_title),
-            "Enter commits the rename"
-        );
-        assert_eq!(title(&bench), format!("{title0}!?"), "the rename landed");
-        assert!(bench.undo(), "the rename is one undo step");
-        assert_eq!(title(&bench), title0);
-    }
-
-    // Case `title_input_supports_select_all_and_replace`.
-    {
-        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        bench.focus();
-        bench.with(|app| {
-            app.begin_title_edit();
-            app.title_input.select_all();
-            assert!(
-                app.title_input.selection_range_public().is_some(),
-                "Ctrl+A selects the whole title in the TextInput"
-            );
-        });
-        type_chars(&mut bench, "X");
-        named(&mut bench, NamedKey::Enter);
-        assert_eq!(
-            title(&bench),
-            "X",
-            "typing over the selection replaced the title"
-        );
-    }
-
-    // Case `title_backspace_and_click_away_commit_the_rename`.
-    {
-        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        bench.focus();
-        let title0 = title(&bench);
-        bench.with(SlidesApp::begin_title_edit);
-        named(&mut bench, NamedKey::Backspace);
-        type_chars(&mut bench, "Z");
-        let away = bench.read(|app| {
-            let chrome = app.compute_chrome();
-            let away = chrome.slide_dest.center();
-            assert!(!chrome.title_rect.contains(away));
-            away
-        });
-        bench.click(away);
-        assert!(
-            !bench.read(|app| app.editing_title),
-            "a click away commits the rename"
-        );
-        let mut expect = title0;
-        expect.pop();
-        assert_eq!(title(&bench), format!("{expect}Z"), "the edit landed");
-    }
-
-    // Case `a_viewer_cannot_rename_the_deck`.
-    {
-        let mut bench = Bench::open_as(
-            &super::bench::deck_of(vec![Slide::new(Layout::Blank)]),
-            super::bench::WINDOW,
-            ui::permissions::Role::Viewer,
-        );
-        bench.focus();
-        bench.with(SlidesApp::begin_title_edit);
-        type_chars(&mut bench, "nope");
-        named(&mut bench, NamedKey::Enter);
-        assert_eq!(title(&bench), "t", "a viewer's rename changes nothing");
-    }
-}
-
-/// Help overlay in present mode and the deck's accessibility tree and activation.
 #[test]
 fn help_overlay_and_accessibility_expose_the_deck() {
     // Case `help_overlay_is_visible_and_dismissable_in_present_mode`.
@@ -378,8 +272,6 @@ fn the_notes_box_reads_out_the_slides_notes() {
     });
 }
 
-/// Typing in the notes edits the slide's notes through the deck's
-/// dispatcher, and Up/Down move the caret between their lines.
 #[test]
 fn notes_typing_edits_the_notes_and_up_down_move_the_caret() {
     let mut bench = editing_notes("line one\nsecond");
@@ -509,7 +401,6 @@ fn text_box_keys_and_notes_editing() {
     }
 }
 
-/// An agent writes a slide's notes with one field edit at their path.
 #[test]
 fn an_agent_writes_speaker_notes_by_a_field_edit() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
@@ -567,6 +458,9 @@ fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, Stri
             "the retained editor belongs to the physically clicked box"
         );
     });
+    // The double-click selects the word under it, as in any text field;
+    // the cases below write after the box's words.
+    bench.key("End");
     (bench, id)
 }
 
@@ -648,4 +542,85 @@ fn an_agent_edits_a_text_box_by_a_field_edit() {
     assert_eq!(element_text(&bench, &id).text, "from an agent");
     assert!(bench.undo());
     assert_eq!(element_text(&bench, &id).text, "Subtitle");
+}
+
+/// Typing on a selected text box writes words into it, replacing what it
+/// held, and never runs the single-letter shortcuts (r inserts a rectangle,
+/// n a slide, p presents, l a line).
+#[test]
+fn typing_on_a_selected_text_box_writes_words_not_shortcuts() {
+    let (mut bench, id) = selected_text("Stock words", TextAlign::Left);
+    type_chars(&mut bench, "rnpl Quarterly");
+    let deck = bench.deck();
+    assert_eq!(deck.slides.len(), 1, "no slide was added");
+    assert_eq!(deck.slides[0].elements.len(), 1, "no shape was inserted");
+    assert_eq!(element_text(&bench, &id).text, "rnpl Quarterly");
+    bench.read(|app| {
+        assert_eq!(app.mode, Mode::Edit, "the deck is not presenting");
+        assert!(app.editing_text);
+        assert!(
+            app.ime_content().is_some(),
+            "the box being edited takes the input method"
+        );
+    });
+
+    // Text from the input method opens a selected box the same way.
+    let (mut bench, id) = selected_text("Old", TextAlign::Left);
+    bench.send(&WindowEvent::Ime(winit::event::Ime::Commit("Neu".into())));
+    assert_eq!(element_text(&bench, &id).text, "Neu");
+}
+
+/// A click on an empty box (one showing its "Add a title" prompt) opens it
+/// for typing; a new slide's boxes are empty prompts, so its title is typed
+/// rather than appended to stock words.
+#[test]
+fn an_empty_prompt_box_opens_on_one_click_and_new_slides_prompt() {
+    let mut slide = Slide::new(Layout::Blank);
+    let id = slide.add(Element::text("", 96.0, 90.0, 1088.0, 100.0, 54.0));
+    let mut bench = Bench::one_slide(slide);
+    bench.focus();
+    let at = bench.read(|app| {
+        let chrome = app.compute_chrome();
+        let element = app.deck.slides[0].element(&id).unwrap();
+        render::element_dest(chrome.slide_dest, chrome.scale, element).center()
+    });
+    bench.click(at);
+    bench.read(|app| assert!(app.editing_text, "one click opens an empty box"));
+    type_chars(&mut bench, "Q3");
+    assert_eq!(element_text(&bench, &id).text, "Q3");
+
+    let template = actions::new_slide_template();
+    let texts: Vec<&Element> = template
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::Text)
+        .collect();
+    assert_eq!(texts.len(), 2);
+    assert!(
+        texts.iter().all(|e| e.is_blank_text()),
+        "a new slide's boxes hold no stock words"
+    );
+    assert_eq!(
+        render::prompt_text(&template, texts[0]),
+        crate::strings::tr("slides-prompt-title")
+    );
+}
+
+/// The Text tool's new box opens with its stock word selected: typing
+/// replaces it.
+#[test]
+fn a_new_text_box_opens_ready_to_type() {
+    let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
+    bench.focus();
+    bench.with(|app| app.insert_element(ElementKind::Text));
+    bench.frame();
+    bench.read(|app| assert!(app.editing_text));
+    type_chars(&mut bench, "Hello");
+    let deck = bench.deck();
+    let texts: Vec<&str> = deck.slides[0]
+        .elements
+        .iter()
+        .map(|e| e.text.as_str())
+        .collect();
+    assert_eq!(texts, ["Hello"]);
 }

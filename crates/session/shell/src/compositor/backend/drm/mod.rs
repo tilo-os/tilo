@@ -12,18 +12,24 @@
 
 pub mod access_keys;
 mod client_scanout;
+mod cpu_layers;
 pub mod cpu_present;
 mod cursor_plane;
 pub mod devices;
 mod direct_retry;
 pub mod gestures;
+mod gl_compose;
+mod gl_present;
 pub mod hotplug;
 pub mod input_config;
 mod kms_flip;
+#[cfg(test)]
+mod lock_wait;
 mod output_link;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
+mod retained_canvas;
 pub mod runtime;
 pub mod scale;
 pub mod scanout;
@@ -31,6 +37,7 @@ pub mod seat_diag;
 pub mod session;
 mod tablet;
 mod topology;
+pub mod wake_check;
 mod xrgb_history;
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -896,7 +903,6 @@ mod phase_window_tests {
 
     #[test]
     fn phase_window_accumulates_and_records_every_frame_outcome() {
-        // Phase `phase_window_accumulates_completed_frame_costs`.
         {
             let mut window = PhaseWindow::default();
             window.record(timing(2));
@@ -917,7 +923,6 @@ mod phase_window_tests {
             assert_eq!(window.scanout_us, 0);
             assert_eq!(window.unprofiled_frames, 0);
         }
-        // Phase `phase_window_keeps_failed_legacy_attempt_visible_without_vello_timing`.
         {
             let mut window = PhaseWindow::default();
             window.record_legacy_attempt(None, 41, 7);
@@ -936,7 +941,6 @@ mod phase_window_tests {
             assert_eq!(summary.scanout_us, 12);
             assert_eq!(summary.window_us, 99);
         }
-        // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
             window.accumulate(paint::BridgePhaseTiming {
@@ -965,7 +969,6 @@ mod phase_window_tests {
             assert_eq!(window.readback_bytes, 0);
             assert_eq!(window.output_bytes, 0);
         }
-        // Phase `two_direct_outputs_are_one_frame`.
         {
             let mut window = PhaseWindow::default();
             let mut frame = DirectFrame::default();
@@ -991,7 +994,6 @@ mod phase_window_tests {
 
     #[test]
     fn phase_window_flush_timing_and_reset() {
-        // Phase `phase_window_is_due_only_after_the_bounded_interval`.
         {
             let mut window = PhaseWindow::default();
             let started = Instant::now();
@@ -1003,7 +1005,6 @@ mod phase_window_tests {
             assert!(!window.due(just_before));
             assert!(window.due(started + PHASE_WINDOW_INTERVAL));
         }
-        // Phase `explicit_profiling_flushes_the_first_observation_without_a_later_frame`.
         {
             let mut window = PhaseWindow::default();
             let started = Instant::now();
@@ -1015,7 +1016,6 @@ mod phase_window_tests {
             assert!(!window.should_emit(started + Duration::from_millis(1), false));
             assert!(window.should_emit(started + PHASE_WINDOW_INTERVAL, false));
         }
-        // Phase `profiling_keeps_direct_drops_and_completions_visible_without_a_frame`.
         {
             let mut window = PhaseWindow::default();
             let now = Instant::now();
@@ -1025,7 +1025,6 @@ mod phase_window_tests {
 
             assert!(window.should_emit(now, true));
         }
-        // Phase `phase_window_reset_discards_the_previous_sample_without_moving_its_clock`.
         {
             let mut window = PhaseWindow::default();
             window.record(timing(7));
@@ -1083,7 +1082,6 @@ mod direct_eligibility_tests {
 
     #[test]
     fn direct_path_eligibility_requires_the_full_contract_and_proven_identity() {
-        // Phase `direct_path_requires_the_complete_safe_contract`.
         assert_eq!(direct_scanout_rejection(eligible()), None);
         for (rejected, reason) in [
             (
@@ -1110,7 +1108,6 @@ mod direct_eligibility_tests {
         ] {
             assert_eq!(direct_scanout_rejection(rejected), Some(reason));
         }
-        // Phase `drm_node_identity_can_prove_virtual_renderer_without_pci_identity`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "",
@@ -1120,7 +1117,6 @@ mod direct_eligibility_tests {
             }),
             None
         );
-        // Phase `matching_drm_node_is_authoritative_when_the_card_has_no_pci_bus_id`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "0000:66:00.0",
@@ -1130,7 +1126,6 @@ mod direct_eligibility_tests {
             }),
             None
         );
-        // Phase `missing_renderer_identities_still_fail_closed`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "",
@@ -1698,18 +1693,9 @@ fn apply_scanout_command(
             tracing::info!("DRM present: paused (the session no longer owns the CRTCs)");
         }
         ScanoutCommand::Resume { dpms_on } => {
-            for e in scanouts.iter_mut() {
-                e.scanout.restore();
-                e.set_power(dpms_on && !e.powered_off);
-                e.direct_targets = None;
-            }
+            wake_check::resume_scanouts(scanouts, dpms_on);
             *blanked = !dpms_on;
             *paused = false;
-            tracing::info!(
-                outputs = scanouts.len(),
-                dpms_on,
-                "DRM present: resumed after re-modesetting every output"
-            );
         }
         ScanoutCommand::SetCursorSize(size) => {
             for entry in scanouts.iter_mut() {
@@ -1739,6 +1725,11 @@ fn apply_scanout_command(
         ScanoutCommand::SetSoftwareDim { output, light } => {
             for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
                 entry.set_software_dim(light);
+            }
+        }
+        ScanoutCommand::WakeFault(stage) => {
+            for entry in scanouts.iter_mut() {
+                entry.scanout.inject_wake_fault(stage);
             }
         }
         ScanoutCommand::SetOutputPower { output, on } => {
@@ -2030,9 +2021,9 @@ fn paint_scanouts_with(
         readback_expected,
         scanouts.iter().filter(|entry| !entry.dark()).count(),
     );
-    if let Some(reason) = paint.as_ref().and_then(paint::VelloDrmBridge::device_lost) {
+    if paint::retire_lost_bridge(paint).is_some() {
         // Every call on a lost device fails, and the bridge cannot replace its own device.
-        tracing::error!(%reason, "DRM backend: the renderer's GPU device was lost; opening a new one");
+        // The direct targets were the lost device's: scan out the last good front instead.
         for entry in scanouts
             .iter_mut()
             .filter(|entry| entry.direct_targets.is_some())
@@ -2040,7 +2031,6 @@ fn paint_scanouts_with(
             entry.scanout.restore_legacy_front();
             entry.direct_targets = None;
         }
-        *paint = None;
     }
     if !ensure_bridge(paint, target_size) {
         return PaintScanoutSample::default();
@@ -2360,7 +2350,6 @@ struct DirectRender {
     sparse: bool,
     revision: u64,
     render_attempts: usize,
-    /// It rendered into HDR targets.
     hdr: bool,
 }
 
@@ -2931,6 +2920,27 @@ fn paint_scanouts_cpu(
         previous_revision: damage.and_then(|damage| damage.previous_revision),
         regions: damage.and_then(|damage| damage.regions),
     };
+    // A frame drawn as layers is composited from the layers' own canvases
+    // where GLES presents; the screen canvas then waits for a frame that
+    // is not.
+    if single
+        && let Some(cache) = frame.layers
+        && let Some(entry) = scanouts.first_mut()
+        && !entry.dark()
+        && !entry.sync_hdr_readback()
+    {
+        renderer.start_frame(cpu_frame.revision, cpu_frame.previous_revision);
+        if gl_present::present(
+            entry,
+            renderer,
+            gl_present::Content::Layers(cache),
+            pointer,
+            CPU_FLIP_TIMEOUT,
+        ) {
+            renderer.finish_frame();
+            return;
+        }
+    }
     renderer.update(cpu_frame, target_size);
 
     if single
@@ -2938,6 +2948,16 @@ fn paint_scanouts_cpu(
         && !entry.dark()
         && !entry.sync_hdr_readback()
     {
+        if gl_present::present(
+            entry,
+            renderer,
+            gl_present::Content::Screen,
+            pointer,
+            CPU_FLIP_TIMEOUT,
+        ) {
+            renderer.finish_frame();
+            return;
+        }
         match entry.scanout.wait_cpu_flip(CPU_FLIP_TIMEOUT) {
             Ok((wait, latency)) => renderer.record_flip_wait(wait, latency),
             Err(wait) => {
@@ -3533,17 +3553,7 @@ fn paint_one_scanout(
     let sx = usize::try_from(px.max(0)).unwrap_or(0);
     let sy = usize::try_from(py.max(0)).unwrap_or(0);
     let hdr = e.scanout.format().is_hdr();
-    // An ICC profile describes the panel's SDR response; while the output
-    // runs in HDR the PQ encode replaces it. Software dimming the CRTC
-    // cannot carry is done on this copy too, before the profile.
-    let dim = e.final_pass_dim().filter(|_| !hdr);
-    if e.cpu_dim
-        .as_ref()
-        .map(crate::shell::software_dim::CpuDim::light)
-        != dim
-    {
-        e.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
-    }
+    let dim = e.sync_cpu_dim(hdr);
     let copied = (e.color_transform.is_some() || dim.is_some()) && !hdr;
     let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
         if copied {
@@ -3635,6 +3645,13 @@ fn paint_one_scanout(
 }
 
 impl Presenter for DrmPresenter {
+    /// The CPU renderer rasterizes on the presenting thread, often for longer
+    /// than a realtime thread may run without blocking: the kernel then ends
+    /// the whole session (`RLIMIT_RTTIME`).
+    fn realtime(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
+    }
+
     fn present(&mut self, scene: &Scene, _output: OutputId) {
         let _ = self.submit(ScanoutFrame::scene_only(scene));
     }
@@ -3810,7 +3827,15 @@ impl Backend for DrmBackend {
     /// The GPU presenter composites a lone unmagnified output's strip pans
     /// from retained layers (`RetainedGpuTarget::render_layers_until`).
     fn composites_strip_layers(&self) -> bool {
-        cpu_present::cpu_render_reason().is_none()
+        cpu_present::cpu_render_reason().is_none() || gl_present::available()
+    }
+
+    /// The CPU renderer composited with GLES keeps every layer in a canvas
+    /// of its own, strips in canvas coordinates
+    /// (`cpu_layers::CpuLayers`), so every frame comes as layers.
+    fn strip_layer_canvas(&self) -> Option<u32> {
+        (cpu_present::cpu_render_reason().is_some() && gl_present::available())
+            .then_some(cpu_layers::MAX_STRIP_CANVAS)
     }
 
     /// The GPU presenter moves pixels within its retained target before it
@@ -3934,6 +3959,18 @@ impl Backend for DrmBackend {
         self.inner.resume_from_sleep();
     }
 
+    fn note_wake(&mut self, reason: &'static str) {
+        self.inner.dispatch.note_wake(reason);
+    }
+
+    fn retry_failed_outputs(&mut self, reason: &'static str) -> bool {
+        self.inner.dispatch.retry_failed_outputs(reason)
+    }
+
+    fn inject_wake_fault(&mut self, stage: wake_check::WakeStage) -> Result<(), String> {
+        self.inner.dispatch.inject_wake_fault(stage)
+    }
+
     fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
         self.inner.set_fullscreen_output(output);
     }
@@ -3990,6 +4027,14 @@ impl Backend for DrmBackend {
 
     fn cancel_touch(&mut self) {
         self.inner.cancel_touch();
+    }
+
+    fn translate_key(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        self.inner.translate_key(keycode, pressed)
+    }
+
+    fn place_pointer(&mut self, x: f64, y: f64) {
+        self.inner.place_pointer(x, y);
     }
 
     fn switch_vt(&mut self, vt: i32) {
@@ -4113,7 +4158,6 @@ mod tests {
             vec![(100, 0), (200, 2)],
             "each card must drain its own shared event stream exactly once"
         );
-        // Phase `overlapping_crtcs_route_flip_completion_only_within_its_card`.
         {
             // Fake card/CRTC topology. CRTC 7 exists on both cards, exactly as
             // it can in DRM. A completion from card 200 must not clear card 100's
@@ -4162,7 +4206,6 @@ mod tests {
             assert!(!paused, "and must start again when it gets them back");
             assert!(!blanked);
         }
-        // Phase `resuming_a_blanked_session_leaves_the_panels_off`.
         {
             // Restoring a session that was idle-blanked must not light the screen: the user turned it off, and a VT switch is not consent.
             let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -4178,7 +4221,6 @@ mod tests {
             assert!(!paused, "the CRTCs are ours again");
             assert!(blanked, "but the panels stay off");
         }
-        // Phase `a_reconfigure_adopts_the_new_output_table`.
         {
             // The presenter sizes its paint target from this table (`bridge_extent`) and renders each output's view from its position, so adopting it is what makes an unplugged monitor stop being painted for.
             let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -4350,14 +4392,20 @@ mod tests {
                 .expect("the presenter holds the command receiver");
             let dropping_master = quiesce_presentations(Some(&gate));
             let (finished_tx, finished) = std::sync::mpsc::channel();
+            let (tid_tx, tid) = std::sync::mpsc::channel();
             let render_thread = std::thread::spawn(move || {
+                let _ = tid_tx.send(lock_wait::current_tid());
                 entry(&mut presenter);
                 let _ = finished_tx.send(());
                 presenter
             });
+            lock_wait::wait_until_blocked_on_a_lock(
+                tilo_test_env::recv("the render thread's id", &tid),
+                &format!("{name}'s render thread"),
+            );
             assert_eq!(
-                finished.recv_timeout(Duration::from_millis(100)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                finished.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty),
                 "{name} presented while DRM master was being dropped"
             );
             drop(dropping_master);
@@ -4598,7 +4646,6 @@ mod per_output_presentation_tests {
             head(1, (2560, 0), (1920, 1080), 60_000),
         ];
         let fastest = outputs.iter().filter_map(|output| output.refresh_mhz).max();
-        // Refresh periods in nanoseconds.
         let fast_period: u64 = 6_944_444;
         let slow_period: u64 = 16_666_667;
         let mut monitor = scanout::DirectScanoutState::new(0);
@@ -4630,7 +4677,6 @@ mod per_output_presentation_tests {
             } else {
                 slow_skips = slow_skips.saturating_add(1);
             }
-            // The frame retires once the outputs pacing the loop have flipped.
             assert_eq!(
                 flip_wait(refresh_of(&outputs, OutputId(0)), fastest, Duration::ZERO),
                 FlipWait::Await,

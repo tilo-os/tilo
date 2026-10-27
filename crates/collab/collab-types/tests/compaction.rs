@@ -143,8 +143,6 @@ fn seqs_of<'a>(ops: impl IntoIterator<Item = &'a SignedOp>) -> Vec<u64> {
     ops.into_iter().map(|op| op.seq).collect()
 }
 
-// ---------- record_validated_op ----------
-
 /// `record_validated_op` keeps arrival order and evicts FIFO at the bound,
 /// which defaults to `DEFAULT_MAX_IN_MEMORY_OPS`.
 #[test]
@@ -172,8 +170,6 @@ fn the_op_log_keeps_order_and_evicts_the_oldest_at_its_bound() {
     );
     assert!(state.op_log.is_empty());
 }
-
-// ---------- apply_compaction ----------
 
 /// A checkpoint evicts exactly the hash-verified prefix of its own artifact
 /// (an empty prefix evicts nothing), a wrong hash changes nothing, and the
@@ -253,8 +249,6 @@ fn compaction_evicts_exactly_a_verified_prefix_of_one_artifact() {
     let parsed = collab_types::parse_compaction_payload(&op).expect("parse");
     assert_eq!(parsed, cp);
 }
-
-// ---------- scrollback_for ----------
 
 /// (case, ops logged, `before_seq`, max, expected seqs, expected exhaustion when
 /// the case pins it, why)

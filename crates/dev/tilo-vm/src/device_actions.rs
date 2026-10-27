@@ -6,9 +6,6 @@ use tilo_vm_protocol::DeviceActions;
 use crate::{cli::DeviceActionCommand, error::CliError};
 
 /// Encode the canonical action request; private arguments are read only from stdin.
-///
-/// # Errors
-/// Returns a content-free error for unreadable, oversized or non-object arguments.
 pub fn request(
     command: DeviceActionCommand,
     reader: impl std::io::Read,

@@ -4,14 +4,31 @@
  * codec (Rust/WASM) are injected.
  *
  * Presence values (the JSON projection of the frozen `PresenceFrame`):
- *   {focus:{app,record}|null, pointer:[x,y]|null,
+ *   {focus:{app,record}|null,
+ *    pointer:{window:{app,record}, at:[x,y]}
+ *           |{beside:{app,record}, edge:[fx,fy], at:[dx,dy]}|{strip:string, at:[x,y]}|null,
  *    selection:{anchor:hex, head:hex}|null,
  *    drag:{object:{record:{app,record}|null,id:hex}, phase:'start'|'move'|'end'|'cancel',
  *          position:[x,y], size:[w,h]|null}|null,
- *    place:string|null, chat:{text, sent}|null, reaction:{seq, emoji}|null}
- * `place` is where within its focus the publisher is (on a desktop, the
+ *    place:string|null, chat:{text, sent}|null, reaction:{seq, emoji}|null,
+ *    wave:{seq, target:hex}|null,
+ *    layout:{size:[w,h], windows:[{app, record:hex16, rect:[x0,y0,x1,y1], focused}]}|null,
+ *    following:hex|null}
+ * `pointer` is relative to a window, named by its record: within the window
+ * it is over (from its content's top-left corner), or over the empty
+ * desktop beside the nearest window (from that window's nearest point,
+ * `edge` fractions across it). Strips are personal in many rooms, so only a
+ * desk showing no window points in its strip's own coordinates. Each member
+ * places it in their own layout (the runtime's `remote_pointers`); `at` and
+ * `edge` interpolate while it stays relative to the same thing. `place` is where within its focus the publisher is (on a desktop, the
  * strip it shows). `chat` is what the publisher is saying beside its pointer
- * (cursor chat); `reaction` its latest reaction, new when its `seq` is.
+ * (cursor chat); `reaction` its latest reaction, new when its `seq` is;
+ * `wave` its latest wave at the member whose publisher is `target`, new
+ * when its `seq` is. `layout` is where the publisher's windows are on its
+ * screen, by app and a 16-hex digest of each window's record only, edges in
+ * 1/10000 of `size`: members draw a mini view of it from what they hold.
+ * `following` is the publisher of the member whose view the publisher
+ * follows, restated while it lasts.
  */
 
 /** Relay ceiling is 120 presence frames/s per publisher (display rate up to 120 Hz). */
@@ -47,11 +64,11 @@ export const ENDED_DRAG_TIMEOUT_MS = 5000;
 /** A publisher with no frame for this long is reported stale. */
 export const STALE_AFTER_MS = 10000;
 
-const FIELDS = ['focus', 'pointer', 'selection', 'drag', 'participant', 'place', 'chat', 'reaction'];
+const FIELDS = ['focus', 'pointer', 'selection', 'drag', 'participant', 'place', 'chat', 'reaction', 'wave', 'layout', 'following'];
 const PARTICIPANT_KINDS = new Set(['person', 'agent']);
 const PHASES = new Set(['start', 'move', 'end', 'cancel']);
 
-const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null, participant: null, place: null, chat: null, reaction: null});
+const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null, participant: null, place: null, chat: null, reaction: null, wave: null, layout: null, following: null});
 
 function finitePair(value, name) {
   if (value === null) return null;
@@ -60,15 +77,56 @@ function finitePair(value, name) {
   }
   return [value[0], value[1]];
 }
+function normalizePointer(value) {
+  const at = finitePair(value.at ?? null, 'pointer at');
+  if (!at) throw new TypeError('a pointer has a point');
+  const record = value => ({app: String(value.app), record: String(value.record)});
+  if (value.window) return {window: record(value.window), at};
+  if (value.beside) {
+    const edge = finitePair(value.edge ?? null, 'pointer edge');
+    if (!edge || !edge.every(fraction => fraction >= 0 && fraction <= 1)) throw new TypeError('a pointer beside a window has an edge of fractions');
+    return {beside: record(value.beside), edge, at};
+  }
+  if (/^\d+$/.test(String(value.strip))) return {strip: String(value.strip), at};
+  throw new TypeError('a pointer is over or beside a window, or on a strip');
+}
+const unit = value => Math.min(10000, Math.max(0, Math.round(Number(value) || 0)));
+const side = value => Math.min(65535, Math.max(0, Math.round(Number(value) || 0)));
+function normalizeLayout(value) {
+  if (!Array.isArray(value.size) || !Array.isArray(value.windows)) throw new TypeError('a layout has a size and windows');
+  // The wire refuses an app it cannot carry: such a window is left out
+  // rather than costing the whole frame.
+  const carried = window => typeof window?.app === 'string' && window.app.length > 0 && new TextEncoder().encode(window.app).length <= 48;
+  const windows = value.windows.filter(carried).slice(0, 8).map(window => {
+    if (!/^[0-9a-f]{16}$/.test(window.record)) throw new TypeError('a layout window names its record by a 16-hex digest');
+    const [x0, y0, x1, y1] = (Array.isArray(window.rect) ? window.rect : []).map(unit);
+    return {app: String(window.app), record: window.record, rect: [x0, y0, Math.max(x0, x1), Math.max(y0, y1)], focused: Boolean(window.focused)};
+  });
+  return {size: [side(value.size[0]), side(value.size[1])], windows};
+}
+const sameRecord = (a, b) => Boolean(a && b) && a.app === b.app && a.record === b.record;
+/** Whether two pointers are relative to the same window or strip. */
+export function sameAnchor(a, b) {
+  if (a.window || b.window) return sameRecord(a.window, b.window);
+  if (a.beside || b.beside) return sameRecord(a.beside, b.beside);
+  return a.strip === b.strip;
+}
 function normalizeField(key, value) {
   if (value === undefined || value === null) return null;
   switch (key) {
-    case 'pointer': return finitePair(value, 'pointer');
+    case 'pointer': return normalizePointer(value);
     case 'focus': return {app: String(value.app), record: String(value.record)};
     case 'selection': return {anchor: String(value.anchor), head: String(value.head)};
     case 'place': return String(value) || null;
     case 'chat': return {text: String(value.text), sent: Boolean(value.sent)};
     case 'reaction': return {seq: Number(value.seq) >>> 0, emoji: String(value.emoji)};
+    case 'wave': return {seq: Number(value.seq) >>> 0, target: String(value.target)};
+    case 'layout': return normalizeLayout(value);
+    case 'following': {
+      const target = String(value);
+      if (!/^[0-9a-f]{1,64}$/.test(target)) throw new TypeError('following names a member by their publisher, as hex');
+      return target;
+    }
     case 'participant': {
       if (!PARTICIPANT_KINDS.has(value.kind)) throw new TypeError('participant kind must be person or agent');
       if (!/^#[0-9a-f]{6}$/.test(value.color)) throw new TypeError('participant colour must be #rrggbb');
@@ -374,7 +432,19 @@ export function createRemotePresence({maxSamples = 8} = {}) {
   function sample(nowMs) {
     if (!newest) return null;
     const at = nowMs - delay();
-    const pointer = position(s => s.pointer, at, () => true);
+    // A pointer moves smoothly while over one window or strip, and jumps
+    // to what it moved over: its earlier points are in other coordinates.
+    const over = newest.pointer;
+    const along = pick => (over ? position(s => (s.pointer && sameAnchor(s.pointer, over) ? pick(s.pointer) : null), at, () => true) : null);
+    const point = along(p => p.at);
+    let pointer = null;
+    if (point && over.window) pointer = {window: over.window, at: point};
+    else if (point && over.beside) {
+      // Extrapolated motion along the window's side stays on the side.
+      const edge = (along(p => p.edge) ?? over.edge).map(fraction => Math.min(1, Math.max(0, fraction)));
+      pointer = {beside: over.beside, edge, at: point};
+    }
+    else if (point) pointer = {strip: over.strip, at: point};
     let drag = null;
     const current = newest.drag;
     if (current && (current.phase === 'end' || current.phase === 'cancel')) {

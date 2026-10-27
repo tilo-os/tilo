@@ -22,6 +22,9 @@ class CanonicalPackaging(unittest.TestCase):
                 'cargo': '#!/bin/sh\nif [ "$1" = metadata ]; then printf \'{"target_directory":"%s"}\\n\' "$FAKE_TARGET"; else printf "%s\\n" "$*" >> "$FAKE_LOG"; fi\n',
                 'wasm-bindgen': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\nif "--version" in sys.argv: print("wasm-bindgen 0.2.108");sys.exit()\na=sys.argv;out=Path(a[a.index("--out-dir")+1]);out.mkdir(parents=True,exist_ok=True);name=a[a.index("--out-name")+1]\n(out/(name+".js")).write_text("export default async()=>{};")\n(out/(name+"_bg.wasm")).write_bytes(bytes([0,97,115,109,1,0,0,0,5,5,1,1,18,128,32]) + (bytes([0,128,128,64])+bytes(1024*1024) if name=="tilo_browser_compute" else b""))\n',
                 'npm': '#!/bin/sh\nexit 0\n',
+                # The release profile names the commit it was built from; the fixture is its own
+                # clean checkout of one, so it needs no .git of the tree under test.
+                'git': '#!/bin/sh\ncase "$1" in rev-parse) echo ' + 'a' * 40 + ' ;; esac\n',
                 'wasm-opt': '#!/bin/sh\n[ \"$1\" != --version ] || echo wasm-opt-fixture\n',
                 'node': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\nif len(sys.argv)>1 and sys.argv[1]=="build.mjs": Path(sys.argv[2]).write_text("export {};")\nelse: os.execv(os.environ["REAL_NODE"],[os.environ["REAL_NODE"],*sys.argv[1:]])\n',
             }
@@ -52,6 +55,36 @@ class CanonicalPackaging(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b'1 MiB release compute budget', result.stderr)
             self.assertFalse((release / 'build.json').exists())
+
+            # The module built apart, without git, and a bundle assembled around it that
+            # compiles nothing and takes the pages from the tree.
+            wasm = temp / 'wasm'
+            subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                            str(wasm), '--profile', 'dev', '--wasm-only'], cwd=ROOT, env=env, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertTrue((wasm / 'pkg/compute/tilo_browser_compute_bg.wasm').is_file())
+            self.assertFalse((wasm / 'compute-worker.mjs').exists())
+            self.assertFalse((wasm / 'build.json').exists())
+            self.assertEqual(json.loads((wasm / 'wasm.json').read_text())['profile'], 'dev')
+            compiled = (temp / 'cargo.log').read_text()
+            assembled = temp / 'assembled'
+            subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                            str(assembled), '--profile', 'dev', '--wasm-from', str(wasm)], cwd=ROOT, env=env,
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual((temp / 'cargo.log').read_text(), compiled)
+            for name in ASSETS:
+                self.assertTrue((assembled / name).is_file(), name)
+            self.assertTrue((assembled / 'entry-page.mjs').is_file())
+            metadata = json.loads((assembled / 'build.json').read_text())
+            self.assertEqual(metadata['profile'], 'dev')
+            self.assertEqual(metadata['wasmBindgen'], 'wasm-bindgen 0.2.108')
+            for name in ASSETS:
+                self.assertIn(name, metadata['files'])
+            refused = subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                                      str(temp / 'other'), '--profile', 'release', '--wasm-from', str(wasm)],
+                                     cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn(b'is a dev runtime module, not release runtime', refused.stderr)
 
 
 if __name__ == '__main__':

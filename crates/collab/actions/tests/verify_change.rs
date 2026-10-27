@@ -1,6 +1,3 @@
-//! A device that has the app replays every change it receives and checks
-//! that the change is exactly what its recorded action produces.
-
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"

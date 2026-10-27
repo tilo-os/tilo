@@ -158,7 +158,6 @@ mod cases {
                     .as_millis(),
             )
             .unwrap();
-            // The bounds Photos' Make thumbnails declares for its offload.
             let spec = ComputeJobSpec {
                 version: COMPUTE_JOB_SCHEMA_VERSION,
                 job_id: [job; 16],
@@ -282,7 +281,7 @@ mod cases {
         let staging = scratch.join("staging");
         std::fs::create_dir_all(staging.join("bin")).unwrap();
         std::fs::copy(
-            env!("CARGO_BIN_EXE_thumbnail-batch"),
+            tilo_test_env::package_binary!("thumbnail-batch"),
             staging.join("bin").join(ENTRYPOINT),
         )
         .unwrap();
@@ -389,7 +388,6 @@ mod cases {
             (0..inputs.len()).map(output_name).collect::<Vec<_>>(),
             String::from_utf8_lossy(&result.stderr)
         );
-        // What the requester then fetches from the worker, byte for byte.
         for (digest, thumbnail) in expected_digests.iter().zip(&expected) {
             let returned = device
                 .worker

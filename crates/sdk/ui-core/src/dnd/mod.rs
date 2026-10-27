@@ -101,26 +101,44 @@ const TILO_TYPES: &[(&str, &str)] = &[("artwork", "application/vnd.tilo.artwork+
 /// A single file is offered as both its own content type and a URI list;
 /// several are offered as a URI list alone, since one pipe can't carry
 /// several files' bytes. Returns whether a drag started.
+///
+/// The file is not read here: its bytes are streamed into the pipe when a
+/// receiver asks for them, on the toolkit's pipe-writing thread. Starting a
+/// drag runs on the app's event thread, inside a pointer motion, and a file
+/// can be gigabytes on a slow or remote disk.
 pub fn start_file_drag(paths: &[PathBuf]) -> bool {
-    if paths.is_empty() {
+    let offers = file_offers(paths);
+    if offers.is_empty() {
         return false;
     }
-    let mut offers: Vec<(String, Vec<u8>)> = Vec::new();
+    start_drag_with(offers)
+}
+
+/// What a drag carries for one offered mime type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Offer {
+    Bytes(Vec<u8>),
+    /// A file's content, read when the receiver asks for it.
+    File(PathBuf),
+}
+
+/// The offers of a drag carrying `paths` ([`start_file_drag`]).
+fn file_offers(paths: &[PathBuf]) -> Vec<(String, Offer)> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let mut offers = Vec::new();
+    // Nothing here touches the disk: the content type comes from the name.
     if let [single] = paths
         && let Some(mime) = mime_for_path(single)
     {
-        match std::fs::read(single) {
-            Ok(bytes) => offers.push((mime.to_string(), bytes)),
-            Err(e) => tracing::warn!(
-                target: "tilo_ui::dnd",
-                path = %single.display(),
-                error = %e,
-                "could not read the dragged file; offering only its name"
-            ),
-        }
+        offers.push((mime.to_string(), Offer::File(single.clone())));
     }
-    offers.push((URI_LIST_MIME.to_string(), uri_list(paths).into_bytes()));
-    start_drag_offering(offers)
+    offers.push((
+        URI_LIST_MIME.to_string(),
+        Offer::Bytes(uri_list(paths).into_bytes()),
+    ));
+    offers
 }
 
 /// Start a drag carrying arbitrary `offers` (mime type → bytes).
@@ -128,6 +146,15 @@ pub fn start_file_drag(paths: &[PathBuf]) -> bool {
 /// The general form behind [`start_file_drag`], for a widget dragging out
 /// something that is not a file on disk.
 pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
+    start_drag_with(
+        offers
+            .into_iter()
+            .map(|(mime, bytes)| (mime, Offer::Bytes(bytes)))
+            .collect(),
+    )
+}
+
+fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
     let window = {
         let slot = DRAG_WINDOW.lock_recover();
         slot.as_ref().and_then(Weak::upgrade)
@@ -141,7 +168,17 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     };
     #[cfg(target_os = "linux")]
     {
-        use winit::platform::wayland::WindowExtWayland;
+        use winit::platform::wayland::{DragData, WindowExtWayland};
+        let offers = offers
+            .into_iter()
+            .map(|(mime, offer)| {
+                let data = match offer {
+                    Offer::Bytes(bytes) => DragData::Bytes(bytes),
+                    Offer::File(path) => DragData::File(path),
+                };
+                (mime, data)
+            })
+            .collect();
         let started = window.start_drag(offers);
         if !started {
             tracing::warn!(
@@ -175,7 +212,6 @@ mod outgoing_tests {
             );
         }
 
-        // Case `several_paths_are_one_entry_per_line`.
         {
             assert_eq!(
                 uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
@@ -191,6 +227,33 @@ mod outgoing_tests {
             assert_eq!(mime_for_path(Path::new("/x/scan.jpeg")), Some("image/jpeg"));
             assert_eq!(mime_for_path(Path::new("/x/archive.tar.zst")), None);
             assert_eq!(mime_for_path(Path::new("/x/noext")), None);
+        }
+
+        // Case `a_dragged_file_is_offered_unread`:
+        // Starting a drag runs inside a pointer motion on the app's thread;
+        // reading the file there froze Files for 11 s on a 4.3 GB video. The
+        // drag names the file and its bytes stream when a receiver asks.
+        {
+            let video = PathBuf::from("/home/me/Downloads/film.png");
+            assert_eq!(
+                file_offers(std::slice::from_ref(&video)),
+                vec![
+                    ("image/png".to_string(), Offer::File(video.clone())),
+                    (
+                        URI_LIST_MIME.to_string(),
+                        Offer::Bytes(uri_list(std::slice::from_ref(&video)).into_bytes())
+                    ),
+                ]
+            );
+            // A name that says no content type is offered as a name only.
+            let folder = PathBuf::from("/home/me/Downloads");
+            assert_eq!(
+                file_offers(std::slice::from_ref(&folder)),
+                vec![(
+                    URI_LIST_MIME.to_string(),
+                    Offer::Bytes(uri_list(std::slice::from_ref(&folder)).into_bytes())
+                )]
+            );
         }
 
         // Case `an_empty_selection_starts_nothing`:

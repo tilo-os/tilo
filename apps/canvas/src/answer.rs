@@ -21,11 +21,10 @@ const MOST_SAMPLES: usize = 400;
 /// A mark this much hidden (`0..=1`, averaged over its area) is reported.
 const MOSTLY: f64 = 0.75;
 
-/// The answer to `action`, which changed `doc` as `changes`.
 pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
     match action {
         "select" => Some(json!({"selection": selection(&Artwork::from_doc(doc).ok()?)})),
-        "paint" | "draw" | "import-svg" | "use-selection" => {
+        "paint" | "draw" | "chart" | "import-svg" | "use-selection" => {
             let added = added(changes);
             if added.is_empty() {
                 return None;

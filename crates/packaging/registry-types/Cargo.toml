@@ -3,7 +3,7 @@ name = "registry-types"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 description = "Wire types for the Tilo app registry: signed package metadata, versions and content roots."
 repository.workspace = true
 homepage.workspace = true
@@ -26,6 +26,8 @@ path = "src/lib.rs"
 # `crates/packaging/tilo-app-package::trust`.
 
 [dependencies]
+# The block list's files in the person's data directory.
+tilo-paths.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
@@ -40,6 +42,7 @@ thiserror.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tempfile.workspace = true
 getrandom.workspace = true
 
 [lints]

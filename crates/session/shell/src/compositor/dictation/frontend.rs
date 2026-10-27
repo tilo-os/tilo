@@ -348,7 +348,6 @@ mod tests {
             fixture.pump();
             std::fs::write(pid.with_extension("release"), b"release prerecorded peer").unwrap();
             let deadline = tilo_test_env::hang_deadline();
-            // Reap the real producer without consuming its queued Done reply.
             while !fixture
                 .state
                 .text_commit
@@ -588,7 +587,6 @@ mod tests {
                 events.extend(fixture.pump());
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            // Preserve the final across an additional native input turn.
             events.extend(fixture.pump());
             assert!(fixture.state.take_native_dictation_commit());
             fixture.display.flush_clients().unwrap();

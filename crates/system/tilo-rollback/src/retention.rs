@@ -169,7 +169,6 @@ mod tests {
 
     #[test]
     fn the_retention_window_and_floor_only_move_forward() {
-        // Phase `window_of_three_keeps_current_and_two_older`.
         {
             let p = plan_floor(10, 0, 3, None).unwrap();
             assert_eq!(p.window_floor, 8);
@@ -177,19 +176,16 @@ mod tests {
             assert!(p.advances());
             assert_eq!(p.increments(), 8);
         }
-        // Phase `window_of_one_pins_the_floor_to_the_running_generation`.
         {
             let p = plan_floor(10, 0, 1, None).unwrap();
             assert_eq!(p.target_floor, 10);
         }
-        // Phase `early_generations_do_not_underflow`.
         {
             assert_eq!(plan_floor(0, 0, 3, None).unwrap().target_floor, 0);
             assert_eq!(plan_floor(1, 0, 3, None).unwrap().target_floor, 0);
             assert_eq!(plan_floor(2, 0, 3, None).unwrap().target_floor, 0);
             assert_eq!(plan_floor(3, 0, 3, None).unwrap().target_floor, 1);
         }
-        // Phase `the_floor_never_goes_backwards`.
         {
             // Confirmed generation 10 with a window of 3 wants floor 8, but the floor is already 9
             // (a security update jumped it). Stay at 9.
@@ -199,7 +195,6 @@ mod tests {
             assert!(!p.advances());
             assert_eq!(p.increments(), 0);
         }
-        // Phase `a_declared_floor_can_jump_past_a_vulnerable_generation`.
         {
             // Generation 10 is a security fix; 8 and 9 are vulnerable. Declaring floor 10 closes the
             // window immediately.
@@ -207,22 +202,18 @@ mod tests {
             assert_eq!(p.window_floor, 8);
             assert_eq!(p.target_floor, 10);
         }
-        // Phase `a_declared_floor_below_the_window_does_not_lower_it`.
         {
             let p = plan_floor(10, 0, 3, Some(2)).unwrap();
             assert_eq!(p.target_floor, 8);
         }
-        // Phase `a_declared_floor_above_the_running_generation_is_refused`.
         {
             let e = plan_floor(10, 0, 3, Some(11)).unwrap_err().to_string();
             assert!(e.contains("above the generation being confirmed"), "{e}");
         }
-        // Phase `a_floor_already_above_the_running_generation_is_refused`.
         {
             let e = plan_floor(5, 6, 3, None).unwrap_err().to_string();
             assert!(e.contains("already above the running generation"), "{e}");
         }
-        // Phase `zero_retention_is_refused`.
         {
             assert!(plan_floor(5, 0, 0, None).is_err());
         }
@@ -230,32 +221,27 @@ mod tests {
 
     #[test]
     fn keep_and_drop_sets_protect_staged_and_verified_keyslots() {
-        // Phase `keep_set_is_newest_first_and_bounded`.
         {
             assert_eq!(keep_set(10, &[7, 8, 9, 10], 3), vec![10, 9, 8]);
             assert_eq!(keep_set(10, &[], 3), vec![10]);
             assert_eq!(keep_set(10, &[9], 3), vec![10, 9]);
         }
-        // Phase `a_staged_generations_keyslot_is_never_dropped`.
         {
             // Generation 11 has been staged and its keyslot sealed; confirming 10 must not remove it,
             // or the next boot has nothing to unseal with.
             assert_eq!(keep_set(10, &[8, 9, 10, 11], 3), vec![11, 10, 9, 8]);
             assert_eq!(drop_set(10, &[8, 9, 10, 11], 3), Vec::<u64>::new());
         }
-        // Phase `two_staged_generations_are_kept_and_a_third_is_not`.
         {
             assert_eq!(keep_set(10, &[10, 11, 12], 3), vec![12, 11, 10]);
             // 11 and 12 are the newest two; 13 arriving means 11 was superseded without ever booting,
             // and re-staging it would seal a fresh keyslot.
             assert_eq!(drop_set(10, &[10, 11, 12, 13], 3), vec![11]);
         }
-        // Phase `drop_set_is_the_complement`.
         {
             assert_eq!(drop_set(10, &[6, 7, 8, 9, 10], 3), vec![6, 7]);
             assert_eq!(drop_set(10, &[9, 10], 3), Vec::<u64>::new());
         }
-        // Phase `pruning_needs_a_verified_survivor_and_a_verified_recovery_key`.
         {
             assert!(
                 prune_is_safe(&[], &[], false).is_ok(),

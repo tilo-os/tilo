@@ -188,6 +188,7 @@
                       "enum": [
                         "paint",
                         "draw",
+                        "chart",
                         "edit-marks",
                         "remove-marks",
                         "arrange",
@@ -271,6 +272,155 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "chart",
+    "resource_kind": "canvas.artwork",
+    "label": "Draw chart",
+    "description": "Bar chart from numbers; use it, not hand-computed rects. Equal bars, one baseline, lengths exactly value/max of box.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "labels",
+        "ty": "array",
+        "required": true,
+        "description": "One per value.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      {
+        "name": "values",
+        "ty": "array",
+        "required": true,
+        "description": ">= 0.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ty": "text",
+        "description": "bar or hbar.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "box",
+        "ty": "array",
+        "description": "Bars' area x, y, w, h on its bottom (hbar: left).",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        }
+      },
+      {
+        "name": "max",
+        "ty": "number",
+        "description": "Full-bar value (default largest).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "bar_width",
+        "ty": "number",
+        "description": "Default: gap 2/3 of it.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "description": "colour",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "label_size",
+        "ty": "number",
+        "description": "label_size",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "values_shown",
+        "ty": "boolean",
+        "description": "values_shown",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "title",
+        "ty": "text",
+        "description": "title",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "id",
+        "ty": "text",
+        "description": "Prefix (default chart).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "description": "layer",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "checkpoint",
     "resource_kind": "canvas.artwork",
     "label": "Checkpoint",
@@ -322,7 +472,7 @@
     "resource_kind": "canvas.artwork",
     "label": "Compare with reference",
     "description": "Compare with reference. See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
-    "operation": "View",
+    "operation": "Effect",
     "params": [
       {
         "name": "region",
@@ -372,7 +522,7 @@
     "resource_kind": "canvas.artwork",
     "label": "Compare versions",
     "description": "Compare versions. Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
-    "operation": "View",
+    "operation": "Effect",
     "params": [
       {
         "name": "from",
@@ -662,7 +812,7 @@
                           "string",
                           "null"
                         ],
-                        "description": "`start`, `center` or `end` at `x`."
+                        "description": "`start`, `center` or `end` at `x`, or in `width`."
                       },
                       "line_height": {
                         "type": [
@@ -1215,7 +1365,7 @@
     "action": "edit-marks",
     "resource_kind": "canvas.artwork",
     "label": "Edit marks",
-    "description": "Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge).",
+    "description": "Change marks by id: colours, opacity, name, `move_by` `[dx,dy]`, scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge).",
     "operation": "Document",
     "params": [
       {
@@ -1905,7 +2055,7 @@
     "action": "field-edit",
     "resource_kind": "canvas.artwork",
     "label": "Edit a Artwork field",
-    "description": "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+    "description": "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \"upsert-item\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \"end\" | {after: id} | {before: id}.",
     "operation": "Document",
     "params": [
       {
@@ -1915,7 +2065,7 @@
         "description": "The path of the field from the record's root, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title`: set, splice, replace — Title (string)\n- `width`: set — Width (number)\n- `height`: set — Height (number)\n- `ground`: set — Ground\n- `layers`: insert-item, remove-item, move-to, set — Bottom to top; removing an item asks for confirmation\n- `layers.*`: set — Bottom to top; one item, by its id\n- `layers.*.name`: set, splice, replace — Name (string)\n- `layers.*.group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `layers.*.medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `layers.*.opacity`: set — Opacity (number)\n- `layers.*.visible`: set — Visible (boolean)\n- `layers.*.texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `layers.*.locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `layers.*.adjust`: set — Colour and tone adjustments of everything on the layer\n- `layers.*.base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `layers.*.invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `layers.*.clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `layers.*.unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)\n- `marks`: insert-item, remove-item, move-to, set — Bottom to top within each layer, layers bottom to top (see; removing an item asks for confirmation\n- `marks.*`: set — Bottom to top within each layer, layers bottom to top (see; one item, by its id\n- `marks.*.layer`: set, splice, replace — Layer (string)\n- `marks.*.name`: set, splice, replace — Name (string)\n- `marks.*.shape`: set — Shape\n- `marks.*.style`: set — Style\n- `marks.*.transform`: set — An affine transform `[a, b, c, d, e, f]` applied to the geometry (array or null)\n- `marks.*.group`: set, splice, replace — The group the mark belongs to, or empty (string)\n- `marks.*.clip`: set, splice, replace — The mark whose shape this mark is cut to, or empty (string)\n- `media`: set, remove-key — Media presets saved in this artwork, by id\n- `media.*`: set, splice, replace, add, insert, remove — Media presets saved in this artwork, by id; an entry, by its key, and what is inside it\n- `reference`: set — Reference\n- `selection`: set — Selection",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title`: set, splice, replace — Title (string)\n- `width`: set — Width (number)\n- `height`: set — Height (number)\n- `ground`: set — Ground\n- `layers`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top; removing an item asks nothing; Undo takes it back\n- `layers.*`: set — Bottom to top; one item, by its id\n- `layers.*.name`: set, splice, replace — Name (string)\n- `layers.*.group`: set, splice, replace — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `layers.*.medium`: set, splice, replace — The medium preset that paints this layer's marks, or empty for plain (string)\n- `layers.*.opacity`: set — Opacity (number)\n- `layers.*.visible`: set — Visible (boolean)\n- `layers.*.texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `layers.*.locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `layers.*.adjust`: set — Colour and tone adjustments of everything on the layer\n- `layers.*.base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `layers.*.invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `layers.*.clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `layers.*.unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)\n- `marks`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top within each layer, layers bottom to top (see; removing an item asks nothing; Undo takes it back\n- `marks.*`: set — Bottom to top within each layer, layers bottom to top (see; one item, by its id\n- `marks.*.layer`: set, splice, replace — Layer (string)\n- `marks.*.name`: set, splice, replace — Name (string)\n- `marks.*.shape`: set — Shape\n- `marks.*.style`: set — Style\n- `marks.*.transform`: set — An affine transform `[a, b, c, d, e, f]` applied to the geometry (array or null)\n- `marks.*.group`: set, splice, replace — The group the mark belongs to, or empty (string)\n- `marks.*.clip`: set, splice, replace — The mark whose shape this mark is cut to, or empty (string)\n- `media`: set, remove-key — Media presets saved in this artwork, by id\n- `media.*`: set, splice, replace, add, insert, remove — Media presets saved in this artwork, by id; an entry, by its key, and what is inside it\n- `reference`: set — Reference\n- `selection`: set — Selection",
           "properties": {
             "path": {
               "type": "array",
@@ -1933,6 +2083,7 @@
                 "insert",
                 "remove",
                 "insert-item",
+                "upsert-item",
                 "remove-item",
                 "move-to",
                 "remove-key",
@@ -1942,6 +2093,8 @@
                 "remove-row",
                 "remove-column",
                 "settle",
+                "react",
+                "unreact",
                 "rich"
               ]
             }
@@ -2005,7 +2158,7 @@
     "action": "find-area",
     "resource_kind": "canvas.artwork",
     "label": "Find image area",
-    "description": "Find image area. Find a photo's subject (subject: true) or refine the selected edge (refine: units) in the background, with progress and one undo step. Then use-selection mask or fill. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
+    "description": "Find image area. Select what a picture of the artwork shows: the magic wand (at: colour touching it), a colour everywhere (colour), a photo's subject (subject: true) or the selected edge refined (refine: units), as one undo step. Then use-selection fill, mask or clear. Accepts select's add/subtract/intersect, layer and feather options. The artwork must remain unchanged while the area is found.",
     "operation": "Effect",
     "params": [
       {
@@ -2033,7 +2186,7 @@
       {
         "name": "at",
         "ty": "array",
-        "description": "Subject point `[x, y]` in artwork units.",
+        "description": "`[x, y]` in artwork units: alone, the magic wand (like colour touching it); with subject, the object there.",
         "schema": {
           "type": [
             "array",
@@ -2044,6 +2197,28 @@
           },
           "minItems": 2,
           "maxItems": 2
+        }
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "description": "`#rrggbb`: that colour everywhere.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "tolerance",
+        "ty": "number",
+        "description": "How far a colour may stray for at or colour, 0..1 (default 0.15).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       {
@@ -2109,6 +2284,7 @@
                     "enum": [
                       "paint",
                       "draw",
+                      "chart",
                       "edit-marks",
                       "remove-marks",
                       "arrange",
@@ -2175,6 +2351,7 @@
                               "insert",
                               "remove",
                               "insert-item",
+                              "upsert-item",
                               "remove-item",
                               "move-to",
                               "remove-key",
@@ -2184,6 +2361,8 @@
                               "remove-row",
                               "remove-column",
                               "settle",
+                              "react",
+                              "unreact",
                               "rich"
                             ]
                           }
@@ -2355,7 +2534,7 @@
       {
         "name": "limit",
         "ty": "integer",
-        "description": "How many of the newest matching marks to list, 0 to 400 (default 100; none with measure).",
+        "description": "How many of the newest matching marks to list, 0 to 400 (default 100).",
         "schema": {
           "type": [
             "integer",
@@ -2385,20 +2564,6 @@
             "boolean",
             "null"
           ]
-        }
-      },
-      {
-        "name": "measure",
-        "ty": "array",
-        "description": "Marks or groups to measure as the eye sees them: ink box, ink area, centre of mass and its offset from the box's middle (for balancing icons optically), and a text's letter boxes.",
-        "schema": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
         }
       }
     ]
@@ -2494,6 +2659,39 @@
         "schema": {
           "type": [
             "boolean",
+            "null"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "measure",
+    "resource_kind": "canvas.artwork",
+    "label": "Measure ink",
+    "description": "Measure ink. Weigh how marks or groups put down ink, as the eye sees it: each one's ink box, ink area, centre of mass and its offset from the box's middle (two icons balance when areas and offsets match), and a text's letter boxes. Answers once their pictures are rendered.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "Marks or groups to measure.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "description": "A past version: a change id from history or a checkpoint name.",
+        "schema": {
+          "type": [
+            "string",
             "null"
           ]
         }
@@ -2672,7 +2870,7 @@
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
-    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points `[[x,y] or [x,y,pressure]]`, size, colour (#rrggbb or `pigment:<name>`). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with `dab_length`, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
     "operation": "Document",
     "params": [
       {
@@ -3189,7 +3387,7 @@
     "action": "select",
     "resource_kind": "canvas.artwork",
     "label": "Select area",
-    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. For subject or edge refinement invoke find-area (a background job). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it",
+    "description": "Select an area: shapes or marks; add, subtract, intersect, grow, feather, invert. For the magic wand, a colour, the subject or edge refinement invoke find-area (a job, as it reads a picture). Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: find-area at, use-selection fill. Cut-out: find-area subject, use-selection mask. look outlines it",
     "operation": "Document",
     "params": [
       {
@@ -3269,47 +3467,9 @@
         }
       },
       {
-        "name": "at",
-        "ty": "array",
-        "description": "Magic wand `[x, y]`: like colour touching it.",
-        "schema": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "number"
-          },
-          "minItems": 2,
-          "maxItems": 2
-        }
-      },
-      {
-        "name": "subject",
-        "ty": "boolean",
-        "description": "The photo's main subject, found on-device (with at: the object there).",
-        "schema": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
-      },
-      {
-        "name": "refine",
-        "ty": "number",
-        "description": "Units: fit the edge to the picture, soft for fur (subject: 6px).",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      {
         "name": "matte",
         "ty": "object",
-        "description": "Set by subject/refine.",
+        "description": "Set by find-area's subject or refine.",
         "schema": {
           "type": [
             "object",
@@ -3334,39 +3494,6 @@
             }
           },
           "additionalProperties": false
-        }
-      },
-      {
-        "name": "colour",
-        "ty": "text",
-        "description": "`#rrggbb`, everywhere.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      {
-        "name": "tolerance",
-        "ty": "number",
-        "description": "0..1, default 0.15.",
-        "schema": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      {
-        "name": "layer",
-        "ty": "text",
-        "description": "at or colour: on this layer alone, not as all show.",
-        "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       {
@@ -3709,7 +3836,7 @@
     "action": "field-edit",
     "resource_kind": "canvas.artwork.layers",
     "label": "Edit a field of this item",
-    "description": "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+    "description": "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \"upsert-item\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \"end\" | {after: id} | {before: id}.",
     "operation": "Document",
     "params": [
       {
@@ -3737,6 +3864,7 @@
                 "insert",
                 "remove",
                 "insert-item",
+                "upsert-item",
                 "remove-item",
                 "move-to",
                 "remove-key",
@@ -3746,6 +3874,8 @@
                 "remove-row",
                 "remove-column",
                 "settle",
+                "react",
+                "unreact",
                 "rich"
               ]
             }
@@ -3801,28 +3931,10 @@
     ]
   },
   {
-    "resource": "tilo.control:canvas-add-picture",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Add picture",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
     "resource": "tilo.control:canvas-dock-fold",
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Fold the layers and history away",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:canvas-export-title",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Export a picture",
     "description": null,
     "operation": "View",
     "params": []
@@ -3896,42 +4008,6 @@
     ]
   },
   {
-    "resource": "tilo.control:canvas-zoom-fit",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Fit to window",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:canvas-zoom-in",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Zoom in",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:canvas-zoom-out",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Zoom out",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:nav-shell-inspector",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Hide inspector",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
     "resource": "tilo.host:search",
     "action": "open",
     "resource_kind": "tilo.host.search",
@@ -3960,104 +4036,5 @@
         "description": "A system action the app prepares for the person to confirm, as JSON: {\"action\": id, \"arguments\": {name: text}}"
       }
     ]
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dadd%2Dpicture",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dexport%2Dtitle",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dmenu",
-    "action": "activate",
-    "resource_kind": "tilo.ui.control",
-    "label": "Activate",
-    "description": null,
-    "operation": "Effect",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dmenu",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Dfit",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Din",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Dout",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dhistory",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dinspector",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Aredo",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Aundo",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
   }
 ]

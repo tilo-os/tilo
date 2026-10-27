@@ -198,14 +198,12 @@ fn longest_text(object: &Map<String, Value>) -> Option<(&String, &str)> {
         .filter(|(_, text)| text.chars().count() > PAGE_CHARS / 2)
 }
 
-/// Characters `from..to` of `text`.
 fn slice_chars(text: &str, from: usize, to: usize) -> &str {
     let byte = |n: usize| text.char_indices().nth(n).map_or(text.len(), |(at, _)| at);
     let start = byte(from);
     text.get(start..byte(to).max(start)).unwrap_or_default()
 }
 
-/// The [`READ_RESULT`] tool definition.
 #[must_use]
 pub fn read_result_definition() -> agent_provider_config::protocol::ToolDefinition {
     agent_provider_config::protocol::ToolDefinition {

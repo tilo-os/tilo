@@ -191,6 +191,9 @@ impl crate::search::SearchProvider for LazyProbe {
     fn action_directory_generation(&self) -> Option<u64> {
         Some(0)
     }
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        Some(tilo_actions::ActionAddress::new("bound:sealed", "open"))
+    }
     fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
         match query {
             "sealed" => vec![crate::search::SearchResult::for_action(
@@ -249,14 +252,7 @@ impl crate::search::SearchProvider for LazyProbe {
         })
     }
 }
-impl Widget for Probe {
-    crate::provides!(
-        dyn crate::undo::CommittedActions,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
-        dyn crate::search::capability::SearchSource
-    );
-
+impl crate::semantic_document_read::SemanticReaders for Probe {
     fn semantic_readers(
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
@@ -274,100 +270,17 @@ impl Widget for Probe {
             &[]
         }
     }
+}
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["bound.follow-up", "bound.view"]
-    }
-    #[allow(
-        clippy::panic_in_result_fn,
-        reason = "probe asserts canonical admission before returning the toolkit result"
-    )]
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
-            return Ok(None);
-        };
-        if type_id == "bound.view" {
-            if COMPOUND_MODE.get() == 1 {
-                self.actions
-                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
-            }
-            Self::capture("bound-view");
-            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        assert_eq!(type_id, "bound.follow-up");
-        assert_eq!(path, &ROOT);
-        assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
-            Some("child")
-        );
-        let mode = COMPOUND_MODE.get();
-        if matches!(mode, 3 | 4 | 6) {
-            doc.document_mut().put(ROOT, "raw-before", true).unwrap();
-        }
-        match mode {
-            2 | 3 => {}
-            7 => self.actions.dispatch_with_context(
-                doc.document_mut(),
-                "bound.apply",
-                &FollowUp,
-                tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
-            ),
-            9 | 10 => {
-                assert_eq!(
-                    self.actions
-                        .try_dispatch(
-                            doc.document_mut(),
-                            "bound.empty",
-                            &EmptyFollowUp { refuse: mode == 10 }
-                        )
-                        .is_err(),
-                    mode == 10
-                );
-            }
-            11 => {
-                doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
-                panic!("controlled compound unwind");
-            }
-            _ => self
-                .actions
-                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
-        }
-        if matches!(mode, 5 | 6) {
-            doc.document_mut().put(ROOT, "raw-after", true).unwrap();
-        }
-        Self::capture("mutable-operation");
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if !cancellation_requested {
-            return None;
-        }
-        assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
-            Some("child")
-        );
-        if !PUBLICATION_NORMAL_POLL.get() {
-            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
-        }
-        Self::capture("mutable-cancel");
-        Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: None,
-        })
-    }
+impl Widget for Probe {
+    crate::provides!(
+        dyn crate::undo::CommittedActions,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::semantic_document_read::SemanticReaders,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = crate::doc::document_ref(doc, path);
@@ -450,6 +363,104 @@ impl Widget for Probe {
         doc.document_mut().put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
+    }
+}
+
+impl crate::widget::ResourceOperations for Probe {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["bound.follow-up", "bound.view"]
+    }
+
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "probe asserts canonical admission before returning the toolkit result"
+    )]
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
+        if type_id == "bound.view" {
+            if COMPOUND_MODE.get() == 1 {
+                self.actions
+                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
+            }
+            Self::capture("bound-view");
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        assert_eq!(type_id, "bound.follow-up");
+        assert_eq!(path, &ROOT);
+        assert_eq!(
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            Some("child")
+        );
+        let mode = COMPOUND_MODE.get();
+        if matches!(mode, 3 | 4 | 6) {
+            doc.document_mut().put(ROOT, "raw-before", true).unwrap();
+        }
+        match mode {
+            2 | 3 => {}
+            7 => self.actions.dispatch_with_context(
+                doc.document_mut(),
+                "bound.apply",
+                &FollowUp,
+                tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
+            ),
+            9 | 10 => {
+                assert_eq!(
+                    self.actions
+                        .try_dispatch(
+                            doc.document_mut(),
+                            "bound.empty",
+                            &EmptyFollowUp { refuse: mode == 10 }
+                        )
+                        .is_err(),
+                    mode == 10
+                );
+            }
+            11 => {
+                doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
+                panic!("controlled compound unwind");
+            }
+            _ => self
+                .actions
+                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
+        }
+        if matches!(mode, 5 | 6) {
+            doc.document_mut().put(ROOT, "raw-after", true).unwrap();
+        }
+        Self::capture("mutable-operation");
+        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !cancellation_requested {
+            return None;
+        }
+        assert_eq!(
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            Some("child")
+        );
+        if !PUBLICATION_NORMAL_POLL.get() {
+            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+        }
+        Self::capture("mutable-cancel");
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        })
     }
 }
 
@@ -1993,7 +2004,6 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             assert!(callbacks <= progress.inspected, "unaccounted provider work");
             progress
         };
-        // A completed-query redraw starts at most one finite validation pass.
         let mut progress = step(palette);
         ticks = 0;
         while progress.pending {
@@ -2297,6 +2307,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                         doc,
                         &target,
                         fixture.app.actions.action_transport.as_mut(),
+                        None,
                         crate::bound_dispatch::ResourceActionRequest {
                             argument: None,
                             arguments: None,
@@ -2525,6 +2536,25 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     );
 }
 
+/// The host opens a hosted component's anchored hits (a video, a search of
+/// the app's service) through the `open` its provider names, so the
+/// component's provider must say which `open` that is.
+#[test]
+fn a_hosted_components_provider_names_the_open_its_hits_go_through() {
+    let fixture = ActionFixture::new();
+    let opens: Vec<_> = crate::widget::published_search_providers(fixture.app.root_widget.as_ref())
+        .iter()
+        .map(|provider| provider.open_action())
+        .collect();
+    assert!(!opens.is_empty());
+    assert!(
+        opens
+            .iter()
+            .all(|open| open == &Some(tilo_actions::ActionAddress::new("bound:sealed", "open"))),
+        "{opens:?}"
+    );
+}
+
 /// Inside the Tilo shell the app's window does not present search: a
 /// component's request to open it is handed to the host as an intent, and
 /// the host's tile drains it.
@@ -2646,6 +2676,10 @@ fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
 #[cfg(unix)]
 #[path = "responsive_nav_publication_tests.rs"]
 mod responsive_nav_publication_tests;
+
+#[cfg(unix)]
+#[path = "own_invocation_order_tests.rs"]
+mod own_invocation_order_tests;
 
 fn hosted_behaviour(
     create: crate::application::ComponentFactory,

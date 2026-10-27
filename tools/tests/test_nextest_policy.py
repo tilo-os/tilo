@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -13,7 +12,8 @@ REPO = Path(__file__).parents[2]
 NEXTEST = REPO / ".config" / "nextest.toml"
 FILTERS = REPO / ".config" / "nextest-filters.toml"
 SHELL = REPO / "crates" / "session" / "shell" / "src"
-WORKFLOWS = REPO / ".forgejo" / "workflows"
+T_NEXTEST = REPO / "tools" / "ci" / "t-nextest.sh"
+T_TOML = REPO / "t.toml"
 
 
 def native_4k_tests() -> set[str]:
@@ -39,29 +39,6 @@ def effective_overrides(config: dict, profile_name: str) -> list[dict]:
 
 
 class NextestPolicyTests(unittest.TestCase):
-    def test_cleanup_keeps_executable_shared_libraries_for_later_cargo_steps(self) -> None:
-        workflow = (WORKFLOWS / "check.yml").read_text(encoding="utf-8")
-        cleanup = workflow.split("- name: Free the test executables", 1)[1].split("- name:", 1)[0]
-        command = "\n".join(line.removeprefix("          ")
-                            for line in cleanup.split("run: |\n", 1)[1].splitlines())
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            deps = root / "target/debug/deps"
-            deps.mkdir(parents=True)
-            names = {"app-test-123": 0o755, "libderive-123.so": 0o755,
-                     "libnative.so.1": 0o755, "libapp-123.rlib": 0o644}
-            for name, mode in names.items():
-                path = deps / name
-                path.write_bytes(b"fixture")
-                path.chmod(mode)
-            output = root / "outputs"
-            subprocess.run(["bash", "-c", command], cwd=root, check=True,
-                           env={"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": str(output)})
-            self.assertEqual(output.read_text(), "shared-libraries=2\n")
-            self.assertFalse((deps / "app-test-123").exists())
-            for name in ("libderive-123.so", "libnative.so.1", "libapp-123.rlib"):
-                self.assertTrue((deps / name).exists(), name)
-
     def test_ci_does_not_retry(self) -> None:
         ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
         self.assertEqual(ci.get("retries", 0), 0)
@@ -141,30 +118,15 @@ class NextestPolicyTests(unittest.TestCase):
         normalised = {name: " ".join(value.split()) for name, value in filters.items()}
         self.assertEqual(len(set(normalised.values())), 1, normalised)
 
-    def test_workflows_read_filters_from_the_tested_tree(self) -> None:
-        # A pull request is tested on top of main with its own workflow file;
-        # a filterset copied into that file names packages main may have
-        # renamed, and nextest rejects a package() that matches nothing.
-        for name in ("check.yml", "ci-nightly.yml", "dev-visual-baselines.yml"):
-            workflow = (WORKFLOWS / name).read_text(encoding="utf-8")
-            self.assertNotRegex(workflow, r"(?m)^\s*(GOLDEN|PUSH_ONLY|QUARANTINE)_FILTER:", name)
-            self.assertIn("python3 tools/ci/nextest_filters.py >> \"$GITHUB_ENV\"", workflow, name)
+    def test_checks_read_filters_from_the_tested_tree(self) -> None:
+        # A filterset copied into t.toml would name packages a later tree may
+        # have renamed, and nextest rejects a package() that matches nothing.
+        self.assertNotRegex(T_TOML.read_text(encoding="utf-8"), r"(?m)^\s*(GOLDEN|PUSH_ONLY|MICRO_VM)_FILTER\s*=")
+        self.assertIn("import nextest_filters", T_NEXTEST.read_text(encoding="utf-8"))
         output = subprocess.run([sys.executable, str(REPO / "tools/ci/nextest_filters.py")],
                                 check=True, capture_output=True, text=True).stdout
         names = [line.split("=", 1)[0] for line in output.splitlines()]
-        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "QUARANTINE_FILTER"])
+        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "MICRO_VM_FILTER"])
 
 if __name__ == "__main__":
     unittest.main()
-
-    def test_required_shards_skip_quarantined_tests_on_every_event(self) -> None:
-        # A quarantine names its tracking issue and is skipped on pull
-        # requests and on pushes to main alike, never only on one of them.
-        source = FILTERS.read_text(encoding="utf-8")
-        quarantine = tomllib.loads(source)["quarantine"]
-        self.assertTrue(quarantine.strip())
-        comment = source.split("quarantine =", 1)[0].rsplit("\n\n", 1)[-1]
-        self.assertRegex(comment, r"#\d+", "a quarantine names its tracking issue")
-        workflow = (WORKFLOWS / "check.yml").read_text(encoding="utf-8")
-        step = workflow.split("- name: Test shard ${{ matrix.shard }}", 1)[1].split("- name:", 1)[0]
-        self.assertIn('-E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)$', step)

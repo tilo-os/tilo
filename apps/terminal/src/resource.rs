@@ -147,6 +147,9 @@ pub struct Run {
     pub truncated: bool,
     /// The tool whose parser read it.
     pub tool: Atom,
+    /// It changed something a later action can put back, so the history
+    /// can undo it ([`crate::undoability`]).
+    pub undoable: bool,
     /// What its parsers found.
     pub items: Vec<RunItem>,
 }
@@ -187,6 +190,9 @@ pub struct Finished {
     pub output_len: u64,
     pub truncated: bool,
     pub tool: String,
+    /// Whether what it changed can be undone later: read from the command
+    /// when it ended ([`crate::undoability`]).
+    pub undoable: bool,
     pub items: Vec<RunItem>,
     /// The request it carried out, if `run` asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,6 +356,7 @@ impl Terminal {
                 output,
                 truncated: run.truncated,
                 tool: Atom(run.tool),
+                undoable: run.undoable,
                 items,
             },
         );
@@ -488,12 +495,12 @@ pub enum TerminalEffect {
     /// Inspect editable field
     ///
     /// Participant-private native editor metadata; never the surrounding buffer.
-    #[effect(returns, device_only, kind = "read")]
+    #[effect(returns, kind = "read")]
     InspectEditor,
     /// Replace editor selection
     ///
     /// Literally replace the original qualified editor selection without execution.
-    #[effect(job, device_only, destructive)]
+    #[effect(job, destructive)]
     ReplaceEditorSelection {
         #[param("Original local terminal session")]
         session: String,
@@ -623,6 +630,9 @@ pub struct TerminalShell;
 impl ResourceApp for TerminalShell {
     type Resource = Terminal;
     const ID: &'static str = "so.tilo.terminal";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
+    // Each window is a session of its own, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Terminal";
     const ICON: Option<&'static str> = Some("terminal");
 
@@ -654,6 +664,8 @@ impl ResourceApp for TerminalShell {
         // service permission or connection the shell lent; in its own process, locally.
         let lent = cx.take_lent::<crate::HostedProcessServices>();
         let deferred = cx.take_lent::<crate::HostedSessionSource>().is_some();
+        // The window the shell shows a tab of it in, in the shell's process.
+        let hosted_window = cx.take_lent::<ui::hosted_window::HostedWindow>();
         let widget = if cx.read_only() {
             TerminalWidget::spawn_headless()
         } else if deferred {
@@ -678,6 +690,12 @@ impl ResourceApp for TerminalShell {
             Some(content) => widget.with_content(content),
             None => widget,
         };
+        // A live terminal is the app of its window: the window's title says
+        // where its shell runs, and the window closes when the shell exits.
+        // A past version shows a terminal, not a window of one.
+        if cx.mode().is_live() {
+            widget.show_in_window(hosted_window);
+        }
         let queue = crate::runs::RunQueue::default();
         widget.run_through(queue.clone());
         let owner = queue.clone();
@@ -876,3 +894,26 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::TerminalShell::scenarios() {
+            let mut app = TestApp::<super::TerminalShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

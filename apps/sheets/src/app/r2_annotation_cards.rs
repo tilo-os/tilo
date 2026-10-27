@@ -1,4 +1,5 @@
-//! Alignment regressions for the docked chart and comment annotation cards.
+//! Alignment regressions for the docked chart cards and the comment card
+//! that floats beside its cell.
 //!
 //! The card rows come from measured line boxes and spacing tokens
 //! ([`ChromeMetrics::comment_rows`], [`ChromeMetrics::plot_h`]) and the
@@ -9,7 +10,6 @@
 use super::tests::{measured_app, paint_frame};
 use super::*;
 
-/// Annotation card rows stay clear at every scale and painted targets follow the measured rows.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -42,8 +42,8 @@ fn annotation_cards_keep_rows_and_targets_clear() {
                 "the card ends with its action row"
             );
             assert!(
-                (m.plot_h() - m.lh_caption - m.s1 - m.s16).abs() < 0.01,
-                "a plot is content-sized under its legend's line"
+                (m.plot_h() - 2.0 * (m.lh_caption + m.s1) - m.s16).abs() < 0.01,
+                "a plot is content-sized between its legend's line and its category labels"
             );
             heights.push(rows.height);
         }
@@ -51,42 +51,63 @@ fn annotation_cards_keep_rows_and_targets_clear() {
     }
 
     // Case `painted_annotation_targets_follow_the_measured_rows`.
-    // On the production paint path the dock stands under the grid, the cards
-    // stand inside it clear of each other and of the sheet, and the
-    // registered action targets sit inside their card, below its title, each
-    // at least a small control tall and clear of each other.
+    // On the production paint path the dock stands under the grid with the
+    // chart in it; the comment is not in the dock but floats beside its
+    // cells once one of them is selected, never over them. The registered
+    // action targets sit inside their card, below its title, each at least
+    // a small control tall and clear of each other.
     {
         // Tall enough at 2× text that the dock is not given up for the grid.
         let (mut app, mut tr, theme) = measured_app(1800.0, 1600.0, 2.0);
         seed_annotations(&mut app);
         app.managed_chart = Some("c1".into());
+        app.grid.select_only((1, 1));
         paint_frame(&mut app, &mut tr, &theme);
 
         let m = app.metrics.clone();
-        assert_eq!(app.dock_cards.len(), 2, "the comment and the chart");
+        assert_eq!(
+            app.dock_cards.len(),
+            1,
+            "the chart; the comment is on its cells"
+        );
         assert!(
             (app.dock_rect.y1 - app.tabs_rect.y0).abs() < 0.01
                 && (app.grid_rect.y1 - app.dock_rect.y0).abs() < 0.01,
             "the dock stands between the grid and the tabs"
         );
-        for (_, card) in &app.dock_cards {
-            assert!(
-                card.y0 >= app.grid_rect.y1 && card.y1 <= app.dock_rect.y1 - m.s3 + 0.01,
-                "card {card:?} is not inside the dock {:?}",
-                app.dock_rect
-            );
-        }
-        let cards: Vec<Rect> = app.dock_cards.iter().map(|(_, rect)| *rect).collect();
-        for pair in cards.windows(2) {
-            assert!(pair[0].x1 <= pair[1].x0 + 0.01, "the cards overlap");
-        }
+        let chart_card = app.dock_cards[0].1;
+        assert!(
+            chart_card.y0 >= app.grid_rect.y1 && chart_card.y1 <= app.dock_rect.y1 - m.s3 + 0.01,
+            "card {chart_card:?} is not inside the dock {:?}",
+            app.dock_rect
+        );
 
-        // The comment card is the first in the row.
-        let comment = cards[0];
+        let thread = app
+            .open_thread()
+            .cloned()
+            .expect("selecting a commented cell opens its thread");
+        let comment = app
+            .comment_card_rect(&thread)
+            .expect("the commented cells are in view");
+        let cells = app.thread_rect(&thread);
+        assert!(
+            comment.intersect(cells).is_zero_area(),
+            "the card {comment:?} covers its cells {cells:?}"
+        );
+        assert!(
+            (comment.y0 - cells.y0).abs() < 0.01 || comment.y0 >= cells.y1,
+            "level with its cells, or under cells too wide to stand beside"
+        );
+        let body = app.grid.body_rect();
+        assert!(
+            comment.x0 >= body.x0 && comment.x1 <= body.x1 && comment.y1 <= body.y1,
+            "the card {comment:?} stays on the sheet {body:?}"
+        );
+
         let (comment_buttons, comment_card): (Vec<_>, Vec<_>) = app
             .annotation_clicks
             .iter()
-            .filter(|(rect, _)| rect.center().x < comment.x1)
+            .filter(|(rect, _)| comment.contains(rect.center()))
             .partition(|(rect, _)| rect.height() < 3.0 * m.control_h);
         assert_eq!(
             comment_buttons.len(),
@@ -149,25 +170,37 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         for rect in &chart_buttons {
             assert!(rect.height() >= m.control_h - 0.01);
             assert!(
-                rect.y0 >= cards[1].y0 + m.lh_label,
+                rect.y0 >= chart_card.y0 + m.lh_label,
                 "chart action {rect:?} sits under the 2x title"
             );
         }
+
+        // Selecting a cell without a comment closes the thread.
+        app.grid.select_only((0, 6));
+        paint_frame(&mut app, &mut tr, &theme);
+        assert!(app.open_thread().is_none());
+        assert!(
+            app.annotation_clicks
+                .iter()
+                .all(|(rect, _)| app.dock_rect.contains(rect.center())),
+            "only the dock's chart answers"
+        );
     }
 
     // Case `annotations_never_cover_the_sheet`.
-    // At the narrow shot size every card still stands under the grid, and in
-    // a window too short to give the height up there is no dock at all: the
-    // annotations wait rather than cover cells.
+    // At the narrow shot size every chart card still stands under the grid,
+    // and in a window too short to give the height up there is no dock at
+    // all: the charts wait rather than cover cells.
     {
         let (mut app, mut tr, theme) = measured_app(800.0, 600.0, 1.0);
         seed_annotations(&mut app);
+        app.sheet_charts.push(second_chart());
         app.sheet_charts.push(crate::workbook::ChartSnapshot {
-            id: "c2".into(),
-            title: "Monthly total".into(),
+            id: "c3".into(),
+            title: "Running total".into(),
             kind: crate::workbook::ChartKind::Line,
-            start: (1, 6),
-            end: (3, 6),
+            start: (1, 7),
+            end: (3, 7),
         });
         app.relayout();
         paint_frame(&mut app, &mut tr, &theme);
@@ -188,6 +221,7 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         // sideways to the ones past its edge; a target never leaves the dock.
         let (mut phone, mut tr, theme) = measured_app(390.0, 844.0, 1.0);
         seed_annotations(&mut phone);
+        phone.sheet_charts.push(second_chart());
         phone.relayout();
         paint_frame(&mut phone, &mut tr, &theme);
         assert_eq!(phone.dock_cards.len(), 2, "every card has a place");
@@ -223,7 +257,19 @@ fn annotation_cards_keep_rows_and_targets_clear() {
     }
 }
 
-/// A comment thread and a chart on the sheet, as the document would supply.
+/// Another chart on the sheet, to fill the dock.
+fn second_chart() -> crate::workbook::ChartSnapshot {
+    crate::workbook::ChartSnapshot {
+        id: "c2".into(),
+        title: "Monthly total".into(),
+        kind: crate::workbook::ChartKind::Line,
+        start: (1, 6),
+        end: (3, 6),
+    }
+}
+
+/// A comment thread and a chart on the sheet, as the document would supply,
+/// with a cell outside the thread selected.
 fn seed_annotations(app: &mut SheetsApp) {
     app.sheet_charts = vec![crate::workbook::ChartSnapshot {
         id: "c1".into(),
@@ -241,5 +287,7 @@ fn seed_annotations(app: &mut SheetsApp) {
         resolved: true,
         replies: Vec::new(),
     }];
+    // A cell away from the comment: its thread starts closed.
+    app.grid.select_only((0, 6));
     app.relayout();
 }

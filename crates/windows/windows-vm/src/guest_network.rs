@@ -415,7 +415,6 @@ mod tests {
 
     #[test]
     fn guest_network_leases_parse_strictly_and_hide_their_tokens() {
-        // Phase `rejects_empty_or_unsafe_canonical_nethosts`.
         {
             assert!(matches!(
                 GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), &[], false),
@@ -430,7 +429,6 @@ mod tests {
                 Err(GuestNetworkError::InvalidHost(_))
             ));
         }
-        // Phase `reads_hosts_through_the_one_nethost_grammar`.
         {
             // An address is not a host, for the guest as for apps and
             // environments.
@@ -447,13 +445,11 @@ mod tests {
                     "{address} must not be leased"
                 );
             }
-            // The domain spelling apps and environments accept is accepted.
             assert_eq!(
                 lease_policy(&["*.example.test".into()]).unwrap(),
                 EgressPolicy::from_grants([".example.test"])
             );
         }
-        // Phase `binding_never_exposes_its_bearer_token_through_debug`.
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
@@ -467,7 +463,6 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::LOCALHOST)
             );
         }
-        // Phase `parser_requires_connect_and_a_full_lease_token`.
         {
             assert!(
                 parse_connect(
@@ -495,7 +490,6 @@ mod tests {
 
     #[test]
     fn tunnels_register_carry_bytes_and_close_on_revocation() {
-        // Phase `active_tunnel_registration_is_removed_when_the_copy_finishes`.
         {
             let tunnels = ActiveTunnels::default();
             let (client, server) = connected_pair();
@@ -505,7 +499,6 @@ mod tests {
             drop(registration);
             assert_eq!(tunnels.len(), 0, "completed tunnels retain no descriptors");
         }
-        // Phase `revoked_lease_rejects_late_tunnel_registration`.
         {
             let tunnels = ActiveTunnels::default();
             let shutdown = AtomicBool::new(true);
@@ -513,7 +506,6 @@ mod tests {
             assert!(tunnels.register(client, server, &shutdown).is_err());
             assert_eq!(tunnels.len(), 0);
         }
-        // Phase `a_tunnel_carries_bytes_both_ways_and_revocation_closes_it`.
         {
             let service = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = service.local_addr().unwrap().port();
@@ -525,13 +517,13 @@ mod tests {
             .unwrap();
             let mut client = TcpStream::connect(proxy.binding().endpoint).unwrap();
             client
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             send_connect(&mut client, port, &proxy.binding().token);
             assert!(read_response(&mut client).starts_with("HTTP/1.1 200"));
             let (mut upstream, _) = service.accept().unwrap();
             upstream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
 
             client.write_all(b"ping").unwrap();
@@ -554,7 +546,6 @@ mod tests {
                 result => panic!("active tunnel survived revoke: {result:?}"),
             }
         }
-        // Phase `revocation_interrupts_an_active_tunnel_immediately`.
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
@@ -568,7 +559,7 @@ mod tests {
                 .register(client, peer.try_clone().unwrap(), &proxy.shutdown)
                 .unwrap();
             proxy.revoke();
-            peer.set_read_timeout(Some(Duration::from_millis(250)))
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut byte = [0_u8; 1];
             match peer.read(&mut byte) {
@@ -594,6 +585,21 @@ mod tests {
                 .as_bytes(),
             )
             .unwrap();
+    }
+
+    /// Connections waiting to be accepted by the IPv4 loopback listener on
+    /// `port`, as the kernel counts them.
+    fn accept_queue(port: u16) -> Option<u32> {
+        let table = std::fs::read_to_string("/proc/net/tcp").ok()?;
+        let local = format!("0100007F:{port:04X}");
+        table.lines().skip(1).find_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // A listening socket ("0A") counts its accept queue as rx_queue.
+            (fields.get(1) == Some(&local.as_str()) && fields.get(3) == Some(&"0A"))
+                .then(|| fields.get(4)?.split_once(':'))
+                .flatten()
+                .and_then(|(_, queued)| u32::from_str_radix(queued, 16).ok())
+        })
     }
 
     /// Read a response head from the relay.
@@ -623,33 +629,34 @@ mod tests {
         // The one slot: a tunnel that stays open.
         let mut first = TcpStream::connect(proxy.binding().endpoint).unwrap();
         first
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         send_connect(&mut first, port, &token);
         assert!(read_response(&mut first).starts_with("HTTP/1.1 200"));
         let (held, _) = service.accept().unwrap();
 
         // The kernel queues a second connection; the relay leaves it there.
+        // A relay accepting past its limit would take it off the queue as
+        // soon as it arrived.
         let mut second = TcpStream::connect(proxy.binding().endpoint).unwrap();
         send_connect(&mut second, port, &token);
-        second
-            .set_read_timeout(Some(Duration::from_millis(300)))
-            .unwrap();
+        let relay_port = proxy.binding().endpoint.port();
+        tilo_test_env::wait_until("the second connection to wait in the backlog", || {
+            accept_queue(relay_port) == Some(1)
+        });
+        second.set_nonblocking(true).unwrap();
         let mut byte = [0_u8; 1];
         match second.read(&mut byte) {
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             result => panic!("a connection past the limit was served: {result:?}"),
         }
+        second.set_nonblocking(false).unwrap();
 
         // Closing the tunnel frees the slot; the waiting CONNECT is served.
         drop(first);
         drop(held);
         second
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         assert!(read_response(&mut second).starts_with("HTTP/1.1 200"));
     }

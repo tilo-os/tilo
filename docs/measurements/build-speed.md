@@ -70,3 +70,68 @@ files `it` referenced were missing, and a hit replayed from another worktree
 points at that worktree's paths. `packed` would write a `.dwp` per binary,
 duplicating the data again.
 
+
+## OS images on t
+
+The OS image is built as a chain of cached t checks rather than one image
+build (`os/image/layers.toml`, written into `t.toml` by
+`tools/ci/os/os_toml.py`). The workspace compiles outside any image build
+(`os-compile-<arch>`, `os/image/compile.sh`) with t's compiler cache; each
+layer action builds its pieces of `os/image/` over the layer below and keeps
+only its own layer blobs (`tools/ci/os/oci_layers.py take`); `os-image-<arch>`
+composes the blobs into an OCI layout without rebuilding anything. A change
+reruns only the checks whose inputs it changes, and the dev and board images
+are layered over the OS image's layout.
+
+Per-check times (from each check's `t: used … in` line), first after an input
+change to every layer ("cold"), then after a comment change in one shell crate
+("warm"), on a shared and busy cluster:
+
+| check | x86_64 cold | x86_64 warm | aarch64 cold | aarch64 warm |
+|---|---|---|---|---|
+| image-rpms | 17m22s | cached | 4m20s | cached |
+| builder | 11m12s | cached | 3m53s | cached |
+| tools | 2m59s | cached | 7m08s | cached |
+| compile | 9m30s | 10m39s | 6m55s | 9m39s |
+| compile-dev | 4m15s | 9m28s | 3m35s | not recorded |
+| layer packages | 16m30s | cached | 5m04s | cached |
+| layer kernel | 3m58s | cached | 2m15s | cached |
+| layer system | 5m33s | cached | 2m21s | cached |
+| layer trust | 2m18s | cached | 2m16s | cached |
+| layer binaries, rootfs, boot | 20m31s | 11m00s | 10m17s | 11m09s |
+| compose | 15s | not recorded | 33s | not recorded |
+| dev image | 10m29s | 6m35s | 4m58s | 4m40s |
+| board image (Orange Pi 3B) | | | 7m48s | 7m27s |
+
+The binaries, rootfs and boot pieces were then merged into one `image` layer
+action, which removes two loads and two pushes of the multi-gigabyte
+intermediate images (9m09s on aarch64).
+
+A warm OS image is the compile plus the `image` layer plus compose: about 21
+minutes on x86_64; the dev image adds 6–7 minutes, the board image 7–8.
+
+A second warm run, after the same kind of change on a later tree, landed on
+build nodes that had just replaced the ones the cold run used:
+
+| check | x86_64 | aarch64 |
+|---|---|---|
+| compile | 22m12s (4% of compiles from the cache) | 15m35s (6%) |
+| compile-dev | 17m42s | 11m33s |
+| image layer | 33m49s (build 19m39s at 0.6 cores, push 8m22s) | 14m44s |
+| compose | 0.3 s | 0.5 s |
+| dev image | no x86_64 node left to run it | 5m05s |
+| board image (Orange Pi 3B) | | 6m34s |
+
+What remains above the 20-minute target:
+
+- The compiler cache and the build snapshots live on each node, so a node
+  that rotates out takes them along and the next compile is cold again (4–6%
+  hits above, 75–88% on a node that kept its cache). Without a warm snapshot
+  the compile rebuilds the changed crate's dependents at fat LTO (10 minutes
+  with a warm cache); with a snapshot the same compile took 40 s to 1m43s.
+- Every layer action pays fixed costs: starting the assembler (15–35 s),
+  loading the layers below (30–100 s), verifying its inputs (15–30 s) and
+  recompressing the image it pushes (1–3 minutes).
+- The board image pushes two complete zstd archives.
+- Cluster contention: the same checks took up to ten times as long in runs
+  that queued behind other work.

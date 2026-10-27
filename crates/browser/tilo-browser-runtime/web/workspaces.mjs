@@ -42,6 +42,14 @@
  * is the room's own admission again, and one that refuses this browser is
  * marked as such rather than reopened.
  *
+ * Each remembered room is pinned to the host that held it (its device key).
+ * A room lives in its host's state, so once another host answers at that
+ * origin (it was set up again on fresh state) the room is gone, and this
+ * browser forgets it (`forgetGoneRooms`) rather than offer a workspace that
+ * can never open. Only that answer, from the origin itself, forgets one: a
+ * host that cannot be reached, or fails, says nothing about its rooms, so
+ * they stay, marked as not opening last time (`settleFailedRoom`).
+ *
  * Spectating (the homepage embed): the page makes a device key in memory
  * only and asks the host to certify it as the room's one read-only
  * spectator person (`POST <admission>spectate`), then connects through the
@@ -52,9 +60,11 @@
  * behind.
  */
 import {AdmissionError} from './admission.mjs';
-import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice, withCustody} from './peer.mjs';
+import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {memberText} from './json-text.mjs';
+import {backoffDelay} from './reconnect.mjs';
+import {hostUnreachable} from './session-refusal.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
 const ADJECTIVES = ['Brave', 'Calm', 'Clever', 'Curious', 'Eager', 'Gentle', 'Happy', 'Jolly', 'Kind', 'Lively', 'Lucky', 'Merry', 'Nimble', 'Quiet', 'Swift', 'Witty'];
@@ -97,32 +107,50 @@ const readJson = (store, key, fallback) => {
   try { return JSON.parse(store?.getItem(key) ?? 'null') ?? fallback; } catch { return fallback; }
 };
 const sameRoom = (a, b) => originOf(a.origin) === originOf(b.origin) && a.room === b.room;
+const HOST_DEVICE = /^[0-9a-f]{64}$/;
 const validEntry = entry => {
   try { return typeof entry?.room === 'string' && entry.room && Boolean(originOf(entry.origin)); } catch { return false; }
 };
+/** A remembered room names the host that held it: one that does not is not
+ * offered, as nothing could ever tell whether it still exists. */
+const keptEntry = entry => validEntry(entry) && HOST_DEVICE.test(entry.hostDevice ?? '');
 const readEntered = store => {
   const list = readJson(store, ENTERED, []);
-  return Array.isArray(list) ? list.filter(validEntry) : [];
+  return Array.isArray(list) ? list.filter(keptEntry) : [];
 };
 const writeEntered = (store, list) => store?.setItem(ENTERED, JSON.stringify(list.slice(0, MAX_ENTERED)));
+
+/** The device key (hex) of the host whose certificate is `hostCert`, or
+ * `null` when it names none. */
+export function hostDeviceOf(hostCert) {
+  const key = hostCert?.device_public_key;
+  const text = typeof key === 'string' ? key : Array.from(key ?? [], byte => Number(byte).toString(16).padStart(2, '0')).join('');
+  return HOST_DEVICE.test(text) ? text : null;
+}
 
 /**
  * The rooms this browser entered as a member (an invitation it redeemed, an
  * account it holds, a device it paired), most recently opened first:
- * `{origin, room, name, unavailable}`. `unavailable` says the last attempt
- * to open it failed: the host refused this browser, or could not be reached.
+ * `{origin, room, hostDevice, name, unavailable}`. `hostDevice` is the host
+ * that held the room when it was entered; `unavailable` says the last
+ * attempt to open it failed without the host saying it is gone: the host
+ * refused this browser, or could not be reached.
  */
 export function enteredWorkspaces(store = globalThis.localStorage) {
-  return readEntered(store).map(({origin, room, name = null, unavailable = false}) => ({
-    origin: originOf(origin), room, name: typeof name === 'string' && name ? name : null, unavailable: unavailable === true,
+  return readEntered(store).map(({origin, room, hostDevice, name = null, unavailable = false}) => ({
+    origin: originOf(origin), room, hostDevice, name: typeof name === 'string' && name ? name : null, unavailable: unavailable === true,
   }));
 }
 
-/** Remember that this browser opened the room `{origin, room}` as a member,
- * under `name` when one is known (an earlier name stays otherwise). */
-export function rememberEntered({origin, room, name = null}, store = globalThis.localStorage) {
-  const entry = {origin: originOf(origin), room};
-  if (!validEntry(entry)) return;
+/** Remember that this browser opened the room `{origin, room}`, held by the
+ * host `hostDevice`, as a member, under `name` when one is known (an earlier
+ * name stays otherwise). Rooms remembered at the origin under another host
+ * are gone with it, and forgotten. */
+export function rememberEntered({origin, room, hostDevice, name = null}, store = globalThis.localStorage) {
+  let entry;
+  try { entry = {origin: originOf(origin), room, hostDevice}; } catch { return; }
+  if (!keptEntry(entry)) return;
+  forgetGoneRooms(entry, store);
   const list = readEntered(store);
   const earlier = list.find(kept => sameRoom(kept, entry));
   const kept = name || earlier?.name || null;
@@ -147,8 +175,58 @@ export function markUnavailable({origin, room}, store = globalThis.localStorage)
   if (!entry) return;
   entry.unavailable = true;
   writeEntered(store, list);
+  unchoose(store, entry);
+}
+
+/** Stop reopening `entry` on a bare entry, when it is the one chosen. */
+function unchoose(store, entry) {
   const chosen = readJson(store, CHOSEN, null);
   if (chosen && validEntry(chosen) && sameRoom(chosen, entry)) store?.removeItem(CHOSEN);
+}
+
+/**
+ * The host at `origin` answered as `hostDevice` (its device key, hex): the
+ * rooms remembered there under another host are gone with that host's
+ * state, so they are forgotten, and a bare entry reopens none of them.
+ * Returns the rooms forgotten, `[{origin, room}]`. Only an answer from the
+ * origin itself is passed here, never a failure to reach it.
+ */
+export function forgetGoneRooms({origin, hostDevice}, store = globalThis.localStorage) {
+  if (!HOST_DEVICE.test(hostDevice ?? '')) return [];
+  let at;
+  try { at = originOf(origin); } catch { return []; }
+  const list = readEntered(store);
+  const gone = list.filter(entry => originOf(entry.origin) === at && entry.hostDevice !== hostDevice);
+  if (!gone.length) return [];
+  writeEntered(store, list.filter(entry => !gone.includes(entry)));
+  for (const entry of gone) unchoose(store, entry);
+  return gone.map(entry => ({origin: originOf(entry.origin), room: entry.room}));
+}
+
+/**
+ * Opening the remembered room `{origin, room}` failed: ask its origin which
+ * host answers there now (`hostInfo(origin)`, resolving to that host's
+ * certificate). Another host than the one that held the room means the room
+ * is gone, and it is forgotten: `'gone'`. Anything else (the same host, or
+ * no answer at all: offline, a network error, a failing host) says nothing
+ * about the room, so it stays, marked as not opening last time:
+ * `'unavailable'`. `null` for a room this browser does not remember.
+ */
+export async function settleFailedRoom({origin, room}, {hostInfo, store = globalThis.localStorage} = {}) {
+  const entry = enteredWorkspaces(store).find(kept => sameRoom(kept, {origin, room}));
+  if (!entry) return null;
+  let answering = null;
+  try {
+    answering = hostDeviceOf(await hostInfo?.(entry.origin));
+  } catch {
+    // Not reached, or not answered: nothing the host said.
+  }
+  if (answering && answering !== entry.hostDevice) {
+    forgetGoneRooms({origin: entry.origin, hostDevice: answering}, store);
+    return 'gone';
+  }
+  markUnavailable(entry, store);
+  return 'unavailable';
 }
 
 /** Keep `{origin, room}` as the workspace a bare entry reopens; `null` goes
@@ -167,6 +245,22 @@ export function chosenWorkspace(store = globalThis.localStorage) {
   return entry && !entry.unavailable ? {origin: entry.origin, room: entry.room} : null;
 }
 
+/** Whether `scope` (`{host | origin, room}`) is the web host's `home`
+ * workspace; `homeRoom` is the room this browser was admitted to through its
+ * door. */
+function isHomeRoom({home, homeRoom = null, scope}) {
+  const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
+  return homeOrigin !== null && Boolean(scope?.host ?? scope?.origin)
+    && originOf(scope.host ?? scope.origin) === homeOrigin
+    && (scope.room == null || scope.room === (home.room ?? homeRoom));
+}
+
+/** Whether the room `scope` names is a public workspace: the web host's home
+ * with a door (`admission`) anyone may join through as a guest. */
+export function isPublicHome({home = null, homeRoom = null, scope = null}) {
+  return Boolean(home?.admission) && scope?.kind === 'room' && isHomeRoom({home, homeRoom, scope});
+}
+
 /**
  * The workspaces the person can switch to from `current` (a route scope, or
  * `null`): the web host's `home` workspace, then the rooms they `entered`,
@@ -178,8 +272,7 @@ export function chosenWorkspace(store = globalThis.localStorage) {
 export function workspaceChoices({home = null, homeRoom = null, entered = [], current = null}) {
   const here = current?.kind === 'room' ? current : null;
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
-  const isHome = scope => homeOrigin !== null && originOf(scope.host ?? scope.origin) === homeOrigin
-    && (scope.room == null || scope.room === (home.room ?? homeRoom));
+  const isHome = scope => isHomeRoom({home, homeRoom, scope});
   const choices = [];
   if (homeOrigin && !(here && isHome(here))) {
     choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,
@@ -193,12 +286,22 @@ export function workspaceChoices({home = null, homeRoom = null, entered = [], cu
   return choices;
 }
 
-/** The host actions that open `choices` (`workspaceChoices`), for desktop search. */
-export function workspaceActions(choices) {
+/**
+ * The host actions that open `choices` (`workspaceChoices`), for desktop
+ * search. The workspace menu lists each by name beside the one in front
+ * (named `current`), so two that share a name are told apart: by their
+ * host, and where one host holds both, by their room too.
+ */
+export function workspaceActions(choices, {current = null} = {}) {
+  const names = [current, ...choices.map(choice => choice.name)].filter(Boolean);
+  const shared = name => names.filter(other => other === name).length > 1;
   return choices.map(choice => {
     const host = new URL(choice.origin).host;
+    const sameHost = choices.filter(other => other.name === choice.name && other.origin === choice.origin).length > 1;
+    const label = !shared(choice.name) ? choice.name
+      : sameHost && choice.room ? `${choice.name} · ${host} · ${choice.room.slice(0, 8)}` : `${choice.name} · ${host}`;
     // `label` and `source`: the desktop's workspace menu lists it by name.
-    return {id: choice.id, title: `Open ${choice.name}`, label: choice.name, source: 'workspaces',
+    return {id: choice.id, title: `Open ${label}`, label, source: 'workspaces',
       subtitle: choice.unavailable ? `Workspace · ${host} · did not open last time` : `Workspace · ${host}`};
   });
 }
@@ -207,17 +310,62 @@ export function workspaceActions(choices) {
 export const removedFrom = name => `You were removed from ${name || 'this workspace'}. To come back, ask someone in it for a new invitation.`;
 
 export class HostAdmissionError extends Error {
-  constructor(code, message, retryAfter = null) {
+  /** `door`: what the door said beside its refusal: `{waitList, contact}`
+   * from a room taking people by invitation that keeps a wait list. */
+  constructor(code, message, retryAfter = null, door = null) {
     super(message);
     this.name = 'HostAdmissionError';
     this.code = code;
     this.retryAfter = retryAfter;
+    this.door = door;
   }
 }
 
 export function randomDisplayName(random = Math.random) {
   const pick = list => list[Math.floor(random() * list.length) % list.length];
   return `${pick(ADJECTIVES)} ${pick(ANIMALS)}`;
+}
+
+/**
+ * The name a person goes by until they choose one: drawn from their key, so
+ * every visit and every way in names them alike. A name drawn afresh per
+ * visit showed one person under two names, to the room and to what it is
+ * bridged with. Random only for a page that has no key yet.
+ */
+export function defaultDisplayName(userPublicKey, random = Math.random, taken = []) {
+  if (!/^[0-9a-f]{4}/i.test(userPublicKey ?? '')) return randomDisplayName(random);
+  const used = new Set(taken.map(name => String(name).toLowerCase()));
+  const free = name => !used.has(name.toLowerCase());
+  // The key's bytes, read two at a time: the first pair is the person's
+  // name; the next ones stand in when someone in the room already goes by
+  // it, so two people are never told apart only by "(1)" and "(2)" on each
+  // screen while what they are bridged with shows one name for both.
+  const bytes = userPublicKey.match(/[0-9a-f]{2}/gi).map(byte => parseInt(byte, 16));
+  let first = null;
+  for (let at = 0; at + 2 < bytes.length || at === 0; at += 4) {
+    const adjective = bytes[at] ?? 0;
+    const animal = bytes[at + 2] ?? bytes[at + 1] ?? 0;
+    const name = `${ADJECTIVES[adjective % ADJECTIVES.length]} ${ANIMALS[animal % ANIMALS.length]}`;
+    first ??= name;
+    if (free(name)) return name;
+  }
+  // Every name the key draws is taken: the first, numbered.
+  for (let n = 2; ; n += 1) if (free(`${first} ${n}`)) return `${first} ${n}`;
+}
+
+/**
+ * The name the person `userPublicKey`, who has not chosen one, takes when the
+ * room's `lines` (from `/here`: `[{user, label}]`) show someone else already
+ * going by `current`; `null` when they keep it. Of two people who drew the
+ * same name the one with the greater key draws again, so both never do.
+ */
+export function redrawnDisplayName(userPublicKey, current, lines) {
+  if (!userPublicKey || !current || !Array.isArray(lines)) return null;
+  const others = lines.filter(line => line?.user && line.user !== userPublicKey && typeof line.label === 'string');
+  const same = others.filter(line => line.label.toLowerCase() === current.toLowerCase());
+  if (!same.length || same.every(line => line.user > userPublicKey)) return null;
+  const name = defaultDisplayName(userPublicKey, Math.random, others.map(line => line.label));
+  return name === current ? null : name;
 }
 
 const NAMES = 'tilo-display-names';
@@ -257,8 +405,171 @@ async function ask({workspace, path, body, fetch}) {
   const retry = Number(response.headers.get('retry-after'));
   const hasRetry = response.headers.get('retry-after') != null && Number.isFinite(retry);
   // A 503 without Retry-After is the host failing, not the room being full.
-  const code = response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
-  throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null);
+  // A 403 naming the person (`removed`) rather than their address, or a
+  // room that takes people by invitation (`invitation-only`).
+  const code = response.status === 403 && ['removed', 'invitation-only'].includes(reply.code) ? reply.code
+    : response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
+  // A room taking people by invitation may keep a wait list, and name where
+  // to ask to be taken off it.
+  const door = code === 'invitation-only' && reply.waitList === true
+    ? {waitList: true, contact: typeof reply.contact === 'string' && reply.contact ? reply.contact : null, mail: reply.mail === true} : null;
+  throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null, door);
+}
+
+/** Why the door kept no address, by its `code`: the cases a door page says. */
+const WAIT_CODES = new Set(['invalid-email', 'invalid-secret', 'too-many', 'wait-list-full', 'no-wait-list']);
+
+/** Where this browser keeps what it left on hosts' wait lists: per door
+ * origin, the address and the secret that takes it off again. */
+const WAIT_LISTINGS = 'tilo-wait-listings';
+
+const readListings = store => {
+  try { return JSON.parse(store?.getItem(WAIT_LISTINGS) ?? '{}') ?? {}; } catch { return {}; }
+};
+
+const writeListings = (store, listings) => {
+  try {
+    if (Object.keys(listings).length) store?.setItem(WAIT_LISTINGS, JSON.stringify(listings));
+    else store?.removeItem(WAIT_LISTINGS);
+  } catch {
+    // Storage refused (private mode, full): the address stays listed, and
+    // the contact the door names still takes it off.
+  }
+};
+
+/** The door `POST`ed to, as JSON, without credentials; `HostAdmissionError`
+ * `unavailable` when it cannot be reached. */
+async function postToDoor(fetch, url, body, what) {
+  try {
+    return await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body), credentials: 'omit'});
+  } catch (error) {
+    throw new HostAdmissionError('unavailable', `${what}: ${error?.message ?? error}`);
+  }
+}
+
+async function doorRefusal(response, what) {
+  const reply = await response.json().catch(() => ({}));
+  const retry = Number(response.headers.get('retry-after'));
+  const code = WAIT_CODES.has(reply.code) ? reply.code : 'unavailable';
+  return new HostAdmissionError(code, reply.error ?? `${what}: HTTP ${response.status}`,
+    Number.isFinite(retry) && retry > 0 ? retry : null);
+}
+
+/**
+ * Leave `email` at `workspace`'s door, to be invited at (`POST
+ * <admission>wait-list`), in the reader's `language`: a room taking people
+ * by invitation keeps it for whoever may invite. A door that mails sends a
+ * link that confirms it, and lists it only then. The secret the door hands
+ * back, which takes the address off again (`leaveWaitList`), is kept in
+ * `storage` for that door. Resolves to `{email, mail}`: the address as the
+ * door keeps it (as typed, trimmed), and whether it mailed a link to
+ * confirm; rejects with `HostAdmissionError` code `invalid-email`,
+ * `too-many` (with `retryAfter`), `wait-list-full`, `no-wait-list` or
+ * `unavailable`.
+ */
+export async function leaveOnWaitList({workspace, email, language = globalThis.navigator?.language ?? '',
+  fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const door = new URL('wait-list', admissionDoor(workspace));
+  const response = await postToDoor(fetch, door, {email: String(email ?? ''), language: String(language)}, 'wait list');
+  if (!response.ok) throw await doorRefusal(response, 'wait list');
+  const reply = await response.json().catch(() => ({}));
+  if (typeof reply.email !== 'string') throw new HostAdmissionError('unavailable', 'wait list: the door named no address');
+  const mail = reply.mail === true;
+  if (typeof reply.removal === 'string' && SECRET.test(reply.removal)) {
+    writeListings(storage, {...readListings(storage), [door.origin]: {email: reply.email, secret: reply.removal, mail}});
+  }
+  return {email: reply.email, mail};
+}
+
+/** A wait-list secret, as the door hands it out and its links carry it. */
+const SECRET = /^[0-9a-f]{64}$/;
+
+/** What this browser left on `workspace`'s wait list and can take off
+ * again: `{email, pending}` (`pending`: the door mailed a link to confirm
+ * it, not known to be opened yet), or `null`. */
+export function waitListing(workspace, storage = globalThis.localStorage) {
+  if (!workspace?.admission) return null;
+  const kept = readListings(storage)[new URL(workspace.admission).origin];
+  return typeof kept?.email === 'string' && typeof kept?.secret === 'string' ? {email: kept.email, pending: kept.mail === true && kept.confirmed !== true} : null;
+}
+
+const forgetListing = (storage, origin) => {
+  const now = readListings(storage);
+  delete now[origin];
+  writeListings(storage, now);
+};
+
+/**
+ * Take an address off `workspace`'s wait list (`POST
+ * <admission>wait-list/remove`): the one this browser left, or the one
+ * whose removal link carried `secret`; this browser's listing is forgotten
+ * either way. The door answers alike whether or not it still listed the
+ * address, so this resolves either way; it rejects with
+ * `HostAdmissionError` code `too-many` (with `retryAfter`) or
+ * `unavailable`, and keeps the secret to try again. A secret the door
+ * calls none is forgotten.
+ */
+export async function leaveWaitList({workspace, secret = null, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const door = new URL('wait-list/remove', admissionDoor(workspace));
+  const sent = secret ?? readListings(storage)[door.origin]?.secret;
+  if (typeof sent !== 'string' || !SECRET.test(sent)) {
+    if (secret === null) return;
+    throw new HostAdmissionError('invalid-secret', 'leaving the wait list: the link carries no secret');
+  }
+  const response = await postToDoor(fetch, door, {secret: sent}, 'leaving the wait list');
+  const refusal = response.ok ? null : await doorRefusal(response, 'leaving the wait list');
+  if (!refusal || refusal.code === 'invalid-secret' || refusal.code === 'no-wait-list') {
+    forgetListing(storage, door.origin);
+    return;
+  }
+  throw refusal;
+}
+
+/**
+ * Confirm the address whose confirmation link carried `token` (`POST
+ * <admission>wait-list/confirm`): whether the door still had it waiting
+ * (`false`: it was taken off, or not confirmed within two days). Rejects
+ * with `HostAdmissionError` as `leaveWaitList` does.
+ */
+export async function confirmWaitList({workspace, token, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const door = new URL('wait-list/confirm', admissionDoor(workspace));
+  if (typeof token !== 'string' || !SECRET.test(token)) return false;
+  const response = await postToDoor(fetch, door, {token}, 'confirming the wait list');
+  if (!response.ok) {
+    const refusal = await doorRefusal(response, 'confirming the wait list');
+    if (refusal.code === 'invalid-secret') return false;
+    throw refusal;
+  }
+  const reply = await response.json().catch(() => ({}));
+  const listings = readListings(storage);
+  if (reply.confirmed === true && listings[door.origin]) {
+    // This browser left it: it no longer waits to be confirmed.
+    writeListings(storage, {...listings, [door.origin]: {...listings[door.origin], confirmed: true}});
+  }
+  return reply.confirmed === true;
+}
+
+/**
+ * Where what this browser left on `workspace`'s wait list stands (`POST
+ * <admission>wait-list/standing`): `pending` (to be confirmed), `listed`,
+ * `invited` or `gone` (then forgotten here); `null` when nothing is kept
+ * here or the door cannot say now.
+ */
+export async function waitListStanding({workspace, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const door = new URL('wait-list/standing', admissionDoor(workspace));
+  const kept = readListings(storage)[door.origin];
+  if (typeof kept?.secret !== 'string') return null;
+  let response;
+  try {
+    response = await postToDoor(fetch, door, {secret: kept.secret}, 'the wait list');
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  const {standing} = await response.json().catch(() => ({}));
+  if (!['pending', 'listed', 'invited', 'gone'].includes(standing)) return null;
+  if (standing === 'gone') forgetListing(storage, door.origin);
+  return standing;
 }
 
 const readMemberships = store => {
@@ -329,6 +640,14 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
   return kept && !kept.paired && kept.userPublicKey === userPublicKey ? kept : null;
 }
 
+/** Resolves after the backoff before try `attempt` (`reconnect.mjs`), or
+ * rejects once `signal` aborts. */
+const backOff = ({attempt, signal}) => new Promise((resolve, reject) => {
+  signal?.throwIfAborted();
+  const timer = setTimeout(resolve, backoffDelay(attempt));
+  signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
+});
+
 /** This browser's device key for `profile`: the first one no other tab
  * holds, a new one when they all are (`device-custody.mjs`). */
 const browserCustody = profile => openDeviceCustody({profile, storage: idbStorage()});
@@ -349,9 +668,9 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  * devices, as on any new browser.
  */
 export async function joinViaHost({
-  workspace, identity, displayName = randomDisplayName(), fetch = globalThis.fetch, memberships = globalThis.localStorage,
-  join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, onProgress,
-  ...connectOptions
+  workspace, identity, displayName = defaultDisplayName(identity?.userPublicKey), fetch = globalThis.fetch, memberships = globalThis.localStorage,
+  join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, renew = renewDevice,
+  wait = backOff, onProgress, ...connectOptions
 }) {
   admissionDoor(workspace);
   const known = keptMembership(workspace, memberships);
@@ -373,8 +692,8 @@ export async function joinViaHost({
   /** Ask the door to admit the person, then join with what it hands out.
    * `custody` (this tab's device key for `known`'s host) goes on where the
    * door names the same host. `refused`: the host refused the membership
-   * this browser kept. */
-  const throughDoor = async (custody, refused) => {
+   * this browser kept. `fresh`: join as a new device of the person. */
+  const throughDoor = async (custody, refused, fresh) => {
     let admitted;
     try {
       admitted = await door(identity.userPublicKey);
@@ -382,34 +701,56 @@ export async function joinViaHost({
       // The host no longer has the person, and its door turns away the
       // address they joined from because someone was removed: they were taken
       // out of the room, not pruned after an absence. Only an invitation
-      // brings them back.
-      if (refused && error?.code === 'cooling-down') throw new AdmissionError('removed', removedFrom(workspace.name));
+      // brings them back. A door that names the person removed says so
+      // whatever this browser kept.
+      if (error?.code === 'removed' || (refused && error?.code === 'cooling-down')) {
+        throw new AdmissionError('removed', removedFrom(workspace.name));
+      }
       throw error;
     }
     const {invitation, admissionToken, origin} = admitted;
     const sameHost = custody && known && originOf(origin) === originOf(known.origin);
     if (custody && !sameHost) await custody.close();
+    let device = sameHost ? custody : null;
+    if (fresh) {
+      const profile = identityProfile(identity, origin);
+      device = await renew(device ?? await openCustody(profile), profile);
+    }
     let room = null;
-    const peer = await join({
-      ...connectOptions, origin, invitation, admissionToken, identity, displayName, ...(sameHost ? {custody} : {}),
+    const joining = () => join({
+      ...connectOptions, origin, invitation, admissionToken, identity, displayName, ...(device ? {custody: device} : {}),
       onProgress: event => { if (event.phase === 'admitted') room = event.room; onProgress?.(event); },
     });
+    const peer = fresh ? await withCustody(device, joining, connectOptions.signal) : await joining();
     keepMembership(memberships, workspace, {origin, room: room ?? peer.room, userPublicKey: identity.userPublicKey});
     return peer;
   };
+  /** Join through the door until the host lets the person in. The door
+   * handed out the invitation a moment before, so a refusal is about what
+   * this browser brings: a device key the host knows under a certificate
+   * this browser no longer holds (its storage was cleared, or a join the
+   * host admitted never finished here) is never admitted under another, so
+   * the person comes again as a new device of theirs. A person the room
+   * bans is told so; anything else passes (a host still starting, a crowd
+   * at the door), so the page waits (`wait`: the reconnect screen, with
+   * backoff) and asks again. */
   const admitAnew = async (custody, refused = false) => {
-    try {
-      return await throughDoor(custody, refused);
-    } catch (error) {
-      if (error?.code !== 'refused') throw error;
-      // The door handed out this invitation a moment ago, so the person has
-      // none of their own to renew: ask it once more for a fresh one.
-      console.warn('host admission: the host refused the door\'s invitation, asking again', error.reason);
+    let held = custody;
+    let since = null;
+    for (let attempt = 0; ; attempt += 1) {
       try {
-        return await throughDoor(custody, refused);
-      } catch (again) {
-        if (again?.code !== 'refused') throw again;
-        throw Object.assign(new AdmissionError('refused', doorRefused(workspace.name)), {reason: again.reason});
+        return await throughDoor(held, refused, attempt > 0);
+      } catch (error) {
+        if (error?.code !== 'refused') throw error;
+        if (/banned/.test(error.reason ?? '')) {
+          throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: error.reason});
+        }
+        // The first new device took this tab's key in place of the old one.
+        if (attempt > 0) held = null;
+        since ??= Date.now();
+        console.warn('host admission: the host refused the door\'s invitation, joining as a new device', error.reason);
+        // The first new device goes at once; later ones after a wait.
+        if (attempt > 0) await wait({attempt: attempt - 1, error, since, signal: connectOptions.signal});
       }
     }
   };
@@ -431,10 +772,10 @@ export async function joinViaHost({
       return peer;
     } catch (error) {
       await peer?.dispose?.().catch(() => {});
-      // The host has not answered yet: nothing the host refused, so the
-      // membership stays, and joining again would spend a seat and a join
-      // to fail the same way.
-      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError') throw error;
+      // The host has not answered yet, or is not answering at all (it is
+      // restarting): nothing the host refused, so the membership stays, and
+      // joining again would spend a seat and a join to fail the same way.
+      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError' || hostUnreachable(error)) throw error;
       if (error?.code === 'host-changed') {
         // Another host answers at this origin now: join it as the same
         // person. What this browser kept stays pinned to the previous host.
@@ -452,10 +793,6 @@ export async function joinViaHost({
   }, connectOptions.signal);
 }
 
-/** What a person is told when a host's open door still could not let them
- * in: nothing of theirs to fix, so only when to try again. */
-export const doorRefused = name => `${name || 'This workspace'} couldn’t let you in just now. Reload the page in a moment to try again.`;
-
 /**
  * Become a new device of `userPublicKey` (hex), the person whose root
  * approves it on another of their devices, in `room` at the host at
@@ -467,7 +804,7 @@ export const doorRefused = name => `${name || 'This workspace'} couldn’t let y
  * joined, paired, for the next visit (`joinViaHost`).
  */
 export async function pairViaHost({
-  origin, room, userPublicKey, workspace = null, label = 'Browser', displayName = randomDisplayName(),
+  origin, room, userPublicKey, workspace = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
   memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
@@ -505,6 +842,63 @@ async function memoryCustody(crypto) {
 function memoryStore() {
   const map = new Map();
   return {get: async key => map.get(key), put: async (key, value) => { map.set(key, value); }, delete: async key => { map.delete(key); }};
+}
+
+/**
+ * Join `workspace` once its door has a seat: a page that watches because
+ * there was none asks the door's `presence` every `retryAfter` seconds (with
+ * jitter, so a full room is not asked by everyone at once) and calls `join`
+ * only when it says `open`. Asking takes no seat, so the page keeps watching
+ * on the one it has instead of trading it for a new one each time. Returns
+ * a function that stops asking.
+ */
+export function joinWhenSeated({workspace, retryAfter, join, fetch = globalThis.fetch,
+  schedule = (run, ms) => setTimeout(run, ms), cancel = clearTimeout, random = Math.random}) {
+  const wait = Math.max(5, retryAfter ?? 30);
+  let timer, stopped = false;
+  const next = () => { if (!stopped) timer = schedule(check, (wait + random() * wait / 2) * 1000); };
+  async function check() {
+    if (!stopped && (await doorPresence(workspace, fetch))?.open === true) {
+      stopped = true;
+      join();
+      return;
+    }
+    next();
+  }
+  next();
+  return () => { stopped = true; cancel(timer); };
+}
+
+/**
+ * What `workspace`'s door says about the room now (`presence`), without
+ * taking a seat: `open`, whether a guest would get in; `joins`, whether
+ * anyone joins at all now; `admission`, `open` or `invite` (members and
+ * invitees only); or `null` when it does not answer.
+ */
+export async function doorPresence(workspace, fetch = globalThis.fetch) {
+  try {
+    const response = await fetch(new URL('presence', admissionDoor(workspace)), {credentials: 'omit'});
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether this browser opens the person's own desktop under an entry whose
+ * home workspace is `home`. Whom the home's door lets in by itself gets a
+ * desktop of their own too; while it takes people by invitation only
+ * (`admission` in its presence), or does not say, only a browser some host
+ * let in (a membership it keeps: joined, paired or set up) does. Anyone
+ * else has nothing here until invited.
+ */
+export async function ownDesktopOpen(home, {memberships = globalThis.localStorage, fetch = globalThis.fetch} = {}) {
+  if (!home?.admission) return true;
+  let kept = [];
+  try { kept = membershipOrigins(undefined, memberships); } catch { /* No storage: nothing kept. */ }
+  if (kept.length) return true;
+  const admission = (await doorPresence(home, fetch))?.admission;
+  return typeof admission === 'string' && admission !== 'invite';
 }
 
 /**

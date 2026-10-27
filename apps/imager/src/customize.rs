@@ -4,7 +4,7 @@
 //!
 //! Every field is a toolkit control in a [`Form`]: names are [`TextInput`]s,
 //! the catalog choices are [`Dropdown`]s that filter while open. Each edit is
-//! reported to the wizard as a [`Command::Profile`], which submits the field
+//! reported to the wizard as a `Command::Profile`, which submits the field
 //! edit at the profile's path — one undo boundary, replicated to
 //! collaborators and the same edit the palette or an agent would make. The form
 //! holds no profile of its own: it is composed from an [`InstallProfile`]
@@ -311,7 +311,6 @@ mod tests {
     /// Timezone catalog and canonical values.
     #[test]
     fn customization_catalogs_match_the_embedded_profile_contract() {
-        // Phase `built_in_timezone_catalog_is_worldwide_canonical_and_safe`.
         {
             let zones = timezones();
             assert!(zones.len() >= 400, "catalog unexpectedly incomplete");
@@ -338,7 +337,6 @@ mod tests {
             }));
         }
 
-        // Phase `canonical_values_match_the_embedded_profile_contract`.
         {
             assert_eq!(
                 profile_value(CzField::Keyboard, "German (QWERTZ)"),

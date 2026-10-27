@@ -1,6 +1,6 @@
 //! `StoreApp` — the root widget.
 //!
-//! The Store's screens are composed in [`view`] from the toolkit's content
+//! The Store's screens are composed in `view` from the toolkit's content
 //! widgets, one column on the window ground each:
 //!
 //! ```text
@@ -23,6 +23,8 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -42,6 +44,7 @@ use crate::resource::{ReportProjection, StoreEffect};
 use crate::worker::{Outcome, Request, StoreWorker};
 mod runtime;
 mod view;
+mod window_bar;
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -61,13 +64,11 @@ pub enum View {
     /// Discover: updates, featured, recently updated, categories.
     #[default]
     Home,
-    /// Every app in one category.
     Category(String),
     /// The installed apps a newer version is offered for.
     Updates,
     /// The apps on this device.
     Installed,
-    /// The bots.
     Bots,
     /// The apps of one configured Flatpak repository, by its resource id.
     Repository(String),
@@ -87,7 +88,6 @@ impl View {
         }
     }
 
-    /// The view `show-view` names, if any.
     #[must_use]
     pub fn named(name: &str) -> Option<Self> {
         Some(match name.trim().to_ascii_lowercase().as_str() {
@@ -305,7 +305,6 @@ fn validate_remote_name(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The id an app's row is published under.
 fn app_row_id(app_id: &str) -> String {
     format!("app:{app_id}")
 }
@@ -363,7 +362,10 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
         .chain(item.pin_action())
         .chain(item.remove_action());
     for action in actions {
-        let spec = StoreEffect::package(action, item).bound();
+        let Some(effect) = StoreEffect::package(action, item) else {
+            continue;
+        };
+        let spec = effect.bound();
         let spec = if action == ActionKind::AddBot {
             // A bot is added by the workspace it runs in: the workspace's
             // Add a bot is the door, which the Store's button prepares.
@@ -428,6 +430,25 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
 type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 
 /// Root widget.
+
+/// An operation as a job: what the whole system sees, and the flag the
+/// person's Stop sets. The package manager cannot be interrupted from here,
+/// so what stops is the Store's part — and the job's outcome says exactly
+/// that.
+pub(crate) struct OperationJob {
+    job: ui::jobs::Running,
+    stopped: Arc<AtomicBool>,
+}
+
+/// The verb a failure's row carries: open the app's page, where its own
+/// control asks again.
+pub(crate) const SHOW_OPERATION: &str = "store.show-operation";
+
+/// The Store, as the ledger and the waiting stack name it.
+fn store_owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.store", "Store").with_icon(ui::icons::Icon::Download)
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (host flatpak \
@@ -493,12 +514,27 @@ pub struct StoreApp {
     /// bubble, when the operation settles.
     status_line: String,
     worker_busy: bool,
+    /// The catalogue's read while the worker brings it and nothing shows
+    /// yet: what its placeholder is timed from.
+    catalogue_read: ui::Arriving<()>,
     /// The one app mutation currently accepted by the serialized worker.
     /// Keeping its stable app id and offered action locally lets the matching
     /// card communicate progress and reject a second activation; it is a
     /// backend observation, not shared document state.
     active_operation: Option<(String, ActionKind)>,
+    /// The jobs the operations run as, by app: the whole system sees them,
+    /// and they outlive this page and this operation.
+    operation_jobs: HashMap<String, OperationJob>,
+    /// What Needs you reports back.
+    needs: ui::attention::Presses,
+    /// What the jobs band reports back.
+    jobs: ui::jobs::Presses,
     operation_error: Option<String>,
+    /// A refusal the window gave itself, without the worker (a handed
+    /// package over the size limit). The worker never hears of it, so its
+    /// snapshots, which carry their own background errors, must not replace
+    /// it; the next effect clears it.
+    local_refusal: Option<String>,
     /// Whether `flatpak` is available on the host — drives whether
     /// Flatpak items show "Install" or the "install flatpak first"
     /// helper.
@@ -509,6 +545,8 @@ pub struct StoreApp {
     /// refresh. An installed app none of the others lists says so once, on
     /// its details page.
     unanswered_repositories: Vec<String>,
+    /// See [`crate::worker::Snapshot::expired_repositories`].
+    expired_repositories: Vec<String>,
     /// Which item the user has expanded in the responsive detail sheet.
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
     /// document-backed route does not disappear during a responsive reflow.
@@ -531,6 +569,9 @@ pub struct StoreApp {
     can_go_back: Rc<Cell<bool>>,
     /// The window's Back was pressed; the next event or sync returns to the catalogue.
     back_requested: Rc<Cell<bool>>,
+    /// What the person pressed in the window's bar, as the invocations of the
+    /// actions its slots stand for ([`window_bar`]).
+    bar_controls: std::collections::VecDeque<ui::tilo_actions::ControlInvocation>,
     /// Remote and moderation jobs waiting on the worker.
     pending_jobs: usize,
     pending_detail: Option<String>,
@@ -542,12 +583,10 @@ pub struct StoreApp {
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
-    /// The transient status bubble: an operation's result, shown once when
-    /// it changes.
-    status_bubble: ui::StatusBubble,
-    /// Last pointer position (window coords), tracked from `CursorMoved`
-    /// so the bubble can stay open while the pointer rests on it.
-    last_cursor: Point,
+    /// The latest outcome (installed, removed, …), said in the window's bar
+    /// for a while; work under way and failures say themselves in place.
+    /// The status line last said in the bar, so only a change is news.
+    status_said: String,
     /// Shared async, bounded decoded-artwork cache. `None` for hermetic shots.
     images: Option<ui::ImageStore>,
 }
@@ -588,12 +627,18 @@ impl StoreApp {
             remote_url_state: ui::LocalState::new(String::new()),
             status_line: String::new(),
             worker_busy: false,
+            catalogue_read: ui::Arriving::ready(()),
             active_operation: None,
+            operation_jobs: HashMap::new(),
+            needs: ui::attention::Presses::new(),
+            jobs: ui::jobs::Presses::new(),
             operation_error: None,
+            local_refusal: None,
             flatpak_available: false,
             flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
             flatpak_checking: true,
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             focused_detail: None,
             technical_details_open: false,
             structure_dirty: true,
@@ -603,6 +648,7 @@ impl StoreApp {
             root: None,
             can_go_back: Rc::new(Cell::new(false)),
             back_requested: Rc::new(Cell::new(false)),
+            bar_controls: std::collections::VecDeque::new(),
             pending_jobs: 0,
             pending_detail: None,
             remotes: Vec::new(),
@@ -610,8 +656,7 @@ impl StoreApp {
             safety_open: false,
             reports: Vec::new(),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
-            status_bubble: ui::StatusBubble::new(),
-            last_cursor: Point::ZERO,
+            status_said: String::new(),
             images: None,
         }
     }
@@ -736,24 +781,21 @@ impl StoreApp {
         if !crate::reports::valid_app_id(app) {
             return Err("invalid app identity".into());
         }
-        let path = app_catalogue::block::person_list_path()
+        let path = ui::registry::block::person_list_path()
             .ok_or_else(|| ui::i18n!("store-block-unavailable"))?;
         let mut list = BlockList::load();
         if block {
-            if list
-                .blockers(app)
-                .contains(&&app_catalogue::Blocker::Person)
-            {
+            if list.blockers(app).contains(&&ui::registry::Blocker::Person) {
                 return Ok(());
             }
             list.block(app);
         } else {
-            list.unblock(app, &app_catalogue::Blocker::Person)
+            list.unblock(app, &ui::registry::Blocker::Person)
                 .map_err(|error| match error {
-                    app_catalogue::UnblockError::NotTheBlocker(_) => {
+                    ui::registry::UnblockError::NotTheBlocker(_) => {
                         ui::i18n!("store-unblock-not-yours")
                     }
-                    app_catalogue::UnblockError::NotBlocked => {
+                    ui::registry::UnblockError::NotBlocked => {
                         ui::i18n!("store-unblock-not-blocked")
                     }
                 })?;
@@ -1023,6 +1065,13 @@ impl StoreApp {
         }
     }
 
+    pub fn set_expired_repositories(&mut self, repositories: Vec<String>) {
+        if self.expired_repositories != repositories {
+            self.expired_repositories = repositories;
+            self.structure_dirty = true;
+        }
+    }
+
     pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
         if self.remotes != remotes {
             self.remotes = remotes;
@@ -1187,42 +1236,73 @@ impl StoreApp {
             self.remotes_open = false;
             self.safety_open = false;
         }
-        // The field shows the query whoever set it (typing, an action, a
-        // link), or the field's stale text would set it back next frame.
-        let query = self.query.clone();
-        self.set_filter_field(&query);
         self.structure_dirty = true;
     }
 
-    /// Put `query` in the window's filter field, as if typed there.
-    fn set_filter_field(&mut self, query: &str) {
-        if let Some(field) = self.root.as_mut().and_then(|root| root.filter_mut())
-            && field.value() != query
-        {
-            field.set_query(query);
+    /// Carry out what the person pressed on the jobs band or on a row of
+    /// what wants them: Show me opens the app's page.
+    fn answer_presses(&mut self) {
+        for press in self.jobs.take() {
+            if let Some(subject) = ui::jobs::apply(press)
+                && let Some(target) = subject.target
+            {
+                self.focus_detail(&target);
+                self.structure_dirty = true;
+            }
+        }
+        for press in self.needs.take() {
+            let Some(acted) = ui::attention::apply(press) else {
+                continue;
+            };
+            if acted.action.verb == SHOW_OPERATION
+                && let Some(ui::attention::Target::Job(number)) = acted.target
+                && let Some(subject) = ui::jobs::show(ui::jobs::JobId::from_number(number))
+                && let Some(target) = subject.target
+            {
+                self.focus_detail(&target);
+                self.structure_dirty = true;
+            }
         }
     }
 
-    /// The filter field's query reached `self.query`; whether it changed.
-    fn follow_filter_field(&mut self) -> bool {
-        let Some(value) = self
-            .root
-            .as_ref()
-            .and_then(|root| root.filter())
-            .map(|field| field.value().to_owned())
-        else {
-            return false;
+    /// End the job the operation ran as: what came of it, or that the person
+    /// stopped following it.
+    fn finish_operation_job(&mut self, app: &str, outcome: Result<String, String>) {
+        let Some(OperationJob { job, stopped }) = self.operation_jobs.remove(app) else {
+            return;
         };
-        if value == self.query {
-            return false;
+        if stopped.load(Ordering::Acquire) {
+            job.stopped();
+            self.status_line =
+                "Stopped following this operation. The package manager may still be finishing it."
+                    .to_owned();
+            ui::attention::publish(ui::attention::Notice::did(
+                store_owner(),
+                self.status_line.clone(),
+            ));
+            return;
         }
-        self.set_query(value);
-        let count = (!self.query.trim().is_empty())
-            .then(|| ui::widget::FilterCount::new(self.results.len(), self.items.len()));
-        if let Some(field) = self.root.as_mut().and_then(|root| root.filter_mut()) {
-            field.set_count(count);
+        match outcome {
+            Ok(status) => {
+                // The ledger records it: `publish_status` writes the same
+                // line once the worker is idle again.
+                job.done(status);
+            }
+            Err(error) => {
+                job.failed(error.clone());
+                ui::attention::publish(
+                    ui::attention::Notice::needs(
+                        store_owner(),
+                        ui::i18n!("store-operation-failed"),
+                        ui::attention::Action::new(
+                            SHOW_OPERATION,
+                            &ui::i18n!("store-error-refresh"),
+                        ),
+                    )
+                    .because(error),
+                );
+            }
         }
-        true
     }
 
     pub fn set_status_line(&mut self, s: impl Into<String>) {
@@ -1236,6 +1316,25 @@ impl StoreApp {
                 self.active_operation = None;
             }
             self.structure_dirty = true;
+        }
+        // An empty catalogue the worker is bringing is a read on its way
+        // from the configured sources; it lands when the worker is done.
+        let waiting = busy && self.items.is_empty();
+        let pending = self.catalogue_read.with(ui::Arrival::is_pending);
+        if waiting && !pending {
+            let from = self.remotes.iter().find(|remote| !remote.disabled).map_or(
+                ui::arriving::Source::Local,
+                |remote| {
+                    ui::arriving::Source::host(if remote.title.is_empty() {
+                        remote.name.clone()
+                    } else {
+                        remote.title.clone()
+                    })
+                },
+            );
+            self.catalogue_read.writer().pending(from);
+        } else if !waiting && pending {
+            self.catalogue_read.writer().ready(());
         }
     }
 
@@ -1294,7 +1393,6 @@ impl StoreApp {
         ids.iter().filter_map(|id| self.item(id)).collect()
     }
 
-    /// Every category with apps in it.
     fn categories(&self) -> Vec<String> {
         crate::catalogue::Home::compute(&self.items, &self.blocks)
             .categories
@@ -1303,21 +1401,22 @@ impl StoreApp {
             .collect()
     }
 
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let now = ui::time::now();
-        if !self.worker_busy && self.operation_error.is_none() && !self.status_line.is_empty() {
-            self.status_bubble.show(&self.status_line, now);
+    /// Write a new outcome to the ledger; work under way says itself in the
+    /// jobs band, and a failure waits in Needs you. Nothing here is said in
+    /// a notice that expires.
+    fn publish_status(&mut self) {
+        if !self.worker_busy
+            && self.operation_error.is_none()
+            && self.status_line != self.status_said
+        {
+            self.status_said.clone_from(&self.status_line);
+            if !self.status_said.is_empty() {
+                ui::attention::publish(ui::attention::Notice::did(
+                    store_owner(),
+                    self.status_said.clone(),
+                ));
+            }
         }
-        self.status_bubble
-            .pointer_moved(self.rect, self.last_cursor, tr, theme, now);
-        self.status_bubble
-            .paint(scene, transform, tr, theme, self.rect, now);
     }
 }
 
@@ -1353,17 +1452,37 @@ impl ui::widget::Collaborative for StoreApp {
     }
 }
 
+/// The window bar's search is the Store's: what is typed searches the
+/// catalogue in place, and closing the search clears it.
+impl ui::widget::Queryable for StoreApp {
+    fn set_query_text(&mut self, text: &str) {
+        self.set_query(text.to_owned());
+    }
+
+    fn query_closed(&mut self) {
+        self.set_query(String::new());
+    }
+
+    fn query_count(&self) -> Option<ui::widget::FilterCount> {
+        (!self.query.trim().is_empty())
+            .then(|| ui::widget::FilterCount::new(self.results.len(), self.items.len()))
+    }
+}
+
 impl Widget for StoreApp {
-    ui::provides!(dyn ui::widget::Collaborative);
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::Queryable
+    );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.answer_presses();
         let changed = self
             .root
             .as_mut()
-            .is_some_and(|root| root.update(state, path));
-        if self.follow_filter_field() {
-            return true;
-        }
+            .is_some_and(|root| root.update(state, path))
+            | self.sync_window_toolbar();
         if self.back_requested.take() {
             self.show_catalogue();
             self.structure_dirty = true;
@@ -1374,11 +1493,22 @@ impl Widget for StoreApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.answer_presses();
         self.drain_worker();
+        self.sync_window_toolbar();
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
         }
         self.request_from_worker();
+        self.publish_status();
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.root
+            .as_ref()
+            .and_then(|root| root.next_wake_deadline())
+            .into_iter()
+            .min()
     }
 
     fn build_layout(
@@ -1400,19 +1530,17 @@ impl Widget for StoreApp {
                 },
             );
         self.structure_dirty = false;
+        let jobs = self.jobs.clone();
         let mut root = self.root.take().unwrap_or_else(|| {
             let can = Rc::clone(&self.can_go_back);
             let requested = Rc::clone(&self.back_requested);
-            let mut filter = ui::widget::SearchField::filter()
-                .with_id("store.search")
-                .with_placeholder(&ui::i18n!("store-search-placeholder"));
-            filter.set_query(&self.query);
             Box::new(
                 ui::widget::NavShell::new()
                     .content_kind(ui::widget::ContentKind::Grid)
                     .with_page_column(f32::from(view::Measure::CATALOGUE_LINES))
                     .with_id("store.shell")
-                    .with_filter(filter)
+                    .with_window_toolbar()
+                    .bottom_band(Box::new(ui::jobs::Band::with_presses(jobs.clone())))
                     .on_back(move || can.get(), move || requested.set(true)),
             )
         });
@@ -1425,41 +1553,9 @@ impl Widget for StoreApp {
                     || self.remotes_open
                     || self.focused_detail.is_some(),
             );
-            let catalogue = !self.runtime_visible()
-                && !self.safety_open
-                && !self.remotes_open
-                && self.focused_detail.is_none();
-            let actions = if catalogue {
-                let mut actions = Self::catalogue_actions();
-                if self.runtime_recovery.is_some() {
-                    let mut repair = ui::widget::Button::new(
-                        "store.runtime.show",
-                        &ui::i18n!("store-runtime-show"),
-                    );
-                    if let Some(binding) = crate::bindings::effect(&StoreEffect::ShowRuntime) {
-                        repair = repair.on_action(binding);
-                    }
-                    actions.push(Box::new(repair));
-                }
-                actions
-            } else {
-                Vec::new()
-            };
-            let title = if self.runtime_visible() {
-                ui::i18n!("store-runtime-title")
-            } else {
-                self.page_title()
-            };
-            root.set_content_header(&title, actions);
             root.set_content(self.compose(theme));
             self.composition_context = Some((theme.clone(), locale, pseudo));
             self.composition_dirty = false;
-        }
-        // A field made after the query was set starts with it.
-        if let Some(field) = root.filter_mut()
-            && field.value() != self.query
-        {
-            field.set_query(&self.query);
         }
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
@@ -1508,12 +1604,9 @@ impl Widget for StoreApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Child overlays first, then the transient status bubble on top of
-        // the content.
         if let Some(root) = self.root.as_mut() {
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -1521,19 +1614,11 @@ impl Widget for StoreApp {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // Track the pointer so the bubble stays open while it rests on it
-        // (coords are window-space, unscaled).
-        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = ctx.logical(position);
-        }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
             && let Some(&child_node) = children.first()
         {
             root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
-        // Each keystroke in the filter field searches the catalogue on this
-        // device; the page shows the results on the next layout.
-        self.follow_filter_field();
         if self.back_requested.take() {
             self.show_catalogue();
             self.structure_dirty = true;
@@ -1591,7 +1676,6 @@ impl Widget for StoreApp {
         self.root
             .as_ref()
             .is_some_and(|r| r.needs_animation_frame())
-            || self.status_bubble.needs_frame(ui::time::now())
             || self
                 .images
                 .as_ref()
@@ -1713,6 +1797,7 @@ impl StoreApp {
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
         self.set_unanswered_repositories(snap.unanswered_repositories);
+        self.set_expired_repositories(snap.expired_repositories);
         self.set_blocks(snap.blocks);
         if let Some(app) = snap.updating
             && let Some((_, action)) = self.active_operation.as_ref()
@@ -1727,7 +1812,7 @@ impl StoreApp {
         }
         if current_detail && current_query {
             self.set_status_line(snap.status_line);
-            self.set_operation_error(snap.operation_error);
+            self.set_operation_error(self.local_refusal.clone().or(snap.operation_error));
         }
     }
 
@@ -1946,6 +2031,7 @@ impl StoreApp {
         reason = "one exhaustive match over the Store's effects keeps every capability check beside the effect it guards"
     )]
     pub fn admit(&mut self, effect: StoreEffect) -> Result<Admitted, String> {
+        self.local_refusal = None;
         if let Some((app, action)) = effect.as_package() {
             let app = app.to_owned();
             let item = self.package_operation(&app, action)?;
@@ -1962,6 +2048,25 @@ impl StoreApp {
             self.operation_error = None;
             self.status_line = view::progress_label(action, &item.name);
             self.structure_dirty = true;
+            // The operation is a job of the whole system: it keeps running
+            // when the person leaves this page, and its row says what the
+            // package manager is doing.
+            let stopped = Arc::new(AtomicBool::new(false));
+            let job = ui::jobs::start(
+                ui::jobs::Spec::new(self.status_line.clone())
+                    .subject(
+                        ui::jobs::Subject::new(store_owner(), item.name.clone())
+                            .opens(item.id.clone()),
+                    )
+                    .unit(ui::jobs::Unit::Steps)
+                    .phase(self.status_line.clone())
+                    .stoppable({
+                        let stopped = Arc::clone(&stopped);
+                        move || stopped.store(true, Ordering::Release)
+                    }),
+            );
+            self.operation_jobs
+                .insert(item.id.clone(), OperationJob { job, stopped });
             return Ok(Job::admitted(
                 Request::Act(Box::new(item), action),
                 Finish::Package,
@@ -2024,13 +2129,10 @@ impl StoreApp {
                 if query.chars().count() > 512 {
                     return Err("search query is too long".into());
                 }
-                // The same search as typing it into the window's filter field.
-                self.set_filter_field(&query);
                 self.set_query(query);
             }
             StoreEffect::ShowView { view } => {
                 let view = View::named(&view).ok_or_else(|| "unknown Store view".to_string())?;
-                self.set_filter_field("");
                 self.set_query(String::new());
                 self.show_view(view);
             }
@@ -2056,7 +2158,6 @@ impl StoreApp {
                 self.focused_detail = None;
                 self.remotes_open = false;
                 self.safety_open = false;
-                self.set_filter_field("");
                 self.set_query(String::new());
                 self.pending_detail = None;
                 self.show_view(View::Repository(remote.clone()));
@@ -2069,13 +2170,11 @@ impl StoreApp {
                     if category.chars().count() > 128 || !self.categories().contains(&category) {
                         return Err("unknown Store category".into());
                     }
-                    self.set_filter_field("");
                     self.set_query(String::new());
                     self.show_view(View::Category(category));
                 }
             }
             StoreEffect::ClearFilters => {
-                self.set_filter_field("");
                 self.set_query(String::new());
                 self.structure_dirty = true;
             }
@@ -2108,6 +2207,7 @@ impl StoreApp {
                     .is_some_and(|size| size > crate::package_import::MAX_IMPORT_BYTES as u64)
                 {
                     let error = ui::i18n!("store-package-size-refused");
+                    self.local_refusal = Some(error.clone());
                     self.set_operation_error(Some(error.clone()));
                     return Err(error);
                 }
@@ -2223,6 +2323,7 @@ impl StoreApp {
                 return Ok(Job::admitted(Request::RemoteRemove(name), Finish::Status));
             }
             StoreEffect::SubmitReport { app, operation } => {
+                ask_who_works_here()?;
                 let operation = self.check_moderation(&app, &operation, false)?;
                 self.reserve_job()?;
                 return Ok(Job::admitted(
@@ -2245,6 +2346,7 @@ impl StoreApp {
                 ));
             }
             StoreEffect::Appeal { app, operation } => {
+                ask_who_works_here()?;
                 let operation = self.check_moderation(&app, &operation, true)?;
                 self.reserve_job()?;
                 return Ok(Job::admitted(
@@ -2260,13 +2362,11 @@ impl StoreApp {
             StoreEffect::InstallRuntime { .. }
             | StoreEffect::OpenApp { .. }
             | StoreEffect::Update { .. }
-            | StoreEffect::Remove { .. }
             | StoreEffect::Pin { .. }
             | StoreEffect::Unpin { .. }
             | StoreEffect::FlatpakInstall { .. }
             | StoreEffect::FlatpakUpdate { .. }
             | StoreEffect::FlatpakOpen { .. }
-            | StoreEffect::FlatpakRemove { .. }
             | StoreEffect::FlatpakSetup { .. }
             | StoreEffect::AddBot { .. } => {}
         }
@@ -2285,11 +2385,8 @@ impl StoreApp {
             .chain(&self.remote_results)
             .find(|item| item.id == app)
             .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
-        // A blocked app is opened, installed or updated from nowhere; it can
-        // still be removed.
-        if self.blocks.is_blocked(app)
-            && !matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove)
-        {
+        // A blocked app is opened, installed or updated from nowhere.
+        if self.blocks.is_blocked(app) {
             return Err(ui::i18n!("store-blocked-refused"));
         }
         if action.requires_flatpak_host() && !self.flatpak_available {
@@ -2297,9 +2394,6 @@ impl StoreApp {
         }
         if !item.allows_action(action, self.flatpak_available) {
             return Err("this action is no longer available for the current app state".into());
-        }
-        if self.active_operation.is_some() {
-            return Err("a package operation is already in progress".into());
         }
         Ok(item.clone())
     }
@@ -2454,6 +2548,12 @@ impl StoreApp {
     fn start_job(&mut self, job: Job, cx: &mut EffectCx<Store, Self>) -> EffectAnswer {
         let parent = ui::invocation_scope::current_invoker().and_then(|_| cx.invocation());
         let Job { request, finish } = job;
+        // The app the operation is about, so its own job ends with it even
+        // when another operation was admitted meanwhile.
+        let operating = match &request {
+            Request::Act(item, _) => Some(item.id.clone()),
+            _ => None,
+        };
         if let Request::ExternalModeration(operation) = request {
             let appeal = matches!(
                 operation.mutation,
@@ -2473,7 +2573,7 @@ impl StoreApp {
                         case: Some(case),
                         ..Default::default()
                     });
-                    app.finish_job(&finish, outcome, parent, cx)
+                    app.finish_job(&finish, operating.clone(), outcome, parent, cx)
                 },
             ));
         }
@@ -2507,7 +2607,7 @@ impl StoreApp {
                     .unwrap_or_else(|_| Err("the Store worker stopped".into()))
             },
             move |app: &mut Self, outcome: Outcome, cx| {
-                app.finish_job(&finish, outcome, parent, cx)
+                app.finish_job(&finish, operating, outcome, parent, cx)
             },
         ))
     }
@@ -2515,6 +2615,7 @@ impl StoreApp {
     fn finish_job(
         &mut self,
         finish: &Finish,
+        operating: Option<String>,
         outcome: Outcome,
         parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
@@ -2526,6 +2627,12 @@ impl StoreApp {
         }
         if *finish == Finish::Package {
             self.active_operation = None;
+            if let Some(app) = operating.clone() {
+                match &outcome {
+                    Ok(finished) => self.finish_operation_job(&app, Ok(finished.status.clone())),
+                    Err(error) => self.finish_operation_job(&app, Err(error.clone())),
+                }
+            }
         } else {
             self.pending_jobs = self.pending_jobs.saturating_sub(1);
         }
@@ -2731,7 +2838,6 @@ impl StoreApp {
                     StoreEffect::FLATPAK_INSTALL,
                     StoreEffect::FLATPAK_UPDATE,
                     StoreEffect::FLATPAK_OPEN,
-                    StoreEffect::FLATPAK_REMOVE,
                     StoreEffect::FLATPAK_SETUP,
                     StoreEffect::ENABLE_REMOTE,
                     StoreEffect::DISABLE_REMOTE,
@@ -2985,9 +3091,6 @@ fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
 
 impl StoreApp {
     fn admit_update_all(&mut self) -> Result<Admitted, String> {
-        if self.active_operation.is_some() {
-            return Err("a package operation is already in progress".into());
-        }
         let updatable = self.updatable();
         let Some(&(first, action)) = updatable.first() else {
             return Err("every installed app is up to date".into());
@@ -3102,6 +3205,18 @@ fn inspect_item(
     })
 }
 
+/// A report or an appeal is signed as the person working in the workspace.
+/// The Store opens without one chosen (browsing is anonymous), so this is the
+/// moment to ask: the shell's chooser opens, and the request waits for the
+/// person to send it again as who they are.
+fn ask_who_works_here() -> Result<(), String> {
+    if !ui::workspace_identity::missing() {
+        return Ok(());
+    }
+    ui::workspace_identity::choose();
+    Err(ui::i18n!("store-identity-needed-to-sign"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3113,7 +3228,7 @@ mod tests {
         item.id = "so.tilo.runtime.chromium".into();
         item.versions[0].root_hash_hex = Some("11".repeat(32));
         item.versions[0].runtime = Some("tilo-runtime/2026.10.4-chromium".into());
-        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item);
+        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item).unwrap();
         let mut app = StoreApp::new();
         app.set_items(vec![item.clone()]);
         assert_eq!(
@@ -3124,6 +3239,37 @@ mod tests {
         app.set_items(vec![item]);
         assert!(app.admit(action).err().unwrap().contains("changed"));
         assert!(app.active_operation.is_none());
+    }
+
+    #[test]
+    fn viewing_an_app_page_needs_no_identity_only_signing_asks() {
+        use ui::framework::ResourceApp as _;
+        // The Store opens while the workspace has nobody chosen.
+        const { assert!(crate::resource::StoreShell::OPENS_WITHOUT_IDENTITY) };
+        ui::workspace_identity::set_missing(true);
+        let mut app = seeded_app();
+        app.directory
+            .set_registries(vec![moderation_test_registry()]);
+        assert!(
+            app.admit(StoreEffect::ShowDetails {
+                app: "id.notes".into(),
+            })
+            .is_ok(),
+            "an app's page opens with nobody chosen"
+        );
+        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+        draft(
+            &mut app,
+            "The app connected to a remote host while offline mode was active.",
+        );
+        let report = app.moderation_effect("id.notes", false).unwrap();
+        let refused = app.admit(report).err();
+        ui::workspace_identity::set_missing(false);
+        assert_eq!(
+            refused.as_deref(),
+            Some("Choose who you are in this workspace, then send it again."),
+            "sending a signed report is when it asks who you are"
+        );
     }
 
     #[test]
@@ -3163,6 +3309,7 @@ mod tests {
                 flatpak_error: None,
                 operation_error: Some("Earlier detail request failed".into()),
                 unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
             });
@@ -3217,6 +3364,7 @@ mod tests {
             flatpak_error: None,
             operation_error: error,
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
         };
@@ -3254,6 +3402,35 @@ mod tests {
     }
 
     #[test]
+    fn a_size_refusal_outlasts_the_workers_background_errors() {
+        let mut app = seeded_app();
+        let refused = app.admit(StoreEffect::ImportPackage {
+            path: Some("/large.tapp".into()),
+            content: None,
+            reported_size: Some(crate::package_import::MAX_IMPORT_BYTES as u64 + 1),
+        });
+        assert!(refused.is_err());
+        let size_refused = ui::i18n!("store-package-size-refused");
+        app.apply_worker_snapshot(crate::worker::Snapshot {
+            items: Vec::new(),
+            status_line: String::new(),
+            query: None,
+            detail: None,
+            remotes: Vec::new(),
+            flatpak_available: false,
+            flatpak_error: Some("App service unavailable.".into()),
+            operation_error: Some("App service unavailable.".into()),
+            unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
+            blocks: BlockList::empty(),
+            updating: None,
+        });
+        assert_eq!(app.operation_error.as_deref(), Some(size_refused.as_str()));
+        app.admit(StoreEffect::ShowRemotes).unwrap();
+        assert!(app.local_refusal.is_none(), "the next effect moves on");
+    }
+
+    #[test]
     fn late_search_feedback_preserves_the_current_declared_query() {
         let mut app = seeded_app();
         app.admit(StoreEffect::SetSearch {
@@ -3276,6 +3453,7 @@ mod tests {
             flatpak_error: None,
             operation_error: error.map(str::to_owned),
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
         };
@@ -3354,6 +3532,7 @@ mod tests {
                 flatpak_error: None,
                 operation_error: None,
                 unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
             });
@@ -3466,6 +3645,7 @@ mod tests {
                 flatpak_error: None,
                 operation_error: None,
                 unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
             });
@@ -3473,7 +3653,10 @@ mod tests {
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
-        assert!(visible.contains("Loading apps"));
+        assert!(
+            visible.contains("\"Loading\""),
+            "the catalogue on its way reads as loading: {visible}"
+        );
         assert!(!visible.contains("No apps found"));
         app.with_surface(|store: &mut StoreApp| {
             store.set_worker_busy(false);
@@ -3490,6 +3673,50 @@ mod tests {
         let visible = app.harness().inspection_json().unwrap();
         assert!(visible.contains("No apps available"));
         assert!(!visible.contains("No apps found"));
+    }
+
+    #[test]
+    fn an_expired_catalogue_is_named_as_expired_not_as_unreachable() {
+        // On 2026-10-21 Tilo main's catalogue expired and every device said
+        // the repository was unreachable; the outcome is that its catalogue
+        // expired and installed apps keep working.
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: String::new(),
+                query: None,
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: Some(
+                    "The app catalogue from Tilo main has expired. Apps you have keep working."
+                        .into(),
+                ),
+                unanswered_repositories: Vec::new(),
+                expired_repositories: vec!["Tilo main".into()],
+                blocks: BlockList::empty(),
+                updating: None,
+            });
+            store.set_worker_busy(false);
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(
+            visible.contains("The app catalogue from Tilo main has expired"),
+            "{visible}"
+        );
+        assert!(visible.contains("Apps you have keep working"), "{visible}");
+        assert!(
+            !visible.contains("Can't reach the app catalogue"),
+            "{visible}"
+        );
+        assert!(
+            !visible.contains("Could not complete the operation"),
+            "{visible}"
+        );
     }
 
     #[test]
@@ -3549,6 +3776,15 @@ mod tests {
         .unwrap();
         app.harness().resize((520, 820)).unwrap();
         app.harness().set_theme(Theme::light());
+        // Opening the page discloses its banner over a few frames. Compare
+        // paints from the page at rest, as a person sees it a moment after
+        // it opened, so the comparisons below measure the theme and the text
+        // setting rather than how far that entrance has run.
+        assert!(
+            app.harness()
+                .settle_for_capture(tilo_test_env::hang_bound()),
+            "the opened page comes to rest"
+        );
         let mut previous = app.harness().scene().encoding().draw_data.clone();
         assert!(!previous.is_empty(), "the actual Store must paint");
         let input_height = app.harness().targets()["store.remote.name"].height();
@@ -3609,7 +3845,6 @@ mod tests {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
             store.worker = None;
-            // This controlled source fixture replaces the initial missing-service snapshot.
             store.set_operation_error(None);
             store.set_items(crate::fixture::fixture_catalog());
             store.set_flatpak_available(true);
@@ -3679,7 +3914,10 @@ mod tests {
             store.set_worker_busy(false);
             store.set_operation_error(Some(crate::flathub_client::remote_error(
                 &remote,
-                "Failed: remote exception: remote exception: command timed out after 8000 ms",
+                &app_host::client::CatalogueError::Refused {
+                    refusal: app_host::client::Refusal::TimedOut,
+                    detail: "command timed out after 8000 ms".into(),
+                },
             )));
         })
         .unwrap();
@@ -3745,14 +3983,8 @@ mod tests {
                 app.harness().set_theme(Theme::named(theme).unwrap());
                 for (width, height) in [(1472, 920), (420, 860)] {
                     app.harness().resize((width, height)).unwrap();
-                    let control = app
-                        .harness()
-                        .controls()
-                        .into_iter()
-                        .find(|control| control.name.as_deref() == Some(action))
-                        .unwrap_or_else(|| panic!("{scenario}: missing {action}"));
                     assert!(
-                        !control.disabled,
+                        owner_can_use(&mut app, action),
                         "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
                     );
                     let additional = match scenario {
@@ -3764,14 +3996,8 @@ mod tests {
                         _ => &[][..],
                     };
                     for name in additional {
-                        let control = app
-                            .harness()
-                            .controls()
-                            .into_iter()
-                            .find(|control| control.name.as_deref() == Some(name))
-                            .unwrap_or_else(|| panic!("{scenario}: missing {name}"));
                         assert!(
-                            !control.disabled,
+                            owner_can_use(&mut app, name),
                             "{scenario}: {name} unavailable in {theme}/{width}"
                         );
                     }
@@ -3796,6 +4022,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The catalogue's actions, which are the window bar's slots
+    /// ([`super::window_bar`]), not controls the Store draws.
+    const BAR_ACTIONS: [&str; 3] = [
+        "Review package",
+        "Flatpak repositories",
+        "Trust and moderation",
+    ];
+
+    /// Whether the ordinary owner can use `name` where it lives: an enabled
+    /// slot in the window's bar for the catalogue's actions (and no control
+    /// of the window's own), else an enabled control on screen.
+    fn owner_can_use(
+        app: &mut ui::framework::testing::TestApp<crate::resource::StoreShell>,
+        name: &str,
+    ) -> bool {
+        let drawn = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(name));
+        if BAR_ACTIONS.contains(&name) {
+            assert!(
+                drawn.is_none(),
+                "{name} is the window bar's, not a row the Store draws"
+            );
+            let toolbar =
+                ui::window_toolbar::declared().expect("the Store declares its window bar");
+            let slot = toolbar
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("missing {name} in the window's bar: {toolbar:?}"));
+            return slot.enabled;
+        }
+        !drawn.unwrap_or_else(|| panic!("missing {name}")).disabled
     }
 
     fn review_store_interactions(
@@ -4707,8 +4970,8 @@ mod tests {
         assert_eq!(job.finish, Finish::Package);
         assert_eq!(app.status_line(), "Updating 2 apps…");
         assert!(
-            app.admit(StoreEffect::UpdateAll).is_err(),
-            "a second update-all waits for the first"
+            app.admit(StoreEffect::UpdateAll).is_ok(),
+            "a second update-all is its own job, not a refusal"
         );
 
         let mut current = seeded_app();
@@ -4766,7 +5029,6 @@ mod tests {
     /// search ranks on this device; the categories are the catalogue's.
     #[test]
     fn catalogue_views_and_search_rank_visible_items() {
-        // Case `discover_features_tilo_apps_not_yet_on_this_device`.
         {
             let app = seeded_app();
             let names: Vec<&str> = app
@@ -4781,7 +5043,6 @@ mod tests {
             );
         }
 
-        // Case `on_this_device_shows_only_installed_apps`.
         {
             let mut app = seeded_app();
             app.show_view(View::Installed);
@@ -4793,7 +5054,6 @@ mod tests {
             assert_eq!(names, vec!["Terminal"]);
         }
 
-        // Case `a_category_lists_its_apps`.
         {
             let mut app = seeded_app();
             app.admit(StoreEffect::SetCategory {
@@ -4808,7 +5068,6 @@ mod tests {
             assert_eq!(names, vec!["Chess"]);
         }
 
-        // Case `search_narrows_and_ranks_by_score`.
         {
             let mut app = seeded_app();
             // "Term" only matches Terminal — Notes contains "te" but not
@@ -4836,7 +5095,6 @@ mod tests {
             );
         }
 
-        // Case `categories_are_the_catalogues`.
         {
             let app = seeded_app();
             let cats = app.categories();
@@ -4853,7 +5111,6 @@ mod tests {
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn resource_snapshots_are_bounded_and_resolve_canonically() {
-        // Case `worker_snapshot_does_not_reindex_on_the_ui_thread`.
         {
             let directory = crate::search::StoreDirectory::default();
             let mut app = StoreApp::new().with_directory(directory.clone());
@@ -4892,7 +5149,6 @@ mod tests {
             assert!(row.actions.iter().any(|action| action.id == "show-details"));
         }
 
-        // Case `published_rows_are_bounded_and_omitted_apps_resolve_by_id`.
         {
             let mut app = StoreApp::new();
             let mut items = Vec::new();
@@ -4952,7 +5208,6 @@ mod tests {
             );
         }
 
-        // Case `remotes_and_moderation_rows_resolve_by_id`.
         {
             let mut app = seeded_app();
             app.set_remotes(vec![crate::flathub_client::Remote {
@@ -4975,7 +5230,6 @@ mod tests {
             );
         }
 
-        // Case `app_rows_include_bounded_catalogue_context_for_nonvisual_clients`.
         {
             let app = seeded_app();
             let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
@@ -4996,7 +5250,6 @@ mod tests {
     /// Remote configuration rejects hostile input and unsubmitted drafts stay on their device.
     #[test]
     fn remote_configuration_is_validated_and_drafts_stay_local() {
-        // Case `remote_configuration_rejects_hostile_sizes_and_control_characters`.
         {
             assert!(validate_remote_name("flathub").is_ok());
             assert!(validate_remote_name(&"r".repeat(MAX_REMOTE_NAME_CHARS + 1)).is_err());
@@ -5011,7 +5264,6 @@ mod tests {
             );
         }
 
-        // Case `unsubmitted_remote_draft_stays_on_its_device`.
         {
             let mut app = seeded_app();
             let doc = AutoCommit::new();
@@ -5034,7 +5286,6 @@ mod tests {
             &[("en-US", include_str!("../locales/en-US.ftl"))],
         )
         .unwrap();
-        // Case `device_copy_distinguishes_tilo_on_demand_from_flatpak_installation`.
         {
             let tilo = item(
                 "Notes",
@@ -5060,7 +5311,6 @@ mod tests {
             assert_eq!(flatpak.action_kind(true).label(), "Install");
         }
 
-        // Case `the_title_says_where_the_person_is`.
         {
             let mut app = seeded_app();
             assert_eq!(app.page_title(), "Discover");
@@ -5077,7 +5327,6 @@ mod tests {
     /// Availability groups, narrow cards, medium summaries and the narrow discover section.
     #[test]
     fn catalogue_grids_keep_cards_apart_at_narrow_and_medium_widths() {
-        // Case `narrow_cards_do_not_cover_each_others_actions`.
         {
             fn check(widget: &dyn Widget) {
                 if widget.name() == "Card" {
@@ -5106,7 +5355,6 @@ mod tests {
             check(list.root_widget());
         }
 
-        // Case `catalogue_never_titles_the_window`.
         {
             let app = seeded_app();
             let tree = app.compose(&Theme::dark());
@@ -5117,15 +5365,17 @@ mod tests {
             );
         }
 
-        // Case `first_empty_busy_catalogue_is_real_chrome_not_a_flat_fill`.
         {
             let mut app = StoreApp::new();
             app.set_worker_busy(true);
             let tree = app.compose(&Theme::dark());
-            assert_eq!(accessible_name_count(tree.as_ref(), "Loading apps"), 1);
+            assert_eq!(
+                accessible_name_count(tree.as_ref(), "Loading"),
+                1,
+                "the catalogue on its way reads as loading"
+            );
         }
 
-        // Case `full_narrow_discover_keeps_its_shelves_apart`.
         {
             let mut app = seeded_app();
             app.set_items(crate::fixture::fixture_catalog());
@@ -5315,7 +5565,6 @@ mod tests {
     /// Card pointer and primary activation invoke the Store's effects.
     #[test]
     fn cards_and_detail_controls_keep_typed_local_bindings() {
-        // Case `card_pointer_details_and_primary_activation_keep_typed_bindings`.
         {
             for width in [480.0, 1200.0] {
                 let app = seeded_app();
@@ -5327,7 +5576,7 @@ mod tests {
                     primary.progress = busy.then(|| view::progress_label(action, &item.name));
                     let card = crate::widgets::app::card(
                         item,
-                        primary,
+                        Some(primary),
                         bindings::show_details(item),
                         None,
                     );
@@ -5373,7 +5622,9 @@ mod tests {
                     } else {
                         assert_eq!(
                             invoked.unwrap().address.action,
-                            crate::resource::StoreEffect::package(action, item).id()
+                            crate::resource::StoreEffect::package(action, item)
+                                .expect("a primary action is the Store's")
+                                .id()
                         );
                     }
                 }
@@ -5384,7 +5635,6 @@ mod tests {
     /// Stacked geometry, contained actions, the three-column measure and the large-text layout.
     #[test]
     fn catalogue_measures_stay_finite_contained_and_stacked_under_large_text() {
-        // Case `full_catalogue_geometry_stays_finite_at_every_width_and_text_scale`.
         {
             for (width, scale) in [(480.0, 1.0), (1_280.0, 2.0)] {
                 let mut app = seeded_app();
@@ -5395,7 +5645,6 @@ mod tests {
             }
         }
 
-        // Case `catalogue_cards_contain_actions_and_align_long_descriptions`.
         {
             fn check(widget: &dyn Widget, found: &mut usize) {
                 if widget.name() == "CardGrid" {
@@ -5447,7 +5696,6 @@ mod tests {
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn status_and_accessibility_surfaces_are_named_bounded_live_regions() {
-        // Case `operation_notice_uses_shared_live_banner_semantics`.
         {
             fn banner(widget: &dyn Widget) -> Option<AccessNode> {
                 if let Some(node) = widget.accessibility()
@@ -5502,7 +5750,6 @@ mod tests {
             assert_eq!(invoked.address.action, StoreEffect::Refresh.id());
         }
 
-        // Case `root_accessibility_is_a_named_window_not_an_empty_generic`.
         {
             let mut app = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
@@ -5512,7 +5759,6 @@ mod tests {
             assert!(node.bounds.is_some());
         }
 
-        // Case `publisher_identity_reads_as_a_short_fingerprint_with_the_full_key_kept`.
         {
             let mut signed = item(
                 "Signed",
@@ -5530,7 +5776,6 @@ mod tests {
             );
         }
 
-        // Case `visible_operation_status_is_printable_and_bounded`.
         {
             assert_eq!(visible_operation_status("\n\t"), UNKNOWN_OPERATION_STATUS);
             assert_eq!(
@@ -5546,7 +5791,6 @@ mod tests {
             assert!(visible.ends_with('…'));
         }
 
-        // Case `resource_detail_excerpt_is_printable_and_byte_bounded`.
         {
             assert_eq!(resource_detail_excerpt(" one\n\ttwo  "), "one two");
             let detail = resource_detail_excerpt(&format!("{}\nignored", "界".repeat(200)));
@@ -5555,7 +5799,6 @@ mod tests {
             assert!(!detail.contains('\n'));
         }
 
-        // Case `operation_status_is_exposed_as_a_polite_live_region`.
         {
             let mut app = seeded_app();
             app.set_status_line("Installing Notes…");
@@ -5587,7 +5830,6 @@ mod tests {
     /// operations are worker jobs; a card's operation holds it until done.
     #[test]
     fn refresh_and_package_operations_are_worker_jobs() {
-        // Case `update_priority_follows_the_current_catalogue_snapshot`.
         {
             let mut app = seeded_app();
             let mut files = item(
@@ -5632,7 +5874,6 @@ mod tests {
             );
         }
 
-        // Case `refresh_is_a_worker_job`.
         {
             let mut app = seeded_app();
             let job = admitted_job(&mut app, StoreEffect::Refresh);
@@ -5640,7 +5881,6 @@ mod tests {
             assert_eq!(job.finish, Finish::Status);
         }
 
-        // Case `app_operation_locks_the_target_card_until_it_finishes`.
         {
             let mut app = seeded_app();
             let open = StoreEffect::OpenApp {
@@ -5656,9 +5896,15 @@ mod tests {
                 Some(("id.notes".into(), ActionKind::Open))
             );
             assert_eq!(app.status_line(), "Opening Notes…");
+            // Jobs are concurrent by construction: a second operation is a
+            // second row, not a refusal that freezes the Store.
             assert!(
-                app.admit(open).is_err(),
-                "the card action cannot double-submit while the worker owns it"
+                app.admit(open).is_ok(),
+                "the Store stays usable while an operation runs"
+            );
+            assert!(
+                app.operation_jobs.values().filter(|_| true).count() >= 1,
+                "the operation is a job the whole system sees"
             );
             app.set_worker_busy(true);
             app.set_worker_busy(false);
@@ -5666,7 +5912,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the app store"
     /// A blocked app is in no list and no search and cannot be installed; its
     /// page says who blocked it; only the person who blocked it lifts it,
     /// and the list is the one desktop search reads.
@@ -5706,7 +5951,7 @@ mod tests {
         let inspected = app.inspect_catalogue(Some("id.chess")).unwrap();
         assert_eq!(inspected["detail"]["blocked_by"][0]["kind"], "person");
         assert!(
-            app_catalogue::BlockList::load().is_blocked("id.chess"),
+            ui::registry::BlockList::load().is_blocked("id.chess"),
             "the person's list is the one desktop search reads"
         );
         app.admit(StoreEffect::UnblockApp {
@@ -5714,7 +5959,7 @@ mod tests {
         })
         .unwrap();
         assert!(!app.blocks.is_blocked("id.chess"));
-        assert!(!app_catalogue::BlockList::load().is_blocked("id.chess"));
+        assert!(!ui::registry::BlockList::load().is_blocked("id.chess"));
         app.set_blocks(BlockList::empty().with_workspace_policy("School", ["id.chess"]));
         assert!(
             app.admit(StoreEffect::UnblockApp {
@@ -5730,7 +5975,6 @@ mod tests {
     /// and an unknown filter is refused.
     #[test]
     fn browse_effects_filter_this_window_only() {
-        // Case `live_constructor_starts_empty`.
         {
             // The live app must show a real (empty) catalog until the
             // refresh worker streams one — never a fabricated one.
@@ -5740,7 +5984,6 @@ mod tests {
             assert!(app.query().is_empty());
         }
 
-        // Case `search_effect_filters_the_catalogue_and_reaches_the_worker`.
         {
             let mut app = seeded_app();
             let doc = AutoCommit::new();
@@ -5755,7 +5998,6 @@ mod tests {
             assert_eq!(names, vec!["Terminal"]);
         }
 
-        // Case `one_window_cannot_navigate_another_with_document_filters`.
         {
             let mut first = seeded_app();
             let mut second = seeded_app();
@@ -5769,7 +6011,6 @@ mod tests {
             assert_eq!(doc.get_heads(), heads, "browsing writes nothing");
         }
 
-        // Case `agent_browse_effects_match_the_local_controls`.
         {
             let mut app = seeded_app();
             app.scroll_offset.set((0.0, 240.0));
@@ -5818,7 +6059,6 @@ mod tests {
             );
         }
 
-        // Case `details_and_remotes_are_routes_of_this_window`.
         {
             let mut app = seeded_app();
             app.admit(StoreEffect::ShowDetails {
@@ -5842,23 +6082,20 @@ mod tests {
         }
     }
 
-    /// Stale or host-less Flatpak operations are unavailable and refused.
     #[test]
     fn flatpak_and_stale_operations_are_refused_without_escalation() {
-        // Case `stale_operation_cannot_escalate_to_an_unoffered_mutation`.
         {
             let mut app = seeded_app();
             assert!(
-                app.admit(StoreEffect::Remove {
+                app.admit(StoreEffect::Update {
                     app: "id.notes".into()
                 })
                 .is_err(),
-                "an uninstalled app offers Open, not an arbitrary stale Remove"
+                "an uninstalled app offers Open, not an arbitrary stale Update"
             );
             assert!(app.active_operation.is_none());
         }
 
-        // Case `flatpak_operations_are_unavailable_without_a_flatpak_host`.
         {
             let mut app = seeded_app();
             app.items
@@ -5876,58 +6113,74 @@ mod tests {
                 .live_row("app:id.chess")
                 .expect("an app row resolves")
                 .into_resource();
-            for id in ["flatpak-setup", "flatpak-remove"] {
-                let action = chess.actions.iter().find(|action| action.id == id).unwrap();
-                assert!(matches!(
-                    action.contract.availability,
-                    ui::tilo_actions::Availability::Unavailable { ref code, .. }
-                        if code == "flatpak_host_unavailable"
-                ));
-            }
+            let setup = chess
+                .actions
+                .iter()
+                .find(|action| action.id == "flatpak-setup")
+                .unwrap();
+            assert!(matches!(
+                setup.contract.availability,
+                ui::tilo_actions::Availability::Unavailable { ref code, .. }
+                    if code == "flatpak_host_unavailable"
+            ));
             assert!(
                 app.effect_statuses()
                     .iter()
                     .any(|status| *status
                         == EffectStatus::unavailable(
-                            StoreEffect::FLATPAK_REMOVE,
+                            StoreEffect::FLATPAK_UPDATE,
                             "flatpak_host_unavailable",
                             "Flatpak is not installed on this host; install it before using Flatpak catalog actions",
                         ))
             );
             assert!(
-                app.admit(StoreEffect::FlatpakRemove {
+                app.admit(StoreEffect::FlatpakUpdate {
                     app: "id.chess".into()
                 })
                 .is_err(),
                 "a direct invocation cannot bypass the unavailable operation"
             );
         }
+    }
 
-        // Case `flatpak_remove_asks_first_at_its_exact_address`.
-        {
-            let mut app = seeded_app();
-            app.items
-                .iter_mut()
-                .find(|item| item.id == "id.chess")
-                .unwrap()
-                .installed = InstalledState::Installed {
-                version: "1".into(),
-                available: "1".into(),
-                pinned: false,
-                user_managed: true,
-            };
-            let chess = app.live_row("app:id.chess").unwrap().into_resource();
-            let remove = chess
-                .actions
-                .iter()
-                .find(|action| action.id == "flatpak-remove")
-                .expect("Flatpak remove is offered at its concrete address");
-            assert_eq!(
-                remove.contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::Confirm
+    #[test]
+    fn uninstalling_is_the_systems_one_action_not_a_store_effect() {
+        let mut app = seeded_app();
+        for item in &mut app.items {
+            if item.id == "id.chess" || item.id == "id.notes" {
+                item.installed = InstalledState::Installed {
+                    version: "1".into(),
+                    available: "1".into(),
+                    pinned: false,
+                    user_managed: true,
+                };
+            }
+        }
+        for (row, remove) in [
+            ("app:id.chess", ActionKind::FlatpakRemove),
+            ("app:id.notes", ActionKind::Remove),
+        ] {
+            let resource = app.live_row(row).unwrap().into_resource();
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .all(|action| action.id != "remove" && action.id != "flatpak-remove")
             );
-            let item = app.items.iter().find(|item| item.id == "id.chess").unwrap();
-            assert!(bindings::package(item, ActionKind::FlatpakRemove).is_some());
+            let item = app
+                .items
+                .iter()
+                .find(|item| row.ends_with(&item.id))
+                .unwrap();
+            assert_eq!(item.remove_action(), Some(remove));
+            assert!(StoreEffect::package(remove, item).is_none());
+            let binding = bindings::package(item, remove).unwrap();
+            let uninstall = bindings::uninstall(item);
+            assert_eq!(binding.address(), uninstall.address());
+            assert_eq!(
+                binding.invoke(()).unwrap().arguments,
+                uninstall.invoke(()).unwrap().arguments
+            );
         }
     }
 
@@ -5939,7 +6192,6 @@ mod tests {
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn moderation_effects_are_bounded_and_target_checked() {
-        // Case `a_draft_is_submitted_with_its_note_to_its_registry`.
         {
             let mut app = seeded_app();
             app.directory
@@ -6000,7 +6252,6 @@ mod tests {
             );
         }
 
-        // Case `a_case_is_refreshed_and_appealed_at_its_registry`.
         {
             let mut app = seeded_app();
             app.directory
@@ -6047,7 +6298,6 @@ mod tests {
             assert!(!offered.contains(&"submit-report"));
         }
 
-        // Case `only_a_well_formed_case_about_the_reported_app_is_recorded`.
         {
             let record = case_record("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
             assert_eq!(
@@ -6062,7 +6312,6 @@ mod tests {
             assert!(case_record("id.notes", "id.other", "case-authoritative", "Open").is_err());
         }
 
-        // Case `registry_work_is_bounded`.
         {
             let mut app = seeded_app();
             app.pending_jobs = MAX_PENDING_EXTERNAL_OPERATIONS;

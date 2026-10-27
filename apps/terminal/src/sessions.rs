@@ -91,6 +91,16 @@ pub struct Sessions {
     /// The person took the tab's offer of the device's own shell; opened at
     /// the next sync.
     pub host_requested: bool,
+    /// The places a listing off the UI thread found, once it answers.
+    listing: Option<std::sync::mpsc::Receiver<Listing>>,
+}
+
+/// What the supervisor listed: the environments, the person's relays and
+/// the legacy VMs. `None` where it could not say.
+struct Listing {
+    environments: Option<Vec<EnvironmentSummary>>,
+    relays: Option<Vec<crate::target::RelaySummary>>,
+    legacy_vms: Vec<String>,
 }
 
 impl std::fmt::Debug for Sessions {
@@ -123,6 +133,7 @@ impl Sessions {
             allow: None,
             intent: None,
             host_requested: false,
+            listing: None,
         }
     }
 
@@ -334,10 +345,71 @@ impl Sessions {
         }
     }
 
+    /// [`Self::refresh_environments`] off the UI thread, for a picker that
+    /// is declared ahead of being opened (the window bar's): the listing
+    /// lands at a later [`Self::poll_environment_refresh`], and `waker`
+    /// brings that about. Only a shell-hosted tab lists anything.
+    pub(crate) fn refresh_environments_in_background(
+        &mut self,
+        waker: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
+    ) {
+        if !matches!(self.source, Source::Hosted { .. }) || self.listing.is_some() {
+            return;
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-terminal-list-places".into())
+            .spawn(move || {
+                let legacy_vms = tilo_paths::xdg::data_home()
+                    .map(|data| legacy_vms_under(&data))
+                    .unwrap_or_default();
+                let environments = crate::HostedProcessServices::ask(
+                    &serde_json::json!({"op": "list-environments"}),
+                )
+                .and_then(|reply| parse_directory_reply(&reply))
+                .ok();
+                let relays =
+                    crate::HostedProcessServices::ask(&serde_json::json!({"op": "list-relays"}))
+                        .ok()
+                        .map(|reply| parse_relays_reply(&reply));
+                let _ = send.send(Listing {
+                    environments,
+                    relays,
+                    legacy_vms,
+                });
+                crate::inner::request_terminal_wake(&waker);
+            });
+        if spawned.is_ok() {
+            self.listing = Some(receive);
+        }
+    }
+
+    /// Take what a listing off the UI thread found, once it answered.
+    /// Returns whether it did.
+    pub(crate) fn poll_environment_refresh(&mut self) -> bool {
+        let Some(receive) = self.listing.as_ref() else {
+            return false;
+        };
+        let listing = match receive.try_recv() {
+            Ok(listing) => listing,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.listing = None;
+                return false;
+            }
+        };
+        self.listing = None;
+        self.legacy_vms = listing.legacy_vms;
+        if let Some(environments) = listing.environments {
+            self.environments = environments;
+        }
+        if let Some(relays) = listing.relays {
+            self.relays = relays;
+        }
+        true
+    }
+
     /// Create an environment named `name`; returns its record key.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn create_environment(&mut self, name: &str) -> Result<String, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -355,10 +427,6 @@ impl Sessions {
             .ok_or_else(|| "the environment was not created".into())
     }
 
-    /// Rename the environment `record`.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn rename_environment(&mut self, record: &str, name: &str) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
@@ -373,9 +441,6 @@ impl Sessions {
     }
 
     /// Grant the environment `record` a folder, read-write or read-only.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn grant_folder(&mut self, record: &str, path: &str, writable: bool) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
@@ -403,9 +468,6 @@ impl Sessions {
 }
 
 /// Decode the supervisor's environment list.
-///
-/// # Errors
-/// Returns the supervisor's reason, or why the reply was not understood.
 pub(crate) fn parse_directory_reply(reply: &str) -> Result<Vec<EnvironmentSummary>, String> {
     #[derive(serde::Deserialize)]
     struct Entry {

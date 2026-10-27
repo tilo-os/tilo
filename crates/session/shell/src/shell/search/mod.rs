@@ -5,7 +5,9 @@
 //! resources). Providers answer a single `query` call per keystroke — no
 //! re-query per resource kind, so a network-backed provider gets exactly one
 //! round-trip per input. [`SearchScope::ActiveApp`] narrows the fanout to
-//! whichever provider owns the focused tab ([`SearchProvider::owns_tab`]);
+//! whichever provider owns the focused tab ([`SearchProvider::owns_tab`])
+//! and the providers that keep to the focused app themselves
+//! ([`SearchProvider::narrows_to_active_app`]), and nothing else;
 //! `Workspace` and `All` fan out to every provider, but `Workspace` ranks
 //! resources from the focused app ahead of equally relevant global results.
 
@@ -13,10 +15,14 @@ pub mod action_api;
 pub mod app_content_index;
 pub mod files_index;
 pub mod invocation_wake;
+pub mod launcher;
 pub mod providers;
+pub mod recent_places;
 #[cfg(test)]
 mod relevance_tests;
+mod timing;
 pub mod usage;
+pub mod verifier;
 pub mod visibility;
 
 use std::cell::RefCell;
@@ -32,7 +38,7 @@ use action_api::{ActionArgs, ActionError, ActionParam};
 use ui::search::system::{self, query_input_is_bounded};
 
 /// Portable search vocabulary and provider page contract, retained at the native API path.
-pub use ui::search::system::{ResourceKind, SearchBudget, SearchCursor};
+pub use ui::search::system::{Availability, ResourceKind, SearchBudget, SearchCursor};
 pub type SearchPage = system::SearchPage<SearchResult>;
 
 /// One page of a retained [`tilo_search::SearchIndex`] query. The cursor
@@ -72,7 +78,7 @@ pub(crate) fn index_page(
                 .id
                 .len()
                 .saturating_add(row.title.len())
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+                .saturating_add(row.secondary_len());
             if results.len() >= budget.max_results
                 || bytes.saturating_add(row_bytes) > budget.max_bytes
             {
@@ -177,7 +183,6 @@ impl ResourceKindText for ResourceKind {
         match self {
             ResourceKind::Action => t("search-kind-actions"),
             ResourceKind::Application => t("search-kind-applications"),
-            ResourceKind::HostApplication => t("search-kind-host-apps"),
             ResourceKind::Note => t("search-kind-notes"),
             ResourceKind::Record => t("search-kind-records"),
             ResourceKind::File => t("search-kind-files"),
@@ -310,6 +315,15 @@ const HEADLESS_MAX_PAGES: usize = 256;
 const HEADLESS_MAX_RESULTS: usize = 16_384;
 const HEADLESS_MAX_BYTES: usize = 16 * 1024 * 1024;
 impl SearchResult {
+    /// Bytes on the secondary line, whether it is `subtitle` or facts.
+    #[must_use]
+    pub fn secondary_len(&self) -> usize {
+        self.facts.iter().fold(
+            self.subtitle.as_ref().map_or(0, String::len),
+            |bytes, fact| bytes.saturating_add(fact.len()),
+        )
+    }
+
     /// Show the secondary line as these facts ([`Self::facts`]): each its
     /// own run, never one string joined by a glyph.
     #[must_use]
@@ -490,6 +504,18 @@ pub trait SearchProvider {
     /// The set of kinds this provider CAN return; contributes chips to
     /// the palette's filter strip.
     fn resource_kinds(&self) -> &[ResourceKind];
+    /// The launcher section this provider's answer to the empty query
+    /// fills ([`launcher`]): what global search shows before anything is
+    /// typed. `None` for a provider that has nothing to offer there.
+    fn launcher_section(&self) -> Option<launcher::LauncherSection> {
+        None
+    }
+    /// The rows this provider shows in its [`Self::launcher_section`] for
+    /// `ctx` (its needle empty; its scope the current workspace or every
+    /// workspace). By default every page of its answer to the empty query.
+    fn launcher_rows(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        launcher::every_page(self, ctx)
+    }
     /// Run the search. `wanted` is the set of kinds currently asked for
     /// (filter chips + scope); a remote-backed provider should dispatch
     /// ONE query and split the response into the wanted kinds.
@@ -528,6 +554,18 @@ pub trait SearchProvider {
     /// find by the row's kind and id: an app this device does not have yet
     /// wears its catalogue icon. `None` keeps the icon.
     fn row_image(&self, _result: &SearchResult) -> Option<ui::icons::AppImage> {
+        None
+    }
+
+    /// The people a row of this provider is about, worn as faces at the
+    /// row's end (who is in a workspace, in a call). Empty for most rows.
+    fn row_faces(&self, _result: &SearchResult) -> Vec<ui::widget::command_palette::RowFace> {
+        Vec::new()
+    }
+
+    /// What choosing a row of this provider does, shown at its end
+    /// ("Join", "Answer"), for a row whose outcome its title does not say.
+    fn row_outcome(&self, _result: &SearchResult) -> Option<String> {
         None
     }
 
@@ -627,11 +665,14 @@ pub trait SearchProvider {
     fn owns_tab(&self, _tab_id: u64, _chrome: &ChromeState) -> bool {
         false
     }
-    /// Keep this provider available while the palette is narrowed to the
-    /// focused app. Shell-level commands are still useful in that scope: a
-    /// person should not have to switch search scopes just to open Activity,
-    /// Settings, or another piece of workspace chrome.
-    fn available_in_active_app_scope(&self) -> bool {
+    /// Whether this provider keeps to the focused app under
+    /// [`SearchScope::ActiveApp`]: it reads [`SearchContext::effective_scope`]
+    /// and answers only with the focused app's own rows. A search scoped to
+    /// an app shows that app and nothing else; system actions, settings,
+    /// people, windows and other apps come back only when the person clears
+    /// the scope. So only a provider that narrows itself says yes; one that
+    /// serves the whole desktop stays out of the scope entirely.
+    fn narrows_to_active_app(&self) -> bool {
         false
     }
 
@@ -643,10 +684,17 @@ pub trait SearchProvider {
     }
 
     /// Whether `result` opens the app whose windows announce `app_id` (a
-    /// package id, a Wayland app id). Search shows one row per open app: the
-    /// app's row takes over its latest window's row and switches to it.
+    /// package id, a Wayland app id). Search ranks an app's row beside the
+    /// rows of its open windows; each stays its own row.
     fn opens_app(&self, _result: &SearchResult, _app_id: &str) -> bool {
         false
+    }
+
+    /// This provider's row that starts the app whose windows announce
+    /// `app_id`, whatever was typed: what a new window of an open window's
+    /// app runs. `None` when the app is not this provider's.
+    fn app_row(&self, _app_id: &str) -> Option<SearchResult> {
+        None
     }
 
     /// Whether a person typing `needle` should not be offered `result`: a
@@ -663,6 +711,14 @@ pub trait SearchProvider {
         false
     }
 
+    /// How far `result` is from the person: theirs, a Tilo app that opens
+    /// at once, or an app they would install first. The merge ranks the
+    /// last after everything they have, whatever its match
+    /// ([`system::order_hits`]).
+    fn availability(&self, _result: &SearchResult) -> Availability {
+        Availability::OnDevice
+    }
+
     /// Whether `result` is the row that answers any query, after every
     /// match (searching the web for it): a person typing sees it last, below
     /// whatever matched, and it never takes a row from a match.
@@ -672,7 +728,7 @@ pub trait SearchProvider {
 
     /// What `needle` says about `result` beyond the lexical fit of its title,
     /// added to its strength at the merge: a row the query names by another
-    /// word ("youtube cats" for "Search YouTube for cats") ranks like an
+    /// word ("youtube cats" for "Search `YouTube` for cats") ranks like an
     /// exact name, and a row that stands in for an app's own (a web service
     /// an app serves) gives way to it. Zero for most rows.
     fn intent_strength(&self, _result: &SearchResult, _needle: &str) -> f32 {
@@ -684,6 +740,15 @@ pub trait SearchProvider {
     /// palette says so ("Matches “darker”"), or the row looks unrelated.
     fn match_reason(&self, _result: &SearchResult, _needle: &str) -> Option<String> {
         None
+    }
+
+    /// Whether activating `result` flips a switch the person watches: the
+    /// palette stays open and rebuilds its rows at once, so the row's state
+    /// pill shows the value it was just switched to and the next activation
+    /// switches it back. Every switch row says yes, whichever provider
+    /// serves it.
+    fn toggles_in_place(&self, _result: &SearchResult) -> bool {
+        false
     }
 
     /// Whether ←/→ step `result`'s value in place ([`Self::adjust`]).
@@ -723,12 +788,18 @@ pub(crate) fn match_reason_in(
 ) -> Option<String> {
     use ui::search::FieldWeight;
     let words: Vec<&str> = needle.split_whitespace().collect();
-    let shows = |text: &str| {
+    let shows = |text: &str, weight: FieldWeight| {
         words
             .iter()
-            .any(|word| tilo_search::locate(word, text).is_some())
+            .any(|word| tilo_search::locate(word, text, weight).is_some())
     };
-    if words.is_empty() || shows(&result.title) || result.subtitle.as_deref().is_some_and(shows) {
+    if words.is_empty()
+        || shows(&result.title, FieldWeight::TITLE)
+        || result
+            .subtitle
+            .as_deref()
+            .is_some_and(|subtitle| shows(subtitle, FieldWeight::SUBTITLE))
+    {
         return None;
     }
     fields
@@ -742,11 +813,13 @@ pub(crate) fn match_reason_in(
             ]
             .contains(weight)
         })
-        .map(|(text, _)| text.trim())
+        .map(|(text, weight)| (text.trim(), *weight))
         // An address ("quick-settings.volume.set") is no reason a person reads.
-        .filter(|text| !text.contains(['.', ':', '/']))
-        .find(|text| text.chars().count() <= MATCH_REASON_MAX_SCALARS && shows(text))
-        .map(str::to_owned)
+        .filter(|(text, _)| !text.contains(['.', ':', '/']))
+        .find(|(text, weight)| {
+            text.chars().count() <= MATCH_REASON_MAX_SCALARS && shows(text, *weight)
+        })
+        .map(|(text, _)| text.to_owned())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -796,7 +869,7 @@ fn estimated_result_bytes(result: &SearchResult) -> usize {
         .len()
         .saturating_add(result.id.len())
         .saturating_add(result.title.len())
-        .saturating_add(result.subtitle.as_ref().map_or(0, String::len))
+        .saturating_add(result.secondary_len())
         .saturating_add(result.params.len().saturating_mul(64))
 }
 
@@ -1069,6 +1142,33 @@ impl SearchRegistry {
         })
     }
 
+    /// Keep the indexes the launcher reads built while the palette is
+    /// closed, so its first opening lists what it settles on instead of
+    /// filling in over the next frames as builds that opening started land.
+    /// Each poll compares generations until a source changes; a build runs
+    /// on its own thread and wakes the loop when it is done.
+    pub fn maintain_launcher_indexes(
+        &self,
+        chrome: &ChromeState,
+        doc: &AutoCommit,
+        doc_root: &ObjId,
+    ) {
+        for provider in self.providers_iter() {
+            if provider.launcher_section().is_none() {
+                continue;
+            }
+            provider.refresh_search_index(&SearchContext {
+                query_scope: Some(SearchScope::Workspace),
+                include_programmatic: false,
+                needle: "",
+                wanted: provider.resource_kinds(),
+                chrome,
+                doc,
+                doc_root,
+            });
+        }
+    }
+
     /// Poll/start retained index maintenance without routing a query. This is
     /// intentionally separate from `query`, `query_revision`, and
     /// `query_provider_page`: a cold 100k source must never be flattened on
@@ -1251,6 +1351,25 @@ impl SearchRegistry {
             .row_image(result)
     }
 
+    /// The faces the provider that returned `result` gives it
+    /// ([`SearchProvider::row_faces`]).
+    pub fn row_faces(&self, result: &SearchResult) -> Vec<ui::widget::command_palette::RowFace> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)
+            .map(|provider| provider.row_faces(result))
+            .unwrap_or_default()
+    }
+
+    /// What choosing `result` does, as its provider says
+    /// ([`SearchProvider::row_outcome`]).
+    pub fn row_outcome(&self, result: &SearchResult) -> Option<String> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)
+            .and_then(|provider| provider.row_outcome(result))
+    }
+
     /// The other actions the provider that returned `result` offers for it
     /// ([`SearchProvider::secondary_actions`]).
     pub fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
@@ -1297,15 +1416,18 @@ impl SearchRegistry {
             }
             out.push_str(provider.id());
             out.push('\0');
-            out.push_str(&provider.search_revision(&SearchContext {
-                query_scope: Some(args.scope),
-                include_programmatic: false,
-                needle: args.needle,
-                wanted: args.wanted_kinds,
-                chrome: args.chrome,
-                doc: args.doc,
-                doc_root: args.doc_root,
-            }));
+            {
+                let _cost = timing::Cost::new("search/provider-revision", provider.id());
+                out.push_str(&provider.search_revision(&SearchContext {
+                    query_scope: Some(args.scope),
+                    include_programmatic: false,
+                    needle: args.needle,
+                    wanted: args.wanted_kinds,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                }));
+            }
             out.push('\0');
         }
         out
@@ -1402,19 +1524,22 @@ impl SearchRegistry {
                         .max_bytes
                         .min(HEADLESS_MAX_BYTES.saturating_sub(bytes));
                 }
-                let page = source.provider.query_page(
-                    SearchContext {
-                        query_scope: Some(args.scope),
-                        include_programmatic,
-                        needle: args.needle,
-                        wanted: &source.wanted,
-                        chrome: args.chrome,
-                        doc: args.doc,
-                        doc_root: args.doc_root,
-                    },
-                    source.cursor.as_ref(),
-                    budget,
-                );
+                let page = {
+                    let _cost = timing::Cost::new("search/provider-query", source.provider.id());
+                    source.provider.query_page(
+                        SearchContext {
+                            query_scope: Some(args.scope),
+                            include_programmatic,
+                            needle: args.needle,
+                            wanted: &source.wanted,
+                            chrome: args.chrome,
+                            doc: args.doc,
+                            doc_root: args.doc_root,
+                        },
+                        source.cursor.as_ref(),
+                        budget,
+                    )
+                };
                 pages = pages.saturating_add(1);
                 advanced = true;
                 source.note_page(&page);
@@ -1539,10 +1664,21 @@ impl SearchRegistry {
         }
         if interactive && !needle.trim().is_empty() {
             loose_matches_give_way(&mut merged, &loose);
-            self.one_row_per_open_app(&mut merged, chrome);
+            self.apps_beside_their_windows(&mut merged, chrome);
             files_follow_what_was_named(&mut merged, needle);
         }
-        system::order_by_kind(&mut merged, |r| &r.kind);
+        let providers: HashMap<&str, &dyn SearchProvider> = self
+            .enabled_providers()
+            .map(|provider| (provider.id(), provider.as_ref()))
+            .collect();
+        system::order_hits(&mut merged, |row| {
+            let availability = providers
+                .get(row.provider_id.as_str())
+                .map_or(Availability::OnDevice, |provider| {
+                    provider.availability(row)
+                });
+            (&row.kind, availability)
+        });
         // The rows that answer any query (searching the web for it) come
         // last, after every match, in their own group.
         if interactive && !needle.trim().is_empty() {
@@ -1555,13 +1691,13 @@ impl SearchRegistry {
         (merged.into_iter().map(|(r, _)| r).collect(), completion)
     }
 
-    /// One row per open app: an app's row takes over the row of its most
-    /// recently used window in this workspace, and Enter switches to that
-    /// window instead of starting another copy. Its other windows stay, each
-    /// titled by what it shows. Two rows that do the same thing ("Files" and
-    /// a "Files" window) cost a row of the palette and a guess.
-    fn one_row_per_open_app(&self, merged: &mut Vec<(SearchResult, f32)>, chrome: &ChromeState) {
-        let windows: Vec<(usize, String, usize)> = {
+    /// An open app is two kinds of row: the app, which starts it (for most
+    /// apps a new window), and each of its windows, which switches to that
+    /// window. They rank together: an app and the windows it opened take
+    /// the strongest of their strengths, so the app sits right beside its
+    /// windows instead of somewhere below them.
+    fn apps_beside_their_windows(&self, merged: &mut [(SearchResult, f32)], chrome: &ChromeState) {
+        let windows: Vec<(usize, String)> = {
             let tree = chrome.tree();
             merged
                 .iter()
@@ -1574,15 +1710,7 @@ impl SearchRegistry {
                         return None;
                     }
                     let app = tilo_desktop::search::window_row_app_id(&tree.desktop, &row.id)?;
-                    let tab: crate::shell::state::TabId =
-                        row.id.rsplit(':').next()?.parse().ok()?;
-                    let recency = chrome
-                        .search_context
-                        .recent_windows
-                        .iter()
-                        .position(|recent| *recent == tab)
-                        .unwrap_or(usize::MAX);
-                    Some((at, app, recency))
+                    Some((at, app))
                 })
                 .collect()
         };
@@ -1593,51 +1721,60 @@ impl SearchRegistry {
             .enabled_providers()
             .map(|provider| (provider.id(), provider.as_ref()))
             .collect();
-        let mut absorbed: Vec<usize> = Vec::new();
         for app_at in 0..merged.len() {
-            let Some((app_row, _)) = merged.get(app_at) else {
+            let Some((app_row, app_strength)) = merged.get(app_at) else {
                 continue;
             };
-            if !matches!(
-                app_row.kind,
-                ResourceKind::Application | ResourceKind::HostApplication
-            ) {
+            if !matches!(app_row.kind, ResourceKind::Application) {
                 continue;
             }
             let Some(provider) = providers.get(app_row.provider_id.as_str()) else {
                 continue;
             };
-            let latest = windows
+            let together: Vec<usize> = windows
                 .iter()
-                .filter(|(at, app, _)| !absorbed.contains(at) && provider.opens_app(app_row, app))
-                .min_by_key(|(_, _, recency)| *recency)
-                .map(|(at, ..)| *at);
-            let Some(window_at) = latest else {
+                .filter(|(_, app)| provider.opens_app(app_row, app))
+                .map(|(at, _)| *at)
+                .chain(std::iter::once(app_at))
+                .collect();
+            if together.len() < 2 {
                 continue;
-            };
-            let Some((window, window_strength)) = merged.get(window_at).cloned() else {
-                continue;
-            };
-            if let Some((app_row, strength)) = merged.get_mut(app_at) {
-                app_row.subtitle = if window.title.eq_ignore_ascii_case(&app_row.title) {
-                    window.subtitle
-                } else {
-                    Some(window.title)
-                };
-                app_row.operation_kind = window.operation_kind;
-                app_row.contract = window.contract;
-                app_row.params = window.params;
-                app_row.on_open = window.on_open;
-                app_row.on_invoke = window.on_invoke;
-                app_row.on_begin_invoke = window.on_begin_invoke;
-                *strength = strength.max(window_strength);
             }
-            absorbed.push(window_at);
+            let strongest = together
+                .iter()
+                .filter_map(|at| merged.get(*at).map(|(_, strength)| *strength))
+                .fold(*app_strength, f32::max);
+            for at in together {
+                if let Some((_, strength)) = merged.get_mut(at) {
+                    *strength = strongest;
+                }
+            }
         }
-        absorbed.sort_unstable();
-        for at in absorbed.into_iter().rev() {
-            merged.remove(at);
-        }
+    }
+
+    /// The row that starts the app whose windows announce `app_id`, from
+    /// the first provider that has it ([`SearchProvider::app_row`]).
+    pub fn app_row(&self, app_id: &str) -> Option<SearchResult> {
+        self.enabled_providers()
+            .find_map(|provider| provider.app_row(app_id))
+    }
+
+    /// Whether activating `result` flips a switch in place; see
+    /// [`SearchProvider::toggles_in_place`].
+    pub fn toggles_in_place(&self, result: &SearchResult) -> bool {
+        self.enabled_providers()
+            .find(|provider| provider.id() == result.provider_id)
+            .is_some_and(|provider| provider.toggles_in_place(result))
+    }
+
+    /// How far `result` is from the person; see
+    /// [`SearchProvider::availability`].
+    pub fn availability(&self, result: &SearchResult) -> Availability {
+        self.enabled_providers()
+            .find(|provider| provider.id() == result.provider_id)
+            .map_or(Availability::OnDevice, |provider| {
+                provider.availability(result)
+            })
     }
 
     /// Whether ←/→ step `result`'s value; see [`SearchProvider::adjustable`].
@@ -1680,18 +1817,45 @@ impl SearchRegistry {
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
     ///
-    /// With nothing typed and no kind chosen, the desktop-wide palette offers
-    /// [`jump_back_in`] instead of listing everything; scoped to one app it
-    /// still lists that app's commands.
+    /// With nothing typed and no kind chosen, the desktop-wide palette is
+    /// the [`launcher`]; scoped to one app it still lists that app's
+    /// commands.
     pub fn query_grouped(&self, args: &QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
-        if args.needle.trim().is_empty()
-            && args.wanted_kinds.is_empty()
-            && args.scope != SearchScope::ActiveApp
-        {
-            return jump_back_in(self, args);
+        if launcher::wanted(args) {
+            return launcher::kind_groups(self, args);
         }
-        system::group(self.query(args), row_budget)
+        let store = in_the_store();
+        let ranked: Vec<(ResourceKind, SearchResult)> = self
+            .query(args)
+            .into_iter()
+            .map(|row| {
+                // A third-party app's Store page is not something the person
+                // has: its own heading, after their content (the merge puts
+                // every one of them last), never a second "Applications".
+                let heading = if self.availability(&row) == Availability::ThirdPartyCatalogue {
+                    store.clone()
+                } else {
+                    row.kind.clone()
+                };
+                (heading, row)
+            })
+            .collect();
+        system::group_by_kind(ranked, |(heading, _)| heading, row_budget)
+            .into_iter()
+            .map(|group| KindGroup {
+                kind: group.kind,
+                total: group.total,
+                results: group.results.into_iter().map(|(_, row)| row).collect(),
+            })
+            .collect()
     }
+}
+
+/// The heading third-party apps' Store pages are listed under, apart from
+/// the apps the person has and the Tilo apps that open at once.
+#[must_use]
+pub fn in_the_store() -> ResourceKind {
+    ResourceKind::Custom(t("search-group-in-the-store"))
 }
 
 /// How much nearer the person a row is in Workspace scope: from the focused
@@ -1761,8 +1925,9 @@ fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
     system::application_intent_boost(row.score, top)
 }
 
-/// The most a row matched only by a typo, or by words spread over its
-/// fields, scores on its provider's scale, as a share of the top.
+/// What a row that matched every word of the query, spread over its fields
+/// (the least a real match ranks), scores on its provider's scale, as a
+/// share of the top. A row below it matched only by a typo.
 #[allow(
     clippy::cast_precision_loss,
     reason = "provider scores are small integers"
@@ -1771,14 +1936,16 @@ fn loose_share() -> f32 {
     provider_score(tilo_search::SPANNING_RANK) as f32 / system::MAX_PROVIDER_SCORE as f32
 }
 
-/// Whether `row` matched `needle` only loosely: by a typo or by words spread
-/// over its fields, with nothing of the query in its title.
+/// Whether `row` matched `needle` only loosely: by a typo, with nothing of
+/// the query in its title. A row that holds every word the person typed,
+/// spread over its fields ("gnome calculator": GNOME's Calculator, whose
+/// title is "Calculator"), is a real match, not a loose one.
 #[allow(
     clippy::cast_precision_loss,
     reason = "provider scores are small integers"
 )]
 fn only_loosely_matched(needle: &str, row: &SearchResult, top: i32) -> bool {
-    row.score as f32 / top.max(1) as f32 <= loose_share()
+    (row.score as f32 / top.max(1) as f32) < loose_share()
         && system::lexical_strength(needle, &row.kind, &row.title, None) < 1.0
 }
 
@@ -1826,7 +1993,6 @@ fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str)
             kind,
             ResourceKind::Action
                 | ResourceKind::Application
-                | ResourceKind::HostApplication
                 | ResourceKind::Tab
                 | ResourceKind::WindowGroup
                 | ResourceKind::Custom(_)
@@ -1854,122 +2020,6 @@ fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str)
     }
 }
 
-/// Rows per group the empty palette shows.
-const JUMP_BACK_IN_GROUP_ROWS: usize = 4;
-
-/// The starting points the empty palette offers after windows and apps.
-const JUMP_BACK_IN_SUGGESTIONS: [&str; 3] =
-    ["room.activity.open", "peer.invite", "shortcut-help.toggle"];
-
-const JUMP_BACK_IN_ACTIONS_PROVIDER: &str = "actions";
-
-/// Recent choices the empty palette shows.
-const RECENT_CHOICES: usize = 5;
-/// How far back the recent choices are read, so that rows that no longer
-/// resolve or are not offered there still leave five.
-const RECENT_CHOICES_SCANNED: usize = 24;
-
-/// Whether a recent choice may sit in the empty palette, one Enter away:
-/// never something that ends or destroys work (restart, close, delete), and
-/// never a window, which the windows group lists already.
-fn offered_again(row: &SearchResult) -> bool {
-    if matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup) {
-        return false;
-    }
-    !row.contract.as_ref().is_some_and(|contract| {
-        matches!(
-            contract.risk,
-            tilo_actions::RiskLevel::Destructive | tilo_actions::RiskLevel::Privileged
-        ) || contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
-    })
-}
-
-/// The palette before anything is typed. Once the person has chosen from
-/// search, it is what they chose last (five things, newest first: apps,
-/// files, actions, settings), then the other windows of this workspace in
-/// the order they were left. Before there is any history, it is the windows,
-/// a few apps to start with and a few ways in. It is never the full
-/// inventory, and never offers a row that changes something: close, move and
-/// revoke need their verb typed. Agents still enumerate everything through
-/// [`SearchRegistry::query_exhaustive`].
-///
-/// Interactive search is one bounded page, so late catalogue rows (help,
-/// the tour) are not on that page. Suggestions and recent choices are
-/// fetched by exact id.
-fn jump_back_in(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<KindGroup> {
-    let rows = registry.query(args);
-    let windows = rows
-        .iter()
-        .filter(|row| matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup))
-        .filter(|row| row.operation_kind == tilo_actions::OperationKind::View)
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut recent: Vec<SearchResult> = Vec::new();
-    for (provider, id) in usage::recent_choices(RECENT_CHOICES_SCANNED) {
-        if recent.len() >= RECENT_CHOICES {
-            break;
-        }
-        if let Some(row) = registry.resolve(&provider, &id, args)
-            && offered_again(&row)
-        {
-            recent.push(row);
-        }
-    }
-    if !recent.is_empty() {
-        // A recent app that has a window here switches to it, and that
-        // window is not listed twice.
-        let recent_count = recent.len();
-        let mut merged: Vec<(SearchResult, f32)> = recent
-            .into_iter()
-            .chain(windows)
-            .map(|row| (row, 0.0))
-            .collect();
-        registry.one_row_per_open_app(&mut merged, args.chrome);
-        let mut rows = merged.into_iter().map(|(row, _)| row);
-        let recent: Vec<SearchResult> = rows.by_ref().take(recent_count).collect();
-        let windows: Vec<SearchResult> = rows.take(JUMP_BACK_IN_GROUP_ROWS).collect();
-        return [
-            (ResourceKind::Custom(t("search-group-recent")), recent),
-            (ResourceKind::Tab, windows),
-        ]
-        .into_iter()
-        .filter(|(_, results)| !results.is_empty())
-        .map(|(kind, results)| KindGroup {
-            kind,
-            total: results.len(),
-            results,
-        })
-        .collect();
-    }
-    let windows = windows
-        .into_iter()
-        .take(JUMP_BACK_IN_GROUP_ROWS)
-        .collect::<Vec<_>>();
-    let apps = rows
-        .iter()
-        .filter(|row| row.kind == ResourceKind::Application)
-        .take(JUMP_BACK_IN_GROUP_ROWS)
-        .cloned()
-        .collect::<Vec<_>>();
-    let suggestions = JUMP_BACK_IN_SUGGESTIONS
-        .iter()
-        .filter_map(|id| registry.resolve(JUMP_BACK_IN_ACTIONS_PROVIDER, id, args))
-        .collect::<Vec<_>>();
-    [
-        (ResourceKind::Tab, windows),
-        (ResourceKind::Application, apps),
-        (ResourceKind::Action, suggestions),
-    ]
-    .into_iter()
-    .filter(|(_, results)| !results.is_empty())
-    .map(|(kind, results)| KindGroup {
-        kind,
-        total: results.len(),
-        results,
-    })
-    .collect()
-}
-
 fn scope_allows(
     provider: &dyn SearchProvider,
     scope: SearchScope,
@@ -1978,12 +2028,15 @@ fn scope_allows(
     match scope {
         SearchScope::All | SearchScope::Workspace => true,
         SearchScope::ActiveApp => match active_provider_id {
-            Some(id) => provider.id() == id || provider.available_in_active_app_scope(),
+            // Only the app's own sources: the provider that owns its tab and
+            // those that narrow themselves to it. The system's actions and
+            // settings are not the app's; they return with a wider scope.
+            Some(id) => provider.id() == id || provider.narrows_to_active_app(),
             // The overlay explicitly degrades to `All` when there is no
             // focused tab. Reaching this branch means a focused app exists
             // but its primary provider is not ready; fail narrow rather than
             // leaking unrelated workspace results into "This app".
-            None => provider.available_in_active_app_scope(),
+            None => provider.narrows_to_active_app(),
         },
     }
 }
@@ -2008,9 +2061,6 @@ impl system::SearchRow for SearchResult {
 
 #[cfg(test)]
 mod tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use std::fmt::Write as _;
@@ -2071,17 +2121,63 @@ mod tests {
     /// key event.  Keep public-registry tests on that same contract instead
     /// of teaching a cold `query()` to synchronously index a corpus.
     fn refresh_until_ready(registry: &SearchRegistry, args: &QueryArgs<'_>) {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        while std::time::Instant::now() < deadline {
+        tilo_test_env::wait_until("the retained search index to become ready", || {
             registry.refresh_indexes(args);
-            if registry.query_revision(args).contains("ready:") {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            registry.query_revision(args).contains("ready:")
+        });
+    }
+
+    #[test]
+    fn the_launchers_indexes_are_kept_built_while_the_palette_is_closed() {
+        use std::cell::Cell;
+
+        struct Refreshed {
+            id: &'static str,
+            launcher: bool,
+            refreshes: Rc<Cell<usize>>,
         }
-        panic!("retained search index did not become ready");
+        impl SearchProvider for Refreshed {
+            fn id(&self) -> &str {
+                self.id
+            }
+            fn name(&self) -> &str {
+                self.id
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Application]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                Vec::new()
+            }
+            fn launcher_section(&self) -> Option<launcher::LauncherSection> {
+                self.launcher.then_some(launcher::LauncherSection::Apps)
+            }
+            fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
+                self.refreshes.set(self.refreshes.get().saturating_add(1));
+            }
+        }
+
+        let (apps, files) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(Refreshed {
+            id: "apps",
+            launcher: true,
+            refreshes: Rc::clone(&apps),
+        }));
+        registry.register(Rc::new(Refreshed {
+            id: "files",
+            launcher: false,
+            refreshes: Rc::clone(&files),
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        registry.maintain_launcher_indexes(&chrome.borrow(), &doc, &root);
+        assert_eq!(
+            apps.get(),
+            1,
+            "what the launcher lists is built ahead of it"
+        );
+        assert_eq!(files.get(), 0, "nothing the launcher does not read");
     }
 
     #[test]
@@ -2876,13 +2972,22 @@ mod tests {
             assert_eq!(out[0].provider_id, "notes");
         }
 
-        // Phase `active_app_scope_keeps_shell_actions_available`.
+        // Phase `active_app_scope_leaves_out_the_systems_actions`.
+        // A search scoped to an app shows only the app's own sources; the
+        // pinned journey is `a_search_scoped_to_an_app_shows_only_that_app_
+        // until_the_scope_is_cleared` in the overlay host's tests.
         {
             use crate::shell::search::providers::actions::ActionsProvider;
 
+            for active in [Some("notes"), None] {
+                assert!(
+                    !scope_allows(&ActionsProvider::new(), SearchScope::ActiveApp, active),
+                    "the system's actions are not the app's own ({active:?})"
+                );
+            }
             assert!(scope_allows(
                 &ActionsProvider::new(),
-                SearchScope::ActiveApp,
+                SearchScope::Workspace,
                 Some("notes")
             ));
         }
@@ -3572,6 +3677,48 @@ mod tests {
         );
     }
 
+    /// "gnome calculator" names Tilo's Calculator by an alias and GNOME's
+    /// Calculator (title "Calculator", "gnome" in its id) by every word, spread
+    /// over its fields. Both are real matches: the second is no typo and
+    /// does not give way to the first.
+    #[test]
+    fn a_match_on_every_word_spread_over_fields_never_gives_way() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "spread-apps".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "spread-apps",
+                "so.tilo.calculator",
+                "Calculator",
+                100,
+            )],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "spread-catalogue".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "spread-catalogue",
+                "flathub:org.gnome.Calculator",
+                "Calculator",
+                provider_score(tilo_search::SPANNING_RANK),
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let rows = ask(&reg, &chrome, "gnome calculator");
+        assert!(
+            rows.iter()
+                .any(|row| row.id == "flathub:org.gnome.Calculator"),
+            "the app holding every word typed is listed: {:?}",
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(rows.iter().any(|row| row.id == "so.tilo.calculator"));
+    }
+
     #[test]
     fn a_short_query_leads_with_what_is_chosen_most() {
         let mut reg = SearchRegistry::new();
@@ -3623,8 +3770,36 @@ mod tests {
         assert_eq!(rows.first().map(|row| row.id.as_str()), Some("tube"));
     }
 
+    /// A desktop showing two Alacritty windows, one titled after the app.
+    fn two_alacritty_windows() -> Rc<RefCell<ChromeState>> {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let window = |id: u64, title: &str| WindowGroup {
+            id: id.saturating_mul(100),
+            tabs: vec![Tab {
+                id,
+                title: title.into(),
+                tile: TileContent::Foreign {
+                    app_id: "Alacritty".into(),
+                    surface_id: id,
+                },
+                app_title: None,
+            }],
+            active_tab: id,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        };
+        tree.desktop.workspaces[0].strips[0].window_groups =
+            vec![window(1, "~/src"), window(2, "Alacritty")];
+        tree.seed_doc_from_cache();
+        ChromeState::new(tree)
+    }
+
     #[test]
-    fn an_open_app_is_one_row_that_switches_to_its_latest_window() {
+    fn an_open_app_is_its_own_row_beside_its_windows_and_still_starts_the_app() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static STARTED: AtomicBool = AtomicBool::new(false);
         struct Apps;
         impl SearchProvider for Apps {
             fn id(&self) -> &'static str {
@@ -3637,56 +3812,81 @@ mod tests {
                 &[ResourceKind::Application]
             }
             fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
-                vec![mk_result(
+                vec![SearchResult::nullary(
                     ResourceKind::Application,
                     "open-app-apps",
-                    "so.tilo.files",
-                    "Files",
-                    100,
+                    "Alacritty",
+                    "Alacritty",
+                    None,
+                    40,
+                    |_, _, _| STARTED.store(true, Ordering::SeqCst),
                 )]
             }
             fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
                 result.id == app_id
             }
         }
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let window = |id: u64, title: &str| WindowGroup {
-            id: id.saturating_mul(100),
-            tabs: vec![Tab {
-                id,
-                title: title.into(),
-                tile: TileContent::Foreign {
-                    app_id: "so.tilo.files".into(),
-                    surface_id: id,
-                },
-            }],
-            active_tab: id,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        };
-        tree.desktop.workspaces[0].strips[0].window_groups =
-            vec![window(1, "Downloads"), window(2, "Documents")];
-        tree.seed_doc_from_cache();
-        let chrome = ChromeState::new(tree);
-        chrome.borrow_mut().search_context.recent_windows = vec![2, 1];
+        struct Actions;
+        impl SearchProvider for Actions {
+            fn id(&self) -> &'static str {
+                "open-app-actions"
+            }
+            fn name(&self) -> &'static str {
+                "actions"
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Action]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                vec![mk_result(
+                    ResourceKind::Action,
+                    "open-app-actions",
+                    "alacritty.settings",
+                    "Alacritty settings",
+                    70,
+                )]
+            }
+        }
+        let chrome = two_alacritty_windows();
         let mut reg = SearchRegistry::new();
         reg.register(Rc::new(Apps));
+        reg.register(Rc::new(Actions));
         reg.register(Rc::new(providers::DesktopWindowsProvider::new()));
-        let rows = ask(&reg, &chrome, "files");
-        let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["Files", "Downloads"],
-            "one row for the app, which took the latest window; the other window stays"
+        let rows = ask(&reg, &chrome, "alacritty");
+        let at = |pick: &dyn Fn(&SearchResult) -> bool| {
+            rows.iter()
+                .position(pick)
+                .unwrap_or_else(|| panic!("{:?}", rows.iter().map(|r| &r.id).collect::<Vec<_>>()))
+        };
+        let app = at(&|row| row.provider_id == "open-app-apps");
+        let windows: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.provider_id == tilo_desktop::search::WINDOWS_PROVIDER_ID)
+            .filter(|(_, row)| row.kind == ResourceKind::Tab)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(windows.len(), 2, "both windows are rows of their own");
+        let mut together = windows;
+        together.push(app);
+        together.sort_unstable();
+        assert!(
+            together.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "the app and its windows sit together: {:?}",
+            rows.iter().map(|row| &row.title).collect::<Vec<_>>()
         );
-        assert_eq!(
-            rows[0].subtitle.as_deref(),
-            Some("Documents"),
-            "the app's row says which window it goes to"
-        );
-        assert_eq!(rows[0].operation_kind, tilo_actions::OperationKind::View);
+        assert_eq!(rows[app].title, "Alacritty");
+        assert_eq!(rows[app].subtitle, None);
+
+        let mut doc = AutoCommit::new();
+        (rows[app].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &action_api::ActionArgs::none(),
+        )
+        .expect("starting the app takes no arguments");
+        assert!(STARTED.load(Ordering::SeqCst), "choosing the app starts it");
     }
 
     /// Write the on-disk shape `launcher::gui_apps` reads.

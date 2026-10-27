@@ -1,6 +1,7 @@
 //! Keyboard transfers and clicked Copy share the browser system clipboard.
 //! The clipboard itself is `tilo_clipboard`'s web backend; this binds the
-//! page's events to it.
+//! page's events to it. A file dropped on the page is handed over the same
+//! way a chooser's is (`drop_files`).
 use js_sys::{Function, Reflect};
 use std::rc::Rc;
 use ui::clipboard::events::{self, CopyReport, EventTransfer};
@@ -68,6 +69,14 @@ impl EventTransfer for DataTransfer {
             .is_some_and(|f| f.call2(&self.0, &"text/plain".into(), &text.into()).is_ok())
     }
 
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        self.method("setData").is_some_and(|f| {
+            f.call2(&self.0, &"text/html".into(), &html.into()).is_ok()
+                && f.call2(&self.0, &"text/plain".into(), &plain.into())
+                    .is_ok()
+        })
+    }
+
     fn rich_text(&self) -> Option<RichTextOffer> {
         let html = bounded_clipboard_text(&self.0, "text/html", MAX_CLIPBOARD_HTML_BYTES)
             .as_string()
@@ -86,6 +95,24 @@ impl EventTransfer for DataTransfer {
             .call1(&self.0, &"text/plain".into())
             .ok()?
             .as_string()
+    }
+
+    /// A picture's bytes cannot be read inside the event, so the page reads
+    /// the pasted file first and dispatches the paste again with it as
+    /// `tiloImage: {type, bytes}` (`web/host.mjs`).
+    fn image(&self) -> Option<ui::clipboard::ClipboardImage> {
+        let image = Reflect::get(&self.0, &"tiloImage".into()).ok()?;
+        let kind = Reflect::get(&image, &"type".into()).ok()?.as_string()?;
+        let mime = ui::clipboard::preferred_image_type([kind.as_str()])?;
+        let bytes = Reflect::get(&image, &"bytes".into()).ok()?;
+        let bytes = bytes.dyn_into::<js_sys::Uint8Array>().ok()?;
+        if usize::try_from(bytes.length()).ok()? > ui::clipboard::MAX_PASTED_IMAGE_BYTES {
+            return None;
+        }
+        Some(ui::clipboard::ClipboardImage {
+            mime,
+            bytes: bytes.to_vec(),
+        })
     }
 }
 

@@ -12,7 +12,15 @@
 //!   never presented as working.
 //! - **Automatic suspend**, the idle timeouts and the lid, power-key and
 //!   critical-battery actions are the device's `power` settings, which the
-//!   compositor's idle layer reads.
+//!   compositor's idle layer reads. There is one suspend timer per power
+//!   source (on battery, plugged in); only where the stored profile timers
+//!   truly differ is the selected profile's timer the one, shown with the
+//!   profile. While "Suspend when idle" is off, every timer that depends on
+//!   it is disabled and says why.
+//! - **Password after sleep** lives beside the lock timer because it is the
+//!   other way the lock screen appears: off, a machine that went to sleep
+//!   unlocked comes back to what its owner left on screen, while a lock from
+//!   the idle timer or the lock command is kept as it was.
 
 mod history_chart;
 
@@ -35,10 +43,24 @@ use crate::resource::Settings;
 use crate::row::Row;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, block, error_caption, note, row, rows, section, untitled, value_row,
+    Item, SettingsSection, block, error_caption, note, row, rows, section, value_row,
 };
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
+
+crate::effects::effect_family!(PowerEffect => answer);
+
+crate::area::pane_area! {
+    PowerArea;
+    fn warm(&self) {
+        PowerArea::warm(self);
+    }
+}
+
+/// The window's [`PowerArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PowerArea> {
+    app.areas().find()
+}
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
 const SUSPEND_OPTIONS: &[(&str, u32)] = &[
@@ -68,12 +90,33 @@ fn duration_shown(english: &str) -> String {
     t(duration_ftl(english))
 }
 
+/// The minutes a suspend option shown as `label` stands for.
+fn suspend_minutes_of(label: &str) -> u32 {
+    SUSPEND_OPTIONS
+        .iter()
+        .find(|(english, _)| *english == label || duration_shown(english) == label)
+        .map_or(
+            settings_store::power::DEFAULT_SUSPEND_MINUTES,
+            |(_, minutes)| *minutes,
+        )
+}
+
 fn suspend_label(minutes: u32) -> String {
     let english = SUSPEND_OPTIONS
         .iter()
         .find(|(_, m)| *m == minutes)
         .map_or("15 minutes", |(l, _)| *l);
     duration_shown(english)
+}
+
+/// The field holding `profile`'s own suspend timer.
+fn profile_suspend_field(profile: PowerProfile) -> tilo_resource::Path<PowerPrefs, Option<u32>> {
+    let paths = PowerPrefs::paths();
+    match profile {
+        PowerProfile::Saver => paths.saver_suspend_minutes,
+        PowerProfile::Balanced => paths.balanced_suspend_minutes,
+        PowerProfile::Performance => paths.performance_suspend_minutes,
+    }
 }
 
 /// The action options offered for the lid / power-key / critical-battery
@@ -203,6 +246,31 @@ fn health_explanation_shown(battery: &BatteryInfo) -> String {
     }
 }
 
+/// "44.6 Wh of 70 Wh": what the battery holds when full against when new.
+fn capacity_shown(battery: &BatteryInfo) -> Option<String> {
+    let (full, design) = battery.full_and_design_wh()?;
+    Some(t_args(
+        "power-capacity-of",
+        &[
+            ("full", ArgValue::from(watt_hours_shown(full))),
+            ("design", ArgValue::from(watt_hours_shown(design))),
+        ],
+    ))
+}
+
+/// "44.6 Wh", "70 Wh": a tenth where there is one.
+fn watt_hours_shown(wh: f64) -> String {
+    let tenths = (wh * 10.0).round();
+    let digits = usize::from(tenths % 10.0 != 0.0);
+    t_args(
+        "power-watt-hours",
+        &[(
+            "amount",
+            ArgValue::from(ui::format::decimal(tenths / 10.0, digits)),
+        )],
+    )
+}
+
 /// This device's power hardware, as the pane and the effects reach it.
 pub trait PowerControl: Send + Sync {
     /// The battery now.
@@ -315,6 +383,7 @@ impl PowerControl for SamplePower {
             on_ac: false,
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
+            unit: os_actions::CapacityUnit::Energy,
             charge_limit: Some(self.cap.lock_recover().current),
             remaining: Some(28_800_000),
             rate: Some(8_640_000),
@@ -569,7 +638,7 @@ pub(crate) fn answer(
     match effect {
         PowerEffect::SetPowerProfile { profile } => {
             let profile = profile_from_label(&profile).ok_or_else(|| not(&profile))?;
-            let area = app.power();
+            let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
             let unsupported =
                 move || format!("{} is not supported by this device", profile_label(profile));
             // What the hardware offers, as last read; the job asks it when
@@ -596,7 +665,7 @@ pub(crate) fn answer(
                     control.set_profile(profile).map(|()| profile)
                 },
                 |app: &mut SettingsApp, outcome: Result<PowerProfile, String>, _| {
-                    let area = app.power();
+                    let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
                     let mut notices = area.notices.get();
                     let answer = match outcome {
                         Ok(profile) => {
@@ -620,7 +689,7 @@ pub(crate) fn answer(
             ))
         }
         PowerEffect::SetChargeLimit { percent } => {
-            let area = app.power();
+            let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
             let offers = move |cap: Option<&ChargeCapCapability>| {
                 cap.is_some_and(|cap| cap.choices.contains(&percent))
             };
@@ -644,7 +713,7 @@ pub(crate) fn answer(
                     control.set_charge_limit(percent).map(|cap| (percent, cap))
                 },
                 |app: &mut SettingsApp, outcome: Result<(u32, ChargeCapCapability), String>, _| {
-                    let area = app.power();
+                    let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
                     let mut notices = area.notices.get();
                     let answer = match outcome {
                         Ok((percent, cap)) => {
@@ -733,7 +802,7 @@ impl PowerPane {
                 rows(vec![note(&t("power-reading"))]),
             )],
         };
-        cards.extend(self.idle_card());
+        cards.push(self.idle_card());
         cards.push(self.actions_card());
         crate::widgets::page(cards)
     }
@@ -762,6 +831,9 @@ impl PowerPane {
         }
         if let Some(health) = state.battery.health_percent() {
             battery_rows.push(value_row(&t("power-health"), &format!("{health}%")));
+            if let Some(capacity) = capacity_shown(&state.battery) {
+                battery_rows.push(value_row(&t("power-capacity-full"), &capacity));
+            }
             battery_rows.push(note(&health_explanation_shown(&state.battery)));
         } else {
             battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
@@ -881,6 +953,24 @@ impl PowerPane {
                     ),
             ]
         };
+        // Truly different profile timers: the selected profile's is the one,
+        // and it is shown here, with the profile.
+        if self.prefs().timers().profiles_differ() && !state.profile_unread {
+            let field = profile_suspend_field(state.profile);
+            profile_rows.push(
+                self.suspend_row(
+                    self.cx
+                        .row(t("power-suspend-after"))
+                        .id("power.profile_suspend"),
+                    |row| {
+                        row.of(&self.prefs, field).among(
+                            SUSPEND_OPTIONS.iter().map(|(_, minutes)| Some(*minutes)),
+                            |minutes: &Option<u32>| suspend_label(minutes.unwrap_or_default()),
+                        )
+                    },
+                ),
+            );
+        }
         profile_rows.push(note(&t("power-profile-caption")));
         if let Some(notice) = &self.notices.profile {
             profile_rows.push(note(notice));
@@ -909,61 +999,95 @@ impl PowerPane {
         )
     }
 
-    /// `row` choosing the suspend timeout at `field`.
-    fn suspend_timeout<'a>(
-        &'a self,
-        row: Row<'a>,
-        field: tilo_resource::Path<PowerPrefs, u32>,
-    ) -> Item {
-        self.timeout(row, SUSPEND_OPTIONS, suspend_label, field)
+    /// `row`, a suspend timer: disabled, saying why, while "Suspend when
+    /// idle" is off; `build` makes its control.
+    fn suspend_row<'a>(&'a self, row: Row<'a>, build: impl FnOnce(Row<'a>) -> Item) -> Item {
+        let on = self.prefs().auto_suspend;
+        let row = row.enabled(on);
+        build(if on {
+            row
+        } else {
+            row.described(t("power-suspend-needs-idle"))
+        })
     }
 
-    fn idle_card(&self) -> [SettingsSection; 2] {
-        let paths = PowerPrefs::paths();
-        [
-            section(
-                &t("power-idle-title"),
-                rows(vec![
-                    self.cx
-                        .row(t("power-suspend-idle"))
-                        .id("power.auto_suspend")
-                        .of(&self.prefs, paths.auto_suspend)
-                        .toggle(),
-                    self.suspend_timeout(
-                        self.cx.row(t("power-suspend-after")).id("power.suspend"),
-                        paths.suspend_minutes,
-                    ),
-                    self.timeout(
-                        self.cx.row(t("power-blank")).id("power.blank"),
-                        BLANK_OPTIONS,
-                        blank_label,
-                        paths.blank_minutes,
-                    ),
-                    self.timeout(
-                        self.cx.row(t("power-lock-after")).id("power.lock"),
-                        LOCK_OPTIONS,
-                        lock_label,
-                        paths.lock_minutes,
-                    ),
-                    note(&t("power-idle-caption")),
-                ]),
+    /// `row` choosing a suspend timer through `verb`, now at `minutes`.
+    fn suspend_timer<'a>(
+        &'a self,
+        row: Row<'a>,
+        minutes: u32,
+        verb: impl ui::tilo_resource::Binds<PowerPrefs, String>,
+    ) -> Item {
+        let options: Vec<String> = SUSPEND_OPTIONS
+            .iter()
+            .map(|(_, minutes)| suspend_label(*minutes))
+            .collect();
+        self.suspend_row(row, |row| {
+            row.choice_verb(options, &LocalState::new(suspend_label(minutes)), verb)
+        })
+    }
+
+    /// The suspend timers: one per power source this device has, unless the
+    /// profile timers truly differ (the selected profile's is then shown
+    /// with the profile).
+    fn suspend_timers(&self) -> Vec<Item> {
+        let timers = self.prefs().timers();
+        if timers.profiles_differ() {
+            return vec![note(&t("power-suspend-in-profile"))];
+        }
+        let has_battery = self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.battery.present);
+        if !has_battery {
+            return vec![self.suspend_timer(
+                self.cx.row(t("power-suspend-after")).id("power.suspend"),
+                timers.plugged_in(),
+                PowerPrefs::SUSPEND_PLUGGED_IN.map(|label: String| suspend_minutes_of(&label)),
+            )];
+        }
+        vec![
+            self.suspend_timer(
+                self.cx
+                    .row(t("power-suspend-battery"))
+                    .id("power.suspend_battery"),
+                timers.on_battery(),
+                PowerPrefs::SUSPEND_ON_BATTERY.map(|label: String| suspend_minutes_of(&label)),
             ),
-            untitled(rows(vec![
-                self.suspend_timeout(
-                    self.cx.row(t("power-saver-suspend")),
-                    paths.saver_suspend_minutes,
-                ),
-                self.suspend_timeout(
-                    self.cx.row(t("power-balanced-suspend")),
-                    paths.balanced_suspend_minutes,
-                ),
-                self.suspend_timeout(
-                    self.cx.row(t("power-performance-suspend")),
-                    paths.performance_suspend_minutes,
-                ),
-                note(&t("power-profile-idle-caption")),
-            ])),
+            self.suspend_timer(
+                self.cx.row(t("power-suspend-plugged")).id("power.suspend"),
+                timers.plugged_in(),
+                PowerPrefs::SUSPEND_PLUGGED_IN.map(|label: String| suspend_minutes_of(&label)),
+            ),
         ]
+    }
+
+    fn idle_card(&self) -> SettingsSection {
+        let paths = PowerPrefs::paths();
+        let mut body = vec![auto_suspend(&self.cx, &self.prefs)];
+        body.extend(self.suspend_timers());
+        body.extend([
+            self.timeout(
+                self.cx.row(t("power-blank")).id("power.blank"),
+                BLANK_OPTIONS,
+                blank_label,
+                paths.blank_minutes,
+            ),
+            self.timeout(
+                self.cx.row(t("power-lock-after")).id("power.lock"),
+                LOCK_OPTIONS,
+                lock_label,
+                paths.lock_minutes,
+            ),
+            self.cx
+                .row(t("power-lock-on-sleep"))
+                .id("power.lock_on_sleep")
+                .described(t("power-lock-on-sleep-caption"))
+                .of(&self.prefs, paths.lock_on_sleep)
+                .toggle(),
+            note(&t("power-idle-caption")),
+        ]);
+        section(&t("power-idle-title"), rows(body))
     }
 
     /// `row` choosing what a button or a critical battery does.
@@ -1032,6 +1156,25 @@ impl PowerPane {
         }
         Some(section(&t("power-devices-title"), rows(entries)))
     }
+}
+
+pub(crate) mod values;
+
+pub(crate) fn auto_suspend(cx: &PaneCx, prefs: &Followed<PowerPrefs>) -> Item {
+    cx.row(t("power-suspend-idle"))
+        .id("power.auto_suspend")
+        .of(prefs, PowerPrefs::paths().auto_suspend)
+        .toggle()
+}
+
+/// Whether waking from sleep asks for the password, as this pane's own row
+/// (and Settings' search) shows it.
+pub(crate) fn lock_on_sleep(cx: &PaneCx, prefs: &Followed<PowerPrefs>) -> Item {
+    cx.row(t("power-lock-on-sleep"))
+        .id("power.lock_on_sleep")
+        .described(t("power-lock-on-sleep-caption"))
+        .of(prefs, PowerPrefs::paths().lock_on_sleep)
+        .toggle()
 }
 
 impl Widget for PowerPane {
@@ -1187,10 +1330,31 @@ mod tests {
             on_ac: false,
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
+            unit: os_actions::CapacityUnit::Energy,
             charge_limit: Some(80),
             remaining: Some(28_800_000),
             rate: Some(8_640_000),
         }
+    }
+
+    #[test]
+    fn a_worn_battery_says_what_it_holds_against_new() {
+        let worn = BatteryInfo {
+            full_capacity: Some(44_600_000),
+            design_capacity: Some(70_000_000),
+            ..sample_battery()
+        };
+        assert_eq!(worn.health_percent(), Some(64));
+        assert_eq!(capacity_shown(&worn).as_deref(), Some("44.6 Wh of 70 Wh"));
+        assert_eq!(
+            health_explanation_shown(&worn),
+            "Capacity is noticeably reduced; shorter runtime is expected."
+        );
+        let unknown = BatteryInfo {
+            design_capacity: None,
+            ..sample_battery()
+        };
+        assert_eq!(capacity_shown(&unknown), None);
     }
 
     #[test]
@@ -1209,9 +1373,7 @@ mod tests {
     /// Battery facts from sysfs, honest degradation without a battery, and the pane layout.
     #[test]
     fn battery_reads_sysfs_and_the_pane_lays_out() {
-        // Case `reads_battery_from_sysfs_tree`.
         {
-            // Build a throwaway /sys/class/power_supply-like tree.
             let base = std::env::temp_dir().join(format!("tilo-power-test-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             let bat = base.join("BAT0");
@@ -1235,7 +1397,6 @@ mod tests {
             let _ = std::fs::remove_dir_all(&base);
         }
 
-        // Case `missing_battery_degrades_honestly`.
         {
             let base =
                 std::env::temp_dir().join(format!("tilo-power-empty-{}", std::process::id()));
@@ -1248,13 +1409,12 @@ mod tests {
             let _ = std::fs::remove_dir_all(&base);
         }
 
-        // Case `builds_layout`.
         {
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
             let area = PowerArea::new(&cx);
             let mut pane = PowerPane::new(cx.clone(), &area);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while area.state.get().is_none() {
                 assert!(std::time::Instant::now() < deadline, "the hardware is read");
                 std::thread::yield_now();
@@ -1314,7 +1474,7 @@ mod tests {
         // changes said, are shown once the reading lands.
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("Performance is now active.")
                         && frame.contains("Hardware confirmed a 60% charge cap."))),
@@ -1323,21 +1483,14 @@ mod tests {
         );
     }
 
-    /// Power hardware that does not answer until it is let go (or ten
-    /// seconds pass), as `powerprofilesctl` does when power-profiles-daemon
-    /// is slow to start on the system bus.
-    struct StalledPower(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// Power hardware that does not answer until it is let go, as
+    /// `powerprofilesctl` does when power-profiles-daemon is slow to start
+    /// on the system bus.
+    struct StalledPower(Arc<crate::stall::Stall>);
 
     impl StalledPower {
         fn wait(&self) {
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open && std::time::Instant::now() < deadline {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                open = released.wait_timeout(open, left).unwrap().0;
-            }
-            drop(open);
+            self.0.wait();
         }
     }
 
@@ -1381,23 +1534,18 @@ mod tests {
     fn a_stalled_power_daemon_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.set_power(PowerArea::over(Arc::new(StalledPower(stalled))));
+            settings.replace_area(PowerArea::over(Arc::new(StalledPower(stalled))));
         })
         .expect("the Settings window is mounted");
 
-        let clicked = std::time::Instant::now();
         crate::effects::show_pane(&mut app, crate::categories::Category::Power);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "opening the pane waited {answered:?} on the power hardware"
-        );
+        gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("power-reading")), "{frame}");
         crate::host::testing::edit_field(
@@ -1409,11 +1557,10 @@ mod tests {
         .expect("a preference changes while the hardware is read");
         assert!(!app.settings::<PowerPrefs>().get().auto_suspend);
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| !frame.contains(&t("power-reading"))
                         && frame.contains(&profile_label(PowerProfile::Balanced)))),
@@ -1437,18 +1584,152 @@ mod tests {
             crate::host::testing::edit_field(app, crate::host::testing::POWER, field, value)
         };
         edit(&mut app, "blank_minutes", 30.into()).unwrap();
-        edit(&mut app, "lock_minutes", 0.into()).unwrap();
+        edit(&mut app, "lock_minutes", 1.into()).expect("locking sooner asks nothing");
+        for weaker in [10, 0] {
+            assert!(
+                edit(&mut app, "lock_minutes", weaker.into())
+                    .is_err_and(|error| error.contains("Confirmation")),
+                "locking later or never asks first"
+            );
+        }
+        assert_eq!(app.settings::<PowerPrefs>().get().lock_minutes, 1);
+        app.call_confirmed_on(
+            &format!("settings:{}", crate::host::testing::POWER),
+            "field-edit",
+            serde_json::json!({
+                "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": 0 }
+            }),
+        )
+        .unwrap();
         edit(&mut app, "saver_suspend_minutes", 5.into()).unwrap();
         edit(&mut app, "lid_close_action", "lock".into()).unwrap();
         let power = app.settings::<PowerPrefs>().get();
         assert!(power.auto_suspend);
         assert_eq!(power.blank_minutes, 30);
         assert_eq!(power.lock_minutes, 0);
-        assert_eq!(power.saver_suspend_minutes, 5);
+        assert_eq!(power.saver_suspend_minutes, Some(5));
         assert_eq!(power.lid_close_action, PowerActionPref::Lock);
         assert!(
             edit(&mut app, "blank_minutes", (25 * 60).into()).is_err(),
             "a delay past a day is refused"
         );
+    }
+
+    /// The control `id` the open Power pane shows, and whether it takes
+    /// input; `None` when the pane does not show it.
+    fn shown(app: &mut TestApp<SettingsShell>, id: &str) -> Option<bool> {
+        ui::widget::find_test_id(app.harness().root_widget(), id).map(|control| {
+            !control
+                .accessibility()
+                .is_some_and(|node| node.state.disabled)
+        })
+    }
+
+    fn open_power(app: &mut TestApp<SettingsShell>) {
+        crate::effects::show_pane(app, crate::categories::Category::Power);
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains(&t("power-profile-title")))),
+            "the hardware is read"
+        );
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+    }
+
+    #[test]
+    fn one_suspend_timer_per_power_source_disabled_and_explained_while_idle_suspend_is_off() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1200, 2400)).unwrap();
+        open_power(&mut app);
+        // A fresh machine: idle-suspend off, so both timers are shown,
+        // disabled, and say why.
+        assert_eq!(shown(&mut app, "power.suspend_battery"), Some(false));
+        assert_eq!(shown(&mut app, "power.suspend"), Some(false));
+        assert_eq!(shown(&mut app, "power.profile_suspend"), None);
+        for gone in [
+            "Power Saver suspend",
+            "Balanced suspend",
+            "Performance suspend",
+        ] {
+            assert!(
+                !app.harness().inspection_json().unwrap().contains(gone),
+                "no per-profile timer list: {gone}"
+            );
+        }
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains(&t("power-suspend-needs-idle"))
+        );
+
+        // On: both take input; each writes its own source's timer.
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "auto_suspend",
+            true,
+        )
+        .unwrap();
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+        assert_eq!(shown(&mut app, "power.suspend_battery"), Some(true));
+        assert_eq!(shown(&mut app, "power.suspend"), Some(true));
+        assert!(
+            !app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains(&t("power-suspend-needs-idle"))
+        );
+        crate::host::testing::invoke_section(
+            &mut app,
+            crate::host::testing::POWER,
+            "set-suspend-on-battery",
+            serde_json::json!({ "minutes": 5 }),
+        )
+        .unwrap();
+        crate::host::testing::invoke_section(
+            &mut app,
+            crate::host::testing::POWER,
+            "set-suspend-plugged-in",
+            serde_json::json!({ "minutes": 60 }),
+        )
+        .unwrap();
+        let timers = app.settings::<PowerPrefs>().get().timers();
+        assert_eq!((timers.on_battery(), timers.plugged_in()), (5, 60));
+        assert!(
+            crate::host::testing::invoke_section(
+                &mut app,
+                crate::host::testing::POWER,
+                "set-suspend-on-battery",
+                serde_json::json!({ "minutes": 7 }),
+            )
+            .is_err(),
+            "only the offered timers"
+        );
+
+        // Profile timers that truly differ: the selected profile's timer is
+        // the one, shown with the profile, and the source timers go.
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "saver_suspend_minutes",
+            10,
+        )
+        .unwrap();
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+        assert_eq!(shown(&mut app, "power.profile_suspend"), Some(true));
+        assert_eq!(shown(&mut app, "power.suspend_battery"), None);
+        assert_eq!(shown(&mut app, "power.suspend"), None);
     }
 }

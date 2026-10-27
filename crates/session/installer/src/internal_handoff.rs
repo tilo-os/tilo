@@ -20,11 +20,6 @@ pub const HANDOFF_ERROR_PATH: &str = "/run/tilo-installer/handoff.error";
 
 /// The Imager-supplied setup choices, validated field by field exactly like
 /// a media profile.
-///
-/// # Errors
-///
-/// Returns an error when the profile object carries unexpected fields or an
-/// unsupported schema.
 pub fn media_profile(handoff: &Handoff) -> Result<crate::media_profile::MediaProfile, String> {
     crate::media_profile::validate_object(&handoff.profile)
 }
@@ -131,7 +126,6 @@ pub(crate) mod tests {
 
     #[test]
     fn internal_handoff_accepts_the_imager_contract_and_fails_closed() {
-        // Phase `accepts_the_imager_contract_and_names_the_host`.
         {
             let handoff = handoff();
             assert_eq!(handoff.host_os, HostOs::Windows);
@@ -140,7 +134,6 @@ pub(crate) mod tests {
             assert_eq!(profile.username.as_deref(), Some("ada"));
             assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
         }
-        // Phase `unknown_duplicate_and_mistyped_fields_fail_closed`.
         {
             assert!(rejects(|v| v["target_disk"] = "/dev/sda".into()).contains("unknown field"));
             assert!(rejects(|v| v["disk_size_bytes"] = true.into()).contains("malformed"));
@@ -156,7 +149,6 @@ pub(crate) mod tests {
                     .contains("large")
             );
         }
-        // Phase `structural_rules_are_enforced`.
         {
             assert!(rejects(|v| v["schema"] = 2.into()).contains("version"));
             assert!(rejects(|v| v["host_os"] = "macos".into()).contains("unknown variant"));
@@ -178,11 +170,17 @@ pub(crate) mod tests {
             );
             assert!(rejects(|v| v["staging_esp"]["first_lba"] = 0.into()).contains("malformed"));
         }
-        // Phase `profile_outside_the_media_contract_is_rejected_but_bad_values_are_repairs`.
         {
-            // A secret never rides in the handoff: the record itself is
-            // refused before any profile is read from it.
+            // The handoff profile is the closed, secret-free media profile: a
+            // credential is refused before the media contract is consulted.
             assert!(rejects(|v| v["profile"]["password"] = "hunter2".into()).contains("password"));
+
+            // The handoff carries the profile's schema opaquely; refusing an
+            // unsupported one is the media contract's decision.
+            let mut value = document();
+            value["profile"]["schema"] = 2.into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(media_profile(&handoff).is_err());
 
             let mut value = document();
             value["profile"]["hostname"] = "bad host".into();
@@ -195,7 +193,31 @@ pub(crate) mod tests {
                     .contains(&crate::media_profile::MediaProfileField::Hostname)
             );
         }
-        // Phase `missing_copy_is_the_ordinary_usb_case`.
+        {
+            // The ordinary USB and older staged handoffs carry no sidecar and
+            // keep parsing unchanged.
+            assert!(media_profile(&handoff()).unwrap().tpm_handoff.is_none());
+
+            let package = serde_json::json!({
+                "schema": 1, "sealed_bytes": 48, "ciphertext_sha256": "a".repeat(64)
+            });
+            let mut value = document();
+            value["profile"]["prepared_setup"] = package;
+            value["profile"]["tpm_handoff"] = "sealed sidecar".into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(
+                media_profile(&handoff).unwrap().tpm_handoff.as_deref(),
+                Some("sealed sidecar")
+            );
+
+            // A sidecar without the prepared package it belongs to is refused,
+            // and so is a value that is not a bounded string.
+            let mut value = document();
+            value["profile"]["tpm_handoff"] = "sealed sidecar".into();
+            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(media_profile(&handoff).is_err());
+            assert!(rejects(|v| v["profile"]["tpm_handoff"] = 1.into()).contains("tpm_handoff"));
+        }
         {
             let dir = tempfile::tempdir().unwrap();
             assert_eq!(load_from(&dir.path().join("handoff.json")), Ok(None));

@@ -39,7 +39,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
 | Focus the Nth window of the strip | Ctrl+Super+1 … Ctrl+Super+9 | Select group/tab |
-| Open/close the strip switcher (strips, people on them, workspaces) | Super+S, then Up/Down, Enter, F2 to rename | Rest the pointer on the right-edge strip ribbon |
+| Open/close the strip switcher (strips and the people on them) | Super+S, then Up/Down, Enter, F2 to rename, Delete to remove | Tap the right-edge strip ribbon or the strip's name in the top bar, or rest the pointer on the ribbon; long-press a strip for Rename and Remove |
 | Quick Settings | Super+Q | Top bar |
 | Keyboard guide | F1, Super+Shift+/ | — |
 | Capture Studio (choose what to capture) | Print | Capture action |
@@ -53,7 +53,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Magnifier zoom in / out | Super+Alt+= / Super+Alt+- | Settings → Accessibility |
 | Next keyboard layout | Super+Alt+Space | Settings → Mouse & keyboard |
 | Insert an emoji into the focused text field | Super+. | — |
-| Ask an agent about the focused window's selection | Super+C | "Ask agent…" in a text field, list row or context menu |
+| Ask an agent about the focused window's selection | Super+C | "Tell an agent…" in every context menu, a window's tab menu included |
 
 Super+C (the chord Windows gives its assistant) opens the agent quick composer on
 what is selected in the focused window, set to queue a task about it. A Tilo

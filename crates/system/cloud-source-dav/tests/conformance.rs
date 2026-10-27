@@ -3,14 +3,15 @@
 //!
 //! - in-process fakes (always): plain `WebDAV`, `WebDAV` with
 //!   `sync-collection`, Nextcloud;
-//! - real servers in containers (CI's fs job starts them and sets
-//!   `TILO_TEST_WEBDAV_*` / `TILO_TEST_NEXTCLOUD_*`; see
-//!   `crates/system/cloud-source-dav/tests/servers.sh`);
-//! - live accounts (`TILO_LIVE_WEBDAV_*` / `TILO_LIVE_NEXTCLOUD_*` from CI
-//!   secrets, on a schedule).
+//! - real servers in containers (`crates/system/cloud-source-dav/tests/servers.sh`
+//!   starts them and prints `TILO_TEST_WEBDAV_*` / `TILO_TEST_NEXTCLOUD_*`;
+//!   t's `cloud-servers` check);
+//! - live accounts (`TILO_LIVE_WEBDAV_*` / `TILO_LIVE_NEXTCLOUD_*` from t's
+//!   secrets, nightly in its `cloud-live` check).
 //!
 //! Server layers are skipped when their variables are absent, unless
-//! `TILO_REQUIRE_CLOUD_SERVERS=1` (set by the CI job that starts them).
+//! `TILO_REQUIRE_CLOUD_SERVERS=1`; `tools/ci/cloud-conformance.sh` fails the
+//! checks instead.
 
 #![allow(
     clippy::unwrap_used,

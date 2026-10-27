@@ -12,11 +12,7 @@ use crate::shell::automation_host::{
 use crate::shell::cold_record_reads::ColdRecordReads;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::room_records::{LocalRecordReader, RoomRecords};
-use crate::shell::state::WorkspaceAuthority as _;
-use crate::shell::state::{
-    Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    WorkspaceTree, WorkspaceTreeHandle,
-};
+use crate::shell::state::{Workspace, WorkspaceTree, WorkspaceTreeHandle};
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::{OnceLock, mpsc};
@@ -29,15 +25,13 @@ pub use tilo_desktop::activity::{ActivityView, Period, RoomActivityOutcome, Room
 use ui::record::{RecordId, RecordStore};
 
 /// History derivation owns its document cursor, not the live workspace lock.
-/// Only the admitted desktop, causal document and native task routing are
-/// copied; persistence and mutation authority remain on the original tree.
+/// Only the admitted desktop and causal document are copied; persistence and mutation authority remain on the original tree.
 #[derive(Clone)]
 struct ActivityObservation {
     desktop: tilo_desktop_model::DesktopTree,
     doc: automerge::AutoCommit,
-    native_rooms: BTreeSet<super::state::RoomId>,
     /// The verified agents of every room on this desktop, read with it.
-    roster_agents: Vec<ui::history_source::RosterAgent>,
+    roster_agents: Vec<collab_types::history::RosterAgent>,
 }
 
 impl ActivityObservation {
@@ -47,13 +41,6 @@ impl ActivityObservation {
         Self {
             desktop: tree.desktop.clone(),
             doc: tree.doc.clone(),
-            native_rooms: tree
-                .desktop
-                .workspaces
-                .iter()
-                .filter(|workspace| tree.requires_native_owner(workspace.room))
-                .map(|workspace| workspace.room)
-                .collect(),
             roster_agents: verified_agents_since(&mut tree),
         }
     }
@@ -62,11 +49,10 @@ impl ActivityObservation {
 /// A room's verified agents and the room document's heads they were read at.
 type ReadAgents = (
     Vec<automerge::ChangeHash>,
-    Vec<ui::history_source::RosterAgent>,
+    Vec<collab_types::history::RosterAgent>,
 );
 
 thread_local! {
-    /// Each room's verified agents as last read.
     static VERIFIED_AGENTS: std::cell::RefCell<HashMap<super::state::RoomId, ReadAgents>> =
         std::cell::RefCell::new(HashMap::new());
 }
@@ -74,12 +60,12 @@ thread_local! {
 /// Every room's verified agents ([`WorkspaceTree::verified_agents`]), read
 /// again only for a room whose document moved since: Activity refreshes on
 /// a workspace switch, and its governance seldom changes.
-fn verified_agents_since(tree: &mut WorkspaceTree) -> Vec<ui::history_source::RosterAgent> {
+fn verified_agents_since(tree: &mut WorkspaceTree) -> Vec<collab_types::history::RosterAgent> {
     let rooms = tree
         .desktop
         .workspaces
         .iter()
-        .map(|workspace| workspace.room)
+        .map(crate::shell::state::Workspace::room)
         .collect::<BTreeSet<_>>();
     VERIFIED_AGENTS.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -129,12 +115,8 @@ impl ActivityTree for ActivityObservation {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
         Ok(())
     }
-    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+    fn roster_agents(&self) -> Vec<collab_types::history::RosterAgent> {
         self.roster_agents.clone()
-    }
-    fn native_manual_tasks(&self, workspace: WorkspaceId) -> bool {
-        self.room_of(workspace)
-            .is_some_and(|room| self.native_rooms.contains(&room))
     }
 }
 
@@ -149,11 +131,17 @@ const SHORTCUT_RUN_LOOK_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Default)]
 pub(crate) struct NativeActivityHost {
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
-    review: Option<super::task_review::NativeTaskReview>,
     morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
     /// Agent task runs being undone, and how each ended.
     undos: super::task_undo::TaskUndos,
+    /// The session's identity, as chrome holds it ([`RoomActivityPane::set_session_user`]).
+    session_user: SessionUser,
 }
+
+/// The session's identity as chrome holds it, shared by the pane and every
+/// host it is given: the pane asks for it on every refresh, which runs while
+/// a frame is painted, so it is never read from the disk there.
+type SessionUser = Rc<std::cell::RefCell<Option<String>>>;
 
 /// A document's revision when a waiting run last looked at it: the heads of
 /// a document open here, or the persisted witness of one on disk.
@@ -176,7 +164,7 @@ impl EndedRun {
     fn group(&self) -> RunGroup {
         match self {
             Self::Shortcut(finished) => RunGroup::shortcut(finished.report.run),
-            Self::Task(ended) => RunGroup::task(&ended.task_id),
+            Self::Task(ended) => RunGroup::task(&ended.group),
         }
     }
 
@@ -243,7 +231,6 @@ struct PersistedFound {
 enum PersistedShare {
     /// The document did not move since the last look: what it found stands.
     Unchanged,
-    /// The document as read now.
     Read(Option<DocumentShare>),
 }
 
@@ -966,7 +953,7 @@ fn morning_source_actions_from(
         .get(&workspace.id.raw())
         .map_or_else(Vec::new, |preferences| {
             preferences
-                .for_room(&workspace.room.to_string())
+                .for_room(&workspace.room().to_string())
                 .iter()
                 .flat_map(|source| {
                     let app = crate::shell::launcher::display_name_for_app_id_without_waiting(
@@ -975,11 +962,11 @@ fn morning_source_actions_from(
                     .unwrap_or_else(|| source.app.clone());
                     [
                         (
-                            format!("{MORNING_NEXT}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_NEXT}{}.{}", workspace.room(), source.key()),
                             t("activity-morning-next"),
                         ),
                         (
-                            format!("{MORNING_OPEN}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_OPEN}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-open"),
@@ -987,7 +974,7 @@ fn morning_source_actions_from(
                             ),
                         ),
                         (
-                            format!("{MORNING_REFRESH}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_REFRESH}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-refresh"),
@@ -995,7 +982,7 @@ fn morning_source_actions_from(
                             ),
                         ),
                         (
-                            format!("{MORNING_DRAFT}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_DRAFT}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-draft"),
@@ -1003,7 +990,7 @@ fn morning_source_actions_from(
                             ),
                         ),
                         (
-                            format!("{MORNING_REMOVE}{}.{}", workspace.room, source.key()),
+                            format!("{MORNING_REMOVE}{}.{}", workspace.room(), source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-remove"),
@@ -1017,59 +1004,35 @@ fn morning_source_actions_from(
 }
 
 impl ActivityHost for NativeActivityHost {
-    fn task_review_required(&self, room: &str) -> bool {
-        self.review
-            .as_ref()
-            .is_some_and(|review| review.requires_room(room))
+    fn undo_task_run(&self, undo: tilo_desktop::activity::TaskRunUndo) -> Result<(), String> {
+        // Undone by each changed document's history, as the person at the
+        // screen: the task's own state does not change.
+        let broker = self
+            .broker
+            .clone()
+            .ok_or("the session's action broker is not running yet")?;
+        // The session is opened on the undo's own thread: admitting it
+        // reads the workspace, which the pane's caller may hold.
+        self.undos
+            .start(broker, undo.room, undo.invocation, undo.task_id, undo.steps)
     }
-    fn task_review_snapshot(
+    fn poll_task_run_undo(
         &self,
-        room: &str,
-    ) -> Option<Result<std::sync::Arc<tilo_desktop::activity::TaskReviewSnapshot>, String>> {
-        self.review.as_ref().map_or_else(
-            || Some(Err("authenticated task owner unavailable".into())),
-            |review| review.snapshot(room),
-        )
-    }
-    fn submit_task_review(
-        &self,
-        request: tilo_desktop::activity::TaskReviewRequest,
-    ) -> Result<(), String> {
-        if let tilo_desktop::activity::TaskReviewCommand::UndoRun { task_id, steps } =
-            &request.command
-        {
-            // Undone by each changed document's history, as the person at
-            // the screen: the task's own state does not change.
-            let broker = self
-                .broker
-                .clone()
-                .ok_or("the session's action broker is not running yet")?;
-            // The session is opened on the undo's own thread: admitting it
-            // reads the workspace, which the pane's caller may hold.
-            return self.undos.start(
-                broker,
-                request.room.clone(),
-                request.invocation,
-                task_id.clone(),
-                steps.clone(),
-            );
+        invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<tilo_desktop::activity::TaskRunDocument>, String>> {
+        match self.undos.poll(invocation)? {
+            super::task_undo::UndoState::Running => None,
+            super::task_undo::UndoState::Ended(outcome) => Some(outcome),
         }
-        self.review
-            .as_ref()
-            .ok_or("authenticated task owner unavailable")?
-            .submit(request)
-    }
-    fn poll_task_review(&self, invocation: uuid::Uuid) -> Option<Result<(), String>> {
-        match self.undos.poll(invocation) {
-            Some(super::task_undo::UndoState::Running) => return None,
-            Some(super::task_undo::UndoState::Ended(outcome)) => return Some(outcome),
-            None => {}
-        }
-        self.review.as_ref()?.poll(invocation)
     }
 
     fn local_user(&self) -> String {
-        crate::shell::state::local_user_id()
+        // Only a pane chrome never told who the session is (a bare test
+        // pane) reads the identity file.
+        self.session_user
+            .borrow()
+            .clone()
+            .unwrap_or_else(crate::shell::state::local_user_id)
     }
     fn local_author(&self, authors: &mut ui::AuthorDirectory, actor: &str) -> Option<String> {
         #[cfg(test)]
@@ -1141,25 +1104,6 @@ impl ActivityHost for NativeActivityHost {
     fn app_display_name(&self, app: &str) -> Option<String> {
         crate::shell::launcher::display_name_for_app_id_without_waiting(app)
     }
-    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
-        workspace.agent_members()
-    }
-    fn agent_is_live(&self, room: &str, agent: &str) -> bool {
-        self.broker
-            .as_ref()
-            .is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
-    }
-    fn dispatch_task(&self, room: &str, task: &str) -> Result<(), String> {
-        self.broker
-            .as_ref()
-            .ok_or_else(|| "agent task dispatch is unavailable".to_string())
-            .and_then(|broker| broker.dispatch_task(room, task).map(|_| ()))
-    }
-    fn launch_agent(&self, agent: &str, workspace: &Workspace) -> Result<(), String> {
-        crate::shell::launcher::launch_workspace_agent(agent, workspace)
-            .map(|_| ())
-            .map_err(|error| error.user_message())
-    }
 }
 
 impl ActivityTree for WorkspaceTree {
@@ -1174,12 +1118,12 @@ impl ActivityTree for WorkspaceTree {
     }
     /// Every room's agents whose delegation its governance verified for
     /// exactly their device ([`WorkspaceTree::verified_agents`]).
-    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+    fn roster_agents(&self) -> Vec<collab_types::history::RosterAgent> {
         let rooms = self
             .desktop
             .workspaces
             .iter()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .collect::<BTreeSet<_>>();
         rooms
             .into_iter()
@@ -1190,30 +1134,6 @@ impl ActivityTree for WorkspaceTree {
         self.resync_cache_from_doc();
         Ok(())
     }
-    fn native_manual_tasks(&self, workspace: WorkspaceId) -> bool {
-        self.room_of(workspace)
-            .is_some_and(|room| self.requires_native_owner(room))
-    }
-    fn create_workspace_task(
-        &mut self,
-        workspace: WorkspaceId,
-        title: String,
-        actor: String,
-        agent: Option<String>,
-        route: WorkspaceTaskRoute,
-        resource: Option<WorkspaceTaskResource>,
-    ) -> Option<String> {
-        WorkspaceTree::create_workspace_task(self, workspace, title, actor, agent, route, resource)
-    }
-    fn set_workspace_task_status(
-        &mut self,
-        workspace: WorkspaceId,
-        id: &str,
-        status: WorkspaceTaskStatus,
-        actor: &str,
-    ) -> bool {
-        WorkspaceTree::set_workspace_task_status(self, workspace, id, status, actor)
-    }
 }
 
 /// The shared pane with the native services installed.
@@ -1222,6 +1142,7 @@ pub struct RoomActivityPane(
     Option<crate::shell::collab_broker::AppActionBroker>,
     ShortcutRunRecorder,
     ColdRecordReads,
+    SessionUser,
 );
 
 impl std::ops::Deref for RoomActivityPane {
@@ -1268,6 +1189,15 @@ impl RoomActivityPane {
     /// refresh asked for is handed to the worker, and
     /// [`Self::take_persisted_reads`] says when Activity must refresh
     /// again because a read came in.
+    /// Tell the pane who the session is, as chrome holds it: the identity
+    /// the pane reads as the reader's own.
+    pub(crate) fn set_session_user(&self, user: &str) {
+        let mut held = self.4.borrow_mut();
+        if held.as_deref() != Some(user) {
+            *held = Some(user.to_owned());
+        }
+    }
+
     pub(crate) fn refresh_observed_local(
         &mut self,
         tree: &WorkspaceTreeHandle,
@@ -1294,12 +1224,17 @@ impl RoomActivityPane {
 
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
-        pane.set_host(Rc::new(NativeActivityHost::default()));
+        let session_user = SessionUser::default();
+        pane.set_host(Rc::new(NativeActivityHost {
+            session_user: Rc::clone(&session_user),
+            ..NativeActivityHost::default()
+        }));
         Self(
             pane,
             None,
             ShortcutRunRecorder::default(),
             ColdRecordReads::default(),
+            session_user,
         )
     }
     /// The production pane: the device's private seen frontiers and
@@ -1311,36 +1246,31 @@ impl RoomActivityPane {
     }
     pub(crate) fn with_local_user(user: String) -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::with_local_user(user);
-        pane.set_host(Rc::new(NativeActivityHost::default()));
+        let session_user = SessionUser::default();
+        pane.set_host(Rc::new(NativeActivityHost {
+            session_user: Rc::clone(&session_user),
+            ..NativeActivityHost::default()
+        }));
         Self(
             pane,
             None,
             ShortcutRunRecorder::default(),
             ColdRecordReads::default(),
+            session_user,
         )
     }
     /// Attach the live broker after the session binds. Without it, agent
     /// tasks remain visible but cannot be launched into an offline queue.
     pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
         self.1 = Some(broker.clone());
+        let session_user = Rc::clone(&self.4);
         self.set_host(Rc::new(NativeActivityHost {
             morning: Some(Rc::new(super::morning_sources::NativeMorningSources::new(
                 broker.clone(),
             ))),
             broker: Some(broker),
-            review: None,
             undos: super::task_undo::TaskUndos::default(),
-        }));
-    }
-    pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
-        let broker = self.1.clone();
-        self.set_host(Rc::new(NativeActivityHost {
-            morning: broker
-                .clone()
-                .map(|broker| Rc::new(super::morning_sources::NativeMorningSources::new(broker))),
-            broker,
-            review: Some(review),
-            undos: super::task_undo::TaskUndos::default(),
+            session_user,
         }));
     }
     /// Whether a finished shortcut run waits to be recorded. Cheap: the
@@ -1372,23 +1302,10 @@ impl RoomActivityPane {
             .as_ref()
             .is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
     }
-    /// Dispatch a queued task in `room` to its assigned live agent, for
-    /// surfaces outside Task Center that hand work over directly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no broker is attached or the assigned agent
-    /// cannot accept the task.
-    pub fn dispatch_task_in(&self, room: &str, task_id: &str) -> Result<u64, String> {
-        self.1
-            .as_ref()
-            .ok_or_else(|| "agent task dispatch is unavailable".to_string())?
-            .dispatch_task(room, task_id)
-    }
+    /// Offer what `focus` names to the Activity app.
     pub fn apply_deep_link(&mut self, focus: crate::shell::chrome_state::ActivityFocus) {
         self.0
-            .apply_deep_link(tilo_desktop::activity::ActivityDeepLink {
-                task_id: focus.task_id,
+            .focus_deep_link(&tilo_desktop::activity::ActivityDeepLink {
                 author: focus.author,
                 group_id: focus.group_id,
                 entry_id: focus.entry_id,
@@ -1396,19 +1313,18 @@ impl RoomActivityPane {
                 resource_version: focus.resource_version,
             });
     }
-    pub fn observe_agent_launch_event(
-        &mut self,
-        event: &crate::shell::launcher::LaunchEvent,
-    ) -> bool {
-        // A job that ended for memory is no end of the agent's app.
-        if let crate::shell::launcher::LaunchEventKind::OutOfMemory(end) = &event.kind
-            && !end.closed_the_app()
-        {
-            return false;
-        }
-        self.0
-            .observe_agent_launch_event(&activity_launch_event(event))
-    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often this thread refreshed a pane from the workspace.
+    static REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How often this thread refreshed a pane from the workspace.
+#[cfg(test)]
+pub(crate) fn refreshes() -> usize {
+    REFRESHES.with(std::cell::Cell::get)
 }
 
 /// Refresh `pane` from a coherent observation of `tree`, deriving history
@@ -1420,40 +1336,14 @@ fn refresh_pane(
     records: &RecordStore,
     local: &dyn tilo_desktop::activity::PersistedRecordHistory,
 ) -> u64 {
+    #[cfg(test)]
+    REFRESHES.with(|refreshes| refreshes.set(refreshes.get().saturating_add(1)));
     let mut observed = ActivityObservation::capture(tree);
     let workspace = observed.active.raw();
     pane.observe_workspace(workspace);
     pane.refresh(&mut observed);
     pane.refresh_records_with_local(&mut observed, records, local);
     workspace
-}
-
-fn activity_launch_event(
-    event: &crate::shell::launcher::LaunchEvent,
-) -> tilo_desktop::activity::AgentLaunchEvent {
-    use crate::shell::launcher::LaunchEventKind as Native;
-    use tilo_desktop::activity::AgentLaunchEventKind as Shared;
-    tilo_desktop::activity::AgentLaunchEvent {
-        managed_agent_id: event.managed_agent_id.clone(),
-        managed_workspace_id: event.managed_workspace_id.clone(),
-        kind: match &event.kind {
-            Native::Started { pid } => Shared::Started { pid: *pid },
-            Native::SpawnFailed { detail, .. } => Shared::SpawnFailed {
-                detail: detail.clone(),
-            },
-            Native::Failed { code, stderr_tail } | Native::WindowLost { code, stderr_tail } => {
-                Shared::Failed {
-                    code: *code,
-                    stderr_tail: stderr_tail.clone(),
-                }
-            }
-            Native::Exited => Shared::Exited,
-            Native::OutOfMemory(_) => Shared::Failed {
-                code: None,
-                stderr_tail: "ran out of memory".to_string(),
-            },
-        },
-    }
 }
 
 #[cfg(test)]
@@ -1491,7 +1381,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.active_workspace().expect("workspace").room;
+        let room = tree.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("history-lock.qdoc");
         let kind = ui::RecordKind::new("document");
         tree.room_records_held
@@ -1547,7 +1437,7 @@ mod tests {
     #[test]
     fn activity_never_reads_a_persisted_record_on_the_loop() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.active_workspace().expect("workspace").room;
+        let room = tree.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("activity-cold-read.qdoc");
         let kind = ui::RecordKind::new("document");
         tree.room_records_held
@@ -1604,9 +1494,7 @@ mod tests {
 
         // That refresh handed the record to the worker again; nothing
         // moved, so the pass changes nothing.
-        let deadline = Instant::now()
-            .checked_add(std::time::Duration::from_secs(30))
-            .expect("a deadline");
+        let deadline = tilo_test_env::hang_deadline();
         while pane.persisted_reads().reading() {
             assert!(
                 !pane.take_persisted_reads(),
@@ -1646,13 +1534,7 @@ mod tests {
     /// Take the persisted reads in once the worker has them. Polls: tests
     /// only.
     fn wait_for_reads(pane: &mut RoomActivityPane) {
-        let deadline = Instant::now()
-            .checked_add(std::time::Duration::from_secs(30))
-            .expect("a deadline");
-        while !pane.take_persisted_reads() {
-            assert!(Instant::now() < deadline, "the read never came in");
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the persisted reads", || pane.take_persisted_reads());
     }
 
     /// Leaving a workspace rewrites the history file and nothing else: a
@@ -1715,7 +1597,7 @@ mod tests {
         let preferences = HashMap::from([(
             workspace.id.raw(),
             MorningPreferences {
-                room: workspace.room.to_string(),
+                room: workspace.room().to_string(),
                 sources: vec![MorningSource {
                     app: "so.tilo.weather".into(),
                     resource: "weather.location:fixture".into(),
@@ -1727,7 +1609,6 @@ mod tests {
         let _ = history_writer();
         let (actions, departures, settles) =
             crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-                // Leaving a workspace hands both maps to the writer.
                 queue_history_save(
                     path.clone(),
                     "seen_frontiers",
@@ -1744,7 +1625,6 @@ mod tests {
                         },
                     )])),
                 );
-                // The palette's next query.
                 let choices = load_known_history_map(&path, "morning_sources");
                 let actions = morning_source_actions_from(&workspace, &choices);
                 let departures: HashMap<u64, WorkspaceDeparture> =
@@ -1869,12 +1749,10 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
     }
 
-    /// A shortcut run the broker finished lands in the workspace document
-    /// as one undoable run as soon as a document it changed is open here.
     #[test]
     fn a_finished_shortcut_run_is_recorded_once_from_the_documents_it_changed() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("drafts.qdoc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -1906,6 +1784,7 @@ mod tests {
                 report: tilo_automation::RunReport {
                     run,
                     shortcut: "publish".into(),
+                    version: None,
                     trigger: "manual".into(),
                     mode: tilo_automation::RunMode::Unattended,
                     steps: Vec::new(),
@@ -1940,12 +1819,12 @@ mod tests {
     /// An agent's run of a workspace task that ended is recorded as one run
     /// from the changes it grouped under the task: under the task's title,
     /// by the agent, for the person, and naming the task, which is what the
-    /// Task Center offers to undo and what undo names. Changes of another
+    /// History offers to undo and what undo names. Changes of another
     /// task are not its.
     #[test]
     fn an_ended_task_run_is_recorded_as_the_agents_undoable_run() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("launch.note");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("note"));
@@ -1971,7 +1850,7 @@ mod tests {
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
                     room: room.to_string(),
-                    task_id: "task:translate".into(),
+                    group: "task:translate".into(),
                     title: "Translate the paragraph".into(),
                     agent: "agent:scribe".into(),
                     person: "person:ada".into(),
@@ -2009,7 +1888,7 @@ mod tests {
     #[test]
     fn a_task_run_over_an_apps_room_document_is_recorded() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let data = tempfile::tempdir().expect("data home");
         let path = RoomRecords::room_document_path_for_test(data.path(), "so.tilo.notes", room);
         std::fs::create_dir_all(path.parent().expect("room directory")).unwrap();
@@ -2035,7 +1914,7 @@ mod tests {
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
                     room: room.to_string(),
-                    task_id: "task:translate".into(),
+                    group: "task:translate".into(),
                     title: "Translate".into(),
                     agent: "agent:scribe".into(),
                     person: "person:ada".into(),
@@ -2108,6 +1987,7 @@ mod tests {
             report: tilo_automation::RunReport {
                 run,
                 shortcut: "publish".into(),
+                version: None,
                 trigger: "manual".into(),
                 mode: tilo_automation::RunMode::Unattended,
                 steps: vec![tilo_automation::StepRecord {
@@ -2129,7 +2009,7 @@ mod tests {
     #[test]
     fn a_shortcut_run_over_a_closed_record_is_still_recorded() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("receipts.sheet");
         let kind = ui::RecordKind::new("sheet");
@@ -2225,7 +2105,7 @@ mod tests {
     #[test]
     fn a_shortcut_run_look_never_reads_the_disk_on_the_loop_or_under_the_tree_lock() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("receipts.sheet");
         let kind = ui::RecordKind::new("sheet");
@@ -2283,7 +2163,7 @@ mod tests {
     #[test]
     fn a_run_that_changed_nothing_here_is_given_up_after_its_settle_time() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let local = RoomRecords::in_memory();
         let mut pane = RoomActivityPane::new();

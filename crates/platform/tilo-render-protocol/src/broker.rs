@@ -76,7 +76,6 @@ pub fn handshake(app_id: &str, workspace_id: Option<&str>) -> io::Result<Vec<u8>
     Ok(framed)
 }
 
-/// A handshake as the broker reads it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Handshake {
     pub protocol: u16,
@@ -84,11 +83,6 @@ pub struct Handshake {
     pub workspace_id: Option<String>,
 }
 
-/// Read the handshake from a new broker connection.
-///
-/// # Errors
-///
-/// When the connection ends early or the line is not a handshake.
 pub fn read_handshake(stream: &mut impl io::Read) -> io::Result<Handshake> {
     let mut length = [0_u8; 4];
     stream.read_exact(&mut length)?;
@@ -106,11 +100,6 @@ pub fn read_handshake(stream: &mut impl io::Read) -> io::Result<Handshake> {
     Ok(handshake)
 }
 
-/// Write `handshake` to a connection.
-///
-/// # Errors
-///
-/// When the write fails.
 pub fn write_handshake(
     stream: &mut impl Write,
     app_id: &str,
@@ -121,10 +110,6 @@ pub fn write_handshake(
 }
 
 /// Ask the broker on `broker` for a channel. Blocks until it answers.
-///
-/// # Errors
-///
-/// When the broker is gone, refuses, or answers with something else.
 pub fn request_channel(broker: BorrowedFd<'_>) -> io::Result<Channel> {
     let sent = rustix::net::send(broker, &[REQUEST], SendFlags::NOSIGNAL)?;
     if sent != 1 {
@@ -163,10 +148,6 @@ pub fn request_channel(broker: BorrowedFd<'_>) -> io::Result<Channel> {
 
 /// Wait for the next request on a broker connection. `Ok(false)` at end of
 /// stream.
-///
-/// # Errors
-///
-/// When the read fails or the byte is not a request.
 pub fn read_request(broker: BorrowedFd<'_>) -> io::Result<bool> {
     let mut byte = [0_u8; 1];
     let read = loop {
@@ -183,10 +164,6 @@ pub fn read_request(broker: BorrowedFd<'_>) -> io::Result<bool> {
 }
 
 /// Answer a request with `channel`, or refuse it.
-///
-/// # Errors
-///
-/// When the send fails.
 pub fn answer(broker: BorrowedFd<'_>, channel: Option<&Channel>) -> io::Result<()> {
     let fds: Vec<BorrowedFd<'_>> = channel.map(Channel::as_fd).into_iter().collect();
     let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];

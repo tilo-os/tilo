@@ -10,9 +10,7 @@
 //! The functions are not generic and take the children as trait objects, so
 //! every app links them from the shared runtime.
 
-use std::collections::HashSet;
-
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -118,26 +116,6 @@ pub(super) fn for_each_child(children: Vec<&dyn Widget>, visitor: &mut dyn FnMut
     }
 }
 
-pub(super) fn resource_operation_handlers(
-    local: &[&str],
-    readers: &[crate::semantic_document_read::RegisteredSemanticReader],
-    each: EachChild<'_>,
-) -> HashSet<String> {
-    let mut handlers = local
-        .iter()
-        .map(|handler| (*handler).to_string())
-        .collect::<HashSet<_>>();
-    // The actual widget's registered readers also declare their selectors.
-    // Descriptor availability and qualified owner admission remain separate.
-    handlers.extend(
-        readers
-            .iter()
-            .map(|reader| reader.operation_type().to_string()),
-    );
-    each(&mut |child| handlers.extend(child.resource_operation_handlers()));
-    handlers
-}
-
 pub(super) fn reveal_descendant(children: ChildrenMut<'_>, target: *const dyn Widget) -> bool {
     children.into_iter().any(|child| {
         std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(child), target)
@@ -201,7 +179,16 @@ pub(super) fn ime_requires_deferred_ack(caret: Option<Rect>, each: EachChild<'_>
     required
 }
 
-/// The child that types at `caret`, the widget's own caret.
+pub(super) fn ime_refuses_ordinary_commits(caret: Option<Rect>, each: EachChild<'_>) -> bool {
+    let mut refused = false;
+    each(&mut |child| {
+        if child.ime_cursor_rect() == caret && child.ime_content().is_some() {
+            refused |= child.ime_refuses_ordinary_commits();
+        }
+    });
+    refused
+}
+
 fn typing_child<'a>(children: ChildrenMut<'a>, caret: Rect) -> Option<&'a mut (dyn Widget + 'a)> {
     children
         .into_iter()
@@ -307,6 +294,14 @@ pub(super) fn take_accessibility_request(
         .find_map(|child| child.take_accessibility_request())
 }
 
+pub(super) fn take_app_activation(
+    children: ChildrenMut<'_>,
+) -> Option<crate::application::InstanceId> {
+    children
+        .into_iter()
+        .find_map(|child| child.take_app_activation())
+}
+
 pub(super) fn dev_route(children: Vec<&dyn Widget>) -> Option<super::router::RouteSnapshot> {
     children.into_iter().find_map(|child| child.dev_route())
 }
@@ -324,27 +319,6 @@ pub(super) fn set_motion_reduced(children: ChildrenMut<'_>, reduced: bool) {
     for child in children {
         child.set_motion_reduced(reduced);
     }
-}
-
-pub(super) fn handle_local_undo_request(
-    children: ChildrenMut<'_>,
-    request: crate::undo::UndoRequest,
-) -> bool {
-    children
-        .into_iter()
-        .any(|child| child.handle_local_undo_request(request))
-}
-
-pub(super) fn poll_resource_operation(
-    children: ChildrenMut<'_>,
-    invocation: tilo_actions::InvocationId,
-    cancellation_requested: bool,
-    doc: &AutoCommit,
-    path: &ObjId,
-) -> Option<tilo_actions::InvocationUpdate> {
-    children.into_iter().find_map(|child| {
-        child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-    })
 }
 
 pub(super) fn needs_animation_frame(each: EachChild<'_>) -> bool {
@@ -365,6 +339,16 @@ pub(super) fn next_wake_deadline(each: EachChild<'_>) -> Option<Instant> {
         }
     });
     earliest
+}
+
+pub(super) fn holds_frame_until(each: EachChild<'_>, now: Instant) -> Option<Instant> {
+    let mut latest = None;
+    each(&mut |child| {
+        if let Some(until) = child.holds_frame_until(now) {
+            latest = Some(latest.map_or(until, |old: Instant| old.max(until)));
+        }
+    });
+    latest
 }
 
 pub(super) fn modal_capture(each: EachChild<'_>) -> Option<Rect> {

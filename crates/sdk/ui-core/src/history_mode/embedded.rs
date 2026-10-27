@@ -100,7 +100,7 @@ pub(crate) fn needs_refresh(
     root: &dyn Widget,
     doc: &automerge::AutoCommit,
     fallback_width: f64,
-    status: Option<&str>,
+    status: Option<&crate::widget::WindowStatus>,
 ) -> bool {
     let mut needed = false;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
@@ -284,7 +284,10 @@ pub(crate) fn finish_pending_command(
 /// Hand `status` to every History surface under `root` that can take it
 /// where it already shows ([`super::host::HistoryHost::set_sync_status_in_place`]),
 /// so a status-only change repaints that text instead of rebuilding.
-pub(crate) fn set_sync_status_in_place(root: &mut dyn Widget, status: Option<&str>) {
+pub(crate) fn set_sync_status_in_place(
+    root: &mut dyn Widget,
+    status: Option<&crate::widget::WindowStatus>,
+) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if !history.sync_status_matches(status) {
             history.set_sync_status_in_place(status, live);
@@ -296,7 +299,7 @@ pub(crate) fn refresh(
     root: &mut dyn Widget,
     doc: &automerge::AutoCommit,
     fallback_width: f64,
-    status: Option<&str>,
+    status: Option<&crate::widget::WindowStatus>,
 ) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.validate_root(live).is_err() {
@@ -309,10 +312,11 @@ pub(crate) fn refresh(
             fallback_width
         };
         if !history.sync_status_matches(status) {
-            history.set_sync_status(status.map(str::to_owned));
+            history.set_sync_status(status.cloned());
         }
         let was_history = history.captures_input();
         history.set_width(width);
+        history.present_entries_of(live);
         history.refresh(doc);
         let returning_live = history.returning_live();
         if was_history || returning_live || history.captures_input() {
@@ -323,6 +327,7 @@ pub(crate) fn refresh(
         if returning_live {
             history.finish_return_to_live();
             history.flush_pending_toolbar();
+            let _ = history.deliver_opened_entry(live);
         }
     });
 }

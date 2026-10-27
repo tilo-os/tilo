@@ -237,6 +237,7 @@ mod tests {
             ActionSpec::operation("erase", "Erase", OperationKind::Effect, "test.erase", &())
                 .unwrap()
                 .with_contract(crate::ActionContract {
+                    kind: crate::ActionKind::Outside,
                     risk: crate::RiskLevel::Destructive,
                     confirmation: crate::ConfirmationPolicy::None,
                     ..crate::ActionContract::default()

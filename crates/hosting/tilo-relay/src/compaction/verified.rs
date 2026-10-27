@@ -48,7 +48,6 @@ type BodyHash = [u8; 32];
 pub(super) struct Signatures {
     /// Reads the route and envelope of a document frame.
     payloads: Arc<dyn ShellPayloads>,
-    /// Verified bodies, as of the previous round.
     verified: HashSet<BodyHash>,
     /// Verified bodies this round has read so far.
     current: HashSet<BodyHash>,
@@ -79,6 +78,8 @@ pub(super) struct Checked<'a> {
     entry: &'a ChannelEntry,
     route: Option<Route>,
     piece: Piece,
+    /// A verified frame written in the clear.
+    cleartext: bool,
 }
 
 impl<'a> Checked<'a> {
@@ -97,7 +98,11 @@ impl<'a> Checked<'a> {
         matches!(self.piece, Piece::Sealed)
     }
 
-    /// The route and the piece.
+    /// Whether the entry is a verified frame written in the clear.
+    pub(super) const fn is_cleartext(&self) -> bool {
+        self.cleartext
+    }
+
     pub(super) fn into_parts(self) -> (Option<Route>, Piece) {
         (self.route, self.piece)
     }
@@ -133,6 +138,7 @@ impl Signatures {
             entry,
             route,
             piece: Piece::Opaque,
+            cleartext: false,
         };
         let Some((route, envelope)) = self.payloads.open_document(&entry.body) else {
             return opaque(None);
@@ -167,6 +173,7 @@ impl Signatures {
             entry,
             route: Some(route),
             piece,
+            cleartext: envelope.encryption.is_none(),
         }
     }
 

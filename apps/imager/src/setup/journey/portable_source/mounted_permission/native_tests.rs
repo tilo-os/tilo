@@ -106,12 +106,12 @@ impl Drop for RetiringPicker {
         self.release
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
     }
 }
 fn wait(controller: &mut Controller) -> Result<Option<Reviewed>, ReviewFailure> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(reply) = controller.poll() {
             if !controller.busy() {
@@ -154,7 +154,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             .env(CHILD, &marker)
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 assert!(status.success());
@@ -215,7 +215,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
         environment.set("XDG_STATE_HOME", temp.path().join("state"));
         let mut app =
             TestApp::<crate::resource::GuidedInstallerShell>::launched(&["--installer"]).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             app.settle();
             let state = app
@@ -268,7 +268,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             stale_request.is_ok(),
             "request is asynchronous; native worker must reject the opaque stale ID; public effect returned {stale_request:?}"
         );
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             app.settle();
             let done = app
@@ -302,7 +302,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             location: actual_id,
         })
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             app.settle();
             let choosing = app
@@ -401,7 +401,9 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             )
             .unwrap();
     }
-    retiring_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    retiring_rx
+        .recv_timeout(tilo_test_env::hang_bound())
+        .unwrap();
     assert!(
         controller.poll().is_none(),
         "received reply is held until actual worker exit"
@@ -529,7 +531,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             },
         )
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(result) = selection.poll() {
             assert!(

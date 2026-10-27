@@ -145,7 +145,6 @@ impl NameIndex {
         self.entries.iter().map(|(_, entry)| entry)
     }
 
-    /// The entry indexed under `key`.
     fn entry(&self, key: u64) -> Option<&NameEntry> {
         let at = self
             .entries
@@ -401,6 +400,13 @@ struct NameEntry {
 }
 
 pub struct FilesProvider {
+    shared: Arc<FilesIndexes>,
+}
+
+/// The name and content indexes of the person's home, shared by the
+/// provider and whoever searches them off the main thread (the file
+/// chooser's [`FilesProvider::searcher`]).
+pub struct FilesIndexes {
     home: PathBuf,
     /// Queries read under the shared lock. A watched change holds the write
     /// lock only for its upserts and incremental commit (milliseconds); a
@@ -459,19 +465,39 @@ fn is_tilo_desktop_session() -> bool {
     std::env::var_os("XDG_SESSION_DESKTOP").as_deref() == Some(std::ffi::OsStr::new("tilo"))
 }
 
+impl std::ops::Deref for FilesProvider {
+    type Target = FilesIndexes;
+
+    fn deref(&self) -> &FilesIndexes {
+        &self.shared
+    }
+}
+
 impl FilesProvider {
     pub fn new() -> Self {
         Self::with_home(indexable_home())
     }
 
     fn with_home(home: PathBuf) -> Self {
-        Self {
+        Self::over(FilesIndexes {
             home,
             name_index: Arc::new(RwLock::new(NameIndex::default())),
             tantivy: OnceLock::new(),
             ready: OnceLock::new(),
             watch: OnceLock::new(),
+        })
+    }
+
+    fn over(indexes: FilesIndexes) -> Self {
+        Self {
+            shared: Arc::new(indexes),
         }
+    }
+
+    /// The same indexes, for a search that runs on a worker thread: it
+    /// opens and reads them there, never on the caller's.
+    pub fn searcher(&self) -> Arc<FilesIndexes> {
+        Arc::clone(&self.shared)
     }
 
     /// A provider over a home already walked, holding these `~/…` paths,
@@ -493,15 +519,30 @@ impl FilesProvider {
         let _ = ready.set(());
         let tantivy = OnceLock::new();
         let _ = tantivy.set(None);
-        Self {
+        Self::over(FilesIndexes {
             home,
             name_index: Arc::new(RwLock::new(NameIndex::from_entries(entries, 1))),
             tantivy,
             ready,
             watch: OnceLock::new(),
-        }
+        })
     }
 
+    /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
+    pub fn rescan(&self) {
+        self.ensure_ready();
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Files search rescan");
+        let name_index = Arc::clone(&self.name_index);
+        let home = self.home.clone();
+        thread::Builder::new()
+            .name("tilo-search-files-rescan".into())
+            .spawn(move || walk_home(&home, &name_index))
+            .ok();
+    }
+}
+
+impl FilesIndexes {
     /// Open the content index and kick the background name walk once.
     /// Users who query before the walk finishes get only the content index.
     fn ensure_ready(&self) {
@@ -531,23 +572,52 @@ impl FilesProvider {
         start_name_watch(&self.home, &self.name_index, &self.watch);
     }
 
-    /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
-    pub fn rescan(&self) {
+    /// The paths whose names match `needle`, best first, then those whose
+    /// contents do, at most `limit`: what the file chooser lists when a
+    /// person searches every place they can reach. The same index the
+    /// palette's Files answers from, so both find the same files. The
+    /// first call opens the index, so the chooser calls it on its worker
+    /// thread.
+    pub fn paths_matching(&self, needle: &str, limit: usize) -> Vec<PathBuf> {
+        let needle = needle.trim().to_lowercase();
+        if needle.is_empty() || limit == 0 {
+            return Vec::new();
+        }
         self.ensure_ready();
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("Files search rescan");
-        let name_index = Arc::clone(&self.name_index);
-        let home = self.home.clone();
-        thread::Builder::new()
-            .name("tilo-search-files-rescan".into())
-            .spawn(move || walk_home(&home, &name_index))
-            .ok();
+        let mut found = Vec::new();
+        let mut seen = HashSet::new();
+        if let Some(index) = self.published() {
+            let needle_len = needle.len();
+            let hits = index.index.search_scored(
+                &needle,
+                tilo_search::Page::first(limit),
+                move |signals| name_score(needle_len, signals),
+            );
+            for hit in &hits.hits {
+                if let Some(entry) = index.entry(hit.key)
+                    && seen.insert(entry.path.clone())
+                {
+                    found.push(entry.path.clone());
+                }
+            }
+        }
+        if let Some(contents) = self.tantivy.get().and_then(Option::as_ref) {
+            for hit in contents.query(&needle, limit) {
+                if seen.insert(hit.path.clone()) {
+                    found.push(hit.path);
+                }
+            }
+        }
+        found.truncate(limit);
+        found
     }
 
     fn published(&self) -> Option<RwLockReadGuard<'_, NameIndex>> {
         self.name_index.read().ok()
     }
+}
 
+impl FilesProvider {
     /// Content hits, appended to `out` and deduped against
     /// `seen` name hits so a file matching both only shows once.
     fn push_content_hits(
@@ -772,11 +842,10 @@ impl FilesProvider {
     }
 }
 
-/// A file row's second line: the folder it is in, and how long ago it last
-/// changed ("Documents · yesterday"). The name is the title already; saying
-/// it again in a path only pushes the part that tells two files apart off
-/// the row.
-fn location_line(entry: &NameEntry) -> String {
+/// A file row's second line as two facts: the folder it is in, and how
+/// long ago it last changed. The name is the title already; saying it again
+/// in a path only pushes the part that tells two files apart off the row.
+fn location_facts(entry: &NameEntry) -> Vec<String> {
     let folder = entry
         .display
         .rsplit_once('/')
@@ -793,16 +862,12 @@ fn location_line(entry: &NameEntry) -> String {
             .as_secs();
         ui::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
     });
-    match age {
-        Some(age) => crate::shell::i18n::t_args(
-            "search-files-location",
-            &[("folder", folder.into()), ("age", age.into())],
-        ),
-        None => folder,
-    }
+    std::iter::once(folder).chain(age).collect()
 }
 
-fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> SearchResult {
+/// A file's row. A content hit's second line is the passage that matched;
+/// any other's is where the file is and when it changed.
+fn make_result(entry: &NameEntry, score: i32, snippet: Option<String>) -> SearchResult {
     let kind = if entry.is_dir {
         ResourceKind::Folder
     } else {
@@ -810,15 +875,23 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
     };
     let path = entry.path.clone();
     let is_dir = entry.is_dir;
+    // The plain line, for matching and for whoever reads rows as text.
+    let (line, facts) = if let Some(snippet) = snippet {
+        (snippet, Vec::new())
+    } else {
+        let facts = location_facts(entry);
+        (facts.join(", "), facts)
+    };
     SearchResult::view_with_output(
         kind,
         "files",
         entry.path.display().to_string(),
         file_title(&entry.path),
-        subtitle.or_else(|| Some(location_line(entry))),
+        Some(line),
         score,
         move |chrome: &Chrome| open_search_hit(&path, is_dir, chrome),
     )
+    .with_facts(facts)
 }
 
 fn file_title(path: &Path) -> String {
@@ -1139,7 +1212,7 @@ fn open_search_hit(
         return open_folder_in_files(path, path, chrome);
     }
     match doc_open::resolve(path) {
-        DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
+        DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } | DocumentTarget::Program => {
             doc_open::open_in_workspace(path, chrome)
                 .map(|opened| opened.to_value(path))
                 .map_err(|e| {
@@ -1581,6 +1654,21 @@ mod tests {
     }
 
     #[test]
+    fn the_chooser_finds_paths_from_the_same_name_index() {
+        let provider = FilesProvider::with_walked_names(&[
+            "~/Documents/tax-report.pdf",
+            "~/Pictures/holiday.png",
+            "~/Documents/report-draft.txt",
+        ]);
+        let found = provider.paths_matching("report", 10);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.contains(&PathBuf::from("/home/tester/Documents/tax-report.pdf")));
+        assert!(found.contains(&PathBuf::from("/home/tester/Documents/report-draft.txt")));
+        assert_eq!(provider.paths_matching("report", 1).len(), 1);
+        assert!(provider.paths_matching("  ", 10).is_empty());
+    }
+
+    #[test]
     fn unchanged_watched_paths_keep_the_index_and_cursor() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path();
@@ -1979,6 +2067,9 @@ mod tests {
             .unwrap_or(20_000)
     }
 
+    /// Set by the scheduled performance job to hold the CPU budgets.
+    const SEARCH_PERF_GATE: &str = "TILO_SEARCH_PERF_GATE";
+
     fn process_cpu() -> Duration {
         crate::compositor::metrics::cpu_trace::process_cpu_time().expect("a process CPU clock")
     }
@@ -1991,7 +2082,9 @@ mod tests {
     /// the before/after of this provider's idle cost. Prints the
     /// `FILES-NAME-INDEX` line the nightly performance job records
     /// (`tools/perf/adapters.py files-name-index`); process CPU, so the
-    /// index's own writer and merge threads count too.
+    /// index's own writer and merge threads count too. Every run holds the
+    /// rebuild count; the CPU budgets depend on the machine, so only the
+    /// performance job, with [`SEARCH_PERF_GATE`] set, holds those.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2137,6 +2230,9 @@ mod tests {
             cpu_ms(rename),
             cpu_ms(burst_cpu)
         );
+        if std::env::var_os(SEARCH_PERF_GATE).is_none() {
+            return;
+        }
         let mut sorted = changes.clone();
         sorted.sort_unstable();
         let median = sorted[sorted.len() / 2];
@@ -2208,8 +2304,32 @@ mod tests {
     }
 
     #[test]
+    fn a_file_row_says_its_folder_and_its_age_as_two_facts() {
+        let entry = NameEntry {
+            path: PathBuf::from("/home/tester/Downloads/report.pdf"),
+            facts: NameFacts::new("~/Downloads/report.pdf", Some(SystemTime::now())),
+            display: "~/Downloads/report.pdf".to_string(),
+            is_dir: false,
+        };
+        let row = make_result(&entry, 1, None);
+        assert_eq!(row.facts.len(), 2, "{:?}", row.facts);
+        assert_eq!(row.facts[0], "Downloads");
+        assert!(
+            row.facts.iter().all(|fact| !fact.contains('·')),
+            "{:?}",
+            row.facts
+        );
+
+        let found_inside = make_result(&entry, 1, Some("…quarterly report…".into()));
+        assert!(
+            found_inside.facts.is_empty(),
+            "a content hit shows the passage"
+        );
+        assert_eq!(found_inside.subtitle.as_deref(), Some("…quarterly report…"));
+    }
+
+    #[test]
     fn file_name_scoring_prefers_the_exact_whole_word_leaf() {
-        // Phase `name_score_prefers_the_leaf_over_the_path`.
         {
             assert_eq!(
                 score_of("todo", "~/notes/todo.md"),
@@ -2224,7 +2344,6 @@ mod tests {
             assert_eq!(score_of("xzq", "~/notes/todo.md"), None);
         }
 
-        // Phase `a_whole_word_beats_the_start_of_a_longer_word`.
         {
             let whole = score_of("open", "~/a/open.txt").unwrap();
             let prefix = score_of("open", "~/a/opening-notes.md").unwrap();
@@ -2243,7 +2362,6 @@ mod tests {
             );
         }
 
-        // Phase `an_exact_filename_match_clearly_wins`.
         {
             let exact = score_of("open", "~/a/open.md").unwrap();
             let long = score_of("open", "~/a/opentelemetry-collector-config.md").unwrap();
@@ -2305,7 +2423,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn file_placement_sinks_assets_vendored_and_buried_paths() {
-        // Phase `a_document_outranks_the_font_assets_of_a_game`.
         {
             const GAME: &str = "~/Spiele/openttd-jgrpp-0.72.3-linux-generic-amd64";
             let p = provider_with_index_aged(vec![
@@ -2372,7 +2489,6 @@ mod tests {
             );
         }
 
-        // Phase `vendored_content_sinks_but_stays_findable`.
         {
             let mine = score_of("parser", "~/proj/src/parser.rs").unwrap();
             let theirs = score_of("parser", "~/proj/vendor/pkg/parser.rs").unwrap();
@@ -2398,7 +2514,6 @@ mod tests {
             );
         }
 
-        // Phase `depth_counts_against_a_buried_path`.
         {
             assert_eq!(depth_penalty("~/report.md"), 0);
             assert_eq!(depth_penalty("~/dev/proj/src/lib.rs"), 0);
@@ -2416,7 +2531,6 @@ mod tests {
             assert_eq!(depth_penalty("~/a/b/c/d/e/f/g/h/i/j/k"), PENALTY_DEPTH_MAX);
         }
 
-        // Phase `equal_scores_prefer_the_shallower_path`.
         {
             // Same filename/age/penalty, so the scores really tie and depth is
             // the only tiebreak left. Both sit inside `DEPTH_FREE`, where depth
@@ -2441,14 +2555,12 @@ mod tests {
 
     #[test]
     fn filename_words_match_whole_and_with_typos() {
-        // Phase `letters_and_digits_are_separate_words`.
         {
             let whole = score_of("2026", "~/a/report2026final.md").unwrap();
             let inside = score_of("eport", "~/a/report2026final.md").unwrap();
             assert!(whole > inside, "{whole} / {inside}");
         }
 
-        // Phase `a_typo_in_a_filename_still_matches`.
         {
             assert!(score_of("noets", "~/a/notes").is_some());
             assert!(
@@ -2469,7 +2581,6 @@ mod tests {
 
     #[test]
     fn recency_breaks_name_ties_from_the_index_but_never_outvotes_the_name() {
-        // Phase `recency_separates_two_files_with_the_same_name`.
         {
             let fresh = aged_score_of("report", "~/a/report.md", Some(0)).unwrap();
             let stale = aged_score_of("report", "~/b/report.md", Some(900)).unwrap();
@@ -2548,7 +2659,6 @@ mod tests {
 
     #[test]
     fn the_walk_skips_bloat_and_indexes_every_tree_before_ranking() {
-        // Phase `skip_dirs_hits_common_bloat`.
         {
             let home = Path::new("/home/x");
             assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
@@ -2614,8 +2724,6 @@ mod tests {
             }
         }
 
-        // Phase `the_best_matches_win_regardless_of_walk_position`.
-        // The best matches win regardless of where they sit in the index.
         {
             let mut entries: Vec<(String, bool)> = (0..50)
                 .map(|i| (format!("~/report/notes/entry-{i:03}.md"), false))
@@ -2750,13 +2858,13 @@ mod tests {
         let _ = ready.set(());
         let tantivy = OnceLock::new();
         let _ = tantivy.set(None);
-        FilesProvider {
+        FilesProvider::over(FilesIndexes {
             home,
             name_index: Arc::new(RwLock::new(NameIndex::from_entries(entries, 1))),
             tantivy,
             ready,
             watch: OnceLock::new(),
-        }
+        })
     }
 
     #[test]
@@ -3071,7 +3179,6 @@ mod tests {
             );
         }
 
-        // Phase `late_non_exact_pages_keep_the_same_work_ceiling`.
         {
             let paths = (0..=LARGE_CORPUS)
                 .map(|i| format!("~/archive/{i:06}-needle.md"))
@@ -3111,7 +3218,6 @@ mod tests {
             assert!(cursor.is_some(), "fixture must reach a genuine late page");
         }
 
-        // Phase `rejects_a_cursor_after_the_retained_index_changes`.
         {
             let p =
                 provider_with_index(vec![("~/one/needle.md", false), ("~/two/needle.md", false)]);
@@ -3142,7 +3248,6 @@ mod tests {
             assert!(stale.results.is_empty());
         }
 
-        // Phase `byte_limited_page_does_not_skip_the_first_unemitted_match`.
         {
             let huge = format!("~/{}-needle.md", "x".repeat(4_096));
             let p = provider_with_index(vec![("~/a-needle.md", false), (&huge, false)]);

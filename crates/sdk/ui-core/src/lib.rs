@@ -118,7 +118,17 @@ pub use action_locus::{ActionUiRoute, PaintedActionMarker};
 pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
+pub mod arriving;
+/// What wants a person: the waiting stack, and the ledger an outcome goes to
+/// when it does not. Replaces the transient notice as a category.
+pub mod attention;
 pub mod author;
+pub mod capability_door;
+pub mod content_zoom;
+pub mod control_hints;
+/// What is running: one cancellable job with a body, which the whole system
+/// can see and which outlives the window that started it.
+pub mod jobs;
 pub mod motion;
 #[cfg(test)]
 extern crate self as tilo_ui;
@@ -144,8 +154,7 @@ pub mod clock;
 pub mod collaboration;
 pub use runtime_collab::native_media;
 pub mod collection_transition;
-pub mod color;
-pub mod color_compat;
+pub use tilo_ui_paint::{color, color_compat};
 pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;
@@ -162,7 +171,10 @@ pub mod doc;
 pub mod doc_source;
 #[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
+pub mod edge_autoscroll;
+pub mod element_pictures;
 pub mod evdev;
+pub mod fact;
 pub mod floating_surface;
 pub mod focus_visible;
 pub mod font_catalog;
@@ -184,6 +196,7 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+pub mod hosted_window;
 pub mod owner_wake;
 /// The app's own vello pipelines, kept across launches in its cache directory.
 #[cfg(feature = "native")]
@@ -192,17 +205,20 @@ pub(crate) mod pipeline_cache;
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
+pub mod emoji_catalogue;
 pub mod held_images;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
+pub mod image_decoders;
 pub mod image_store;
 pub mod ime;
 pub mod input;
 pub mod interaction;
 pub mod keycaps;
+pub mod latin_chord;
 pub mod launch;
 pub mod live_collaboration;
 pub mod local_identity;
@@ -218,8 +234,12 @@ pub mod paint;
 pub mod paragraph;
 pub mod passcode_keyboard;
 pub mod pen;
+pub mod people_photos;
 pub mod permissions;
 pub mod persist;
+pub mod person_card;
+pub mod pick;
+pub mod pick_wire;
 pub mod platform;
 pub mod pointer_replay;
 pub mod portable_storage;
@@ -227,16 +247,27 @@ pub mod presence;
 pub mod priority_contacts;
 pub mod profiling;
 pub mod query_text;
-pub mod raster;
+pub use tilo_ui_paint::raster;
 pub mod realtime_continuity;
 pub mod room_sync;
 pub mod standalone_history_pane;
 pub mod storage;
+/// The desktop's keyboard shortcut table (actions, their chords and the
+/// defaults) as the settings document keeps it: what every desktop host
+/// resolves a key press through, the native shell and a browser page alike.
+pub mod shortcut_table {
+    pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+}
+/// The desk widgets and the screen edges things kept at the screen's edges
+/// wait at, as the settings document keeps them: what every desktop host
+/// places them by, the native shell and a browser page alike.
+pub mod desk_widgets {
+    pub use settings_store::desk_widgets::{DockEdge, WidgetId};
+}
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
-#[cfg(any(test, feature = "lazy-hyphenation", feature = "lazy-image-decode"))]
-mod deferred;
+pub mod deferred;
 pub mod person_chat;
 pub mod personal_dictionary;
 pub mod private_draft;
@@ -254,20 +285,30 @@ pub mod close_admission;
 pub mod host_operation {
     pub use crate::widget::resource_operation::{
         OperationRequest, OperationTarget, ResourceOperation, ResourceOperationStart,
-        start_in_children,
+        ResourceOperations, local_resource_operation_handlers, poll_resource_operation,
+        resource_operation_handlers, start_in_children, start_operation,
     };
 }
+#[cfg_attr(
+    not(any(feature = "native", test)),
+    expect(dead_code, reason = "only a native host's frame culls its draw")
+)]
+pub(crate) mod draw_cull;
 pub mod host_palette;
+pub mod mentions;
 pub mod published;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
+pub mod render_bump_recovery;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod render_thread;
 pub mod reorder;
 pub mod resources;
 pub mod retained_present;
+pub mod retained_raster;
 pub mod richtext;
+pub mod save_status;
 pub mod scale;
 pub mod scene_parts;
 pub mod screen_reader;
@@ -275,12 +316,13 @@ pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
+pub mod session_door;
 pub mod shared_selection;
 pub mod shell_tabs;
+mod slot_row;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;
-pub mod status_bubble;
 pub mod surface;
 pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]
@@ -300,7 +342,12 @@ pub mod undo;
 pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
+pub mod window_door;
+pub mod window_pictures;
+pub mod window_share;
+pub mod window_slots;
 pub mod window_toolbar;
+pub mod workspace_emoji;
 pub mod workspace_identity;
 #[cfg(feature = "native")]
 pub use native::warmup;
@@ -320,12 +367,8 @@ pub mod window_icon;
 #[doc(inline)]
 pub use tilo_host::{
     background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png, portal,
-    secrets, time, wake,
+    secrets, shell_choosers, time, wake,
 };
-
-/// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
-#[cfg(test)]
-pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
@@ -346,9 +389,10 @@ pub use winit;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use app::{App, local_surface_id};
+pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arriving};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
-    KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
+    KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, RowMotion, RowMotions, TransitionVisual,
 };
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
@@ -361,7 +405,7 @@ pub use input::{
 };
 pub use interaction::{
     ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
-    KeyboardFamily, PointerPrecision, TouchPointerEmulator, TouchPointerEvent,
+    KeyboardFamily, PointerPrecision, TouchClaim, TouchPointerEmulator, TouchPointerEvent,
 };
 pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
@@ -383,7 +427,7 @@ pub use record::{
     RecordCheckout, RecordId, RecordKind, RecordRef, RecordRefusal, RecordSet, RecordStore,
 };
 pub use remote_actions::{
-    CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
+    CancellationCall, CatalogueCall, Followed, InvocationCall, RemoteActions, RemoteActionsGuard,
 };
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
@@ -401,7 +445,8 @@ pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenatio
 #[cfg(feature = "lazy-hyphenation")]
 pub use text_break::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
 pub use theme::{
-    AppearanceIntent, ContentSurface, Theme, WindowAppearance, resolve_theme_layers, workspace_hue,
+    AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
+    workspace_hue,
 };
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
@@ -415,8 +460,8 @@ pub use view::{
 };
 pub use virtual_viewport::{
     DragScrollFinish, DragScrollUpdate, DragScroller, KineticSampler, ReconcileError,
-    ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, VirtualViewport,
-    WheelStep,
+    ScrollAlignment, ScrollGlide, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+    VirtualViewport, WheelStep,
 };
 
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid
@@ -441,7 +486,7 @@ pub mod autocorrect {
 }
 pub use widget::ModelView;
 pub use widget::command_palette::{
-    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
+    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, RowFace, SearchScope,
 };
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
@@ -498,8 +543,9 @@ pub use history_source::runs::{
     AgentRun, RunStep, forget_run, read_runs, record_run, record_run_with_details, run_starting_at,
 };
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
-pub use status_bubble::{
-    SAVE_GIVE_UP, SAVE_STALL, SaveAction, SaveNotice, SaveState, SaveStatusSurface, StatusBubble,
+pub use save_status::{
+    SAVE_GIVE_UP, SAVE_RETRY_ACTION, SAVE_STALL, SaveAction, SaveNotice, SaveState,
+    SaveStatusSurface,
 };
 pub use text_edit::{
     CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,
@@ -515,11 +561,11 @@ pub use text_render::{
 };
 pub use text_selection::{
     CopyWatch, Selection, TextAffinity, TextPosition, clipboard_copy, clipboard_copy_image,
-    clipboard_copy_primary, clipboard_paste, clipboard_paste_image, clipboard_paste_primary,
-    extend_span_drag, grapheme_boundary_at_or_before, line_boundaries, next_char_boundary,
-    next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
-    prev_word_boundary_chars, try_clipboard_copy, try_clipboard_copy_secret, word_boundaries,
-    word_boundaries_chars,
+    clipboard_copy_primary, clipboard_copy_rich_accepted, clipboard_paste, clipboard_paste_image,
+    clipboard_paste_primary, clipboard_paste_rich, extend_span_drag,
+    grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
+    next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
+    try_clipboard_copy, try_clipboard_copy_secret, word_boundaries, word_boundaries_chars,
 };
 pub use tokens::{ReadingFace, TextRole, UiFace};
 
@@ -553,6 +599,7 @@ pub mod semantic_document_read;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;
+pub(crate) mod retained_widgets;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;

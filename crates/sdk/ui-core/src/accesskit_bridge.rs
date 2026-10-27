@@ -66,7 +66,7 @@ use crate::widget::Widget;
 #[cfg(any(feature = "native", test))]
 mod floating_surface;
 #[cfg(feature = "native")]
-pub(crate) use floating_surface::{surface_action_target, surface_tree_update};
+pub(crate) use floating_surface::{publish_host_part, surface_action_target, surface_tree_update};
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
@@ -133,6 +133,8 @@ pub fn map_role(role: Role) -> AkRole {
         Role::TreeItem => AkRole::TreeItem,
         Role::Menu => AkRole::Menu,
         Role::MenuItem => AkRole::MenuItem,
+        Role::ListBox => AkRole::ListBox,
+        Role::ListBoxOption => AkRole::ListBoxOption,
 
         // No dedicated "toggle button" role; a Button with `toggled` state
         // (applied in `apply_state`) is the AccessKit idiom.
@@ -358,7 +360,6 @@ pub enum A11yTarget {
     /// has one element per level: `[row]` for a table row, `[row, cell]` for a
     /// cell inside it.
     Synthetic {
-        /// The widget that synthesised the node.
         owner: TaffyNodeId,
         /// Keys from `owner`'s direct synthetic child down to the target.
         /// Keys, for a widget that identifies a synthetic child by identity
@@ -707,8 +708,10 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         scale,
         focused,
         walk_counter: 0,
+        child_description: None,
         nodes: Vec::new(),
         active_descendant: None,
+        owned_active_descendant: None,
     };
 
     // The synthetic window root gathers the top-level accessible nodes.
@@ -828,10 +831,17 @@ struct TreeWalk<'m> {
     scale: f64,
     focused: Option<TaffyNodeId>,
     walk_counter: u64,
+    /// What the parent says describes the widget visited next
+    /// ([`Widget::accessibility_child_description`]).
+    child_description: Option<String>,
     nodes: Vec<(AkNodeId, AkNode)>,
     /// Set when the *focused* widget marks one of its synthetic descendants
     /// focused — the active-descendant target (see the module docs).
     active_descendant: Option<AkNodeId>,
+    /// Set when a synthetic descendant of the focused widget is marked
+    /// [`active_descendant`](crate::a11y::AccessState::active_descendant):
+    /// the focused widget's node points at it, keeping the focus itself.
+    owned_active_descendant: Option<AkNodeId>,
 }
 
 /// Where a synthetic node sits under its parent: the parent's id, the widget
@@ -850,10 +860,16 @@ impl TreeWalk<'_> {
     /// DFS helper: if `w.accessibility()` is `None` (presentational), reparent
     /// the children's ids straight onto `parent_children` instead of emitting a node.
     fn visit<const BOUND: bool>(&mut self, w: &dyn Widget, parent_children: &mut Vec<AkNodeId>) {
+        let described = self.child_description.take();
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };
-        let access = w.accessibility();
+        let mut access = w.accessibility();
+        if let Some(node) = &mut access
+            && node.description.is_none()
+        {
+            node.description = described;
+        }
         let taffy_id = self.ptr_to_taffy.get(w);
 
         if let Some(access_node) = access {
@@ -884,6 +900,7 @@ impl TreeWalk<'_> {
                         .or_default()
                         .push((child_path, child));
                 } else {
+                    self.child_description = w.accessibility_child_description(child_index);
                     self.visit::<BOUND>(child, &mut my_children);
                 }
             }
@@ -891,6 +908,7 @@ impl TreeWalk<'_> {
             // timeline's clips. Only the widget that actually holds keyboard focus
             // may nominate an active descendant.
             let owns_focus = (taffy_id.is_some() && taffy_id == self.focused) || represents_focus;
+            let outer_active = self.owned_active_descendant.take();
             for (ordinal, synth) in access_node.children.iter().enumerate() {
                 self.visit_synthetic::<BOUND>(
                     synth,
@@ -903,6 +921,10 @@ impl TreeWalk<'_> {
                     hosted.remove(&ordinal).unwrap_or_default(),
                     &mut my_children,
                 );
+            }
+            if let Some(active) = std::mem::replace(&mut self.owned_active_descendant, outer_active)
+            {
+                ak.set_active_descendant(active);
             }
             let run_id = text_run_node_id(id);
             if let Some(run) = text_run_for(
@@ -964,6 +986,12 @@ impl TreeWalk<'_> {
         if in_focused_widget && access.state.focused && self.active_descendant.is_none() {
             self.active_descendant = Some(id);
         }
+        if in_focused_widget
+            && access.state.active_descendant
+            && self.owned_active_descendant.is_none()
+        {
+            self.owned_active_descendant = Some(id);
+        }
 
         let mut my_children: Vec<AkNodeId> = Vec::new();
         let direct = hosted
@@ -1015,7 +1043,11 @@ impl TreeWalk<'_> {
 fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: f64) {
     apply_semantics_common(ak, access);
 
-    let r = w.get_rect();
+    // A widget that names where its node stands (the one control it
+    // paints inside a larger box) is taken at its word; otherwise its box.
+    let r = access
+        .bounds
+        .map_or_else(|| w.get_rect(), crate::a11y::AccessBounds::to_rect);
     if r.width() > 0.0 || r.height() > 0.0 {
         ak.set_bounds(AkRect::new(
             r.x0 * scale,
@@ -1033,13 +1065,7 @@ fn apply_synthetic_bounds(
     ordinal_path: &[usize],
     scale: f64,
 ) {
-    let bounds = access.bounds.or_else(|| {
-        owner
-            .synthetic_accessibility_rect(ordinal_path)
-            .filter(|rect| rect.width() > 0.0 || rect.height() > 0.0)
-            .map(Into::into)
-    });
-    if let Some(bounds) = bounds {
+    if let Some(bounds) = crate::a11y::synthetic_bounds(access, owner, ordinal_path) {
         ak.set_bounds(AkRect::new(
             bounds.x0 * scale,
             bounds.y0 * scale,
@@ -1060,6 +1086,9 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     }
     if let Some(desc) = &access.description {
         ak.set_description(desc.clone());
+    }
+    if let Some(kind) = &access.role_description {
+        ak.set_role_description(kind.clone());
     }
     // This must be part of the platform tree, not only the built-in reader's
     // narration pass.  `accesskit_unix` turns these into AT-SPI live-region
@@ -1337,7 +1366,6 @@ mod tests {
 
     #[test]
     fn node_ids_stay_distinct_and_stable_across_tree_changes() {
-        // Case `wrapper_and_first_field_have_distinct_nodes_and_child_keeps_focus`.
         {
             let mut wrapper = AliasWrapper {
                 child: TestWidget::new(Some(AccessNode::new(Role::Button))),
@@ -1445,7 +1473,6 @@ mod tests {
             );
         }
 
-        // Case `a_synthetic_nodes_id_survives_changes_elsewhere_in_the_tree`.
         {
             // Two independent widgets with synthetic contents. Adding a clip to the
             // FIRST must not renumber the second's rows: an AT holding a reference
@@ -1489,7 +1516,6 @@ mod tests {
             );
         }
 
-        // Case `an_explicitly_keyed_node_keeps_its_id_when_it_moves`.
         {
             // Ordinal keying is right for a table row ("row 3" is the identity the
             // user means), but wrong for a clip that can be dragged along a track.
@@ -1521,7 +1547,6 @@ mod tests {
             );
         }
 
-        // Case `synthetic_ids_never_collide_with_widget_ids`.
         {
             let mut root = TestWidget::new(Some(canvas(vec![clip("a", false), clip("b", false)])));
             let (_taffy, node_map, _n) = lay_out(&mut root);
@@ -1549,6 +1574,28 @@ mod tests {
     }
 
     /// Exactly as the App does before `build_tree_update`.
+    #[test]
+    fn a_rows_secondary_line_describes_its_trailing_switch() {
+        let mut row = crate::widget::ListRow::new("remove-data", "Remove its data")
+            .secondary("Your settings and saved files go to the Trash.")
+            .trailing(Box::new(
+                crate::widget::Toggle::new("remove-data-switch", "remove_data")
+                    .with_accessible_name("Remove its data"),
+            ));
+        let (_taffy, node_map, _root) = lay_out(&mut row);
+        let update = build_tree_update(&row, &node_map, None, 1.0);
+        let switch = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.role() == AkRole::Switch)
+            .expect("the switch is exported");
+        assert_eq!(
+            switch.description(),
+            Some("Your settings and saved files go to the Trash.")
+        );
+    }
+
     fn lay_out(
         root: &mut dyn Widget,
     ) -> (
@@ -1602,9 +1649,7 @@ mod tests {
 
     #[test]
     fn roles_states_bounds_and_labels_map_to_accesskit() {
-        // Case `maps_every_role_to_a_concrete_accesskit_role`.
         {
-            // A non-exhaustive smoke set covering the interesting many-to-one maps.
             let cases = [
                 (Role::Window, AkRole::Window),
                 (Role::Dialog, AkRole::Dialog),
@@ -1625,7 +1670,6 @@ mod tests {
             }
         }
 
-        // Case `state_flags_map_to_accesskit`.
         {
             let checkbox = TestWidget::new(Some(
                 AccessNode::new(Role::Checkbox).with_state(
@@ -1650,7 +1694,6 @@ mod tests {
             assert!(!node.supports_action(AkAction::Click));
         }
 
-        // Case `heading_level_is_set`.
         {
             let h = TestWidget::new(Some(
                 AccessNode::new(Role::Heading { level: 3 }).with_name("Section"),
@@ -1666,7 +1709,6 @@ mod tests {
             assert_eq!(node.level(), Some(3));
         }
 
-        // Case `bounds_carry_through_with_scale`.
         {
             let btn = TestWidget::new(Some(AccessNode::new(Role::Button).with_name("B")))
                 .with_rect(10.0, 20.0, 110.0, 60.0);
@@ -1694,7 +1736,6 @@ mod tests {
             assert_eq!((b2.x0, b2.y0, b2.x1, b2.y1), (20.0, 40.0, 220.0, 120.0));
         }
 
-        // Case `static_labels_export_the_value_read_by_native_accessibility`.
         {
             for role in [Role::Label, Role::StaticText] {
                 let text = "SQLite · Grün 🌍 · 1 rows";
@@ -1714,7 +1755,6 @@ mod tests {
             }
         }
 
-        // Case `every_update_includes_the_window_root_and_a_tree`.
         {
             let mut root = TestWidget::new(None);
             let (_taffy, node_map, _root_node) = lay_out(&mut root);
@@ -1745,7 +1785,6 @@ mod tests {
 
     #[test]
     fn supported_actions_are_advertised_and_round_trip() {
-        // Case `action_round_trips_through_accesskit`.
         {
             for a in [
                 Action::Activate,
@@ -1776,7 +1815,6 @@ mod tests {
             assert_eq!(map_action(&Action::ToggleCheck), AkAction::Click);
         }
 
-        // Case `enabled_focusable_widget_supports_focus_and_click`.
         {
             let btn = TestWidget::new(Some(
                 AccessNode::new(Role::Button)
@@ -1795,7 +1833,6 @@ mod tests {
             assert!(node.supports_action(AkAction::Click));
         }
 
-        // Case `context_menu_is_advertised_only_when_declared`.
         {
             let row = TestWidget::new(Some(
                 AccessNode::new(Role::ListItem)
@@ -1813,7 +1850,6 @@ mod tests {
             assert!(node.supports_action(AkAction::ShowContextMenu));
         }
 
-        // Case `slider_supports_increment_decrement`.
         {
             let slider = TestWidget::new(Some(
                 AccessNode::new(Role::Slider)
@@ -1833,7 +1869,6 @@ mod tests {
             assert_eq!(node.value(), Some("50%"));
         }
 
-        // Case `live_resources_are_accessible_through_the_same_action_addresses`.
         {
             let immediate = tilo_actions::ActionSpec::operation(
                 "refresh",
@@ -1894,7 +1929,6 @@ mod tests {
 
     #[test]
     fn tree_shape_collapses_presentational_nodes_and_carries_synthetic_and_live_regions() {
-        // Case `presentational_containers_collapse_and_reparent`.
         {
             // root(None) -> [ group(Some Group) -> [ btn(Some Button) ], None-wrapper -> [ text(Some StaticText) ] ]
             let btn = TestWidget::new(Some(AccessNode::new(Role::Button).with_name("Go")));
@@ -1921,7 +1955,6 @@ mod tests {
                 "presentational widgets must not emit a node"
             );
 
-            // The window root owns BOTH the Group and the reparented Label.
             let (_, window) = update.nodes.iter().find(|(id, _)| *id == ROOT_ID).unwrap();
             assert_eq!(
                 window.children().len(),
@@ -1945,7 +1978,6 @@ mod tests {
             assert_eq!(group_node.children().len(), 1, "group owns the button");
         }
 
-        // Case `synthetic_children_flow_into_the_tree_with_position_and_labels`.
         {
             // Models a DataTable: each row carries its position and two named cells.
             let row = |pos: usize, size: usize| {
@@ -1968,7 +2000,6 @@ mod tests {
             let (_taffy, node_map, _root_node) = lay_out(&mut root);
             let update = build_tree_update(&root, &node_map, None, 1.0);
 
-            // The table node owns two synthetic rows.
             let (_, table) = update
                 .nodes
                 .iter()
@@ -1992,7 +2023,6 @@ mod tests {
                 assert_eq!(r.children().len(), 2, "each row owns two cells");
             }
 
-            // Cells are named by their column header.
             let cell_labels: Vec<Option<&str>> = update
                 .nodes
                 .iter()
@@ -2010,7 +2040,6 @@ mod tests {
             assert_eq!(cell_labels.len(), 4, "two cells per row across two rows");
         }
 
-        // Case `live_regions_reach_accesskit_with_priority_and_atomic_updates`.
         {
             let polite = TestWidget::new(Some(
                 AccessNode::new(Role::StaticText)
@@ -2047,7 +2076,6 @@ mod tests {
 
     #[test]
     fn focus_targets_the_focused_widget_or_falls_back_to_root() {
-        // Case `focus_targets_the_focused_widget`.
         {
             let btn = TestWidget::new(Some(
                 AccessNode::new(Role::Button)
@@ -2080,7 +2108,6 @@ mod tests {
             );
         }
 
-        // Case `focus_falls_back_to_root_when_nothing_focused`.
         {
             let mut root = TestWidget::new(Some(AccessNode::new(Role::Document)));
             let (_taffy, node_map, _root_node) = lay_out(&mut root);
@@ -2088,7 +2115,6 @@ mod tests {
             assert_eq!(update.focus, ROOT_ID);
         }
 
-        // Case `focus_falls_back_to_root_when_focused_id_is_stale`.
         {
             // A stale taffy id (left over from before a relayout) must not be
             // forwarded — AccessKit panics the AT if `focus` isn't emitted.
@@ -2106,7 +2132,6 @@ mod tests {
             assert!(update.nodes.iter().any(|(id, _)| *id == update.focus));
         }
 
-        // Case `focus_falls_back_to_root_when_the_focused_widget_collapsed_out`.
         {
             // The other half of the emitted-node rule the active-descendant
             // preference is layered on: a live taffy id whose widget is
@@ -2133,7 +2158,6 @@ mod tests {
 
     #[test]
     fn text_values_expose_editable_runs_but_never_protected_content() {
-        // Case `terminal_is_selectable_but_not_an_editable_text_value`.
         {
             let terminal = TestWidget::new(Some(
                 AccessNode::new(Role::Terminal)
@@ -2174,7 +2198,6 @@ mod tests {
             assert_eq!(selection.focus, selection.anchor);
         }
 
-        // Case `protected_value_is_never_exposed`.
         {
             let pw = TestWidget::new(Some(
                 AccessNode::new(Role::TextInput)
@@ -2198,7 +2221,6 @@ mod tests {
             );
         }
 
-        // Case `protected_field_is_editable_text_with_an_empty_run`.
         {
             // AccessKit's AT-SPI adapter offers Text and EditableText only on a
             // text input with a text run; without them a screen reader cannot
@@ -2255,7 +2277,6 @@ mod tests {
             }
         }
 
-        // Case `protected_synthetic_field_is_editable_text_with_an_empty_run`.
         {
             let mut root =
                 TestWidget::new(Some(AccessNode::new(Role::Dialog).with_children(vec![
@@ -2286,7 +2307,6 @@ mod tests {
             ));
         }
 
-        // Case `protected_non_text_node_gets_no_run`.
         {
             let mut root = TestWidget::new(Some(
                 AccessNode::new(Role::Label)
@@ -2303,7 +2323,6 @@ mod tests {
             );
         }
 
-        // Case `editable_text_exposes_grapheme_run_and_directional_selection`.
         {
             let family = "👩‍👩‍👧‍👦";
             let value = format!("a{family}b");
@@ -2378,8 +2397,6 @@ mod tests {
         }
     }
 
-    // ---- Synthetic nodes: focus, stable ids, action routing --------------
-
     /// A canvas-style widget: one accessible node whose contents are entirely
     /// synthetic (no child widgets), the shape the video editor / sheets use.
     fn canvas(children: Vec<AccessNode>) -> AccessNode {
@@ -2424,7 +2441,6 @@ mod tests {
 
     #[test]
     fn focus_and_active_descendant_follow_the_marked_synthetic_node() {
-        // Case `focus_lands_on_the_marked_synthetic_node_not_its_owning_widget`.
         {
             // A canvas widget holds keyboard focus and nominates its second clip as
             // the active descendant. The reader must land on THAT clip — a canvas
@@ -2462,7 +2478,6 @@ mod tests {
             );
         }
 
-        // Case `an_unfocused_widget_cannot_claim_the_readers_cursor`.
         {
             // Two widgets; the one WITHOUT keyboard focus marks a descendant
             // focused. Honouring that would let any offscreen widget yank the reader
@@ -2494,7 +2509,6 @@ mod tests {
             assert_eq!(focused.label(), Some("Save"));
         }
 
-        // Case `the_first_marked_descendant_in_document_order_wins`.
         {
             // A widget that marks two nodes focused is buggy, but the reader must
             // still land somewhere deterministic rather than on whichever node the
@@ -2516,7 +2530,6 @@ mod tests {
             assert_eq!(focused.label(), Some("Interview"));
         }
 
-        // Case `exported_focus_resolves_back_to_the_marked_node`.
         {
             let mut root = TestWidget::new(Some(
                 AccessNode::new(Role::Canvas)
@@ -2551,7 +2564,6 @@ mod tests {
 
     #[test]
     fn resolve_node_id_maps_emitted_ids_back_or_reports_them_gone() {
-        // Case `resolve_node_id_round_trips_an_emitted_synthetic_id_to_owner_and_key_path`.
         {
             // The action-routing contract: whatever id the bridge put in the tree,
             // an incoming ActionRequest carrying it must resolve back to the widget
@@ -2616,7 +2628,6 @@ mod tests {
                     semantic_target: None,
                 }),
             );
-            // The widget itself and the window root still resolve to themselves.
             assert_eq!(
                 resolve_node_id(&root, &node_map, label_id(&update, "People")),
                 Some(A11yTarget::Widget(table_taffy)),
@@ -2627,7 +2638,6 @@ mod tests {
             );
         }
 
-        // Case `resolve_node_id_reports_a_stale_reference_as_gone`.
         {
             // An AT can hold an id across a structural change. Resolving it to
             // "whatever now sits there" would operate on the wrong element, so an
@@ -2642,7 +2652,6 @@ mod tests {
             assert_eq!(resolve_node_id(&root, &node_map, bogus_widget), None);
         }
 
-        // Case `resolve_node_id_declines_a_synthetic_node_whose_owner_was_never_laid_out`.
         {
             // Without a taffy id there is no handle to dispatch against, so such a
             // node must report as unaddressable rather than resolve to a wrong owner.
@@ -2655,7 +2664,6 @@ mod tests {
             assert_eq!(resolve_node_id(&root, &empty_map, orphan), None);
         }
 
-        // Case `a_child_the_host_represents_is_exported_once`.
         {
             // A host that publishes a child's semantics itself (the shell's
             // palette inside its overlay tree) must not have the child's own
@@ -2691,7 +2699,6 @@ mod tests {
             assert_eq!(update.focus, label_id(&update, "palette"));
         }
 
-        // Case `a_synthetic_text_field_exports_its_run_and_resolves_it_to_its_owner`.
         {
             // A query field drawn by its owner (a palette) has no widget of its
             // own. It still needs a text run, or AT-SPI exposes no Text and no
@@ -2746,7 +2753,6 @@ mod tests {
             ));
         }
 
-        // Case `a_text_run_resolves_to_the_field_that_owns_it`.
         {
             // The run carries the widget's own text, so a verb aimed at it belongs
             // to the widget — dropping it would make an AT's text actions no-ops.

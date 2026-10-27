@@ -22,7 +22,6 @@ struct Legacy {
     tag: PageId,
 }
 
-/// The map under `key` of `obj`, made empty.
 fn map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     Slot::Key(obj, key).object(doc, ObjType::Map).unwrap()
 }

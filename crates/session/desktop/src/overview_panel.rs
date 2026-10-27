@@ -1,6 +1,8 @@
 //! The overview as a widget: a floating panel over the desk that names the
-//! workspace you are in, lists its windows, and offers the other workspaces
-//! and a new one, drawn from [`crate::overview::room_cards`].
+//! workspace you are in, pictures its strips and windows zoomed out (the
+//! same picture the native shell's overview draws,
+//! [`crate::overview_picture`]), and offers the other workspaces and a new
+//! one, drawn from [`crate::overview::room_cards`].
 //!
 //! The panel decides nothing. A pick (a window, a workspace, a new
 //! workspace, or leaving) is queued for the host with
@@ -21,14 +23,20 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{TaffyTreeExt as _, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Size, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::i18n::t;
 use crate::overview::{RoomCard, room_access_label};
-use crate::window_switcher::WindowApp;
+use crate::overview_picture::{
+    GridMetrics, StripPlace, Tile, band_height, draw_empty_strip, draw_strip_name, draw_tile_title,
+    layout_strips,
+};
+use crate::window_switcher::{
+    NoThumbnails, PreviewSource, PreviewWell, SwitcherWindow, WindowAddress, draw_preview_well,
+};
 
 /// What the person chose in the overview.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +45,6 @@ pub enum OverviewPick {
     Window(TabId),
     /// Go to another workspace.
     Workspace(WorkspaceId),
-    /// Make a workspace and go there.
     NewWorkspace,
     /// Leave the overview where it was.
     Dismiss,
@@ -81,6 +88,8 @@ struct Metrics {
     /// The "You are here" chip's padding (`s3` across, `s1` down).
     chip_pad_x: f64,
     chip_pad_y: f64,
+    /// The picture of the strips and windows, as the native overview's.
+    grid: GridMetrics,
 }
 
 impl Metrics {
@@ -108,6 +117,7 @@ impl Metrics {
             inset: s3,
             chip_pad_x: s3,
             chip_pad_y: s1,
+            grid: GridMetrics::for_theme(theme),
         }
     }
 }
@@ -118,16 +128,20 @@ impl Default for Metrics {
         Self::for_theme(&Theme::default())
     }
 }
-/// Windows listed before the rest are counted instead.
-const MAX_WINDOWS: usize = 8;
-
-/// One window the panel lists.
-#[derive(Clone, Debug)]
-struct WindowRow {
-    tab: TabId,
-    title: String,
-    app: WindowApp,
+/// One strip of the workspace you are in, as the picture shows it: every
+/// tab of every window, left to right, each window's tabs together.
+#[derive(Clone, Debug, Default)]
+struct PictureStrip {
+    name: String,
     current: bool,
+    windows: Vec<SwitcherWindow>,
+    /// Each one's share of the strip, in per-mille of its width.
+    shares: Vec<u32>,
+    /// Each one is a tab of the same window as the one before it.
+    joined: Vec<bool>,
+    /// Each one is the tab its window shows.
+    front: Vec<bool>,
+    current_window: Vec<bool>,
 }
 
 /// What a row of the panel leads to, in keyboard order.
@@ -142,8 +156,9 @@ pub struct OverviewPanel {
     open: bool,
     rect: Rect,
     here: Option<RoomCard>,
-    windows: Vec<WindowRow>,
-    more_windows: usize,
+    picture: Vec<PictureStrip>,
+    /// Where each strip of the picture stands, as last laid out.
+    places: Vec<StripPlace>,
     rooms: Vec<RoomCard>,
     /// Rows as last laid out, in keyboard order.
     rows: Vec<(Target, Rect)>,
@@ -169,8 +184,8 @@ impl OverviewPanel {
             open: false,
             rect: Rect::ZERO,
             here: None,
-            windows: Vec::new(),
-            more_windows: 0,
+            picture: Vec::new(),
+            places: Vec::new(),
             rooms: Vec::new(),
             rows: Vec::new(),
             panel: Rect::ZERO,
@@ -196,6 +211,14 @@ impl OverviewPanel {
 
     /// Open over `cards` (every workspace, as [`crate::overview::room_cards`]
     /// returns them), or close.
+    /// Offer a new workspace or not, as the host's policy answers now.
+    pub fn set_new_workspace(&mut self, offered: bool) {
+        if self.can_add != offered {
+            self.can_add = offered;
+            self.dirty = true;
+        }
+    }
+
     pub fn set_open(&mut self, open: bool, cards: Vec<RoomCard>) {
         self.open = open;
         self.selected = None;
@@ -210,30 +233,82 @@ impl OverviewPanel {
         let (here, rooms): (Vec<_>, Vec<_>) = cards.into_iter().partition(|c| c.is_current);
         self.here = here.into_iter().next();
         self.rooms = rooms;
-        let mut windows: Vec<WindowRow> = self
+        self.picture = self
             .here
             .iter()
             .flat_map(|card| &card.strips)
-            .flat_map(|strip| {
-                strip.groups.iter().filter_map(move |group| {
-                    let tab = group
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.is_active)
-                        .or_else(|| group.tabs.first())?;
-                    Some(WindowRow {
-                        tab: tab.id,
-                        title: tab.title.clone(),
-                        app: tab.app.clone(),
-                        current: group.is_current && strip.is_current,
-                    })
-                })
+            .map(|strip| {
+                let mut picture = PictureStrip {
+                    name: strip.name.clone(),
+                    current: strip.is_current,
+                    ..PictureStrip::default()
+                };
+                for group in &strip.groups {
+                    for (index, tab) in group.tabs.iter().enumerate() {
+                        picture.windows.push(SwitcherWindow {
+                            address: WindowAddress {
+                                strip: strip.id,
+                                group: group.id,
+                                tab: tab.id,
+                            },
+                            title: tab.title.clone(),
+                            app: tab.app.clone(),
+                            preview: PreviewSource::Unavailable,
+                        });
+                        picture.shares.push(group.width_permille);
+                        picture.joined.push(index > 0);
+                        picture.front.push(tab.is_active || group.tabs.len() == 1);
+                        picture
+                            .current_window
+                            .push(group.is_current && strip.is_current && tab.is_active);
+                    }
+                }
+                picture
             })
             .collect();
-        self.more_windows = windows.len().saturating_sub(MAX_WINDOWS);
-        windows.truncate(MAX_WINDOWS);
-        self.windows = windows;
         self.dirty = true;
+    }
+
+    /// Every pictured window in reading order, with whether it is the one
+    /// you are in.
+    fn pictured(&self) -> impl Iterator<Item = (&SwitcherWindow, bool)> {
+        self.picture.iter().flat_map(|strip| {
+            strip
+                .windows
+                .iter()
+                .zip(strip.current_window.iter().copied())
+        })
+    }
+
+    /// Height of the picture inside the panel, or of the line saying the
+    /// workspace has no windows.
+    fn picture_height(&self) -> f64 {
+        let m = self.metrics;
+        if self.picture.is_empty() {
+            m.window_h + m.row_gap
+        } else {
+            band_height(self.picture.len(), &m.grid, m.grid.band) + m.row_gap
+        }
+    }
+
+    /// Each pictured window's size on the desk the panel covers.
+    fn picture_sizes(&self) -> (Vec<Vec<Size>>, Vec<Vec<bool>>) {
+        let desk = self.rect.size();
+        let width = desk.width.max(1.0);
+        let height = desk.height.max(1.0);
+        self.picture
+            .iter()
+            .map(|strip| {
+                (
+                    strip
+                        .shares
+                        .iter()
+                        .map(|share| Size::new(width * f64::from(*share) / 1000.0, height))
+                        .collect(),
+                    strip.joined.clone(),
+                )
+            })
+            .unzip()
     }
 
     /// What the person chose since the host last asked.
@@ -257,16 +332,7 @@ impl OverviewPanel {
     fn content_height(&self) -> f64 {
         let m = self.metrics;
         let window_step = m.window_h + m.row_gap;
-        let windows = if self.windows.is_empty() {
-            window_step
-        } else {
-            window_step
-                * f64_of_usize(
-                    self.windows
-                        .len()
-                        .saturating_add(usize::from(self.more_windows > 0)),
-                )
-        };
+        let windows = self.picture_height();
         let rooms = if self.rooms.is_empty() {
             0.0
         } else {
@@ -299,16 +365,32 @@ impl OverviewPanel {
         let inner_x1 = x0 + width - m.pad;
         let mut rows = Vec::new();
         let mut y = y0 + m.gap + m.here_h + m.gap + m.caption_h;
-        for window in &self.windows {
-            rows.push((
-                Target::Window(window.tab),
-                Rect::new(inner_x0, y, inner_x1, y + m.window_h),
-            ));
-            y += m.window_h + m.row_gap;
+        // The picture: each strip under its name, its windows at their
+        // shares of the desk, zoomed out to one band.
+        let (sizes, joined) = self.picture_sizes();
+        self.places = layout_strips(
+            Rect::new(inner_x0, y, inner_x1, y),
+            &sizes,
+            &joined,
+            &m.grid,
+            Some(m.grid.band),
+        );
+        let tiles: Vec<(TabId, Rect)> = self
+            .picture
+            .iter()
+            .zip(&self.places)
+            .flat_map(|(strip, place)| {
+                strip
+                    .windows
+                    .iter()
+                    .zip(place.wells.iter().zip(&place.titles))
+                    .map(|(window, (well, title))| (window.address.tab, well.union(*title)))
+            })
+            .collect();
+        for (tab, tile) in tiles {
+            rows.push((Target::Window(tab), tile));
         }
-        if self.windows.is_empty() || self.more_windows > 0 {
-            y += m.window_h + m.row_gap;
-        }
+        y += self.picture_height();
         y += m.gap;
         if !self.rooms.is_empty() {
             y += m.caption_h;
@@ -374,14 +456,16 @@ impl OverviewPanel {
         reason = "one immediate-mode pass over the panel's bounded rows; text widths are f32"
     )]
     fn paint(&self, scene: &mut Scene, transform: Affine, text: &mut TextRenderer, theme: &Theme) {
-        let colors = &theme.tokens.colors;
         let m = self.metrics;
         ui::chrome::shell::fill_scrim(scene, transform, self.rect, 0.45, theme);
         let panel = self.panel;
         if panel.width() <= 0.0 || panel.height() <= 0.0 {
             return;
         }
-        let shape = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let shape = painted.body;
+        let theme = &painted.theme;
+        let colors = &theme.tokens.colors;
         // Everything inside stays inside the panel's outline.
         scene.push_layer(
             Fill::NonZero,
@@ -496,68 +580,9 @@ impl OverviewPanel {
         );
         y += m.caption_h;
         let body = theme.text(TextRole::Body);
-        let rows = self.rows.clone();
-        for (index, (target, rect)) in rows.iter().enumerate() {
-            let Target::Window(tab) = target else {
-                continue;
-            };
-            let Some(window) = self.windows.iter().find(|w| w.tab == *tab) else {
-                continue;
-            };
-            let lifted = self.row_state(index) || window.current;
-            Self::draw_row_ground(
-                scene,
-                transform,
-                theme,
-                *rect,
-                lifted,
-                self.selected == Some(index),
-            );
-            let mid = rect.center().y;
-            let mark_x = rect.x0 + m.inset;
-            ui::widget::draw_app_mark(
-                scene,
-                transform,
-                Rect::new(
-                    mark_x,
-                    mid - m.mark / 2.0,
-                    mark_x + m.mark,
-                    mid + m.mark / 2.0,
-                ),
-                window.app.icon.as_ref(),
-                window.app.kind,
-                colors.text_primary,
-            );
-            let label_x = mark_x + m.mark + m.inset;
-            let title = text.elide_to_width_style(
-                &window.title,
-                (rect.x1 - m.inset - label_x) as f32,
-                &body,
-            );
-            let (_, h) = text.measure_style(&title, None, &body);
-            text.draw_style(
-                scene,
-                &title,
-                if window.current {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                },
-                transform.pre_translate((label_x, mid - f64::from(h) / 2.0).into()),
-                None,
-                &body,
-            );
-            y = rect.y1 + m.row_gap;
-        }
-        if self.windows.is_empty() || self.more_windows > 0 {
-            let note = if self.windows.is_empty() {
-                t("overview-panel-no-windows")
-            } else {
-                crate::i18n::t_args(
-                    "overview-panel-more-windows",
-                    &[("count", self.more_windows.into())],
-                )
-            };
+        self.paint_picture(scene, transform, text, theme);
+        if self.picture.is_empty() {
+            let note = t("overview-panel-no-windows");
             let (_, h) = text.measure_style(&note, None, &body);
             text.draw_style(
                 scene,
@@ -573,8 +598,8 @@ impl OverviewPanel {
                 None,
                 &body,
             );
-            y += m.window_h + m.row_gap;
         }
+        y += self.picture_height();
         y += m.gap;
 
         // Where else you can go.
@@ -590,6 +615,7 @@ impl OverviewPanel {
         }
         let room_name = theme.text(TextRole::Heading);
         let room_sub = theme.text(TextRole::Caption);
+        let rows = self.rows.clone();
         for (index, (target, rect)) in rows.iter().enumerate() {
             match target {
                 Target::Workspace(id) => {
@@ -675,6 +701,94 @@ impl OverviewPanel {
         scene.pop_layer();
     }
 
+    /// The picture of the workspace you are in: each strip's name, its
+    /// windows' pictures (their app's mark: a browser holds no picture of
+    /// a window) and titles, the window you are in and the one under the
+    /// pointer or the keyboard lifted, as the native overview draws them.
+    fn paint_picture(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let g = self.metrics.grid;
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let mut index: usize = 0;
+        for (strip, place) in self.picture.iter().zip(&self.places) {
+            draw_strip_name(
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                place.label,
+                place.label.x1,
+                (&strip.name, strip.current),
+            );
+            if let Some(empty) = place.empty {
+                draw_empty_strip(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    empty,
+                    1.0,
+                );
+            }
+            for (wi, window) in strip.windows.iter().enumerate() {
+                let (Some(well), Some(title)) = (place.wells.get(wi), place.titles.get(wi)) else {
+                    continue;
+                };
+                let row = index;
+                index = index.saturating_add(1);
+                let current = strip.current_window.get(wi).copied().unwrap_or(false);
+                let selected = self.selected == Some(row);
+                let state = ui::chrome::SelectionState::new(
+                    selected || current,
+                    self.hovered() == Some(row),
+                    false,
+                );
+                let bounds = well.union(*title);
+                if state.active || state.hover {
+                    ui::chrome::selection_tier(theme, state).paint(
+                        scene,
+                        transform,
+                        bounds.inflate(s1, s1),
+                        g.radius + s1,
+                    );
+                }
+                if selected {
+                    ui::widget::paint_focus_ring(
+                        scene,
+                        transform,
+                        bounds.inflate(s1, s1),
+                        g.radius + s1,
+                        theme,
+                    );
+                }
+                draw_preview_well(
+                    scene,
+                    transform,
+                    theme,
+                    PreviewWell {
+                        rect: *well,
+                        radius: g.radius,
+                        icon: f64::from(theme.tokens.metrics.icon_lg).min(well.height() * 0.6),
+                    },
+                    window,
+                    &mut NoThumbnails,
+                );
+                draw_tile_title(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    &Tile {
+                        window,
+                        front: strip.front.get(wi).copied().unwrap_or(true),
+                        well: *well,
+                        title: *title,
+                        // Who is where shows on the bar's faces here.
+                        faces: &[],
+                    },
+                    *well,
+                    (1.0, current || selected),
+                );
+            }
+        }
+    }
+
     fn key(&mut self, key: &Key) -> bool {
         let last = self.rows.len().checked_sub(1);
         match key {
@@ -690,7 +804,7 @@ impl OverviewPanel {
             Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 let target = self
                     .selected
-                    .or_else(|| self.windows.iter().position(|w| w.current))
+                    .or_else(|| self.pictured().position(|(_, current)| current))
                     .and_then(|i| self.rows.get(i))
                     .map(|(target, _)| Self::target_pick(target));
                 self.choose(target.unwrap_or(OverviewPick::Dismiss));
@@ -816,10 +930,9 @@ impl Widget for OverviewPanel {
         }
         let name = |target: &Target| match target {
             Target::Window(tab) => self
-                .windows
-                .iter()
-                .find(|w| w.tab == *tab)
-                .map(|w| w.title.clone())
+                .pictured()
+                .find(|(w, _)| w.address.tab == *tab)
+                .map(|(w, _)| w.title.clone())
                 .unwrap_or_default(),
             Target::Workspace(id) => self
                 .rooms
@@ -878,6 +991,7 @@ impl Widget for OverviewPanel {
 mod tests {
     use super::*;
     use crate::overview::{OverviewGroup, OverviewStrip, OverviewTab, RoomCard};
+    use crate::window_switcher::WindowApp;
     use tilo_desktop_model::{GroupId, StripId};
     use ui::widget::AppKind;
 
@@ -890,6 +1004,7 @@ mod tests {
             shares: Vec::new(),
             strips: vec![OverviewStrip {
                 id: StripId(id * 10),
+                name: "Main".into(),
                 is_current: current,
                 groups: windows
                     .iter()
@@ -906,6 +1021,7 @@ mod tests {
                                 key: format!("app:{title}"),
                                 kind: AppKind::Editor,
                                 icon: None,
+                                glyph: ui::icons::Icon::AppWindow,
                             },
                             people: Vec::new(),
                         }],
@@ -949,7 +1065,78 @@ mod tests {
                 .iter()
                 .all(|(_, r)| panel.panel.contains(r.origin()))
         );
-        assert!(panel.rows.windows(2).all(|w| w[0].1.y1 <= w[1].1.y0));
+        let (notes, writer) = (panel.rows[0].1, panel.rows[1].1);
+        assert!(
+            notes.x1 < writer.x0 && (notes.y0 - writer.y0).abs() < 1e-6,
+            "a strip's windows stand side by side: {notes:?} {writer:?}"
+        );
+        assert!(panel.rows[1..].windows(2).all(|w| w[0].1.y1 <= w[1].1.y0));
+    }
+
+    /// The overview is a picture, not a list: each strip of the workspace
+    /// under its name, top to bottom, its windows left to right at their
+    /// shares of the desk, the tabs of one window together.
+    #[test]
+    fn the_overview_pictures_each_strip_under_its_name_with_its_windows() {
+        let mut here = card(1, "Acme", true, &["Notes", "Writer"]);
+        here.strips[0].groups[1].width_permille = 1000;
+        let mut second = card(3, "Acme", false, &["Chat", "Weather", "Calendar"]).strips[0].clone();
+        second.name = "Games".into();
+        second.is_current = false;
+        // Weather is a tab of Chat's window.
+        let weather = second.groups.remove(1).tabs.remove(0);
+        second.groups[0].tabs.push(OverviewTab {
+            is_active: false,
+            ..weather
+        });
+        here.strips.push(second);
+        let mut panel = OverviewPanel::new();
+        panel.set_open(true, vec![here]);
+        panel.rect = Rect::new(0.0, 48.0, 1440.0, 900.0);
+        panel.layout_rows();
+
+        assert_eq!(panel.places.len(), 2, "both strips are pictured");
+        assert_eq!(panel.picture[0].name, "Main");
+        assert_eq!(panel.picture[1].name, "Games");
+        let (main, games) = (&panel.places[0], &panel.places[1]);
+        assert!(
+            main.label.y1 <= main.wells[0].y0,
+            "the name heads its strip"
+        );
+        assert!(
+            main.bounds().y1 <= games.label.y0,
+            "strips stack top to bottom"
+        );
+        let ratio = main.wells[1].width() / main.wells[0].width();
+        assert!(
+            (ratio - 2.0).abs() < 1e-6,
+            "windows keep their shares: {ratio}"
+        );
+        assert_eq!(games.wells.len(), 3, "every tab of every window");
+        let tab_gap = games.wells[1].x0 - games.wells[0].x1;
+        let window_gap = games.wells[2].x0 - games.wells[1].x1;
+        assert!(tab_gap < window_gap, "a window's tabs stand together");
+        assert!(
+            panel
+                .places
+                .iter()
+                .all(|place| panel.panel.contains(place.bounds().origin())),
+            "the picture is inside the panel"
+        );
+        // Picking a pictured window goes to it.
+        let chat = panel.rows[2].1.center();
+        panel.cursor = chat;
+        assert_eq!(panel.hovered(), Some(2));
+        assert_eq!(panel.rows[2].0, Target::Window(3000));
+        // The one drawn shows the strips' names and every window.
+        let mut scene = Scene::new();
+        panel.paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+        );
+        assert!(!scene.encoding().is_empty());
     }
 
     #[test]

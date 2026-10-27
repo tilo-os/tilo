@@ -1,5 +1,3 @@
-//! Two-peer RPC integration test for the production typed collaboration client.
-
 use crate::support::{document_mutation, typed_collab::TypedBroker};
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
 use tilo_ui::presence::PresenceKey;

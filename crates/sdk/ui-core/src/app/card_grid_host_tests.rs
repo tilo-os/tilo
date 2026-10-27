@@ -469,6 +469,10 @@ impl Widget for GrowingBody {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.column.children_mut()
     }
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.column);
+        true
+    }
     fn get_rect(&self) -> KurboRect {
         self.column.get_rect()
     }

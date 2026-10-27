@@ -226,7 +226,6 @@ impl SelectionModel {
         self.selected.len()
     }
 
-    /// Whether `index` is currently selected.
     pub fn is_selected(&self, index: usize) -> bool {
         self.selected.contains(&index)
     }
@@ -391,7 +390,6 @@ mod tests {
 
     #[test]
     fn keyed_selection_tracks_keys_through_reorder_select_all_and_ranges() {
-        // Case `keyed_selection_survives_reorder_and_prunes_deleted_keys`.
         {
             let mut selection = KeySelection::new();
             selection.select_only("beta");
@@ -407,7 +405,6 @@ mod tests {
             assert_eq!(selection.len(3), 2);
         }
 
-        // Case `keyed_select_all_is_constant_space_and_tracks_exceptions`.
         {
             let mut selection = KeySelection::new();
             selection.select_all();
@@ -429,7 +426,6 @@ mod tests {
             assert_eq!(selection.stored_keys().count(), 0);
         }
 
-        // Case `additive_key_range_removes_select_all_exceptions`.
         {
             let mut selection = KeySelection::new();
             selection.select_all();
@@ -534,7 +530,6 @@ mod tests {
                 ],
             ),
             (
-                // Shift again from the same anchor, downward, replaces the range.
                 "shift click selects an inclusive range from the anchor",
                 vec![
                     click(2, false, false),
@@ -546,7 +541,6 @@ mod tests {
                 ],
             ),
             (
-                // Move the anchor with a ctrl-click, then ctrl+shift unions a range.
                 "ctrl shift click adds a range",
                 vec![
                     click(0, false, false),
@@ -587,7 +581,6 @@ mod tests {
 
     #[test]
     fn keyboard_select_all_clamp_and_refresh_keep_anchor_and_primary_consistent() {
-        // Case `keyboard_move_replaces_then_extends`.
         {
             let mut m = SelectionModel::new();
             m.select_only(3);
@@ -600,7 +593,6 @@ mod tests {
             assert_eq!(m.primary(), Some(6));
         }
 
-        // Case `select_all_and_clear`.
         {
             let mut m = SelectionModel::new();
             m.select_all(4);
@@ -617,7 +609,6 @@ mod tests {
             assert_eq!(empty.primary(), None);
         }
 
-        // Case `clamp_drops_out_of_range_indices`.
         {
             let mut m = SelectionModel::new();
             m.apply_click(1, false, false);
@@ -630,11 +621,9 @@ mod tests {
             // Anchor/primary were 8 → dropped.
             assert_eq!(m.anchor(), None);
             assert_eq!(m.primary(), None);
-            // A clamp that changes nothing returns false.
             assert!(!m.clamp_to(6));
         }
 
-        // Case `model_refresh_can_replace_indices_and_keep_the_primary`.
         {
             let mut m = SelectionModel::new();
             m.replace_indices([2, 7, 4], Some(4));

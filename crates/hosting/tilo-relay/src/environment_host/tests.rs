@@ -1,6 +1,3 @@
-//! Sessions, re-attachment, quotas, tenancy and reaping, against an
-//! in-memory guest.
-
 use std::sync::Mutex;
 
 use tilo_relay_protocol::environment::DirectoryGrant;

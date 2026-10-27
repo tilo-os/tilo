@@ -469,7 +469,6 @@ mod tests {
 
     #[test]
     fn engine_pcm_reaches_the_governed_output_as_48k_stereo() {
-        // Phase `a_mono_stream_is_played_as_the_same_sound_in_both_ears`.
         {
             let (mixer, sink) = mixer(IDLE_CLOSE);
             let id = mixer.attach(48_000, 1);
@@ -495,7 +494,6 @@ mod tests {
             assert!(samples.chunks(2).map(|f| f[0]).is_sorted());
             mixer.shutdown();
         }
-        // Phase `every_packet_fits_the_service`.
         {
             let (mixer, sink) = mixer(IDLE_CLOSE);
             let id = mixer.attach(48_000, 2);
@@ -514,7 +512,6 @@ mod tests {
 
     #[test]
     fn streams_are_summed_and_a_stall_never_adds_delay() {
-        // Phase `tabs_are_mixed_with_saturation`.
         {
             let mut state = State::default();
             for (id, level) in [(1, 20_000_i16), (2, 20_000), (3, -100)] {
@@ -537,7 +534,6 @@ mod tests {
             );
             assert!(state.take_mix().is_none());
         }
-        // Phase `a_stalled_device_drops_the_oldest_pcm`.
         {
             let gate = Arc::new(Mutex::new(()));
             let held = gate.lock().unwrap();
@@ -598,21 +594,23 @@ mod tests {
         let leaked: &'static Arc<Mixer> = Box::leak(Box::new(mixer.clone()));
         let tab = PageAudio::default();
         let send = |name: &str, value: Value| tab.event_on(|| leaked, name, &value);
-        // Phase `pcm_before_a_start_is_ignored`.
         send("audio", json!({"pcm": encode(&[9, 9])}));
-        // Phase `start_then_packets_play`.
         send("audio_start", json!({"rate": 48000, "channels": 2}));
         send("audio", json!({"pcm": encode(&[1, -1, 2, -2])}));
         tilo_test_env::wait_until("the packet plays", || written(&sink) == [1, -1, 2, -2]);
-        // Phase `malformed_packets_are_dropped`.
         send("audio", json!({"pcm": "!!!"}));
         send("audio", json!({"pcm": encode(&[1, 2, 3])}));
         send("audio", json!({"pcm": ""}));
-        // Phase `stop_ends_the_stream`.
         send("audio_stop", json!({}));
         send("audio", json!({"pcm": encode(&[4, 4])}));
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(written(&sink), [1, -1, 2, -2]);
+        // The next stream's packet plays after whatever the stopped one let
+        // through.
+        send("audio_start", json!({"rate": 48000, "channels": 2}));
+        send("audio", json!({"pcm": encode(&[7, 7])}));
+        tilo_test_env::wait_until("the next stream's packet plays", || {
+            written(&sink).len() >= 6
+        });
+        assert_eq!(written(&sink), [1, -1, 2, -2, 7, 7]);
         assert!(!valid_event(
             "audio_start",
             &json!({"rate": 0, "channels": 2})

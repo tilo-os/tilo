@@ -9,7 +9,7 @@
 //! ([`ui::motion::Disclose`]). Paint, hit-testing, keyboard focus and the
 //! accessibility tree all read the same items, so they cannot disagree.
 
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use ui::TextRole;
 use ui::paint::PaintCtx;
@@ -30,11 +30,7 @@ use tilo_desktop::drill_in::{RELATED_GAP, TOGGLE_H, TOGGLE_W};
 pub(crate) enum SectionStop {
     /// "Turn on" while the radio is off.
     TurnOn,
-    /// A network in `wifi_networks`.
     Network(usize),
-    PasswordCancel,
-    PasswordConnect,
-    /// The section's way into Settings.
     Settings,
     /// An accessory in `bt_devices`: connect or disconnect.
     Device(usize),
@@ -44,6 +40,8 @@ pub(crate) enum SectionStop {
     Profile(usize),
     /// One of the three power modes.
     Mode(PowerProfile),
+    /// The Battery section's way to the Power mode tile's section.
+    PowerMode,
     /// A sound output in `sound_outputs`: play sound there.
     Output(usize),
     /// A row the overlay host paints: a Devices row or a clipboard copy.
@@ -61,7 +59,6 @@ pub(crate) struct SectionMetrics {
     pub two_line: f64,
     /// A button or field.
     pub control: f64,
-    /// One caption line.
     pub caption: f64,
     /// One title line, as the battery's charge is set.
     pub title: f64,
@@ -76,11 +73,10 @@ pub(crate) enum ItemKind {
     /// "Turn on" under a radio that is off.
     TurnOn(String),
     Network(usize),
-    /// The inline password for the network above it: its field and status.
+    /// The inline password prompt for the network above it, which the
+    /// overlay host draws and routes: its field, its status line and its
+    /// Cancel and Connect.
     Password,
-    /// Cancel and Connect under the password.
-    PasswordButtons,
-    /// The section's link into Settings.
     Settings(String),
     Device(usize),
     Profile(usize),
@@ -88,6 +84,9 @@ pub(crate) enum ItemKind {
     Battery,
     /// The three-way power mode.
     Modes,
+    /// The Battery section's row naming the power mode, leading to where it
+    /// is chosen.
+    PowerMode,
     /// The apps keeping the machine awake.
     Awake(String),
     /// A sound output.
@@ -164,10 +163,10 @@ pub(crate) fn awake_sentence(state: &QuickSettingsState) -> Option<String> {
 /// The battery's charge state, in words.
 pub(crate) fn battery_state_text(state: &QuickSettingsState) -> String {
     use tilo_power_mgmt::BatteryState;
-    if !state.battery.present {
+    if !state.battery().present {
         return t("qs-power-ac");
     }
-    t(match state.battery.state {
+    t(match state.battery().state {
         BatteryState::Charging => "qs-battery-charging",
         BatteryState::Full => "qs-battery-full",
         BatteryState::PendingCharge => "qs-battery-not-charging",
@@ -178,10 +177,10 @@ pub(crate) fn battery_state_text(state: &QuickSettingsState) -> String {
 /// How long until empty or full, in words, when the battery says.
 pub(crate) fn battery_time_text(state: &QuickSettingsState) -> Option<String> {
     use tilo_power_mgmt::BatteryTime;
-    if !state.battery.present {
+    if !state.battery().present {
         return None;
     }
-    let (key, minutes) = match state.battery_time? {
+    let (key, minutes) = match state.status.battery_time? {
         BatteryTime::ToEmpty(minutes) => ("qs-battery-time-left", minutes),
         BatteryTime::ToFull(minutes) => ("qs-battery-time-to-full", minutes),
     };
@@ -213,6 +212,7 @@ pub(crate) fn layout(
         QsSection::Wifi => wifi(&mut builder, state, m),
         QsSection::Bluetooth => bluetooth(&mut builder, state, m),
         QsSection::Vpn => vpn(&mut builder, state, m),
+        QsSection::PowerMode => power_mode(&mut builder, state, m),
         QsSection::Battery => battery(&mut builder, state, m),
         QsSection::Sound => sound(&mut builder, state, m),
         QsSection::Devices => devices(&mut builder, state, m),
@@ -295,8 +295,7 @@ fn wifi(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
                 .is_some_and(|network| prompt == Some(network.ssid.as_str()));
             if asked {
                 b.gap();
-                b.push_inset(ItemKind::Password, m.control + m.caption + RELATED_GAP);
-                b.push_inset(ItemKind::PasswordButtons, m.control);
+                b.push_inset(ItemKind::Password, password_height(state, m));
                 b.gap();
             }
         }
@@ -315,11 +314,7 @@ fn wifi(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
 }
 
 fn bluetooth(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
-    if !state.bluetooth {
-        b.push(ItemKind::Message(t("qs-bluetooth-off")), m.row);
-        b.push(ItemKind::TurnOn(t("qs-bluetooth-turn-on")), m.control);
-        b.gap();
-    } else {
+    if state.bluetooth {
         // Connected first, then by name: what is in use is what a person
         // came to change.
         let mut order: Vec<(usize, &crate::shell::quick_settings::BtDevice)> =
@@ -335,6 +330,10 @@ fn bluetooth(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
         if state.bt_devices.is_empty() {
             b.push(ItemKind::Message(t("qs-bluetooth-empty")), m.row);
         }
+    } else {
+        b.push(ItemKind::Message(t("qs-bluetooth-off")), m.row);
+        b.push(ItemKind::TurnOn(t("qs-bluetooth-turn-on")), m.control);
+        b.gap();
     }
     b.push(ItemKind::Settings(t("qs-bluetooth-pair")), m.row);
 }
@@ -350,7 +349,7 @@ fn vpn(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
 }
 
 fn battery(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
-    if state.battery.present {
+    if state.battery().present {
         let lines = if battery_time_text(state).is_some() {
             2.0
         } else {
@@ -359,21 +358,32 @@ fn battery(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
         b.push(ItemKind::Battery, m.title + lines * m.caption + RELATED_GAP);
         b.gap();
     }
+    // The mode is chosen in one place, the Power mode tile's section; here
+    // it is named, and the row leads there.
     if !offered_modes(state).is_empty() {
-        b.push_inset(ItemKind::Modes, m.control);
-        b.gap();
+        b.push(ItemKind::PowerMode, m.row);
     }
     if let Some(awake) = awake_sentence(state) {
         b.push(ItemKind::Awake(awake), m.row);
     }
     b.push(
-        ItemKind::Settings(t(if state.battery.present {
+        ItemKind::Settings(t(if state.battery().present {
             "qs-battery-settings"
         } else {
             "qs-power-settings"
         })),
         m.row,
     );
+}
+
+fn power_mode(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
+    if offered_modes(state).is_empty() {
+        b.push(ItemKind::Message(t("qs-power-mode-unavailable")), m.row);
+    } else {
+        b.push_inset(ItemKind::Modes, m.control);
+        b.gap();
+    }
+    b.push(ItemKind::Settings(t("qs-power-settings")), m.row);
 }
 
 fn sound(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
@@ -396,20 +406,20 @@ fn devices(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
 }
 
 fn clipboard(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
-    if state.clipboard_rows.is_empty() {
+    if state.clipboard.rows.is_empty() {
         // Nothing copied, or nothing matching what was typed.
-        let message = if state.clipboard_caption.is_empty() {
+        let message = if state.clipboard.caption.is_empty() {
             t("qs-clipboard-empty-hint")
         } else {
-            state.clipboard_caption.clone()
+            state.clipboard.caption.clone()
         };
         b.push(ItemKind::Message(message), m.row);
         return;
     }
-    if !state.clipboard_caption.is_empty() {
-        b.push(ItemKind::Caption(state.clipboard_caption.clone()), m.row);
+    if !state.clipboard.caption.is_empty() {
+        b.push(ItemKind::Caption(state.clipboard.caption.clone()), m.row);
     }
-    for index in 0..state.clipboard_rows.len() {
+    for index in 0..state.clipboard.rows.len() {
         b.push(ItemKind::Hosted(index), m.two_line);
     }
     b.push(
@@ -425,7 +435,7 @@ pub(crate) fn hosted_rows(
 ) -> &[super::hosted::HostedRow] {
     match section {
         QsSection::Devices => &state.device_rows,
-        QsSection::Clipboard => &state.clipboard_rows,
+        QsSection::Clipboard => &state.clipboard.rows,
         _ => &[],
     }
 }
@@ -445,18 +455,16 @@ pub(crate) fn mode_segments(state: &QuickSettingsState, rect: Rect) -> Vec<(Powe
         .collect()
 }
 
-/// Cancel and Connect, side by side in `rect`, one related step apart.
-pub(crate) fn password_buttons(rect: Rect) -> (Rect, Rect) {
-    let width = (rect.width() - RELATED_GAP) / 2.0;
-    (
-        Rect::new(rect.x0, rect.y0, rect.x0 + width, rect.y1),
-        Rect::new(rect.x1 - width, rect.y0, rect.x1, rect.y1),
-    )
-}
-
-/// The password field inside a [`ItemKind::Password`] item's rect.
-pub(crate) fn password_field(rect: Rect, m: SectionMetrics) -> Rect {
-    Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + m.control)
+/// The room the inline password prompt takes: as tall as the host last
+/// laid it out, or, before it has, a field and a button row with their
+/// label and status lines.
+fn password_height(state: &QuickSettingsState, m: SectionMetrics) -> f64 {
+    state
+        .wifi_password
+        .as_ref()
+        .map(|prompt| f64::from(prompt.height))
+        .filter(|height| *height > 0.0)
+        .unwrap_or(m.control * 2.0 + m.caption * 2.0 + RELATED_GAP * 3.0)
 }
 
 /// "Turn on", centred under its message at its natural width.
@@ -502,11 +510,6 @@ pub(crate) fn stops(
                     out.push((SectionStop::Network(*index), item.rect));
                 }
             }
-            ItemKind::PasswordButtons => {
-                let (cancel, connect) = password_buttons(item.rect);
-                out.push((SectionStop::PasswordCancel, cancel));
-                out.push((SectionStop::PasswordConnect, connect));
-            }
             ItemKind::Settings(_) => out.push((SectionStop::Settings, item.rect)),
             ItemKind::Device(index) => {
                 out.push((SectionStop::Device(*index), item.rect));
@@ -525,6 +528,7 @@ pub(crate) fn stops(
             ItemKind::Output(index) => out.push((SectionStop::Output(*index), item.rect)),
             ItemKind::Hosted(index) => out.push((SectionStop::Hosted(*index), item.rect)),
             ItemKind::ClearClipboard(_) => out.push((SectionStop::ClearClipboard, item.rect)),
+            ItemKind::PowerMode => out.push((SectionStop::PowerMode, item.rect)),
             ItemKind::Modes => out.extend(
                 mode_segments(state, item.rect)
                     .into_iter()
@@ -566,13 +570,13 @@ pub(crate) struct SectionPaint<'a> {
     /// The pointer, in the section's coordinates.
     pub cursor: Option<Point>,
     pub focused: Option<SectionStop>,
-    /// The password typed so far can be submitted.
-    pub password_ready: bool,
+    /// The motion of the switches the section paints.
+    pub faces: &'a ui::widget::FaceMotions,
 }
 
 /// Paint `layout`'s items.
 pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionPaint<'_>) {
-    let xform = ctx.transform * Affine::translate(p.origin.to_vec2());
+    let xform = ctx.transform.pre_translate(p.origin.to_vec2());
     let mut ctx = PaintCtx::new(&mut *ctx.scene, xform, &mut *ctx.text, ctx.theme);
     let hovered = |rect: Rect| p.cursor.is_some_and(|point| rect.contains(point));
     let focused = |stop: SectionStop| p.focused == Some(stop);
@@ -603,42 +607,8 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
             ItemKind::Network(index) => {
                 paint_network(&mut ctx, rect, p, *index, hovered(rect));
             }
-            ItemKind::Password => paint_password_status(&mut ctx, rect, p),
-            ItemKind::PasswordButtons => {
-                let (cancel, connect) = password_buttons(rect);
-                let connecting = p
-                    .state
-                    .wifi_password
-                    .as_ref()
-                    .is_some_and(|prompt| prompt.connecting);
-                Button::paint(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text,
-                    ctx.theme,
-                    &ButtonFace::new(cancel, &t("portal-cancel"))
-                        .hovered(hovered(cancel))
-                        .focused(focused(SectionStop::PasswordCancel)),
-                );
-                Button::paint(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text,
-                    ctx.theme,
-                    &ButtonFace::new(
-                        connect,
-                        &t(if connecting {
-                            "qs-connecting"
-                        } else {
-                            "portal-connect"
-                        }),
-                    )
-                    .role(ButtonRole::Primary)
-                    .disabled(!p.password_ready)
-                    .hovered(hovered(connect))
-                    .focused(focused(SectionStop::PasswordConnect)),
-                );
-            }
+            // The overlay host draws the prompt over this item.
+            ItemKind::Password => {}
             ItemKind::Settings(label) => {
                 let mut face =
                     ListRowFace::new(label).leading(RowLeading::Icon(ui::icons::Icon::Settings2));
@@ -659,6 +629,24 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
             ItemKind::Output(index) => paint_output(&mut ctx, rect, p, *index),
             ItemKind::Battery => paint_battery(&mut ctx, rect, p.state, p.metrics),
             ItemKind::Modes => paint_modes(&mut ctx, rect, p),
+            ItemKind::PowerMode => {
+                let label = t("qs-power-mode");
+                let value = p.state.power_profile.label();
+                let mut face = ListRowFace::new(&label)
+                    .leading(RowLeading::Icon(ui::icons::Icon::Gauge))
+                    .value(&value);
+                if let Some(column) = column {
+                    face = face.leading_column(column);
+                }
+                face.disclosure()
+                    .interaction(Interaction {
+                        hovered: hovered(rect),
+                        focused: focused(SectionStop::PowerMode),
+                        ..Interaction::default()
+                    })
+                    .paint(&mut ctx, rect);
+                focus_ring(&mut ctx, rect, focused(SectionStop::PowerMode));
+            }
             ItemKind::Awake(text) => {
                 ListRowFace::new(text)
                     .leading(RowLeading::Icon(ui::icons::Icon::Monitor))
@@ -738,9 +726,9 @@ fn paint_message(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str) {
     );
 }
 
-/// A network: its signal as the Wi-Fi glyph lit by strength, its name with
-/// a lock when it has a password, and "Connected", "Connecting…" or
-/// "Saved" on the trailing side.
+/// A network: its signal as the shared signal meter, its name with a lock
+/// when it has a password, and "Connected", "Connecting…" or "Saved" on the
+/// trailing side.
 fn paint_network(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -751,31 +739,10 @@ fn paint_network(
     let Some(network) = p.state.wifi_networks.get(index) else {
         return;
     };
-    let theme = ctx.theme;
-    let ink = theme.tokens.colors.text_primary;
-    // An unlit arc of the signal: the quietest ink.
-    let faint = theme.tokens.colors.text_tertiary;
-    let signal = network.signal;
-    let side = f64::from(theme.tokens.metrics.icon_md);
-    let bars = move |c: &mut PaintCtx<'_>, slot: Rect| {
-        ui::icons::draw_icon_layered(
-            c.scene,
-            c.transform,
-            Rect::from_center_size(slot.center(), (side, side)),
-            ui::icons::Icon::Wifi,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            // [dot, outer, middle, inner]: a weak network lights fewer arcs.
-            |arc| {
-                let needed = match arc {
-                    0 => 1,
-                    1 => 4,
-                    2 => 3,
-                    _ => 2,
-                };
-                if signal >= needed { ink } else { faint }
-            },
-        );
-    };
+    let level = ui::widget::SignalLevel::from_bars(network.signal);
+    // The other rows of the list share this column, so every title starts
+    // on one edge.
+    let column = f64::from(ctx.theme.tokens.metrics.icon_lg);
     let joining = p.state.wifi_joining.as_deref() == Some(network.ssid.as_str());
     let value = if joining {
         Some(t("qs-connecting"))
@@ -787,7 +754,8 @@ fn paint_network(
         None
     };
     let mut face = ListRowFace::new(&network.ssid)
-        .leading(RowLeading::Paint(&bars))
+        .leading(RowLeading::Signal(level))
+        .leading_column(column)
         .selected(network.connected)
         .interaction(Interaction {
             hovered: hovered && !network.connected,
@@ -802,35 +770,6 @@ fn paint_network(
     }
     face.paint(ctx, rect);
     focus_ring(ctx, rect, p.focused == Some(SectionStop::Network(index)));
-}
-
-/// The password's status line under its field (the field itself is the
-/// overlay host's secret input, drawn over this item).
-fn paint_password_status(ctx: &mut PaintCtx<'_>, rect: Rect, p: &SectionPaint<'_>) {
-    let Some(prompt) = p.state.wifi_password.as_ref() else {
-        return;
-    };
-    let field = password_field(rect, p.metrics);
-    let colors = &ctx.theme.tokens.colors;
-    let (text, color) = if let Some(error) = prompt.error.as_ref() {
-        (error.clone(), colors.semantic.danger)
-    } else if prompt.connecting {
-        (t("qs-connecting"), colors.text_dim)
-    } else {
-        (t("qs-wifi-password-for"), colors.text_dim)
-    };
-    let style = ctx.theme.text(TextRole::Caption);
-    let width = ui::num::f32_of_f64(rect.width().max(1.0));
-    let text = ctx.text.elide_to_width_style(&text, width, &style);
-    ctx.text.draw_style(
-        ctx.scene,
-        &text,
-        color,
-        ctx.transform
-            .pre_translate((rect.x0, field.y1 + RELATED_GAP / 2.0).into()),
-        None,
-        &style,
-    );
 }
 
 fn paint_device(ctx: &mut PaintCtx<'_>, rect: Rect, p: &SectionPaint<'_>, index: usize) {
@@ -927,7 +866,12 @@ fn paint_profile(ctx: &mut PaintCtx<'_>, rect: Rect, p: &SectionPaint<'_>, index
         ctx.scene,
         ctx.transform,
         ctx.theme,
-        &ToggleFace::new(switch, profile.active).hovered(hovered),
+        &ToggleFace::new(switch, profile.active)
+            .pose(
+                p.faces
+                    .switch(("vpn", &profile.uuid), profile.active, ctx.theme.motion()),
+            )
+            .hovered(hovered),
     );
 }
 
@@ -945,7 +889,7 @@ fn paint_battery(
         .theme
         .text(TextRole::Title)
         .with_weight(TextWeight::Semibold);
-    let percent = format!("{}%", state.battery.percent);
+    let percent = format!("{}%", state.battery().percent);
     ctx.text.draw_style(
         ctx.scene,
         &percent,
@@ -973,13 +917,13 @@ fn paint_battery(
         rect.x1 - bleed - gauge_h * 2.0,
         rect.y0 + (m.title - gauge_h) / 2.0,
         rect.x1 - bleed,
-        rect.y0 + (m.title + gauge_h) / 2.0,
+        rect.y0 + f64::midpoint(m.title, gauge_h),
     );
     ui::widget::primitives::paint_level_gauge(
         ctx.scene,
         ctx.transform,
         gauge,
-        f64::from(state.battery.percent.min(100)) / 100.0,
+        f64::from(state.battery().percent.min(100)) / 100.0,
         ctx.theme,
     );
 }
@@ -1104,7 +1048,6 @@ mod tests {
                 &ItemKind::Network(0),
                 &ItemKind::Network(1),
                 &ItemKind::Password,
-                &ItemKind::PasswordButtons,
                 &ItemKind::Settings("Wi-Fi settings".into()),
             ]
         );
@@ -1114,13 +1057,9 @@ mod tests {
             .collect();
         assert_eq!(
             stops,
-            [
-                SectionStop::Network(1),
-                SectionStop::PasswordCancel,
-                SectionStop::PasswordConnect,
-                SectionStop::Settings,
-            ],
-            "the network in use is not a stop: pressing it does nothing"
+            [SectionStop::Network(1), SectionStop::Settings],
+            "the network in use is not a stop: pressing it does nothing; the \
+             prompt routes its own keys"
         );
         // Items never overlap, and the section is as tall as they are.
         for pair in laid.items.windows(2) {
@@ -1130,38 +1069,48 @@ mod tests {
     }
 
     #[test]
-    fn the_battery_section_offers_only_the_modes_the_daemon_has() {
+    fn the_power_mode_is_chosen_under_its_tile_and_the_battery_section_links_to_it() {
         let mut state = QuickSettingsState::fixture();
-        state.battery = tilo_power_mgmt::BatterySnapshot {
+        state.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,
             percent: 82,
             state: tilo_power_mgmt::BatteryState::Discharging,
-        };
-        state.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(190));
+        });
+        state.status.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(190));
         state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
         state.awake_holders = vec!["Firefox".into()];
-        let laid = layout(QsSection::Battery, &state, 360.0, metrics());
-        let kinds: Vec<&ItemKind> = laid.items.iter().map(|item| &item.kind).collect();
+        let battery = layout(QsSection::Battery, &state, 360.0, metrics());
+        let kinds: Vec<&ItemKind> = battery.items.iter().map(|item| &item.kind).collect();
         assert_eq!(
             kinds,
             [
                 &ItemKind::Battery,
-                &ItemKind::Modes,
-                &ItemKind::Awake("Firefox keeps the screen on".into()),
+                &ItemKind::PowerMode,
+                &ItemKind::Awake("Firefox is keeping the screen on".into()),
                 &ItemKind::Settings("Battery settings".into()),
-            ]
+            ],
+            "the Battery section names the mode and leads to it, choosing none"
+        );
+        assert!(
+            !stops(&battery, &state, metrics())
+                .iter()
+                .any(|(stop, _)| matches!(stop, SectionStop::Mode(_))),
+            "no mode is chosen in the Battery section"
         );
         assert_eq!(
             battery_time_text(&state).as_deref(),
             Some("3 h 10 min left")
         );
-        let modes: Vec<SectionStop> = stops(&laid, &state, metrics())
+
+        // The tile's section offers only the modes the daemon has.
+        let modes = layout(QsSection::PowerMode, &state, 360.0, metrics());
+        let chosen: Vec<SectionStop> = stops(&modes, &state, metrics())
             .into_iter()
             .map(|(stop, _)| stop)
             .filter(|stop| matches!(stop, SectionStop::Mode(_)))
             .collect();
         assert_eq!(
-            modes,
+            chosen,
             [
                 SectionStop::Mode(PowerProfile::Saver),
                 SectionStop::Mode(PowerProfile::Balanced)

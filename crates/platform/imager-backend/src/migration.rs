@@ -756,8 +756,6 @@ mod tests {
             }
         }
 
-        // Phase `corruption_of_staged_bytes_is_not_published`.
-        // Catches publication without destination digest verification.
         {
             let (_temp, source, destination) = fixture();
             fs::write(source.join("hello"), b"hello").unwrap();
@@ -771,8 +769,6 @@ mod tests {
             assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
         }
 
-        // Phase `source_content_changed_with_restored_mtime_is_not_published`.
-        // Catches trusting size/mtime without a second source content read.
         {
             let (_temp, source, destination) = fixture();
             fs::write(source.join("hello"), b"hello").unwrap();
@@ -824,15 +820,12 @@ mod tests {
         }
     }
 
-    /// Copying trees, refusing existing destinations, links and unsupported entries, metadata limits.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn copy_reproduces_supported_trees_and_refuses_unsupported_entries() {
-        // Phase `copies_nested_files_and_empty_directories_without_changing_originals`.
-        // Catches missing/corrupted copies and dropped empty directories.
         {
             let (_temp, source, destination) = fixture();
             fs::create_dir(source.join("nested")).unwrap();
@@ -855,8 +848,6 @@ mod tests {
             assert_eq!(progress.last().unwrap().verified_bytes, 5);
         }
 
-        // Phase `refuses_existing_destination_and_overlapping_grants`.
-        // Catches overwrite/merge or recursive self-copy.
         {
             let (_temp, source, destination) = fixture();
             fs::create_dir(&destination).unwrap();
@@ -868,7 +859,6 @@ mod tests {
             assert!(!source.join("inside").exists());
         }
 
-        // Phase `refuses_symbolic_link_source`.
         #[cfg(unix)]
         {
             let (temp, source, destination) = fixture();
@@ -880,8 +870,6 @@ mod tests {
             assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
         }
 
-        // Phase `unsupported_entries_are_explicit_and_never_followed`.
-        // Catches silently following links or claiming a partial copy complete.
         #[cfg(unix)]
         {
             let (temp, source, destination) = fixture();
@@ -910,7 +898,6 @@ mod tests {
             assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
         }
 
-        // Phase `large_file_and_non_ascii_name_cross_chunk_boundaries`.
         {
             let (_temp, source, destination) = fixture();
             let bytes = vec![43; 200_003];
@@ -922,8 +909,6 @@ mod tests {
             assert_eq!(fs::read(destination.join("café 📁.txt")).unwrap(), bytes);
         }
 
-        // Phase `preserves_supported_timestamps_and_discloses_other_metadata_limits`.
-        // Catches loss of timestamps and accidentally copying permissive modes.
         {
             let (_temp, source, destination) = fixture();
             fs::write(source.join("hello"), b"hello").unwrap();
@@ -987,8 +972,6 @@ mod tests {
             assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
         }
 
-        // Phase `cancellation_retains_verified_files_and_stops_before_next_entry`.
-        // Catches completing a cancelled operation or deleting verified work.
         {
             let (_temp, source, destination) = fixture();
             fs::write(source.join("a"), b"hello").unwrap();
@@ -1009,7 +992,6 @@ mod tests {
             assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
         }
 
-        // Phase `cancellation_after_staging_cleans_only_the_unpublished_temp`.
         {
             let (_temp, source, destination) = fixture();
             fs::write(source.join("hello"), b"hello").unwrap();
@@ -1027,8 +1009,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn pinned_paths_resist_parent_and_descendant_swaps() {
-        // Phase `refuses_a_destination_parent_replaced_after_pinning`.
-        // Catches a check-then-open destination parent redirect.
         #[cfg(unix)]
         {
             let (temp, source, _) = fixture();
@@ -1057,7 +1037,6 @@ mod tests {
             assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
         }
 
-        // Phase `swapped_descendant_is_never_followed_outside_grant`.
         #[cfg(unix)]
         {
             let (temp, source, destination) = fixture();
@@ -1081,7 +1060,6 @@ mod tests {
             assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
         }
 
-        // Phase `pinned_destination_parent_cannot_be_renamed_on_windows`.
         #[cfg(windows)]
         {
             let (temp, source, _) = fixture();
@@ -1166,7 +1144,6 @@ mod tests {
             assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
         }
 
-        // Phase `namespace_checks_ancestor_replacement_rights`.
         {
             use std::os::unix::fs::PermissionsExt;
             let (temp, source, _) = fixture();
@@ -1188,7 +1165,6 @@ mod tests {
             assert!(!ancestor.join("private/copy").exists());
         }
 
-        // Phase `namespace_preserves_safe_sticky_temporary_paths`.
         {
             use std::os::unix::fs::PermissionsExt;
             let (temp, source, _) = fixture();
@@ -1241,7 +1217,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn namespace_macos_acls_are_honoured_before_copy() {
-        // Phase `namespace_macos_acl_write_grant_is_not_hidden_by_private_mode`.
         {
             use std::os::unix::fs::PermissionsExt;
             let (temp, source, _) = fixture();
@@ -1269,7 +1244,6 @@ mod tests {
             assert!(!parent.join("copy").exists());
         }
 
-        // Phase `namespace_macos_inherit_only_write_acl_is_refused_before_mkdir`.
         {
             let (temp, source, _) = fixture();
             let parent = temp.path().canonicalize().unwrap().join("acl-parent");
@@ -1287,7 +1261,6 @@ mod tests {
             assert!(!parent.join("copy").exists());
         }
 
-        // Phase `namespace_macos_read_only_acl_does_not_block_safe_copy`.
         {
             let (temp, source, _) = fixture();
             let parent = temp.path().canonicalize().unwrap().join("acl-parent");

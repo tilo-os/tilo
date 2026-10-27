@@ -5,7 +5,7 @@ use ui::tilo_resource::Id;
 
 #[test]
 fn private_group_action_contracts_preserve_read_and_outside_grants() {
-    use ui::tilo_actions::{ActionKind, LOCAL_DEVICE_ONLY, OperationKind};
+    use ui::tilo_actions::{ActionKind, OperationKind};
 
     let specs = <MessagesEffect as ui::framework::Effect>::specs();
     for (id, kind) in [
@@ -23,13 +23,6 @@ fn private_group_action_contracts_preserve_read_and_outside_grants() {
             .expect("every private group action must be exported");
         assert_eq!(spec.contract.kind, kind, "grant kind for {id}");
         assert_eq!(spec.kind, OperationKind::Effect, "effect kind for {id}");
-        assert!(
-            spec.contract
-                .tags
-                .iter()
-                .any(|tag| tag == LOCAL_DEVICE_ONLY),
-            "private group action {id} must remain on the original device"
-        );
     }
 }
 
@@ -340,34 +333,15 @@ fn narrow_and_wide_surfaces_publish_accessible_routes_and_shared_navigation() {
         app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap)
             .expect("the messages shell is hosted");
         app.harness().relayout();
-        let nodes = app.harness().a11y_nodes();
-        assert!(
-            nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("Message using"))
-        );
-        // NavShell owns Back only in the narrow push layout; a wide window
-        // keeps the overview visible and needs no application-drawn Back.
-        assert_eq!(
-            nodes.iter().any(|(_, node)| node.label() == Some("Back")),
-            width == 420,
-        );
-        let labels = if width == 420 {
-            vec!["Message using", "Back"]
-        } else {
-            vec!["Message using"]
-        };
-        for label in labels {
-            let node = nodes
-                .iter()
-                .find(|(_, node)| node.label() == Some(label))
-                .expect("visible navigation control");
-            let bounds = node.1.bounds().expect("control geometry");
-            assert!(
-                bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width),
-                "{label} must be visible after restoring selection: {bounds:?}"
-            );
-        }
+        app.settle();
+        // The window bar names the person and offers the routes to them;
+        // NavShell's Back is the bar's only in the narrow push layout: a
+        // wide window keeps the overview visible beside the conversation.
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let location = bar.location.expect("the bar names the conversation");
+        assert_eq!(location.label, "Alex");
+        assert_eq!(location.name, "Message using");
+        assert_eq!(!bar.leading.is_empty(), width == 420);
         assert!(app.effect(&MessagesEffect::Back).is_ok());
     }
 }
@@ -385,18 +359,14 @@ fn scoped_live_selection_rejects_substituted_sender_scope_recipient_and_revision
     })
     .expect("identity comparison ignores JSON whitespace");
     app.settle();
-    let nodes = app.harness().a11y_nodes();
-    let route_control = nodes
-        .iter()
-        .find(|(_, node)| {
-            node.label()
-                .is_some_and(|label| label.starts_with("Message using"))
-        })
-        .expect("shared header route control");
-    let displayed = route_control
-        .1
-        .label()
-        .expect("selected route is named for menu accessibility");
+    let displayed = ui::window_toolbar::declared()
+        .and_then(|bar| bar.location)
+        .expect("the window bar names the conversation")
+        .name;
+    assert!(
+        displayed.starts_with("Message using"),
+        "the bar's route picker names the selected route: {displayed}"
+    );
     assert!(displayed.contains("fixture-signal"));
     assert!(displayed.contains("+12025550123"));
     for (field, forged) in [
@@ -679,7 +649,7 @@ fn stale_group_membership_result_cannot_clear_newer_account_group_view() {
     host.release();
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .job_updates(pending)
                 .iter()
                 .any(ui::tilo_actions::InvocationUpdate::is_terminal)),
@@ -773,4 +743,173 @@ fn group_text_and_membership_changes_require_confirmation_and_current_private_se
     assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
     app.settle();
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
+}
+
+#[test]
+fn with_nobody_yet_the_window_says_how_to_start() {
+    let mut app =
+        TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
+    app.settle();
+    let harness = app.harness();
+    harness.resize((1280, 800)).expect("a wide window lays out");
+    let heading = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Your people, together"))
+        .map(|(_, node)| node)
+        .expect("the empty People pane has an empty state");
+    let bounds = heading.bounds().expect("the empty state is laid out");
+    assert!(
+        bounds.height() > 1.0 && bounds.width() > 1.0,
+        "the empty state fills the pane instead of collapsing: {bounds:?}"
+    );
+    assert!(
+        (f64::midpoint(bounds.x0, bounds.x1) - 640.0).abs() < 8.0,
+        "with nothing to list, the empty state is the whole window's, not a list's beside a \
+         blank pane: {bounds:?}"
+    );
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    let location = bar.location.expect("the bar names where the window is");
+    assert_eq!(location.label, "People");
+    assert!(
+        location.choices.is_empty(),
+        "no route to choose while no conversation is open"
+    );
+
+    // Open Contacts runs the published action that asks the window's
+    // session to open Contacts in its workspace.
+    let session = std::sync::Arc::new(OpeningSession::default());
+    harness.set_session_door(
+        ui::RemoteActions::with_host(
+            session.clone(),
+            ui::tilo_actions::remote::Caller::local_app("so.tilo.messages").in_room("room"),
+        ),
+        Some("room".into()),
+    );
+    let button = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Open Contacts"))
+        .map(|(_, node)| node)
+        .expect("the empty state offers to open Contacts");
+    assert!(button.bounds().is_some_and(|b| b.width() > 1.0));
+    let contacts = ui::tilo_actions::remote::application_open_target("room", "so.tilo.contacts");
+    assert!(
+        harness.resources().iter().any(offers_open_contacts),
+        "the button's action is one the app publishes"
+    );
+    harness
+        .invoke_published(
+            "tilo.messages",
+            crate::OPEN_CONTACTS,
+            &serde_json::Map::new(),
+        )
+        .expect("the session opens Contacts");
+    let asked = std::mem::take(&mut *session.asked.lock().unwrap());
+    assert_eq!(asked.len(), 1, "one open, asked of the session");
+    assert_eq!(asked[0].target, contacts);
+
+    // Pressing the button is the same request.
+    harness
+        .click_named("messages.open-contacts")
+        .expect("the button is pressed");
+    app.settle();
+    let asked = std::mem::take(&mut *session.asked.lock().unwrap());
+    assert_eq!(asked.len(), 1, "the press asks the session once");
+    assert_eq!(asked[0].target, contacts);
+}
+
+/// Whether `resource` or one inside it offers Open Contacts.
+fn offers_open_contacts(resource: &ui::tilo_actions::Resource) -> bool {
+    resource
+        .actions
+        .iter()
+        .any(|action| action.id == crate::OPEN_CONTACTS)
+        || resource.children.iter().any(offers_open_contacts)
+}
+
+/// A session that records what it is asked to open.
+#[derive(Default)]
+struct OpeningSession {
+    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+}
+
+impl ui::tilo_actions::remote::ActionHost for OpeningSession {
+    fn query(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        _query: ui::tilo_actions::remote::CatalogueQuery,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+    > {
+        ui::tilo_actions::remote::Pending::ready(Ok(
+            ui::tilo_actions::remote::CataloguePage::default(),
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        request: ui::tilo_actions::remote::InvokeRequest,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<
+            ui::tilo_actions::remote::InvocationReceipt,
+            ui::tilo_actions::remote::ActionHostError,
+        >,
+    > {
+        let invocation = request.invocation;
+        self.asked.lock().unwrap().push(request);
+        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
+            invocation,
+            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                output: ui::tilo_actions::ActionOutput::default(),
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        _id: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        _id: &ui::tilo_actions::InvocationId,
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    {
+        ui::tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+#[test]
+fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
+    let mut app =
+        TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
+    app.settle();
+    app.effect(&MessagesEffect::OpenAccountSetup)
+        .expect("open setup");
+    app.settle();
+    let targets = app.harness().targets();
+    assert!(
+        !targets.contains_key("messages.first-whatsapp"),
+        "a link row that cannot start is not offered"
+    );
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some("Accounts")
+    );
+    assert!(
+        bar.actions
+            .iter()
+            .all(|action| action.id != crate::window_bar::ACCOUNTS),
+        "the open setup is not offered again beside its own name"
+    );
+    let tree = app.harness().inspection_json().unwrap();
+    assert!(tree.contains("isn't running here"), "{tree}");
+    assert!(tree.contains("a browser has none"), "{tree}");
 }

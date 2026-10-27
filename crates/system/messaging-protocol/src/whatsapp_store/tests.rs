@@ -20,6 +20,9 @@ fn open(root: &Path) -> EncryptedBackend {
 }
 
 fn group_review_fixture() -> groups::Review {
+    // The review expires 90 s of wall time after it is made; the wall clock
+    // stands still from here, so a slow run cannot outlast it.
+    tilo_clock::freeze_wall(tilo_clock::wall());
     groups::Review {
         group: "123@g.us".into(),
         identity: ("123@s.whatsapp.net".into(), Some("456@lid".into())),

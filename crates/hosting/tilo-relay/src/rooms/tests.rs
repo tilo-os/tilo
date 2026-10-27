@@ -473,9 +473,9 @@ async fn a_seeded_room_default_record_names_the_default_id() {
     let rooms = relay.rooms().unwrap();
     let created = rooms.create("Seeded default record").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    // An app that keeps a record per window: one that keeps a room record
-    // seeds its package primary, not the default route.
-    let app = "so.tilo.scratchpad";
+    // An app whose windows each show a resource of their own: one that keeps
+    // a room record (Scratchpad, Notes) seeds its package primary instead.
+    let app = "so.tilo.sheets";
     let record = crate::room_bots::room_record(&catalogue, app);
     assert_eq!(record, ui::record::RecordId::room_default().as_str());
     assert!(
@@ -623,6 +623,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let state = room.collaboration().clone();
     let mut candidate = room.peer().clone();
     candidate
+        .publication_mut()
         .publish_document("notes", "plan", large(), &key, SystemTime::now())
         .unwrap();
     room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
@@ -659,6 +660,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         automerge::AutoCommit::load(&room.peer().document("notes", "plan").unwrap()).unwrap();
     edited.put(automerge::ROOT, "edited", true).unwrap();
     candidate
+        .publication_mut()
         .publish_document("notes", "plan", edited.save(), &key, SystemTime::now())
         .unwrap();
     room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
@@ -1466,6 +1468,7 @@ fn bridge_program() -> String {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: vec![rule],
         triggers: vec![],
@@ -2029,6 +2032,937 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
             }
         ),
         "{response:?}"
+    );
+    relay.shutdown().await;
+}
+
+/// One window, a Chat tab, on one strip, with ids in the namespace `salt`.
+fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    let own = |counter: u64| (u64::from(salt) << 48) | counter;
+    [Strip {
+        id: StripId(own(1)),
+        name: "Main".into(),
+        window_groups: vec![WindowGroup {
+            id: own(2),
+            tabs: vec![Tab {
+                id: own(3),
+                title: "Chat".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.chat".into(),
+                    surface_id: 7,
+                },
+                app_title: None,
+            }],
+            active_tab: own(3),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }]
+}
+
+/// A window a member opens after joining is a change to the room document in
+/// that device's own topology namespace. The governor takes it in as the
+/// room's next generation, so every other member sees the window; before,
+/// only record writes were taken in and the window reached nobody.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(&rooms, &created.room, &key, &member).await;
+    // The governor's own namespace has a random salt; take another.
+    let salt = {
+        let state = rooms.room(&created.room).await.unwrap();
+        let owners = tilo_desktop_model::projection::contents_owners_of(
+            state.lock().await.peer().admitted_room().unwrap(),
+        );
+        (1..=u16::MAX)
+            .find(|salt| !owners.contains_key(salt))
+            .unwrap()
+    };
+    rooms
+        .claim_topology_namespace(&created.room, &member, salt)
+        .await
+        .unwrap();
+
+    let windows = one_chat_window(salt);
+    let (generation, mut doc) = {
+        let state = rooms.room(&created.room).await.unwrap();
+        let room = state.lock().await;
+        let doc = room
+            .peer()
+            .admitted_room()
+            .expect("a created room has a room document")
+            .clone();
+        (room.record.generation, doc)
+    };
+    let heads = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        &windows,
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .unwrap();
+    doc.commit();
+    let changes = doc.get_changes(&heads);
+    assert!(!changes.is_empty(), "opening a window changes the room");
+    let hashes = changes
+        .iter()
+        .map(automerge::Change::hash)
+        .collect::<Vec<_>>();
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
+        room: created.room.clone(),
+        changes: changes
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+    })
+    .unwrap();
+
+    rooms
+        .absorb(&created.room, member.device_public_key, &body)
+        .await
+        .unwrap();
+
+    {
+        let state = rooms.room(&created.room).await.unwrap();
+        let room = state.lock().await;
+        assert!(
+            room.record.generation > generation,
+            "the governor committed the window as the room's next generation"
+        );
+        let mut admitted = room.peer().admitted_room().unwrap().clone();
+        drop(room);
+        for hash in &hashes {
+            assert!(
+                admitted.get_change_by_hash(hash).is_some(),
+                "the governed room holds the member's window"
+            );
+        }
+    }
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// A device of the governor's person, certified as a member and admitted to
+/// `room`, with its own topology namespace: what joining gives each member.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
+)]
+async fn member_with_namespace(
+    rooms: &Rooms,
+    room: &str,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    seed: u8,
+) -> (DeviceCert, u16) {
+    let member_key = SigningKey::from_bytes(&[seed; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(rooms, room, key, &member).await;
+    let salt = {
+        let state = rooms.room(room).await.unwrap();
+        let governed = state.lock().await;
+        let owners = tilo_desktop_model::projection::contents_owners_of(
+            governed.peer().admitted_room().unwrap(),
+        );
+        (1..=u16::MAX)
+            .find(|salt| !owners.contains_key(salt))
+            .unwrap()
+    };
+    rooms
+        .claim_topology_namespace(room, &member, salt)
+        .await
+        .unwrap();
+    (member, salt)
+}
+
+/// `member`'s change to `room`'s document opening two unconfined terminals
+/// in its namespace `salt`, as its device would send it.
+async fn terminals_opened(rooms: &Rooms, room: &str, member: &DeviceCert, salt: u16) -> Vec<u8> {
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    let own = |counter: u64| (u64::from(salt) << 48) | counter;
+    let terminal = |counter: u64, title: &str| WindowGroup {
+        id: own(counter),
+        tabs: vec![Tab {
+            id: own(counter),
+            title: title.into(),
+            tile: TileContent::Foreign {
+                app_id: "Alacritty".into(),
+                surface_id: counter,
+            },
+            app_title: None,
+        }],
+        active_tab: own(counter),
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let windows = [Strip {
+        id: StripId(own(1)),
+        name: "Main".into(),
+        window_groups: vec![terminal(2, "ssh prod-db"), terminal(3, "~/private/taxes")],
+    }];
+    let mut doc = {
+        let state = rooms.room(room).await.unwrap();
+        let governed = state.lock().await;
+        governed.peer().admitted_room().unwrap().clone()
+    };
+    let heads = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        &windows,
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .unwrap();
+    doc.commit();
+    postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
+        room: room.to_owned(),
+        changes: doc
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+    })
+    .unwrap()
+}
+
+/// The window titles the governed room holds: what every member is given.
+async fn titles_shared(rooms: &Rooms, room: &str) -> Vec<String> {
+    let state = rooms.room(room).await.unwrap();
+    let governed = state.lock().await;
+    tilo_desktop_model::projection::contents_of(governed.peer().admitted_room().unwrap())
+        .into_iter()
+        .flat_map(|strip| strip.groups)
+        .flat_map(|group| group.tabs)
+        .map(|tab| tab.title)
+        .collect()
+}
+
+/// Two strangers in a public room: A opens two terminals, and B is never
+/// given them, their app or their titles. The door refuses A's change, and
+/// the governor, should it reach it anyway, commits nothing of it.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
+)]
+#[tokio::test]
+async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let room = created.room.clone();
+    rooms
+        .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+        .await
+        .unwrap();
+    assert!(rooms.is_public(&room));
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let (_b, _) = member_with_namespace(&rooms, &room, &key, &cert, 4).await;
+    let generation = rooms
+        .room(&room)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .record
+        .generation;
+
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    let refused = rooms
+        .decide_layout_write(&room, a.device_public_key, &body)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("public room"), "{refused}");
+
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    {
+        let state = rooms.room(&room).await.unwrap();
+        let governed = state.lock().await;
+        assert_eq!(
+            governed.record.generation, generation,
+            "the governor committed nothing of A's windows"
+        );
+        let shared = governed.peer().admitted_room().unwrap();
+        assert!(
+            tilo_desktop_model::projection::contents_of(shared)
+                .iter()
+                .all(|strip| tilo_desktop_model::peer_salt_of(strip.id) != a_salt),
+            "no strip of A's reaches B"
+        );
+    }
+    assert!(
+        titles_shared(&rooms, &room).await.is_empty(),
+        "B is given no title of A's"
+    );
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// In a private room the same change is let through and committed, as
+/// before.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Team").await.unwrap().room;
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    assert!(!rooms.is_public(&room));
+    rooms
+        .decide_layout_write(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    let mut titles = titles_shared(&rooms, &room).await;
+    titles.sort();
+    assert_eq!(titles, ["ssh prod-db", "~/private/taxes"]);
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// `member`'s change to `room`'s document closing every window it has in
+/// its namespace `salt`, as its device would send it.
+async fn windows_closed(rooms: &Rooms, room: &str, member: &DeviceCert, salt: u16) -> Vec<u8> {
+    let mut doc = {
+        let state = rooms.room(room).await.unwrap();
+        let governed = state.lock().await;
+        governed.peer().admitted_room().unwrap().clone()
+    };
+    let heads = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        &[],
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .unwrap();
+    doc.commit();
+    postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
+        room: room.to_owned(),
+        changes: doc
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+    })
+    .unwrap()
+}
+
+/// Every entry the store under `root` archived.
+fn archived_bytes(root: &std::path::Path) -> Vec<Vec<u8>> {
+    let mut found = Vec::new();
+    let mut dirs = vec![
+        root.join(crate::store::RETAINED_DIR)
+            .join(crate::store::compaction::ARCHIVE_DIR),
+    ];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                found.push(bytes);
+            }
+        }
+    }
+    found
+}
+
+/// Whether `title` occurs in `frame`, a frame a device's replay delivers:
+/// in its bytes as encoded for the wire, or in any operation of a room
+/// document change it carries once decoded (a change's columns may be
+/// compressed, which a search of the raw bytes alone would miss).
+fn replayed_frame_carries(frame: &crate::transport::Envelope, title: &str) -> bool {
+    let needle = title.as_bytes();
+    let wire = crate::frame::encode(frame).unwrap();
+    if wire.windows(needle.len()).any(|window| window == needle) {
+        return true;
+    }
+    let crate::transport::Envelope::Delta { delta, .. } = frame else {
+        return false;
+    };
+    let Some(
+        crate::coedit::CoeditPayload::Checkpoint { body, .. }
+        | crate::coedit::CoeditPayload::RetainedDelta { body, .. },
+    ) = crate::coedit::CoeditPayload::decode(delta)
+    else {
+        return false;
+    };
+    let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body)
+    else {
+        return false;
+    };
+    changes.iter().any(|bytes| {
+        automerge::Change::try_from(bytes.as_slice())
+            .is_ok_and(|change| format!("{:?}", change.decode()).contains(title))
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Withdrawal {
+    Closed,
+    LayoutTurnedPersonal,
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
+    const TITLES: [&str; 2] = ["ssh prod-db", "~/private/taxes"];
+    for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let relay = view_read_relay(dir.path(), &key, &cert).await;
+        let rooms = relay.rooms().unwrap().clone();
+        let created = rooms.create("Team").await.unwrap();
+        let room = created.room.clone();
+        let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+        let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+        rooms
+            .absorb(&room, a.device_public_key, &body)
+            .await
+            .unwrap();
+        assert_eq!(
+            titles_shared(&rooms, &room).await.len(),
+            2,
+            "{withdrawal:?}: the room shares A's terminals while they are open"
+        );
+
+        match withdrawal {
+            Withdrawal::Closed => {
+                let body = windows_closed(&rooms, &room, &a, a_salt).await;
+                rooms
+                    .absorb(&room, a.device_public_key, &body)
+                    .await
+                    .unwrap();
+            }
+            Withdrawal::LayoutTurnedPersonal => rooms
+                .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+                .await
+                .unwrap(),
+        }
+        assert!(
+            titles_shared(&rooms, &room).await.is_empty(),
+            "{withdrawal:?}: the room's current state no longer holds A's terminals"
+        );
+
+        let (c, c_cert) = guest_device();
+        door_join(&rooms, &cert, &room, (&c, &c_cert), 21).await;
+        // Whatever the room published is retained before C's replay is read.
+        rooms
+            .inner
+            .host
+            .records
+            .retained(created.workspace_id)
+            .await
+            .unwrap();
+        let workspace = rooms
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&created.workspace_id)
+            .cloned()
+            .expect("the relay hosts the room's workspace");
+        let (replayed, archived) = {
+            let runtime = workspace.lock().await;
+            (
+                crate::store::test_support::replay_frames(&runtime.store),
+                archived_bytes(runtime.store.root()),
+            )
+        };
+        assert!(
+            !replayed.is_empty(),
+            "{withdrawal:?}: a device joining the room is replayed the room"
+        );
+        for title in TITLES {
+            assert!(
+                !replayed
+                    .iter()
+                    .any(|frame| replayed_frame_carries(frame, title)),
+                "{withdrawal:?}: a member who joins later is replayed {title:?}, \
+                 a window withdrawn before they joined"
+            );
+            assert!(
+                archived.iter().any(|bytes| {
+                    crate::frame::decode(bytes.get(4..).unwrap_or_default())
+                        .is_ok_and(|frame| replayed_frame_carries(&frame, title))
+                }),
+                "{withdrawal:?}: the relay keeps {title:?} archived for those who held it"
+            );
+        }
+        drop(rooms);
+        relay.shutdown().await;
+    }
+}
+
+/// A room listed in the directory (open admission) whose governor chose no
+/// layout scope becomes personal when the relay opens it: the windows the
+/// governor committed of a member while it shared them are removed, its
+/// governance says it is personal for every member's device to read, and its
+/// doors refuse members' windows from then on.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn a_listed_room_refuses_members_windows_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert_eq!(
+        titles_shared(&rooms, &room).await.len(),
+        2,
+        "committed while the relay still took members' windows in"
+    );
+    // Listed by a relay from before rooms carried their layout scope.
+    rooms
+        .inner
+        .listings
+        .set(
+            &room,
+            Some(tilo_relay_protocol::directory::Listing {
+                description: "Come in".into(),
+                default_role: tilo_relay_protocol::rooms::RoomRole::Editor,
+            }),
+        )
+        .unwrap();
+    drop(rooms);
+    relay.shutdown().await;
+
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    assert!(rooms.is_public(&room));
+    assert!(
+        titles_shared(&rooms, &room).await.is_empty(),
+        "what was committed of A's windows is gone"
+    );
+    {
+        let state = rooms.room(&room).await.unwrap();
+        let governed = state.lock().await;
+        assert_eq!(
+            governed.peer().governance().room_layout(),
+            tilo_desktop_model::projection::RoomLayout::Personal,
+            "every member's device reads that the room is personal"
+        );
+    }
+    assert!(
+        rooms
+            .decide_layout_write(&room, a.device_public_key, &body)
+            .await
+            .is_err()
+    );
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert!(titles_shared(&rooms, &room).await.is_empty());
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// The governor decides the layout scope, and the room holds to its word
+/// across a restart: made personal, what the room committed of a member's
+/// windows goes at once; made shared again, members' windows are taken in
+/// as in any invite-only room; and a listed room whose governor chose to
+/// share its layout keeps sharing it.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
+    use tilo_desktop_model::projection::RoomLayout;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    assert_eq!(rooms.layout(&room), RoomLayout::Shared, "invite-only");
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
+
+    rooms.set_layout(&room, RoomLayout::Personal).await.unwrap();
+    assert!(titles_shared(&rooms, &room).await.is_empty());
+
+    rooms.set_layout(&room, RoomLayout::Shared).await.unwrap();
+    assert!(!rooms.is_public(&room));
+    // A's device publishes its windows again, now that the room shares them.
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    rooms
+        .decide_layout_write(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
+    rooms
+        .inner
+        .listings
+        .set(
+            &room,
+            Some(tilo_relay_protocol::directory::Listing {
+                description: "Come in".into(),
+                default_role: tilo_relay_protocol::rooms::RoomRole::Editor,
+            }),
+        )
+        .unwrap();
+    drop(rooms);
+    relay.shutdown().await;
+
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    assert_eq!(
+        rooms.layout(&room),
+        RoomLayout::Shared,
+        "the governor's choice, not the listing's default"
+    );
+    assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// One person's device joining `room` through its door, as a Tilo computer
+/// does: the challenge, the door's admission spent with the proof, then the
+/// Complete. Answers the Complete it sent and the host's answer.
+pub(crate) async fn door_join(
+    rooms: &Rooms,
+    host: &DeviceCert,
+    room: &str,
+    (device, device_cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+) -> (
+    tilo_peer_state::join::JoinTransportRequest,
+    tilo_peer_state::join::JoinTransportResponse,
+) {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
+        sign_join_proof,
+    };
+    use tilo_relay_protocol::rooms::{JoinReply, JoinStep};
+    let token = [seed; 8];
+    let issued = rooms
+        .pre_admit(
+            host,
+            PreAdmitRequest {
+                request_id: [seed; 32],
+                grant: signed_pre_admission(room, &token),
+                recipient_user_public_key: Some(device_cert.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let service = rooms.join_service();
+    let endpoint = device_cert.device_public_key;
+    let JoinTransportResponse::Challenge(answer) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::Challenge(JoinChallengeRequest {
+                signed_invitation: issued.signed_invitation,
+                device_cert: device_cert.clone(),
+                request_id: [seed.wrapping_add(100); 32],
+            }),
+        )
+        .await
+    else {
+        panic!("no challenge");
+    };
+    let proof = sign_join_proof(answer.challenge, device).unwrap();
+    let admitted = rooms
+        .page_join(JoinStep::ProvePreAdmitted {
+            challenge: postcard::to_stdvec(&proof.challenge).unwrap(),
+            signature: proof.signature,
+            name: "Ada".into(),
+            token: token.to_vec(),
+        })
+        .await;
+    assert!(
+        matches!(admitted, JoinReply::Admitted { .. }),
+        "{admitted:?}"
+    );
+    let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof });
+    let response = service.handle(endpoint, complete.clone()).await;
+    drop(service);
+    (complete, response)
+}
+
+/// The Lounge, 2026-10-20: a laptop's join completed at the host, but the
+/// laptop restarted before it installed the answer. By the time it resent
+/// its retained proof, others had joined: the host no longer replays the
+/// answer, says so with its code, and gives the device, a member now, the
+/// room's current state through the membership exchange, which matches
+/// what the device's retained proof expects.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_membership() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JOIN_COMPLETED_REFRESH, JoinTransportRequest, JoinTransportResponse,
+        MembershipChallengeRequest, MembershipCompleteRequest, sign_membership_proof,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (laptop, laptop_cert) = guest_device();
+    let (complete, first) =
+        door_join(rooms, &cert, &created.room, (&laptop, &laptop_cert), 11).await;
+    let JoinTransportResponse::Complete(delivered) = first else {
+        panic!("the first Complete is admitted: {first:?}");
+    };
+    // The answer never reached the laptop. Someone else joins meanwhile.
+    let (other, other_cert) = guest_device();
+    let (_, joined) = door_join(rooms, &cert, &created.room, (&other, &other_cert), 12).await;
+    assert!(matches!(joined, JoinTransportResponse::Complete(_)));
+
+    let service = rooms.join_service();
+    let endpoint = laptop_cert.device_public_key;
+    let resent = service.handle(endpoint, complete).await;
+    assert!(
+        matches!(
+            resent,
+            JoinTransportResponse::Error {
+                code: JOIN_COMPLETED_REFRESH,
+                ..
+            }
+        ),
+        "{resent:?}"
+    );
+    let JoinTransportResponse::MembershipChallenge(answer) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
+                room: created.room.clone(),
+                workspace_id: created.workspace_id,
+                device_cert: laptop_cert.clone(),
+                request_id: [13; 32],
+            }),
+        )
+        .await
+    else {
+        panic!("no membership challenge");
+    };
+    let proof = sign_membership_proof(answer.challenge, &laptop).unwrap();
+    let JoinTransportResponse::MembershipComplete(current) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
+        )
+        .await
+    else {
+        panic!("no membership");
+    };
+    // What the device's retained proof checks the answer against.
+    assert_eq!(current.version, 1);
+    assert_eq!(current.invite_id, delivered.invite_id);
+    assert_eq!(current.device_cert, laptop_cert);
+    assert_eq!(current.role, delivered.role);
+    assert_eq!(current.room, delivered.room);
+    assert_eq!(current.workspace_id, delivered.workspace_id);
+    assert_eq!(current.authority, delivered.authority);
+    assert!(current.generation > 0);
+    assert!(current.certified_roster.contains(&laptop_cert));
+    assert!(current.certified_roster.contains(&other_cert));
+    assert!(current.certified_roster.contains(&current.authority));
+    relay.shutdown().await;
+}
+
+/// A workspace that moves to its person's host keeps its room: the host
+/// takes over governing the room under the identity it already has, and
+/// refuses a room it holds already, rather than minting another.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_room_moved_here_keeps_its_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().expect("a certified host governs rooms");
+    let room = "6f1c2b9e-4d3a-4f5e-8a7b-1c2d3e4f5a6b";
+    let moved = rooms.create_room("Mine", Some(room)).await.unwrap();
+    assert_eq!(moved.room, room, "the room keeps its identity");
+    assert_eq!(
+        moved.workspace_id,
+        crate::room_workspace_id(room).unwrap(),
+        "and its workspace the id every device derives from it"
+    );
+    assert!(
+        rooms.create_room("Again", Some(room)).await.is_err(),
+        "a room the host holds is never made a second time"
+    );
+    assert!(rooms.create_room("Bad", Some("not a room")).await.is_err());
+    let fresh = rooms.create_room("Fresh", None).await.unwrap();
+    assert_ne!(fresh.room, room);
+    relay.shutdown().await;
+}
+
+/// A member whose person's root renewed its device certificate proves its
+/// membership with the renewal: the relay holds the renewal in place of the
+/// certificate it replaces, answers the device as the same member with its
+/// role, and refuses the older certificate from then on.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JoinTransportRequest, JoinTransportResponse, MembershipChallengeRequest,
+        MembershipCompleteRequest, sign_membership_proof,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Lounge").await.unwrap();
+    let root = SigningKey::from_bytes(&[71; 32]);
+    let laptop = SigningKey::from_bytes(&[72; 32]);
+    let certify = |issued_at_ns: u64, expires_at_ns: Option<u64>| {
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: laptop.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns,
+            expires_at_ns,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        cert
+    };
+    let held = certify(1, None);
+    let (_, first) = door_join(rooms, &cert, &created.room, (&laptop, &held), 21).await;
+    let JoinTransportResponse::Complete(delivered) = first else {
+        panic!("the join is admitted: {first:?}");
+    };
+    let now = tilo_clock::unix_now_ns();
+    let renewed = certify(
+        now.saturating_sub(1_000_000_000),
+        Some(now.saturating_add(3_600_000_000_000)),
+    );
+
+    let service = rooms.join_service();
+    let endpoint = laptop.verifying_key().to_bytes();
+    let challenge = |device_cert: DeviceCert, seed: u8| {
+        service.handle(
+            endpoint,
+            JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
+                room: created.room.clone(),
+                workspace_id: created.workspace_id,
+                device_cert,
+                request_id: [seed; 32],
+            }),
+        )
+    };
+    let JoinTransportResponse::MembershipChallenge(answer) = challenge(renewed.clone(), 22).await
+    else {
+        panic!("the renewal is challenged as the device it renews");
+    };
+    let proof = sign_membership_proof(answer.challenge, &laptop).unwrap();
+    let JoinTransportResponse::MembershipComplete(current) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
+        )
+        .await
+    else {
+        panic!("the renewed member is answered");
+    };
+    assert_eq!(current.device_cert, renewed);
+    assert_eq!(
+        current.role, delivered.role,
+        "the same member, with its role"
+    );
+    assert!(current.certified_roster.contains(&renewed));
+    assert!(!current.certified_roster.contains(&held));
+    assert!(
+        matches!(
+            challenge(held, 23).await,
+            JoinTransportResponse::Error { .. }
+        ),
+        "the older certificate is refused after the renewal"
     );
     relay.shutdown().await;
 }

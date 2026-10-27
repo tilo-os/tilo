@@ -49,10 +49,6 @@ fn u64_at(bytes: &[u8], at: usize) -> Result<u64, Malformed> {
 }
 
 /// The byte offset and size of `$Volume`'s MFT record, from the boot sector.
-///
-/// # Errors
-///
-/// Returns [`Malformed`] for geometry no NTFS volume has.
 pub fn volume_record_location(boot: &[u8]) -> Result<(u64, usize), Malformed> {
     let bytes_per_sector = u64::from(u16_at(boot, 0x0B)?);
     if !(512..=4096).contains(&bytes_per_sector) || !bytes_per_sector.is_power_of_two() {
@@ -128,10 +124,6 @@ fn apply_fixups(record: &mut [u8]) -> Result<(), Malformed> {
 }
 
 /// Whether the `$Volume` record (as read from disk) carries the dirty bit.
-///
-/// # Errors
-///
-/// Returns [`Malformed`] if the record or its attributes do not parse.
 pub fn record_is_dirty(record: &mut [u8]) -> Result<bool, Malformed> {
     apply_fixups(record)?;
     let in_use = usize::try_from(u32_at(record, 0x18)?).map_err(|_| Malformed("record"))?;
@@ -168,11 +160,6 @@ pub fn record_is_dirty(record: &mut [u8]) -> Result<bool, Malformed> {
 }
 
 /// Read the dirty bit through `read_at(offset, buffer)`.
-///
-/// # Errors
-///
-/// Returns the read error, or an `InvalidData` error naming what did not
-/// parse.
 pub fn volume_is_dirty(
     mut read_at: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
 ) -> io::Result<bool> {

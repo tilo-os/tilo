@@ -187,7 +187,6 @@ mod tests {
 
     #[test]
     fn package_state_is_found_per_room_measured_and_removed_in_isolation() {
-        // Phase `every_room_holding_state_for_a_package_is_found`.
         {
             let tmp = tempfile::tempdir().unwrap();
             seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
@@ -201,12 +200,10 @@ mod tests {
             assert_eq!(total_bytes(&found), 12);
             assert!(found.iter().all(|s| s.files == 1));
         }
-        // Phase `a_package_that_was_never_launched_has_no_state`.
         {
             let tmp = tempfile::tempdir().unwrap();
             assert!(find(tmp.path(), "so.tilo.never-run").is_empty());
         }
-        // Phase `removing_state_leaves_the_other_packages_alone`.
         {
             let tmp = tempfile::tempdir().unwrap();
             seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
@@ -218,7 +215,6 @@ mod tests {
             assert!(find(tmp.path(), "so.tilo.notes").is_empty());
             assert!(other.exists(), "another package's state must survive");
         }
-        // Phase `a_symlinked_subtree_is_measured_but_not_followed`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let dir = seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
@@ -247,7 +243,6 @@ mod tests {
             assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
             assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
         }
-        // Phase `human_bytes_reads_like_a_size`.
         {
             assert_eq!(human_bytes(0), "0 B");
             assert_eq!(human_bytes(512), "512 B");

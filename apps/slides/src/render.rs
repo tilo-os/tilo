@@ -18,7 +18,7 @@ use tilo_rich_text::RichTextView;
 use ui::widget::BlockEditor;
 
 use crate::assets::{ImageLookup, ImageState};
-use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
+use crate::model::{DeckLook, Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
 pub use ui::paint::with_alpha;
 
 /// Map a point from slide space to destination pixels.
@@ -43,12 +43,37 @@ pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
 pub struct DeckAssets<'a> {
     pub palette: &'a Palette,
     pub images: &'a dyn ImageLookup,
+    /// Where collaborators are in the deck's words, for the canvas to show
+    /// their carets and selections; `None` where nobody's place is shown (a
+    /// thumbnail, a presentation).
+    pub presence: Option<&'a ui::presence::PresenceCtx>,
 }
 
-/// `theme` at unit text scale, when it is scaled: what a slide's words lay
-/// out against.
-pub fn unit_scale(theme: &ui::theme::Theme) -> Option<ui::theme::Theme> {
-    ((theme.text_scale - 1.0).abs() > f32::EPSILON).then(|| theme.clone().with_text_scale(1.0))
+/// The theme a deck's words lay out and paint against: the deck's own
+/// `look`, at unit text scale, never the reader's UI theme, so a slide
+/// shows the same on every screen, in Present and in a written file. Only
+/// the reader's own colour comes along, for their caret and selection.
+/// Built once per look and colour on a thread.
+pub fn words_theme(look: DeckLook, reader: &ui::theme::Theme) -> std::rc::Rc<ui::theme::Theme> {
+    type Key = (DeckLook, ui::tokens::colors::PresenceHue);
+    thread_local! {
+        static THEMES: RefCell<Vec<(Key, std::rc::Rc<ui::theme::Theme>)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let key = (look, reader.tokens.colors.you);
+    THEMES.with(|themes| {
+        let mut themes = themes.borrow_mut();
+        if let Some((_, theme)) = themes.iter().find(|(k, _)| *k == key) {
+            return theme.clone();
+        }
+        let preset = match look {
+            DeckLook::Light => ui::theme::Preset::Light,
+            DeckLook::Dark => ui::theme::Preset::Dark,
+        };
+        let theme = std::rc::Rc::new(ui::theme::Theme::preset(preset).with_your_colour(key.1));
+        themes.push((key, theme.clone()));
+        theme
+    })
 }
 
 /// The colour under the middle of text element `e`: the topmost filled
@@ -143,10 +168,11 @@ pub fn draw_slide_except(
     let assets = DeckAssets {
         palette,
         images: assets.images,
+        presence: assets.presence,
     };
-    // A slide's type is sized in slide units, whatever the reader's text
-    // scale: its words lay out against a theme at unit scale.
-    let unit_theme = unit_scale(ctx.theme);
+    // A slide's words lay out and paint against the deck's look, sized in
+    // slide units whatever the reader's text scale.
+    let words_theme = words_theme(palette.look, ctx.theme);
     for el in slide.z_sorted() {
         if el.kind == ElementKind::Text {
             if editing == Some(el.id.as_str()) {
@@ -155,13 +181,13 @@ pub fn draw_slide_except(
             if el.is_blank_text() && !prompts {
                 continue;
             }
-            let theme = unit_theme.as_ref().unwrap_or(ctx.theme);
+            let theme = &*words_theme;
             let prompt = (prompts && el.is_blank_text()).then(|| prompt_for(slide, el));
             let shown = prompt.as_ref().unwrap_or(el);
             let ink = text_ink(palette, slide, shown);
             draw_text_element(
                 &mut PaintCtx::new(ctx.scene, ctx.transform, ctx.text, theme),
-                ink,
+                (ink, assets.presence),
                 shown,
                 dest,
                 s,
@@ -283,7 +309,10 @@ fn draw_element(ctx: &mut PaintCtx<'_>, assets: DeckAssets<'_>, e: &Element, des
         ElementKind::Text => {
             draw_text_element(
                 ctx,
-                palette.resolve_role(&e.fill).unwrap_or(palette.text),
+                (
+                    palette.resolve_role(&e.fill).unwrap_or(palette.text),
+                    assets.presence,
+                ),
                 e,
                 dest,
                 s,
@@ -402,7 +431,57 @@ thread_local! {
     /// Each text element's words, laid out once at the slide's size and
     /// drawn scaled wherever the slide is painted (the canvas, a thumbnail,
     /// the presentation), so all of them wrap exactly alike.
-    static TEXT_VIEWS: RefCell<HashMap<String, RichTextView>> = RefCell::new(HashMap::new());
+    static TEXT_VIEWS: RefCell<HashMap<String, LaidText>> = RefCell::new(HashMap::new());
+}
+
+/// A text element's words as last laid out, and how tall they came to.
+struct LaidText {
+    view: RichTextView,
+    /// In slide units.
+    height: f64,
+}
+
+/// How tall text element `id`'s words came to when last laid out, in slide
+/// units: what a box that its words outgrew grows to. `None` before it was
+/// first drawn.
+pub fn text_height(id: &str) -> Option<f64> {
+    TEXT_VIEWS.with(|views| views.borrow().get(id).map(|laid| laid.height))
+}
+
+/// How tall text box `e` shows, in slide units: its own height, or its
+/// words' where they outgrow it, set as the canvas sets them.
+pub fn shown_text_height(e: &Element, tr: &mut ui::text_render::TextRenderer) -> f64 {
+    let reader_scale = tr.text_scale();
+    tr.set_text_scale(1.0);
+    let mut view = RichTextView::with_editor(text_box_editor(e));
+    view.show(&e.rich_blocks());
+    let words = view.layout(text_box_rect(e), &ui::theme::Theme::dark(), tr);
+    tr.set_text_scale(reader_scale);
+    e.h.max(words)
+}
+
+/// Every text box's shown height ([`shown_text_height`]) across `deck`, by
+/// element id: the frame a file written from the deck gives each box, so
+/// another app shows the box as tall as Slides does.
+pub fn shown_text_heights(deck: &crate::model::Deck) -> HashMap<String, f64> {
+    let mut tr = ui::text_render::TextRenderer::new();
+    deck.slides
+        .iter()
+        .flat_map(|slide| &slide.elements)
+        .filter(|e| e.kind == ElementKind::Text)
+        .map(|e| (e.id.clone(), shown_text_height(e, &mut tr)))
+        .collect()
+}
+
+/// The key collaborators address a paragraph of a text box's words by
+/// (`block` is its document id): the one the shared editor publishes a caret
+/// under while the words are edited, so that caret shows wherever the words
+/// are drawn.
+pub fn words_presence_key(block: &str) -> ui::presence::PresenceKey {
+    use ui::framework::ResourceApp;
+    ui::framework::ResourceSelection::Item(block.to_owned())
+        .presence::<tilo_document::RichText>(crate::resource::SlidesShell::ID)
+        .0
 }
 
 /// The most text boxes whose layout is kept between frames.
@@ -444,7 +523,15 @@ pub fn text_box_rect(e: &Element) -> Rect {
     Rect::new(e.x, e.y, e.x + e.w.max(1.0), e.y)
 }
 
-fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Rect, s: f64) {
+/// Paint text element `e` in `color`, with the collaborators' carets and
+/// selections `presence` places in its words.
+fn draw_text_element(
+    ctx: &mut PaintCtx<'_>,
+    (color, presence): (Color, Option<&ui::presence::PresenceCtx>),
+    e: &Element,
+    dest: Rect,
+    s: f64,
+) {
     let PaintCtx {
         scene,
         transform,
@@ -460,16 +547,24 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Re
         if views.len() > KEPT_TEXT_VIEWS && !views.contains_key(&e.id) {
             views.clear();
         }
-        let view = views
-            .entry(e.id.clone())
-            .or_insert_with(|| RichTextView::with_editor(text_box_editor(e)));
+        let laid = views.entry(e.id.clone()).or_insert_with(|| {
+            let mut view = RichTextView::with_editor(text_box_editor(e));
+            view.editor_mut()
+                .set_presence_key(std::rc::Rc::new(words_presence_key));
+            LaidText { view, height: 0.0 }
+        });
+        let view = &mut laid.view;
         view.editor_mut().set_body_size(e.font_size as f32);
         view.editor_mut().set_text_align(text_align(e.align));
         view.set_text_color(Some(color));
         view.show(&e.rich_blocks());
         let content_h = view.layout(text_box_rect(e), theme, tr);
         view.set_transform(text_box_transform(dest, s, e, content_h));
-        view.draw(scene, transform, tr, theme);
+        match presence {
+            Some(presence) => view.draw_with_presence(scene, transform, tr, theme, presence),
+            None => view.draw(scene, transform, tr, theme),
+        }
+        laid.height = content_h;
     });
     tr.set_text_scale(reader_scale);
 }

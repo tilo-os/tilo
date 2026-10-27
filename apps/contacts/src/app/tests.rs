@@ -155,6 +155,29 @@ fn ask(app: &mut Live, request: Request) {
     app.request(request);
 }
 
+/// Whether the window's bar offers action `id` now.
+fn bar_offers(id: &str) -> bool {
+    ui::window_toolbar::declared().is_some_and(|toolbar| {
+        toolbar
+            .actions
+            .iter()
+            .chain(&toolbar.leading)
+            .any(|action| action.id == id && action.enabled)
+    })
+}
+
+/// Press `id` in the window's bar, as the desktop hands the press to the
+/// app, and let the app apply it.
+fn press_bar(app: &mut Live, id: &str) {
+    assert!(
+        bar_offers(id),
+        "{id} is in the window's bar: {:?}",
+        ui::window_toolbar::declared()
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+    app.settle();
+}
+
 fn selected_contact(app: &ContactsApp) -> Contact {
     app.selected
         .and_then(|id| app.store.contact(id))
@@ -243,13 +266,22 @@ fn named(harness: &Live, name: &str) -> bool {
     contains(&**harness, name)
 }
 
-fn announced(app: &ContactsApp, message: &str) -> bool {
-    let node = app
-        .shell
-        .children()
-        .last()
-        .and_then(|child| child.accessibility());
-    node.is_some_and(|node| node.live.is_some() && node.value.as_deref() == Some(message))
+/// Whether the window's bar says `message`: its notice, which the bar
+/// reads out as a live region.
+fn announced(_app: &ContactsApp, message: &str) -> bool {
+    ui::window_toolbar::notice().is_some_and(|notice| notice.text == message)
+}
+
+/// Press the button `name` beside the notice in the window's bar.
+fn press_notice_button(app: &mut Live, name: &str) {
+    app.settle();
+    let button = ui::window_toolbar::notice()
+        .and_then(|notice| notice.actions.into_iter().next())
+        .unwrap_or_else(|| panic!("the window's bar offers {name} beside its notice"));
+    assert_eq!(button.name, name);
+    app.harness_mut()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: button.id });
+    app.settle();
 }
 
 fn toast(app: &ContactsApp) -> Option<&str> {
@@ -286,17 +318,29 @@ fn the_window_lists_groups_people_and_the_selected_person() {
     for name in [
         "Groups",
         "Contacts",
-        "More actions",
-        "New contact",
-        "Favorite",
-        "Edit",
-        "Delete contact",
         "All contacts",
         "Favorites",
         "Work",
         shown.display_name().as_str(),
     ] {
         assert!(named(&harness, name), "{name} is exposed");
+    }
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label),
+        Some(shown.display_name())
+    );
+    // What can be done to the person is the window bar's.
+    for id in [
+        BAR_NEW,
+        BAR_FAVORITE,
+        BAR_EDIT,
+        BAR_DELETE,
+        BAR_IMPORT,
+        BAR_EXPORT,
+    ] {
+        assert!(bar_offers(id), "{id} is in the window's bar");
     }
     assert!(
         app.shared.borrow().painted.len() == 7,
@@ -327,7 +371,10 @@ fn a_phone_window_pushes_the_person_over_the_list() {
         NavPane::Content,
         "choosing a person pushes them in"
     );
-    assert!(named(&harness, "Back"), "the shell offers the way back");
+    assert!(
+        bar_offers("nav-shell-back"),
+        "the window's bar offers the way back"
+    );
 }
 
 /// The sidebar's destinations narrow the list: favourites, one group, and
@@ -444,17 +491,24 @@ fn the_sort_control_orders_the_list() {
 #[test]
 fn the_list_selects_by_pointer_keyboard_and_semantics() {
     let mut harness = harness((1280, 800));
-    let (target, center) = {
+    let ((other, other_center), (target, center)) = {
         let app = &*harness;
         let bridge = app.shared.borrow();
-        let (id, rect) = bridge.painted[1];
-        (id, rect.center())
+        let row = |index: usize| {
+            let (id, rect) = bridge.painted[index];
+            (id, rect.center())
+        };
+        (row(2), row(1))
     };
-    harness.harness_mut().click_at(center.x, center.y);
-    assert_eq!(harness.selected, Some(target));
-    assert_eq!(harness.mode, Mode::View);
+    harness
+        .harness_mut()
+        .click_at(other_center.x, other_center.y);
+    assert_eq!(harness.selected, Some(other));
+    assert_eq!(harness.mode, Mode::View, "a single press only selects");
 
-    harness.harness_mut().click_at(center.x, center.y);
+    // A double press on another row selects it and opens it, however long
+    // a slow host takes to draw the frame between the two presses.
+    harness.harness_mut().double_click_at(center.x, center.y);
     let app = &*harness;
     assert_eq!(
         app.mode,
@@ -480,22 +534,34 @@ fn the_list_selects_by_pointer_keyboard_and_semantics() {
     assert_eq!(harness.selected, Some(last));
 }
 
-/// The list's keys: Delete asks before deleting, `e` edits, `n` starts a
-/// new contact, and an open form ignores bare keys.
+/// The list's keys: Delete deletes your contact at once and its notice's
+/// Undo brings it back, `e` edits, `n` starts a new contact, and an open
+/// form ignores bare keys.
 #[test]
 fn list_keys_delete_edit_and_create() {
     let mut harness = harness((1280, 800));
-    let selected = harness.selected;
+    let selected = harness.selected.unwrap();
     harness.harness_mut().key("Delete");
     harness.settle();
     assert!(
-        host_confirmation_is_up(&mut harness),
-        "the host asks before deleting"
+        !host_confirmation_is_up(&mut harness),
+        "deleting your own contact, which Undo takes back, asks nothing"
     );
-    cancel_on_host(&mut harness);
     assert!(
-        harness.store.contact(selected.unwrap()).is_some(),
-        "cancelling deletes nothing"
+        harness.store.contact(selected).is_none(),
+        "the Delete key deletes the contact"
+    );
+    assert!(
+        toast(&harness).is_some_and(|notice| notice.starts_with("Deleted ")),
+        "the notice names what was deleted: {:?}",
+        toast(&harness)
+    );
+    // The notice's Undo asks the host for the undo Ctrl+Z performs.
+    press_notice_button(&mut harness, "Undo");
+    harness.settle();
+    assert!(
+        harness.store.contact(selected).is_some(),
+        "the notice's Undo brings the contact back"
     );
 
     harness.harness_mut().key("e");
@@ -590,23 +656,10 @@ fn the_contact_menu_runs_the_canonical_actions() {
         "the sensitive export waits for the person's consent"
     );
     assert!(
-        app.harness_mut()
-            .a11y_nodes()
-            .iter()
-            .any(|(_, node)| node.role() == ui::accesskit::Role::Dialog
-                && node.label() == Some("Action confirmation")),
+        host_confirmation_is_up(&mut app),
         "the actual host confirms the contact menu's sensitive operation"
     );
-    act_named(
-        &mut app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    assert!(
-        app.export.is_none(),
-        "typing the consent phrase does not itself export the contact"
-    );
-    act_named(&mut app, "Confirm", &ui::a11y::Action::Activate);
+    confirm_on_host(&mut app);
     if app.export.is_none() {
         eprintln!(
             "Contacts menu export after explicit confirmation: controls={:?}; failures={:?}; refusal={:?}",
@@ -632,7 +685,11 @@ fn the_contact_menu_runs_the_canonical_actions() {
         Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
     );
     app.choose_menu(index(ContextAction::Delete));
-    confirm_on_host(&mut app);
+    app.settle();
+    assert!(
+        !host_confirmation_is_up(&mut app),
+        "the menu's Delete of your own contact asks nothing"
+    );
     assert!(app.store.contact(grace).is_none());
     assert!(!app.book().iter().any(|c| c.id == grace));
     assert!(
@@ -641,7 +698,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
             .contacts
             .iter()
             .all(|contact| contact.id != grace),
-        "the deletion is the palette's action"
+        "the deletion reaches the book"
     );
 
     let next = app.selected.unwrap();
@@ -651,7 +708,8 @@ fn the_contact_menu_runs_the_canonical_actions() {
 }
 
 /// The person's header commands: favourite toggles through the document,
-/// Delete asks first, and the website opens.
+/// Delete deletes and Ctrl+Z brings the contact back, and the website
+/// opens.
 #[test]
 fn header_commands_favorite_delete_and_open_the_website() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -662,20 +720,22 @@ fn header_commands_favorite_delete_and_open_the_website() {
     let ada = selected_contact(&app);
     ask(&mut app, Request::ToggleFavorite);
     assert_eq!(app.store.contact(ada.id).unwrap().favorite, !ada.favorite);
-    assert_eq!(
-        app.header_shown,
-        Some(HeaderKey::View {
-            favorite: !ada.favorite
-        }),
-        "the toggle follows the person"
-    );
+    let star = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.actions.into_iter().find(|a| a.id == BAR_FAVORITE))
+        .expect("the window's bar offers Favorite");
+    assert_eq!(star.on, !ada.favorite, "the toggle follows the person");
 
     ask(&mut app, Request::DeleteSelected);
-    assert!(host_confirmation_is_up(&mut app), "the host asks first");
-    cancel_on_host(&mut app);
+    assert!(!host_confirmation_is_up(&mut app), "nothing is asked");
+    assert!(
+        app.store.contact(ada.id).is_none(),
+        "the contact is deleted"
+    );
+    assert!(app.app.undo(), "the deletion is the person's undo step");
+    app.settle();
     assert!(
         app.store.contact(ada.id).is_some(),
-        "dismissing deletes nothing"
+        "Ctrl+Z brings the contact back"
     );
 
     ask(&mut app, Request::OpenWebsite(ada.website.clone()));
@@ -705,7 +765,6 @@ fn retained_forms_preserve_persistence_and_refusals() {
     check_importing_state_is_visible_and_announced_as_busy();
 }
 
-/// The window offers importing and exporting the book beside its actions.
 #[test]
 fn the_window_offers_import_and_export_on_the_book() {
     let mut app = Live::live_sample(1280, 800);
@@ -1201,6 +1260,12 @@ impl Harness {
         self.dispatch(&ui::synthetic_input::cursor_moved(p.x, p.y));
     }
 
+    /// Press `id` in the window's bar, as the desktop hands the press to
+    /// the app.
+    fn press_bar(&mut self, id: &str) {
+        press_bar(&mut self.app, id);
+    }
+
     fn press_left(&mut self, p: Point) -> bool {
         self.move_to(p);
         let press = self.dispatch(&ui::synthetic_input::mouse_press());
@@ -1396,9 +1461,14 @@ fn detail_fields_enter_edit_on_double_click_with_placeholders() {
         .unwrap();
     h.app.settle();
     assert_eq!(h.focused_slot(), Some(Slot::First));
+    let first_rect = form_widget(&h.app, Slot::First).unwrap().get_rect();
+    let column = h.app.shell.geometry().content_column;
     assert!(
-        form_widget(&h.app, Slot::First).unwrap().get_rect().y0
-            >= h.app.shell.geometry().content_column.y0
+        // Fractional layout rounds a field resting at the column's top a
+        // few hundred-thousandths of a pixel either side.
+        first_rect.y0 >= column.y0 - 0.01,
+        "focus reveals the first field inside the content column: {first_rect:?} in {column:?}, scrolled {:?}",
+        h.app.form.as_ref().unwrap().scroll.get()
     );
 
     for slot in form_slots(h.app.form.as_ref().unwrap()) {
@@ -1506,8 +1576,6 @@ fn form_tab_visits_and_wraps_every_control() {
         "Remove email 1",
         "Add phone",
         "Add email",
-        "Save",
-        "Cancel",
     ] {
         assert!(
             labels.contains(control),
@@ -1673,16 +1741,17 @@ fn context_menu_opens_canonical_contact_actions() {
                 other.is_some()
             ),
         }
-        // Click the "Delete" row in the menu → the host asks to confirm.
+        // Click the "Delete" row in the menu: your own contact goes at once,
+        // and its notice offers Undo.
         let rows = menu_rows(&h.app);
         let delete_idx = menu_index(&h.app, ContextAction::Delete);
         h.press_left(rows[&delete_idx].center());
         h.app.settle();
         assert!(
-            host_confirmation_is_up(&mut h.app),
-            "context-menu Delete routes through the host's confirmation"
+            !host_confirmation_is_up(&mut h.app),
+            "context-menu Delete of your own contact asks nothing"
         );
-        assert!(h.app.store.contact(id).is_some(), "nothing is deleted yet");
+        assert!(h.app.store.contact(id).is_none(), "the contact is deleted");
         assert!(
             !h.app.menu.is_open(),
             "the context menu closes when an item is chosen"
@@ -1746,11 +1815,9 @@ fn context_menu_opens_canonical_contact_actions() {
             "the Favorite item is labelled for the contact's current state",
         );
 
-        // Click the Favorite item in the actual shared menu.
         let rows = menu_rows(&h.app);
         h.press_left(rows[&fav_idx].center());
 
-        // The flag flipped in the store AND in the CRDT, and the menu closed.
         assert_eq!(
             h.app.store.contact(id).unwrap().favorite,
             !before,
@@ -1766,7 +1833,6 @@ fn context_menu_opens_canonical_contact_actions() {
             "the menu closes after toggling favorite"
         );
 
-        // Reopening the menu now shows the inverted label.
         assert!(h.press_right(h.row_center(0)));
         assert_eq!(
             h.app.menu.items()[fav_idx].label().unwrap(),
@@ -1789,43 +1855,30 @@ fn context_menu_opens_canonical_contact_actions() {
     }
 }
 
-/// Deleting asks the host to confirm: confirmed, it does exactly what the
-/// palette's delete does; cancelled, it deletes nothing.
+/// The person's own Delete does exactly what the palette's delete does,
+/// without asking, and Undo leaves the document as it was.
 #[test]
-fn delete_confirmation_dispatches_the_palette_action() {
-    // --- phase: confirmed_delete_is_the_palettes_delete ---
-    {
-        let mut h = Harness::new(1280, 800);
-        let id = h.app.selected.unwrap();
-        let expected = h.app.book_after(Contacts::delete(id));
-        assert!(h.press_named(NamedKey::Delete));
-        h.app.settle();
-        confirm_on_host(&mut h.app);
-        assert_eq!(
-            h.book(),
-            expected,
-            "the confirmed delete does what the palette's Delete does",
-        );
-        assert!(
-            !h.book().iter().any(|c| c.id == id),
-            "and it actually deleted the contact",
-        );
-    }
-
-    // --- phase: cancelling_the_hosts_confirmation_is_non_destructive ---
-    {
-        let mut h = Harness::new(1280, 800);
-        let id = h.app.selected.unwrap();
-        assert!(h.press_named(NamedKey::Delete));
-        h.app.settle();
-        assert!(host_confirmation_is_up(&mut h.app));
-        cancel_on_host(&mut h.app);
-        assert!(h.app.store.contact(id).is_some(), "Cancel never deletes");
-        assert!(
-            h.book().iter().any(|c| c.id == id),
-            "Cancel leaves the document untouched"
-        );
-    }
+fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
+    let mut h = Harness::new(1280, 800);
+    let id = h.app.selected.unwrap();
+    let before = h.book();
+    let expected = h.app.book_after(Contacts::delete(id));
+    assert!(h.press_named(NamedKey::Delete));
+    h.app.settle();
+    assert!(!host_confirmation_is_up(&mut h.app), "nothing is asked");
+    assert_eq!(
+        h.book(),
+        expected,
+        "the Delete key does what the palette's Delete does",
+    );
+    assert!(
+        !h.book().iter().any(|c| c.id == id),
+        "and it actually deleted the contact",
+    );
+    press_notice_button(&mut h.app, "Undo");
+    h.app.settle();
+    assert_eq!(h.book(), before, "Undo leaves the book as it was");
+    assert!(h.app.store.contact(id).is_some(), "the contact is back");
 }
 
 /// Favourite toggles dispatch the palette action, palette actions reconcile on sync, the detail star toggles store and doc and a toast expires after a real action.
@@ -1869,6 +1922,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let before = h.app.store.len();
         // Invoke the palette's delete through the door, bypassing the app's
         // own affordances (exactly as the shell's Ctrl+K palette would).
+        // Undo takes a deletion back, so it runs at once.
         h.app
             .app
             .call_on(
@@ -1876,8 +1930,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                 "delete-contact",
                 serde_json::json!({}),
             )
-            .expect_err("deleting asks for confirmation");
-        h.app.app.invoke_confirmed(Contacts::delete(id)).unwrap();
+            .expect("an undoable delete runs at once");
         h.app.settle();
         assert!(
             h.app.store.contact(id).is_none(),
@@ -1892,10 +1945,10 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let id = h.app.selected.unwrap();
         let before = h.app.store.contact(id).unwrap().favorite;
         assert!(
-            target(&h.app, "contacts.favorite").width() > 0.0,
+            bar_offers(BAR_FAVORITE),
             "the detail favorite star is laid out"
         );
-        h.press_left(target(&h.app, "contacts.favorite").center());
+        h.press_bar(BAR_FAVORITE);
         assert_eq!(
             h.app.store.contact(id).unwrap().favorite,
             !before,
@@ -1918,6 +1971,8 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             contact.first = "Toasted".into();
             app.begin_edit(contact, true);
             app.request(Request::Save);
+            // Said once the address book kept it, the pass after.
+            app.app.settle();
             assert_eq!(
                 toast(&app),
                 Some("Contact created"),
@@ -1926,9 +1981,6 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
 
             let deadline = app
                 .shell
-                .children()
-                .last()
-                .expect("the showing notice is the shell's final owned child")
                 .next_wake_deadline()
                 .expect("the production notice exposes its expiry deadline");
             let host_deadline = app
@@ -1968,7 +2020,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                     toast(&app).is_none(),
                     "the toast auto-dismisses once its lifetime elapses; first host wake {:?}, shared notice lifetime {:?}",
                     deadline.duration_since(shown),
-                    ui::widget::toast::DEFAULT_TTL
+                    ui::widget::toast::NOTICE_LIFETIME
                 );
             });
             // Allow the real host to finish any action animation; never force
@@ -2014,7 +2066,6 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
     // --- phase: switching_while_editing_dirty_pops_save_modal_then_save_commits ---
     {
         let mut h = Harness::new(1280, 800);
-        // Enter edit on the selected contact and dirty a field.
         let cur = h.app.selected.unwrap();
         let c = h.app.store.contact(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
@@ -2085,6 +2136,46 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         assert_eq!(
             unchanged.title, original_title,
             "discard left the doc unchanged"
+        );
+    }
+
+    // --- phase: the_unsaved_question_offers_keep_editing_and_keeps_the_form ---
+    {
+        let mut h = Harness::new(1280, 800);
+        let cur = h.app.selected.unwrap();
+        let c = h.app.store.contact(cur).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        if let Some(form) = h.app.form.as_ref() {
+            form.set_value(Slot::Title, "Keep Me");
+        }
+        h.relayout();
+        let other_idx = (0..h.app.shared.borrow().painted.len())
+            .find(|i| h.app.shared.borrow().painted[*i].0 != cur)
+            .unwrap();
+        h.press_left(h.row_center(other_idx));
+        assert_eq!(
+            h.app.pending_switch.map(|id| id),
+            Some(h.row_id(other_idx)),
+            "the guard asks before dropping the edit"
+        );
+        // Three answers: Save, Don't save, and staying where the person is.
+        let tertiary = current_dialog(&*h.app).tertiary_rect();
+        assert!(
+            tertiary.width() > 0.0,
+            "Keep editing is a real answer, not a missing button"
+        );
+        h.press_left(tertiary.center());
+        assert_eq!(h.app.selected, Some(cur), "the switch did not happen");
+        assert!(h.app.pending_switch.is_none(), "the question is closed");
+        assert_eq!(h.app.mode, Mode::Edit, "the form is still open to edit");
+        assert_eq!(
+            h.app
+                .form
+                .as_ref()
+                .map(|form| form.draft.title.clone())
+                .unwrap_or_default(),
+            "Keep Me",
+            "what was typed is still there"
         );
     }
 
@@ -2170,7 +2261,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             "the title field focuses on click"
         );
         h.type_text("XYZ");
-        // The keystrokes landed in the field's local buffer …
         let live = h.field_value(Slot::Title);
         assert!(
             live.contains("XYZ"),
@@ -2189,12 +2279,8 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             "CRDT doc untouched mid-edit"
         );
         assert!(h.app.form_is_dirty(), "the live-typed form reports dirty");
-        // Cancel genuinely discards the draft.
-        assert!(
-            target(&h.app, "contacts.form.cancel").width() > 0.0,
-            "the Cancel button is laid out"
-        );
-        h.press_left(target(&h.app, "contacts.form.cancel").center());
+        assert!(bar_offers(BAR_CANCEL), "the Cancel button is laid out");
+        h.press_bar(BAR_CANCEL);
         assert_eq!(h.app.mode, Mode::View, "Cancel leaves edit mode");
         assert!(h.app.form.is_none(), "Cancel drops the form");
         assert_eq!(
@@ -2214,7 +2300,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         let mut h = Harness::new(1280, 800);
         let store_before = h.app.store.len();
         let doc_before = h.book().len();
-        // Start a new contact via the keyboard shortcut, focus the name, type.
         assert!(h.press_char("n"), "'n' starts a new contact");
         assert_eq!(h.app.mode, Mode::Edit);
         assert!(h.app.form.as_ref().unwrap().is_new);
@@ -2229,7 +2314,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         );
         assert_eq!(h.book().len(), doc_before, "nor in the doc");
         // Cancel → still nothing, no "No Name"/"Ghost" phantom left behind.
-        h.press_left(target(&h.app, "contacts.form.cancel").center());
+        h.press_bar(BAR_CANCEL);
         assert_eq!(h.app.mode, Mode::View);
         assert_eq!(
             h.app.store.len(),
@@ -2259,13 +2344,13 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             .selected
             .expect("a contact is selected in the read view");
         assert!(
-            target(&h.app, "contacts.edit").width() > 0.0,
+            bar_offers(BAR_EDIT),
             "the read-view Edit button is laid out"
         );
 
         // Clicking Edit enters the form on the shown contact (identity carried
         // across the transition — the header's avatar + name reflect this draft).
-        h.press_left(target(&h.app, "contacts.edit").center());
+        h.press_bar(BAR_EDIT);
         assert_eq!(h.app.mode, Mode::Edit, "clicking Edit opens the edit form");
         {
             let form = h.app.form.as_ref().expect("an edit form is open");
@@ -2279,10 +2364,10 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         // Leaving is just as direct: Cancel returns to the read view, no form.
         h.relayout();
         assert!(
-            target(&h.app, "contacts.form.cancel").width() > 0.0,
+            bar_offers(BAR_CANCEL),
             "the Cancel button is laid out in the form"
         );
-        h.press_left(target(&h.app, "contacts.form.cancel").center());
+        h.press_bar(BAR_CANCEL);
         assert_eq!(h.app.mode, Mode::View, "Cancel returns to the read view");
         assert!(h.app.form.is_none(), "no edit form lingers after Cancel");
         assert_eq!(h.app.selected, Some(sel), "the same contact stays selected");
@@ -2350,7 +2435,6 @@ fn open_edit_forms_ignore_bare_keys_and_start_clean() {
         );
         assert_eq!(h.app.mode, Mode::Edit, "still editing");
 
-        // Once a field IS focused, the very same key types into it normally.
         assert!(h.focus_field(Slot::First));
         h.type_text("n");
         assert!(
@@ -2514,7 +2598,6 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
                 .iter()
                 .any(|g| g.value.eq_ignore_ascii_case("Friends")),
         );
-        // The shared navigation list exposes the same group as a semantic destination.
         act_named(&mut h.app, "Friends", &ui::a11y::Action::Activate);
         assert_eq!(
             h.app.group_filter.as_deref(),
@@ -2565,7 +2648,6 @@ fn list_keyboard_and_scroll_navigation() {
     check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view();
 }
 
-/// The divider resizes the split and the compact toolbar fits with tooltips at phone width.
 #[test]
 fn split_divider_and_compact_toolbar_fit_their_space() {
     // --- phase: dragging_the_divider_resizes_the_split ---
@@ -2593,19 +2675,20 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         );
     }
 
-    // --- phase: compact_toolbar_has_room_and_tooltips_at_phone_width ---
+    // --- phase: compact_window_keeps_every_action_in_the_bar ---
     {
         let h = Harness::new(320, 640);
-        let new = target(&h.app, "contacts.new");
-        let more = named_widget(&*h.app, "More actions", Role::Button)
-            .expect("compact More action")
-            .get_rect();
-        assert!(new.width() > 0.0 && more.width() > 0.0);
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let new = toolbar.actions.iter().position(|a| a.id == BAR_NEW);
+        assert_eq!(new, Some(0), "New contact leads the bar's actions");
         assert!(
-            new.x1 <= h.app.rect.x1 && more.x0 >= h.app.rect.x0,
-            "compact controls remain inside the viewport"
+            toolbar
+                .actions
+                .iter()
+                .filter(|a| a.id == BAR_IMPORT || a.id == BAR_EXPORT)
+                .all(|a| a.menu),
+            "file operations are in the bar's menu"
         );
-        assert!(new.intersect(more).area() == 0.0, "actions do not overlap");
         assert!(h.app.more_rows().contains(&(MoreAction::Import, true)));
         assert!(
             h.app.more_rows().contains(&(MoreAction::Export, true)),
@@ -2629,7 +2712,6 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
         let base = c.phones.len();
         h.app.begin_edit(c, false);
         h.relayout();
-        // Add-phone button appends a blank row.
         assert!(
             target(&h.app, "contacts.form.add.add-phone").width() > 0.0,
             "the add-phone button is laid out"
@@ -2641,7 +2723,6 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
             "add-phone grew the draft"
         );
         h.relayout();
-        // Remove-field button on the new phone drops it again.
         let rm = target(&h.app, &format!("contacts.form.remove.phone-{base}"));
         h.press_left(rm.center());
         assert_eq!(
@@ -2696,6 +2777,26 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
             "draft-only: store unchanged until Save"
         );
     }
+}
+
+/// In the narrow detail pane of a half-screen window the phone's kind still
+/// reads ("Mobile", not "…") and stands at its number's height.
+#[test]
+fn a_new_contacts_phone_kind_keeps_its_label_and_the_fields_height() {
+    let mut h = Harness::new(960, 820);
+    h.app.request(Request::NewContact);
+    h.relayout();
+    let kind = target(&h.app, "contacts.form.type.phone-0");
+    let number = target(&h.app, "contacts.form.phone-0");
+    assert!(
+        kind.width() >= 80.0,
+        "the kind keeps room for its label: {kind:?}"
+    );
+    assert!(
+        (kind.height() - number.height()).abs() < 0.5,
+        "kind {kind:?} and number {number:?} share a height"
+    );
+    assert!(kind.x1 <= number.x0, "{kind:?} sits before {number:?}");
 }
 
 /// Type chip and calendar popups change only the draft and popup keyboard selection matches the pointer.
@@ -2917,7 +3018,7 @@ fn vcf_export_writes_the_selected_book() {
 
         // The file is written off the UI thread; the export ends on the
         // frame after.
-        let deadline = ui::time::now() + std::time::Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while h.app.portal_in_flight() && ui::time::now() < deadline {
             h.app.settle();
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -3042,7 +3143,7 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     assert_eq!(picks.len(), 1);
     assert_eq!(picks[0].title(), "Export contacts");
     chooser.choose(vcf.clone());
-    let deadline = ui::time::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while app.portal_in_flight() && ui::time::now() < deadline {
         app.settle();
         std::thread::sleep(Duration::from_millis(1));
@@ -3186,7 +3287,6 @@ fn saved_book_persists_across_restarts_and_imports() {
         assert!(firsts.contains("Ada"));
         assert!(firsts.contains("Grace"));
 
-        // The import reached the book's document, as one step.
         app.settle();
         assert_eq!(app.book().len(), 3, "written to the doc");
         assert!(app.app.undo(), "the import is one undo step");
@@ -3426,26 +3526,18 @@ fn check_duplicate_resource_and_compact_header() {
     app.harness_mut()
         .set_theme(Theme::dark().with_text_scale(2.0));
     app.harness_mut().resize((390, 844)).unwrap();
+    // Narrowing to one column slides the panes; measure the header where it
+    // comes to rest instead of wherever the slide stands on this machine.
+    app.shell.snap();
     app.recompose();
     let controls = app.harness_mut().controls();
-    let header: Vec<_> = ["Search", "More actions", "New contact"]
-        .into_iter()
-        .map(|name| {
-            controls
-                .iter()
-                .find(|control| control.name.as_deref() == Some(name))
-                .unwrap_or_else(|| panic!("missing actual header {name}: {controls:?}"))
-                .bounds
-                .unwrap()
-        })
-        .collect();
-    for pair in header.windows(2) {
-        assert!(
-            pair[0].intersect(pair[1]).area() <= 0.0,
-            "header controls remain disjoint"
-        );
-        assert!(pair[0].width() >= 40.0 && pair[1].width() >= 40.0);
-    }
+    assert!(
+        !controls
+            .iter()
+            .any(|control| control.name.as_deref() == Some("New contact")),
+        "no header row of the window's own: {controls:?}"
+    );
+    assert!(bar_offers(BAR_NEW), "New contact is the window bar's");
 }
 
 /// Export and unsaved modals are focus-trapped and semantic; detail, editor and popup controls reach the durable action path.
@@ -3563,12 +3655,11 @@ fn detail_and_editor_semantics() {
     let mut app = Live::sample(1280, 800);
     let id = app.selected.unwrap();
     let favorite = app.store.contact(id).unwrap().favorite;
-    let favorite_node = named_widget(&*app, "Favorite", Role::ToggleButton)
-        .expect("actual favorite control")
-        .accessibility()
-        .unwrap();
-    assert_eq!(favorite_node.state.checked, Some(favorite));
-    act_named(&mut app, "Favorite", &ui::a11y::Action::Activate);
+    let star = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.actions.into_iter().find(|a| a.id == BAR_FAVORITE))
+        .expect("the window's bar offers Favorite");
+    assert_eq!(star.on, favorite);
+    press_bar(&mut app, BAR_FAVORITE);
     assert_eq!(
         app.store.contact(id).map(|contact| contact.favorite),
         Some(!favorite)
@@ -3600,7 +3691,8 @@ fn detail_and_editor_semantics() {
         before,
         "assistive typing remains a cancellable local draft"
     );
-    act_named(&mut app, "Save", &ui::a11y::Action::Activate);
+    // Save is the window bar's, as the desktop hands its press to the app.
+    press_bar(&mut app, BAR_SAVE);
     assert_eq!(
         app.book()
             .into_iter()
@@ -3648,7 +3740,7 @@ fn form_choice_semantics() {
         Some(date),
         "calendar choice remains a cancellable draft"
     );
-    act_named(&mut app, "Cancel", &ui::a11y::Action::Activate);
+    press_bar(&mut app, BAR_CANCEL);
     act_named(&mut app, "Friends", &ui::a11y::Action::Activate);
     assert_eq!(app.group_filter.as_deref(), Some("Friends"));
     let controls = app.harness_mut().controls();
@@ -3872,13 +3964,13 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
     assert!(matches!(app.dialog, Some((DialogKey::Duplicate(..), _))));
     opened.choose(crate::actions::MergeField::Organization, true);
 
+    // Undo takes a merge back, so it lands at once: nobody is asked first.
     ask(&mut app, Request::Dialog(DialogChoice::Primary));
     app.settle();
     assert!(
-        app.duplicate_review.is_some(),
-        "the review stays up behind the host's question"
+        !host_confirmation_is_up(&mut app),
+        "an undoable merge asks nothing"
     );
-    confirm_on_host(&mut app);
     assert!(app.duplicate_review.is_none(), "a landed merge closes it");
     let book = app.book();
     assert!(
@@ -3890,9 +3982,14 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
         "Babbage & Co.",
         "the merge kept the chosen value"
     );
+    assert!(app.app.undo(), "the merge is the person's undo step");
+    app.settle();
+    assert!(
+        app.book().iter().any(|c| c.id == copy.id),
+        "Undo brings the copy back"
+    );
 }
 
-/// Shared facts read as a phrase.
 #[test]
 fn shared_facts_read_as_a_phrase() {
     use crate::actions::DuplicateReason;
@@ -3920,7 +4017,6 @@ fn every_capture_scenario_renders() {
         "groups",
         "favorites",
         "context",
-        "more",
         "import-conflict",
         "duplicate-review",
         "empty",
@@ -3944,7 +4040,6 @@ fn every_capture_scenario_renders() {
     }
 }
 
-/// An address and its kind label read like an envelope.
 #[test]
 fn details_read_like_an_envelope() {
     let address = Address {
@@ -4165,11 +4260,9 @@ fn check_narrow_selection_pushes_detail_then_back_returns_to_list() {
     app.shell.snap();
     assert_eq!(app.shell.front_pane(), NavPane::Content);
     drive_frame(&mut app, 480, 860);
-    // The Back affordance must be laid out (hittable) in the pushed pane.
-    assert!(
-        target(&app, "nav-shell-back").width() > 0.0,
-        "pushed detail shows a Back affordance"
-    );
+    // The window's bar offers Back in the pushed pane.
+    app.publish();
+    assert!(bar_offers("nav-shell-back"), "pushed detail offers Back");
 }
 
 fn check_wide_frame_stays_docked_side_by_side() {
@@ -4199,13 +4292,9 @@ fn check_narrow_row_press_pushes_detail_then_back_returns_to_list() {
             "selecting pushes the detail in"
         );
         h.relayout();
-        assert!(
-            target(&h.app, "nav-shell-back").width() > 0.0,
-            "the Back affordance is laid out"
-        );
-        // Press Back → return to the list.
-        let back = target(&h.app, "nav-shell-back").center();
-        assert!(h.press_left(back));
+        h.app.settle();
+        // Press the window bar's Back → return to the list.
+        h.press_bar("nav-shell-back");
         assert_eq!(
             h.app.shell.front_pane(),
             NavPane::Overview,
@@ -4536,7 +4625,12 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
         assert!(control.width() > 0.0 && control.height() >= 32.0);
         assert!(control.x0 >= row.x0 && control.x1 <= row.x1);
         assert!(control.y0 >= row.y0 && control.y1 <= row.y1);
-        assert_eq!(control.x0, row.x0, "sort aligns with its overview rail");
+        let theme = Theme::light().with_text_scale(scale);
+        assert_eq!(
+            control.x0,
+            row.x0 + f64::from(theme.tokens.spacing.rhythm.tight),
+            "sort starts where the list rows' faces do"
+        );
         assert_eq!(
             control.y0 - row.y0,
             f64::from(Theme::light().tokens.spacing.s2),
@@ -4557,35 +4651,23 @@ fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
         .expect("the peer's change merges");
 }
 
-/// Whether the host's confirmation of an action is up.
 fn host_confirmation_is_up(app: &mut Live) -> bool {
-    app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
-        node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Action confirmation")
-    })
+    app.settle();
+    app.harness_mut().asking().is_some()
 }
 
-/// Confirm the action the host asks about, as the person does.
+/// Confirm the action the host asks about, as the person does: its
+/// dialog's button named for the verb.
 fn confirm_on_host(app: &mut Live) {
     assert!(
         host_confirmation_is_up(app),
         "the host asks to confirm the action"
     );
-    act_named(
-        app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    act_named(app, "Confirm", &ui::a11y::Action::Activate);
+    assert!(app.harness_mut().confirm_asked().is_some());
     app.settle();
 }
 
-/// Cancel the action the host asks about.
-fn cancel_on_host(app: &mut Live) {
-    act_named(app, "Cancel", &ui::a11y::Action::Activate);
-    app.settle();
-}
-
-/// A surface that closes its own dialog in the same event its destructive
+/// A surface that closes its own dialog in the same event its sensitive
 /// action asks the host to confirm: the host remembers where focus returns
 /// from the window as it now stands, never from the dialog that is gone.
 #[test]
@@ -4616,20 +4698,134 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
         .perform_a11y_action(merge, &ui::a11y::Action::Focus)
         .unwrap();
     // In one event: the review closes, so its focused Merge button is
-    // dropped, and the merge goes to the host, which asks to confirm.
+    // dropped, and an export of the contact (private data leaving the room,
+    // which asks even though nothing is lost) goes to the host, which asks
+    // to confirm.
     app.with_widget(|surface: &mut ContactsApp| {
         surface.duplicate_review = None;
         surface.dirty = true;
-        surface
-            .submit(Contacts::merge(survivor.id, source.id, []))
-            .unwrap();
+        surface.dispatcher.as_ref().unwrap().effect(
+            &crate::actions::ContactsEffect::ExportContact {
+                contact: survivor.id,
+            },
+        );
     });
     app.settle();
     assert!(
-        app.harness().a11y_nodes().iter().any(|(_, node)| {
-            node.role() == ui::accesskit::Role::Dialog
-                && node.label() == Some("Action confirmation")
-        }),
-        "the host asks to confirm the merge"
+        app.asking().is_some(),
+        "the host asks to confirm the export"
+    );
+}
+
+/// A narrow window opens on the list, which stands alone: an empty book says
+/// so there instead of showing nothing (its New contact is in the bar). Beside
+/// the content, the content's first-run pane says it once.
+#[test]
+fn a_narrow_windows_empty_list_says_the_book_is_empty() {
+    let mut narrow = Live::empty(460, 880);
+    narrow.harness_mut().relayout();
+    assert_eq!(narrow.shell.front_pane(), NavPane::Overview);
+    assert_eq!(
+        narrow.shared.borrow().empty_title.as_deref(),
+        Some("No contacts yet"),
+        "the list a narrow window opens on is not blank"
+    );
+    let mut wide = Live::empty(1280, 800);
+    wide.harness_mut().relayout();
+    assert_eq!(
+        wide.shared.borrow().empty_title,
+        None,
+        "beside the first-run pane the list stays quiet"
+    );
+}
+
+/// The node the accessibility tree holds under `name`, as the host exports it.
+fn exported_node(app: &mut Live, name: &str) -> Option<ui::accesskit::Node> {
+    app.settle();
+    app.harness_mut()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name))
+        .map(|(_, node)| node)
+}
+
+/// Writing the first contact replaces the content's first-run pane with the
+/// form, so the list beside it says the book is empty and where the new
+/// contact will appear instead of standing blank. Someone who may only view
+/// is told so, and offered no New contact that would be refused.
+#[test]
+fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
+    let mut app = Live::empty(1280, 800);
+    let first_run = exported_node(&mut app, "No contacts yet").expect("the first-run pane");
+    assert_eq!(
+        first_run.children().len(),
+        1,
+        "someone who may edit is offered New contact"
+    );
+    app.request(Request::NewContact);
+    app.settle();
+    assert_eq!(app.mode, Mode::Edit);
+    assert!(app.form.as_ref().is_some_and(|form| form.is_new));
+    let state = exported_node(&mut app, "No contacts yet")
+        .expect("the list beside the form names the empty book");
+    assert_eq!(state.role(), ui::accesskit::Role::Group);
+    assert_eq!(
+        state.description(),
+        Some("The contact you're adding appears here once you save it.")
+    );
+    assert!(
+        app.shared.borrow().painted.is_empty(),
+        "no row stands where the empty state is drawn"
+    );
+
+    let mut viewer = Live::mount(
+        ui::framework::testing::TestApp::with_role(ui::Role::Viewer).unwrap(),
+        (1280, 800),
+    );
+    let state = exported_node(&mut viewer, "No contacts yet")
+        .expect("an empty book is named to someone who may only view it");
+    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+    assert!(
+        state.children().is_empty(),
+        "the empty state offers no New contact to someone who may only view"
+    );
+    viewer.request(Request::NewContact);
+    viewer.settle();
+    let state = exported_node(&mut viewer, "No contacts yet")
+        .expect("the list beside a viewer's form names the empty book");
+    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+}
+
+#[test]
+fn the_contact_form_leaves_its_title_to_the_window_bar() {
+    let mut app = synced();
+    let shown = selected_contact(&app);
+    let bar_action = |id: &str| {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.actions.into_iter().find(|action| action.id == id))
+            .unwrap_or_else(|| panic!("the bar offers {id}"))
+    };
+    assert_eq!(
+        bar_action(BAR_EDIT).name,
+        "Edit contact",
+        "the bar's Edit is named for the whole contact, apart from each field's pencil"
+    );
+    press_bar(&mut app, BAR_EDIT);
+    assert_eq!(app.mode, Mode::Edit, "the person is being edited");
+    assert_ne!(
+        bar_action(BAR_CANCEL).icon,
+        "x",
+        "Cancel does not wear the window's own close"
+    );
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label),
+        Some(shown.display_name()),
+        "the window bar names the person being edited"
+    );
+    assert!(
+        !named(&app, "Edit contact"),
+        "the form draws no title of its own"
     );
 }

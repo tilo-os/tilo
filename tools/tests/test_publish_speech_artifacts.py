@@ -3,6 +3,7 @@ import importlib.util
 import io
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -102,14 +103,23 @@ class UploadTransport(unittest.TestCase):
             run.assert_not_called()
 
 
-class WorkflowCredentialContract(unittest.TestCase):
+class PublicationCredentialContract(unittest.TestCase):
     def test_publication_uses_existing_package_scoped_credential(self):
-        workflow = (Path(__file__).resolve().parents[2]
-                    / ".forgejo/workflows/release-local-model-catalog.yml").read_text()
-        publish_job = workflow.split("\n  publish:\n", 1)[1]
-        self.assertIn("PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish_job)
-        self.assertNotIn("secrets.RELEASE_TOKEN", publish_job)
+        root = Path(__file__).resolve().parents[2]
+        sys.path.insert(0, str(root / "tools/ci"))
+        import t_matrix
 
+        checks = {check["name"]: check for check in t_matrix.checks(root)}
+        publish = checks["publish-model-catalog"]
+        self.assertEqual(publish["secrets"], ["REGISTRY_TOKEN"])
+        self.assertEqual(publish["run"], "bash tools/release/local-model-catalog.sh publish /target/model-catalog/signed")
+        # Only the signing checks hold the catalog seed; the publisher holds only the package token.
+        for name in ("sign-model-catalog", "review-model-catalog"):
+            self.assertNotIn("REGISTRY_TOKEN", checks[name]["secrets"])
+        script = (root / "tools/release/local-model-catalog.sh").read_text()
+        step = script.split("\n  publish)\n", 1)[1].split("\n    ;;", 1)[0]
+        self.assertIn('PACKAGE_TOKEN=$REGISTRY_TOKEN python3 -I tools/release/publish_speech_artifacts.py', step)
+        self.assertNotIn("RELEASE_TOKEN", script)
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,6 +63,10 @@ pub(crate) struct CaptureLeases {
     /// channel's steward reads. A lineage's route names its kind of message
     /// for good, so the answer never changes: each is read once.
     steward_only: std::sync::Mutex<std::collections::HashMap<std::ffi::OsString, bool>>,
+    /// The governor of a room whose layout is personal, which this store
+    /// holds: captures leave out every other author's lineages of the room's
+    /// layout ([`WorkspaceStore::replay_member_layout`]).
+    layout_governor: std::sync::Mutex<Option<[u8; 32]>>,
     /// What each lineage's current generation held when last listed.
     listed: std::sync::Mutex<ListedLineages>,
     /// How each retained channel's record syncs
@@ -102,6 +106,28 @@ impl Drop for CaptureLease {
         }
     }
 }
+/// What classifying a retained lineage read of its current generation
+/// ([`WorkspaceStore::leaves_out`]), for a capture to list without opening
+/// the lineage's CURRENT again.
+enum CurrentRead {
+    /// Classifying the lineage read nothing: it was known already.
+    Unread,
+    /// The lineage's current generation, `None` while its first checkpoint
+    /// is staged but not committed.
+    Read(Option<PathBuf>),
+}
+
+impl CurrentRead {
+    /// The current generation of `lineage`, read now unless classifying it
+    /// did.
+    fn or_read(self, lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+        match self {
+            Self::Read(read) => Ok(read),
+            Self::Unread => Ok(retained::current(lineage)?),
+        }
+    }
+}
+
 impl WorkspaceStore {
     /// Wake `owner` when the last capture lease ends with collections
     /// waiting for it.
@@ -120,37 +146,66 @@ impl WorkspaceStore {
             .store(true, Ordering::SeqCst);
     }
 
+    /// From now on, with `Some(governor)`, leave out of every capture what
+    /// members other than `governor` wrote of the room's layout: their
+    /// changes to the room document (its topology and windows) and to its
+    /// shared desktop record. The room's layout is personal, and shares no
+    /// member's windows. They stay retained; no one is replayed them. With
+    /// `None` (the room shares its layout) every capture holds them again.
+    pub(crate) fn replay_member_layout(&self, governor: Option<[u8; 32]>) {
+        *self.capture_leases.layout_governor.lock_recover() = governor;
+    }
+
+    /// Whether a capture leaves the retained lineage `name` out because it
+    /// is a member's part of a personal room's layout.
+    fn leaves_out_member_layout(&self, name: &std::ffi::OsStr) -> bool {
+        let Some(governor) = *self.capture_leases.layout_governor.lock_recover() else {
+            return false;
+        };
+        member_layout_lineage(name, &governor)
+    }
+
     /// The next entry of the directory a capture lists, past the retained
     /// lineages it leaves out: a room keeps far more lineages than a
     /// newcomer is replayed (each author's part of every record, on-demand
     /// ones included), and stepping over one is not a step of work.
+    /// With it, the lineage's current generation when classifying it read
+    /// that ([`Self::leaves_out`]), for the capture to list.
     fn next_listed(
         &self,
         outer: &mut Option<fs::ReadDir>,
         phase: u8,
         every_record: bool,
-    ) -> Result<Option<fs::DirEntry>, StoreError> {
+    ) -> Result<Option<(fs::DirEntry, CurrentRead)>, StoreError> {
         loop {
             let Some(entry) = outer.as_mut().invariant("outer missing")?.next() else {
                 return Ok(None);
             };
             let entry = entry?;
+            let mut current = CurrentRead::Unread;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
-                if self.leaves_out(&name, &entry.path())?
+                if self.leaves_out_member_layout(&name)
+                    || self.leaves_out(&name, &entry.path(), &mut current)?
                     || (!every_record && self.leaves_out_on_demand(&name)?)
                 {
                     continue;
                 }
             }
-            return Ok(Some(entry));
+            return Ok(Some((entry, current)));
         }
     }
 
     /// Whether a capture leaves the retained lineage `name` at `lineage`
     /// out. A lineage is classified by its checkpoint once, then from
-    /// memory: no capture reads it again.
-    fn leaves_out(&self, name: &std::ffi::OsStr, lineage: &Path) -> Result<bool, StoreError> {
+    /// memory: no capture reads it again. The lineage's current generation,
+    /// when this read it, goes to `current`, for the capture to list.
+    fn leaves_out(
+        &self,
+        name: &std::ffi::OsStr,
+        lineage: &Path,
+        current: &mut CurrentRead,
+    ) -> Result<bool, StoreError> {
         /// A larger checkpoint is no access request or acknowledgement.
         const MAX_CLASSIFIED_BYTES: u64 = 1024 * 1024;
         if !self.capture_leases.steward_here.load(Ordering::SeqCst) {
@@ -167,7 +222,9 @@ impl WorkspaceStore {
         }
         // A lineage with no generation yet is not classified: its first
         // frame is still being retained.
-        let Some(active) = retained::current(lineage)? else {
+        let read = retained::current(lineage)?;
+        *current = CurrentRead::Read(read.clone());
+        let Some(active) = read else {
             return Ok(false);
         };
         let checkpoint = active.join("checkpoint.delta");
@@ -338,6 +395,9 @@ pub struct ReplaySummary {
     /// Of `total_frames`, those replayed from the device's pending queue
     /// rather than retained history.
     pub pending_frames: u64,
+    /// Pending entries the replay's cleanup unlinks once it is written: none
+    /// needs the owner's cleanup turn ([`WorkspaceStore::cleanup_replay_step`]).
+    pub cleanup_entries: u64,
 }
 /// A caller shares this budget across all owners; the batch keeps its permit
 /// through writes, including `transport::encode`'s payload + output overlap.
@@ -694,6 +754,8 @@ pub struct ReplaySnapshot {
     ready: bool,
     count: u64,
     pending_count: u64,
+    /// Entries in `cleanup.manifest`.
+    cleanup_count: u64,
     read_offset: u64,
     cleanup_offset: u64,
     batch_number: u64,
@@ -731,7 +793,7 @@ impl ReplaySnapshot {
             }
             if &winner != receipt {
                 if meta.pending {
-                    write_meta(&mut self.cleanup, &meta)?;
+                    self.clean_up(&meta)?;
                 }
                 return Ok(());
             }
@@ -832,6 +894,17 @@ impl ReplaySnapshot {
         });
         Ok(())
     }
+    /// Have the replay's cleanup unlink the pending entry `meta` once the
+    /// replay is written. A final cut's held commits are not unlinked one by
+    /// one: they are its session's alone, no later cut reads them, and they
+    /// go with the catch-up's held directory once it is written.
+    fn clean_up(&mut self, meta: &Meta) -> Result<(), StoreError> {
+        if self.held_root.is_some() && meta.source.parent() == self.held_root.as_deref() {
+            return Ok(());
+        }
+        write_meta(&mut self.cleanup, meta)?;
+        increment(&mut self.cleanup_count)
+    }
     fn winner_path(&self, group: &str) -> PathBuf {
         self.root.join("index").join(format!(
             "{}.winner",
@@ -877,7 +950,7 @@ impl ReplaySnapshot {
             held,
         } = candidate;
         if meta.pending {
-            write_meta(&mut self.cleanup, &meta)?;
+            self.clean_up(&meta)?;
         }
         if !duplicate {
             if !meta.pending || continuity.is_some() {
@@ -928,6 +1001,28 @@ impl WorkspaceStore {
             return Err(invalid("held catch-up outside the store's work"));
         }
         self.start_replay_capture_at(id, device, Some(held.to_owned()))
+    }
+    /// Move the work directory of replay `id`, written and cleaned up, aside
+    /// under a fresh name, so its catch-up's final cut can take the name over
+    /// at once; the returned discard removes it wherever it is stepped.
+    /// Discarded in place, in the owner's turn, it unlinked every pin and
+    /// index of the first replay in front of every queued job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be renamed or listed.
+    pub(crate) fn retire_replay_work(&self, id: ReplayId) -> Result<WorkDiscard, StoreError> {
+        let work = self.root.join(WORK_DIR);
+        let current = work.join(format!("replay-{}", hex::encode(id.0)));
+        let retired = work.join(format!(
+            "replay-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        match fs::rename(&current, &retired) {
+            Ok(()) => WorkDiscard::new(retired),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => WorkDiscard::new(current),
+            Err(error) => Err(error.into()),
+        }
     }
     fn start_replay_capture_at(
         &self,
@@ -990,7 +1085,7 @@ impl WorkspaceStore {
     /// Invoke under one owner operation until Done; later mutations must not
     /// interleave before every selected source has its immutable hardlink,
     /// or, for a retained frame, is listed under the capture's lease (it is
-    /// pinned when the snapshot is prepared: [`CaptureLeases`]).
+    /// pinned when the snapshot is prepared: `CaptureLeases`).
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
@@ -1103,6 +1198,7 @@ impl WorkspaceStore {
                     ready: false,
                     count: 0,
                     pending_count: 0,
+                    cleanup_count: 0,
                     read_offset: 0,
                     cleanup_offset: 0,
                     batch_number: 0,
@@ -1220,7 +1316,7 @@ impl WorkspaceStore {
                         }
                     }
                 }
-            } else if let Some(entry) =
+            } else if let Some((entry, current)) =
                 self.next_listed(&mut build.outer, build.phase, build.every_record)?
             {
                 let name = entry.file_name();
@@ -1228,39 +1324,30 @@ impl WorkspaceStore {
                 match build.phase {
                     2 if kind.is_dir() => {
                         let lineage = entry.path();
-                        if !self.leaves_out(&name, &lineage)?
-                            && (build.every_record || !self.leaves_out_on_demand(&name)?)
+                        // `next_listed` stepped over the lineages a capture
+                        // leaves out. Counted: lineages listed from memory
+                        // and from their generation.
+                        build.child = if let Some((generation, frames)) = self.known_listing(&name)
                         {
-                            // Counted: lineages listed from memory and
-                            // from their generation.
-                            build.child =
-                                if let Some((generation, frames)) = self.known_listing(&name) {
-                                    crate::timing::window(
-                                        "capture.lineage_known",
-                                        crate::timing::start(),
-                                    );
-                                    Some(Lineage::Known {
-                                        channel: name,
-                                        generation,
-                                        frames: frames.into_iter(),
-                                    })
-                                } else if let Some(active) = retained::current(&lineage)? {
-                                    crate::timing::window(
-                                        "capture.lineage_read",
-                                        crate::timing::start(),
-                                    );
-                                    Some(Lineage::Reading {
-                                        channel: name,
-                                        entries: fs::read_dir(&active)?,
-                                        generation: active,
-                                        learned: Some(Vec::new()),
-                                    })
-                                } else {
-                                    // A lineage whose first checkpoint is staged
-                                    // but not committed yet.
-                                    None
-                                };
-                        }
+                            crate::timing::window("capture.lineage_known", crate::timing::start());
+                            Some(Lineage::Known {
+                                channel: name,
+                                generation,
+                                frames: frames.into_iter(),
+                            })
+                        } else if let Some(active) = current.or_read(&lineage)? {
+                            crate::timing::window("capture.lineage_read", crate::timing::start());
+                            Some(Lineage::Reading {
+                                channel: name,
+                                entries: fs::read_dir(&active)?,
+                                generation: active,
+                                learned: Some(Vec::new()),
+                            })
+                        } else {
+                            // A lineage whose first checkpoint is staged
+                            // but not committed yet.
+                            None
+                        };
                         None
                     }
                     3 if kind.is_file() && name.to_string_lossy().ends_with(".delta") => {
@@ -1416,6 +1503,7 @@ impl WorkspaceStore {
             return Ok(Step::Done(ReplaySummary {
                 total_frames: snapshot.count,
                 pending_frames: snapshot.pending_count,
+                cleanup_entries: snapshot.cleanup_count,
             }));
         }
         snapshot.stats.last_step_work = 0;
@@ -1546,6 +1634,7 @@ impl WorkspaceStore {
                 return Ok(Step::Done(ReplaySummary {
                     total_frames: snapshot.count,
                     pending_frames: snapshot.pending_count,
+                    cleanup_entries: snapshot.cleanup_count,
                 }));
             }
         }
@@ -2061,5 +2150,62 @@ impl PublicationCursor {
             charged_bytes: charge,
             _allocation: allocation,
         })))
+    }
+}
+
+/// Whether the retained lineage `name` (`<author>-<channel>`, both hex) is
+/// an author's other than `governor` on a room's layout: the room document
+/// (`SyncResp`) or the shared desktop record.
+fn member_layout_lineage(name: &std::ffi::OsStr, governor: &[u8; 32]) -> bool {
+    let Some((author, channel)) = name.to_str().and_then(|name| name.split_once('-')) else {
+        return false;
+    };
+    if author == hex::encode(governor) {
+        return false;
+    }
+    let topology = blake3::hash(b"shell-tree");
+    let desktop = neighbour_wire::app_document_channel(
+        tilo_desktop_model::ownership::DESKTOP_APP,
+        tilo_desktop_model::ownership::DESKTOP_RECORD,
+    );
+    channel == hex::encode(topology.as_bytes()) || channel == hex::encode(desktop)
+}
+
+#[cfg(test)]
+mod member_layout_tests {
+    use super::member_layout_lineage;
+
+    /// The lineages a personal room replays to nobody: a member's room
+    /// document and shared desktop writes, never the governor's, and no
+    /// record's.
+    #[test]
+    fn a_members_layout_lineages_are_told_apart_from_the_governors_and_records() {
+        let governor = [7u8; 32];
+        let member = hex::encode([9u8; 32]);
+        let topology = hex::encode(blake3::hash(b"shell-tree").as_bytes());
+        let desktop = hex::encode(neighbour_wire::app_document_channel(
+            "so.tilo.browser-desktop",
+            "desktop",
+        ));
+        let chat = hex::encode(neighbour_wire::app_document_channel("so.tilo.chat", "home"));
+        let lineage =
+            |author: &str, channel: &str| std::ffi::OsString::from(format!("{author}-{channel}"));
+        assert!(member_layout_lineage(
+            &lineage(&member, &topology),
+            &governor
+        ));
+        assert!(member_layout_lineage(
+            &lineage(&member, &desktop),
+            &governor
+        ));
+        assert!(!member_layout_lineage(&lineage(&member, &chat), &governor));
+        assert!(!member_layout_lineage(
+            &lineage(&hex::encode(governor), &topology),
+            &governor
+        ));
+        assert!(!member_layout_lineage(
+            std::ffi::OsStr::new("CURRENT"),
+            &governor
+        ));
     }
 }

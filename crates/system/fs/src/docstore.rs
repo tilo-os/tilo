@@ -34,16 +34,10 @@ pub struct VersionManifest {
 }
 
 impl VersionManifest {
-    /// # Errors
-    ///
-    /// Returns an error if postcard serialization fails.
     pub fn encode(&self) -> Result<Vec<u8>> {
         Ok(postcard::to_allocvec(self)?)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `bytes` is not a valid postcard-encoded [`VersionManifest`].
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         Ok(postcard::from_bytes(bytes)?)
     }
@@ -86,10 +80,6 @@ impl<'a> DocStore<'a> {
 
     /// Persist the current state of `doc` as a new version: each automerge
     /// change is ingested as a content-addressed blob (already-stored changes dedup), chained to the previous version via a [`VersionManifest`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a change or the manifest fails to ingest, or the manifest fails to serialize.
     pub async fn commit(&mut self, doc: &mut AutoCommit, author: &str) -> Result<VersionRef> {
         let changes = doc.get_changes(&[]);
         let mut change_hashes = Vec::with_capacity(changes.len());
@@ -158,9 +148,6 @@ impl<'a> DocStore<'a> {
         self.commit(&mut ac, author).await
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the manifest is not stored locally or fails to decode.
     pub async fn load_manifest(&self, manifest_hash: Hash) -> Result<VersionManifest> {
         let bytes = self
             .store
@@ -232,10 +219,6 @@ impl<'a> DocStore<'a> {
     }
 
     /// Structural diff between two committed versions — both share block identities, so the diff aligns by id (see [`tilo_doc::diff`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if either version fails to check out or open as a document.
     pub async fn diff_versions(&self, from: usize, to: usize) -> Result<tilo_doc::DocDiff> {
         let a = self.checkout_version(from).await?;
         let b = self.checkout_version(to).await?;
@@ -249,10 +232,6 @@ impl<'a> DocStore<'a> {
     }
 
     /// Structural spreadsheet diff — sheets align by id, cells by A1 ref (see [`tilo_doc::diff_workbooks`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if either version fails to check out or open as a workbook.
     pub async fn diff_workbook_versions(
         &self,
         from: usize,

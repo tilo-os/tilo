@@ -495,7 +495,7 @@ fn source_worker(
         )
     }));
     let endpoint = receive
-        .recv_timeout(Duration::from_secs(15))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("actual source namespace enrolled");
     (worker, endpoint)
 }
@@ -525,7 +525,7 @@ fn target_worker(
         )
     }));
     let endpoint = receive
-        .recv_timeout(Duration::from_secs(15))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("actual target namespace enrolled");
     (worker, endpoint)
 }
@@ -825,10 +825,10 @@ fn consumer(view: &File, state: &File, source: &File) -> (Consumer, UnixStream) 
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     let (parent, child) = UnixStream::pair().unwrap();
     parent
-        .set_read_timeout(Some(Duration::from_secs(120)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     parent
-        .set_write_timeout(Some(Duration::from_secs(120)))
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let descriptors = [
         view.as_raw_fd(),
@@ -1207,7 +1207,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
         File::open(&source_dir).unwrap(),
         Arc::clone(&authority),
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let source_stream = loop {
         match endpoint.connect() {
             Ok(stream) => break stream,
@@ -1416,7 +1416,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
     signal.write_all(b"R").unwrap();
     signal.read_exact(&mut response).unwrap();
     assert_eq!(&response, b"E");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(status) = child.child.try_wait().unwrap() {
             assert!(status.success());
@@ -1601,13 +1601,13 @@ fn qualify_alias_iteration(
     ]);
     let (mut signal, child) = UnixStream::pair().unwrap();
     signal
-        .set_read_timeout(Some(Duration::from_secs(120)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     signal
-        .set_write_timeout(Some(Duration::from_secs(120)))
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let (info, info_child) = UnixStream::pair().unwrap();
-    info.set_read_timeout(Some(Duration::from_secs(10)))
+    info.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     argv.splice(0..0, ["--info-fd".into(), "75".into()]);
     let view = exposure.file().unwrap();
@@ -1713,7 +1713,7 @@ fn qualify_alias_iteration(
             "revocation denies source bytes while actual exposure retains target custody"
         );
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(status) = consumer.child.try_wait().unwrap() {
             assert!(status.success());

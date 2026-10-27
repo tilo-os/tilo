@@ -59,8 +59,6 @@ fn admitted_category_rows(node: &ui::a11y::AccessNode, rows: &mut Vec<(String, S
     }
 }
 
-/// A sidebar row opens its pane through the pane row's open effect, the
-/// one way search and agents open it too.
 #[test]
 fn a_sidebar_click_opens_the_pane_through_its_effect() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
@@ -132,14 +130,35 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
     assert_eq!(selected, Category::Bluetooth);
 }
 
-/// A `settings://models/<id>` link opens Settings at Agent Models.
+/// A `settings://models/<id>` link opens Settings at Agent Models. Where the
+/// device has no such model (this harness reaches no model service), the
+/// window says so over the pane, and dismissing that leaves Agent Models.
 #[test]
 fn a_model_link_opens_agent_models() {
     let mut app = TestApp::<SettingsShell>::launched(&["settings://models/u2net-subject"])
         .expect("settings opens on a link");
+    let settled = app
+        .harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            harness.refusal_shown().is_some()
+                || harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains("Privacy"))
+        });
+    assert!(
+        settled,
+        "the link either opens Agent Models or says why not"
+    );
+    if let Some(refusal) = app.harness().refusal_shown().map(str::to_owned) {
+        assert!(
+            refusal.contains("u2net-subject"),
+            "a missing model is named: {refusal}"
+        );
+        app.harness().key("Escape");
+    }
     let shown = app
         .harness()
-        .wait_until(ui::time::Duration::from_secs(20), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .inspection_json()
                 .is_ok_and(|frame| frame.contains("Privacy"))
@@ -154,10 +173,12 @@ fn a_model_link_opens_agent_models() {
     );
 }
 
-/// Every section of the person's settings is published beside Settings with
-/// its field edits, so an agent or assistive technology changes any of it by
-/// path, without a pane showing it, and the section's own check refuses what
-/// it does not hold.
+/// Every section of the person's settings is published with its field
+/// edits, so an agent or assistive technology changes any of it by path,
+/// without a pane showing it, and the section's own check refuses what it
+/// does not hold. The session keeps and publishes the system's own; Settings
+/// publishes the rest, and its controls change the session's through the
+/// session's actions.
 #[test]
 fn every_settings_section_is_edited_by_path() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
@@ -171,16 +192,6 @@ fn every_settings_section_is_edited_by_path() {
         .filter_map(|row| row["resource"].as_str().map(str::to_owned))
         .collect();
     for kind in [
-        "settings.appearance",
-        "settings.accessibility",
-        "settings.input",
-        "settings.power",
-        "settings.updates",
-        "settings.notifications",
-        "settings.audio",
-        "settings.display",
-        "settings.locale",
-        "settings.continuity",
         "settings.desktop-controls",
         "settings.agent-providers",
         "settings.default-apps",
@@ -191,6 +202,23 @@ fn every_settings_section_is_edited_by_path() {
         assert!(
             published.contains(&format!("settings:{kind}")),
             "{kind} is published with its field edits: {published:?}"
+        );
+    }
+    for kept in [
+        "settings.appearance",
+        "settings.accessibility",
+        "settings.input",
+        "settings.power",
+        "settings.updates",
+        "settings.notifications",
+        "settings.audio",
+        "settings.display",
+        "settings.locale",
+        "settings.continuity",
+    ] {
+        assert!(
+            !published.contains(&format!("settings:{kept}")),
+            "the session publishes {kept}, not Settings: {published:?}"
         );
     }
 

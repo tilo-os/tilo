@@ -25,14 +25,17 @@ use anyhow::{Context, bail, ensure};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_relay::daemon::RelayIdentity;
-use tilo_relay::rooms::{PreAdmitRequest, Rooms};
+use tilo_relay::rooms::{PreAdmitRequest, Rooms, WaitListed};
 use tilo_relay::web::WebHandle;
 use tilo_relay_protocol::room_operator::{self, OperatorCommand, RoomEvent, hex32};
 use tilo_relay_protocol::rooms::{JoinReply, JoinStep, PreAdmission, RoomRole, join_proof_digest};
 use tilo_relay_session::rooms::SetMemberRoleRequest;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay, web_config};
+use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay_lending, web_config};
+
+mod bots;
+use bots::{hand_to_discord, offer_sign_in, start_bots};
 
 /// The secret store this host keeps room roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
@@ -69,9 +72,19 @@ pub struct PersistentArgs {
         long = "chat-channel",
         value_name = "NAME",
         requires = "persistent",
-        value_parser = crate::room_seed::channel_name
+        value_parser = crate::room_chat::channel_name
     )]
     pub chat_channels: Vec<String>,
+    /// The channel, by name, the room's members report problems to: kept
+    /// in the room's Chat on every start, after its other channels, since
+    /// the site's pages send reports to it by its id (`c_<name>`).
+    #[arg(
+        long = "feedback-channel",
+        value_name = "NAME",
+        requires = "persistent",
+        value_parser = crate::room_chat::channel_name
+    )]
+    pub feedback_channel: Option<String>,
     /// A strip, by name, the room's shared desktop has in its first
     /// workspace; repeatable, in order. Added at start where missing; the
     /// strips people made are kept.
@@ -82,6 +95,17 @@ pub struct PersistentArgs {
         value_parser = crate::room_strips::strip_name
     )]
     pub strips: Vec<String>,
+    /// A text published outside the room, announced so its readers find a
+    /// discussion thread to arrive in: `<address>=<title>`, the address of
+    /// the text and the title its thread is named; repeatable. A text whose
+    /// thread the room keeps is left as it is.
+    #[arg(
+        long = "discussion",
+        value_name = "ADDRESS=TITLE",
+        requires = "persistent",
+        value_parser = crate::room_discussions::parse
+    )]
+    pub discussions: Vec<crate::room_discussions::Published>,
     /// The room's owner root: a file of 64 hex characters (the Ed25519
     /// seed), mounted from the operator's encrypted secrets.
     #[arg(long = "root-file", value_name = "PATH")]
@@ -104,6 +128,33 @@ pub struct PersistentArgs {
     /// A person made a Moderator once they joined; repeatable.
     #[arg(long = "moderator", value_name = "HEX")]
     pub moderators: Vec<String>,
+    /// Take people by invitation: the door pre-admits only the room's
+    /// members (another tab of theirs is another device), and members may
+    /// invite someone with an invitation of their own, which they let in.
+    /// Settled at every start.
+    #[arg(long = "members-only")]
+    pub members_only: bool,
+    /// How many requests left at the door the room keeps while it takes
+    /// people by invitation: each is an address (an email) someone who asked
+    /// without an invitation leaves, on the room's wait list for whoever
+    /// may invite until they take it off. `0`: the door keeps none.
+    #[arg(
+        long = "wait-list-max",
+        value_name = "COUNT",
+        default_value_t = 0,
+        requires = "members_only"
+    )]
+    pub wait_list_max: usize,
+    /// Whoever runs the room sends mail from the web entry DOOR (a URL
+    /// ending in `/`): members may ask it to mail an invitation on that
+    /// door to a confirmed address on the wait list, which it hears as an
+    /// `invite_mail` event.
+    #[arg(
+        long = "wait-list-mail",
+        value_name = "DOOR",
+        requires = "wait_list_max"
+    )]
+    pub wait_list_mail: Option<String>,
     /// A file of more owners and moderators, `{"owners": [hex],
     /// "moderators": [hex]}`, read again whenever it changes, so a role is
     /// granted or taken back while the room runs.
@@ -112,16 +163,22 @@ pub struct PersistentArgs {
     /// An app authored into the room at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
+    /// Whether the room shares its members' windows and strips: `personal`
+    /// (each member's stay on their device; the room shares its records and
+    /// people) or `shared`. Settled at every start.
+    #[arg(
+        long = "layout",
+        value_name = "SCOPE",
+        default_value = "personal",
+        value_parser = parse_layout
+    )]
+    pub layout: tilo_desktop_model::projection::RoomLayout,
     /// An app the room's members write through: it authors the room's
     /// content, so a member whose role lets them change the room (a guest
     /// is an Editor) can talk in its Chat; repeatable. Settled at every
     /// start: an app named here no longer stops authoring the room.
     #[arg(long = "author-app", value_name = "APP_ID")]
     pub author_apps: Vec<String>,
-    /// Every this many seconds, snapshot each seeded app with starting
-    /// content (not chat) and reset it to that content; 0 never resets.
-    #[arg(long = "reset-every", value_name = "SECS", default_value_t = 0)]
-    pub reset_every: u64,
     /// A member with no session for this many days stops being one; they
     /// join again through the door as the same person. Membership persists:
     /// a person stays a member until they leave, the host removes them, or
@@ -129,15 +186,28 @@ pub struct PersistentArgs {
     /// nobody; who is here now is the room's presence, not its membership.
     #[arg(long = "inactive-after-days", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3650))]
     pub inactive_after_days: u64,
-    /// A bot directory entry and its inputs (`<entry> key=value …`) to
-    /// install at the room's first start, approved by the room's root;
-    /// repeatable.
+    /// What to install at the room's first start, approved by the room's
+    /// root, with its inputs (`<source> key=value …`); repeatable. The source
+    /// is a bot directory entry, or a program file on this host, which the
+    /// room runs under the program's own name.
     #[arg(long = "bot", value_name = "SPEC")]
     pub bot_specs: Vec<String>,
     /// The Discord bot token, mounted from the operator's encrypted
     /// secrets; kept where the Discord connector's worker asks for it.
     #[arg(long = "discord-token-file", value_name = "PATH")]
     pub discord_token_file: Option<PathBuf>,
+    /// The Discord application members sign in with to link their
+    /// account (OAuth 2, `identify`); with the redirect and consent page
+    /// below, the room offers "Connect Discord". The room's host keeps the
+    /// client secret and trades the code itself.
+    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url"])]
+    pub discord_client_id: Option<String>,
+    /// Where Discord sends the browser back: the room host's callback.
+    #[arg(long = "discord-redirect-url", value_name = "URL")]
+    pub discord_redirect_url: Option<String>,
+    /// Discord's consent page.
+    #[arg(long = "discord-authorize-url", value_name = "URL")]
+    pub discord_authorize_url: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
     /// `<name>-worker` beside this binary; repeatable.
     #[arg(long = "connector-worker", value_name = "APP=PATH")]
@@ -145,7 +215,9 @@ pub struct PersistentArgs {
     /// The model API key the room's moderation agent asks with, mounted
     /// from the operator's encrypted secrets; kept in this host's secret
     /// store. Without it the room has no moderation agent and reports wait
-    /// for its human Moderators.
+    /// for its human Moderators. The same model looks over the reports its
+    /// members write in the feedback channel before they send them, asked
+    /// through the room, so their pages never hold the key.
     #[arg(long = "moderation-key-file", value_name = "PATH")]
     pub moderation_key_file: Option<PathBuf>,
     /// The model the moderation agent asks.
@@ -165,6 +237,19 @@ pub struct PersistentArgs {
     /// The public URL `--public-avatars` is served at.
     #[arg(long = "public-avatars-url", value_name = "URL")]
     pub public_avatars_url: Option<String>,
+    /// The largest file a member posts in the room's Chat that the room
+    /// keeps once they left, in MiB; a larger one stays with its poster.
+    #[arg(long = "attachment-max-mib", default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=64))]
+    pub attachment_max_mib: u64,
+    /// What one member's kept files may take together, in MiB; past it
+    /// their oldest go first. The room takes in no more of one member's
+    /// files in an hour either.
+    #[arg(long = "attachment-member-mib", default_value_t = 250)]
+    pub attachment_member_mib: u64,
+    /// What all members' kept files may take together, in MiB; past it the
+    /// oldest go first. `0` keeps none.
+    #[arg(long = "attachment-room-mib", default_value_t = 2048)]
+    pub attachment_room_mib: u64,
 }
 
 /// What every part of the persistent room works with.
@@ -175,6 +260,9 @@ pub(crate) struct PersistentRoom {
     pub spectator: SigningKey,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
+    /// The Discord connector a bridge runs on, which a sign-in with Discord
+    /// that came back to the service is handed to.
+    pub discord: Option<Arc<tilo_connector::ConnectorProcess>>,
 }
 
 /// The workspace name people see for the persistent room `name` (a lowercase
@@ -303,6 +391,10 @@ pub(crate) fn newly_removed(
     seen: &mut BTreeSet<[u8; 32]>,
     members: &[tilo_peer_state::GovernedMember],
 ) -> Vec<[u8; 32]> {
+    // Someone admitted again since is a member: a later removal is new.
+    for member in members.iter().filter(|member| !member.removed) {
+        seen.remove(&member.user_public_key);
+    }
     members
         .iter()
         .filter(|member| member.removed && seen.insert(member.user_public_key))
@@ -378,6 +470,7 @@ pub(crate) fn idle_guests(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BotSpec {
+    /// The directory entry it is installed from, or the program file.
     pub entry: String,
     pub inputs: BTreeMap<String, String>,
 }
@@ -386,7 +479,7 @@ pub(crate) fn parse_bot_spec(text: &str) -> anyhow::Result<BotSpec> {
     let mut words = text.split_whitespace();
     let entry = words
         .next()
-        .context("a bot spec names a directory entry")?
+        .context("a bot spec names a directory entry or a program file")?
         .to_owned();
     let mut inputs = BTreeMap::new();
     for word in words {
@@ -416,6 +509,12 @@ fn token_digest(token: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(token).into()
 }
 
+/// `--layout`: `shared` or `personal`.
+fn parse_layout(scope: &str) -> Result<tilo_desktop_model::projection::RoomLayout, String> {
+    tilo_desktop_model::projection::RoomLayout::from_id(scope)
+        .ok_or_else(|| format!("{scope:?} is not a layout scope: say shared or personal"))
+}
+
 fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>> {
     keys.iter()
         .map(|key| {
@@ -423,6 +522,38 @@ fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>>
                 .with_context(|| format!("--{flag} {key:?} is not 64 lowercase hex characters"))
         })
         .collect()
+}
+
+/// The relay of the persistent room `name` whose `room --state` is `state`
+/// and whose root key is in `root_file`, as that room starts it: its state
+/// root and identity. Refuses a state whose host has no device key yet.
+pub(crate) fn room_relay(
+    state: &Path,
+    root_file: &Path,
+    name: &str,
+) -> anyhow::Result<(PathBuf, RelayIdentity)> {
+    let root = read_root_file(root_file)?;
+    anyhow::ensure!(
+        state.join("host-device.key").is_file(),
+        "{} holds no room host",
+        state.display()
+    );
+    let host = host_key(state)?;
+    let host_cert = enrol(
+        &root,
+        &host,
+        &format!("{name} room host"),
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    )?;
+    Ok((
+        tilo_relay_protocol::metrics::room_relay_root(state),
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host,
+            device_cert: host_cert,
+            revocations: RevocationList::new(),
+        },
+    ))
 }
 
 /// The host's own device key, kept beside the relay's state. The root is
@@ -529,22 +660,208 @@ async fn issue_pre_admission(
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
+/// What answering one pre-admission needs, owned, so the room answers a
+/// crowd's side by side rather than one after another.
+#[derive(Clone)]
+struct Admitter {
+    rooms: Rooms,
+    host_cert: DeviceCert,
+    root: SigningKey,
+    room: String,
+    spectator: [u8; 32],
+    removals: Removals,
+    /// The door lets in only the room's members (`--members-only`).
+    members_only: bool,
+}
+
+impl Admitter {
+    fn of(context: &PersistentRoom, removals: Removals, members_only: bool) -> Self {
+        Self {
+            rooms: context.rooms.clone(),
+            host_cert: context.host_cert.clone(),
+            root: context.root.clone(),
+            room: context.room.clone(),
+            spectator: context.spectator.verifying_key().to_bytes(),
+            removals,
+            members_only,
+        }
+    }
+}
+
+/// How long a person moderation removed is refused pre-admission: the day
+/// the room service's door also turns away the address they joined from.
+const REMOVED_FOR_MS: u64 = 24 * 3600 * 1000;
+
+/// Whom the room has taken in as removed, and when moderation removed each
+/// person, kept in the room's state so a restart lets nobody back early.
+/// Shared by the operator loop, which takes removals in, and every
+/// pre-admission, which may run before the loop has.
+#[derive(Clone)]
+struct Removals {
+    file: PathBuf,
+    state: Arc<std::sync::Mutex<RemovalState>>,
+}
+
+struct RemovalState {
+    /// Every person accounted for as removed, by moderation or pruned after
+    /// an absence, so each removal is reported once.
+    seen: BTreeSet<[u8; 32]>,
+    /// When moderation removed each person, in Unix milliseconds.
+    at: BTreeMap<[u8; 32], u64>,
+}
+
+impl Removals {
+    /// The removals of a room whose members are `members` now: everyone
+    /// listed as removed is accounted for, and the removal times kept in
+    /// `file` that are still within the day hold.
+    fn load(
+        file: PathBuf,
+        members: &[tilo_peer_state::GovernedMember],
+        now_ms: u64,
+    ) -> anyhow::Result<Self> {
+        let stored: BTreeMap<String, u64> = read_json(&file)?;
+        let at = stored
+            .iter()
+            .filter(|(_, at)| now_ms.saturating_sub(**at) < REMOVED_FOR_MS)
+            .filter_map(|(key, at)| hex32(key).map(|key| (key, *at)))
+            .collect();
+        let seen = members
+            .iter()
+            .filter(|member| member.removed)
+            .map(|member| member.user_public_key)
+            .collect();
+        Ok(Self {
+            file,
+            state: Arc::new(std::sync::Mutex::new(RemovalState { seen, at })),
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, RemovalState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Guests about to be pruned: their removal is not moderation's.
+    fn pruning(&self, people: &BTreeSet<[u8; 32]>) {
+        self.lock().seen.extend(people.iter().copied());
+    }
+
+    /// Guests whose pruning failed: still members.
+    fn not_pruned(&self, people: &BTreeSet<[u8; 32]>) {
+        let mut state = self.lock();
+        for person in people {
+            state.seen.remove(person);
+        }
+    }
+
+    /// The people moderation removed since the last call, noted as removed
+    /// now and written down.
+    fn taken_in(
+        &self,
+        members: &[tilo_peer_state::GovernedMember],
+        now_ms: u64,
+    ) -> anyhow::Result<Vec<[u8; 32]>> {
+        let mut state = self.lock();
+        let fresh = newly_removed(&mut state.seen, members);
+        if fresh.is_empty() {
+            return Ok(fresh);
+        }
+        state
+            .at
+            .retain(|_, at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS);
+        for person in &fresh {
+            state.at.insert(*person, now_ms);
+        }
+        let stored: BTreeMap<String, u64> = state
+            .at
+            .iter()
+            .map(|(key, at)| (hex::encode(key), *at))
+            .collect();
+        drop(state);
+        write_json(&self.file, &stored)?;
+        Ok(fresh)
+    }
+
+    /// Whether `person` is kept out: moderation removed them within the
+    /// day, or the room lists them as removed and the loop has not taken
+    /// that in yet (a removed guest's page asks again the moment the room
+    /// drops it, which may be before the loop hears of the change).
+    fn refuses(
+        &self,
+        person: [u8; 32],
+        members: &[tilo_peer_state::GovernedMember],
+        now_ms: u64,
+    ) -> bool {
+        let state = self.lock();
+        if state
+            .at
+            .get(&person)
+            .is_some_and(|at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS)
+        {
+            return true;
+        }
+        !state.seen.contains(&person)
+            && members
+                .iter()
+                .any(|member| member.user_public_key == person && member.removed)
+    }
+}
+
+/// Pre-admissions the room answers at once. The room service waits a few
+/// seconds for each answer before it turns the visitor into a spectator;
+/// answered one at a time, a launch's crowd queued behind each other's
+/// writes, while side by side the relay writes everything staged meanwhile
+/// in one go. Past this many, the next commands wait their turn.
+const PRE_ADMITTING_AT_ONCE: usize = 64;
+
 async fn answer_pre_admit(
-    context: &PersistentRoom,
-    user_public_key: &str,
+    context: Admitter,
+    user_public_key: String,
     token_sha256: String,
-    label: &str,
+    label: String,
     role: RoomRole,
 ) -> RoomEvent {
     let refused = |reason: String| RoomEvent::PreAdmitRefused {
         token_sha256: token_sha256.clone(),
         reason,
+        removed: false,
+        invite_only: false,
     };
-    let (Some(user), Some(digest)) = (hex32(user_public_key), hex32(&token_sha256)) else {
+    let (Some(user), Some(digest)) = (hex32(&user_public_key), hex32(&token_sha256)) else {
         return refused("the guest key and token digest must be 64 hex characters".into());
     };
-    if user == context.spectator.verifying_key().to_bytes() {
+    if user == context.spectator {
         return refused("the spectator person joins no other way".into());
+    }
+    let members = match context.rooms.summary(&context.room).await {
+        Ok(summary) => summary.members,
+        Err(error) => return refused(format!("{error}")),
+    };
+    if context
+        .removals
+        .refuses(user, &members, tilo_clock::unix_now_ms())
+    {
+        return RoomEvent::PreAdmitRefused {
+            token_sha256,
+            reason: "the person was removed from the room within the day".into(),
+            removed: true,
+            invite_only: false,
+        };
+    }
+    // Taking people by invitation, the door still lets a member in again
+    // (another tab of theirs is another device), and nobody else.
+    if context.members_only
+        && !members
+            .iter()
+            .any(|member| member.user_public_key == user && !member.removed)
+    {
+        return RoomEvent::PreAdmitRefused {
+            token_sha256,
+            reason: "the room takes people by invitation only".into(),
+            removed: false,
+            invite_only: true,
+        };
     }
     match issue_pre_admission(
         &context.rooms,
@@ -553,7 +870,7 @@ async fn answer_pre_admit(
         &context.room,
         user,
         digest,
-        label,
+        &label,
         role,
     )
     .await
@@ -564,6 +881,237 @@ async fn answer_pre_admit(
                 .encode(issued.signed_invitation),
         },
         Err(error) => refused(format!("{error:#}")),
+    }
+}
+
+/// What an [`OperatorCommand::WaitList`] carries.
+struct WaitListAsk {
+    request: String,
+    contact: String,
+    removal_sha256: String,
+    confirm_sha256: Option<String>,
+    language: String,
+}
+
+/// Keep the request someone left at the door without an invitation, while
+/// the room takes people by invitation and keeps a wait list.
+async fn answer_wait_list(
+    context: &PersistentRoom,
+    governance: &Governance,
+    ask: WaitListAsk,
+) -> RoomEvent {
+    let WaitListAsk {
+        request,
+        contact,
+        removal_sha256,
+        confirm_sha256,
+        language,
+    } = ask;
+    let refused = |reason: String, full: bool| RoomEvent::WaitListRefused {
+        request: request.clone(),
+        reason,
+        full,
+    };
+    if !governance.members_only || governance.wait_list_max == 0 {
+        return refused("the room keeps no wait list".into(), false);
+    }
+    let Some(removal) = hex32(&removal_sha256) else {
+        return refused("the removal digest must be 64 hex characters".into(), false);
+    };
+    let confirm = match confirm_sha256.as_deref().map(hex32) {
+        None => None,
+        Some(Some(confirm)) => Some(confirm),
+        Some(None) => {
+            return refused(
+                "the confirmation digest must be 64 hex characters".into(),
+                false,
+            );
+        }
+    };
+    let secrets = tilo_relay::rooms::WaitListSecrets { removal, confirm };
+    match context
+        .rooms
+        .wait(
+            &context.room,
+            &contact,
+            secrets,
+            &language,
+            governance.wait_list_max,
+        )
+        .await
+    {
+        Ok(WaitListed::Added { mail }) => RoomEvent::WaitListed {
+            request,
+            added: true,
+            mail,
+        },
+        Ok(WaitListed::Already { mail }) => RoomEvent::WaitListed {
+            request,
+            added: false,
+            mail,
+        },
+        Ok(WaitListed::Full) => refused("the wait list is full".into(), true),
+        Err(error) => refused(error.to_string(), false),
+    }
+}
+
+fn mailbox(mailbox: tilo_relay::rooms::Mailbox) -> room_operator::WaitListMailbox {
+    room_operator::WaitListMailbox {
+        contact: mailbox.contact,
+        language: mailbox.language,
+    }
+}
+
+/// Take off the wait list the entry whose removal secret hashes to
+/// `removal_sha256`, for whoever left it: answered alike whether or not
+/// one did.
+async fn answer_unlist(
+    context: &PersistentRoom,
+    request: String,
+    removal_sha256: &str,
+) -> RoomEvent {
+    let Some(removal) = hex32(removal_sha256) else {
+        return RoomEvent::WaitListFailed {
+            request,
+            reason: "the removal digest must be 64 hex characters".into(),
+        };
+    };
+    match context
+        .rooms
+        .leave_wait_list_for_operator(&context.room, removal)
+        .await
+    {
+        Ok((told, contact)) => RoomEvent::Unlisted {
+            request,
+            told: told.map(mailbox),
+            contact_sha256: contact.map(hex::encode),
+        },
+        Err(error) => RoomEvent::WaitListFailed {
+            request,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// Confirm the entry whose confirmation secret hashes to `confirm_sha256`.
+async fn answer_confirm(
+    context: &PersistentRoom,
+    request: String,
+    confirm_sha256: &str,
+) -> RoomEvent {
+    let Some(confirm) = hex32(confirm_sha256) else {
+        return RoomEvent::WaitListFailed {
+            request,
+            reason: "the confirmation digest must be 64 hex characters".into(),
+        };
+    };
+    match context
+        .rooms
+        .confirm_wait_list(&context.room, confirm)
+        .await
+    {
+        Ok(confirmed) => RoomEvent::Confirmed { request, confirmed },
+        Err(error) => RoomEvent::WaitListFailed {
+            request,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// Where the entry whose removal secret hashes to `removal_sha256` stands.
+async fn answer_standing(
+    context: &PersistentRoom,
+    request: String,
+    removal_sha256: &str,
+) -> RoomEvent {
+    let Some(removal) = hex32(removal_sha256) else {
+        return RoomEvent::WaitListFailed {
+            request,
+            reason: "the removal digest must be 64 hex characters".into(),
+        };
+    };
+    match context
+        .rooms
+        .wait_list_standing(&context.room, removal)
+        .await
+    {
+        Ok(standing) => RoomEvent::Standing { request, standing },
+        Err(error) => RoomEvent::WaitListFailed {
+            request,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// The answer to a command about the wait list.
+async fn answer_wait_list_command(
+    context: &PersistentRoom,
+    governance: &Governance,
+    command: OperatorCommand,
+) -> RoomEvent {
+    match command {
+        OperatorCommand::WaitList {
+            request,
+            contact,
+            removal_sha256,
+            confirm_sha256,
+            language,
+        } => {
+            let ask = WaitListAsk {
+                request,
+                contact,
+                removal_sha256,
+                confirm_sha256,
+                language,
+            };
+            answer_wait_list(context, governance, ask).await
+        }
+        OperatorCommand::Unlist {
+            request,
+            removal_sha256,
+        } => answer_unlist(context, request, &removal_sha256).await,
+        OperatorCommand::Confirm {
+            request,
+            confirm_sha256,
+        } => answer_confirm(context, request, &confirm_sha256).await,
+        OperatorCommand::Standing {
+            request,
+            removal_sha256,
+        } => answer_standing(context, request, &removal_sha256).await,
+        _ => RoomEvent::WaitListFailed {
+            request: String::new(),
+            reason: "not a wait-list command".into(),
+        },
+    }
+}
+
+/// The event that has the operator mail an invitation a member asked for.
+fn invite_mail(
+    mail: tilo_relay::rooms::WaitListMail,
+    request: String,
+) -> (RoomEvent, tokio::sync::oneshot::Sender<bool>) {
+    (
+        RoomEvent::InviteMail {
+            request,
+            to: mailbox(mail.to),
+            link: mail.link,
+            removal: hex::encode(mail.removal),
+        },
+        mail.queued,
+    )
+}
+
+type MailAcks = std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<bool>>;
+
+fn publish_invite_mail(asked: tilo_relay::rooms::WaitListMail, mail_acks: &mut MailAcks) {
+    mail_acks.retain(|_, sender| !sender.is_closed());
+    if mail_acks.len() >= 512 {
+        let _ = asked.queued.send(false);
+    } else {
+        let request = hex::encode(rand::random::<[u8; 32]>());
+        let (event, queued) = invite_mail(asked, request.clone());
+        mail_acks.insert(request, queued);
+        println!("{}", event.to_line());
     }
 }
 
@@ -737,46 +1285,69 @@ pub(crate) async fn seed_apps(
             .prepare_application(room, cert, &catalogue, app, &record)
             .await
             .map_err(|error| anyhow::anyhow!("seed {app}: {error}"))?;
-        // Written before the app counts as seeded: a start interrupted
-        // here writes it again, and writing the seed twice changes nothing.
-        if crate::room_seed::has_seed(app) {
-            rooms
-                .author_application(room, cert, &catalogue, app, &record, |doc| {
-                    crate::room_seed::write_seed(app, doc)
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("write the starting content of {app}: {error}"))?;
-        }
         seeded.insert(app.clone());
         write_json(seeded_file, &seeded)?;
     }
     Ok(())
 }
 
+/// What the room keeps of the files members post in its Chat; `None`
+/// when it keeps none.
+fn attachment_limits(
+    persistent: &PersistentArgs,
+) -> Option<tilo_relay::room_bots::attachments::AttachmentLimits> {
+    const MIB: u64 = 1024 * 1024;
+    (persistent.attachment_room_mib > 0).then(|| {
+        tilo_relay::room_bots::attachments::AttachmentLimits {
+            file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
+            member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
+            room_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
+        }
+    })
+}
+
+/// [`attachment_limits`] as the room's Chat reads them.
+fn room_files(persistent: &PersistentArgs) -> chat::record::RoomFiles {
+    attachment_limits(persistent).map_or_else(Default::default, |limits| chat::record::RoomFiles {
+        largest: limits.file_bytes,
+        member_hourly: limits.member_bytes,
+    })
+}
+
 /// Give the room's chat, when it is seeded and while it has only the
-/// channels every room opens with, the operator's starting `channels`. What
-/// people wrote is never touched, and a chat with channels keeps exactly
-/// those.
+/// channels every room opens with, the operator's starting `channels`, and
+/// tell it what the room keeps of members' `files`. What people wrote is
+/// never touched, and a chat with channels keeps exactly those.
 pub(crate) async fn settle_chat(
     rooms: &Rooms,
     room: &str,
     cert: &DeviceCert,
     apps: &[String],
     channels: &[String],
+    feedback: Option<&str>,
+    files: chat::record::RoomFiles,
+    discussions: &[crate::room_discussions::Published],
 ) -> anyhow::Result<()> {
-    if !apps.iter().any(|app| app == crate::room_seed::CHAT_APP) {
+    if !apps.iter().any(|app| app == crate::room_chat::CHAT_APP) {
         return Ok(());
     }
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    let record = tilo_relay::room_bots::room_record(&catalogue, crate::room_seed::CHAT_APP);
+    let record = tilo_relay::room_bots::room_record(&catalogue, crate::room_chat::CHAT_APP);
     rooms
         .author_application(
             room,
             cert,
             &catalogue,
-            crate::room_seed::CHAT_APP,
+            crate::room_chat::CHAT_APP,
             &record,
-            |doc| crate::room_seed::settle_chat(doc, channels),
+            |doc| {
+                crate::room_chat::settle_chat(doc, channels)?;
+                if let Some(name) = feedback {
+                    crate::room_chat::settle_feedback_channel(doc, name)?;
+                }
+                crate::room_chat::settle_files(doc, files)?;
+                crate::room_discussions::settle_threads(doc, discussions).map(drop)
+            },
         )
         .await
         .map_err(|error| anyhow::anyhow!("open the chat's channels: {error}"))
@@ -800,39 +1371,6 @@ pub(crate) async fn settle_strips(
         .await
         .map(drop)
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
-}
-
-/// Snapshot each seeded app with starting content under
-/// `<state>/snapshots/<app>/`, then reset it to that content. Chat has no
-/// starting content and is never touched.
-pub(crate) async fn reset_seeded(
-    rooms: &Rooms,
-    room: &str,
-    cert: &DeviceCert,
-    apps: &[String],
-    state: &Path,
-) -> anyhow::Result<()> {
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
-    let seeded: BTreeSet<String> = read_json(&state.join("seeded.json"))?;
-    let now = tilo_clock::unix_now_ms() / 1000;
-    for app in apps
-        .iter()
-        .filter(|app| seeded.contains(*app) && crate::room_seed::has_seed(app))
-    {
-        let dir = state.join("snapshots").join(app);
-        let record = tilo_relay::room_bots::room_record(&catalogue, app);
-        rooms
-            .author_application(room, cert, &catalogue, app, &record, |doc| {
-                // The snapshot is taken under the same lock as the reset, so
-                // it is exactly what the reset replaced.
-                crate::room_seed::keep_snapshot(&dir, now, &doc.save())
-                    .map_err(|error| format!("snapshot: {error}"))?;
-                crate::room_seed::write_seed(app, doc)
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("reset {app}: {error}"))?;
-    }
-    Ok(())
 }
 
 /// Make exactly the operator's `apps` authors of the room, so its members
@@ -877,6 +1415,53 @@ pub(crate) async fn ensure_guest_policy(
         .put_room_grants(room, cert, digest, vec![deny])
         .await
         .map_err(|error| anyhow::anyhow!("deny outside effects to guests: {error}"))?;
+    Ok(())
+}
+
+/// The grant letting the room's members (guests are Editors) invite
+/// someone, which a room taking people by invitation holds and an open one
+/// does not: anyone joins an open room through its door.
+const MEMBERS_INVITE: &str = "members-invite";
+
+/// Let the room's members invite people, and let in whom they invited,
+/// while the room takes people by invitation (`members_only`); take that
+/// back once it lets anyone in again. Settled at every start.
+pub(crate) async fn settle_member_invites(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    members_only: bool,
+) -> anyhow::Result<()> {
+    use tilo_action_policy::{Answer, Grant, GrantId, KindSet, Role, Subject, roles};
+    // One request per start and setting: the same setting settled again
+    // after the room changed writes it again, which changes nothing.
+    let generation = rooms
+        .summary(room)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .generation;
+    let request_id =
+        *blake3::hash(format!("{MEMBERS_INVITE}/{members_only}/{generation}").as_bytes())
+            .as_bytes();
+    if members_only {
+        let invite = Grant::new(
+            MEMBERS_INVITE,
+            Subject::Role(Role::Editor),
+            roles::governance_action(room, roles::governance::INVITE),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            Subject::Person(hex::encode(cert.user_public_key)),
+        );
+        rooms
+            .put_room_grants(room, cert, request_id, vec![invite])
+            .await
+            .map_err(|error| anyhow::anyhow!("let members invite: {error}"))?;
+    } else {
+        rooms
+            .remove_room_grants(room, cert, request_id, vec![GrantId(MEMBERS_INVITE.into())])
+            .await
+            .map_err(|error| anyhow::anyhow!("take back members inviting: {error}"))?;
+    }
     Ok(())
 }
 
@@ -932,6 +1517,21 @@ pub(crate) async fn run(
     if let Some(agent) = &moderation {
         tracing::info!(model = agent.model(), "moderation agent loaded");
     }
+    // The same model looks over the reports the room's members write
+    // before they send them, asked through the room on their behalf.
+    let feedback_reviewer = moderation
+        .is_some()
+        .then(|| {
+            crate::persistent_moderation::RoomReviewer::from_store(
+                &store,
+                persistent.moderation_model.as_deref(),
+            )
+        })
+        .transpose()?
+        .map(|reviewer| {
+            std::sync::Arc::new(reviewer)
+                as std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>
+        });
     let host = host_key(&state)?;
     let host_cert = enrol(
         &root,
@@ -945,7 +1545,7 @@ pub(crate) async fn run(
         member_limits: persistent.member_limits.then(Default::default),
         ..Default::default()
     };
-    let hosted = start_relay(
+    let hosted = start_relay_lending(
         config,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -955,6 +1555,7 @@ pub(crate) async fn run(
         },
         &args.web,
         &state,
+        crate::web_cli::Lent { feedback_reviewer },
     )
     .await?;
     let rooms = hosted
@@ -967,6 +1568,13 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     let room = governed_room(&rooms, &shown, &id_file, &store, &root).await?;
+    // Every visitor comes in through the site's door: unless the host says
+    // otherwise, the room shares its apps' records, never what anyone has
+    // open. Settled at every start, as the host configured it.
+    rooms
+        .set_layout(&room, persistent.layout)
+        .await
+        .map_err(|error| anyhow::anyhow!("settle the room's layout scope: {error}"))?;
     let spectator = spectator_root(&store, &room)?;
     ensure_spectator_member(&rooms, &host_cert, &root, &room, &spectator).await?;
     let workspace_id = rooms
@@ -1002,10 +1610,14 @@ pub(crate) async fn run(
         &host_cert,
         &persistent.seed_apps,
         &persistent.chat_channels,
+        persistent.feedback_channel.as_deref(),
+        room_files(&persistent),
+        &persistent.discussions,
     )
     .await?;
     settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
     ensure_guest_policy(&rooms, &room, &host_cert).await?;
+    settle_member_invites(&rooms, &room, &host_cert, persistent.members_only).await?;
     settle_app_authorship(
         &rooms,
         &room,
@@ -1058,9 +1670,13 @@ pub(crate) async fn run(
         workers,
         tilo_relay::room_bots::installed::FsBlobs::new(state.join("blobs"), public)
             .context("prepare the blob store")?,
-        persistent.public_avatars_url.clone(),
+        tilo_relay::room_bots::discord::Served {
+            avatars_url: persistent.public_avatars_url.clone(),
+            web_entry: args.web.web_entry.clone(),
+            origin: Some(web.origin.clone()),
+        },
     );
-    let runners = start_bots(
+    let (runners, discord) = start_bots(
         &rooms,
         &room,
         &host_cert,
@@ -1071,6 +1687,24 @@ pub(crate) async fn run(
         &state,
     )
     .await?;
+    if let Some(discord) = &discord {
+        offer_sign_in(discord, &persistent).await;
+    }
+    // The files members post in the room's Chat, kept in the same store
+    // as what the bots fetch, so they stay once their poster left.
+    let attachments = attachment_limits(&persistent).map(|limits| {
+        tokio::spawn(
+            tilo_relay::room_bots::attachments::RoomAttachments::new(
+                rooms.clone(),
+                room.clone(),
+                host_cert.device_public_key,
+                connector_host.store(&rooms),
+                state.join("attachments.json"),
+                limits,
+            )
+            .run(),
+        )
+    });
     // Bots the room's members ask for, beside the operator's.
     let requested =
         tilo_relay::room_bots::requested::spawn(tilo_relay::room_bots::requested::Follower {
@@ -1089,6 +1723,7 @@ pub(crate) async fn run(
         spectator,
         host_cert,
         web,
+        discord,
     };
     let governance = Governance {
         owners,
@@ -1096,8 +1731,9 @@ pub(crate) async fn run(
         roles_file: persistent.roles_file.clone(),
         inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
         state: state.clone(),
-        seed_apps: persistent.seed_apps.clone(),
-        reset_every: persistent.reset_every,
+        members_only: persistent.members_only,
+        wait_list_max: persistent.wait_list_max,
+        wait_list_mail: persistent.wait_list_mail.clone(),
     };
     let result = tokio::select! {
         result = serve_operator(&context, &governance, &mut operator) => result,
@@ -1106,6 +1742,7 @@ pub(crate) async fn run(
     for runner in moderator
         .into_iter()
         .chain(runners)
+        .chain(attachments)
         .chain(std::iter::once(requested))
     {
         runner.abort();
@@ -1113,155 +1750,6 @@ pub(crate) async fn run(
     drop(context);
     hosted.shutdown().await;
     result
-}
-
-/// Connect the room to the Discord server a bridge's inputs name
-/// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)).
-async fn link_discord(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    spec: &BotSpec,
-    bot: &mut tilo_relay::room_bots::installed::InstalledBot,
-    persistent: &PersistentArgs,
-) -> Result<Vec<(String, String)>, String> {
-    tilo_relay::room_bots::discord::link_bridge(
-        rooms,
-        room,
-        host_cert,
-        &spec.inputs,
-        bot,
-        persistent.public_avatars_url.as_deref(),
-    )
-    .await
-}
-
-/// Install the bots the operator named (once: a restart finds the same
-/// installations), start the connectors their programs listen to, and run
-/// each bot on this host. Each is kept a governed member of the room, its
-/// delegation renewed with the room's root as it runs out.
-async fn start_bots(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    root: &SigningKey,
-    bots: &[BotSpec],
-    connector_host: &tilo_relay::room_bots::installed::ConnectorHost,
-    persistent: &PersistentArgs,
-    state: &Path,
-) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
-    use tilo_relay::room_bots::discord;
-    use tilo_relay::room_bots::installed::{self, BotRunner, InstalledBot};
-    if let Some(path) = &persistent.discord_token_file {
-        let token = std::fs::read_to_string(path)
-            .with_context(|| format!("read the Discord token file {}", path.display()))?;
-        // Never logged: only kept where the connector's worker asks for it.
-        installed::put_connector_secret(
-            discord::APP,
-            discord::TOKEN_PURPOSE,
-            token.trim().as_bytes(),
-        )
-        .map_err(|error| anyhow::anyhow!("keep the Discord token: {error}"))?;
-    }
-    let mut installed_bots = Vec::new();
-    let mut connectors = BTreeSet::new();
-    let mut settings = BTreeMap::new();
-    for spec in bots {
-        let inputs = spec
-            .inputs
-            .iter()
-            .map(|(key, value)| (key.clone(), input_value(value)))
-            .collect();
-        let dir = state.join("bots").join(slug_of(&spec.entry));
-        let mut bot = installed::install(&dir, &spec.entry, inputs)
-            .await
-            .map_err(|error| anyhow::anyhow!("install {}: {error}", spec.entry))?;
-        let shortcut = bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?;
-        let wanted = InstalledBot::connectors(&shortcut);
-        if wanted.contains(discord::APP) {
-            match link_discord(rooms, room, host_cert, spec, &mut bot, persistent).await {
-                Ok(env) => {
-                    settings.insert(discord::APP.to_owned(), env);
-                }
-                Err(error) => {
-                    tracing::error!(entry = %spec.entry, %error, "not running the Discord bridge");
-                    continue;
-                }
-            }
-        }
-        connectors.extend(wanted);
-        tracing::info!(entry = %spec.entry, installation = %bot.installation, "bot installed");
-        installed_bots.push((dir, bot));
-    }
-    if installed_bots.is_empty() {
-        return Ok(Vec::new());
-    }
-    let blobs = connector_host.blobs(rooms);
-    // The room serves without its bots rather than not at all: a connector
-    // whose worker does not start (a missing binary, an unreachable service)
-    // leaves the bots that need it out, said in the log, as a bridge that
-    // does not link does.
-    let started = match installed::start_connectors(
-        &connectors,
-        state,
-        &connector_host.workers,
-        &settings,
-        &blobs,
-    )
-    .await
-    {
-        Ok(started) => started,
-        Err(error) => {
-            tracing::error!(%error, "not running the room's bots: a connector did not start");
-            return Ok(Vec::new());
-        }
-    };
-    let mut runners = Vec::new();
-    for (dir, bot) in installed_bots {
-        let wanted =
-            InstalledBot::connectors(&bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?);
-        let own = started
-            .iter()
-            .filter(|(app, _)| wanted.contains(*app))
-            .map(|(app, process)| (app.clone(), Arc::clone(process)))
-            .collect();
-        let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
-        let runner = BotRunner::new(
-            rooms.clone(),
-            room.to_owned(),
-            host_cert.clone(),
-            certifier.device_key(&bot.installation),
-            bot.clone(),
-            own,
-            dir.join("progress.json"),
-        )
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        runners.push(tokio::spawn(
-            tilo_relay::room_bots::membership::keep_renewed(
-                rooms.clone(),
-                room.to_owned(),
-                host_cert.clone(),
-                certifier,
-                bot.clone(),
-            ),
-        ));
-        runners.push(tokio::spawn(runner.run()));
-    }
-    Ok(runners)
-}
-
-/// A file name for directory entry or program path `entry`.
-fn slug_of(entry: &str) -> String {
-    entry
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 /// The operator's declarations the room is kept in line with.
@@ -1272,9 +1760,12 @@ struct Governance {
     roles_file: Option<PathBuf>,
     inactive_after_mins: u64,
     state: PathBuf,
-    seed_apps: Vec<String>,
-    /// Seconds between resets of seeded content; 0 never resets.
-    reset_every: u64,
+    /// The room takes people by invitation (`--members-only`).
+    members_only: bool,
+    /// Requests left at the door it keeps (`--wait-list-max`).
+    wait_list_max: usize,
+    /// The door whoever runs it sends mail from (`--wait-list-mail`).
+    wait_list_mail: Option<String>,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1286,6 +1777,10 @@ struct DeclaredRoles {
 impl Governance {
     fn declared_file(&self) -> PathBuf {
         self.state.join("declared-roles.json")
+    }
+
+    fn removals_file(&self) -> PathBuf {
+        self.state.join("removals.json")
     }
 
     fn last_seen_file(&self) -> PathBuf {
@@ -1381,37 +1876,13 @@ async fn reconcile_roles(
     Ok(())
 }
 
-/// Ticks every `secs`, the first one period after the start, not at it: a
-/// restart must not wipe what visitors just made.
-fn reset_interval(secs: u64) -> tokio::time::Interval {
-    let period = Duration::from_secs(secs.max(1));
-    let now = tokio::time::Instant::now();
-    tokio::time::interval_at(now.checked_add(period).unwrap_or(now), period)
-}
-
-/// Reset the seeded content. A failed reset leaves the content as it is
-/// until the next one; the room keeps serving.
-async fn reset_now(context: &PersistentRoom, governance: &Governance) {
-    if let Err(error) = reset_seeded(
-        &context.rooms,
-        &context.room,
-        &context.host_cert,
-        &governance.seed_apps,
-        &governance.state,
-    )
-    .await
-    {
-        tracing::warn!("resetting the room's content failed: {error:#}");
-    }
-}
-
 /// Removes guests idle past the horizon, in batches. A batch the room
 /// refuses stays seated until the next call.
 async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
     spectator: [u8; 32],
-    removed: &mut BTreeSet<[u8; 32]>,
+    removals: &Removals,
     last_seen: &mut BTreeMap<[u8; 32], u64>,
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
@@ -1433,7 +1904,7 @@ async fn prune_idle(
         let batch: BTreeSet<[u8; 32]> = batch.iter().copied().collect();
         // Into `removed` first: a pruned guest is not a removal the service
         // should cool their address down for.
-        removed.extend(batch.iter().copied());
+        removals.pruning(&batch);
         let first = batch.first().copied().unwrap_or_default();
         if let Err(error) = context
             .rooms
@@ -1446,12 +1917,10 @@ async fn prune_idle(
             .await
         {
             // They keep their seats until the next tick tries again, and
-            // the room goes on serving, as after a failed reset: ending
-            // here dropped every visitor's session and turned each new one
-            // away while the room service restarted it.
-            for key in &batch {
-                removed.remove(key);
-            }
+            // the room goes on serving: ending here dropped every visitor's
+            // session and turned each new one away while the room service
+            // restarted it.
+            removals.not_pruned(&batch);
             tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
             break;
         }
@@ -1459,11 +1928,95 @@ async fn prune_idle(
             last_seen.remove(key);
         }
     }
+    // Addresses left at the door and not confirmed in time go too, also
+    // while nobody touches the wait list.
+    if governance.wait_list_max > 0
+        && let Err(error) = context.rooms.expire_wait_list(&context.room).await
+    {
+        tracing::warn!("the wait list kept unconfirmed addresses: {error}");
+    }
     governance.write_last_seen(last_seen)
 }
 
 /// How often the operator's roles file is looked at for a change.
 const ROLES_FILE_EVERY_SECS: u64 = 2;
+
+/// What the room last said about who is online, and when it last wrote
+/// down when each member was last seen.
+struct OnlineWatch {
+    last_online: Option<(u32, u32, Vec<tilo_relay_protocol::directory::Face>, u32)>,
+    last_seen_written: tokio::time::Instant,
+}
+
+impl OnlineWatch {
+    /// Say who is online when it changed, note everyone online as seen now,
+    /// and write the last-seen times down at most once a minute.
+    async fn observe(
+        &mut self,
+        context: &PersistentRoom,
+        governance: &Governance,
+        spectator: [u8; 32],
+        last_seen: &mut BTreeMap<[u8; 32], u64>,
+    ) -> anyhow::Result<()> {
+        let sessions = context.web.online_users();
+        let people = sessions.keys().filter(|user| **user != spectator).count();
+        // Seated ones only: a page refused for want of a seat keeps
+        // its web session open while it waits, but watches nothing.
+        let spectators = context
+            .rooms
+            .seated_spectators(&context.room)
+            .await
+            .unwrap_or(0);
+        // Who of the members is here, for the site's directory.
+        let here: std::collections::BTreeSet<[u8; 32]> = sessions
+            .keys()
+            .filter(|user| **user != spectator)
+            .copied()
+            .collect();
+        let (faces, _, members) = context
+            .rooms
+            .presence(&context.room, &here)
+            .await
+            .unwrap_or_default();
+        let online = (
+            u32::try_from(people).unwrap_or(u32::MAX),
+            u32::try_from(spectators).unwrap_or(u32::MAX),
+            faces,
+            // The spectator person is a member nobody counts.
+            members.saturating_sub(1),
+        );
+        if self.last_online.as_ref() != Some(&online) {
+            println!(
+                "{}",
+                RoomEvent::Online {
+                    people: online.0,
+                    spectators: online.1,
+                    here: online.2.clone(),
+                    members: online.3,
+                }
+                .to_line()
+            );
+            self.last_online = Some(online);
+        }
+        let now = tilo_clock::unix_now_ms();
+        for user in sessions.keys() {
+            last_seen.insert(*user, now);
+        }
+        if self.last_seen_written.elapsed() >= Duration::from_secs(60) {
+            for member in summary(context)
+                .await?
+                .members
+                .iter()
+                .filter(|member| !member.removed)
+            {
+                last_seen.entry(member.user_public_key).or_insert(now);
+            }
+            governance.write_last_seen(last_seen)?;
+            self.last_seen_written = tokio::time::Instant::now();
+        }
+        Ok(())
+    }
+}
 
 async fn serve_operator(
     context: &PersistentRoom,
@@ -1472,16 +2025,18 @@ async fn serve_operator(
 ) -> anyhow::Result<()> {
     let mut changes = context.rooms.governance_changes();
     let spectator = context.spectator.verifying_key().to_bytes();
-    let initial = summary(context).await?.members;
-    let mut removed: BTreeSet<[u8; 32]> = initial
-        .iter()
-        .filter(|member| member.removed)
-        .map(|member| member.user_public_key)
-        .collect();
+    let removals = Removals::load(
+        governance.removals_file(),
+        &summary(context).await?.members,
+        tilo_clock::unix_now_ms(),
+    )?;
     let mut previously_declared = governance.previously_declared()?;
     reconcile_roles(context, governance, &mut previously_declared).await?;
     let mut last_seen = governance.read_last_seen()?;
-    let mut last_seen_written = tokio::time::Instant::now();
+    let mut presence = OnlineWatch {
+        last_online: None,
+        last_seen_written: tokio::time::Instant::now(),
+    };
     let mut online_tick =
         tokio::time::interval(Duration::from_secs(room_operator::ONLINE_EVERY_SECS));
     // A quarter of the horizon, so nobody stays much past it, and not more
@@ -1492,14 +2047,30 @@ async fn serve_operator(
             .saturating_mul(15)
             .clamp(60, 3600),
     ));
-    let mut reset_tick = reset_interval(governance.reset_every);
-    let mut last_online = None;
     // The operator's roles file, looked at every few seconds: a role it
     // grants or takes back reaches the room without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
+    let admitter = Admitter::of(context, removals.clone(), governance.members_only);
+    let mut admitting = tokio::task::JoinSet::<RoomEvent>::new();
+    let mut mail_acks = MailAcks::new();
+    let mut mail = governance
+        .wait_list_mail
+        .as_ref()
+        .and_then(|door| context.rooms.mail_wait_list(door));
     loop {
         tokio::select! {
+            Some(asked) = async {
+                match mail.as_mut() {
+                    Some(mail) => mail.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => publish_invite_mail(asked, &mut mail_acks),
+            Some(answered) = admitting.join_next(), if !admitting.is_empty() => match answered {
+                Ok(event) => println!("{}", event.to_line()),
+                // Its waiter hears nothing and gives up, as on any lost answer.
+                Err(error) => eprintln!("tilo-relay: a pre-admission did not finish: {error}"),
+            },
             _ = roles_tick.tick(), if governance.roles_file.is_some() => {
                 let changed_at = governance.roles_changed_at();
                 if changed_at != roles_seen {
@@ -1508,57 +2079,9 @@ async fn serve_operator(
                 }
             }
             _ = online_tick.tick() => {
-                let sessions = context.web.online_users();
-                let people = sessions.keys().filter(|user| **user != spectator).count();
-                // Seated ones only: a page refused for want of a seat keeps
-                // its web session open while it waits, but watches nothing.
-                let spectators = context
-                    .rooms
-                    .seated_spectators(&context.room)
-                    .await
-                    .unwrap_or(0);
-                // Who of the members is here, for the site's directory.
-                let here: std::collections::BTreeSet<[u8; 32]> =
-                    sessions.keys().filter(|user| **user != spectator).copied().collect();
-                let (faces, _, members) = context
-                    .rooms
-                    .presence(&context.room, &here)
-                    .await
-                    .unwrap_or_default();
-                let online = (
-                    u32::try_from(people).unwrap_or(u32::MAX),
-                    u32::try_from(spectators).unwrap_or(u32::MAX),
-                    faces,
-                    // The spectator person is a member nobody counts.
-                    members.saturating_sub(1),
-                );
-                if last_online.as_ref() != Some(&online) {
-                    println!(
-                        "{}",
-                        RoomEvent::Online {
-                            people: online.0,
-                            spectators: online.1,
-                            here: online.2.clone(),
-                            members: online.3,
-                        }
-                        .to_line()
-                    );
-                    last_online = Some(online);
-                }
-                let now = tilo_clock::unix_now_ms();
-                for user in sessions.keys() {
-                    last_seen.insert(*user, now);
-                }
-                if last_seen_written.elapsed() >= Duration::from_secs(60) {
-                    for member in summary(context).await?.members.iter().filter(|member| !member.removed) {
-                        last_seen.entry(member.user_public_key).or_insert(now);
-                    }
-                    governance.write_last_seen(&last_seen)?;
-                    last_seen_written = tokio::time::Instant::now();
-                }
+                presence.observe(context, governance, spectator, &mut last_seen).await?;
             }
-            _ = prune_tick.tick() => prune_idle(context, governance, spectator, &mut removed, &mut last_seen).await?,
-            _ = reset_tick.tick(), if governance.reset_every > 0 => reset_now(context, governance).await,
+            _ = prune_tick.tick() => prune_idle(context, governance, spectator, &removals, &mut last_seen).await?,
             changed = changes.recv() => {
                 match changed {
                     Ok(room) if room != context.room => continue,
@@ -1566,23 +2089,44 @@ async fn serve_operator(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("the relay stopped governing"),
                 }
                 let members = summary(context).await?.members;
-                for user in newly_removed(&mut removed, &members) {
+                for user in removals.taken_in(&members, tilo_clock::unix_now_ms())? {
                     // Bans exist once room moderation lands; until then every
                     // removal is a plain removal. The service treats both alike.
                     println!("{}", RoomEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
                 }
                 reconcile_roles(context, governance, &mut previously_declared).await?;
             }
-            line = operator.recv() => match line {
+            line = operator.recv(), if admitting.len() < PRE_ADMITTING_AT_ONCE => match line {
                 Some(Ok(OperatorCommand::PreAdmit { user_public_key, token_sha256, label, role })) => {
-                    let event = answer_pre_admit(context, &user_public_key, token_sha256, &label, role).await;
-                    println!("{}", event.to_line());
+                    admitting.spawn(answer_pre_admit(admitter.clone(), user_public_key, token_sha256, label, role));
                 }
                 Some(Ok(OperatorCommand::Spectate { device_public_key })) => {
                     println!("{}", answer_spectate(context, device_public_key).to_line());
                 }
+                Some(Ok(command @ (OperatorCommand::WaitList { .. }
+                | OperatorCommand::Unlist { .. }
+                | OperatorCommand::Confirm { .. }
+                | OperatorCommand::Standing { .. }))) => {
+                    println!("{}", answer_wait_list_command(context, governance, command).await.to_line());
+                }
+                Some(Ok(OperatorCommand::InviteMailQueued { request, queued })) => {
+                    if let Some(sender) = mail_acks.remove(&request) {
+                        let _ = sender.send(queued);
+                    }
+                }
+                Some(Ok(OperatorCommand::DiscordAuthorized { user_id, user_name, display_name, avatar, state_sha256, link_check })) => {
+                    hand_to_discord(context, user_id, user_name, display_name, avatar, state_sha256, link_check).await;
+                }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
-                Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
+                Some(Ok(OperatorCommand::Shutdown {})) | None => {
+                    // Whoever is being let in hears the answer before the room stops.
+                    while let Some(answered) = admitting.join_next().await {
+                        if let Ok(event) = answered {
+                            println!("{}", event.to_line());
+                        }
+                    }
+                    return Ok(());
+                }
                 Some(Err(error)) => bail!("unreadable room operator line: {error}"),
             },
         }
@@ -1597,6 +2141,7 @@ async fn serve_operator(
 )]
 mod tests {
     use super::*;
+    use tilo_relay_protocol::rooms::{RoomsReply, RoomsRequest};
     const DAY_MS: u64 = 24 * 3600 * 1000;
 
     #[test]
@@ -1719,6 +2264,368 @@ mod tests {
     }
 
     #[test]
+    fn someone_admitted_again_is_reported_when_removed_again() {
+        let listed = |removed: bool| tilo_peer_state::GovernedMember {
+            removed,
+            ..member(4, false)
+        };
+        let mut seen = BTreeSet::new();
+        assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
+        assert!(newly_removed(&mut seen, &[listed(false)]).is_empty());
+        assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
+    }
+
+    /// A guest pruned after an absence comes back through the door as
+    /// anyone does; only moderation's removals keep a person out.
+    #[test]
+    fn a_pruned_guest_is_not_kept_out_and_a_removal_lapses_after_the_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("removals.json");
+        let gone = |key: u8| tilo_peer_state::GovernedMember {
+            removed: true,
+            ..member(key, false)
+        };
+        let removals = Removals::load(file.clone(), &[], 1_000).unwrap();
+        removals.pruning(&BTreeSet::from([[5; 32]]));
+        assert!(!removals.refuses([5; 32], &[gone(5)], 1_000));
+        assert!(removals.taken_in(&[gone(5)], 1_000).unwrap().is_empty());
+        assert!(
+            removals.refuses([6; 32], &[gone(6)], 1_000),
+            "removed, not yet taken in"
+        );
+        assert_eq!(removals.taken_in(&[gone(6)], 1_000).unwrap(), vec![[6; 32]]);
+        let members = [gone(5), gone(6)];
+        // Kept across a restart, for the day and no longer.
+        let reloaded = Removals::load(file, &members, 2_000).unwrap();
+        assert!(reloaded.refuses([6; 32], &members, 2_000));
+        assert!(!reloaded.refuses([6; 32], &members, 1_000 + REMOVED_FOR_MS));
+        assert!(!reloaded.refuses([5; 32], &members, 2_000));
+    }
+
+    /// A relay governing one room `Plaza`, and what answers its
+    /// pre-admissions, removals kept in `dir`.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the rooms handle moves into what answers pre-admissions"
+    )]
+    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Admitter) {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let host = SigningKey::from_bytes(&[2; 32]);
+        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
+        let relay = tilo_relay::daemon::Relay::start(
+            tilo_relay::RelayConfig {
+                state_root: dir.join("relay"),
+                identity_root: dir.join("identity"),
+                ..Default::default()
+            },
+            RelayIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: host,
+                device_cert: host_cert.clone(),
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let rooms = relay.rooms().unwrap().clone();
+        let room = rooms.create("Plaza").await.unwrap().room;
+        let removals =
+            Removals::load(dir.join("removals.json"), &[], tilo_clock::unix_now_ms()).unwrap();
+        let admitter = Admitter {
+            rooms,
+            host_cert,
+            root,
+            room,
+            spectator: [9; 32],
+            removals,
+            members_only: false,
+        };
+        (relay, admitter)
+    }
+
+    /// Whether the guest `device` joins with the pre-admission `answer`
+    /// and its `token`, as their page does.
+    async fn joins(
+        rooms: &Rooms,
+        (device, device_cert): &(SigningKey, DeviceCert),
+        answer: RoomEvent,
+        token: &[u8],
+    ) -> bool {
+        let RoomEvent::PreAdmitted { invitation, .. } = answer else {
+            panic!("not pre-admitted: {answer:?}");
+        };
+        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(invitation)
+            .unwrap();
+        let JoinReply::Challenge { challenge } = rooms
+            .page_join(JoinStep::Ask {
+                invitation,
+                device_cert: device_cert.clone(),
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            return false;
+        };
+        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+        let proved = rooms
+            .page_join(JoinStep::ProvePreAdmitted {
+                challenge,
+                signature,
+                name: "Guest".into(),
+                token: token.to_vec(),
+            })
+            .await;
+        matches!(proved, JoinReply::Admitted { .. })
+    }
+
+    fn listed_removed(members: &[tilo_peer_state::GovernedMember], person: [u8; 32]) -> bool {
+        members
+            .iter()
+            .any(|member| member.user_public_key == person && member.removed)
+    }
+
+    /// A guest moderation removed asks the door again at once, as their
+    /// page does the moment the room drops it: the room refuses that
+    /// person, whether or not its operator loop has taken the removal in
+    /// yet, and an invitation it issued them before the removal is no way
+    /// back in either.
+    #[tokio::test]
+    async fn a_removed_guest_is_refused_pre_admission_and_kept_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, admitter) = plaza(dir.path()).await;
+        let (rooms, room) = (admitter.rooms.clone(), admitter.room.clone());
+        let device = SigningKey::from_bytes(&[4; 32]);
+        let guest_root = SigningKey::from_bytes(&[3; 32]);
+        let guest = (
+            device.clone(),
+            enrol(&guest_root, &device, "guest", DeviceCapabilities::member()).unwrap(),
+        );
+        let person = guest.1.user_public_key;
+        let pre_admit = |token: &'static [u8]| {
+            answer_pre_admit(
+                admitter.clone(),
+                hex::encode(person),
+                hex::encode(token_digest(token)),
+                "Guest".into(),
+                RoomRole::Editor,
+            )
+        };
+        let removed =
+            |event: &RoomEvent| matches!(event, RoomEvent::PreAdmitRefused { removed: true, .. });
+
+        assert!(joins(&rooms, &guest, pre_admit(b"first").await, b"first").await);
+        let earlier = pre_admit(b"earlier").await;
+        let removal = tilo_relay_session::rooms::RemoveMemberRequest {
+            request_id: [8; 32],
+            user_public_key: person,
+        };
+        rooms
+            .remove_member(&room, &admitter.host_cert, removal)
+            .await
+            .unwrap();
+        let members = rooms.summary(&room).await.unwrap().members;
+        assert!(
+            listed_removed(&members, person),
+            "the removal takes their membership"
+        );
+        // Before the operator loop has heard of the removal.
+        let asked = pre_admit(b"second").await;
+        assert!(removed(&asked), "{asked:?}");
+        // Taken in: reported once, and still refused.
+        let now = tilo_clock::unix_now_ms();
+        let taken = admitter.removals.taken_in(&members, now).unwrap();
+        assert_eq!(taken, vec![person]);
+        let asked = pre_admit(b"third").await;
+        assert!(removed(&asked), "{asked:?}");
+        assert!(
+            !joins(&rooms, &guest, earlier, b"earlier").await,
+            "an earlier invitation lets them back in"
+        );
+        let members = rooms.summary(&room).await.unwrap().members;
+        assert!(listed_removed(&members, person), "still removed");
+        relay.shutdown().await;
+    }
+
+    /// Ask for an invitation to `room` as `device`, as a member's page does.
+    async fn invite(rooms: &Rooms, room: &str, device: &DeviceCert) -> RoomsReply {
+        rooms
+            .page_rooms(
+                device,
+                RoomsRequest::Invite {
+                    room: room.to_owned(),
+                    request_id: rand::random(),
+                    role: RoomRole::Editor,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
+                    inviter_name: Some("Member".into()),
+                    wait_list_entry: None,
+                },
+            )
+            .await
+    }
+
+    /// A room taking people by invitation lets nobody new in through its
+    /// door, and still lets a member in again: another tab of theirs is
+    /// another device of the same person. A member invites someone with an
+    /// invitation of their own and lets them in; once the room lets anyone
+    /// in again, members no longer invite.
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one story: the door, a member's other tab, an invitation and taking it back"
+    )]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions"
+        )
+    )]
+    async fn taking_people_by_invitation_members_invite_whom_the_door_turns_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, open) = plaza(dir.path()).await;
+        let rooms = open.rooms.clone();
+        let room = open.room.clone();
+        ensure_guest_policy(&rooms, &room, &open.host_cert)
+            .await
+            .unwrap();
+        // An open room settles as one at every start, holding no such grant.
+        settle_member_invites(&rooms, &room, &open.host_cert, false)
+            .await
+            .unwrap();
+        let by_invitation = Admitter {
+            members_only: true,
+            ..open.clone()
+        };
+        let guest = |seed: u8| {
+            let device = SigningKey::from_bytes(&[seed; 32]);
+            let root = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
+            let cert = enrol(&root, &device, "guest", DeviceCapabilities::member()).unwrap();
+            (device, cert)
+        };
+        let pre_admit = |admitter: &Admitter, person: [u8; 32], token: &'static [u8]| {
+            answer_pre_admit(
+                admitter.clone(),
+                hex::encode(person),
+                hex::encode(token_digest(token)),
+                "Guest".into(),
+                RoomRole::Editor,
+            )
+        };
+
+        // Someone who joined while the door was open is a member. An open
+        // room's link is its invitation: members invite nobody themselves.
+        let member = guest(12);
+        let person = member.1.user_public_key;
+        assert!(
+            joins(
+                &rooms,
+                &member,
+                pre_admit(&open, person, b"open").await,
+                b"open"
+            )
+            .await
+        );
+        let asked = invite(&rooms, &room, &member.1).await;
+        assert!(matches!(asked, RoomsReply::Refused(_)), "{asked:?}");
+
+        settle_member_invites(&rooms, &room, &open.host_cert, true)
+            .await
+            .unwrap();
+        let stranger = guest(11);
+        let asked = pre_admit(&by_invitation, stranger.1.user_public_key, b"stranger").await;
+        assert!(
+            matches!(
+                asked,
+                RoomEvent::PreAdmitRefused {
+                    invite_only: true,
+                    ..
+                }
+            ),
+            "{asked:?}"
+        );
+        let another_tab = (
+            SigningKey::from_bytes(&[13; 32]),
+            enrol(
+                &SigningKey::from_bytes(&[112; 32]),
+                &SigningKey::from_bytes(&[13; 32]),
+                "guest",
+                DeviceCapabilities::member(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(another_tab.1.user_public_key, person, "the same person");
+        let asked = pre_admit(&by_invitation, person, b"again").await;
+        assert!(
+            joins(&rooms, &another_tab, asked, b"again").await,
+            "a member gets in again"
+        );
+
+        // The member invites the stranger, who asks to join with it and
+        // waits until the member lets them in.
+        let issued = invite(&rooms, &room, &member.1).await;
+        let RoomsReply::Invitation {
+            signed_invitation, ..
+        } = issued
+        else {
+            panic!("a member invites: {issued:?}");
+        };
+        let JoinReply::Challenge { challenge } = rooms
+            .page_join(JoinStep::Ask {
+                invitation: signed_invitation,
+                device_cert: stranger.1.clone(),
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            panic!("no challenge");
+        };
+        let signature = stranger.0.sign(&join_proof_digest(&challenge)).to_bytes();
+        let waiting = rooms
+            .page_join(JoinStep::Prove {
+                challenge,
+                signature,
+                name: "Stranger".into(),
+            })
+            .await;
+        assert!(matches!(waiting, JoinReply::Waiting), "{waiting:?}");
+        let listed = rooms
+            .page_rooms(&member.1, RoomsRequest::Requests { room: room.clone() })
+            .await;
+        let RoomsReply::Requests(requests) = listed else {
+            panic!("the member sees who waits: {listed:?}");
+        };
+        let [request] = requests.as_slice() else {
+            panic!("{requests:?}");
+        };
+        assert_eq!(request.user_public_key, stranger.1.user_public_key);
+        let admitted = rooms
+            .page_rooms(
+                &member.1,
+                RoomsRequest::Admit {
+                    room: room.clone(),
+                    request_id: request.request_id,
+                },
+            )
+            .await;
+        assert!(matches!(admitted, RoomsReply::Room(_)), "{admitted:?}");
+        let members = rooms.summary(&room).await.unwrap().members;
+        assert!(
+            members.iter().any(
+                |member| member.user_public_key == stranger.1.user_public_key && !member.removed
+            ),
+            "the invited stranger is a member"
+        );
+
+        settle_member_invites(&rooms, &room, &open.host_cert, false)
+            .await
+            .unwrap();
+        let asked = invite(&rooms, &room, &member.1).await;
+        assert!(matches!(asked, RoomsReply::Refused(_)), "{asked:?}");
+        relay.shutdown().await;
+    }
+
+    #[test]
     fn declared_owners_are_promoted_once_they_joined_and_dropped_keys_are_demoted() {
         let owners = BTreeSet::from([[1; 32], [9; 32]]);
         // [9] has not joined yet: nothing to do for them until they do.
@@ -1801,7 +2708,6 @@ mod tests {
         assert!(newly_removed(&mut seen, &[gone]).is_empty());
     }
 
-    // USER REQUIREMENT (2026-10-19): "Membership in a public room persists. A person who joined stays a member until they leave, are removed by the host, or have been inactive for 30 days (configurable on the host). Going offline for an hour must never remove anyone."
     #[test]
     fn a_member_away_for_an_hour_or_a_week_stays_one_and_thirty_days_away_does_not() {
         use clap::Parser as _;
@@ -1836,6 +2742,30 @@ mod tests {
             .inactive_after_days;
         assert_eq!(shorter, 7, "the host configures it");
         assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
+    }
+
+    /// A site's room lets everyone in through its door: unless its host says
+    /// otherwise, each member's windows stay on their device.
+    #[test]
+    fn a_site_rooms_layout_is_personal_unless_its_host_says_otherwise() {
+        use clap::Parser as _;
+        use tilo_desktop_model::projection::RoomLayout;
+        #[derive(clap::Parser)]
+        struct Args {
+            #[command(flatten)]
+            persistent: PersistentArgs,
+        }
+        assert_eq!(
+            Args::parse_from(["relay"]).persistent.layout,
+            RoomLayout::Personal
+        );
+        assert_eq!(
+            Args::parse_from(["relay", "--layout", "shared"])
+                .persistent
+                .layout,
+            RoomLayout::Shared
+        );
+        assert!(Args::try_parse_from(["relay", "--layout", "public"]).is_err());
     }
 
     #[test]

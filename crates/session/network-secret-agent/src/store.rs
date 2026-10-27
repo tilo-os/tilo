@@ -31,10 +31,6 @@ pub struct StoreKey {
 pub trait SecretStore: Send + Sync {
     fn load(&self, key: &StoreKey) -> Option<SettingSecrets>;
     /// Remember `secrets` for `key`, replacing what was there.
-    ///
-    /// # Errors
-    ///
-    /// When nothing could keep them.
     fn keep(&self, key: &StoreKey, secrets: &SettingSecrets) -> Result<(), String>;
     /// Forget what is remembered for `key` on this device.
     ///

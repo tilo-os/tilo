@@ -253,11 +253,6 @@ impl WriteStage {
         self.gaps().is_empty()
     }
 
-    /// Apply a write of `data` at `offset`.
-    ///
-    /// # Errors
-    ///
-    /// `EINVAL` for a range past the largest offset, or the backing's error.
     pub(super) fn write(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
         let end = offset
             .checked_add(data.len() as u64)
@@ -293,10 +288,6 @@ impl WriteStage {
     }
 
     /// Truncate or extend to `len` bytes; an extension reads as zeros.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backing's error.
     pub(super) fn set_len(&mut self, len: u64) -> io::Result<()> {
         if let Backing::Memory(memory) = &mut self.backing {
             memory.reserve(len)?;
@@ -323,10 +314,6 @@ impl WriteStage {
 
     /// Store `bytes`, read from the base at `offset`, where the stage still
     /// lacks them. Ranges written or truncated away meanwhile are skipped.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backing's error.
     pub(super) fn fill(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
         if let Backing::Memory(memory) = &mut self.backing {
             memory.reserve(self.len)?;
@@ -409,10 +396,6 @@ impl WriteStage {
 
     /// Up to `size` bytes from `offset`: what the stage holds, with the ranges
     /// that are still the base's listed for the caller to read.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backing's error.
     pub(super) fn read(&self, offset: u64, size: u64) -> io::Result<StagedRead> {
         let end = offset.saturating_add(size).min(self.len);
         let start = offset.min(end);
@@ -433,10 +416,6 @@ impl WriteStage {
     }
 
     /// The complete content as a version source; the stage must be complete.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when ranges are missing or the backing fails.
     pub(super) fn source(&mut self) -> io::Result<VersionSource<'_>> {
         if !self.is_complete() {
             return Err(io::Error::other("staged file still lacks base content"));
@@ -484,10 +463,6 @@ impl WriteStage {
     }
 
     /// The first `size` bytes, which must be in the backing.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backing's error, or an error when they are missing.
     pub(super) fn prefix(&self, size: u64) -> io::Result<Vec<u8>> {
         match self.read(0, size)? {
             StagedRead::Ready(bytes) => Ok(bytes),
@@ -496,7 +471,6 @@ impl WriteStage {
     }
 }
 
-/// The answer to a read of a stage.
 pub(super) enum StagedRead {
     /// Every byte was staged (or local base content).
     Ready(Vec<u8>),
@@ -641,7 +615,6 @@ mod tests {
             Some(libc::EFBIG)
         );
         assert_eq!(budget.reserved.load(Ordering::Acquire), 0);
-        // Shrinking an unopened large base to a small prefix remains possible.
         stage.set_len(1).unwrap();
         stage.fill(0, b"x").unwrap();
         assert_eq!(bytes_of(&mut stage), b"x");
@@ -677,7 +650,6 @@ mod tests {
             assert_eq!(missing.gaps, vec![0..4, 6..8]);
             assert_eq!(missing.bytes.len(), 11);
             assert!(stage.source().is_err(), "an incomplete stage never commits");
-            // Filling skips ranges a writer owns.
             stage.write(0, b"W").unwrap();
             stage.fill(0, b"basebase").unwrap();
             assert!(stage.is_complete());

@@ -22,8 +22,9 @@ contains this project's longer workflow. Use `tilo-app --help` or a command's
 4. Extend `tests/app.rs`. `Replica` tests actions without a window; `TestApp`
    drives the production resource and view. Check the visible result, undo,
    reopening, and refusal of edits by a viewer where relevant. A destructive
-   action asks the host first: confirm it with `app.confirm_asked()` (never
-   a dialog of the app's own).
+   action Undo takes back runs at once and offers Undo; one Undo cannot take
+   back asks the host first: confirm it with `app.confirm_asked()` (never a
+   dialog of the app's own).
 
 Storage, history, per-author undo/redo, permissions and collaboration belong
 in the resource runtime. Keep edits on that path so they can be attributed,
@@ -41,6 +42,7 @@ Run these commands from any directory inside the app:
 
 ```sh
 tilo-app dev                       # rebuild on save; retain state after reload
+tilo-app dev --platform web --share  # the app in a room: one browser window per person
 tilo-app test                      # resource and production-view tests
 tilo-app inspect                   # headless widget/accessibility tree
 tilo-app shot                      # headless image of the production root

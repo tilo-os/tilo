@@ -156,7 +156,9 @@ pub trait WindowExtWayland {
     fn xdg_toplevel(&self) -> Option<NonNull<c_void>>;
 
     /// Start a drag-and-drop from this window, offering `offers` as
-    /// mime type → bytes.
+    /// mime type → content: bytes, or a file that is read only when a
+    /// receiver asks for it, on the thread that writes the pipe
+    /// ([`DragData::File`]).
     ///
     /// Call it while a pointer button is held — the compositor validates
     /// the drag against that implicit grab, so a drag started without one
@@ -171,7 +173,7 @@ pub trait WindowExtWayland {
     /// Returns whether the drag was started: `false` on X11, when no
     /// pointer is on the seat, when the compositor has no
     /// `wl_data_device_manager`, or when `offers` is empty.
-    fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool;
+    fn start_drag(&self, offers: Vec<(String, DragData)>) -> bool;
 
     /// Whether the compositor draws this window's decorations, as settled by
     /// `xdg-decoration` in the last configure. `None` before the first
@@ -206,7 +208,7 @@ pub trait WindowExtWayland {
 }
 
 #[cfg(wayland_platform)]
-pub use crate::platform_impl::wayland::{ClientBuffer, ClientBufferSource};
+pub use crate::platform_impl::wayland::{ClientBuffer, ClientBufferSource, DragData};
 
 impl WindowExtWayland for Window {
     fn set_ime_content_type(&self, content: Option<ImeContentType>) {
@@ -266,7 +268,7 @@ impl WindowExtWayland for Window {
     }
 
     #[inline]
-    fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool {
+    fn start_drag(&self, offers: Vec<(String, DragData)>) -> bool {
         #[allow(clippy::single_match)]
         match &self.window {
             #[cfg(x11_platform)]

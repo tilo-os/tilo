@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Located", "version": "1.0",
+ "action": {"default_title": "Where am I"},
+ "permissions": ["activeTab", "scripting"],
+ "background": {"service_worker": "background/worker.js"}}

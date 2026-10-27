@@ -52,7 +52,6 @@ impl LegacyLaunchRoute {
         *self.inner.relay.lock_recover() = Some(connection);
     }
 
-    /// Route one launch for `member`.
     pub async fn launch(&self, member: &MemberIdentity, asked: LaunchRequest) -> LaunchReply {
         let refused = |detail: &str| LaunchReply::Refused {
             detail: detail.to_string(),

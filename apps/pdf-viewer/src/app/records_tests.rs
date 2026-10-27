@@ -144,7 +144,6 @@ fn concurrent_markup_edits_converge_across_replicas() {
         assert_eq!(order, vec!["source-2", "source-3", "source-1"]);
         assert_eq!(ids(&left), vec![("on-first".to_string(), 3)]);
         assert_eq!(ids(&left), ids(&right));
-        // Concurrent moves of the same page still materialise it once.
         let (mut a, mut b) = replicas();
         apply(&mut a, move_page_plan_action("source-2", None));
         apply(&mut b, move_page_plan_action("source-2", Some("source-3")));
@@ -208,7 +207,6 @@ fn concurrent_markup_edits_converge_across_replicas() {
             moved.rotation, 90,
             "rotation is keyed by page id, not list slot"
         );
-        // Concurrent rotations resolve as one register too.
         let (mut a, mut b) = replicas();
         apply(&mut a, rotate_page_action("source-3", 90));
         apply(&mut b, rotate_page_action("source-3", 180));
@@ -458,7 +456,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
         app.recompute_regions();
         app.sync_viewport_frame();
 
-        // The record pins the bytes it annotates.
         let pinned = PdfMarkup::of(&state.doc)
             .pinned_source()
             .expect("source pinned");
@@ -515,7 +512,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
         );
         app.reload(&state.doc);
 
-        // The same records on the same bytes export byte-identically.
         let out1 = dir.path().join("one.pdf");
         let out2 = dir.path().join("two.pdf");
         assert!(
@@ -540,7 +536,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
             "the original stays untouched"
         );
 
-        // Reloaded, the export carries real annotations and field values.
         let engine = tilo_pdf::Engine::shared().expect("engine");
         let reloaded = engine.open_bytes(&one).expect("reopen");
         let annotations = reloaded.annotations(0).unwrap();
@@ -627,7 +622,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
         );
         assert!(stored[0].chars.is_some(), "text-anchored");
 
-        // On screen the page is rotated and the highlight still covers the word.
         let map = app.page_map(1);
         assert_eq!(map.effective.rotation, tilo_pdf::Rotation::Cw90);
         let key = (0, crate::source::RasterBackend::bucket_for(400));
@@ -642,7 +636,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             })
             .expect("the render is queued");
         tests::drain_until(&mut app, |app| app.raster_images.contains_key(&key));
-        let bitmap = app.raster_images[&key].clone();
+        let bitmap = app.raster_images.get(&key).expect("the render arrived");
         assert!(
             bitmap.height > bitmap.width,
             "the landscape page renders portrait once rotated ({}x{})",
@@ -671,4 +665,22 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let overlap = quad.intersects(&word);
         assert!(overlap, "quad {quad:?} covers the word {word:?}");
     }
+}
+
+#[test]
+fn a_reading_position_records_a_page_fraction_and_zoom() {
+    let bytes = PdfMarkup::planned(3);
+    let mut doc = AutoCommit::load(&bytes).expect("a planned record");
+    let page = PdfMarkup::of(&doc).page_plan()[1].id.clone();
+    apply(
+        &mut doc,
+        crate::actions::record_reading_position_action(&page, 0.25, 1.75),
+    );
+    assert_eq!(
+        PdfMarkup::of(&doc).reading_position(),
+        Some((page, 0.25, 1.75))
+    );
+    let unchanged = PdfMarkup::of(&doc).reading_position();
+    apply(&mut doc, PdfMarkup::START_PAGE_PLAN.with(2));
+    assert_eq!(PdfMarkup::of(&doc).reading_position(), unchanged);
 }

@@ -148,11 +148,6 @@ pub(crate) fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
 ///
 /// This function does not mutate process-global state. The native executable
 /// applies the returned values at its single-threaded startup boundary.
-///
-/// # Errors
-///
-/// Rejects a relative profile path and returns any error creating or
-/// securing the private directories.
 pub(crate) fn prepare_profile_environment(
     profile: &Path,
 ) -> io::Result<[(&'static str, PathBuf); 5]> {
@@ -214,10 +209,6 @@ pub(crate) fn prepare_admission_profile_environment(
 ///
 /// An oversized line is consumed through its newline and reported as
 /// [`Frame::TooLong`]; end of input yields any partial line, then [`Frame::Eof`].
-///
-/// # Errors
-///
-/// Returns any error from the underlying reader.
 pub(crate) fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
     let mut line = Vec::new();
     let mut too_long = false;
@@ -262,10 +253,6 @@ pub(crate) fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
 }
 
 /// Write `reply` as one JSON line and flush it.
-///
-/// # Errors
-///
-/// Returns any serialization or write error.
 pub(crate) fn write_reply(writer: &mut impl Write, reply: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *writer, reply).map_err(io::Error::other)?;
     writer.write_all(b"\n")?;
@@ -432,10 +419,6 @@ const CHECK_EVERY: Duration = Duration::from_millis(25);
 /// never interleave. At end of input the requests in flight are answered
 /// before it returns. `check`, when given, runs every [`CHECK_EVERY`] and
 /// ends the loop with its error.
-///
-/// # Errors
-///
-/// Returns a read, write or `check` error, or that a request's task failed.
 pub(crate) fn serve_lines<'a>(
     runtime: &tilo_rt::AppRuntime,
     mut input: tokio::sync::mpsc::Receiver<InputEvent>,
@@ -545,10 +528,6 @@ where
 }
 
 /// Load a validated manifest and serve with the caller's configured profile environment.
-///
-/// # Errors
-///
-/// Returns any [`load_manifest`] or [`serve`] error.
 pub(crate) fn run<S: RuntimeServices>(profile: &Path, manifest_path: &Path) -> io::Result<()> {
     // The complete startup configuration is parsed and validated before
     // profile services or any application process is started.

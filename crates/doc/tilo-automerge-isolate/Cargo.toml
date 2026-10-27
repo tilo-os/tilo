@@ -21,6 +21,7 @@ seccompiler.workspace = true
 flate2.workspace = true
 hex.workspace = true
 sha2.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

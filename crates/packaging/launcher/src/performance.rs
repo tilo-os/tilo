@@ -244,7 +244,6 @@ mod tests {
             game_hints_survive_exec_into_the_final_process();
             return;
         }
-        // Phase `kernel_applies_available_scoped_game_hints`.
         {
             std::thread::spawn(|| {
                 let applied = apply_game_uclamp();
@@ -294,7 +293,6 @@ mod tests {
             .join()
             .expect("game-hint test thread");
         }
-        // Phase `public_hint_path_applies_timer_slack_or_reports_a_real_error`.
         {
             std::thread::spawn(|| {
                 apply_game_performance_hints().expect("Tilo game scheduling profile");
@@ -306,7 +304,6 @@ mod tests {
             .join()
             .expect("game profile test thread");
         }
-        // Phase `game_uclamp_preserves_existing_nice_value`.
         {
             std::thread::spawn(|| {
                 // SAFETY: setpriority consumes scalar arguments. A positive nice

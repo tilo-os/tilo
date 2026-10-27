@@ -97,9 +97,6 @@ impl AccountConfig {
     ///
     /// Keeping this concrete entry point beside the schema lets thin apps use
     /// the shared runtime's decoder rather than each instantiating one.
-    ///
-    /// # Errors
-    /// Returns the schema error for malformed connection metadata.
     pub fn from_value(value: serde_json::Value) -> serde_json::Result<Self> {
         serde_json::from_value(value)
     }
@@ -227,7 +224,6 @@ mod tests {
 
     #[test]
     fn setup_model_autofills_and_validates() {
-        // Phase `autofill_recognises_gmail`.
         {
             let mut cfg = AccountConfig {
                 email: "person@gmail.com".into(),
@@ -239,7 +235,6 @@ mod tests {
             assert!(cfg.is_valid());
         }
 
-        // An unknown domain gets the generic `imap.`/`smtp.` guess.
         {
             let mut cfg = AccountConfig {
                 email: "person@acme.test".into(),
@@ -250,7 +245,6 @@ mod tests {
             assert_eq!(cfg.smtp_host, "smtp.acme.test");
         }
 
-        // Phase `validate_flags_missing_fields`.
         {
             let cfg = AccountConfig::default();
             assert!(!cfg.is_valid());

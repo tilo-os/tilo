@@ -39,8 +39,6 @@ pub struct MediaHost {
 
 impl MediaHost {
     /// Open the content store at `content` and serve it on `socket`.
-    /// # Errors
-    /// Returns runtime, store or socket errors.
     pub fn start(content: &Path, socket: &Path) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)

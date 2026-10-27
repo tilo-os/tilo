@@ -13,12 +13,14 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const RUNTIME_BINARY: &str = env!("CARGO_BIN_EXE_tilo-runtime");
+fn runtime_binary() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-runtime")
+}
 
 /// The runtime as an MCP client config inside a Tilo login starts it: no
 /// profile named, the session's runtime directory and desktop name set.
 fn connect_in_login(runtime_dir: &Path, home: &Path) -> Command {
-    let mut command = Command::new(RUNTIME_BINARY);
+    let mut command = Command::new(runtime_binary());
     command
         .arg("--connect")
         .env("XDG_CURRENT_DESKTOP", "tilo:GNOME")
@@ -120,7 +122,7 @@ fn a_tilo_login_without_a_door_fails_and_starts_no_runtime() {
 
 #[test]
 fn standalone_is_rejected_outside_connect() {
-    let output = Command::new(RUNTIME_BINARY)
+    let output = Command::new(runtime_binary())
         .args(["--standalone", "--daemon", "--profile", "/nonexistent/tilo"])
         .output()
         .unwrap();

@@ -1,10 +1,30 @@
 #!/bin/sh
+# Whether background network work may run now: the condition every Tilo
+# timer that fetches in the background starts with (ExecCondition=).
+#
+#   tilo-update-policy-check               updates: spare a metered connection
+#                                          only when the owner asked to
+#                                          (metered=avoid in the state file)
+#   tilo-update-policy-check --background  work nobody waits for (refreshing
+#                                          public catalogue copies): always
+#                                          spare a metered connection
+#
+# Battery is the timer's own ConditionACPower=, which systemd evaluates.
 set -eu
 
 state_file=/var/lib/tilo/update-policy
-if ! grep -qx 'metered=avoid' "$state_file" 2>/dev/null; then
-    exit 0
-fi
+case "${1-}" in
+    --background) ;;
+    '')
+        if ! grep -qx 'metered=avoid' "$state_file" 2>/dev/null; then
+            exit 0
+        fi
+        ;;
+    *)
+        echo "usage: $0 [--background]" >&2
+        exit 2
+        ;;
+esac
 
 # NetworkManager is the system authority for whether an active connection is
 # metered. Unknown/unreported links do not block security updates; only an
@@ -14,7 +34,7 @@ if ! command -v nmcli >/dev/null 2>&1; then
 fi
 if nmcli -t -f GENERAL.STATE,GENERAL.METERED device show 2>/dev/null \
     | grep -Eiq '(^|:)yes([[:space:]]|$)|yes \(guessed\)'; then
-    echo 'Tilo update deferred: active connection is metered'
+    echo 'Tilo background fetch deferred: active connection is metered'
     exit 1
 fi
 exit 0

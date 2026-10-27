@@ -1,6 +1,3 @@
-//! The service end to end, over a machine laid out in a directory and real
-//! processes for the ends.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -15,7 +12,6 @@
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use crate::apps::EndPolicy;
 use crate::end::PidfdSignaller;
@@ -235,13 +231,9 @@ fn snapshots(
 }
 
 fn next(rx: &mpsc::Receiver<crate::protocol::Snapshot>) -> crate::protocol::Snapshot {
-    rx.recv_timeout(Duration::from_secs(10))
-        .expect("the hub pushes a snapshot each interval")
+    tilo_test_env::recv("the hub's snapshot of the interval", rx)
 }
 
-/// USER REQUIREMENT, the service's half: the resource monitor reads the
-/// machine's processes and stats through the service.
-// USER REQUIREMENT (2026-10-18): "the resource monitor isn't allowed to read the system process list/or any system stats"
 #[test]
 fn the_monitor_is_served_the_machines_processes_and_stats() {
     let root = tempfile::tempdir().unwrap();
@@ -406,8 +398,12 @@ fn nobody_subscribed_means_no_thread_and_no_reading() {
         !hub.is_reading(),
         "the last subscriber leaving stops the thread"
     );
-    assert!(
-        rx.recv_timeout(Duration::from_millis(600)).is_err(),
+    // The subscriber's callback went with it: whatever was read before is
+    // all there will be.
+    let _read_before: Vec<_> = rx.try_iter().collect();
+    assert_eq!(
+        rx.try_recv().unwrap_err(),
+        mpsc::TryRecvError::Disconnected,
         "and nothing more is read"
     );
 }
@@ -436,7 +432,8 @@ fn connect_within(
         let reader = service.try_clone().unwrap();
         crate::server::serve(reader, service, &handoff, &hub, prompter.as_ref());
     });
-    app.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    app.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
     app
 }
 
@@ -604,6 +601,208 @@ fn an_app_sees_and_does_only_what_it_was_granted() {
         },
         "a grant past the manifest is not held"
     );
+}
+
+/// An app holding `system-info` is told the machine's storage, as the hub's
+/// source describes it; one without it is refused, and no prompt is shown
+/// for a read the launcher already decided.
+#[test]
+fn storage_is_answered_to_system_info_and_refused_without_it() {
+    use crate::protocol::{DriveHealth, Storage, StorageDevice};
+    let root = tempfile::tempdir().unwrap();
+    machine(root.path(), 100);
+    let storage = Storage {
+        devices: vec![StorageDevice {
+            name: "nvme0n1".into(),
+            kind: "disk".into(),
+            size: 1_024_209_543_168,
+            children: vec![StorageDevice {
+                name: "nvme0n1p7".into(),
+                kind: "part".into(),
+                fstype: Some("crypto_LUKS".into()),
+                children: vec![StorageDevice {
+                    name: "root".into(),
+                    kernel_name: Some("dm-0".into()),
+                    kind: "crypt".into(),
+                    fstype: Some("ext4".into()),
+                    mountpoint: Some("/sysroot".into()),
+                    ..StorageDevice::default()
+                }],
+                ..StorageDevice::default()
+            }],
+            health: Some(DriveHealth {
+                supported: true,
+                ..DriveHealth::default()
+            }),
+            ..StorageDevice::default()
+        }],
+    };
+    let hub = Hub::with_storage(
+        Box::new(KernelProbe::at(root.path())),
+        EndPolicy::for_user(UID, std::process::id()),
+        Box::new(PidfdSignaller),
+        Box::new(crate::storage::FixedStorage(storage.clone())),
+    );
+
+    let mut granted = connect(
+        &hub,
+        Grants {
+            system_info: true,
+            ..Grants::default()
+        },
+        std::sync::Arc::new(NoPrompter),
+    );
+    assert_eq!(
+        ask(&mut granted, &Request::Storage { request: 1 }),
+        Reply::Storage {
+            request: 1,
+            storage: Box::new(storage),
+        }
+    );
+
+    let mut ungranted = connect(&hub, Grants::default(), std::sync::Arc::new(NoPrompter));
+    assert_eq!(
+        ask(&mut ungranted, &Request::Storage { request: 2 }),
+        Reply::Refused {
+            request: 2,
+            refusal: Refusal::NotGranted {
+                grant: Grant::SystemInfo
+            },
+        }
+    );
+}
+
+/// Storage that waits for the test to let it answer, and notes which
+/// thread read it.
+struct HeldStorage {
+    started: std::sync::Mutex<mpsc::Sender<()>>,
+    release: std::sync::Mutex<mpsc::Receiver<()>>,
+    readers: std::sync::Mutex<Vec<(std::thread::ThreadId, Option<String>)>>,
+}
+
+impl crate::storage::StorageSource for HeldStorage {
+    fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
+        let thread = std::thread::current();
+        self.readers
+            .lock()
+            .unwrap()
+            .push((thread.id(), thread.name().map(str::to_owned)));
+        let _ = self.started.lock().unwrap().send(());
+        self.release
+            .lock()
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the test releases the reading");
+        Ok(crate::protocol::Storage::default())
+    }
+}
+
+/// A slow storage read (a busy udisks2, a drive waking up) holds up nothing
+/// but its own answer. It is never taken on the thread that started the
+/// service, which in the session is the compositor's main loop, nor on the
+/// asking connection's: the hub's storage thread reads, and the connection
+/// answers the app's other requests meanwhile.
+#[test]
+fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
+    struct Shared(std::sync::Arc<HeldStorage>);
+    impl crate::storage::StorageSource for Shared {
+        fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
+            self.0.read()
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    machine(root.path(), 100);
+    let (release, released) = mpsc::channel();
+    let (start, started) = mpsc::channel();
+    let storage = std::sync::Arc::new(HeldStorage {
+        started: std::sync::Mutex::new(start),
+        release: std::sync::Mutex::new(released),
+        readers: std::sync::Mutex::new(Vec::new()),
+    });
+    let hub = Hub::with_storage(
+        Box::new(KernelProbe::at(root.path())),
+        EndPolicy::for_user(UID, std::process::id()),
+        Box::new(PidfdSignaller),
+        Box::new(Shared(std::sync::Arc::clone(&storage))),
+    );
+    // This thread stands for the compositor's: it starts the service.
+    let socket = root.path().join("system-stats.sock");
+    let _server =
+        crate::server::Server::bind(&socket, hub, std::sync::Arc::new(NoPrompter)).unwrap();
+    let mut app = UnixStream::connect(&socket).unwrap();
+    app.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    crate::protocol::write_handoff(
+        &mut app,
+        &Handoff {
+            protocol: PROTOCOL,
+            app_id: "so.tilo.disks".into(),
+            workspace_id: Some("room".into()),
+            grants: Grants {
+                system_info: true,
+                ..Grants::default()
+            },
+            ceiling: Grants::ALL,
+        },
+    )
+    .unwrap();
+
+    let reading_started = || {
+        started
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the storage thread starts reading");
+    };
+    write_message(&mut app, &Request::Storage { request: 1 }).unwrap();
+    reading_started();
+    // While the reading waits, the connection answers what else the app asks.
+    assert_eq!(
+        ask(
+            &mut app,
+            &Request::EndProcess {
+                request: 2,
+                pid: 4242,
+                started_at: 5000,
+                force: false,
+            }
+        ),
+        Reply::Refused {
+            request: 2,
+            refusal: Refusal::NotGranted {
+                grant: Grant::Processes
+            },
+        },
+        "the connection answered while the storage read was held"
+    );
+    release.send(()).unwrap();
+    assert_eq!(
+        read_message::<_, Reply>(&mut app).unwrap(),
+        Some(Reply::Storage {
+            request: 1,
+            storage: Box::default(),
+        })
+    );
+    // A later ask is a fresh reading, again off this thread.
+    write_message(&mut app, &Request::Storage { request: 3 }).unwrap();
+    reading_started();
+    release.send(()).unwrap();
+    assert_eq!(
+        read_message::<_, Reply>(&mut app).unwrap(),
+        Some(Reply::Storage {
+            request: 3,
+            storage: Box::default(),
+        })
+    );
+
+    let readers = storage.readers.lock().unwrap().clone();
+    assert_eq!(readers.len(), 2);
+    for (thread, name) in readers {
+        assert_ne!(
+            thread,
+            std::thread::current().id(),
+            "never on the thread that started the service"
+        );
+        assert_eq!(name.as_deref(), Some(crate::hub::STORAGE_THREAD));
+    }
 }
 
 /// A real process, described in the fake `/proc` as living in `cgroup` and

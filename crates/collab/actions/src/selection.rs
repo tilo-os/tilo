@@ -83,7 +83,6 @@ impl SelectionPlace {
         }
     }
 
-    /// A caret at character `at` of `item`.
     #[must_use]
     pub fn caret(item: impl Into<String>, at: usize) -> Self {
         Self {
@@ -263,14 +262,12 @@ impl SelectionAnchor {
         }
     }
 
-    /// The same anchor with `excerpt` as its excerpt, bounded.
     #[must_use]
     pub fn with_excerpt(mut self, excerpt: &str) -> Self {
         self.excerpt = excerpt_of(excerpt);
         self
     }
 
-    /// The same anchor at `place`.
     #[must_use]
     pub fn at(mut self, place: SelectionPlace) -> Self {
         self.place = Some(place);

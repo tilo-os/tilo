@@ -1,4 +1,4 @@
-"""The agent-door (M01-M04) and input-fidelity (I01-I07) checks, without a VM.
+"""The agent-door (M01-M04) and input-fidelity (I01-I08) checks, without a VM.
 
 The agent checks run for real against a fake `tilo-runtime-mcp` and a fake permission
 prompt, through the same guest client the VM runs; the input checks' parsers read the
@@ -21,6 +21,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 
 from acceptance import core, report  # noqa: E402
 from acceptance.checks import agent, input_devices  # noqa: E402
@@ -50,14 +52,13 @@ B: PROP=0
 """
 
 # A stand-in for tilo-runtime-mcp --connect behind the agent door: it asks the person on
-# `initialize` (a file the fake VM answers), then serves a Notes catalogue.
+# `initialize` (a file the fake VM answers), then serves the agent tools over a Notes notebook.
 FAKE_MCP = r'''#!/usr/bin/env python3
 import json, os, sys, time
 state = os.environ["FAKE_STATE"]
 def say(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
-def tool(i, payload, error=False):
-    say({"jsonrpc": "2.0", "id": i, "result": {"isError": error, "structuredContent": payload,
-         "content": [{"type": "text", "text": json.dumps(payload)}]}})
+def tool(i, text, error=False):
+    say({"jsonrpc": "2.0", "id": i, "result": {"isError": error, "content": [{"type": "text", "text": text}]}})
 for line in sys.stdin:
     m = json.loads(line)
     if m.get("method") == "initialize":
@@ -72,18 +73,22 @@ for line in sys.stdin:
         say({"jsonrpc": "2.0", "id": m["id"], "result": {"serverInfo": {"name": "tilo"}}})
     elif m.get("method") == "tools/list":
         say({"jsonrpc": "2.0", "id": m["id"], "result": {"tools": [{"name": n} for n in
-             ("tilo_list_apps", "tilo_query", "tilo_invoke")] + FAKE_EXTRA}})
+             ("tilo_ls", "tilo_read", "tilo_do", "tilo_find", "tilo_status")] + FAKE_EXTRA}})
     elif m.get("method") == "tools/call":
         p = m["params"]; a = p["arguments"]
-        if p["name"] == "tilo_list_apps":
-            tool(m["id"], {"apps": [{"peer_id": 1, "app_id": a_} for a_ in APPS]})
-        elif p["name"] == "tilo_query":
-            tool(m["id"], {"rows": [{"resource": "notes.notebook", "id": "new-page", "label": "New page"}]})
-        elif p["name"] == "tilo_invoke":
-            if a["action"] == "new-page":
-                tool(m["id"], {"page": "page-123", "resource": "notes.page:page-123"})
-            else:
-                tool(m["id"], "unknown_action: " + a["action"], error=True)
+        notes = state + "/notes"
+        if p["name"] == "tilo_ls" and not a.get("path"):
+            tool(m["id"], "\n".join(["apps"] + [f"{x.rsplit('.', 1)[-1]}  Notes  running" for x in APPS]))
+        elif p["name"] == "tilo_ls" and a["path"] == "notes#new-note":
+            tool(m["id"], "notes#new-note  New note\n  title  text")
+        elif p["name"] == "tilo_do" and a["path"] == "notes#new-note":
+            open(notes, "a").write(a["args"]["title"] + "\n")
+            tool(m["id"], "ok note " + a["args"]["title"])
+        elif p["name"] == "tilo_do":
+            tool(m["id"], "notes has no action " + a["path"].split("#")[-1], error=True)
+        elif p["name"] == "tilo_find":
+            found = open(notes).read().splitlines() if os.path.exists(notes) else []
+            tool(m["id"], "\n".join(f"notes/Notebook/{t}  {t}" for t in found if a["query"] in t))
 '''
 
 
@@ -104,6 +109,7 @@ class FakeVm:
         self.home.mkdir()
         self.state.mkdir()
         self.invoked = []
+        self.grants = []
 
     def exec(self, script, timeout=120, check=True):
         if script.startswith("test -S"):
@@ -131,7 +137,14 @@ class FakeVm:
         return {}
 
     def run(self, *args, **kwargs):
-        return json.dumps({"pages": ["page-123"]}) if args[:2] == ("control", "read") else ""
+        notes = self.state / "notes"
+        if args[:2] == ("control", "read") and notes.exists():
+            return json.dumps({"notes": notes.read_text().splitlines()})
+        return ""
+
+    def raw(self, op, timeout=60):
+        self.grants.append(op)
+        return {"ok": True}
 
     def control_json(self, *args):
         return {}
@@ -179,13 +192,15 @@ class AgentDoorChecks(unittest.TestCase):
             self.assertIn("fix/agent-door", r.detail)
             self.assertFalse(r.unobservable)
 
-    def test_an_admitted_agent_sees_the_desktop_and_makes_a_page(self):
+    def test_an_admitted_agent_sees_the_desktop_and_makes_a_note(self):
         vm, results = self.run_agent()
         self.assertEqual({i: r.status for i, r in results.items()},
                          {"M01": "pass", "M02": "pass", "M03": "pass", "M04": "pass"},
                          {i: r.detail for i, r in results.items()})
         self.assertEqual([a[1] for a in vm.invoked], ["allow-once@p1", "deny@p1"][:len(vm.invoked)])
         self.assertTrue(any(i[1].startswith("deny@") for i in vm.invoked))
+        # Notes is granted for the session and taken back after it.
+        self.assertEqual([g["op"] for g in vm.grants], ["allow", "disallow"])
 
     def test_an_empty_standalone_runtime_fails_m02_not_m01(self):
         _, results = self.run_agent(apps=[])
@@ -239,19 +254,20 @@ class AgentDoorChecks(unittest.TestCase):
 
 
 class GuestClientTransport(unittest.TestCase):
-    def probe(self, server, assertions, timeout=3):
+    def probe(self, server, assertions):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "fake-mcp"
             binary.write_text("#!/usr/bin/env python3\nimport os, sys\n" + textwrap.dedent(server))
             binary.chmod(0o755)
             code = ("import runpy\n"
+                    f"HANG = {HANG_BOUND!r}\n"
                     f"module = runpy.run_path({str(agent.CLIENT)!r})\n"
                     "client = module['Client']()\n"
                     "try:\n" + textwrap.indent(textwrap.dedent(assertions), "    ") +
                     "\nfinally:\n    client.close()\n")
             # Bound regressions that previously blocked forever inside readline/close.
             proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                                  env=dict(os.environ, ACC_MCP_BIN=str(binary)), timeout=timeout)
+                                  env=dict(os.environ, ACC_MCP_BIN=str(binary)), timeout=HANG_BOUND)
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_coalesced_lines_do_not_disappear_in_text_buffering(self):
@@ -259,7 +275,7 @@ class GuestClientTransport(unittest.TestCase):
             os.write(1, b'{"id":1}\\n{"id":2}\\n')
             sys.stdin.read()
         ''', '''
-            assert client.read(1) == {"id": 1}
+            assert client.read(HANG) == {"id": 1}
             assert client.read(0.1) == {"id": 2}
         ''')
 
@@ -271,7 +287,7 @@ class GuestClientTransport(unittest.TestCase):
         ''', '''
             assert client.read(0.1) == "timeout"
             client.send({"continue": True})
-            assert client.read(1) == {"id": 1}
+            assert client.read(HANG) == {"id": 1}
         ''')
 
     def test_stderr_backpressure_cannot_block_protocol_reply(self):
@@ -279,7 +295,7 @@ class GuestClientTransport(unittest.TestCase):
             os.write(2, b'x' * 262144)
             os.write(1, b'{"id":1}\\n')
         ''', '''
-            assert client.read(1) == {"id": 1}
+            assert client.read(HANG) == {"id": 1}
         ''')
 
     def test_shutdown_reaps_a_server_that_ignores_eof(self):
@@ -292,7 +308,7 @@ class GuestClientTransport(unittest.TestCase):
             client.close = lambda: None
             assert client.proc.returncode == -9
             assert client.proc.stdout.closed
-        ''', timeout=8)
+        ''')
 
     def test_shutdown_drains_final_notifications_and_reaps_child(self):
         self.probe('''
@@ -358,18 +374,57 @@ class InputDeviceParsers(unittest.TestCase):
         wrong_bus = dict(input_devices.KEYBOARD_ID, bus=0x06)
         self.assertIsNone(input_devices.find_device(devices, wrong_bus))
 
+    def test_the_kernel_state_says_which_outputs_scan_out(self):
+        state = (
+            "plane[31]: plane-0\n\tcrtc=crtc-0\n\tfb=44\n\t\tallocated by = tilo\n\t\trefcount=2\n"
+            "plane[32]: plane-1\n\tcrtc=(null)\n\tfb=0\n"
+            "plane[33]: plane-2\n\tcrtc=crtc-1\n\tfb=0\n"
+            "crtc[34]: crtc-0\n\tenable=1\n\tactive=1\n\tself_refresh_active=0\n"
+            "crtc[35]: crtc-1\n\tenable=1\n\tactive=1\n"
+            "crtc[36]: crtc-2\n\tenable=0\n\tactive=0\n"
+            "connector[37]: Virtual-1\n\tcrtc=crtc-0\n\tself_refresh_aware=0\n"
+            "connector[38]: Virtual-2\n\tcrtc=crtc-1\n"
+            "connector[39]: Virtual-3\n\tcrtc=crtc-2\n"
+            "connector[40]: Virtual-4\n\tcrtc=(null)\n"
+        )
+        blocks = input_devices.parse_kms_state(state)
+        self.assertEqual(blocks[0], {"kind": "plane", "name": "plane-0", "crtc": "crtc-0", "fb": "44"})
+        self.assertEqual(
+            input_devices.scanning_out(blocks, ["Virtual-1", "Virtual-2", "Virtual-3", "Virtual-4"]),
+            {"Virtual-1": "crtc-0", "Virtual-2": None, "Virtual-3": None, "Virtual-4": None},
+            "only an active CRTC with a framebuffer on a plane scans out",
+        )
+
     def test_udev_properties(self):
         props = input_devices.parse_properties("ID_INPUT=1\nID_INPUT_TOUCHPAD=1\nID_INPUT_WIDTH_MM=130\n")
         self.assertEqual(props["ID_INPUT_WIDTH_MM"], "130")
 
+    def test_a_lost_super_space_names_the_keyboards_the_compositor_opened(self):
+        written = {}
+        state = {"devices": [{"name": "tilo-vm keyboard (seat-acceptance)"}],
+                 "active_keyboard": "tilo-vm keyboard"}
+        vm = SimpleNamespace(
+            exec=lambda script, **k: json.dumps(state),
+            root_exec=lambda script, **k: YOGA_DEVICES if "proc/bus" in script
+            else "ID_INPUT_KEYBOARD=1\nID_SEAT=seat-acceptance\nDEVNAME=/dev/input/event1\n")
+        ctx = SimpleNamespace(vm=vm, current=SimpleNamespace(id="I02"),
+                              write=lambda name, text: written.update({name: text}))
+        why = input_devices.keyboard_diagnosis(ctx)
+        self.assertIn("has not opened the profile keyboard", why)
+        self.assertIn("'tilo-vm keyboard'", why)
+        self.assertIn("ID_SEAT", why)
+        self.assertNotIn("DEVNAME", why)
+        self.assertIn("I02-keyboards.json", written)
+
     def test_every_check_has_a_registered_order_and_area(self):
         from run import ORDER  # noqa: PLC0415
         ids = {c.id for c in core.REGISTRY if c.area in ("agent", "input")}
-        self.assertEqual(ids, {f"M0{i}" for i in range(1, 5)} | {f"I0{i}" for i in range(1, 8)})
+        self.assertEqual(ids, {f"M0{i}" for i in range(1, 5)} | {f"I0{i}" for i in range(1, 9)})
         self.assertTrue(ids <= set(ORDER), ids - set(ORDER))
         calibrating = {c.id for c in core.REGISTRY if c.area == "input" and c.func.__name__ in
-                       ("touchpad_tap_click", "touchpad_scroll", "disable_while_typing")}
-        self.assertEqual(calibrating, {"I05", "I06", "I07"})
+                       ("touchpad_tap_click", "touchpad_scroll", "disable_while_typing",
+                        "wake_from_sleep")}
+        self.assertEqual(calibrating, {"I05", "I06", "I07", "I08"})
 
 
 if __name__ == "__main__":

@@ -49,6 +49,14 @@ pub fn default_selection() -> Option<ProviderSelection> {
     ProviderSelection::from_config(&ProviderConfig::load())
 }
 
+/// Load the model Settings chose for `agent`, else the default, for a *new*
+/// task.
+pub fn agent_selection(agent: &str) -> Option<ProviderSelection> {
+    let config = ProviderConfig::load();
+    let (profile, model) = config.selection_for(agent)?;
+    Some(ProviderSelection::from_profile(profile, model.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,7 +67,6 @@ mod tests {
     /// environment key: the desktop-owned gateway is the only way out.
     #[test]
     fn a_provider_is_reached_only_through_the_gateway_with_an_explicit_model_and_no_secret() {
-        // Case `task_selection_captures_a_model_but_not_a_secret`.
         {
             let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
             profile.models.push(ModelDescriptor::new("claude-test"));
@@ -67,6 +74,7 @@ mod tests {
             let config = ProviderConfig {
                 default_profile: Some(profile.id.clone()),
                 profiles: vec![profile],
+                ..Default::default()
             };
             let selected = ProviderSelection::from_config(&config).expect("configured provider");
             assert_eq!(selected.model.id, "claude-test");
@@ -75,23 +83,21 @@ mod tests {
             assert!(!serialised.contains("sk-ant-"));
         }
 
-        // Case `incomplete_provider_requires_an_explicit_model_choice`.
         {
             let profile = ProviderProfile::local_vllm();
             let config = ProviderConfig {
                 default_profile: Some(profile.id.clone()),
                 profiles: vec![profile],
+                ..Default::default()
             };
             assert!(ProviderSelection::from_config(&config).is_none());
         }
 
-        // Case `packaged_agent_has_no_direct_provider_or_environment_key_route`,
-        // moved here from the one-test `tests/hosted_gateway_boundary.rs`.
         {
             let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/");
             let model = std::fs::read_to_string(format!("{root}model.rs")).unwrap();
             let providers = std::fs::read_to_string(format!("{root}providers.rs")).unwrap();
-            assert!(model.contains("tilo_model_gateway::complete_streaming"));
+            assert!(model.contains("tilo_model_client::complete_streaming"));
             assert!(model.contains("ModelConversation::new"));
             assert!(!model.contains("ANTHROPIC_API_KEY"));
             assert!(!model.contains("reqwest::"));

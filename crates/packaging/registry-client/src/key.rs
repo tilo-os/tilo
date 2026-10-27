@@ -48,10 +48,6 @@ fn secret(store: &SecretStore) -> ItemSecret {
 }
 
 /// A key from a key file's contents or from its bare hex seed.
-///
-/// # Errors
-///
-/// When `text` is neither.
 pub fn parse(text: &str) -> Result<SigningKey> {
     let text = text.trim();
     let hex_seed = if text.starts_with('{') {

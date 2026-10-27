@@ -41,9 +41,7 @@ use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
-use crate::graphics::{
-    GraphicsScanner, StreamEvent, TerminalImagePlacement, decode_for_rendering, parse_kitty,
-};
+use crate::graphics::{GraphicsScanner, StreamEvent, TerminalImagePlacement, parse_kitty};
 
 /// The PTY reader applies natural backpressure once this many chunks are
 /// waiting for the UI. A terminal must never silently discard process output,
@@ -56,26 +54,30 @@ pub(crate) enum PtyReadDisposition {
     Closed,
 }
 
-/// Linux PTY masters report `EIO` whenever no slave descriptor is open. For a
-/// hosted `ush` session that happens briefly in the hand-off window, after the
-/// master reaches the app but before the guest opens its slave, and it also
-/// happens for good once the guest exits. `session_open` tells the two apart:
-/// the supervisor keeps the session's lifetime socket open exactly while its
-/// guest runs, so `EIO` retries only while that socket is still open. A local
-/// PTY has no hand-off window, so its `EIO` always means the shell exited.
-/// `EINTR` is never closure. EOF and every other error remain terminal.
+/// A PTY master reports that no slave descriptor is open: Linux with `EIO`,
+/// macOS with the end of the file. For a hosted `ush` session that happens
+/// briefly in the hand-off window, after the master reaches the app but before
+/// the guest opens its slave, and it also happens for good once the guest
+/// exits. `session_open` tells the two apart: the supervisor keeps the
+/// session's lifetime socket open exactly while its guest runs, so the signal
+/// retries only while that socket is still open. A local PTY has no hand-off
+/// window, so for it the signal always means the shell exited. `EINTR` is
+/// never closure; every other error is.
 pub(crate) fn classify_pty_read(
     result: &std::io::Result<usize>,
     session_open: impl FnOnce() -> bool,
 ) -> PtyReadDisposition {
     match result {
-        Ok(0) => PtyReadDisposition::Closed,
-        Ok(n) => PtyReadDisposition::Data(*n),
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => PtyReadDisposition::Retry,
-        Err(error) if error.raw_os_error() == Some(libc::EIO) && session_open() => {
-            PtyReadDisposition::Retry
+        Ok(n) if *n > 0 => return PtyReadDisposition::Data(*n),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            return PtyReadDisposition::Retry;
         }
-        Err(_) => PtyReadDisposition::Closed,
+        _ => {}
+    }
+    if tilo_process::editor::read_finds_no_slave(result) && session_open() {
+        PtyReadDisposition::Retry
+    } else {
+        PtyReadDisposition::Closed
     }
 }
 
@@ -569,24 +571,26 @@ pub struct TerminalWidget {
     /// Rows scrolled up from the bottom of the buffer. 0 == pinned to the
     /// live output; a new keystroke or fresh PTY output snaps it back to 0.
     scroll_offset: usize,
-    /// Sub-row precision retained between high-resolution touchpad events.
-    /// Terminal storage is row based, but discarding each fractional delta
-    /// made slow two-finger gestures feel sticky and unpredictable.
+    /// Sub-row precision retained between high-resolution touchpad events
+    /// the terminal hands on as rows (to a program that reads the mouse, or
+    /// as arrow keys in the alternate screen).
     wheel_remainder_px: f64,
+    /// The scrollback as a scroll view (`scrollback_ui.rs`).
+    view: ScrollbackView,
     /// Shared toolkit interaction model for the terminal history bar.
     scrollbar: Scrollbar,
 
     conventions: ui::PlatformConventions,
-    /// Local find-in-scrollback state: the matches the find scope that hosts
-    /// this terminal asked for ([`Findable`]), painted over their cells. It
+    /// Local find-in-scrollback state: the matches the window bar's search
+    /// asked for ([`Findable`]), painted over their cells. It
     /// is intentionally not mirrored into the CRDT or resource tree: a find
     /// term and its matching output can be sensitive, while the shared
     /// terminal transcript already has its own carefully bounded
     /// collaboration contract.
     find_matches: Vec<FindMatch>,
     find_current: usize,
-    /// The context menu's Find entry was chosen: the hosting find scope
-    /// opens its bar ([`Self::take_find_request`]).
+    /// The context menu's Find entry was chosen: the hosting view opens the
+    /// window bar's search ([`Self::take_find_request`]).
     find_request: bool,
     /// Bumped whenever a sync brings fresh output, so an open find bar finds
     /// again and its counter follows ([`Findable::content_revision`]).
@@ -604,7 +608,6 @@ pub struct TerminalWidget {
     /// for behavioural tests that want to verify palette swaps actually
     /// propagate into rendered state without spinning up a GPU scene.
     last_cursor_color: Color,
-    /// Last default-fg color drawn, same rationale as `last_cursor_color`.
     last_fg_default: Color,
     /// Last default-bg color drawn, same rationale as `last_cursor_color`.
     last_bg_default: Color,
@@ -635,6 +638,12 @@ pub struct TerminalWidget {
     /// person pastes next, while every other clipboard effect of this
     /// terminal is admitted through the host.
     allow_osc52_clipboard: bool,
+    /// The bell, and when it last rang. Both settings above are kept where
+    /// the person's other preferences are kept, so they hold for the next
+    /// terminal too.
+    bell: crate::preferences::Bell,
+    bell_at: Option<ui::time::Instant>,
+    preferences: crate::preferences::Preferences,
     /// Right-click context menu (Copy / Paste), reusing the shared toolkit
     /// `ContextMenu` primitive so the terminal never draws its own menu chrome.
     /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
@@ -643,6 +652,8 @@ pub struct TerminalWidget {
     find_menu_index: Option<usize>,
     copy_on_select_menu_index: Option<usize>,
     osc52_menu_index: Option<usize>,
+    /// The context menu's bell row, when the menu is tall enough to hold it.
+    bell_menu_index: Option<usize>,
     menu_paste_index: Option<usize>,
     /// What each effect row of the open menu asks for.
     menu_effects: HashMap<usize, crate::resource::TerminalEffect>,
@@ -696,9 +707,9 @@ pub struct TerminalWidget {
     content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
     /// Decoded images are deliberately local GPU-side state. The session record
-    /// holds only immutable content addresses; each peer validates and decodes bytes
-    /// on demand when a placement comes into view.
-    image_cache: HashMap<String, ui::widget::Image>,
+    /// holds only immutable content addresses; each peer reads, validates and
+    /// decodes bytes on a worker when a placement comes into view.
+    images: crate::image_loads::ImageLoads,
     graphics_scanner: GraphicsScanner,
 
     /// Stable per-instance id used to scope this terminal's collaboration
@@ -723,6 +734,9 @@ pub struct TerminalWidget {
     focused: bool,
     /// How this tab reaches its sessions, and where the current one runs.
     sessions: crate::sessions::Sessions,
+    /// The window this terminal is the app of, and how its session's
+    /// end reaches it.
+    life: WindowLife,
     /// Height of the header that carries the target chip.
     chrome_header_h: f64,
     /// The target chip, as last drawn.
@@ -757,10 +771,10 @@ struct RunState {
     /// The command lines `run` asked for, shared with the view that carries
     /// out the session's outbox.
     queue: crate::runs::RunQueue,
-    /// Asked, waiting for the shell to be at its prompt.
     waiting: std::collections::VecDeque<crate::runs::Asked>,
-    /// Typed at the prompt, waiting for the shell to start it.
-    typed: Option<crate::runs::Asked>,
+    /// Typed at the prompt, waiting for the shell to start them, oldest
+    /// first.
+    typed: std::collections::VecDeque<crate::runs::Asked>,
     /// Started for whoever asked.
     running: Option<crate::runs::Asked>,
     /// Ended, waiting to be recorded.
@@ -776,6 +790,30 @@ struct RunState {
 }
 
 impl TerminalWidget {
+    /// The bell's flash: the pane washes with the attention colour and fades.
+    /// It is drawn over the grid, because a bell nobody sees is what the
+    /// terminal used to do.
+    fn draw_bell_flash(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let flash = self.bell_flash(theme.motion());
+        if flash <= 0.0 {
+            self.bell_at = None;
+            return;
+        }
+        let wash = theme
+            .tokens
+            .colors
+            .semantic
+            .warning
+            .with_alpha_factor(flash * 0.22);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            wash,
+            None,
+            &self.rect,
+        );
+    }
+
     pub(crate) fn native_editor_read_only_changed(&mut self, read_only: bool) {
         if self.native_read_only != read_only {
             self.native_read_only = read_only;
@@ -796,8 +834,6 @@ impl TerminalWidget {
         content: ContentStore,
     ) -> Self {
         let (width, height) = (80, 24);
-        let grid = vec![" ".repeat(width); height];
-        let grid_attrs = vec![vec![Attr::default(); width]; height];
 
         Self {
             rect: Rect::ZERO,
@@ -818,8 +854,8 @@ impl TerminalWidget {
             child_killer: None,
             session_status_message: Arc::new(Mutex::new(SESSION_ENDED_MESSAGE.to_owned())),
             parser: Parser::new(),
-            grid,
-            grid_attrs,
+            grid: vec![" ".repeat(width); height],
+            grid_attrs: vec![vec![Attr::default(); width]; height],
             cursor_x: 0,
             cursor_y: 0,
             width,
@@ -849,6 +885,7 @@ impl TerminalWidget {
             modes: TermModes::default(),
             scroll_offset: 0,
             wheel_remainder_px: 0.0,
+            view: ScrollbackView::default(),
             scrollbar: Scrollbar::vertical(),
             conventions: ui::PlatformConventions::default(),
             find_matches: Vec::new(),
@@ -867,10 +904,14 @@ impl TerminalWidget {
             drag_anchor_span: None,
             select_to_copy: false,
             allow_osc52_clipboard: false,
+            bell: crate::preferences::Bell::default(),
+            bell_at: None,
+            preferences: crate::preferences::Preferences::none(),
             context_menu: ContextMenu::new(),
             find_menu_index: None,
             copy_on_select_menu_index: None,
             osc52_menu_index: None,
+            bell_menu_index: None,
             menu_paste_index: None,
             menu_effects: HashMap::new(),
             last_cursor_pos: Point::ZERO,
@@ -888,7 +929,7 @@ impl TerminalWidget {
             next_link_id: 0,
             current_link_id: 0,
             image_placements: Vec::new(),
-            image_cache: HashMap::new(),
+            images: crate::image_loads::ImageLoads::new(content.clone()),
             content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
@@ -897,6 +938,7 @@ impl TerminalWidget {
             mouse_buttons: 0,
             focused: false,
             sessions: crate::sessions::Sessions::none(),
+            life: WindowLife::default(),
             chrome_header_h: 32.0,
             chip_rect: Rect::ZERO,
             target_menu_rows: None,
@@ -991,6 +1033,14 @@ impl TerminalWidget {
     }
 
     fn status_banner_message(&self) -> Option<String> {
+        // A window closing for its exited shell keeps nothing behind, and a
+        // shell that could not start says why once, with its retry.
+        if self.closing_for_exit()
+            || self.start_failure().is_some()
+            || self.life.reconnect.is_some()
+        {
+            return None;
+        }
         if self.is_disconnected() {
             return Some(self.disconnected_message());
         }
@@ -1261,6 +1311,10 @@ impl TerminalWidget {
 
     fn target_picker_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        // Where the window bar names the target, the picker is the bar's.
+        if self.bar_shows_target() {
+            return None;
+        }
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.chip_label()?)
@@ -1400,14 +1454,80 @@ impl TerminalWidget {
     }
     /// Enable/disable "select to copy": when on, finishing a selection also
     /// writes it to the system clipboard (in addition to the always-set
-    /// primary selection used by middle-click paste).
+    /// primary selection used by middle-click paste). The choice is kept for
+    /// every terminal opened afterwards.
     pub fn set_select_to_copy(&mut self, on: bool) {
+        if self.select_to_copy == on {
+            return;
+        }
         self.select_to_copy = on;
+        self.preferences.set_copy_on_select(on);
     }
     /// Allow (or refuse, the default) programs to write the clipboard through
-    /// OSC 52.
+    /// OSC 52. The choice is kept for every terminal opened afterwards.
     pub fn set_allow_osc52_clipboard(&mut self, on: bool) {
+        if self.allow_osc52_clipboard == on {
+            return;
+        }
         self.allow_osc52_clipboard = on;
+        self.preferences.set_allow_osc52_clipboard(on);
+    }
+
+    /// Choose what a bell does, and keep it. A bell the person asked for is
+    /// a flash of the pane; there is no audible bell in the toolkit yet.
+    pub fn set_bell(&mut self, bell: crate::preferences::Bell) {
+        self.bell = bell;
+        self.preferences.set_bell(bell);
+    }
+
+    /// Read the person's preferences — the bell and what a selection does —
+    /// and use them from now on.
+    pub fn use_preferences(&mut self, preferences: crate::preferences::Preferences) {
+        let stored = preferences.load();
+        self.select_to_copy = stored.copy_on_select;
+        self.allow_osc52_clipboard = stored.allow_osc52_clipboard;
+        self.bell = stored.bell;
+        self.preferences = preferences;
+    }
+
+    /// The bell rang: remember when, so the pane washes and fades. A bell set
+    /// to off rings nothing.
+    fn ring_bell(&mut self) {
+        if self.bell == crate::preferences::Bell::Off {
+            return;
+        }
+        self.bell_at = Some(ui::time::now());
+    }
+
+    /// The bell's flash as a test reads it.
+    #[cfg(test)]
+    pub(crate) fn bell_flash_for_test(&self) -> f32 {
+        self.bell_flash(ui::theme::Theme::default().motion())
+    }
+
+    /// Whether a finished selection copies, as a test reads it.
+    #[cfg(test)]
+    pub(crate) fn selects_to_copy_for_test(&self) -> bool {
+        self.select_to_copy
+    }
+
+    /// How much of the bell's flash is left, `0.0..=1.0`. A bell is a
+    /// confirmation that arrives at once and leaves, so its arrival, its life
+    /// and its fade are the motion library's `Transient` — the app decides only
+    /// how long it is worth looking at.
+    fn bell_flash(&self, motion: ui::tokens::EffectiveMotion) -> f32 {
+        // A quarter second: long enough to catch the eye from another window,
+        // short enough not to sit on the text.
+        const FLASH: std::time::Duration = std::time::Duration::from_millis(260);
+        let Some(at) = self.bell_at else {
+            return 0.0;
+        };
+        ui::motion::Transient::opacity(
+            ui::motion::Transient::CONFIRMATION,
+            (at, at + FLASH),
+            ui::time::now(),
+            motion,
+        )
     }
     /// Set (or clear) the selection programmatically over buffer-absolute
     /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
@@ -1430,20 +1550,30 @@ impl TerminalWidget {
     }
 
     /// Whether the context menu's Find entry was chosen since the last call.
-    /// The find scope that hosts this terminal opens its bar; the terminal
-    /// itself holds no bar. Nothing here publishes a query, a match or a
+    /// The view that hosts this terminal opens the window bar's search; the
+    /// terminal itself holds no bar. Nothing here publishes a query, a match or a
     /// command to collaborators or agents: scrollback may contain
     /// credentials, and find is only a viewport aid.
     pub fn take_find_request(&mut self) -> bool {
         std::mem::take(&mut self.find_request)
     }
 
-    /// Match `query` against the retained scrollback. Matches are literal;
-    /// the bar's options choose whether case and whole words count.
+    /// The platform's keyboard conventions this terminal follows.
+    pub(crate) fn conventions(&self) -> ui::PlatformConventions {
+        self.conventions
+    }
+
+    /// Match `query` against the retained scrollback: literally, or as a
+    /// regular expression; the bar's options choose whether case and whole
+    /// words count.
     fn scan_find_matches(&mut self, query: &str, options: FindOptions) {
         self.find_matches.clear();
         let query: Vec<char> = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
         if query.is_empty() {
+            return;
+        }
+        if options.mode == ui::widget::FindMode::Regex {
+            self.scan_find_pattern(&query.iter().collect::<String>(), options);
             return;
         }
         let same = |a: char, b: char| {
@@ -1489,6 +1619,60 @@ impl TerminalWidget {
             .min(self.find_matches.len().saturating_sub(1));
     }
 
+    /// Match the regular expression `pattern` against the retained
+    /// scrollback. A pattern that does not compile, or matches only empty
+    /// spans, finds nothing.
+    fn scan_find_pattern(&mut self, pattern: &str, options: FindOptions) {
+        let Ok(pattern) = regex::RegexBuilder::new(pattern)
+            .case_insensitive(!options.match_case)
+            .build()
+        else {
+            return;
+        };
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        'rows: for (row, line) in self.grid.iter().enumerate() {
+            // Cell column at each byte where a character starts, so wide
+            // glyphs line up.
+            let mut column = 0usize;
+            let mut columns = std::collections::BTreeMap::new();
+            for (at, c) in line.char_indices() {
+                columns.insert(at, column);
+                column += c.width().unwrap_or(1);
+            }
+            columns.insert(line.len(), column);
+            for hit in pattern.find_iter(line) {
+                if hit.is_empty() {
+                    continue;
+                }
+                let bounded = !options.whole_word
+                    || (line
+                        .get(..hit.start())
+                        .and_then(|head| head.chars().next_back())
+                        .is_none_or(|c| !word(c))
+                        && line
+                            .get(hit.end()..)
+                            .and_then(|tail| tail.chars().next())
+                            .is_none_or(|c| !word(c)));
+                if !bounded {
+                    continue;
+                }
+                let start_col = columns.get(&hit.start()).copied().unwrap_or(0);
+                let end_col = columns.get(&hit.end()).copied().unwrap_or(start_col);
+                self.find_matches.push(FindMatch {
+                    row,
+                    start_col,
+                    end_col,
+                });
+                if self.find_matches.len() == MAX_FIND_MATCHES {
+                    break 'rows;
+                }
+            }
+        }
+        self.find_current = self
+            .find_current
+            .min(self.find_matches.len().saturating_sub(1));
+    }
+
     fn reveal_current_find_match(&mut self) {
         let Some(found) = self.find_matches.get(self.find_current).copied() else {
             return;
@@ -1499,7 +1683,7 @@ impl TerminalWidget {
         let visible = self.current_visible_rows().max(1);
         let max_top = self.view_rows().saturating_sub(visible);
         let top = found.row.saturating_sub(visible / 2).min(max_top);
-        self.scroll_offset = max_top.saturating_sub(top);
+        self.set_scroll_offset(max_top.saturating_sub(top));
     }
 
     /// Resolve the OSC 8 hyperlink URL for the cell at absolute buffer
@@ -1817,45 +2001,19 @@ impl TerminalWidget {
         let total = self.view_rows() as f64;
         // Scrollbar offsets are measured from the top; terminal history is
         // measured back from the live bottom.
-        let from_top = self.max_scroll().saturating_sub(self.scroll_offset) as f64;
+        let from_top = self.scroll_from_top() / self.char_h.max(1.0);
         ScrollMetrics::new(total, visible, from_top)
     }
 
     fn set_scrollbar_offset(&mut self, from_top: f64) {
-        let max = self.max_scroll();
-        let top = from_top.round().clamp(0.0, max as f64) as usize;
-        self.scroll_offset = max.saturating_sub(top);
-        self.wheel_remainder_px = 0.0;
-    }
-
-    /// Scroll the viewport back (toward older output) by `n` rows.
-    pub fn scroll_up(&mut self, n: usize) {
-        if self.alt_active {
-            return;
-        }
-        self.scroll_offset = (self.scroll_offset + n).min(self.max_scroll());
-    }
-    /// Scroll the viewport forward (toward the live bottom) by `n` rows.
-    pub fn scroll_down(&mut self, n: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(n);
-    }
-    /// Jump to the oldest retained line.
-    pub fn scroll_to_top(&mut self) {
-        if self.alt_active {
-            return;
-        }
-        self.scroll_offset = self.max_scroll();
-    }
-    /// Pin the viewport back to the live output.
-    pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
-        self.wheel_remainder_px = 0.0;
+        let to = from_top.clamp(0.0, self.max_scroll() as f64) * self.char_h.max(1.0);
+        self.scroll_by_px(to - self.scroll_from_top());
     }
 
     /// Drain queued PTY bytes and replay them through the vte parser onto the
-    /// screen. Shared by both `Widget::update` (for hosts that pump it, e.g.
-    /// the compositor's tile host) and `Widget::sync`. Returns whether any
-    /// bytes were processed this call.
+    /// screen, and take in images read meanwhile. Shared by both
+    /// `Widget::update` (for hosts that pump it, e.g. the compositor's tile
+    /// host) and `Widget::sync`. Returns whether anything arrived to show.
     fn pump(&mut self) -> bool {
         let open_activity = self.poll_session_open();
         let native_activity = self.poll_native_ime() || open_activity;
@@ -1897,9 +2055,11 @@ impl TerminalWidget {
             // never be painted over them.
             self.ever_nonblank = true;
             // Fresh output snaps the viewport back to the live bottom.
-            self.scroll_offset = 0;
+            self.set_scroll_offset(0);
         }
-        activity || native_activity
+        // An image read on the worker arrived to paint.
+        let images = self.images.take_finished();
+        activity || native_activity || images
     }
 
     #[cfg(test)]
@@ -1958,6 +2118,7 @@ impl TerminalWidget {
         // XTVERSION, DECRQM). Written back to the PTY after the parse — the
         // vte performer only reads, so it stages answers here.
         let mut responses: Vec<u8> = Vec::new();
+        let mut bells: u32 = 0;
         let mut performer = TerminalPerformer {
             screen: &mut self.screen,
             content: &self.content,
@@ -1974,6 +2135,7 @@ impl TerminalWidget {
             next_link_id: &mut self.next_link_id,
             current_link_id: self.current_link_id,
             title_out: &mut title_out,
+            bells: &mut bells,
             responses: &mut responses,
             print_buf: None,
             allow_osc52_clipboard: self.allow_osc52_clipboard,
@@ -2012,6 +2174,11 @@ impl TerminalWidget {
         if let Some(t) = title_out {
             self.title = t;
         }
+        // A bell rings once per feed, however many times it was rung: one
+        // flash is as much attention as one burst of bells deserves.
+        if bells > 0 {
+            self.ring_bell();
+        }
         self.show_screen();
     }
 
@@ -2033,12 +2200,6 @@ impl TerminalWidget {
     /// dead PTY into a false `Succeeded` result. Local keyboard/paste callers
     /// use [`Self::write_input`], which records the same terminal state and
     /// exposes it visibly even though winit cannot return an error.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the PTY has already ended, its writer lock is
-    /// poisoned, or either write/flush operation fails. Every such error marks
-    /// the session disconnected before returning.
     pub fn try_write_input(&self, bytes: &[u8]) -> Result<(), String> {
         if let Some(("session_not_open", reason)) = self.input_unavailable() {
             return Err(reason.to_owned());
@@ -2098,7 +2259,7 @@ impl TerminalWidget {
             out.extend_from_slice(normalised.as_bytes());
         }
         self.try_write_input(&out)?;
-        self.scroll_offset = 0;
+        self.set_scroll_offset(0);
         Ok(())
     }
 
@@ -2270,8 +2431,6 @@ impl TerminalWidget {
         }
     }
 
-    /// # Errors
-    /// Returns why the effect was refused or failed.
     pub(crate) fn perform(
         &mut self,
         effect: crate::resource::TerminalEffect,
@@ -2484,7 +2643,7 @@ impl TerminalWidget {
         let unanswered: Vec<_> = runs
             .waiting
             .drain(..)
-            .chain(runs.typed.take())
+            .chain(runs.typed.drain(..))
             .chain(runs.running.take())
             .collect();
         for asked in unanswered {
@@ -2501,13 +2660,28 @@ impl TerminalWidget {
         match piece {
             Piece::Mark(Mark::Prompt) => {
                 runs.at_prompt = true;
-                if let Some(asked) = runs.typed.take() {
+                if let Some(asked) = runs.typed.pop_front() {
                     fail_run(asked, "the shell did not run the command");
                 }
             }
-            Piece::Mark(Mark::Started { .. }) => {
+            Piece::Mark(Mark::Started { command, .. }) => {
                 runs.at_prompt = false;
-                runs.running = runs.typed.take();
+                // The line this terminal typed for `run` starts when the
+                // shell stops showing its prompt and says it runs the
+                // command that was typed: lines reach the shell in the order
+                // they were typed, so the oldest waiting one that matches is
+                // it. Anything else the shell runs — a person's line, a
+                // `.bashrc` command — is nobody's request.
+                let typed = if runs
+                    .typed
+                    .front()
+                    .is_some_and(|asked| asked.command.trim() == command.trim())
+                {
+                    runs.typed.pop_front()
+                } else {
+                    None
+                };
+                runs.running = typed;
             }
             Piece::Mark(Mark::Ended { .. }) | Piece::Output(_) => {}
         }
@@ -2530,7 +2704,7 @@ impl TerminalWidget {
             match runs
                 .waiting
                 .iter_mut()
-                .chain(runs.typed.as_mut())
+                .chain(runs.typed.iter_mut())
                 .chain(runs.running.as_mut())
                 .find(|known| known.request == asked.request)
             {
@@ -2561,7 +2735,7 @@ impl TerminalWidget {
             }
             return;
         }
-        if !self.runs.at_prompt || self.runs.typed.is_some() {
+        if !self.runs.at_prompt || !self.runs.typed.is_empty() {
             return;
         }
         let Some(asked) = self.runs.waiting.pop_front() else {
@@ -2575,7 +2749,7 @@ impl TerminalWidget {
         match self.try_write_input(&line) {
             Ok(()) => {
                 self.runs.at_prompt = false;
-                self.runs.typed = Some(asked);
+                self.runs.typed.push_back(asked);
             }
             Err(error) => fail_run(asked, &error),
         }
@@ -2601,11 +2775,24 @@ impl TerminalWidget {
                 }
             };
             let request = asked.as_ref().map(|asked| asked.request.clone());
-            let id = request.clone().unwrap_or_else(|| {
-                ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string())
+            // The run a request asked for takes the request's id, so the
+            // answer names it. Only a line the person started before this
+            // terminal saw the request's line reach the shell can hold that
+            // id already: this run is the request's all the same, under an
+            // id of its own.
+            let taken = request.as_ref().is_some_and(|request| {
+                self.runs
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.runs.contains(request))
             });
+            let id = match request.clone() {
+                Some(request) if !taken => request,
+                _ => ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string()),
+            };
             let finished = crate::resource::Finished {
                 tool: crate::parse::tool_of(&run.command).to_owned(),
+                undoable: crate::undoability::of(&run.command) == Some(true),
                 items: crate::parse::items(&run.command, &run.output),
                 output_len: if output.is_some() {
                     u64::try_from(run.output.len()).unwrap_or(u64::MAX)
@@ -2716,6 +2903,10 @@ impl TerminalWidget {
         // waker (or an embedding host's own pump), is what shows output.
         self.pump();
         self.type_asked_run();
+        self.begin_reconnect_if_lost();
+        self.reconnect_when_due();
+        self.sync_window_bar();
+        self.close_if_exited();
     }
 
     /// Bring the session record up to date with this terminal: the session
@@ -2822,6 +3013,9 @@ impl TerminalWidget {
     /// Stage screenshot scenario `name`: the output its process printed,
     /// parsed as PTY output, and the view state shown over it.
     pub(crate) fn stage_scenario(&mut self, name: &str) {
+        // The staged output is an open session's: a capture has no process
+        // behind it, but only the ended scenario shows the session closed.
+        self.session_disconnected.store(false, Ordering::Release);
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
             self.set_relays(crate::scenarios::relays(name));
@@ -2882,6 +3076,10 @@ impl Findable for TerminalWidget {
         self.find_current = 0;
     }
 
+    fn supports_regex(&self) -> bool {
+        true
+    }
+
     fn content_revision(&self) -> u64 {
         self.content_revision
     }
@@ -2931,6 +3129,7 @@ impl Widget for TerminalWidget {
     }
 
     fn update(&mut self, _state: &AppModel, _root: &ModelPath) -> bool {
+        self.advance_glide();
         self.pump()
     }
 
@@ -2943,6 +3142,11 @@ impl Widget for TerminalWidget {
     /// host independently of painting. Treating an absent standalone proxy as
     /// animation demand made every idle embedded terminal repaint the complete
     /// desktop continuously.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        // The next automatic reconnect to a remote shell.
+        self.reconnect_deadline()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A bounded pump deliberately leaves excess output queued. Keep frames
         // flowing until it is drained even when the reader's coalesced wake is
@@ -2954,7 +3158,36 @@ impl Widget for TerminalWidget {
             .or_else(|| self.output_rx.try_recv().ok());
         let queued = pending.is_some();
         self.deferred_output.set(pending);
-        queued || self.folder_picker_pending()
+        // A glide, or the give past an end springing back.
+        let gliding = self.view.glide.is_active()
+            || self.view.glide.give_needs_frame(ui::motion::frame_now());
+        queued
+            || gliding
+            || self.folder_picker_pending()
+            || self.bell_flash(ui::theme::Theme::default().motion()) > 0.0
+    }
+
+    /// The rows that changed, came into view or went, and a scroll as a
+    /// copy of the rows it only moved, for a host that copies; the whole
+    /// terminal when anything else it paints changed. What its top layer
+    /// paints (the context menu, the environments panel) repaints it.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.view.overlay_drawn || self.view.overlay_presented {
+            regions.push(self.rect);
+            return;
+        }
+        self.view.shown.damage_within(self, self.rect, regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.view.shown.present();
+        self.view.overlay_presented = self.view.overlay_drawn;
+    }
+
+    /// An outer cache keeps the terminal's scene: what it showed is not
+    /// known to be on screen where the next frame scrolls from.
+    fn release_scene_cache(&mut self) {
+        self.view.shown.forget();
     }
 
     fn build_layout(
@@ -3020,6 +3253,7 @@ impl Widget for TerminalWidget {
         self.set_geometry(self.rect);
         let grid_rect = self.grid_rect;
 
+        self.view.motion = theme.motion();
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
         let max_top = self.view_rows().saturating_sub(visible_rows);
         // Alt screen has no scrollback; clamp the offset for the main buffer.
@@ -3028,6 +3262,9 @@ impl Widget for TerminalWidget {
         } else {
             self.scroll_offset.min(max_top)
         };
+        if scroll != self.scroll_offset || scroll == 0 {
+            self.view.sub = 0.0;
+        }
         self.scroll_offset = scroll;
         let start_y = max_top.saturating_sub(scroll);
 
@@ -3050,37 +3287,38 @@ impl Widget for TerminalWidget {
         if !self.grid_is_blank() {
             self.ever_nonblank = true;
         }
-        self.draw_target_header(scene, transform, text_renderer, theme);
-        // With no shell behind the grid (or one that has already ended) and
-        // nothing ever printed, say so instead of showing a blank void. A live
-        // shell that has not drawn its prompt yet shows its blank grid.
-        if !self.alt_active && !self.ever_nonblank && (self.headless || self.is_disconnected()) {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
-            self.draw_top_bands(scene, transform, text_renderer, theme);
+        // What the terminal paints that does not scroll: the header and the
+        // bands above the grid, or what stands in place of the grid.
+        let mut outside = Scene::new();
+        self.draw_target_header(&mut outside, transform, text_renderer, theme);
+        // A shell that could not start says so, with a retry, in place of
+        // the grid.
+        if let Some(reason) = self.start_failure().map(str::to_owned) {
+            self.draw_start_failure(&mut outside, transform, text_renderer, theme, &reason);
+            self.draw_top_bands(&mut outside, transform, text_renderer, theme);
+            scene.append(&outside, None);
+            self.view.shown.forget();
             return;
         }
-
-        // Images sit beneath selections and glyphs: text printed over a Kitty
-        // placement remains legible, and selecting cells still has the same
-        // visible feedback as plain terminal content. Their row anchors are
-        // buffer-absolute, so scrollback and history retention move them with
-        // the corresponding rows rather than pinning them to the viewport.
-        self.draw_terminal_images(scene, transform, theme, grid_rect, start_y, visible_rows);
-
-        // Paint the selection BEFORE the cell text so glyphs read on top of
-        // the highlight.
-        self.draw_selection_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
-        self.draw_find_match_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
-
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        self.draw_cell_rows(&mut ctx, &cell_style, start_y, visible_rows);
-        self.draw_block_cursor(&mut ctx, &cell_style, start_y, visible_rows);
-
-        // A themed scrollbar indicator in the reserved right gutter, shown only
-        // when the buffer overflows the viewport.
-        self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
-        self.draw_top_bands(scene, transform, text_renderer, theme);
-        self.draw_peer_marks(scene, transform, theme, presence);
+        self.life.retry_rect = Rect::ZERO;
+        // With no shell behind the grid (or one that has already ended) and
+        // nothing ever printed, say so instead of showing a blank void. A live
+        // shell that has not drawn its prompt yet shows its blank grid. A
+        // window closing for its exited shell shows nothing new.
+        if !self.alt_active
+            && !self.ever_nonblank
+            && !self.closing_for_exit()
+            && (self.headless || self.is_disconnected())
+        {
+            self.draw_empty_state(&mut outside, transform, text_renderer, theme);
+            self.draw_top_bands(&mut outside, transform, text_renderer, theme);
+            scene.append(&outside, None);
+            self.view.shown.forget();
+            return;
+        }
+        self.draw_top_bands(&mut outside, transform, text_renderer, theme);
+        self.draw_grid(scene, transform, text_renderer, theme, presence, outside);
+        self.draw_bell_flash(scene, transform, theme);
     }
 
     /// The right-click Copy/Paste menu is a floating Panel: it paints in the
@@ -3094,6 +3332,7 @@ impl Widget for TerminalWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let before = scene.encoding().draw_tags.len();
         if self.context_menu.is_open() {
             Widget::draw_overlay(
                 &mut self.context_menu,
@@ -3105,6 +3344,7 @@ impl Widget for TerminalWidget {
             );
         }
         self.draw_environments_panel(scene, transform, text_renderer, theme, presence);
+        self.view.overlay_drawn = scene.encoding().draw_tags.len() != before;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -3137,8 +3377,17 @@ impl Widget for TerminalWidget {
         }
 
         match event {
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_wheel_event(delta, *ctx.modifiers, ctx.handled);
+            // Ctrl+scroll zooms the window, and with it the grid's font.
+            WindowEvent::MouseWheel { delta, phase, .. }
+                if !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
+            {
+                self.handle_wheel_event(
+                    delta,
+                    *phase,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved_event(
@@ -3153,6 +3402,14 @@ impl Widget for TerminalWidget {
                 button,
                 ..
             } => {
+                // A press on the grid, by pointer or by a finger, gives it the
+                // keyboard. Typing already reached the session without it, but
+                // the first Tab then moved focus instead of completing.
+                if *element_state == ElementState::Pressed
+                    && self.grid_rect.contains(self.last_cursor_pos)
+                {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
                 self.handle_mouse_button_event(
                     *element_state,
                     *button,
@@ -3190,7 +3447,7 @@ impl Widget for TerminalWidget {
                 if self.focused && !text.is_empty() =>
             {
                 self.commit_ordinary_ime(text);
-                self.scroll_offset = 0;
+                self.set_scroll_offset(0);
                 *ctx.handled = true;
             }
             _ => {}
@@ -3248,31 +3505,31 @@ impl Widget for TerminalWidget {
                 .saturating_add(self.cursor_y)
                 .saturating_sub(self.viewport_start_y);
             let x = self.grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-            let y = self.grid_rect.y0 + row as f64 * self.char_h;
+            let y = self.grid_rect.y0 + row as f64 * self.char_h - self.view.sub;
             Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
         })
     }
 
+    /// A terminal always declares terminal input, so the on-screen keyboard
+    /// shows its terminal keys, at a native editor prompt too. What dictation
+    /// is offered is separate: see [`Self::ime_requires_deferred_ack`].
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        if self.focused
-            && !self.context_menu.is_open()
+        (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
+            .then_some(ui::ime::InputContent::TERMINAL)
+    }
+
+    /// A native editor prompt offers acknowledged edits: the editor confirms
+    /// each one against its own lease, which is what lets dictation write to
+    /// a terminal at all. A bare PTY offers none.
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.ime_content().is_some()
             && !self.native_read_only
             && !self.alt_active
-            && self.input_unavailable().is_none()
             && self
                 .native_editor
                 .as_ref()
                 .and_then(crate::native_editor::Client::snapshot)
                 .is_some()
-        {
-            return Some(ui::ime::InputContent::TEXT);
-        }
-        (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
-            .then_some(ui::ime::InputContent::TERMINAL)
-    }
-
-    fn ime_requires_deferred_ack(&self) -> bool {
-        self.ime_content() == Some(ui::ime::InputContent::TEXT)
     }
 
     fn start_deferred_text(&mut self) -> Option<ui::text_input::Receipt> {
@@ -3378,6 +3635,9 @@ impl Widget for TerminalWidget {
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
         }
+        if let Some(failure) = self.start_failure_accessibility() {
+            transcript.children.push(failure);
+        }
         transcript
             .children
             .extend(self.visible_link_accessibility());
@@ -3443,6 +3703,9 @@ impl Widget for TerminalWidget {
 
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
+        }
+        if target == format!("terminal.retry:{}", self.pane_id) {
+            return self.retry_session();
         }
         let link_prefix = format!("terminal.link:{}:", self.pane_id);
         if let Some(link_id) = target
@@ -3654,71 +3917,6 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
-    fn handle_wheel_event(
-        &mut self,
-        delta: &MouseScrollDelta,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) {
-        if !self.rect.contains(self.last_cursor_pos) {
-            return;
-        }
-        let lines = match delta {
-            MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
-            MouseScrollDelta::PixelDelta(pos) => {
-                self.wheel_remainder_px += pos.y;
-                let lines = (self.wheel_remainder_px / self.char_h.max(1.0)).trunc() as i32;
-                self.wheel_remainder_px -= f64::from(lines) * self.char_h.max(1.0);
-                lines
-            }
-        };
-        if lines == 0 {
-            return;
-        }
-        if self.modes.mouse_report
-            && !modifiers.state().shift_key()
-            && self.grid_rect.contains(self.last_cursor_pos)
-        {
-            // xterm encodes wheel up/down as virtual buttons 4/5. One report
-            // per platform wheel event avoids turning high-resolution touchpad
-            // deltas into an input flood; the application owns acceleration.
-            self.report_mouse(if lines > 0 { 64 } else { 65 }, true, modifiers);
-            *handled = true;
-            return;
-        }
-        if self.alt_active && !self.modes.mouse_report {
-            // In the alternate screen (pager / editor) forward wheel
-            // notches as arrow keys so `less`/`man` scroll naturally.
-            // Honour DECCKM so apps that requested application cursor
-            // keys (`vim`, `less -R`) receive the SS3 form they expect.
-            let seq: &[u8] = match (lines > 0, self.modes.app_cursor_keys) {
-                (true, false) => b"\x1b[A",
-                (false, false) => b"\x1b[B",
-                (true, true) => b"\x1bOA",
-                (false, true) => b"\x1bOB",
-            };
-            let reps = lines.unsigned_abs() as usize;
-            let mut out = Vec::new();
-            for _ in 0..reps {
-                out.extend_from_slice(seq);
-            }
-            self.write_input(&out);
-        } else if !self.alt_active {
-            if lines > 0 {
-                self.scroll_up(lines as usize);
-            } else {
-                self.scroll_down((-lines) as usize);
-            }
-            // Reviewing history moves the viewport over the scrollback and
-            // nothing the terminal publishes; the text it exposes to
-            // assistive technology follows with the frame's accessibility
-            // refresh.
-            ui::widget::note_view_only_pan();
-        }
-        *handled = true;
-    }
-
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::CursorMoved` arm.
     fn handle_cursor_moved_event(
         &mut self,
@@ -3946,6 +4144,39 @@ impl TerminalWidget {
             return;
         }
         let mods = modifiers.state();
+        // Ctrl+Plus, Ctrl+Minus and Ctrl+0 zoom the window, which sets the
+        // grid's font larger or smaller (`ui::content_zoom`): never bytes for
+        // the shell.
+        if ui::content_zoom::ZoomStep::from_key(
+            ui::platform::PlatformConventions::default(),
+            mods,
+            logical_key,
+        )
+        .is_some()
+        {
+            return;
+        }
+        // Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T are the desktop's tab
+        // chords wherever an app leaves them: the next or previous tab of
+        // this window, the last closed tab. A terminal has no bytes of its
+        // own for them (Ctrl+Tab would send the Tab that Tab sends,
+        // Ctrl+Shift+T the ^T of Ctrl+T), so they go unhandled to the
+        // desktop through `ui::shell_tabs`. Ctrl+T and Ctrl+W stay the
+        // shell's ^T and ^W.
+        if matches!(
+            ui::shell_tabs::chord_request(
+                logical_key,
+                ui::platform::PlatformConventions::default().command_modifier_down(mods),
+                mods.shift_key(),
+                mods.alt_key() || (mods.control_key() && mods.super_key()),
+            ),
+            Some(
+                ui::shell_tabs::TabRequest::CycleTab { .. }
+                    | ui::shell_tabs::TabRequest::ReopenClosed
+            )
+        ) {
+            return;
+        }
         if self.take_no_runtime_offer(logical_key, mods) {
             *handled = true;
             return;
@@ -4055,68 +4286,8 @@ impl TerminalWidget {
         if let Some(b) = bytes {
             let _ = self.try_write_input(&b);
             // Typing snaps the viewport back to the live bottom.
-            self.scroll_offset = 0;
+            self.set_scroll_offset(0);
             *handled = true;
-        }
-    }
-
-    /// Paint the flow-selection highlight, if any, before the cell text so
-    /// glyphs read on top of it. Selection rows are buffer-absolute, so a
-    /// row only paints when it falls inside the current viewport window
-    /// `[start_y, start_y + visible_rows)`, translated to an on-screen row.
-    /// Helper for [`Widget::draw`].
-    fn draw_selection_highlight(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        grid_rect: Rect,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let Some(sel) = self.selection else { return };
-        // The selection tint is already translucent, so glyphs show through.
-        let sel_color = theme.tokens.colors.intent.selection_tint;
-        for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
-            if row < start_y || row >= start_y + visible_rows {
-                continue;
-            }
-            let vrow = row - start_y;
-            let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
-            let x0 = grid_rect.x0 + start_col as f64 * self.char_w;
-            let x1 = grid_rect.x0 + end_col as f64 * self.char_w;
-            let band = snap_to_device_pixels(transform, Rect::new(x0, py, x1, py + self.char_h));
-            scene.fill(Fill::NonZero, transform, sel_color, None, &band);
-        }
-    }
-
-    /// Paint the visible find matches over their glyphs, the current one
-    /// emphasised. The matches stay local and are never serialized into the
-    /// shared transcript; this is a visual locator over already-rendered
-    /// cells.
-    fn draw_find_match_highlight(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        grid_rect: Rect,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let end_y = start_y.saturating_add(visible_rows);
-        for (index, found) in self.find_matches.iter().enumerate() {
-            if found.row < start_y || found.row >= end_y {
-                continue;
-            }
-            let row = found.row - start_y;
-            let x0 = grid_rect.x0 + found.start_col as f64 * self.char_w;
-            let x1 = grid_rect.x0 + found.end_col as f64 * self.char_w;
-            let y0 = grid_rect.y0 + row as f64 * self.char_h;
-            let marker = snap_to_device_pixels(
-                transform,
-                Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h),
-            );
-            paint_find_match(scene, transform, marker, index == self.find_current, theme);
         }
     }
 
@@ -4128,11 +4299,13 @@ impl TerminalWidget {
         // The header with the session's target comes first.
         let mut y = self.rect.y0 + self.header_h();
         self.banner_rect = Rect::ZERO;
-        if let Some(message) = self.status_banner_message()
+        if let Some((kind, message, action)) = self.top_banner()
             && self.rect.width() > gutter * 2.0
         {
             let width = self.rect.width() - gutter * 2.0;
-            let height = Self::banner_height(&message, width, theme, tr);
+            let mut content = BannerContent::new(kind, &message);
+            content.action = action.as_deref();
+            let height = Banner::height(&content, width, tr, theme);
             self.banner_rect = Rect::new(
                 self.rect.x0 + gutter,
                 y + gutter,
@@ -4144,14 +4317,19 @@ impl TerminalWidget {
         self.chrome_top_band = y - self.rect.y0;
     }
 
-    /// The height a banner reading `message` needs in `width`.
-    fn banner_height(message: &str, width: f64, theme: &Theme, tr: &mut TextRenderer) -> f64 {
-        Banner::height(
-            &BannerContent::new(BannerKind::Warning, message),
-            width,
-            tr,
-            theme,
-        )
+    /// The banner over the grid: the reconnecting one (quiet, with Try
+    /// again) while the tab reconnects to its remote shell, else the
+    /// session's lifecycle line.
+    fn top_banner(&self) -> Option<(BannerKind, String, Option<String>)> {
+        if let Some(message) = self.reconnect_banner() {
+            return Some((
+                BannerKind::Neutral,
+                message,
+                Some(t("terminal-start-retry")),
+            ));
+        }
+        self.status_banner_message()
+            .map(|message| (BannerKind::Warning, message, None))
     }
 
     /// Paint the session banner laid out by
@@ -4163,18 +4341,19 @@ impl TerminalWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.life.banner_action.set(Rect::ZERO);
         if self.banner_rect.width() > 0.0
-            && let Some(message) = self.status_banner_message()
+            && let Some((kind, message, action)) = self.top_banner()
         {
             // Transport and unconfirmed edits remain visible beside the
             // transcript and through the same accessible live region.
             let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-            Banner::paint(
-                &mut ctx,
-                self.banner_rect,
-                &BannerContent::new(BannerKind::Warning, &message),
-                self.last_cursor_pos,
-            );
+            let mut content = BannerContent::new(kind, &message);
+            content.action = action.as_deref();
+            let hit = Banner::paint(&mut ctx, self.banner_rect, &content, self.last_cursor_pos);
+            self.life
+                .banner_action
+                .set(hit.action.unwrap_or(Rect::ZERO));
         }
     }
 
@@ -4199,7 +4378,6 @@ impl TerminalWidget {
         start_y: usize,
         visible_rows: usize,
     ) {
-        const MAX_DECODE_CACHE_ENTRIES: usize = 128;
         let placements: Vec<_> = self
             .image_placements
             .iter()
@@ -4236,29 +4414,11 @@ impl TerminalWidget {
                 continue;
             }
 
-            // The MIME and dimensions form part of this local cache key: raw
-            // Kitty payloads have no self-describing header, and a replicated
-            // descriptor must not reuse a decoded image under altered metadata.
-            let cache_key = format!(
-                "{}:{}:{}:{}",
-                placement.hash, placement.mime, placement.pixel_width, placement.pixel_height
-            );
-            if !self.image_cache.contains_key(&cache_key) {
-                if self.image_cache.len() >= MAX_DECODE_CACHE_ENTRIES {
-                    self.image_cache.clear();
-                }
-                if let Some(bytes) = self.content.read(&placement.hash)
-                    && placement.byte_len == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-                    && let Some(image) = decode_for_rendering(&placement, &bytes)
-                {
-                    self.image_cache.insert(cache_key.clone(), image);
-                }
-            }
-            if let Some(image) = self.image_cache.get_mut(&cache_key) {
+            if let Some(image) = self.images.image(&placement, &self.waker) {
                 image.paint_at(scene, transform, rect);
             } else {
-                // Honest fallback for an unavailable blob or unsupported /
-                // invalid image.  It reserves the promised cells without
+                // Honest fallback for an image still loading, an unavailable
+                // blob or an unsupported / invalid image.  It reserves the promised cells without
                 // pretending an image rendered successfully.
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
@@ -4270,53 +4430,6 @@ impl TerminalWidget {
             }
         }
         scene.pop_layer();
-    }
-
-    /// Paint every visible row's cell text as colour runs (consecutive cells
-    /// sharing one [`Attr`] drawn in a single [`Self::draw_run`] call), in
-    /// `cell_style`'s size and monospace family. Helper for [`Widget::draw`].
-    fn draw_cell_rows(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        cell_style: &TextStyle,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let grid_rect = self.grid_rect;
-        let PaintCtx {
-            scene,
-            transform,
-            text,
-            theme,
-        } = ctx.reborrow();
-        for (y, line_text) in self
-            .grid
-            .iter()
-            .skip(start_y)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let py = (grid_rect.y0 + y as f64 * self.char_h).floor();
-            let attrs_idx = y + start_y;
-            let Some(attrs) = self.grid_attrs.get(attrs_idx) else {
-                continue;
-            };
-            // Each row on screen is a damage part: typing repaints its row.
-            // Glyphs may overhang their row by up to a row above and below,
-            // and the widget's width by up to two cells.
-            let band = Rect::new(
-                self.rect.x0 - 2.0 * self.char_w,
-                py - self.char_h,
-                self.rect.x1 + 2.0 * self.char_w,
-                py + 2.0 * self.char_h,
-            );
-            let key = ui::scene_parts::PartKey::new("terminal.row", y);
-            let bounds = vec![transform.transform_rect_bbox(band)];
-            ui::scene_parts::part(scene, key, bounds, |scene| {
-                let mut ctx = PaintCtx::new(scene, transform, text, theme);
-                self.draw_cell_row(&mut ctx, cell_style, line_text, attrs, py);
-            });
-        }
     }
 
     /// Paint one row of cells, run by run of shared attributes, with its top
@@ -4371,84 +4484,6 @@ impl TerminalWidget {
                 Point::new(run_start_cell_idx as f64 * self.char_w, py),
             );
         }
-    }
-
-    /// Paint the block cursor, pinned to the live output — while the user
-    /// has scrolled back into history it hides (matching xterm/kitty), so
-    /// it doesn't imply the caret is somewhere on an old line. Helper for
-    /// [`Widget::draw`].
-    fn draw_block_cursor(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        cell_style: &TextStyle,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            ..
-        } = ctx.reborrow();
-        let palette = &self.palette;
-        let grid_rect = self.grid_rect;
-        let scroll = self.scroll_offset;
-        let cursor_color = self.last_cursor_color;
-        // Absolute grid row of the cursor → visible row (may be scrolled off).
-        let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
-        let scrolled_back = !self.alt_active && scroll > 0;
-        let shown = self.modes.cursor_visible
-            && !scrolled_back
-            && cursor_abs >= start_y
-            && cursor_abs < start_y + visible_rows.max(1);
-        let cy_local = cursor_abs.saturating_sub(start_y);
-        let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-        let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
-        // The cursor is a damage part of its own: moving it repaints the
-        // cell it left and the cell it entered. Its glyph may overhang the
-        // cell by up to a cell on every side.
-        let bounds = if shown {
-            vec![transform.transform_rect_bbox(Rect::new(
-                cx - self.char_w,
-                cy - self.char_h,
-                cx + 2.0 * self.char_w,
-                cy + 2.0 * self.char_h,
-            ))]
-        } else {
-            Vec::new()
-        };
-        let key = ui::scene_parts::PartKey::new("terminal.cursor", ());
-        ui::scene_parts::part(scene, key, bounds, |scene| {
-            if !shown {
-                return;
-            }
-            // An unmistakable, theme-coloured "inverted cell" cursor.
-            let cursor_rect = snap_to_device_pixels(
-                transform,
-                Rect::new(cx, cy, cx + self.char_w, cy + self.char_h),
-            );
-            scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
-
-            // Re-punch the glyph beneath the block in the background color so
-            // the character under the caret stays legible (a solid block that
-            // hides its own cell reads as a blank cursor). This is the standard
-            // "inverted cell" block cursor.
-            if let Some(ch) = self
-                .grid
-                .get(cursor_abs)
-                .and_then(|line| cell_char_at(line, self.cursor_x))
-                && !ch.is_whitespace()
-            {
-                text_renderer.draw_style(
-                    scene,
-                    &ch.to_string(),
-                    palette.bg_default,
-                    transform * Affine::translate((cx, cy)),
-                    None,
-                    cell_style,
-                );
-            }
-        });
     }
 
     /// Paint one run of cells sharing `attr`, starting `at.x` into the grid
@@ -4596,14 +4631,13 @@ impl TerminalWidget {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        start_y: usize,
         visible_rows: usize,
     ) {
         if !self.scrollbar_visible(visible_rows) {
             return;
         }
-        let metrics =
-            ScrollMetrics::new(self.view_rows() as f64, visible_rows as f64, start_y as f64);
+        let from_top = self.viewport_start_y as f64 + self.view.sub / self.char_h.max(1.0);
+        let metrics = ScrollMetrics::new(self.view_rows() as f64, visible_rows as f64, from_top);
         self.scrollbar.draw(
             scene,
             transform,
@@ -4662,13 +4696,14 @@ impl TerminalWidget {
     /// leaves the terminal area.
     fn pos_from_logical(&self, p: Point) -> GridPos {
         let local_x = (p.x - self.grid_rect.x0).max(0.0);
-        let local_y = (p.y - self.grid_rect.y0).max(0.0);
+        // The view stands `view.sub` past its first row's top.
+        let local_y = (p.y - self.grid_rect.y0).max(0.0) + self.view.sub;
         let col = (local_x / self.char_w.max(1.0)).floor() as usize;
         let vrow = (local_y / self.char_h.max(1.0)).floor() as usize;
         // `width` is logical grid width; `viewport` height is computed
         // from `grid_rect.height() / char_h` rather than `self.height` because
         // resize-clamp may have a stale `self.height` between frames.
-        let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0)).floor() as usize;
+        let (_, visible_rows) = self.viewport_window();
         let vrow = vrow.min(visible_rows.saturating_sub(1));
         let abs_row = (self.viewport_start_y + vrow).min(self.grid.len().saturating_sub(1));
         GridPos {
@@ -4856,13 +4891,17 @@ impl TerminalWidget {
             col: pos % w,
         }
     }
-    /// Number of on-screen rows and the absolute row of the top visible row —
-    /// the viewport window used to map buffer-absolute rows to screen rows.
+    /// The absolute row of the top row in view and the number of rows in
+    /// view — the viewport window used to map buffer-absolute rows to screen
+    /// rows. Between two rows' tops the view shows a part of one more.
     fn viewport_window(&self) -> (usize, usize) {
         let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0))
             .floor()
             .max(1.0) as usize;
-        (self.viewport_start_y, visible_rows)
+        (
+            self.viewport_start_y,
+            visible_rows + usize::from(self.view.sub > 0.0),
+        )
     }
 
     /// A remote peer's caret rect (a thin vertical bar at the cell's left
@@ -4952,10 +4991,16 @@ impl TerminalWidget {
         // still expose the toggle.
         self.copy_on_select_menu_index = None;
         self.osc52_menu_index = None;
+        self.bell_menu_index = None;
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
             self.copy_on_select_menu_index = Some(menu.items().len());
             menu.push(MenuItem::action("Copy on select", || {}).with_checked(self.select_to_copy));
+            self.bell_menu_index = Some(menu.items().len());
+            menu.push(
+                MenuItem::action(self.bell.label(), || {})
+                    .with_checked(self.bell == crate::preferences::Bell::Visual),
+            );
             self.osc52_menu_index = Some(menu.items().len());
             menu.push(
                 MenuItem::action("Let programs set the clipboard", || {})
@@ -4999,6 +5044,10 @@ impl TerminalWidget {
     }
 
     fn activate_context_menu_item(&mut self, index: usize) {
+        if self.bell_menu_index == Some(index) {
+            self.set_bell(self.bell.toggled());
+            return;
+        }
         if self.menu_paste_index == Some(index) {
             if let Some(text) = clipboard_paste() {
                 self.submit_effect(crate::resource::TerminalEffect::Paste { text });
@@ -5014,10 +5063,10 @@ impl TerminalWidget {
             return;
         }
         if self.copy_on_select_menu_index == Some(index) {
-            self.select_to_copy = !self.select_to_copy;
+            self.set_select_to_copy(!self.select_to_copy);
         }
         if self.osc52_menu_index == Some(index) {
-            self.allow_osc52_clipboard = !self.allow_osc52_clipboard;
+            self.set_allow_osc52_clipboard(!self.allow_osc52_clipboard);
         }
     }
 
@@ -5064,7 +5113,6 @@ impl TerminalWidget {
             let abs_row = *row;
             let line = self.grid.get(abs_row).map_or("", String::as_str);
 
-            // Walk chars and pick out the cells covered by [start_col, end_col).
             let mut cell_idx = 0usize;
             let mut row_text = String::new();
             for c in line.chars() {
@@ -5287,6 +5335,9 @@ pub struct TerminalPerformer<'a> {
     /// Out-param for an OSC 0/2 window-title change parsed this feed; the
     /// widget records it in the session and its own `title` field afterwards.
     pub title_out: &'a mut Option<String>,
+    /// Out-param: how many times a program rang the bell (BEL) in this feed,
+    /// so the widget flashes the pane after the parse.
+    pub bells: &'a mut u32,
     /// Reply bytes accumulated for terminal capability queries (Device
     /// Attributes, Device Status Report, XTVERSION, DECRQM, …). A real
     /// terminal answers these on the same wire the keyboard writes to; the
@@ -5304,6 +5355,19 @@ pub struct TerminalPerformer<'a> {
     /// screenful of output linear. Any non-`print` action flushes the buffer
     /// first (see `flush_print_buf`) so it never observes stale grid state.
     pub print_buf: Option<PrintBuf>,
+}
+
+/// Emulator work the tests count on the thread that parses output.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Grid lines replaced by a finished print run.
+        pub(crate) static LINE_WRITES: Cell<usize> = const { Cell::new(0) };
+        /// Primary Device Attributes queries answered.
+        pub(crate) static DA1_REPLIES: Cell<usize> = const { Cell::new(0) };
+    }
 }
 
 /// In-memory accumulator for a run of `print`s landing on one grid line.
@@ -5468,8 +5532,10 @@ impl Perform for TerminalPerformer<'_> {
                 let next = ((self.cursor_x / 8) + 1) * 8;
                 self.cursor_x = next.min(self.width.saturating_sub(1));
             }
-            // Everything else, including 7 (BEL), is a no-op — the toolkit
-            // has no audible bell yet and no other single byte has meaning.
+            // BEL: the toolkit has no audible bell, so a bell the person
+            // asked for is the pane flashing. No other single byte means
+            // anything here.
+            7 => *self.bells = self.bells.saturating_add(1),
             _ => {}
         }
         self.update_cursor();
@@ -5671,6 +5737,16 @@ impl TerminalPerformer<'_> {
     /// ANSI/xterm CSI sequences (cursor motion, erase, scroll region,
     /// SGR, device attributes/status).
     fn csi_dispatch_public(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
+        // A private marker or intermediate byte makes it a different command
+        // from the plain sequence with the same final byte: `CSI > 4 ; 2 m` is
+        // XTMODKEYS (modifyOtherKeys), not SGR 4;2 (underline + faint), and
+        // `CSI > 5 u` / `CSI < u` push and pop Kitty keyboard flags, not a
+        // cursor restore. Claude Code sends all three at start-up, so reading
+        // them as their plain forms left its whole UI underlined and dimmed.
+        if !intermediates.is_empty() {
+            self.csi_dispatch_intermediate(params, intermediates, c);
+            return;
+        }
         match c {
             'A' => {
                 let n = Self::csi_first_or1(params);
@@ -5746,17 +5822,26 @@ impl TerminalPerformer<'_> {
                 }
             }
             'm' => self.apply_sgr(params),
-            // Device Attributes. `CSI c` / `CSI 0 c` is the Primary request
-            // (DA1); `CSI > c` / `CSI > 0 c` is the Secondary (DA2). fish
-            // blocks on the DA1 reply for up to 10s at startup.
-            'c' => match intermediates.first() {
-                None => self.reply_da1(),
-                Some(&b'>') => self.reply_da2(),
-                _ => {}
-            },
+            // Device Attributes, Primary request (DA1): `CSI c` / `CSI 0 c`.
+            // fish blocks on the DA1 reply for up to 10s at startup.
+            'c' => self.reply_da1(),
             // Device Status Report. `CSI 5 n` → terminal OK; `CSI 6 n` →
-            // cursor position (CPR). Only the plain (non-`>`) form replies.
-            'n' if intermediates.is_empty() => self.reply_dsr(Self::csi_first(params)),
+            // cursor position (CPR).
+            'n' => self.reply_dsr(Self::csi_first(params)),
+            _ => {}
+        }
+    }
+
+    /// CSI sequences carrying a private marker (`>`, `<`, `=`) or an
+    /// intermediate byte (`$`, `!`, …). Only the ones named here act; every
+    /// other one (XTMODKEYS `CSI > Ps ; Ps m`, Kitty keyboard `CSI > Ps u` /
+    /// `CSI < u` / `CSI = Ps u`, …) is ignored rather than run as the plain
+    /// command sharing its final byte.
+    fn csi_dispatch_intermediate(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
+        match c {
+            // Device Attributes, Secondary request (DA2): `CSI > c` /
+            // `CSI > 0 c`.
+            'c' if intermediates.first() == Some(&b'>') => self.reply_da2(),
             // XTVERSION — `CSI > 0 q` → the terminal's name + version.
             'q' if intermediates.first() == Some(&b'>') && Self::csi_first(params) == 0 => {
                 self.reply_xtversion();
@@ -6134,7 +6219,9 @@ impl TerminalPerformer<'_> {
                 1 => self.current_attr.bold = true,
                 2 => self.current_attr.dim = true,
                 3 => self.current_attr.italic = true,
-                4 => self.current_attr.underline = true,
+                // `4` underlines; the colon form picks a style (`4:1` single,
+                // `4:3` curly, …) and `4:0` means no underline.
+                4 => self.current_attr.underline = group.get(1).copied().unwrap_or(1) != 0,
                 7 => self.current_attr.reverse = true,
                 9 => self.current_attr.strike = true,
                 // SGR 22 turns off both bold *and* faint (they share the
@@ -6153,6 +6240,15 @@ impl TerminalPerformer<'_> {
                 49 => self.current_attr.bg = CellColor::Default,
                 90..=97 => self.current_attr.fg = CellColor::Indexed((code - 90 + 8) as u8),
                 100..=107 => self.current_attr.bg = CellColor::Indexed((code - 100 + 8) as u8),
+                // SGR 58 — underline colour, not drawn (underlines take the
+                // text colour). Its semicolon form still has to swallow its
+                // arguments, or `58;2;r;g;b` would run `2` (faint) and the
+                // colour components as SGR codes of their own.
+                58 if group.len() < 2 => match groups.get(i + 1).and_then(|g| g.first()) {
+                    Some(2) => i += 4,
+                    Some(5) => i += 2,
+                    _ => {}
+                },
                 38 | 48 => {
                     let is_fg = code == 38;
                     if group.len() >= 2 {
@@ -6239,6 +6335,8 @@ impl TerminalPerformer<'_> {
             && let Some(line) = self.screen.lines_mut(buf.alternate).get_mut(buf.index)
             && (line.text != buf.text || line.attrs != buf.attrs)
         {
+            #[cfg(test)]
+            work::LINE_WRITES.with(|n| n.set(n.get() + 1));
             *line = std::rc::Rc::new(crate::screen::Line {
                 text: buf.text,
                 attrs: buf.attrs,
@@ -6269,6 +6367,8 @@ impl TerminalPerformer<'_> {
     /// for up to 10s at startup and disables optional features if it never
     /// arrives.
     fn reply_da1(&mut self) {
+        #[cfg(test)]
+        work::DA1_REPLIES.with(|n| n.set(n.get() + 1));
         self.respond(b"\x1b[?62;22c");
     }
 
@@ -6391,6 +6491,22 @@ pub(crate) fn selection_row_spans(sel: &Selection, cols: usize) -> Vec<(usize, u
         spans.push((end.row, 0, end.col));
     }
     spans
+}
+
+/// The columns `sel` covers on `row`, as [`selection_row_spans`] lists
+/// them; `None` when it covers none of it.
+pub(crate) fn selection_span_on(
+    sel: &Selection,
+    row: usize,
+    cols: usize,
+) -> Option<(usize, usize)> {
+    let (start, end) = sel.ordered();
+    if start == end || row < start.row || row > end.row {
+        return None;
+    }
+    let from = if row == start.row { start.col } else { 0 };
+    let to = if row == end.row { end.col } else { cols };
+    Some((from, to))
 }
 
 /// Byte offset in `line` where cell column `col` begins, honouring wide
@@ -6649,6 +6765,10 @@ pub struct TerminalBackend {
     /// For an environment on a relay: the session's id there, which
     /// re-attaches to it.
     pub relay_session: Option<String>,
+    /// The session's id at the session supervisor, when it opened there:
+    /// told to the window a desktop shows this terminal in, which then knows
+    /// which tab a program typed here belongs to.
+    pub supervisor_session: Option<String>,
     /// The key the session's shell marks its command runs with, when it does.
     pub runs: Option<String>,
     native_editor: Option<crate::native_editor::Socket>,
@@ -6667,9 +6787,35 @@ impl TerminalBackend {
             master: Box::new(NullMaster),
             shell_name: "test".into(),
             relay_session: None,
+            supervisor_session: None,
             runs: None,
             native_editor: None,
             service_lifetime: None,
+        }
+    }
+
+    /// A remote session as the supervisor hands it over — for tests: its
+    /// terminal output reads from `output`, and `lease` is the session's
+    /// lease, on which the supervisor reports how it ended.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn for_test_remote(
+        output: std::os::unix::net::UnixStream,
+        lease: std::os::unix::net::UnixStream,
+        relay_session: &str,
+    ) -> Self {
+        Self {
+            writer: Box::new(std::io::sink()),
+            reader: Box::new(output),
+            master: Box::new(NullMaster),
+            shell_name: "ush".into(),
+            relay_session: Some(relay_session.to_owned()),
+            supervisor_session: None,
+            runs: None,
+            native_editor: None,
+            service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
+                lease,
+            )),
         }
     }
 
@@ -6679,7 +6825,7 @@ impl TerminalBackend {
     /// `/bin` at all: `launcher::profile` binds the loader, fonts, `/sys` and
     /// the CA bundle, and deliberately binds no executable directory. A session
     /// runs where its target says (`docs/app-model/environments.md`), and the
-    /// route to it is chosen by [`decide_route`] from a capability probe, not
+    /// route to it is chosen by `decide_route` from a capability probe, not
     /// by trying each in turn — so confinement is never silently downgraded.
     ///
     /// 1. **The service socket.** A sandboxed app cannot build a namespace, so
@@ -6779,6 +6925,7 @@ impl TerminalBackend {
             master: pair.master,
             shell_name,
             relay_session: None,
+            supervisor_session: None,
             runs: None,
             native_editor: None,
             service_lifetime: None,
@@ -6881,7 +7028,6 @@ pub enum OpenError {
     /// No environment can be built on this device: no `env-runtime` image is
     /// installed. The device's own shell may still be opened instead.
     NoRuntime(String),
-    /// Opening failed.
     Failed(String),
 }
 
@@ -7181,6 +7327,14 @@ pub(crate) fn ush_request(
         if let Some(session) = relay_session {
             fields.insert("relay_session".to_string(), serde_json::json!(session));
         }
+        // A remote shell's lease says how its session ended, so a lost
+        // connection reconnects and only an exit closes the window.
+        if target
+            .location()
+            .is_some_and(|location| !location.is_this_device())
+        {
+            fields.insert("end_report".to_string(), serde_json::json!(true));
+        }
         if let Some(key) = runs {
             fields.insert("runs".to_string(), serde_json::json!(key));
         }
@@ -7327,9 +7481,7 @@ pub(crate) fn ush_backend_on(
     // The supervisor declares PTY first, then the private session lease, and
     // only after negotiation the editor capability last.
     let master = std::fs::File::from(fd);
-    let lifetime = std::os::unix::net::UnixStream::from(lifetime);
-    lifetime
-        .peer_addr()
+    let lifetime = runtime_portal::pending_connection::SessionLifetime::adopt(lifetime)
         .map_err(|_| OpenError::Failed(t("terminal-service-invalid-lease")))?;
     tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
@@ -7340,11 +7492,10 @@ pub(crate) fn ush_backend_on(
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
+        supervisor_session: Some(response.session),
         runs: response.runs.then_some(key),
         native_editor,
-        service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
-            lifetime,
-        )),
+        service_lifetime: Some(lifetime),
     })
 }
 
@@ -7459,6 +7610,10 @@ impl TerminalWidget {
     /// receiver) is dropped.
     fn from_backend(backend: TerminalBackend) -> Self {
         let mut widget = Self::without_process(ContentStore::memory());
+        // The bell and what a selection does are the person's preferences,
+        // kept where their other preferences are: the next terminal opens
+        // with them already set.
+        widget.use_preferences(crate::preferences::Preferences::discover());
         widget.attach_backend(backend);
         widget
     }
@@ -7493,7 +7648,58 @@ impl TerminalWidget {
         });
     }
 
+    /// ConPTY keeps its output pipe open while the pseudoconsole exists, so
+    /// the child handle is watched too: its exit is the session's.
+    #[cfg(windows)]
+    fn watch_child_exit(
+        &mut self,
+        mut child: Box<dyn portable_pty::Child + Send + Sync>,
+        child_exit: SessionExit,
+    ) {
+        // Keep a killer for normal window teardown.
+        self.child_killer = Some(child.clone_killer());
+        let disconnected = self.session_disconnected.clone();
+        let status = self.session_status_message.clone();
+        let waker = self.waker.clone();
+        if std::thread::Builder::new()
+            .name("tilo-terminal-child-wait".into())
+            .spawn(move || {
+                let message = if child.wait().is_ok() {
+                    SESSION_ENDED_MESSAGE
+                } else {
+                    "Session ended. The shell's exit status could not be read."
+                };
+                set_terminal_disconnected(&disconnected, &status, message);
+                child_exit.ended(SessionEnd::Exited);
+                request_terminal_wake(&waker);
+            })
+            .is_err()
+        {
+            if let Some(killer) = &mut self.child_killer {
+                let _ = killer.kill();
+            }
+            self.mark_disconnected(
+                "Session unavailable. The terminal could not watch the shell for exit.",
+            );
+        }
+    }
+
+    /// What the reader asks whether the session is still open, and how it
+    /// ended once it is not. The reader distinguishes a hosted session's
+    /// start-up `EIO` from its exit by the lifetime socket the supervisor
+    /// closes when the guest ends. A local PTY has none.
+    fn reader_lease(&self) -> ReaderLease {
+        ReaderLease::new(
+            self.service_lifetime
+                .as_ref()
+                .and_then(|socket| socket.clone_for_reader().ok()),
+        )
+    }
+
     fn attach_backend(&mut self, backend: TerminalBackend) {
+        // What this session's threads say when its shell exits.
+        let exit = self.next_session_exit();
+        self.life.close_asked = false;
         let (output_tx, output_rx) = sync_channel(PTY_QUEUE_CHUNKS);
         self.pty_write = std::sync::Arc::new(std::sync::Mutex::new(backend.writer));
         self.pty_master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
@@ -7508,58 +7714,14 @@ impl TerminalWidget {
         widget.attach_native_editor(backend.native_editor);
         widget.service_lifetime = backend.service_lifetime;
         #[cfg(windows)]
-        {
-            // ConPTY keeps its output pipe open while the pseudoconsole exists.
-            // Observe the child handle too, so exit is visible before closing
-            // the terminal window. Keep a killer for normal window teardown.
-            widget.child_killer = Some(backend.child.clone_killer());
-            let disconnected = widget.session_disconnected.clone();
-            let status = widget.session_status_message.clone();
-            let waker = widget.waker.clone();
-            let mut child = backend.child;
-            if std::thread::Builder::new()
-                .name("tilo-terminal-child-wait".into())
-                .spawn(move || {
-                    let message = if child.wait().is_ok() {
-                        SESSION_ENDED_MESSAGE
-                    } else {
-                        "Session ended. The shell's exit status could not be read."
-                    };
-                    set_terminal_disconnected(&disconnected, &status, message);
-                    request_terminal_wake(&waker);
-                })
-                .is_err()
-            {
-                if let Some(killer) = &mut widget.child_killer {
-                    let _ = killer.kill();
-                }
-                widget.mark_disconnected(
-                    "Session unavailable. The terminal could not watch the shell for exit.",
-                );
-            }
-        }
+        widget.watch_child_exit(backend.child, exit.clone());
         // Share the waker with the reader thread so fresh PTY output wakes an
         // idle host instead of waiting for a poll.
         let waker = widget.waker.clone();
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
 
-        // The reader distinguishes a hosted session's start-up `EIO` from its
-        // exit by the lifetime socket the supervisor closes when the guest
-        // ends. A local PTY has none.
-        #[cfg(unix)]
-        let reader_lifetime = widget
-            .service_lifetime
-            .as_ref()
-            .and_then(|socket| socket.clone_for_reader().ok());
-        #[cfg(unix)]
-        let session_open = move || {
-            reader_lifetime
-                .as_ref()
-                .is_some_and(runtime_portal::pending_connection::ReaderLifetime::is_open)
-        };
-        #[cfg(not(unix))]
-        let session_open = || false;
+        let lease = widget.reader_lease();
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         let reader_result = std::thread::Builder::new()
             .name("tilo-terminal-pty-reader".to_string())
@@ -7579,7 +7741,7 @@ impl TerminalWidget {
                         break;
                     };
                     let read = std::io::Read::read(&mut *r, &mut buf);
-                    match classify_pty_read(&read, &session_open) {
+                    match classify_pty_read(&read, || lease.open()) {
                         PtyReadDisposition::Retry => {
                             // Avoid a hot loop while the guest is between
                             // opening/closing slave descriptors.
@@ -7591,6 +7753,10 @@ impl TerminalWidget {
                                 &session_status_message,
                                 SESSION_ENDED_MESSAGE,
                             );
+                            // The shell exited (its window closes), or the
+                            // connection to a remote one was lost (the tab
+                            // reconnects): the supervisor's report says which.
+                            exit.ended(lease.end());
                             request_terminal_wake(&waker);
                             break;
                         }
@@ -7684,10 +7850,6 @@ impl TerminalWidget {
     /// mock PTY master. No shell is spawned, so nothing arrives on the output
     /// channel — used by headless screenshot scenarios that drive the grid
     /// entirely through `feed`, keeping the frame deterministic.
-    ///
-    /// # Errors
-    ///
-    /// This function should not fail under normal circumstances as it uses a null backend.
     pub fn spawn_headless() -> anyhow::Result<Self> {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.headless = true;
@@ -7699,14 +7861,17 @@ impl TerminalWidget {
     /// readers. A terminal made without it keeps them in memory.
     #[must_use]
     pub fn with_content(mut self, content: ContentStore) -> Self {
+        self.images.set_content(content.clone());
         self.content = content;
         self
     }
 }
 
-#[cfg(windows)]
 impl Drop for TerminalWidget {
     fn drop(&mut self) {
+        // Its sessions end with it; that closes no window.
+        self.end_session_exit();
+        #[cfg(windows)]
         if let Some(killer) = &mut self.child_killer {
             let _ = killer.kill();
         }

@@ -40,7 +40,7 @@ use tilo_actions::ActionAddress;
 use tilo_lock::RwLockRecover as _;
 
 /// Fold text the way every index does: case, compatibility forms and
-/// alphabetic diacritics (see [`tilo_search::fold`]).
+/// alphabetic diacritics (see [`tilo_search::fold()`]).
 #[must_use]
 pub fn normalize_search_text(text: &str) -> String {
     tilo_search::fold(text)
@@ -169,6 +169,11 @@ pub enum PagePoll {
     Pending,
     /// The awaited page. It may carry its own `next` or another `pending`.
     Ready(SearchPage),
+    /// The whole query answered again, now that the source has what it
+    /// lacked (the app has taken the query in): it replaces every row the
+    /// provider gave for the query before, rather than adding to them, so a
+    /// hit for what was typed earlier does not stand beside it.
+    Answered(SearchPage),
 }
 
 /// Cheap diagnostics used by contract and performance tests.
@@ -473,11 +478,6 @@ impl SearchCatalog {
     /// counterpart to [`Self::upsert`]: the whole snapshot is indexed in one
     /// build, while later incremental updates retain their existing
     /// semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed, duplicate, or non-canonical rows, or
-    /// when catalogue generation/browse identities are exhausted.
     pub fn replace_all(
         &self,
         rows: impl IntoIterator<Item = (String, String, SearchResult)>,
@@ -585,11 +585,6 @@ impl SearchCatalog {
     /// Insert or replace one durable resource. `searchable_text` may combine
     /// title, metadata and body; `result` is materialised only when it is a
     /// hit on a requested page.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SearchCatalogError`] when the stable id is empty, the result
-    /// is legacy/opaque, or its canonical action addresses another resource.
     pub fn upsert(
         &self,
         resource_id: impl Into<String>,
@@ -768,9 +763,9 @@ pub struct SearchResult {
     /// Optional secondary line rendered dimmer under the title (e.g. an email
     /// address, a file path, a command description).
     pub subtitle: Option<String>,
-    /// Plain-text detail rendered by the shared result surface for the
-    /// selected or hovered row without changing row geometry.
-    pub preview: Option<String>,
+    /// What the shared result surface shows of the selected or hovered row,
+    /// in the preview band under the list, without changing row geometry.
+    pub preview: Option<super::SearchPreview>,
     /// Grouping label, e.g. `"Contacts"`, `"Files"`, `"Commands"`. Rows sharing
     /// a `kind` are bucketed together under this label in the results overlay,
     /// so a mixed query reads as sectioned groups rather than one flat list.
@@ -862,8 +857,9 @@ impl SearchResult {
     }
 
     #[must_use]
-    pub fn with_preview(mut self, preview: impl Into<String>) -> Self {
-        self.preview = Some(preview.into());
+    pub fn with_preview(mut self, preview: impl Into<super::SearchPreview>) -> Self {
+        let preview = preview.into();
+        self.preview = (!preview.is_empty()).then_some(preview);
         self
     }
 
@@ -1137,6 +1133,17 @@ pub trait SearchProvider {
     /// Lazily resolve a canonical search address that is intentionally absent
     /// from the small open-resource snapshot.
     fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
+        None
+    }
+
+    /// The action that opens one of this provider's hits that names no
+    /// action of its own: invoked with the hit's anchor (its `action_id`) as
+    /// its one argument, it shows the hit in the app, as picking it in the
+    /// app's own search does and as an agent's `open` does. A host that
+    /// searches the app from outside it (a desktop's search over the app's
+    /// window) opens such hits through it; `None` where hits are opened only
+    /// inside the app.
+    fn open_action(&self) -> Option<ActionAddress> {
         None
     }
 }
@@ -2112,7 +2119,6 @@ mod tests {
         );
         assert_eq!(touched(snapshot(Some(500)).collect()), 1);
         assert_eq!(catalog.stats().generation, generation + 1);
-        // One more record at the front, and one gone from the end.
         let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
         records.pop();
         records.insert(0, sync_record(5_000, 0));

@@ -34,9 +34,18 @@ pub struct TestGovernor {
     workspace_id: u64,
     generation: u64,
     outgoing: Vec<Vec<u8>>,
+    /// What the last commit published: the whole checkpoint after
+    /// [`Self::refresh_checkpoint`], only what changed after
+    /// [`Self::commit_changes`].
+    changes: Vec<(Vec<u8>, Retention)>,
+    /// The peer as last published, the baseline of the next commit.
+    published: Option<StatePeer>,
     invitations: Vec<Vec<u8>>,
     challenges: Vec<(JoinChallenge, DeviceCert)>,
     completions: BTreeMap<[u8; 32], JoinBootstrap>,
+    /// The instant the governor treats as now, once a test pins it;
+    /// otherwise it follows the wall clock.
+    clock: Option<SystemTime>,
 }
 
 fn random<const N: usize>() -> [u8; N] {
@@ -134,9 +143,12 @@ impl TestGovernor {
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
+            changes: Vec::new(),
+            published: None,
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
+            clock: None,
         };
         governor.refresh_checkpoint().unwrap();
         governor
@@ -189,9 +201,12 @@ impl TestGovernor {
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
+            changes: Vec::new(),
+            published: None,
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
+            clock: None,
         };
         fixture.refresh_checkpoint()?;
         Ok(fixture)
@@ -223,13 +238,14 @@ impl TestGovernor {
             None,
             &self.governor_key,
         )?;
+        let now = self.now();
         self.peer
             .governance_mut()
             .admit_certificate_with_workspace_delegation(
                 host.clone(),
                 delegation.clone(),
                 &self.governor_key,
-                SystemTime::now(),
+                now,
             )?;
         self.host = host;
         self.host_key = host_key;
@@ -265,6 +281,17 @@ impl TestGovernor {
     #[must_use]
     pub fn host_key(&self) -> &SigningKey {
         &self.host_key
+    }
+
+    /// Answer every later exchange as of `now` instead of the wall clock, so
+    /// a test whose other side runs on a fixed instant agrees with the
+    /// governor on what has expired however long the test machine takes.
+    pub fn pin_clock(&mut self, now: SystemTime) {
+        self.clock = Some(now);
+    }
+
+    fn now(&self) -> SystemTime {
+        self.clock.unwrap_or_else(SystemTime::now)
     }
 
     /// The host's signed hint that it serves the room at `endpoint_addr`.
@@ -327,8 +354,6 @@ impl TestGovernor {
             .map(|bytes| (bytes.as_slice(), Retention::Checkpoint))
     }
 
-    /// # Errors
-    /// The room's governance is missing.
     pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
         self.peer.governance().governed_access(now)
     }
@@ -353,12 +378,17 @@ impl TestGovernor {
             .collect())
     }
 
-    /// Re-sign the room's full checkpoint at the next generation.
-    ///
-    /// # Errors
-    /// The checkpoint cannot be signed.
-    pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
-        let now = SystemTime::now();
+    /// What the last commit published, oldest first, each with its
+    /// retention: the whole checkpoint after [`Self::refresh_checkpoint`],
+    /// what changed after [`Self::commit_changes`].
+    pub fn changes(&self) -> impl Iterator<Item = (&[u8], Retention)> {
+        self.changes
+            .iter()
+            .map(|(bytes, retention)| (bytes.as_slice(), *retention))
+    }
+
+    /// The candidate peer of the next commit and its generation.
+    fn next_commit(&self, now: SystemTime) -> Result<(StatePeer, u64), String> {
         let mut candidate = self.peer.clone();
         candidate
             .media_mut()
@@ -377,11 +407,68 @@ impl TestGovernor {
             .max(admitted_generation)
             .checked_add(1)
             .ok_or("fixture checkpoint generation exhausted")?;
-        let messages = candidate.durable_bootstrap_messages(&self.governor_key, now, generation)?;
+        Ok((candidate, generation))
+    }
+
+    /// Re-sign the room's full checkpoint at the next generation.
+    ///
+    /// # Errors
+    /// The checkpoint cannot be signed.
+    pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
+        let now = self.now();
+        let (mut candidate, generation) = self.next_commit(now)?;
+        let messages = candidate.publication_mut().durable_bootstrap_messages(
+            &self.governor_key,
+            now,
+            generation,
+        )?;
         self.outgoing = messages
             .iter()
             .map(|message| postcard::to_stdvec(message).map_err(|error| error.to_string()))
             .collect::<Result<_, _>>()?;
+        self.changes = self
+            .outgoing
+            .iter()
+            .map(|bytes| (bytes.clone(), Retention::Checkpoint))
+            .collect();
+        self.published = Some(candidate.clone());
+        self.peer = candidate;
+        self.generation = generation;
+        Ok(())
+    }
+
+    /// Commit what the governor admitted since its last publication as a
+    /// room host does between checkpoints: the governance changes and every
+    /// changed record, retained after the last publication, instead of the
+    /// room's whole checkpoint re-signed. Each checkpoint replaces its
+    /// lineage on the relay, a few fsyncs; a governor that re-signed one per
+    /// admitted edit queued more of them than a loaded runner's disk keeps
+    /// up with. The first commit is a whole checkpoint.
+    ///
+    /// # Errors
+    /// The commit cannot be signed.
+    pub fn commit_changes(&mut self) -> Result<(), String> {
+        let Some(before) = self.published.clone() else {
+            return self.refresh_checkpoint();
+        };
+        let now = self.now();
+        let (mut candidate, generation) = self.next_commit(now)?;
+        let messages = candidate.publication_mut().durable_mutation_messages(
+            &before,
+            &self.governor_key,
+            now,
+            generation,
+        )?;
+        self.changes = messages
+            .iter()
+            .map(|message| {
+                let (_, retention) = neighbour_wire::retention(message, false)
+                    .ok_or("a committed change has no retention channel")?;
+                let bytes = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+                Ok::<_, String>((bytes, retention))
+            })
+            .collect::<Result<_, _>>()?;
+        self.published = Some(candidate.clone());
         self.peer = candidate;
         self.generation = generation;
         Ok(())
@@ -400,7 +487,8 @@ impl TestGovernor {
             .then(|| postcard::to_stdvec(&message).ok())
             .flatten()
             .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
-        let outcome = self.peer.receive_from(origin, message, SystemTime::now())?;
+        let now = self.now();
+        let outcome = self.peer.receive_from(origin, message, now)?;
         tracing::debug!(?id, ?outcome, "native fixture governor admission");
         Ok(())
     }
@@ -451,7 +539,7 @@ impl TestGovernor {
             signed_invitation,
             None,
             &self.revocations(),
-            ns(SystemTime::now()),
+            ns(self.now()),
         )
     }
 
@@ -463,7 +551,7 @@ impl TestGovernor {
         if remote != request.device_cert.device_public_key {
             return Err("join certificate does not match authenticated transport endpoint".into());
         }
-        let now = ns(SystemTime::now());
+        let now = ns(self.now());
         if let Some((challenge, _)) = self.challenges.iter().find(|(challenge, cert)| {
             challenge.request_id == request.request_id && *cert == request.device_cert
         }) {
@@ -514,7 +602,7 @@ impl TestGovernor {
         if cert.device_public_key != remote {
             return Err("join proof does not match authenticated transport endpoint".into());
         }
-        let now = SystemTime::now();
+        let now = self.now();
         let redemption = join::verify_join_proof(
             &request.proof,
             &challenge,
@@ -564,6 +652,7 @@ mod empty_interactive_tests {
         let messages = governor
             .peer()
             .clone()
+            .publication_mut()
             .durable_bootstrap_messages(&key, std::time::SystemTime::now(), 20)
             .unwrap();
         for message in messages {

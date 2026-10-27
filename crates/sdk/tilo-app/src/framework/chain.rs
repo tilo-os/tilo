@@ -70,7 +70,7 @@ pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 const LOOK_EVERY: ui_core::time::Duration = ui_core::time::Duration::from_secs(1);
 
 /// A resource whose records are the parts of a chain kept beside the app's
-/// own record ([`RecordId::part`]). See the [module docs](self).
+/// own record ([`RecordId::part`]). See the module docs.
 pub trait Chained: Resource {
     /// The app's own resource: what [`Self::prepare`] reads where an action
     /// is invoked.
@@ -101,6 +101,17 @@ pub trait Chained: Resource {
     ) -> Result<(), String> {
         let _ = (action, base);
         Ok(())
+    }
+
+    /// Where in the app's own record `action` happens, named as everyone
+    /// the record is shared with sees that place (a post's channel,
+    /// `#general`): history keeps it on the step
+    /// ([`tilo_actions::PLACE_FACET`]), so what someone is doing can say
+    /// where. `None` for an action of no such place, and for a place not
+    /// everyone sees (a direct conversation).
+    fn place(action: &Self::Action, base: &<Self::Base as Resource>::State) -> Option<String> {
+        let _ = (action, base);
+        None
     }
 }
 
@@ -261,13 +272,22 @@ impl<P: Chained> ChainState<P> {
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
-        let Some(newest) = self.room.store.held_parts(&P::chain()).last().copied() else {
+        let kept = self.room.store.held_parts(&P::chain()).last().copied();
+        // A part a peer started is the same record here (each part's genesis
+        // is the same everywhere): started here, it syncs on its route.
+        let started = self.room.store.announced_parts(&P::chain()).last().copied();
+        let Some(newest) = kept.max(started) else {
             return false;
         };
         if head.is_some_and(|head| newest <= head) {
             return false;
         }
-        self.hold(newest)
+        let opened = if kept.is_some_and(|kept| kept >= newest) {
+            self.hold(newest)
+        } else {
+            self.start(newest)
+        };
+        opened
             .map_err(|error| {
                 tracing::debug!(kind = P::KIND, part = newest, %error, "chain head not opened");
             })
@@ -397,7 +417,10 @@ impl<P: Chained> ChainState<P> {
         invoker: &ActionInvoker,
     ) -> Result<(u64, Vec<String>), ActionError> {
         let mut action = action.clone();
-        P::prepare(&mut action, &(self.base)()).map_err(ActionError::Refused)?;
+        let base = (self.base)();
+        P::prepare(&mut action, &base).map_err(ActionError::Refused)?;
+        let place = P::place(&action, &base);
+        drop(base);
         let index = P::part_for(&action, &self.parts()).map_err(ActionError::Refused)?;
         if let Some(permissions) = &self.room.permissions {
             // Decided where the chain publishes the action, as the door
@@ -414,11 +437,14 @@ impl<P: Chained> ChainState<P> {
                     &verb,
                 )
             } else {
+                // A field edit, at the field it changes, as the published
+                // `field-edit`: a grant on that action covers it too.
                 TreePath::root()
                     .app(self.room.app_id)
                     .kind(P::KIND)
                     .resource(self.id.clone())
                     .field(need.field.as_deref().unwrap_or_default())
+                    .action(tilo_resource::FIELD_EDIT)
             };
             if !permissions.check(&PermissionScope::Action {
                 node,
@@ -432,7 +458,7 @@ impl<P: Chained> ChainState<P> {
         }
         self.start(index).map_err(ActionError::Refused)?;
         let encoded = tilo_resource::encode::<P>(&action)?;
-        let created = self.write(index, &action, encoded, invoker)?;
+        let created = self.write(index, &action, encoded, invoker, place)?;
         Ok((index, created))
     }
 
@@ -440,10 +466,6 @@ impl<P: Chained> ChainState<P> {
     /// `invoker`: checked as an undoable change where the chain publishes
     /// the verb, and written into the part's history as any of its steps.
     /// Answers the part and its version after.
-    ///
-    /// # Errors
-    /// The participant may not, the part is neither here nor known to the
-    /// room, or history refused the edit.
     fn apply_history(
         &self,
         edit: &PartEdit,
@@ -469,7 +491,7 @@ impl<P: Chained> ChainState<P> {
         }
         self.hold(edit.part).map_err(ActionError::Refused)?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
-        self.write(edit.part, &edit.action::<P>(), encoded, invoker)?;
+        self.write(edit.part, &edit.action::<P>(), encoded, invoker, None)?;
         let now = self
             .room
             .store
@@ -481,19 +503,27 @@ impl<P: Chained> ChainState<P> {
     }
 
     /// Write `action` into part `index`, which is open here, attributed to
-    /// `invoker` and recorded in the part's history. The item resources it
-    /// created.
+    /// `invoker` and recorded in the part's history, with where in the
+    /// app's record it happened (`place`, [`Chained::place`]). The item
+    /// resources it created.
     fn write(
         &self,
         index: u64,
         action: &dyn tilo_actions::Action,
         encoded: tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
+        place: Option<String>,
     ) -> Result<Vec<String>, ActionError> {
-        let context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
+        let mut context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
             .with_app(self.room.app_id, self.room.app_title)
             .with_invoker(invoker.clone())
             .with_change(action.change_kind());
+        if let Some(place) = place.filter(|place| !place.trim().is_empty()) {
+            context = context.with_facet(tilo_actions::ActionFacet::new(
+                tilo_actions::PLACE_FACET,
+                place,
+            ));
+        }
         let id = P::chain().part(index);
         let created = self
             .room
@@ -584,16 +614,37 @@ fn verb_of<P: Chained>(action: &P::Action) -> Option<String> {
 }
 
 /// `resource`'s document actions, and those of its children, carried out on
-/// the chain `chain`, each keeping the need it declares.
-fn route(mut resource: tilo_actions::Resource, chain: &str) -> tilo_actions::Resource {
+/// the chain `chain`, each keeping the need it declares. An item's views
+/// and the app's other effects on it stay as the part publishes them,
+/// answered by the app's window: an item of a part opens at the address a
+/// room's host knows it by. The chain itself offers only document actions;
+/// the app's own record offers its effects.
+fn route(resource: tilo_actions::Resource, chain: &str) -> tilo_actions::Resource {
+    route_at(resource, chain, false)
+}
+
+fn route_at(
+    mut resource: tilo_actions::Resource,
+    chain: &str,
+    item: bool,
+) -> tilo_actions::Resource {
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
-        .filter(|spec| spec.kind == OperationKind::Document)
-        .map(|spec| super::record::route_operation(spec, CHAIN_ACTION_TYPE, chain))
+        .filter_map(|spec| {
+            if spec.kind == OperationKind::Document {
+                Some(super::record::route_operation(
+                    spec,
+                    CHAIN_ACTION_TYPE,
+                    chain,
+                ))
+            } else {
+                item.then_some(spec)
+            }
+        })
         .collect();
     resource.children = std::mem::take(&mut resource.children)
         .into_iter()
-        .map(|child| route(child, chain))
+        .map(|child| route_at(child, chain, true))
         .collect();
     resource
 }
@@ -669,7 +720,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
 }
 
 /// A chain of records the app keeps beside its own, held for a view or
-/// surface. See the [module docs](self).
+/// surface. See the module docs.
 pub struct Chain<P: Chained> {
     state: Rc<ChainState<P>>,
     dispatch: Dispatcher<P>,
@@ -718,9 +769,6 @@ impl<P: Chained> Chain<P> {
     /// Hold the earlier part `index` too: read it from this device, which
     /// asks the room for it when it has not got it yet (its changes arrive
     /// and [`Self::revision`] moves).
-    ///
-    /// # Errors
-    /// The part is neither here nor known to the room yet.
     pub fn hold(&self, index: u64) -> Result<(), String> {
         self.state.hold(index)
     }
@@ -747,6 +795,43 @@ impl<P: Chained> Chain<P> {
         self.apply(&action)
     }
 
+    /// Take back the window's person's last step in part `index`, through
+    /// the part's history as the `undo` verb the chain publishes on it does:
+    /// the way back a surface offers for a step it took at the person's own
+    /// gesture (Undo beside a message they deleted).
+    ///
+    /// A refusal is reported through the dispatcher's
+    /// [`refused`](Dispatcher::refused), as the door's are.
+    ///
+    /// # Errors
+    /// As the door refuses it: the person may not change the part's history,
+    /// the part is not here, or they have no step in it to take back.
+    pub fn undo_in(&self, index: u64) -> Result<(), ActionError> {
+        let me = self.dispatch.me().unwrap_or(&self.state.room.me);
+        let edit = PartEdit {
+            part: index,
+            edit: super::history::HistoryEdit::Undo {
+                steps: None,
+                run: None,
+                by: None,
+                to: None,
+            },
+        };
+        let undone = self
+            .state
+            .apply_history(&edit, &ActionInvoker::actor(me))
+            .map(drop);
+        if let Err(error) = &undone {
+            self.dispatch.refused().set(Some(super::dispatch::Refused {
+                action: edit.verb().to_owned(),
+                item: None,
+                reason: error.to_string(),
+                by_room: false,
+            }));
+        }
+        undone
+    }
+
     /// Apply what `invoke` names as `author` wrote it: a screenshot
     /// scenario staging what other people wrote, or a test acting as
     /// someone else. Checked and recorded as [`Self::apply`] is, attributed
@@ -771,6 +856,51 @@ impl<P: Chained> Chain<P> {
     ) -> Result<u64, ActionError> {
         let action = invoke.build(now_ms).map_err(ActionError::Refused)?;
         self.state.apply_as(&action, &ActionInvoker::actor(author))
+    }
+
+    /// Write `state` into part `index` directly, as what the part starts
+    /// with: a capture's or a test's fixture (items under fixed ids,
+    /// written by several people) in fields the parts keep to their own
+    /// actions (`#[model(readonly)]`), which refuse every generic edit.
+    /// Not an action: nothing checks who may, nobody is its author, and it
+    /// is committed as the part's genesis, so only a fixture writes it.
+    ///
+    /// # Errors
+    /// The part could not be opened or started, or `state` does not fit it.
+    pub fn write_start(&self, index: u64, state: &P::State) -> Result<(), String>
+    where
+        P::State: tilo_resource::Fields,
+    {
+        use tilo_resource::Fields as _;
+        self.state.start(index)?;
+        let id = P::chain().part(index);
+        self.state
+            .room
+            .store
+            .with_history(&id, |doc, history| {
+                let root = ui_core::automerge::ROOT;
+                let written = <P::State as tilo_resource::Fields>::read_fields(doc, &root)
+                    .and_then(|before| {
+                        state.write_changed_fields(
+                            &before,
+                            doc,
+                            &root,
+                            &tilo_resource::Delta::default(),
+                        )
+                    })
+                    .map_err(|error| error.to_string());
+                doc.commit_with(
+                    ui_core::automerge::transaction::CommitOptions::default()
+                        .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+                );
+                history.rebase(doc);
+                written
+            })
+            .ok_or("the part is not open here")??;
+        self.state.room.store.schedule_committed_history(&id);
+        self.state.refresh();
+        self.state.moved();
+        Ok(())
     }
 
     /// Whether the chain takes a change now: not while a frame reads the
@@ -946,6 +1076,7 @@ impl Chains {
         &self,
         me: Option<&str>,
         payload: &[u8],
+        live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let request: super::record::RecordAction =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
@@ -959,6 +1090,6 @@ impl Chains {
         let invoker = ui_core::invocation_scope::current_invoker()
             .or_else(|| me.map(ActionInvoker::actor))
             .ok_or("nobody changes a past version")?;
-        door.apply_answering(&request.action, &invoker)
+        door.apply_in(&request.action, &invoker, live)
     }
 }

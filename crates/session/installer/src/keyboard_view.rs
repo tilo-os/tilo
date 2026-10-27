@@ -241,17 +241,14 @@ mod tests {
 
     #[test]
     fn keyboard_view_follows_the_selected_layout_as_a_non_focusable_leaf() {
-        // Phase `defaults_to_us_without_a_known_selection`.
         {
             let kv = KeyboardView::new(&ui::LocalState::new(String::new()));
             assert_eq!(kv.layout_id(), "us");
         }
-        // Phase `resolves_the_selected_layout`.
         {
             let kv = KeyboardView::new(&ui::LocalState::new("German (QWERTZ)".into()));
             assert_eq!(kv.layout_id(), "de");
         }
-        // Phase `sync_tracks_changes_live`.
         {
             let selection = ui::LocalState::new("French (AZERTY)".to_string());
             let mut kv = KeyboardView::new(&selection);
@@ -263,7 +260,6 @@ mod tests {
             sync(&mut kv);
             assert_eq!(kv.layout_id(), "dvorak");
         }
-        // Phase `unknown_value_keeps_current_layout`.
         {
             let selection = ui::LocalState::new("Nonsense".to_string());
             let mut kv = KeyboardView::new(&selection);
@@ -271,7 +267,6 @@ mod tests {
             // Falls back to the default (no panic, no change to a bogus layout).
             assert_eq!(kv.layout_id(), "us");
         }
-        // Phase `is_a_non_focusable_leaf`.
         {
             let kv = KeyboardView::new(&ui::LocalState::new(String::new()));
             assert!(!kv.is_focusable());

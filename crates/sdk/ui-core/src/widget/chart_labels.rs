@@ -240,7 +240,6 @@ pub(crate) fn centre_label_layout(
     None
 }
 
-/// The ink of a label drawn on the chart's ground.
 pub(crate) fn ground_ink(theme: &Theme) -> Color {
     theme.tokens.colors.text_dim
 }

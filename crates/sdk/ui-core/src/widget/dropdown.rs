@@ -17,8 +17,9 @@
 //! incremental, case-insensitive substring filter (Backspace edits it) so
 //! hundred-entry lists stay usable without endless scrolling. Opening a
 //! searchable list shows its search prompt and caret immediately. A
-//! shorter list never filters: a typed letter arms the next option starting
-//! with it.
+//! shorter list never filters: letters typed in quick succession arm the
+//! first option their name begins, one letter again steps on through the
+//! options it begins ([`crate::type_ahead`], as every list answers typing).
 //!
 //! Closed, the control is as wide as its widest option (`fill` spans the
 //! parent). Inside a [`crate::widget::Section`] or
@@ -118,6 +119,8 @@ pub struct Dropdown {
     filter: String,
     filter_selection: Selection,
     filter_composition: QueryComposition,
+    /// What has been typed into an open short list.
+    typing: crate::type_ahead::TypeAhead,
     scroll: f32,
     scrollbar: Scrollbar,
     scrollbar_gutter: f64,
@@ -169,7 +172,6 @@ pub struct Dropdown {
     /// The label and caption styles of the latest layout, for measuring.
     label_style: TextStyle,
     caption_style: TextStyle,
-    /// The theme's caption height from the latest layout or paint.
     theme_caption_height: f64,
     /// The width measured for the options in the latest layout.
     measured: f64,
@@ -297,6 +299,7 @@ impl Dropdown {
             filter: String::new(),
             filter_selection: Selection::collapsed(0),
             filter_composition: QueryComposition::new(),
+            typing: crate::type_ahead::TypeAhead::default(),
             scroll: 0.0,
             scrollbar: Scrollbar::vertical(),
             scrollbar_gutter: 0.0,
@@ -924,6 +927,53 @@ impl Dropdown {
         rows
     }
 
+    /// The stable key of the option whose value is `value`.
+    fn option_key(value: &str) -> u64 {
+        crate::a11y::hash_key(&("dropdown-option", value))
+    }
+
+    /// The open list as assistive technology and agents read it: each
+    /// option the filter shows, where it is drawn (rows scrolled out of
+    /// the list have no geometry), the chosen one selected and the
+    /// highlighted one the combobox's active descendant, each choosable through
+    /// [`Widget::perform_action`] by its key.
+    fn options_access(&self) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let filtered = self.filtered();
+        let list = self.list_rect(filtered.len());
+        let rows = self.option_rows(list, filtered.len());
+        let total = filtered.len();
+        let options = filtered
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &index)| {
+                let label = self.options.get(index)?;
+                let value = self.values.get(index)?;
+                let top = rows.y0 + f64_of_usize(row) * self.item_h - f64::from(self.scroll);
+                let drawn = Rect::new(rows.x0, top, rows.x1, top + self.item_h).intersect(rows);
+                let mut option = AccessNode::new(Role::ListBoxOption)
+                    .with_name(label.clone())
+                    .with_key(Self::option_key(value))
+                    .with_position(row.saturating_add(1), total)
+                    // The keyboard stays on the combobox while its list is
+                    // open: the highlighted option is its active descendant,
+                    // announced without taking the tree's focus from it.
+                    .with_state(
+                        AccessState::new()
+                            .selected(self.menu.is_none() && *value == self.selected)
+                            .active_descendant(self.is_focused() && row == self.highlight),
+                    );
+                if drawn.height() > 0.0 {
+                    option = option.with_bounds(drawn);
+                }
+                Some(option)
+            })
+            .collect();
+        AccessNode::new(Role::ListBox)
+            .with_bounds(list)
+            .with_children(options)
+    }
+
     /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
     fn row_at(&self, pos: Point, list: Rect, n: usize) -> Option<usize> {
         let rows = self.option_rows(list, n);
@@ -957,21 +1007,21 @@ impl Dropdown {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll(n));
     }
 
-    /// Arm the next option after the highlighted one whose label starts
-    /// with `typed`, wrapping round; nothing when none does.
+    /// Arm the option whose label begins with what has been typed: letters
+    /// in quick succession spell a name, one letter again steps to the next
+    /// option it begins, wrapping round; nothing when none begins so. A
+    /// space only continues a name being typed.
     fn type_ahead(&mut self, typed: &str) {
-        let typed = typed.trim().to_lowercase();
-        if typed.is_empty() {
+        let now = crate::time::now();
+        if typed.trim().is_empty() && !self.typing.is_typing(now) {
             return;
         }
+        self.typing.type_text(typed, now);
         let n = self.options.len();
-        let next = (1..=n)
-            .map(|step| self.highlight.saturating_add(step) % n)
-            .find(|&index| {
-                self.options
-                    .get(index)
-                    .is_some_and(|label| label.to_lowercase().starts_with(&typed))
-            });
+        let next = self.typing.target(
+            self.options.iter().map(String::as_str),
+            Some(self.highlight),
+        );
         if let Some(index) = next {
             self.highlight = index;
             self.ensure_visible(index, n);
@@ -986,6 +1036,7 @@ impl Dropdown {
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
+        self.typing.reset();
         let filtered = self.filtered();
         self.highlight = self.selected_pos(&filtered);
         self.scroll = 0.0;
@@ -1044,11 +1095,17 @@ impl Dropdown {
             return;
         }
         if let Some(action) = &mut self.action {
-            let _ = action.emit(value.to_string());
+            if let Err(error) = action.emit(value.to_string()) {
+                tracing::warn!(%error, "the chooser's action refused its value");
+            }
         } else if let Some(binding) = &mut self.binding {
             binding.publish(&value.to_string());
         }
-        self.selected = value.to_string();
+        // Bound to the value its action writes, the chooser shows what the
+        // store holds once it holds it, never an unconfirmed choice.
+        if self.action.is_none() || self.binding.is_none() {
+            self.selected = value.to_string();
+        }
         if self.action.is_none() {
             self.publish_local_state();
         }
@@ -1873,6 +1930,11 @@ impl Widget for Dropdown {
         if self.open && self.supports_filter() {
             node = node.with_description(crate::i18n!("dropdown-search-description"));
         }
+        if self.open {
+            node = node
+                .with_children(vec![self.options_access()])
+                .with_keyed_action_routes(self.test_id().unwrap_or("dropdown"));
+        }
         Some(node)
     }
 
@@ -1884,13 +1946,29 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _key_path: &[u64],
+        key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.effectively_enabled() {
             return false;
+        }
+        // One of the open list's options, by its key: chosen as a click on
+        // its row chooses it.
+        if let Some(&key) = key_path.last()
+            && let Some(row) = self.filtered().iter().position(|&index| {
+                self.values
+                    .get(index)
+                    .is_some_and(|value| Self::option_key(value) == key)
+            })
+        {
+            if !self.open || !matches!(action, Action::Activate) {
+                return false;
+            }
+            self.highlight = row;
+            self.select_highlighted(state.doc(), root);
+            return true;
         }
         match action {
             Action::Expand => {
@@ -2247,7 +2325,6 @@ impl<'a> DropdownFace<'a> {
         self
     }
 
-    /// The field's height at `size` in `theme`.
     #[must_use]
     pub fn height(size: crate::widget::ControlSize, theme: &Theme) -> f64 {
         size.height(theme)
@@ -2317,7 +2394,6 @@ impl<'a> DropdownFace<'a> {
         field.inflate(0.0, grow_y).contains(point)
     }
 
-    /// Paint the face.
     pub fn paint(
         &self,
         scene: &mut Scene,
@@ -2786,7 +2862,6 @@ mod tests {
                 &root
             ));
             assert!(dd.is_open());
-            // Highlight lands on the currently-selected option.
             assert_eq!(dd.highlight_index(), 0);
         }
 
@@ -2852,7 +2927,6 @@ mod tests {
                 &root
             ));
             assert!(!dd.is_open(), "selecting closes the list");
-            assert_eq!(dd.selected(), "America/New_York");
             assert_eq!(
                 crate::widget::controls::take_control_invocation(&mut dd)
                     .unwrap()
@@ -2864,6 +2938,12 @@ mod tests {
                 Some("UTC"),
                 "selecting submits an action and preserves the read model"
             );
+            // The chooser shows what the document holds, never the choice
+            // before it lands: still UTC, then New York once it is stored.
+            assert_eq!(dd.selected(), "UTC");
+            let (doc, root) = doc_with_tz("America/New_York");
+            dd.sync(&doc, &root);
+            assert_eq!(dd.selected(), "America/New_York");
         }
 
         fn escape_closes_without_changing_value() {
@@ -2944,7 +3024,6 @@ mod tests {
             );
             assert_eq!(dd.filter_query(), "ame");
             assert_eq!(dd.visible_count(), 1);
-            // Enter selects the sole filtered match.
             feed_key(
                 &mut dd,
                 &key_press(Key::Named(NamedKey::Enter), None),
@@ -3357,7 +3436,6 @@ mod tests {
         let mut document = AutoCommit::new();
         let root = automerge::ROOT;
 
-        // The list hangs from the icon's trailing edge, wide enough to read.
         let list = menu.list_rect(opts().len());
         assert!((list.x1 - menu.rect.x1).abs() < 1e-6, "{list:?}");
         assert!(list.width() >= menu_min_width());
@@ -3699,6 +3777,31 @@ mod tests {
                 &root,
             );
             assert_eq!(dd.highlight_index(), 3, "typing again moves on");
+            // Letters typed together spell a name: from UTC, "a" arms
+            // America, the first option it begins, and "as" goes on to Asia.
+            dd.close();
+            dd.do_open();
+            assert_eq!(dd.highlight_index(), 0);
+            for letter in ["a", "s"] {
+                feed_key(
+                    &mut dd,
+                    &key_press(Key::Character(letter.into()), Some(letter)),
+                    &mut doc,
+                    &root,
+                );
+            }
+            assert_eq!(dd.highlight_index(), 3, "\"as\" spells Asia");
+            feed_key(
+                &mut dd,
+                &key_press(Key::Character("x".into()), Some("x")),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(
+                dd.highlight_index(),
+                3,
+                "a name no option begins leaves the highlight where it is"
+            );
             let node = Widget::accessibility(&dd).expect("semantics");
             assert_eq!(
                 node.value.as_deref(),

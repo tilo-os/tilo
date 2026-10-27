@@ -51,6 +51,9 @@ struct NoticeState {
     /// The person asked for the centre from the banner stack (its "more"
     /// card); the layer opens it on its next pass.
     centre_requested: Cell<bool>,
+    /// Notifications posted since the person last looked at the centre, by
+    /// id: what the bell counts.
+    unread: RefCell<std::collections::BTreeSet<u64>>,
 }
 
 impl NoticeState {
@@ -173,6 +176,7 @@ impl DesktopNotifications {
     /// to the centre. Returns its id.
     pub fn post(&self, notification: Notification) -> u64 {
         let id = notification.id;
+        self.log.unread.borrow_mut().insert(id);
         let evicted = self.log.log.borrow_mut().show(notification);
         for retired in evicted {
             self.log.log.borrow_mut().retain(retired);
@@ -247,6 +251,27 @@ impl DesktopNotifications {
 
     pub fn revision(&self) -> u64 {
         self.log.revision.get()
+    }
+
+    /// Notifications posted since the centre was last open that are still
+    /// shown, as a banner or in the centre: the bell's count. One withdrawn
+    /// or cleared is no longer news.
+    pub fn unread(&self) -> usize {
+        let log = self.log.log.borrow();
+        let unread = self.log.unread.borrow();
+        log.active()
+            .iter()
+            .chain(log.history())
+            .filter(|notification| unread.contains(&notification.id))
+            .count()
+    }
+
+    /// The person saw every notification: the centre opened or closed.
+    pub fn mark_read(&self) {
+        let had = !std::mem::take(&mut *self.log.unread.borrow_mut()).is_empty();
+        if had {
+            self.log.touch();
+        }
     }
 
     /// Banners on screen and notifications retained in the centre.
@@ -525,8 +550,16 @@ impl NotificationLayer {
         &self.notifications
     }
 
+    /// Banners begin below `y`, where the shown windows' content starts.
+    pub fn set_clear_top(&mut self, y: f64) {
+        self.stack.set_clear_top(y);
+    }
+
+    /// Open or close the centre. Either way the person has seen what it
+    /// holds: nothing is unread after.
     pub fn set_center_open(&mut self, open: bool) {
         if open != self.center.is_some() {
+            self.notifications.mark_read();
             self.center = open.then(NotificationCenter::new);
             self.dirty = true;
         }
@@ -687,6 +720,18 @@ impl Widget for NotificationLayer {
     }
     fn needs_animation_frame(&self) -> bool {
         self.stack.needs_animation_frame(self.notifications.host())
+            || self
+                .center
+                .as_ref()
+                .is_some_and(NotificationCenter::reading_needs_frame)
+    }
+    /// The reading page glides on after a flick, repainted as a wheel's
+    /// scroll is; that changes no model.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        if let Some(center) = self.center.as_mut() {
+            self.dirty |= center.advance_reading();
+        }
+        false
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
         let banner = self.stack.next_wake_deadline(self.notifications.host());
@@ -700,7 +745,7 @@ impl Widget for NotificationLayer {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = tree
-            .new_leaf(super::history::overlay_style())
+            .new_leaf(overlay_style())
             .unwrap_or_else(|_| NodeId::from(0u64));
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -749,6 +794,21 @@ impl Widget for NotificationLayer {
     }
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         self.center.as_ref()?.reading_scroll()
+    }
+    /// A banner's control pressed by assistive technology, as a click does.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        let notifications = self.notifications.clone();
+        let pressed = self
+            .stack
+            .perform_semantic(notifications.host(), target, action);
+        self.dirty |= pressed;
+        pressed
     }
     fn apply_primary_vertical_scroll(
         &mut self,
@@ -803,6 +863,24 @@ impl Widget for NotificationLayer {
     }
 }
 
+/// A leaf over the whole surface, out of the strip's flow.
+fn overlay_style() -> ui::taffy::Style {
+    ui::taffy::Style {
+        position: ui::taffy::Position::Absolute,
+        inset: ui::taffy::Rect {
+            left: ui::taffy::LengthPercentageAuto::length(0.0),
+            top: ui::taffy::LengthPercentageAuto::length(0.0),
+            right: ui::taffy::LengthPercentageAuto::auto(),
+            bottom: ui::taffy::LengthPercentageAuto::auto(),
+        },
+        size: ui::taffy::Size {
+            width: ui::taffy::Dimension::percent(1.0),
+            height: ui::taffy::Dimension::percent(1.0),
+        },
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,6 +915,23 @@ mod tests {
     fn press(layer: &mut NotificationLayer, p: Point) -> bool {
         layer.cursor = Some(p);
         layer.route(&ui::synthetic_input::mouse_press(), 1.0)
+    }
+
+    /// The bell counts what arrived since the person last looked: opening
+    /// the centre reads it all, and one taken back is no longer news.
+    #[test]
+    fn notifications_stay_unread_until_the_centre_opens() {
+        let (mut layer, notifications) = layer_with(2);
+        assert_eq!(notifications.unread(), 2);
+        let revision = notifications.revision();
+        layer.set_center_open(true);
+        assert_eq!(notifications.unread(), 0, "opening the centre reads them");
+        assert_ne!(notifications.revision(), revision, "the bell repaints");
+        layer.set_center_open(false);
+        let fresh = notifications.post(Notification::new("Grace renamed it", ""));
+        assert_eq!(notifications.unread(), 1, "a new one is unread");
+        assert!(notifications.withdraw(fresh));
+        assert_eq!(notifications.unread(), 0, "a withdrawn one is not news");
     }
 
     #[test]
@@ -1130,7 +1225,7 @@ mod tests {
         assert!(!layer.center.as_ref().unwrap().is_reading());
         assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
         assert!(layer.center.as_ref().unwrap().is_reading());
-        let back = layer.layout().unwrap().back();
+        let back = layer.layout().unwrap().reader_back();
         assert!(press(&mut layer, back.center()));
         assert!(layer.center_open());
         assert!(!layer.center.as_ref().unwrap().is_reading());
@@ -1170,7 +1265,6 @@ mod tests {
             notice.default_action_key().as_deref(),
             Some("host:keep-identity")
         );
-        // An application's notification still opens on a click.
         let plain = Notification::new("Tea", "Ready");
         assert!(notifications.host().actions_for(&plain).is_empty());
     }
@@ -1182,7 +1276,6 @@ mod tests {
         notifications.host().invoke_action(id, "not-now");
         assert!(notifications.take_outcomes().is_empty());
         assert_eq!(notifications.counts(), (0, 1));
-        // Chosen later from the centre, it is the action itself.
         let activation = notifications.host().activate_history(id);
         assert!(matches!(activation, HistoryActivation::Invoked));
         assert!(matches!(

@@ -74,15 +74,7 @@ pub enum FsOperation {
         directory: bool,
     },
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ItemState {
-    Completed,
-    Failed,
-    Cancelled,
-    CopiedSourceRetained,
-    RecoveryRequired,
-    OutcomeUnknown,
-}
+pub use tilo_fs_client::directory_types::ItemState;
 #[derive(Debug)]
 pub struct ItemOutcome {
     pub item: usize,
@@ -708,9 +700,6 @@ impl FsSession {
         Ok(prepared)
     }
     /// Admit a bounded mutation job only after a durable scoped receipt exists.
-    /// # Errors
-    /// Returns `StoreUnavailable`, `Busy`, `LimitExceeded`, or live scope errors
-    /// before admission. Individual source failures are durable item outcomes.
     pub fn start(&self, operation: FsOperation) -> Result<FsJob, FsError> {
         if matches!(operation, FsOperation::Replace { .. })
             && self.has_selected_replace_authority()?
@@ -1232,7 +1221,7 @@ fn candidate(name: &EntryName, attempt: usize) -> Result<EntryName, FsError> {
     let mut result = bytes.get(..split).ok_or(FsError::InvalidName)?.to_vec();
     result.extend_from_slice(format!(" {}", attempt.saturating_add(1)).as_bytes());
     result.extend_from_slice(bytes.get(split..).ok_or(FsError::InvalidName)?);
-    EntryName::new(OsString::from_vec(result))
+    EntryName::new(OsString::from_vec(result)).map_err(FsError::from)
 }
 fn attempts(ctx: &Context<'_>, policy: ConflictPolicy) -> usize {
     let limit = if policy == ConflictPolicy::Fail {
@@ -4182,9 +4171,7 @@ pub(super) mod tests {
             }
             let mut out = Vec::new();
             let mut err = Vec::new();
-            let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(30))
-                .expect("test deadline fits the monotonic clock");
+            let deadline = tilo_test_env::hang_deadline();
             let status = loop {
                 drain_permission_output(&mut stdout, &mut out);
                 drain_permission_output(&mut stderr, &mut err);

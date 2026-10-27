@@ -34,3 +34,78 @@ title = "About this computer"
 
 [[situation.steps]]
 invoke = { resource = "settings.root", action = "open-pane", args = { pane = "about" } }
+
+[[situation]]
+name = "network"
+title = "Network"
+scenario = "network-list"
+
+[[situation]]
+name = "network-all"
+title = "Network: every network in range"
+scenario = "network-all"
+
+[[situation]]
+name = "network-page"
+title = "Network: the network in use"
+scenario = "network-page"
+
+[[situation]]
+name = "network-known"
+title = "Network: known networks"
+scenario = "network-known"
+
+[[situation]]
+name = "network-vpn"
+title = "Network: VPN"
+scenario = "network-vpn"
+
+[[situation]]
+name = "network-vpn-profile"
+title = "Network: a WireGuard tunnel"
+scenario = "network-vpn-profile"
+
+[[situation]]
+name = "network-vpn-kill-switch"
+title = "Network: a WireGuard tunnel with its kill switch on"
+scenario = "network-vpn-kill-switch"
+
+[[situation]]
+name = "network-vpn-blocking"
+title = "Network: a dropped WireGuard tunnel blocking traffic"
+scenario = "network-vpn-blocking"
+
+[[situation]]
+name = "network-vpn-openvpn"
+title = "Network: an OpenVPN profile with its own MTU and name servers"
+scenario = "network-vpn-openvpn"
+
+[[situation]]
+name = "network-vpn-add"
+title = "Network: adding a VPN"
+scenario = "network-vpn-add"
+
+[[situation]]
+name = "network-vpn-devices"
+title = "Network: your devices as a VPN"
+scenario = "network-vpn-devices"
+
+[[situation]]
+name = "network-mobile"
+title = "Network: with a modem"
+scenario = "network-mobile"
+
+[[situation]]
+name = "network-mobile-roaming"
+title = "Network: the modem's page, abroad"
+scenario = "network-mobile-roaming"
+
+[[situation]]
+name = "network-mobile-locked"
+title = "Network: a SIM asking for its PIN"
+scenario = "network-mobile-locked"
+
+[[situation]]
+name = "network-mobile-puk"
+title = "Network: a blocked SIM asking for its PUK"
+scenario = "network-mobile-puk"

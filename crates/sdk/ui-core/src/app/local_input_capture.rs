@@ -6,6 +6,13 @@ use super::{App, action_directory_snapshot};
 use crate::local_document_action::{InputRoute, Queue};
 use std::{collections::HashMap, rc::Rc};
 
+/// The window's resource for changes that could not be saved to the history.
+pub(super) const UNSAVED_RESOURCE: &str = "tilo.host.unsaved-changes";
+/// Its one operation: Retry.
+pub(super) const UNSAVED_OPERATION: &str = "tilo.host.unsaved-changes.retry";
+/// What the window says while its edits land where no report is admitted.
+const UNRECORDED: &str = "history-local-action-unrecorded";
+
 #[derive(Default)]
 pub(super) struct LocalInputCapture {
     queues: HashMap<crate::collaboration::RouteSpec, Queue>,
@@ -24,22 +31,37 @@ pub(super) struct LocalInputCapture {
     // action route could carry. Only a recorded edit sets it: a wheel that
     // pans, a hover or a selection is no unconfirmed action.
     unrouted_edits: crate::local_document_action::UnsignedEdits,
+    /// What the person is told, once a change definitively could not be
+    /// saved to their history. Nothing is said while it is still on its way.
     pub(super) failure: Option<String>,
+    /// Routes whose connection the broker admits no local reports on (it
+    /// is no worker there: no launcher vouched for this app, or the route
+    /// is another app's). Edits on them still land and are saved here, and
+    /// the person is told their history does not record them, until the
+    /// connection is replaced.
+    reports_nothing: std::collections::HashSet<crate::collaboration::RouteSpec>,
+    /// Edits made under input whose every route reports nothing. Only a
+    /// recorded edit sets it.
+    unrecorded_edits: crate::local_document_action::UnsignedEdits,
+    /// Changes the broker refused, kept for the person's Retry.
+    refused: Vec<(
+        crate::collaboration::RouteSpec,
+        crate::local_document_action::CapturedAction,
+    )>,
 }
 
 struct PendingCapture {
     capture: crate::local_document_action::CapturedAction,
     route: crate::collaboration::RouteSpec,
     _lease: crate::local_document_action::Lease,
+    /// The published surface a capture made under a stale one is reported
+    /// against, held until its outcome is known.
+    _pin: Option<Rc<action_directory_snapshot::LocalDocumentDirectoryPin>>,
     retry_at: crate::time::Instant,
     retry_delay: crate::time::Duration,
 }
 
 impl LocalInputCapture {
-    pub(super) fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
     #[cfg(test)]
     pub(super) fn pending_count(&self) -> usize {
         self.pending.len()
@@ -119,16 +141,11 @@ impl App {
         }
     }
 
-    /// Record that an edit went into history no authenticated publication
-    /// observed. Editing continues. The status is idempotent, so only its
-    /// first appearance asks for a frame.
-    fn note_local_input_unsigned(&mut self) {
-        if self.local_input_capture.failure.is_none() {
-            self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
-                "history-local-action-unsigned",
-            ));
-            self.needs_sync = true;
-        }
+    /// An edit went into history no authenticated publication observed: no
+    /// action reports it. The change is the person's, saved here, and there
+    /// is nothing to tell them.
+    fn note_local_input_unsigned(&self) {
+        tracing::debug!("an edit no published action reports was saved");
     }
 
     pub(super) fn begin_local_input_capture(&mut self) -> crate::local_document_action::Scope {
@@ -182,17 +199,26 @@ impl App {
             );
         }
         let mut routes: Vec<InputRoute> = Vec::new();
+        let mut reports_nothing = false;
         let revision = self
             .actions
             .action_directory_stamp
             .as_ref()
             .map(|(_, revision)| revision.clone());
-        let pin = revision
+        let pinned = revision
             .as_deref()
-            .and_then(|revision| self.pin_local_document_action_directory(revision));
-        if pin.is_none() {
-            self.local_input_capture_failed("local input directory could not be pinned");
-        }
+            .map(|revision| self.try_pin_local_document_action_directory(revision));
+        // A surface that moved under this input (it was published while a
+        // route was still opening) leaves the input's actions without a
+        // revision: they are recorded once the next published surface can
+        // be pinned (`fill_pending_revisions`), quietly. While as many
+        // surfaces as may be retained are held by changes on their way, the
+        // input's actions still edit and report nothing, and the gap is shown.
+        let revision_pending = !matches!(
+            pinned,
+            Some(Ok(_) | Err(action_directory_snapshot::PinRefused::Full))
+        );
+        let pin = pinned.and_then(Result::ok);
         if let (Some((_, revision)), Some(snapshot)) = (
             self.actions.action_directory_stamp.as_ref(),
             self.actions.action_directory_snapshot.as_ref(),
@@ -237,6 +263,10 @@ impl App {
                 }
             }
             for (owner, (route, aliases)) in aliases {
+                if self.local_input_capture.reports_nothing.contains(&route) {
+                    reports_nothing = true;
+                    continue;
+                }
                 let queue = self
                     .local_input_capture
                     .queues
@@ -252,12 +282,21 @@ impl App {
                     } else {
                         String::new()
                     },
+                    revision_pending: pin.is_none() && revision_pending,
                     aliases: Rc::new(aliases),
                     pin: pin.clone().map(|pin| pin as Rc<dyn std::any::Any>),
                 });
             }
         }
-        if routes.is_empty() && pin.is_some() {
+        if routes.is_empty() && reports_nothing {
+            // The connection can carry no report: the edit is the person's,
+            // saved here, and the history will not show it.
+            drop(background);
+            return crate::local_document_action::enter_unsigned_input(
+                self.local_input_capture.unrecorded_edits.clone(),
+            );
+        }
+        if routes.is_empty() {
             // Nothing can carry this input's actions; whether that matters
             // is learnt when it records an edit, as the input drains.
             drop(background);
@@ -286,6 +325,9 @@ impl App {
     pub(super) fn drain_local_input_capture(&mut self) {
         if self.local_input_capture.unsigned_edits.take() {
             self.note_local_input_unsigned();
+        }
+        if self.local_input_capture.unrecorded_edits.take() {
+            self.local_input_unrecorded();
         }
         if self.local_input_capture.unrouted_edits.take() {
             self.local_input_capture_failed("local input has no published action route");
@@ -338,7 +380,11 @@ impl App {
                 while self.local_input_capture.pending.contains_key(&request_id) {
                     request_id = request_id.wrapping_add(1);
                 }
-                if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
+                // A change still waiting for a surface to be reported
+                // against is kept once it has one (`fill_pending_revisions`).
+                if !capture.revision.is_empty()
+                    && let Err(error) = self.stage_local_action_evidence(&route, &capture, None)
+                {
                     failures.push(error);
                 }
                 // Transfer custody before enqueueing: send failure must not
@@ -349,6 +395,7 @@ impl App {
                         capture,
                         route: route.clone(),
                         _lease: lease,
+                        _pin: None,
                         retry_at: now,
                         retry_delay: crate::time::Duration::from_secs(1),
                     },
@@ -360,10 +407,20 @@ impl App {
             for pending in self.local_input_capture.pending.values_mut() {
                 pending.retry_at = now;
             }
+            // A new connection may be one the broker admits reports on.
+            self.local_input_capture.reports_nothing.clear();
+            let unrecorded = crate::i18n::I18nManager::lookup_plain(UNRECORDED);
+            if self.local_input_capture.failure.as_deref() == Some(unrecorded.as_str()) {
+                self.local_input_capture.failure = None;
+                self.needs_sync = true;
+            }
         }
         self.local_input_capture.transport_connected = connected;
         let mut rejected = Vec::new();
+        let mut reports_nothing = Vec::new();
+        let mut still_going: Vec<String> = Vec::new();
         if connected {
+            self.fill_pending_revisions(now);
             // A bounded amount of nonblocking enqueue work per pump. Retrying
             // reports is not dispatch: the original UUID, snapshot and mutations
             // are reused, and the document action is never executed again.
@@ -371,7 +428,11 @@ impl App {
                 .local_input_capture
                 .pending
                 .iter_mut()
-                .filter(|(_, pending)| pending.retry_at <= now)
+                // A change made under a surface that moved waits, quietly,
+                // for one it can be reported against.
+                .filter(|(_, pending)| {
+                    pending.retry_at <= now && !pending.capture.revision.is_empty()
+                })
                 .take(4)
             {
                 // Missing legacy provenance is private evidence only. Never
@@ -384,6 +445,8 @@ impl App {
                             .connection_snapshot(&pending.route)
                 {
                     pending.retry_at = now + crate::time::Duration::from_secs(30);
+                    // Never reported on another connection's authority: this
+                    // change cannot be saved to the history from here.
                     failures.push(
                         "local action recovery requires its original authenticated connection"
                             .into(),
@@ -409,15 +472,24 @@ impl App {
                 pending.retry_delay =
                     (pending.retry_delay * 2).min(crate::time::Duration::from_secs(30));
                 if let Err(error) = result {
-                    if matches!(error, runtime_collab::LocalDocumentActionError::Rejected(_)) {
+                    if is_connection_without_reports(&error) {
+                        reports_nothing.push(*request_id);
+                    } else if matches!(error, runtime_collab::LocalDocumentActionError::Rejected(_))
+                    {
                         rejected.push(*request_id);
+                        failures.push(error.to_string());
+                    } else {
+                        // Reported again, paced: still on its way.
+                        still_going.push(error.to_string());
                     }
-                    failures.push(error.to_string());
                 }
             }
         }
         for request_id in rejected {
             self.retire_rejected_local_capture(request_id);
+        }
+        for request_id in reports_nothing {
+            self.retire_capture_on_connection_without_reports(request_id);
         }
         // Never retire a route's capacity accounting while replies are in
         // flight, including unknown outcomes that still own snapshot leases.
@@ -434,8 +506,68 @@ impl App {
                     .iter()
                     .any(|owner| &owner.route == route)
         });
+        for error in still_going {
+            tracing::debug!(%error, "a change is still on its way to the history");
+        }
         for error in failures {
             self.local_input_capture_failed(&error);
+        }
+    }
+
+    /// Give each change made under a surface that moved under its input the
+    /// revision of the surface published since, pinned until its outcome is
+    /// known, so it is reported against that one. A change whose action that
+    /// surface no longer offers is refused by the broker, and the person is
+    /// told then; until a surface can be pinned, nothing is said. The
+    /// revision binds the change's identity, so its private evidence is
+    /// kept from here, under the identity it is reported with.
+    fn fill_pending_revisions(&mut self, now: crate::time::Instant) {
+        if !self
+            .local_input_capture
+            .pending
+            .values()
+            .any(|pending| pending.capture.revision.is_empty())
+        {
+            return;
+        }
+        let background = crate::local_document_action::suspend();
+        self.publish_action_surface();
+        drop(background);
+        let Some(revision) = self
+            .actions
+            .action_directory_stamp
+            .as_ref()
+            .map(|(_, revision)| revision.clone())
+        else {
+            return;
+        };
+        let Ok(pin) = self.try_pin_local_document_action_directory(&revision) else {
+            return;
+        };
+        let waiting: Vec<u64> = self
+            .local_input_capture
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.capture.revision.is_empty())
+            .map(|(request_id, _)| *request_id)
+            .collect();
+        for request_id in waiting {
+            let Some(pending) = self.local_input_capture.pending.get_mut(&request_id) else {
+                continue;
+            };
+            if let Err(error) = pending.capture.report_against(&revision) {
+                // It can never be reported: drop its custody.
+                self.local_input_capture.pending.remove(&request_id);
+                self.local_input_capture_failed(&error);
+                continue;
+            }
+            pending._pin = Some(Rc::clone(&pin));
+            // Reported in this same pump.
+            pending.retry_at = now;
+            let (route, capture) = (pending.route.clone(), pending.capture.clone());
+            if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
+                self.local_input_capture_failed(&error);
+            }
         }
     }
 
@@ -557,6 +689,7 @@ impl App {
                         capture,
                         route: route.clone(),
                         _lease: lease,
+                        _pin: None,
                         retry_at: crate::time::now(),
                         retry_delay: crate::time::Duration::from_secs(1),
                     },
@@ -581,6 +714,38 @@ impl App {
             .flatten()
     }
 
+    /// The broker admits no report on this capture's connection, and never
+    /// will: its edit is kept, unreported, as one no publication observed,
+    /// and later edits on the route are not reported either. The person has
+    /// nothing to retry, so nothing is said.
+    fn retire_capture_on_connection_without_reports(&mut self, request_id: u64) {
+        let Some(pending) = self.local_input_capture.pending.remove(&request_id) else {
+            return;
+        };
+        // Recorded as settled, so a restart does not report it again.
+        if let Err(error) =
+            self.stage_local_action_checkpoint(&pending.route, &pending.capture, None, true)
+        {
+            tracing::debug!(%error, "an unreportable change stays unrecorded");
+        }
+        self.local_input_capture
+            .reports_nothing
+            .insert(pending.route);
+        self.local_input_unrecorded();
+    }
+
+    /// An edit landed on a connection whose reports the broker refuses: it
+    /// is saved here, and the person is told their history will not show
+    /// it. Retrying would be refused the same way, so none is offered.
+    fn local_input_unrecorded(&mut self) {
+        tracing::warn!("an edit was saved that this window's connection cannot record in history");
+        if self.local_input_capture.failure.is_none() {
+            self.local_input_capture.failure =
+                Some(crate::i18n::I18nManager::lookup_plain(UNRECORDED));
+            self.needs_sync = true;
+        }
+    }
+
     fn retire_rejected_local_capture(&mut self, request_id: u64) {
         if let Some(pending) = self.local_input_capture.pending.remove(&request_id) {
             if let Err(error) =
@@ -588,15 +753,118 @@ impl App {
             {
                 self.local_input_capture_failed(&error);
             }
+            // The person may retry it ([`Self::retry_unsaved_changes`]).
+            let mut capture = pending.capture;
+            capture.revision.clear();
+            let refused = &mut self.local_input_capture.refused;
+            if refused.len() >= 128 {
+                refused.remove(0);
+                tracing::warn!(
+                    "the oldest change the broker refused is no longer offered to retry"
+                );
+            }
+            refused.push((pending.route, capture));
         }
     }
 
-    fn local_input_capture_failed(&mut self, error: &str) {
-        tracing::warn!(%error, "local document action observation was not confirmed");
+    /// A change definitively could not be saved to the person's history:
+    /// say so in plain words. A change still on its way says nothing.
+    pub(super) fn local_input_capture_failed(&mut self, error: &str) {
+        tracing::warn!(%error, "a change could not be saved to the history");
         self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
-            "history-local-action-unconfirmed",
+            "history-local-action-not-saved",
         ));
         self.needs_sync = true;
+    }
+
+    /// The person's Retry, while changes the broker refused wait for it: a
+    /// resource of the window's own, reached by the History bar's status,
+    /// the palette, menus and assistive technology alike.
+    pub(super) fn unsaved_changes_resources(&self) -> Vec<tilo_actions::Resource> {
+        if !self.has_unsaved_changes_to_retry() {
+            return Vec::new();
+        }
+        let mut resource = tilo_actions::Resource::new(
+            UNSAVED_RESOURCE,
+            UNSAVED_RESOURCE,
+            crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved"),
+        );
+        match tilo_actions::ActionSpec::operation(
+            "retry",
+            crate::i18n::I18nManager::lookup_plain("history-local-action-retry"),
+            tilo_actions::OperationKind::Effect,
+            UNSAVED_OPERATION,
+            &(),
+        ) {
+            Ok(action) => resource.actions.push(action),
+            Err(error) => tracing::warn!(%error, "no Retry for unsaved changes"),
+        }
+        vec![resource]
+    }
+
+    /// What the window's header says about its changes: the sync status, and
+    /// Retry beside it while it says changes could not be saved and the
+    /// person can retry them.
+    pub(super) fn window_status(&self) -> Option<crate::widget::WindowStatus> {
+        let status = crate::widget::WindowStatus::says(self.document_sync_status()?);
+        if self.local_input_capture.failure.is_none() {
+            return Some(status);
+        }
+        let retry = self
+            .unsaved_changes_resources()
+            .first()
+            .and_then(|resource| tilo_actions::ActionBinding::unit_for(resource, "retry").ok());
+        Some(match retry {
+            Some(binding) => status.with_action(crate::widget::StatusAction {
+                label: crate::i18n::I18nManager::lookup_plain("history-local-action-retry"),
+                binding,
+            }),
+            None => status,
+        })
+    }
+
+    /// Whether the person can retry saving changes the broker refused.
+    pub(super) fn has_unsaved_changes_to_retry(&self) -> bool {
+        !self.local_input_capture.refused.is_empty()
+    }
+
+    /// The person's Retry: report the refused changes again, each against
+    /// the surface published now, and stop saying they were not saved. A
+    /// change the broker refuses again says so again.
+    ///
+    /// # Errors
+    ///
+    /// A change whose report no longer fits the pending budget.
+    pub(super) fn retry_unsaved_changes(&mut self) -> Result<(), String> {
+        let refused = std::mem::take(&mut self.local_input_capture.refused);
+        self.local_input_capture.failure = None;
+        self.needs_sync = true;
+        // Each is kept as evidence again once it has the surface it is
+        // reported against (`fill_pending_revisions`).
+        for (route, capture) in refused {
+            let history = &mut self.local_input_capture;
+            let mut request_id = capture.invocation.as_u64_pair().0;
+            while history.pending.contains_key(&request_id) {
+                request_id = request_id.wrapping_add(1);
+            }
+            let lease = history
+                .queues
+                .entry(route.clone())
+                .or_default()
+                .restore_lease(&capture, None)?;
+            history.pending.insert(
+                request_id,
+                PendingCapture {
+                    capture,
+                    route,
+                    _lease: lease,
+                    _pin: None,
+                    retry_at: crate::time::now(),
+                    retry_delay: crate::time::Duration::from_secs(1),
+                },
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn observe_local_input_capture(
@@ -671,15 +939,29 @@ impl App {
                     );
                 }
             }
+            Err(error @ Rejected(_)) if is_connection_without_reports(&error) => {
+                self.retire_capture_on_connection_without_reports(request_id);
+            }
             Err(Rejected(error)) => {
                 self.retire_rejected_local_capture(request_id);
                 self.local_input_capture_failed(&error);
             }
             // Unknown or malformed replies keep custody until a bounded,
             // backoff-paced exact-UUID report reconciles their outcome.
-            Err(Uncertain(error)) => self.local_input_capture_failed(&error),
+            Err(Uncertain(error)) => {
+                tracing::debug!(%error, "a change is still on its way to the history");
+            }
         }
     }
+}
+
+/// Whether the broker refused a report because its connection admits none.
+fn is_connection_without_reports(error: &runtime_collab::LocalDocumentActionError) -> bool {
+    matches!(
+        error,
+        runtime_collab::LocalDocumentActionError::Rejected(reason)
+            if reason == runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING
+    )
 }
 
 #[cfg(test)]
@@ -726,6 +1008,7 @@ mod tests {
             owner: None,
             queue: queue.clone(),
             revision: "snapshot".into(),
+            revision_pending: false,
             aliases: Rc::new([("body".into(), "body".into())].into()),
             pin: None,
         }])
@@ -803,10 +1086,10 @@ mod tests {
         host.try_dispatch(&mut doc, "put", &Put(2)).unwrap();
         drop(input);
         app.drain_local_input_capture();
-        let unsigned = crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned");
         assert_eq!(
-            app.document_sync_status().as_deref(),
-            Some(unsigned.as_str())
+            app.document_sync_status(),
+            None,
+            "an edit no action reports is the person's, saved here: nothing to say"
         );
     }
 
@@ -828,11 +1111,10 @@ mod tests {
             "the action's committed edit survives its refusal"
         );
         app.drain_local_input_capture();
-        let unsigned = crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned");
         assert_eq!(
-            app.document_sync_status().as_deref(),
-            Some(unsigned.as_str()),
-            "a surviving unmanaged edit is unsigned history"
+            app.document_sync_status(),
+            None,
+            "a surviving unmanaged edit is the person's, saved here: nothing to say"
         );
     }
 

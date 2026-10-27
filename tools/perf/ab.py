@@ -14,7 +14,7 @@ round's two runs cancels it.
 
 1. **Build.** The tree must have no tracked changes. For each side the
    checkout is detached at that side's commit, the group's existing build
-   commands run (the same ones as `.forgejo/workflows/perf-scheduled.yml`),
+   commands run (the same ones as `tools/ci/perf-scheduled.sh`),
    and the binaries are copied to `OUT/bin/<side>/<group>/`. Test executables
    are found through `cargo test --no-run --message-format=json`. Both sides
    share the one target directory, so the second build recompiles only what
@@ -74,8 +74,6 @@ CONFIDENCE = 0.95
 HIGHER_IS_BETTER = frozenset({"fps"})
 VERDICTS = ("improved", "regressed", "unchanged", "inconclusive")
 
-
-# --- statistics ---------------------------------------------------------------
 
 def signed_rank_null(n: int) -> list[int]:
     """How many of the 2**n sign patterns give each Wilcoxon T+ (no ties)."""
@@ -248,8 +246,6 @@ def analyse(records: list[record.Record], level: float = CONFIDENCE) -> Analysis
     return Analysis(paired, only, len(rounds))
 
 
-# --- report -------------------------------------------------------------------
-
 def number(value: float) -> str:
     return f"{value:,.0f}" if abs(value) >= 10_000 else f"{value:.4g}"
 
@@ -330,8 +326,6 @@ def provenance(records: list[record.Record]) -> tuple[dict[str, dict[str, str]],
     return sides, sorted({item.group for item in records}), harness
 
 
-# --- groups -------------------------------------------------------------------
-
 @dataclasses.dataclass
 class RunContext:
     repo: Path
@@ -350,7 +344,7 @@ class Group:
     name: str
     profile: str
     renderer: str
-    # Build commands, from the repository root, as perf-scheduled.yml runs them.
+    # Build commands, from the repository root, as tools/ci/perf-scheduled.sh runs them.
     builds: tuple[tuple[str, ...], ...]
     # Artifact name -> path below the repository after the builds.
     binaries: dict[str, str]
@@ -408,6 +402,14 @@ def run_agent(ctx: RunContext) -> list[record.Record]:
           "--transport", "test-control socket, headless, release + dev-overrides, thin LTO",
           "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "compositor.log"],
          ctx.dir / "bench.log", ctx.repo)
+    if "agent_task_desktop" in ctx.bins:
+        call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_task.py",
+              "--spawn", ctx.bins["shell"], "--seeder", ctx.bins["agent_task_desktop"],
+              "--mcp", ctx.bins["tilo-runtime-mcp"], "--repetitions", "30", "--warmup", "3",
+              "--transport", "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO",
+              "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "task-compositor.log",
+              "--client-log", ctx.dir / "task-client.log"],
+             ctx.dir / "task.log", ctx.repo)
     return record.read(records)
 
 
@@ -419,8 +421,11 @@ def run_render(ctx: RunContext) -> list[record.Record]:
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
-    measured = record.read(records) + adapters.framework_open(
-        [opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
+    focusing = ctx.dir / "framework-focus.log"
+    call([ctx.bins["framework-scaling"], "500,1000,2500", "focus"], focusing, ctx.repo)
+    measured = (record.read(records)
+                + adapters.framework_open([opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
+                + adapters.framework_focus([focusing.read_text(encoding="utf-8", errors="replace")], ctx.env))
     if "notes-latency" in ctx.bins:
         notes = ctx.dir / "notes-latency.log"
         call([ctx.bins["notes-latency"]], notes, ctx.repo)
@@ -470,13 +475,16 @@ def run_search(ctx: RunContext) -> list[record.Record]:
 
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
+# The agent task's client and seeded desktop, as perf-scheduled.sh builds them.
+AGENT_TASK_BUILD = (*RELEASE_SHELL, "--bin", "tilo-runtime-mcp", "--example", "agent_task_desktop")
+AGENT_TASK_SEEDER = "crates/session/shell/examples/agent_task_desktop.rs"
 
 
 def run_browser(ctx: RunContext) -> list[record.Record]:
     report = ctx.dir / "browser.json"
     call(["node", "scripts/perf/browser_qualification.mjs", ctx.bins["browser-bundle"], "--out", report,
           "--renderer", ctx.env["renderer"], "--expect-revision", ctx.env["commit"],
-          # As the nightly job on SwiftShader (perf-scheduled.yml).
+          # As the nightly group on SwiftShader (tools/ci/perf-scheduled.sh).
           "--demo-seconds", "0", "--rounds", "1", "--activations", "10", "--viewport", "960x540"],
          ctx.dir / "bench.log", ctx.repo)
     return adapters.browser_qualification(json.loads(report.read_text(encoding="utf-8")), ctx.env,
@@ -496,7 +504,7 @@ BROWSER_BUILD = ("bash", "-c",
                  "GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no "
                  f'crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/{BROWSER_BUNDLE}" --bundle desktop')
 
-# The groups of perf-scheduled.yml that measure a build of the repository.
+# The groups of tools/ci/perf-scheduled.sh that measure a build of the repository.
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("hosting", "release", "none",
@@ -510,7 +518,10 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           (("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
           {"shell": "target/debug/shell"}, {}, {}, run_latency),
     Group("agent", "release", "lavapipe", (RELEASE_SHELL,),
-          {"shell": "target/release/shell"}, {}, {}, run_agent),
+          {"shell": "target/release/shell"}, {}, {}, run_agent,
+          {"agent_task_desktop": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD,
+                                  "target/release/examples/agent_task_desktop"),
+           "tilo-runtime-mcp": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD, "target/release/tilo-runtime-mcp")}),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),
            ("cargo", "build", "--locked", "--release", "-p", "shell", "--example", "redraw_bench"),
@@ -544,8 +555,6 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {"browser-bundle": BROWSER_BUNDLE}, {}, {}, run_browser),
 )}
 
-
-# --- orchestration ------------------------------------------------------------
 
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)

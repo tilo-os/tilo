@@ -96,6 +96,12 @@ impl Frecency {
         entries.into_iter().take(limit).map(|(id, _)| id).collect()
     }
 
+    /// When `id` was last chosen (seconds since the epoch), if ever.
+    #[must_use]
+    pub fn last_used(&self, id: &str) -> Option<u64> {
+        self.entries.get(id).map(|entry| entry.last)
+    }
+
     /// One `id`, count and last-used line per entry.
     #[must_use]
     pub fn serialize(&self) -> String {

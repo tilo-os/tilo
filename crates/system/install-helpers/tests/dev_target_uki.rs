@@ -767,8 +767,8 @@ fn unsigned_route_requires_real_vm_gate() {
 #[test]
 fn the_shipped_command_refuses_outside_the_development_vm() {
     let fixture = Fixture::new();
-    let binary = env!("CARGO_BIN_EXE_tilo-installer-offline-target");
-    let output = Command::new(binary)
+    let binary = tilo_test_env::package_binary!("tilo-installer-offline-target");
+    let output = Command::new(&binary)
         .args(["dev-target-uki", "validate-image", "--image-root"])
         .arg(&fixture.image)
         .output()

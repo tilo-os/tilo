@@ -240,16 +240,7 @@ impl ContentStore {
     ///
     /// Returns an error when the change cannot be recorded.
     pub fn set_pinned(&self, content: Hash, pinned: bool) -> Result<()> {
-        let key = content.as_bytes();
-        let Some(entry) = self.files.entry(key) else {
-            return Ok(());
-        };
-        let retention = match (pinned, entry.retention) {
-            (true, _) => Retention::Pinned,
-            (false, Retention::Pinned) => Retention::Cached,
-            (false, other) => other,
-        };
-        self.files.set_retention(key, retention)?;
+        self.files.keep_offline(content.as_bytes(), pinned)?;
         Ok(())
     }
 }
@@ -294,11 +285,30 @@ mod tests {
             store.read_local(id, &m, 1000..2_500_000).await.unwrap(),
             &large[1000..2_500_000]
         );
-        // Chunks are found where they live, checked against their hash.
         let first = m.chunks()[0];
         let chunk = store.local(Hash::from(first.hash)).await.unwrap();
         assert_eq!(chunk.len(), first.len as usize);
         assert!(store.has(Hash::from(first.hash)).await);
+    }
+
+    /// Pinning and unpinning a file only this device holds leaves it
+    /// unevictable: a pin may only hold back what the budget could take.
+    #[tokio::test]
+    async fn a_pin_never_makes_content_only_this_device_holds_evictable() {
+        let store = ContentStore::memory();
+        let authored = store
+            .write_content(&pseudo(3 * 1024 * 1024, 4))
+            .await
+            .unwrap()
+            .unwrap();
+        let retention = || store.files().entry(authored.as_bytes()).unwrap().retention;
+        store.set_pinned(authored, true).unwrap();
+        assert_eq!(retention(), Retention::LocalOnly);
+        store.set_pinned(authored, false).unwrap();
+        assert_eq!(retention(), Retention::LocalOnly);
+        store.files().set_budget(0);
+        store.files().evict_to_budget(&[]);
+        assert!(store.files().entry(authored.as_bytes()).is_some());
     }
 
     #[tokio::test]

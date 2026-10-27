@@ -281,10 +281,6 @@ enum Placement {
 }
 impl HeldViewExposure {
     /// Prepare custody for a verified launcher in this mount namespace.
-    ///
-    /// # Errors
-    /// Returns an error if root access, endpoint authority, launcher identity or
-    /// namespace checks fail, or detached clone allocation fails.
     pub fn prepare(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Arc<ExecutingPeer>,
@@ -386,10 +382,6 @@ impl HeldViewExposure {
         self.check()
     }
     /// Validate live authority and exact placement custody.
-    ///
-    /// # Errors
-    /// Returns an error for expired authority, a retired launcher, absent placement
-    /// facts, changed mount identity or failed kernel observations.
     pub fn check(&self) -> io::Result<()> {
         self.endpoint.check()?;
         if let Some(peer) = &self.peer
@@ -412,10 +404,6 @@ impl HeldViewExposure {
         Ok(())
     }
     /// Return the held view after validating custody.
-    ///
-    /// # Errors
-    /// Returns an error if live authority or placement validation fails, or the
-    /// held view is no longer connected.
     pub fn file(&self) -> io::Result<&File> {
         self.check()?;
         match &self.placement {
@@ -424,10 +412,6 @@ impl HeldViewExposure {
         }
     }
     /// Return the validated placed mount identity.
-    ///
-    /// # Errors
-    /// Returns an error if authority or placement validation fails or placement
-    /// facts are unavailable.
     pub fn mount_id(&self) -> io::Result<u64> {
         self.check()?;
         Ok(self
@@ -437,10 +421,6 @@ impl HeldViewExposure {
             .mount_id)
     }
     /// Check that an observation belongs to this exposure's endpoint and inode.
-    ///
-    /// # Errors
-    /// Returns an error if either object's validation fails, this is a fixture
-    /// exposure, or endpoint and inode identities differ.
     pub fn matches(&self, object: &super::ObservedTargetObject<'_>) -> io::Result<()> {
         self.check()?;
         object.check()?;
@@ -463,19 +443,12 @@ impl HeldViewExposure {
         }
     }
     /// Record possible delivery only while the exposure remains valid.
-    ///
-    /// # Errors
-    /// Returns an error if live authority or placement validation fails.
     pub fn mark_possible_delivery(&mut self) -> io::Result<()> {
         self.check()?;
         self.possible_delivery = true;
         Ok(())
     }
     /// Retain an independently verified consuming namespace witness.
-    ///
-    /// # Errors
-    /// Returns an error for fixture custody, an invalid launcher witness, duplicate
-    /// adoption, pidfd duplication failure or failed remote witness exchange.
     pub fn adopt_consumer(&mut self, witness: &NamespaceWitness) -> io::Result<()> {
         let peer = self
             .peer
@@ -493,11 +466,6 @@ impl HeldViewExposure {
         Ok(())
     }
     /// Retire the mount only after any possible consumer has stopped.
-    ///
-    /// # Errors
-    /// Returns `WouldBlock` when consumer stop is unknown or not observed. Also
-    /// returns errors for failed kernel observations, changed placement custody,
-    /// or unmount and staging cleanup failures.
     pub fn retire(&mut self) -> io::Result<()> {
         if self.possible_delivery {
             let fd = self.consumer.as_ref().ok_or(io::ErrorKind::WouldBlock)?;

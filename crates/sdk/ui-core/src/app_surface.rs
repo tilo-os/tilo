@@ -28,6 +28,24 @@ struct Named {
     bytes: &'static [u8],
 }
 
+/// Counts the surfaces named so far ([`registered`]).
+static NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times an app's surface was named in this process: a change
+/// decided against a surface that was not here may be decided again once
+/// this moves.
+#[must_use]
+pub fn registered() -> u64 {
+    NAMED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// A surface became readable other than by being named: an app's update
+/// installed it. A change decided against a surface that was not here may
+/// be decided again ([`registered`] moves).
+pub fn arrived() {
+    NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 fn registry() -> &'static Mutex<BTreeMap<String, Named>> {
     static REGISTRY: OnceLock<Mutex<BTreeMap<String, Named>>> = OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
@@ -35,9 +53,6 @@ fn registry() -> &'static Mutex<BTreeMap<String, Named>> {
 
 /// Name `bytes`, the surface file whoever started the app named, for
 /// `app_id`, when they hash to `hash`, the hash it was named with.
-///
-/// # Errors
-/// Returns why the bytes are not the file that was named.
 pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), String> {
     let expected =
         parse_hash(hash).ok_or_else(|| format!("{SURFACE_HASH_ENV} is not a hash: {hash:?}"))?;
@@ -65,10 +80,11 @@ pub fn launch_env(path: &std::path::Path, bytes: &[u8]) -> [(&'static str, Strin
 /// unless a package already named one.
 pub fn register_built_in(app_id: &str, bytes: &'static [u8]) {
     let hash = *blake3::hash(bytes).as_bytes();
-    if let Ok(mut registry) = registry().lock() {
-        registry
-            .entry(app_id.to_owned())
-            .or_insert(Named { hash, bytes });
+    if let Ok(mut registry) = registry().lock()
+        && let std::collections::btree_map::Entry::Vacant(entry) = registry.entry(app_id.to_owned())
+    {
+        entry.insert(Named { hash, bytes });
+        NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -85,6 +101,7 @@ pub fn register_package(app_id: &str, bytes: &[u8]) {
     // Kept for the process's life, once per distinct surface.
     let bytes = held_bytes(hash, bytes);
     registry.insert(app_id.to_owned(), Named { hash, bytes });
+    NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
 /// The bytes of surface `hash`, kept once however many apps or launches
@@ -106,6 +123,14 @@ pub fn register_kind(kind: &str, app_id: &str) {
     if let Ok(mut kinds) = kinds().lock() {
         kinds.insert(kind.to_owned(), app_id.to_owned());
     }
+}
+
+/// The app that keeps records of kind `kind`, when this process knows it: a
+/// link naming the kind reaches the app that declares it without naming that
+/// app itself.
+#[must_use]
+pub fn app_of_kind(kind: &str) -> Option<String> {
+    kinds().lock().ok()?.get(kind).cloned()
 }
 
 /// The hash of the surface the changes to a record of kind `kind` are
@@ -145,7 +170,6 @@ pub fn person_record_kinds(app_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Whether `app_id`'s surface declares the person's records of `kind`.
 #[must_use]
 pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
     person_record_kinds(app_id)
@@ -167,6 +191,43 @@ pub fn reads_app(reader: &str, owner: &str) -> bool {
     }
 }
 
+/// `claims` naming as units what each action may write by `app_id`'s
+/// surface: what a relay that cannot read a sealed change checks it against
+/// (devices that open it check what it really wrote). Every host that signs a
+/// change names its units this way; a claim left on the whole record is
+/// refused wherever the action may only write some of its units (a comment,
+/// a message). Unchanged when this process holds no surface for the app.
+#[must_use]
+pub fn with_footprints(
+    app_id: &str,
+    mut claims: Vec<collab_types::ChangeClaim>,
+) -> Vec<collab_types::ChangeClaim> {
+    use collab_types::ReceiptSurface as _;
+    let Some(file) =
+        bytes_of(app_id).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+    else {
+        return claims;
+    };
+    for claim in &mut claims {
+        let kind = claim
+            .action
+            .members()
+            .into_iter()
+            .find_map(|action| match action {
+                collab_types::ClaimedAction::Verb { action, .. } => Some(action.kind.clone()),
+                collab_types::ClaimedAction::Edit { kind, .. } if !kind.is_empty() => {
+                    Some(kind.clone())
+                }
+                _ => None,
+            });
+        if let Some(resource) = file.resource(kind.as_deref()) {
+            let surface = collab_types::surface::KindSurface(resource.clone());
+            claim.units = surface.footprint(&claim.action);
+        }
+    }
+    claims
+}
+
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.
 #[must_use]
 pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
@@ -186,6 +247,52 @@ mod tests {
         assert!(keeps_person_record("test.person-kinds", "test.history"));
         assert!(!keeps_person_record("test.person-kinds", "test.own"));
         assert!(!keeps_person_record("test.unknown-app", "test.history"));
+    }
+
+    /// A change to a part of a record its app keeps apart (a PDF's
+    /// comments) claims only that part: claimed on the whole record, the
+    /// room refuses it, since no action of it may write the whole record.
+    #[test]
+    fn a_claim_names_the_units_its_action_may_write() {
+        use collab_types::{ChangeClaim, ClaimedAction, ReceiptRefusal};
+        use tilo_actions::PathStep;
+        static FILE: &[u8] = b"[[resources]]\nkind = \"test.paper\"\nlabel = \"Paper\"\nversion = 1\nfields = [\n  { path = \"title\", type = \"String\" },\n  { path = \"comments\", type = \"Keyed<Note>\", stored = \"keyed\", unit = true },\n  { path = \"comments.*.text\", type = \"String\" },\n  { path = \"comments.*.resolved\", type = \"bool\" },\n]\n";
+        register_package("test.footprints", FILE);
+        let edit = |field: &str| ClaimedAction::Edit {
+            kind: "test.paper".into(),
+            path: vec![
+                PathStep::Field("comments".into()),
+                PathStep::Item("c1".into()),
+                PathStep::Field(field.into()),
+            ],
+        };
+        let group = ClaimedAction::Group(vec![edit("text"), edit("resolved")]);
+        let whole_record = vec![ChangeClaim {
+            change: [7; 32],
+            action: group,
+            units: vec![Vec::new()],
+        }];
+        let file = collab_types::surface::SurfaceFile::parse(FILE).unwrap();
+        let receiver = collab_types::surface::KindSurface(file.resource(None).unwrap().clone());
+        let record = collab_types::Record {
+            room: "room-1",
+            app: "test.footprints",
+            record: "paper-1",
+        };
+        let decide = |claims: &[ChangeClaim]| {
+            collab_types::check_claims(claims, &record, None, None, Some(&receiver), &|_, _| true)
+        };
+        assert!(matches!(
+            decide(&whole_record),
+            Err(ReceiptRefusal::OutsideFootprint { .. })
+        ));
+        let claimed = with_footprints("test.footprints", whole_record);
+        let comment = vec![
+            PathStep::Field("comments".into()),
+            PathStep::Item("c1".into()),
+        ];
+        assert_eq!(claimed[0].units, [comment.clone(), comment]);
+        assert_eq!(decide(&claimed), Ok(collab_types::Receipt::Admit));
     }
 
     #[test]

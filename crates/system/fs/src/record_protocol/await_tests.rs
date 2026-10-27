@@ -296,14 +296,12 @@ async fn idle_awaits_share_one_connection() {
 /// pause on a loaded runner; a change made before the await arrives would
 /// time that handshake instead of the wake.
 async fn until_held(protocol: &RecordProtocol) {
-    let started = Instant::now();
-    while protocol.awaits.available_permits() == MAX_RECORD_CHANGE_AWAITS {
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "the recipient's await never reached the host"
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    tilo_test_env::within("the recipient's await to reach the host", async {
+        while protocol.awaits.available_permits() == MAX_RECORD_CHANGE_AWAITS {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
 }
 
 /// A host write wakes the held await itself, which answers with the record

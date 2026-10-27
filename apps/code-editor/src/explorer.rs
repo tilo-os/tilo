@@ -1,11 +1,16 @@
 //! The project explorer: the toolkit's [`TreeView`] over a snapshot of the
-//! [`Project`], configured as a navigator sidebar.
+//! [`Project`], standing in the shell's sidebar column.
 //!
 //! The tree owns rows, keyboard navigation, disclosure, selection, hover,
 //! scrolling and semantics. This module owns only what is specific to Code:
 //! the indexed model the view reads (folders first, then alphabetical, the
 //! explorer convention), each row's file-type icon, and the activation and
 //! expansion signals the app applies to the session.
+//!
+//! The session stays the one truth: the app shows the project and the file
+//! on screen through an [`ExplorerFeed`], which the tree takes up at its next
+//! sync, and what the person does in the tree comes back as
+//! [`ExplorerEvent`]s.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,6 +22,8 @@ use ui::theme::Theme;
 use ui::widget::tree_view::{
     NodeId, TreeClickActivation, TreeModel, TreeRowDecoration, TreeRowInfo, TreeRowTone, TreeView,
 };
+use ui::widget::{AppModel, Element, EmptyState, Manual, ModelPath, When};
+use vello::kurbo::Rect;
 
 use crate::model::{NodeId as ProjectId, NodeKind, Project};
 
@@ -28,6 +35,8 @@ pub enum ExplorerEvent {
     Activate(ProjectId),
     /// A folder was expanded (`true`) or collapsed.
     Expand(ProjectId, bool),
+    /// The no-project state's Open folder.
+    OpenFolder,
 }
 
 /// The explorer widget type the app hosts.
@@ -52,7 +61,6 @@ pub struct ProjectTree {
     entries: HashMap<NodeId, Entry>,
 }
 
-/// The tree key of a project node.
 pub fn node_key(id: ProjectId) -> NodeId {
     NodeId::try_from(id).unwrap_or(NodeId::MAX)
 }
@@ -172,7 +180,7 @@ pub fn explorer(project: &Project, events: &ExplorerEvents) -> Explorer {
         .with_id("file_tree")
         .hide_root()
         .fill()
-        .with_accessible_name(format!("{} files", project.name))
+        .with_heading(project.name.clone())
         .click_activation(TreeClickActivation::SingleClick)
         .selection_follows_focus(true)
         .with_row_decoration(decorate)
@@ -190,24 +198,133 @@ pub fn explorer(project: &Project, events: &ExplorerEvents) -> Explorer {
     view
 }
 
-/// Re-read `project` into an existing explorer, keeping its selection,
-/// focus and scroll anchored to the same rows.
-pub fn refresh(view: &mut Explorer, project: &Project) {
-    view.update_source(&[ui::widget::TreeModelChange::Reset], |model| {
-        *model = ProjectTree::from_project(project);
-    });
-    view.restore_expanded(expanded_folders(project));
+/// What the app shows in the explorer, for the tree to take up at its next
+/// sync: the project as it stands and the file on screen.
+#[derive(Clone, Default)]
+pub struct ExplorerFeed(Rc<RefCell<Shown>>);
+
+#[derive(Default)]
+struct Shown {
+    revision: u64,
+    tree: Option<ProjectTree>,
+    expanded: Vec<NodeId>,
+    name: String,
+    has_project: bool,
+    current: Option<NodeId>,
 }
 
-/// Mark the file on screen: it carries the current-row rail and is the
-/// selection, so the open buffer is where keyboard browsing starts.
-pub fn set_current(view: &mut Explorer, id: Option<ProjectId>) {
-    let id = id.map(node_key);
-    view.set_current(id);
-    match id {
-        Some(id) => view.selection_mut().select_only(id),
-        None => view.selection_mut().clear(),
+impl ExplorerFeed {
+    /// Show `project` as it stands: its rows, its open folders and its name.
+    pub fn show(&self, project: &Project) {
+        let mut shown = self.0.borrow_mut();
+        shown.tree = Some(ProjectTree::from_project(project));
+        shown.expanded = expanded_folders(project);
+        shown.name.clone_from(&project.name);
+        shown.has_project = project.nodes.len() > 1;
+        shown.revision += 1;
     }
+
+    /// Mark the file on screen: it carries the current-row rail and is the
+    /// selection, so the open buffer is where keyboard browsing starts.
+    pub fn set_current(&self, id: Option<ProjectId>) {
+        let mut shown = self.0.borrow_mut();
+        shown.current = id.map(node_key);
+        shown.revision += 1;
+    }
+
+    /// Whether there is a project to list: the root alone is no project.
+    #[must_use]
+    pub fn has_project(&self) -> bool {
+        self.0.borrow().has_project
+    }
+}
+
+/// The explorer as the sidebar holds it: the tree, taking up what its
+/// [`ExplorerFeed`] shows at each sync.
+pub struct FedExplorer {
+    view: Explorer,
+    feed: ExplorerFeed,
+    seen: u64,
+}
+
+impl FedExplorer {
+    fn pull(&mut self) -> bool {
+        let mut shown = self.feed.0.borrow_mut();
+        if shown.revision == self.seen {
+            return false;
+        }
+        self.seen = shown.revision;
+        if let Some(tree) = shown.tree.take() {
+            self.view
+                .update_source(&[ui::widget::TreeModelChange::Reset], |model| {
+                    *model = tree;
+                });
+            self.view
+                .restore_expanded(std::mem::take(&mut shown.expanded));
+            self.view.set_heading(Some(shown.name.clone()));
+        }
+        self.view.set_current(shown.current);
+        match shown.current {
+            Some(id) => self.view.selection_mut().select_only(id),
+            None => self.view.selection_mut().clear(),
+        }
+        true
+    }
+}
+
+impl ui::widget::Decorator for FedExplorer {
+    type Inner = Explorer;
+
+    fn inner(&self) -> &Explorer {
+        &self.view
+    }
+
+    fn inner_mut(&mut self) -> &mut Explorer {
+        &mut self.view
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.pull();
+        ui::widget::Widget::sync(&mut self.view, state, path);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let pulled = self.pull();
+        ui::widget::Widget::update(&mut self.view, state, path) || pulled
+    }
+}
+
+/// The sidebar's column: the project's files, or, with no project open, the
+/// offer to open a folder.
+pub fn sidebar(feed: &ExplorerFeed, events: &ExplorerEvents) -> Element {
+    let mut explorer = FedExplorer {
+        view: explorer(&Project::new(""), events),
+        feed: feed.clone(),
+        seen: 0,
+    };
+    explorer.pull();
+    let open = Rc::clone(events);
+    let empty = EmptyState::new("No folder open")
+        .with_icon(Icon::FolderOpen)
+        .with_action("Open folder")
+        .on_view(move || open.borrow_mut().push(ExplorerEvent::OpenFolder));
+    let listed = feed.clone();
+    let unlisted = feed.clone();
+    Box::new(
+        Manual::new(|ctx| {
+            let size = ctx.available();
+            let all = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
+            ctx.place(0, all)?;
+            ctx.place(1, all)?;
+            Ok(size)
+        })
+        .child(Box::new(When::new(Box::new(explorer), move || {
+            listed.has_project()
+        })))
+        .child(Box::new(When::new(Box::new(empty), move || {
+            !unlisted.has_project()
+        }))),
+    )
 }
 
 fn expanded_folders(project: &Project) -> Vec<NodeId> {
@@ -248,7 +365,6 @@ mod tests {
             assert_eq!(labels, ["assets", "src", "README.md"]);
         }
 
-        // The root is hidden and expansion comes from the project.
         {
             let mut project = sample();
             let src = project
@@ -276,7 +392,6 @@ mod tests {
             );
         }
 
-        // File rows get their type icon.
         {
             let project = sample();
             let tree = ProjectTree::from_project(&project);

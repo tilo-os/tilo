@@ -231,12 +231,16 @@ mod tests {
             metered: Some(false),
         });
         let monitor_task = tokio::spawn(async move { monitor(&portal_sender).await });
+        // Past the fallback's poll on the runtime's clock, which runs ahead
+        // while every task waits.
+        tokio::time::pause();
         assert!(
-            tokio::time::timeout(Duration::from_millis(5200), portable_updates.changed())
+            tokio::time::timeout(imp::POLL * 2, portable_updates.changed())
                 .await
                 .is_err(),
             "a supported rich host must suspend fallback route reads and portal retries"
         );
+        tokio::time::resume();
         let (_portal, portal) = watch::channel(imp::fallback());
         let mut changes = Watch {
             portal,
@@ -324,9 +328,8 @@ mod tests {
     }
 
     async fn next(receiver: &mut watch::Receiver<NetStatus>) -> NetStatus {
-        tokio::time::timeout(Duration::from_secs(2), receiver.changed())
+        tilo_test_env::within("the next status", receiver.changed())
             .await
-            .unwrap()
             .unwrap();
         *receiver.borrow_and_update()
     }
@@ -356,12 +359,15 @@ mod tests {
                 metered: None
             }
         );
-        // Longer than the old five-second poll: an idle portal causes no reads.
+        // Longer than the old five-second poll, on the runtime's clock, which
+        // runs ahead while every task waits: an idle portal causes no reads.
+        tokio::time::pause();
         assert!(
-            tokio::time::timeout(Duration::from_millis(5200), receiver.changed())
+            tokio::time::timeout(imp::POLL * 2, receiver.changed())
                 .await
                 .is_err()
         );
+        tokio::time::resume();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
         let iface = server
             .object_server()
@@ -369,11 +375,14 @@ mod tests {
             .await
             .unwrap();
         Portal::changed(iface.signal_emitter()).await.unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), receiver.changed())
-                .await
-                .is_err()
-        );
+        // The signal is read again; the unchanged answer publishes nothing,
+        // so the next status seen below is the metered one.
+        tilo_test_env::within("the changed signal to be read", async {
+            while reads.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
         assert_eq!(reads.load(Ordering::SeqCst), 2);
         iface.get_mut().await.metered = Some(true);
         Portal::changed(iface.signal_emitter()).await.unwrap();
@@ -387,9 +396,8 @@ mod tests {
         server.close().await.unwrap();
         assert_eq!(next(&mut receiver).await.metered, None);
         assert!(
-            tokio::time::timeout(Duration::from_secs(2), task)
+            tilo_test_env::within("the follower to end", task)
                 .await
-                .unwrap()
                 .unwrap()
                 .is_err()
         );

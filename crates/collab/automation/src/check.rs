@@ -19,7 +19,7 @@ use tilo_actions::door::ActionDescriptor;
 use tilo_actions::params::ActionParam;
 
 use crate::catalog::{ActionCatalog, ResourceTarget};
-use crate::grant::{grant_answer, step_node};
+use crate::grant::{EDIT_PARAM, FIELD_EDIT, edit_reach, grant_answer, step_node, step_node_at};
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, is_identifier};
@@ -119,9 +119,6 @@ impl<F: Fn(&str) -> Option<Shortcut>> ShortcutResolver for F {
 /// less. A person's Shortcut may carry a hand-widened grant; a bot acts
 /// unattended under its own identity, so nobody may hand it more than its
 /// program shows.
-///
-/// # Errors
-/// Every structural error, then every unused and every missing rule.
 pub fn check_bot(shortcut: &Shortcut, catalog: &ActionCatalog) -> Result<(), Vec<CheckError>> {
     let mut errors = check(shortcut, catalog, &NoShortcuts)
         .err()
@@ -151,10 +148,6 @@ pub fn check_bot(shortcut: &Shortcut, catalog: &ActionCatalog) -> Result<(), Vec
 }
 
 /// Check `shortcut` against the descriptors in `catalog`.
-///
-/// # Errors
-///
-/// Returns every problem found, each with the step path it concerns.
 pub fn check(
     shortcut: &Shortcut,
     catalog: &ActionCatalog,
@@ -471,7 +464,19 @@ impl Checker<'_> {
             );
             return unknown;
         };
-        let node = step_node(None, app_id, &descriptor.resource_kind, &descriptor.address);
+        let at = (action == FIELD_EDIT)
+            .then(|| args.get(EDIT_PARAM).and_then(edit_reach))
+            .flatten();
+        let node = match &at {
+            Some(at) => step_node_at(
+                None,
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address,
+                at,
+            ),
+            None => step_node(None, app_id, &descriptor.resource_kind, &descriptor.address),
+        };
         if grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind).answer
             == Answer::Deny
         {
@@ -606,6 +611,18 @@ impl Checker<'_> {
                     }
                 }
                 Some(Ty::Text)
+            }
+            Binding::Object(members) => {
+                for member in members.values() {
+                    self.value(member, scope, path);
+                }
+                Some(Ty::Object(None))
+            }
+            Binding::List(items) => {
+                for item in items {
+                    self.value(item, scope, path);
+                }
+                Some(Ty::Array(None))
             }
         }
     }

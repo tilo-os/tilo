@@ -10,8 +10,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::{
-    Frame, FrameSlot, MediaElementInfo, PageFailure, PageReply, PageRequest, WebViewCommand,
-    WebViewEngine, WebViewEvent,
+    Frame, FrameSlot, MediaElementInfo, PageFailure, PageNavigation, PageReply, PageRequest,
+    WebViewCommand, WebViewEngine, WebViewEvent,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -42,6 +42,30 @@ struct Inner {
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
     /// Whether it says it measures its document, as a ready host does.
     measures_document: bool,
+    /// What the page has selected, as [`WebViewCommand::CopySelection`]
+    /// answers it.
+    selection: String,
+    /// Links the page asked to open in a new window, not taken yet.
+    new_tabs: Vec<(String, bool)>,
+    /// Whether it was asked for the page's popups, the popups the page
+    /// opened and not yet taken, and the engines of those adopted.
+    accepts_popups: bool,
+    popups: Vec<super::Popup>,
+    /// Whether it was asked for the page's own questions.
+    accepts_page_dialogs: bool,
+    adopted: std::collections::HashMap<u32, Arc<TestEngine>>,
+    /// The tabs it was asked to create, oldest first.
+    created: Vec<Arc<TestEngine>>,
+    /// It paints nothing new, as a busy renderer has not yet.
+    holds_frames: bool,
+    /// Its pages carry an end mark, as a mail's document does.
+    marks_page_end: bool,
+    /// Addresses that fail to load, and the network error each fails with.
+    failing: std::collections::HashMap<String, String>,
+    /// A test reported the page's focused field: the engine then takes an
+    /// input method's composition, as a ready host does.
+    composition: bool,
+    text_field: Option<super::TextField>,
 }
 
 pub struct TestEngine {
@@ -94,6 +118,124 @@ impl TestEngine {
         self.lock_inner().measures_document = measures;
     }
 
+    /// Say the page asked to open `url` in a new window, as a link the
+    /// person followed does.
+    pub fn push_new_tab_request(&self, url: impl Into<String>) {
+        self.lock_inner().new_tabs.push((url.into(), false));
+    }
+
+    /// Say the page opened a popup, as `window.open` with a size does. An
+    /// engine nobody asked for popups ignores it, as Chromium's opens it
+    /// as a tab.
+    pub fn push_popup(&self, id: u32, url: impl Into<String>, width: u32, height: u32) {
+        let mut inner = self.lock_inner();
+        if inner.accepts_popups {
+            inner.popups.push(super::Popup {
+                id,
+                url: url.into(),
+                width,
+                height,
+            });
+        }
+    }
+
+    /// Whether it was asked for the page's popups.
+    pub fn accepts_popups(&self) -> bool {
+        self.lock_inner().accepts_popups
+    }
+
+    /// Whether it was asked for the page's own questions.
+    pub fn accepts_page_dialogs(&self) -> bool {
+        self.lock_inner().accepts_page_dialogs
+    }
+
+    /// The tabs it created, oldest first.
+    pub fn created_tabs(&self) -> Vec<Arc<TestEngine>> {
+        self.lock_inner().created.clone()
+    }
+
+    /// The engine a popup was adopted as.
+    pub fn adopted(&self, id: u32) -> Option<Arc<TestEngine>> {
+        self.lock_inner().adopted.get(&id).cloned()
+    }
+
+    /// Say the page has `text` selected: a later
+    /// [`WebViewCommand::CopySelection`] answers with it.
+    pub fn set_selection(&self, text: impl Into<String>) {
+        self.lock_inner().selection = text.into();
+    }
+
+    /// Report the page's focused field (`None`: nothing editable has the
+    /// focus), as a host that takes compositions does.
+    pub fn set_text_field(&self, field: Option<super::TextField>) {
+        let mut inner = self.lock_inner();
+        inner.composition = true;
+        inner.text_field = field;
+    }
+
+    /// Hold back every frame, as a renderer still laying out a page does,
+    /// or paint the page at the view's current size now.
+    pub fn hold_frames(&self, hold: bool) {
+        let mut inner = self.lock_inner();
+        inner.holds_frames = hold;
+        if !hold {
+            self.render_locked(&inner);
+        }
+    }
+
+    /// Paint its pages with a document's end mark: the bottom-right 2×2
+    /// pixels one level off the page beneath, as a mail's document marks
+    /// them (`mix-blend-mode: difference` with `rgb(1,1,1)`).
+    pub fn mark_page_end(&self) {
+        self.lock_inner().marks_page_end = true;
+    }
+
+    /// Paint the view at its current size in the page's background colour
+    /// and nothing of the page, as Chromium paints a resized view before
+    /// the page has drawn there.
+    pub fn paint_before_page(&self) {
+        let inner = self.lock_inner();
+        let (width, height) = (inner.width.max(1), inner.height.max(1));
+        let [r, g, b] = inner
+            .history
+            .get(inner.index)
+            .map_or([0xFF; 3], |uri| Self::page_color(uri));
+        let pixels = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX));
+        *self.lock_frames() = Some(Frame {
+            trace_id: None,
+            damage: None,
+            rgba: Arc::new([r, g, b, 0xFF].repeat(pixels)),
+            width,
+            height,
+        });
+    }
+
+    /// Deliver a frame painted for an earlier `width` × `height`, as an
+    /// engine does that finishes a paint after the view has moved on.
+    pub fn paint_stale(&self, width: u32, height: u32) {
+        let bytes = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        *self.lock_frames() = Some(Frame {
+            trace_id: None,
+            damage: None,
+            rgba: Arc::new(vec![0x80; bytes]),
+            width,
+            height,
+        });
+    }
+
+    /// Make every load of `uri` fail with the network `error`
+    /// (`ERR_CONNECTION_REFUSED`), as an unreachable site does: the engine
+    /// reports the address, the failure and its history, and an owned
+    /// navigation's outcome carries the error.
+    pub fn fail_address(&self, uri: impl Into<String>, error: impl Into<String>) {
+        self.lock_inner().failing.insert(uri.into(), error.into());
+    }
+
     /// Deliver `event` on the next drain, as the engine would on its own (a
     /// page reporting its document size).
     pub fn push_event(&self, event: WebViewEvent) {
@@ -115,14 +257,17 @@ impl TestEngine {
         }
         let url = inner.history.get(inner.index).cloned().unwrap_or_default();
         Ok(PageReply {
-            outline: matches!(request, PageRequest::Outline | PageRequest::Changes)
-                .then(|| format!("- document \"{url} — test page\"")),
+            outline: matches!(
+                request,
+                PageRequest::Outline { .. } | PageRequest::Changes { .. }
+            )
+            .then(|| format!("- document \"{url} — test page\"")),
             // Logs and lookups answer with an empty, well-formed finding.
             data: match request {
                 PageRequest::Console { .. } | PageRequest::Network { .. } => {
                     Some(serde_json::json!({"entries": [], "next": 0, "dropped": 0}))
                 }
-                PageRequest::At { x, y } => {
+                PageRequest::At { x, y, .. } => {
                     Some(serde_json::json!({"x": x, "y": y, "element": null}))
                 }
                 PageRequest::Settle { .. } => {
@@ -132,7 +277,18 @@ impl TestEngine {
             },
             message: "Done".into(),
             url,
-            navigated: false,
+            navigation: if matches!(
+                request,
+                PageRequest::Click { .. }
+                    | PageRequest::Press { .. }
+                    | PageRequest::Fill { .. }
+                    | PageRequest::Select { .. }
+                    | PageRequest::Submit { .. }
+            ) {
+                PageNavigation::Possible
+            } else {
+                PageNavigation::None
+            },
             loading: false,
         })
     }
@@ -155,6 +311,9 @@ impl TestEngine {
     }
 
     fn render_locked(&self, inner: &Inner) {
+        if inner.holds_frames {
+            return;
+        }
         let Some(uri) = inner.history.get(inner.index) else {
             return;
         };
@@ -167,12 +326,17 @@ impl TestEngine {
         let mut rgba = Vec::with_capacity(pixel_count.saturating_mul(4));
         for y in 0..height {
             let px: [u8; 3] = if y < HEADER_BAND_PX { band } else { [r, g, b] };
-            for _ in 0..width {
+            for x in 0..width {
+                let mark = inner.marks_page_end
+                    && x.saturating_add(2) >= width
+                    && y.saturating_add(2) >= height;
+                let px = if mark { px.map(|c| c.abs_diff(1)) } else { px };
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
             }
         }
         *self.lock_frames() = Some(Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(rgba),
             width,
             height,
@@ -185,11 +349,15 @@ impl TestEngine {
             return;
         };
         inner.events.push(WebViewEvent::UriChanged(uri.clone()));
-        inner
-            .events
-            .push(WebViewEvent::TitleChanged(format!("{uri} — test page")));
-        inner.events.push(WebViewEvent::LoadProgress(1.0));
-        inner.events.push(WebViewEvent::LoadFinished);
+        if let Some(error) = inner.failing.get(&uri).cloned() {
+            inner.events.push(WebViewEvent::LoadFailed { uri, error });
+        } else {
+            inner
+                .events
+                .push(WebViewEvent::TitleChanged(format!("{uri} — test page")));
+            inner.events.push(WebViewEvent::LoadProgress(1.0));
+            inner.events.push(WebViewEvent::LoadFinished);
+        }
         inner.events.push(WebViewEvent::HistoryChanged {
             can_go_back: inner.index > 0,
             can_go_forward: inner.index.saturating_add(1) < inner.history.len(),
@@ -304,6 +472,42 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().measures_document
     }
 
+    fn supports_composition(&self) -> bool {
+        self.lock_inner().composition
+    }
+
+    fn text_field(&self) -> Option<super::TextField> {
+        self.lock_inner().text_field
+    }
+
+    fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.lock_inner().new_tabs)
+    }
+
+    fn create_tab(&self) -> Result<super::SharedEngine, String> {
+        let tab = TestEngine::new();
+        self.lock_inner().created.push(tab.clone());
+        Ok(tab)
+    }
+
+    fn accept_popups(&self) {
+        self.lock_inner().accepts_popups = true;
+    }
+
+    fn accept_page_dialogs(&self) {
+        self.lock_inner().accepts_page_dialogs = true;
+    }
+
+    fn take_popups(&self) -> Vec<super::Popup> {
+        std::mem::take(&mut self.lock_inner().popups)
+    }
+
+    fn adopt_popup(&self, popup: u32) -> Result<super::SharedEngine, String> {
+        let engine = TestEngine::new();
+        self.lock_inner().adopted.insert(popup, engine.clone());
+        Ok(engine)
+    }
+
     fn navigate_owned(
         &self,
         request_id: u32,
@@ -332,6 +536,7 @@ impl WebViewEngine for TestEngine {
         });
         let error = self.navigate_locked(&mut inner, command).err();
         let uri = inner.history.get(inner.index).cloned().unwrap_or_default();
+        let error = error.or_else(|| inner.failing.get(&uri).cloned());
         inner.events.push(WebViewEvent::NavigationOutcome {
             request_id,
             uri,
@@ -455,15 +660,42 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetClearOnExit(_)
             | WebViewCommand::ShowDeveloperTools
             | WebViewCommand::PermissionDecision { .. }
+            | WebViewCommand::PermissionDismissed { .. }
+            | WebViewCommand::ExtensionAccess { .. }
+            | WebViewCommand::ExtensionGrants { .. }
+            | WebViewCommand::ExtensionPermissionDecision { .. }
+            | WebViewCommand::ExtensionForget { .. }
+            | WebViewCommand::ExtensionIdentity { .. }
+            | WebViewCommand::ExtensionPanel { .. }
+            | WebViewCommand::ExtensionSignInPanel { .. }
+            | WebViewCommand::ExtensionClick { .. }
+            | WebViewCommand::ExtensionMenuChoice { .. }
+            | WebViewCommand::ExtensionNotificationChosen { .. }
+            | WebViewCommand::ExtensionOmnibox { .. }
+            | WebViewCommand::ExtensionOpenSidePanel { .. }
+            | WebViewCommand::ExtensionSidePanelPage { .. }
+            | WebViewCommand::ExtensionCommandKey { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
+            | WebViewCommand::AnswerPageDialog { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::ReportDocumentSize(_)
             | WebViewCommand::CancelNativeDownload { .. }
             | WebViewCommand::RetryDownload { .. }
-            | WebViewCommand::CancelAllDownloads => {}
+            | WebViewCommand::CancelAllDownloads
+            | WebViewCommand::AnswerClipboardRead { .. }
+            | WebViewCommand::ImeComposition { .. }
+            | WebViewCommand::ImeCommit(_)
+            | WebViewCommand::ImeCancel
+            | WebViewCommand::ImeFinish => {}
+            WebViewCommand::CopySelection { request_id } => {
+                let text = inner.selection.clone();
+                inner
+                    .events
+                    .push(WebViewEvent::SelectionText { request_id, text });
+            }
             WebViewCommand::RequestMediaElement { request_id } => {
                 Self::emit_media_locked(&mut inner, request_id, None);
             }
@@ -572,7 +804,6 @@ mod tests {
                 can_go_back: false,
                 can_go_forward: false
             }));
-            // Draining twice yields nothing new.
             assert!(engine.drain_events().is_empty());
 
             let frame = engine

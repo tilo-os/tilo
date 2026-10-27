@@ -128,11 +128,20 @@ pub(crate) struct ViewStorage {
     held_sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
     /// Those sections, as the door reaches them.
     section_doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
+    /// The records another provider keeps, by id, with that provider
+    /// ([`Records::kept_by`](super::Records::kept_by)): views show them and
+    /// bind to them, the window neither publishes nor runs their actions.
+    kept_by: RefCell<HashMap<String, &'static str>>,
     /// The store of the app's records in the room, for the records it
     /// keeps beside its own: not in a view of a past version.
     room: Option<super::chain::RoomRecords>,
     /// The chains the views opened ([`super::Chain`]).
     chains: super::chain::Chains,
+    /// The records every app of the room opens, when the host keeps them:
+    /// not in a view of a past version.
+    workspace: Option<Rc<super::workspace::WorkspaceState>>,
+    /// The workspace's emoji, as the window's views draw them.
+    emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
 }
 
 /// What the host gives a live window beside its record: the person's own
@@ -148,6 +157,12 @@ pub(crate) struct Hosted {
         String,
         ui_core::permissions::LivePermissions,
     )>,
+    /// The records every app of the room opens, and the window's wake
+    /// scope, against which the workspace's emoji are registered.
+    pub(crate) workspace: Option<(
+        ui_core::record::workspace::WorkspaceRecords,
+        ui_core::wake::WakeHandle,
+    )>,
 }
 
 /// [`Hosted`], with the person's records opened for one app.
@@ -155,11 +170,31 @@ pub(crate) struct Attached {
     person: Option<super::person::PersonState>,
     device: Option<String>,
     room: Option<super::chain::RoomRecords>,
+    workspace: Option<Rc<super::workspace::WorkspaceState>>,
+    emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
 }
 
 impl Hosted {
     pub(crate) fn attach(self, app_id: &'static str, app_title: &'static str) -> Attached {
+        let permissions = self
+            .room
+            .as_ref()
+            .map(|(_, _, permissions)| permissions.clone());
+        let workspace = self.workspace.map(|(records, wake)| {
+            let state = Rc::new(super::workspace::WorkspaceState::new(
+                records,
+                app_id,
+                app_title,
+                permissions,
+                Some(wake.clone()),
+            ));
+            let emoji = super::workspace_emoji::register(&wake, Rc::clone(&state));
+            (state, emoji)
+        });
+        let (workspace, emoji) = workspace.unzip();
         Attached {
+            workspace,
+            emoji,
             person: self
                 .person
                 .map(|records| super::person::PersonState::new(records, app_id, app_title)),
@@ -187,8 +222,11 @@ impl ViewStorage {
             sections: RefCell::default(),
             held_sections: RefCell::default(),
             section_doors: RefCell::default(),
+            kept_by: RefCell::default(),
             room: hosted.room,
             chains: super::chain::Chains::default(),
+            workspace: hosted.workspace,
+            emoji: hosted.emoji,
         })
     }
 
@@ -220,12 +258,19 @@ impl ViewStorage {
         &self,
         me: Option<&str>,
         payload: &[u8],
+        live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        self.chains.answer(me, payload)
+        self.chains.answer(me, payload, live)
     }
 
     pub(crate) fn storage(&self) -> &AppStorage {
         &self.storage
+    }
+
+    /// The store of the app's records in the workspace; `None` in a view of
+    /// a past version.
+    pub(crate) fn room_store(&self) -> Option<&ui_core::record::RecordStore> {
+        self.room.as_ref().map(|room| &room.store)
     }
 
     /// This device's id, in a live window.
@@ -239,6 +284,23 @@ impl ViewStorage {
     ) -> Option<super::person::PersonRecord<P>> {
         super::controls::opened::<P>();
         self.person.as_ref()?.open::<P>()
+    }
+
+    /// Open the record `P` every app of the room opens that this app
+    /// keeps.
+    pub(crate) fn workspace_record<P: tilo_resource::Resource>(&self) {
+        if let Some(workspace) = &self.workspace {
+            let _ = workspace.open::<P>(workspace.app_id());
+        }
+    }
+
+    /// The record `P` every app of the room opens that `owner` keeps,
+    /// opened on first use.
+    pub(crate) fn workspace<P: tilo_resource::Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<super::workspace::WorkspaceRecord<P>> {
+        self.workspace.as_ref()?.open::<P>(owner)
     }
 
     /// The shared record of the person's `P`.
@@ -267,6 +329,15 @@ impl ViewStorage {
             .collect()
     }
 
+    /// The person's records a view asked for and could not open, as they
+    /// are published: their declared actions, unavailable for why.
+    pub(crate) fn unavailable_records(&self) -> Vec<tilo_actions::Resource> {
+        self.person
+            .as_ref()
+            .map(super::person::PersonState::unavailable)
+            .unwrap_or_default()
+    }
+
     pub(crate) fn record_resources(&self) -> Vec<tilo_actions::Resource> {
         let mut resources = self
             .person
@@ -280,7 +351,26 @@ impl ViewStorage {
                 .map(|door| door.publish()),
         );
         resources.extend(self.chains.doors().iter().map(|door| door.publish()));
+        let kept_by = self.kept_by.borrow();
+        if !kept_by.is_empty() {
+            for resource in &mut resources {
+                if let Some(provider) = kept_by.get(resource.id.as_str()) {
+                    run_by(resource, provider);
+                }
+            }
+        }
         resources
+    }
+
+    /// Mark the record `id` as kept by `provider`
+    /// ([`Records::kept_by`](super::Records::kept_by)).
+    pub(crate) fn keep_by(&self, id: &str, provider: &'static str) {
+        self.kept_by.borrow_mut().insert(id.to_owned(), provider);
+    }
+
+    /// The provider keeping the record `id`, when another one does.
+    pub(crate) fn kept_provider(&self, id: &str) -> Option<&'static str> {
+        self.kept_by.borrow().get(id).copied()
     }
 
     /// Answer one published action of those records, invoked by someone
@@ -296,6 +386,9 @@ impl ViewStorage {
             .map(super::person::PersonState::doors)
             .unwrap_or_default();
         doors.extend(self.section_doors.borrow().iter().cloned());
+        // Another provider runs what it keeps; the window never does.
+        let kept_by = self.kept_by.borrow();
+        doors.retain(|door| !kept_by.contains_key(door.id()));
         let me = self
             .person
             .as_ref()
@@ -377,12 +470,18 @@ impl ViewStorage {
             .answer(payload)
     }
 
-    /// The routes of the person's records the views opened.
+    /// The routes of the person's records the views opened, and of the
+    /// records every app of the room opens.
     pub(crate) fn person_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
-        self.person
+        let mut owners = self
+            .person
             .as_ref()
             .map(super::person::PersonState::owners)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(workspace) = &self.workspace {
+            owners.extend(workspace.owners());
+        }
+        owners
     }
 
     /// `T`, followed for as long as `alive` is.
@@ -430,6 +529,12 @@ impl ViewStorage {
         if let Some(person) = &self.person {
             person.refresh();
         }
+        if let Some(workspace) = &self.workspace {
+            workspace.refresh();
+        }
+        if let Some(emoji) = &self.emoji {
+            emoji.settle();
+        }
         for chain in self.chains.doors() {
             let _ = chain.revision();
         }
@@ -446,5 +551,16 @@ impl ViewStorage {
         let mut list = self.followed.borrow_mut();
         current.append(&mut list);
         *list = current;
+    }
+}
+
+/// `resource`'s actions as `provider` runs them, its parts' too.
+fn run_by(resource: &mut tilo_actions::Resource, provider: &'static str) {
+    resource.actions = std::mem::take(&mut resource.actions)
+        .into_iter()
+        .map(|spec| spec.run_by(provider))
+        .collect();
+    for child in &mut resource.children {
+        run_by(child, provider);
     }
 }

@@ -152,8 +152,8 @@ fn host_declarations_roles_and_replay_are_honoured() {
 }
 
 #[test]
-fn destructive_host_edits_wait_for_one_confirmation() {
-    // Case `deleting_a_clip_is_confirmed_and_trimming_one_is_not`.
+fn undoable_host_edits_apply_at_once_and_undo_takes_them_back() {
+    // Case `deleting_a_clip_and_trimming_one_both_apply_at_once`.
     {
         let mut app = with_sample();
         let clip = app.state().clips.first().cloned().unwrap();
@@ -177,35 +177,33 @@ fn destructive_host_edits_wait_for_one_confirmation() {
         let stored = app.state().clip(clip.id).cloned().unwrap();
         assert!((stored.out_point - trimmed.out_point).abs() < 1e-9);
 
-        // Deleting it is destructive: refused until confirmed, like a declared
-        // destructive action.
+        // Deleting it is destructive but undoable: it applies at once, and
+        // Undo takes it back.
         let delete = Project::REMOVE_CLIP.with(clip_key);
-        assert!(matches!(
-            app.invoke(delete.clone()),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ));
-        assert_eq!(app.state().clips.len(), clips, "nothing was deleted");
         let partners = app.state().link_partners(clip.id).len();
-        app.invoke_confirmed(delete).unwrap();
+        app.invoke(delete).unwrap();
         assert_eq!(
             app.state().clips.len(),
             clips - 1 - partners,
             "the clip goes with the clips linked to it"
         );
+        assert!(app.undo(), "the delete is one undo step");
+        assert_eq!(app.state().clips.len(), clips);
     }
-    // Case `a_delete_key_on_the_surface_waits_for_confirmation`.
+    // Case `a_delete_key_on_the_surface_applies_at_once`.
     {
         let mut app = with_sample();
         let clips = app.state().clips.len();
         app.harness().click_named("video_editor_root").unwrap();
         app.harness().key("Delete");
-        assert_eq!(
-            app.state().clips.len(),
-            clips,
-            "the surface's delete is held for the host's confirmation"
+        assert!(
+            app.state().clips.len() < clips,
+            "the surface's delete applies at once"
         );
+        assert!(app.undo(), "the delete is one undo step");
+        assert_eq!(app.state().clips.len(), clips);
     }
-    // Case `a_destructive_gesture_asks_once_and_changes_nothing_until_confirmed`.
+    // Case `a_destructive_gesture_applies_as_one_and_undoes_as_one`.
     {
         let mut app = with_sample();
         let clips = app.state().clips.len();
@@ -213,9 +211,11 @@ fn destructive_host_edits_wait_for_one_confirmation() {
         app.harness().set_modifiers(&["ctrl".into()]);
         app.harness().key("a");
         app.harness().set_modifiers(&[]);
-        // One deletion per clip, submitted as one destructive group: nothing is
-        // deleted before the host's confirmation, not even the first clip.
+        // One deletion per clip, submitted as one group of undoable changes:
+        // it applies at once, and one Undo takes every deletion back.
         app.harness().key("Delete");
+        assert!(app.state().clips.len() < clips, "the group applies at once");
+        assert!(app.undo(), "the group is one undo step");
         assert_eq!(app.state().clips.len(), clips);
     }
 }
@@ -260,4 +260,57 @@ fn edits_bound_to_the_playhead_reach_the_door() {
         )
         .is_err()
     );
+}
+
+/// What an agent's answer is for an action of the project, by its id.
+fn agent_answer(app: &mut HeadlessApp<VideoEditor>, action: &str) -> ui::permissions::Answer {
+    let descriptor = app
+        .actions()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| {
+            descriptor.address.action == action && descriptor.resource_kind == Project::KIND
+        })
+        .unwrap();
+    let need = descriptor.contract.need();
+    let node = tilo_actions::action_node(
+        &ui::permissions::TreePath::root(),
+        VideoEditor::ID,
+        Project::KIND,
+        &descriptor.address.resource,
+        need.field.as_deref(),
+        action,
+    );
+    app.permissions().answer(&node, need.kind)
+}
+
+#[test]
+fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
+    use ui::permissions::{Answer, LOCAL_ROOM, LOCAL_USER, PermissionContext, Role, policy};
+    const AGENT: &str = "renderer";
+
+    let mut app = with_sample();
+    // An agent admitted as an Operator, with no answer of the person's yet.
+    let grants = policy::roles::AgentPreset::Operator.grants(
+        LOCAL_ROOM,
+        AGENT,
+        &policy::Subject::person(LOCAL_USER),
+    );
+    app.set_permissions(
+        PermissionContext::member(LOCAL_USER, Role::Owner)
+            .acting_as(policy::Subject::agent(AGENT), grants),
+    );
+    // Reading or writing a file is an outside effect: it asks first, like
+    // any other.
+    for action in ["export", "import", "open-project", "save", "save-as"] {
+        assert_eq!(agent_answer(&mut app, action), Answer::Ask, "{action}");
+    }
+    // Rendering into content reads.
+    assert_eq!(agent_answer(&mut app, "render-timeline"), Answer::Allow);
+    // The window's door never runs an ask for someone acting for the
+    // person; the broker pauses the agent's run to ask them.
+    let asked = app.effect(&video_editor::actions::VideoEditorEffect::Export {
+        path: Some("/nonexistent/out.mp4".into()),
+    });
+    assert!(asked.is_err(), "{asked:?}");
 }

@@ -50,12 +50,6 @@ impl FontFiles {
         &self.roots
     }
 
-    /// The font at `path`, face `index`.
-    ///
-    /// # Errors
-    ///
-    /// When the path is outside the font directories, is not a regular
-    /// file, or does not parse as a font with that face.
     pub fn open(&mut self, path: &str, index: u32) -> Result<FontData, WireError> {
         if path.len() > tilo_render_protocol::control::MAX_FONT_PATH || !path.starts_with('/') {
             return Err(WireError::Invalid("font path"));
@@ -122,10 +116,6 @@ impl Registry {
     }
 
     /// Register a font the app uploads itself, in the sealed memfd `fd`.
-    ///
-    /// # Errors
-    ///
-    /// When the memfd is not sealed, too large, not a font, or over a limit.
     pub fn add_font_data(
         &mut self,
         id: FontId,
@@ -149,11 +139,6 @@ impl Registry {
 
     /// Register an image whose tightly packed pixels are in the sealed memfd
     /// `fd`.
-    ///
-    /// # Errors
-    ///
-    /// When the memfd is not sealed or shorter than the image, or the image
-    /// is over a limit.
     pub fn add_image(
         &mut self,
         id: ImageId,

@@ -1,5 +1,5 @@
 //! GOA metadata definitions shared by review and selected capture.
-use super::{Candidate, Inventory, Origin, Provider};
+use super::{Candidate, Inventory, Origin, Provider, Service};
 use account_custody::OAuthCloud;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
@@ -49,12 +49,54 @@ impl Definition {
                 .get("OAuth2AuthorizationUri")
                 .map_or("", String::as_str),
             self.fields.get("FilesEnabled").map_or("", String::as_str),
+            self.fields.get("MailEnabled").map_or("", String::as_str),
+            self.fields
+                .get("CalendarEnabled")
+                .map_or("", String::as_str),
+            self.fields
+                .get("ContactsEnabled")
+                .map_or("", String::as_str),
         ] {
             hash.update(value.len().to_le_bytes());
             hash.update(value.as_bytes());
         }
         format!("goa-source-{}", hex::encode(hash.finalize()))
     }
+    pub fn files_enabled(&self) -> bool {
+        self.fields
+            .get("FilesEnabled")
+            .is_some_and(|value| value == "true")
+    }
+
+    pub fn services(&self) -> Vec<Service> {
+        let mut services = Vec::new();
+        if self.files_enabled() {
+            services.push(Service::Files);
+        }
+        if self
+            .fields
+            .get("MailEnabled")
+            .is_some_and(|value| value == "true")
+        {
+            services.push(Service::Mail);
+        }
+        if self
+            .fields
+            .get("CalendarEnabled")
+            .is_some_and(|value| value == "true")
+        {
+            services.push(Service::Calendar);
+        }
+        if self
+            .fields
+            .get("ContactsEnabled")
+            .is_some_and(|value| value == "true")
+        {
+            services.push(Service::Contacts);
+        }
+        services
+    }
+
     pub fn supported(&self) -> bool {
         let endpoint = match self.provider {
             GoaProvider::Google => "https://oauth2.googleapis.com/token",
@@ -73,10 +115,7 @@ impl Definition {
                 .fields
                 .get("OAuth2AuthorizationUri")
                 .is_none_or(|value| value == authorization)
-            && self
-                .fields
-                .get("FilesEnabled")
-                .is_some_and(|value| value == "true")
+            && self.files_enabled()
     }
     pub fn candidate(&self, path: &Path) -> Candidate {
         Candidate {
@@ -92,6 +131,7 @@ impl Definition {
             profile: path.to_owned(),
             needs_sign_in: true,
             can_import_credentials: self.supported(),
+            services: self.services(),
         }
     }
 }
@@ -111,6 +151,9 @@ pub fn definitions(text: &str, private: bool) -> Vec<Definition> {
         "OAuth2TokenUri",
         "OAuth2AuthorizationUri",
         "FilesEnabled",
+        "MailEnabled",
+        "CalendarEnabled",
+        "ContactsEnabled",
     ];
     if private {
         allowed.push("OAuth2ClientSecret");

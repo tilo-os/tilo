@@ -134,7 +134,6 @@ impl Policy {
     };
 }
 
-/// A hang, as the watchdog found it.
 #[derive(Debug, Clone)]
 pub struct Hang {
     /// The watched thread.
@@ -229,6 +228,60 @@ impl Drop for Watchdog {
             let _ = thread.join();
         }
     }
+}
+
+/// How long recovery waits for the freeze record to reach the disk. The
+/// record is a few kilobytes; a disk that takes longer is itself stuck, and
+/// handing the display back comes first.
+pub const RECORD_WITHIN: Duration = Duration::from_secs(5);
+
+/// Keep the hang in the person's local record (`crash_log`), then end the
+/// process ([`end_process`]). The compositor's recovery.
+pub fn record_and_end_process(hang: &Hang) {
+    match record_freeze(hang, RECORD_WITHIN) {
+        Some(path) => crate::stderr_guard::write_final(&format!(
+            "tilo compositor: the freeze is recorded in {}\n",
+            path.display()
+        )),
+        None => crate::stderr_guard::write_final(
+            "tilo compositor: the freeze could not be recorded on disk\n",
+        ),
+    }
+    end_process(hang);
+}
+
+/// Write `hang` as a freeze record into the crash directory, on a thread of
+/// its own so a stuck disk holds recovery back by `within` at most. Where it
+/// went, or `None` when it did not get there in time.
+#[must_use]
+pub fn record_freeze(hang: &Hang, within: Duration) -> Option<std::path::PathBuf> {
+    let (tid, blocked_for, report) = (hang.tid, hang.blocked_for, hang.report.clone());
+    let (sent, written) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("tilo-hang-record".into())
+        .spawn(move || {
+            let written = crate::crash_log::directory().and_then(|dir| {
+                let timestamp = crate::crash_log::file_timestamp();
+                let body = crate::crash_log::render_freeze(
+                    &crate::crash_log::BuildInfo::current(),
+                    &crate::crash_log::Freeze {
+                        timestamp: &timestamp,
+                        tid,
+                        blocked_for,
+                        report: &report,
+                    },
+                );
+                let name = format!(
+                    "{timestamp}-{}{}",
+                    std::process::id(),
+                    crate::crash_log::FREEZE_SUFFIX
+                );
+                crate::crash_log::write_record(&dir, &name, &body).ok()
+            });
+            let _ = sent.send(written);
+        })
+        .ok()?;
+    written.recv_timeout(within).ok().flatten()
 }
 
 /// End this process with [`HUNG_EXIT_STATUS`], without running anything of
@@ -575,9 +628,7 @@ mod tests {
                 drop(watchdog);
             })
             .unwrap();
-        let hang = reports
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the watchdog recovers a deadlocked loop");
+        let hang = tilo_test_env::recv("the watchdog to recover a deadlocked loop", &reports);
         drop(held);
         worker.join().unwrap();
         assert!(hang.blocked_for > FAST.hung_after, "{hang:?}");
@@ -608,11 +659,9 @@ mod tests {
                 watchdog.parking();
                 std::thread::sleep(FAST.hung_after.saturating_mul(3));
                 watchdog.unparked();
-                // One turn of many waits, each within the bound.
                 for _ in 0..8 {
                     std::thread::sleep(FAST.hung_after / 3);
                 }
-                // One turn of work longer than the bound.
                 let busy = Instant::now();
                 while busy.elapsed() < FAST.hung_after.saturating_mul(2) {
                     std::hint::spin_loop();

@@ -148,6 +148,117 @@ fn a_change_takes_both_sides_or_custom_text() {
     assert_eq!(session.state().unwrap().merged, "a\nCUSTOM\nc\n");
 }
 
+/// Resolving one change with text of its own leaves the rest of the merge
+/// open: the other changes still take a side, the written text stays, and a
+/// side taken later for the same change replaces it.
+#[test]
+fn a_change_resolved_with_text_leaves_the_others_open() {
+    let mut session = Replica::<Session>::new();
+    session
+        .apply(Session::OPEN_MERGE.with(session::OpenMerge {
+            base_label: "base".into(),
+            base: "a\nb\nc\nd\ne\n".into(),
+            ours_label: "ours".into(),
+            ours: "a\nB1\nc\nD1\ne\n".into(),
+            theirs_label: "theirs".into(),
+            theirs: "a\nB2\nc\nD2\ne\n".into(),
+        }))
+        .unwrap();
+    let conflicts: Vec<u64> = session
+        .state()
+        .unwrap()
+        .merge_model()
+        .hunks
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.resolution.is_conflict())
+        .map(|(index, _)| u64::try_from(index).unwrap())
+        .collect();
+    let [first, second] = conflicts[..] else {
+        panic!("two conflicts: {conflicts:?}");
+    };
+
+    session
+        .apply(Session::RESOLVE.with(session::Resolve {
+            hunk: first,
+            text: "B\nB'".into(),
+        }))
+        .unwrap();
+    let state = session.state().unwrap();
+    assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
+    assert_eq!(
+        children_of_kind(&session.published().unwrap(), "diffmerge.session.change").len(),
+        2,
+        "every change is still offered"
+    );
+
+    session
+        .apply(Session::TAKE_THEIRS.with(session::TakeTheirs { hunk: second }))
+        .expect("the other change still takes a side");
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\nB\nB'\nc\nD2\ne\n");
+    let model = state.merge_model();
+    assert!(model.fully_resolved());
+    assert_eq!(
+        model.hunks[usize::try_from(first).unwrap()].resolution,
+        Resolution::Written
+    );
+
+    session
+        .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk: first }))
+        .expect("a written change can still take a side");
+    assert_eq!(session.state().unwrap().merged, "a\nB1\nc\nD2\ne\n");
+}
+
+/// A merge of Windows files without a final newline keeps their bytes from
+/// opening to the last resolution, so the result shows in git as the lines
+/// that changed and nothing else; the record still composes, so every
+/// change stays open to a side.
+#[test]
+fn a_windows_merge_keeps_its_line_endings_through_every_resolution() {
+    let mut session = Replica::<Session>::new();
+    session
+        .apply(Session::OPEN_MERGE.with(session::OpenMerge {
+            base_label: "base".into(),
+            base: "a\r\nb\r\nc\r\nd\r\ne".into(),
+            ours_label: "ours".into(),
+            ours: "a\r\nB1\r\nc\r\nD1\r\ne".into(),
+            theirs_label: "theirs".into(),
+            theirs: "a\r\nB2\r\nc\r\nD2\r\ne".into(),
+        }))
+        .unwrap();
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\r\nB1\r\nc\r\nD1\r\ne");
+    let conflicts: Vec<u64> = state
+        .merge_model()
+        .hunks
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.resolution.is_conflict())
+        .map(|(index, _)| u64::try_from(index).unwrap())
+        .collect();
+    let [first, second] = conflicts[..] else {
+        panic!("two conflicts: {conflicts:?}");
+    };
+
+    session
+        .apply(Session::TAKE_BOTH.with(session::TakeBoth { hunk: first }))
+        .unwrap();
+    assert_eq!(
+        session.state().unwrap().merged,
+        "a\r\nB1\r\nB2\r\nc\r\nD1\r\ne"
+    );
+    session
+        .apply(Session::RESOLVE.with(session::Resolve {
+            hunk: second,
+            text: "D\nD'".into(),
+        }))
+        .expect("the other change still takes text");
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\r\nB1\r\nB2\r\nc\r\nD\r\nD'\r\ne");
+    assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
+}
+
 /// Two people typing in the merged result converge character by
 /// character; inputs opened at once end as one of the two, never a mix.
 #[test]
@@ -243,7 +354,6 @@ fn the_session_publishes_changes_and_change_blocks() {
     assert!(session.state().unwrap().merged.contains("THEIRS"));
 }
 
-/// The sample merge has a conflict to resolve through the palette.
 #[test]
 fn the_sample_merge_exposes_a_conflict() {
     let mut session = Replica::<Session>::new();

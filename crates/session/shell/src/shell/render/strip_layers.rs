@@ -6,7 +6,7 @@
 //! (device) pixels. A pan then changes only where each strip reads its canvas
 //! ([`StripBlit::scroll_x`]); the layers' scenes stay byte for byte the same.
 //!
-//! [`StripLayers`] keeps the backdrop, the strips and the chrome rasterised in
+//! `StripLayers` keeps the backdrop, the strips and the chrome rasterised in
 //! textures of the output's size. The strips texture holds the strips as the
 //! screen shows them ([`append_panned`]). On a pure pan, a pixel whose strips all moved by the
 //! same distance is copied from where it was, and only the rest is
@@ -57,7 +57,7 @@ pub fn append_panned(scene: &mut Scene, layers: &FrameLayers, strips: &[StripBli
 }
 
 /// The frame `cache` holds as one scene: its layers over each other, as
-/// [`StripLayers`] composites them.
+/// `StripLayers` composites them.
 pub fn compose(cache: &FrameCache) -> Scene {
     let mut scene = cache.layers.backdrop.clone();
     append_panned(&mut scene, &cache.layers, &cache.strips);
@@ -198,7 +198,6 @@ pub(crate) struct LayerWork {
 }
 
 impl LayerWork {
-    /// Every layer and the whole output.
     fn whole(size: (u32, u32)) -> Self {
         Self {
             backdrop: true,
@@ -429,6 +428,11 @@ struct Piece {
     change: Change,
 }
 
+/// How far inside an output's edges a changed window group's columns are
+/// looked for ([`cover_lane`]): the columns a change can round onto a tile
+/// just past the group it belongs to, where the output's own edge is not.
+const COLUMN_EDGE: u32 = 16;
+
 /// How a strip's drawing changed since the shown frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Change {
@@ -468,14 +472,14 @@ fn strip_change(
     let (bx0, by0, bx1, by1) = band(blit, size);
     let scroll = f64::from(blit.scroll_x);
     let mut within = Vec::new();
+    // The strip is drawn in canvas coordinates and shown `scroll_x` pixels to
+    // the left ([`append_panned`]), clipped to its band.
+    let edge = f64::from(TILE_EDGE);
+    let tile = |value: f64, round: fn(f64) -> f64| round(value / edge) * edge;
+    let clamp = |value: f64, low: u32, high: u32| -> u32 {
+        ui::num::u32_of_f64(value.clamp(f64::from(low), f64::from(high)))
+    };
     for rect in rects {
-        // The strip is drawn in canvas coordinates and shown `scroll_x`
-        // pixels to the left ([`append_panned`]), clipped to its band.
-        let edge = f64::from(TILE_EDGE);
-        let tile = |value: f64, round: fn(f64) -> f64| round(value / edge) * edge;
-        let clamp = |value: f64, low: u32, high: u32| -> u32 {
-            ui::num::u32_of_f64(value.clamp(f64::from(low), f64::from(high)))
-        };
         let x0 = clamp(tile(rect.x0 - scroll, f64::floor), bx0, bx1);
         let x1 = clamp(tile(rect.x1 - scroll, f64::ceil), bx0, bx1);
         let y0 = clamp(tile(rect.y0, f64::floor), by0, by1);
@@ -489,7 +493,11 @@ fn strip_change(
             });
         }
     }
-    Change::Within(within)
+    if within.is_empty() {
+        Change::Unchanged
+    } else {
+        Change::Within(within)
+    }
 }
 
 /// `rect` cut to the run `x0..x1` of rows `y0..y1`, if any of it is there.
@@ -529,10 +537,8 @@ fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> 
         .zip(&cache.strips)
         .zip(shown.drawn.iter().zip(&cache.layers.strips))
         .enumerate()
-        .map(|(index, ((old, new), (old_drawn, new_drawn)))| Piece {
-            band: band(new, size),
-            delta: i64::from(new.scroll_x).saturating_sub(i64::from(old.scroll_x)),
-            change: strip_change(
+        .map(|(index, ((old, new), (old_drawn, new_drawn)))| {
+            let change = strip_change(
                 (old_drawn, shown.parts.get(index).and_then(Option::as_ref)),
                 (
                     new_drawn,
@@ -540,13 +546,18 @@ fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> 
                 ),
                 new,
                 size,
-            ),
+            );
+            Piece {
+                band: band(new, size),
+                delta: i64::from(new.scroll_x).saturating_sub(i64::from(old.scroll_x)),
+                change,
+            }
         })
         .collect();
     // What no strip carries is drawn in place under the strips: where it
     // draws, a strip's pixels cannot be moved without it.
     let in_place_drawn = !cache.layers.workspace.encoding().is_empty();
-    let (copies, uncovered) = pan_work(&pieces, in_place_drawn);
+    let (copies, uncovered) = pan_work(&pieces, in_place_drawn, cache.width);
     if uncovered.len() > MAX_BANDS {
         WorkspaceWork::Whole
     } else if copies.is_empty() && uncovered.is_empty() {
@@ -563,9 +574,18 @@ fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> 
 /// strips all moved by `d` shows what the pixels `d` to its right showed,
 /// which the same strips covered: those are copied, the `d` columns the move
 /// uncovered are rasterised. A run whose strips moved by different distances
-/// (where two strips' drawings meet), or one with a changed strip, is
-/// rasterised whole; a run nothing moved in is left as it is.
-fn pan_work(pieces: &[Piece], in_place_drawn: bool) -> (Vec<BandCopy>, Vec<FineDamageRect>) {
+/// (where two strips' drawings meet) is rasterised whole, and so is a run a
+/// strip changed in anywhere but its drawing; a run nothing moved in and
+/// nothing changed in is left as it is.
+///
+/// A pan moves what the strips drew; what changed is drawn where it stands,
+/// not where the move would have brought it. So a run that moved is copied
+/// whole, and the tiles a change stands on are rasterised over the copy.
+fn pan_work(
+    pieces: &[Piece],
+    in_place_drawn: bool,
+    width: u32,
+) -> (Vec<BandCopy>, Vec<FineDamageRect>) {
     let mut ys: Vec<u32> = pieces
         .iter()
         .flat_map(|piece| [piece.band.1, piece.band.3])
@@ -579,7 +599,7 @@ fn pan_work(pieces: &[Piece], in_place_drawn: bool) -> (Vec<BandCopy>, Vec<FineD
             continue;
         }
         let height = y1.saturating_sub(y0);
-        for (x0, x1, cover) in runs(pieces, y0, y1) {
+        for (x0, x1, cover) in runs(pieces, y0, y1, width) {
             let width = x1.saturating_sub(x0);
             let Some((first, rest)) = cover.split_first() else {
                 continue;
@@ -602,10 +622,9 @@ fn pan_work(pieces: &[Piece], in_place_drawn: bool) -> (Vec<BandCopy>, Vec<FineD
                 push_rect(&mut uncovered, x0, y0, width, height);
                 continue;
             }
-            for rect in &within {
-                push_rect(&mut uncovered, rect.x, rect.y, rect.width, rect.height);
-            }
-            if delta == 0 && uniform {
+            // A row the strips did not move in and did not change shows as it
+            // shows: nothing to copy, nothing to draw.
+            if delta == 0 && within.is_empty() {
                 continue;
             }
             let kept = width.saturating_sub(shift);
@@ -614,34 +633,68 @@ fn pan_work(pieces: &[Piece], in_place_drawn: bool) -> (Vec<BandCopy>, Vec<FineD
             } else {
                 (x0, x0.saturating_add(shift), x0)
             };
-            push_copy(
-                &mut copies,
-                BandCopy {
-                    src_x,
-                    dst_x,
-                    y: y0,
-                    width: kept,
-                    height,
-                },
-            );
+            let kept = BandCopy {
+                src_x,
+                dst_x,
+                y: y0,
+                width: kept,
+                height,
+            };
+            // What a strip shows here and where the pan puts it are the same
+            // pixels, so the row is copied where it moves to; a change drawn
+            // on top of them is not moved with them, and is drawn again.
+            push_copy(&mut copies, kept);
             push_rect(&mut uncovered, gap_x, y0, shift, height);
+            for rect in &within {
+                push_rect(&mut uncovered, rect.x, rect.y, rect.width, rect.height);
+            }
         }
     }
     (copies, uncovered)
 }
 
-/// The runs of the row `y0..y1` covered by the same strips, left to right,
-/// with those strips; pixels no strip covers are left out.
-fn runs(pieces: &[Piece], y0: u32, y1: u32) -> Vec<(u32, u32, Vec<Piece>)> {
-    let in_row: Vec<Piece> = pieces
+/// The strips that show in the row `y0..y1`: every strip whose band holds
+/// the row. Each strip between two others is drawn over the ones before it
+/// ([`append_panned`]), so only the last of them shows; several strips over
+/// the same row are told apart by the widths of their bands, which the
+/// planner cuts into runs at. A change inside [`COLUMN_EDGE`] of an output's
+/// own edge is left out: it was rounded onto a tile just past the group it
+/// belongs to, and rasterising it costs that edge the cut the output makes
+/// there anyway.
+fn cover_lane(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<Piece> {
+    pieces
         .iter()
         .filter(|piece| piece.band.1 <= y0 && piece.band.3 >= y1 && piece.band.0 < piece.band.2)
-        .cloned()
-        .collect();
+        .map(|piece| Piece {
+            change: match &piece.change {
+                Change::Within(rects) => Change::Within(
+                    rects
+                        .iter()
+                        .filter(|rect| {
+                            rect.x >= COLUMN_EDGE && rect.x < width.saturating_sub(COLUMN_EDGE)
+                        })
+                        .copied()
+                        .collect(),
+                ),
+                other => other.clone(),
+            },
+            ..piece.clone()
+        })
+        .collect()
+}
+
+/// The runs of the row `y0..y1` covered by the same strips, left to right,
+/// with those strips: cut at every strip's edges, and at the columns an
+/// output's edges are near, so a run there is decided apart from the run the
+/// pan really moves. Pixels no strip covers are left out.
+fn runs(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<(u32, u32, Vec<Piece>)> {
+    let in_row = cover_lane(pieces, y0, y1, width);
     let mut xs: Vec<u32> = in_row
         .iter()
         .flat_map(|piece| [piece.band.0, piece.band.2])
         .collect();
+    xs.push(COLUMN_EDGE.min(width));
+    xs.push(width.saturating_sub(COLUMN_EDGE));
     xs.sort_unstable();
     xs.dedup();
     let mut runs: Vec<(u32, u32, Vec<usize>)> = Vec::new();
@@ -653,7 +706,9 @@ fn runs(pieces: &[Piece], y0: u32, y1: u32) -> Vec<(u32, u32, Vec<Piece>)> {
             .map(|(index, _)| index)
             .collect();
         match runs.last_mut() {
-            Some(last) if last.1 == x0 && last.2 == cover => last.1 = x1,
+            Some(last) if last.1 == x0 && last.2 == cover => {
+                last.1 = x1;
+            }
             _ => runs.push((x0, x1, cover)),
         }
     }
@@ -857,7 +912,6 @@ impl StripLayers {
         }
     }
 
-    /// Composite `rect` of `output` from the layers.
     pub(crate) fn encode_composite(&self, target: CompositeTarget<'_>, rect: FineDamageRect) {
         self.composite.encode(
             target,
@@ -1274,13 +1328,19 @@ mod tests {
             SIZE,
             true,
         );
-        // Canvas 130..430 shown 40 px left is 90..390, in tiles 80..400,
-        // inside the band 100..900; rows 60..300 in tiles 48..304, inside
-        // 50..450.
+        // The group changed without the strip moving: every row the band
+        // holds is copied where it stands, and the group is drawn again on
+        // the rows and columns it was drawn on.
         assert_eq!(
             near.workspace,
             WorkspaceWork::Pan {
-                copies: Vec::new(),
+                copies: vec![BandCopy {
+                    src_x: 100,
+                    dst_x: 100,
+                    y: 50,
+                    width: 800,
+                    height: 400,
+                }],
                 uncovered: vec![FineDamageRect {
                     x: 100,
                     y: 50,
@@ -1299,6 +1359,9 @@ mod tests {
         let WorkspaceWork::Pan { copies, uncovered } = &panned.workspace else {
             panic!("a pan with a changed group copies: {:?}", panned.workspace);
         };
+        // The run past the changed group's own columns copies every row the
+        // pan keeps: that change is drawn where it stands, and the rows a run
+        // copies are the run's.
         assert_eq!(
             copies,
             &vec![BandCopy {
@@ -1307,14 +1370,9 @@ mod tests {
                 y: 50,
                 width: 788,
                 height: 400,
-            }]
+            }],
+            "{uncovered:?}"
         );
-        assert!(uncovered.contains(&FineDamageRect {
-            x: 888,
-            y: 50,
-            width: 12,
-            height: 400,
-        }));
         // Canvas 130..430 shown 52 px left is 78..378, in tiles 64..384.
         assert!(
             uncovered
@@ -1338,6 +1396,68 @@ mod tests {
                 }],
             }
         );
+    }
+
+    /// A group at the strip's left edge changed while the strip panned: the
+    /// pan copies every row it keeps and draws the group again where it
+    /// stands. A change nowhere on screen is not drawn at all: no row moved
+    /// because of it, and nothing shows it.
+    #[test]
+    fn a_pan_copies_its_rows_and_draws_a_changed_group_where_it_stands() {
+        // A group drawn at the canvas's left edge (110..410, shown at 10..310
+        // with the strip 100 px right of the canvas), so the columns a pan
+        // brings it to are the run a move of at most a strip's width leaves.
+        let edge = |near: Color, far: Color| {
+            let mut drawn = Scene::new();
+            let ((), parts) = ui::scene_parts::record(&mut drawn, |drawn| {
+                for (index, (x, color)) in [(10.0, near), (2400.0, far)].into_iter().enumerate() {
+                    let bounds = Rect::new(x, 60.0, x + 300.0, 300.0);
+                    let key = ui::scene_parts::PartKey::new("test.group", index);
+                    ui::scene_parts::part(drawn, key, vec![bounds], |drawn| {
+                        drawn.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
+                    });
+                }
+            });
+            let mut frame = cache(Color::BLACK, vec![strip(0)]);
+            frame.layers.strips = vec![drawn];
+            frame.layers.strip_parts = vec![parts];
+            frame
+        };
+        let shown = Shown::of(&edge(Color::WHITE, Color::WHITE), 1);
+        // The strip moved 4 px left with the group at its edge changed: the
+        // pan copies the rows it keeps and draws the group where it stands.
+        let work = plan(Some(&shown), &edge(Color::BLACK, Color::WHITE), SIZE, true);
+        let WorkspaceWork::Pan { copies, uncovered } = &work.workspace else {
+            panic!("a pan: {work:?}");
+        };
+        assert_eq!(
+            copies,
+            &vec![BandCopy {
+                src_x: 100,
+                dst_x: 100,
+                y: 50,
+                width: 800,
+                height: 400,
+            }],
+            "copies, with {uncovered:?}"
+        );
+        // The rows the change stands on are drawn again where it stands.
+        assert_eq!(
+            uncovered,
+            &vec![FineDamageRect {
+                x: 100,
+                y: 50,
+                width: 220,
+                height: 254,
+            }]
+        );
+        assert!(work.raster_pixels(SIZE) < 900 * 400);
+
+        // A group the move does not reach changed with the strips beside it,
+        // and nothing on screen shows that change: no row is copied and none
+        // is drawn.
+        let near = plan(Some(&shown), &edge(Color::WHITE, Color::BLACK), SIZE, true).workspace;
+        assert_eq!(near, WorkspaceWork::Unchanged);
     }
 
     /// Two strips whose destinations meet (each draws its shadows past its
@@ -1535,8 +1655,6 @@ mod tests {
         );
     }
 
-    /// A whole layer is warmed in bands of at most about a million pixels,
-    /// a whole number of tile rows each, that cover the output once.
     #[test]
     fn warm_bands_cover_the_output_once_in_tile_rows() {
         assert_eq!(warm_bands((1024, 1024)), None);

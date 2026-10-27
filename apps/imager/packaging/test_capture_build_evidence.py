@@ -34,7 +34,7 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
             'target': {'name': 'tilo-launcher', 'kind': ['bin']},
             'profile': {'test': False}, 'executable': str(target), 'fresh': True}
         self.assertEqual(PRODUCER.select_artifact([row], 'launcher'), (row, target))
-        self.assertEqual(QUALIFIER.BINDINGS['launcher'], '/usr/bin/tilo-launcher')
+        self.assertEqual(QUALIFIER.BINDINGS['launcher'], '/usr/libexec/tilo/tilo-launcher')
         self.assertEqual(QUALIFIER.TARGETS['launcher'], 'tilo-launcher')
         self.assertEqual(QUALIFIER.PACKAGES['launcher'], 'crates/packaging/launcher')
         row['manifest_path'] = str(PRODUCER.ROOT / 'unrelated/Cargo.toml')

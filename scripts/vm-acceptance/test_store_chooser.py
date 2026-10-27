@@ -117,7 +117,7 @@ class ChooserSafety(unittest.TestCase):
                 vm.control_json("actions", "list", "file-picker", "--json")
             args = run.call_args.args
             self.assertEqual(args[:3], ("slot", "exec", "--"))
-            self.assertIn("/usr/bin/tilo-control", args)
+            self.assertIn("/usr/libexec/tilo/tilo-control", args)
             self.assertIn("/run/user/1000/tilo-session/admin-control.sock", args)
             self.assertEqual(args[3:6], ("env", "-u", "TILO_TEST_CONTROL"))
             self.assertNotIn("--actor", args)

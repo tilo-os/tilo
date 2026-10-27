@@ -9,7 +9,7 @@
 //! the host advertises [`ServiceCapabilities::app_serving`](crate::ServiceCapabilities::app_serving).
 //! Without one, the capability stays off and such frames are refused as
 //! undeliverable — all but the governance of the rooms the relay governs,
-//! which it answers itself ([`crate::rooms::GovernedPlane`]).
+//! which it answers itself (`crate::rooms::GovernedPlane`).
 
 use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
 

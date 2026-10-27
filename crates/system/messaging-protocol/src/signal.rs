@@ -56,9 +56,6 @@ pub struct Acknowledgment {
 }
 
 /// Decode one matching send response without interpreting it as delivery.
-///
-/// # Errors
-/// Refuses oversized/malformed frames, mismatched IDs and remote errors.
 pub fn acknowledgment(frame: &[u8], operation: &str) -> Result<Acknowledgment, Error> {
     let value = decode(frame)?;
     if value.get("id").and_then(Value::as_str) != Some(operation) {

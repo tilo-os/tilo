@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_sort::CompactSort as _;
 use vello::kurbo::Rect;
 
 /// Directory of live `*.json` screen graphs. When set, graph apps load and
@@ -180,15 +181,15 @@ impl UiValues {
 impl fmt::Debug for UiValues {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut paths: Vec<String> = self.texts.borrow().keys().cloned().collect();
-        paths.sort_unstable();
+        paths.compact_sort();
         let mut routes: Vec<String> = self.routes.borrow().keys().cloned().collect();
-        routes.sort_unstable();
+        routes.compact_sort();
         let mut clicks: Vec<String> = self.clicks.borrow().keys().cloned().collect();
-        clicks.sort_unstable();
+        clicks.compact_sort();
         let mut booleans: Vec<String> = self.booleans.borrow().keys().cloned().collect();
-        booleans.sort_unstable();
+        booleans.compact_sort();
         let mut bool_routes: Vec<String> = self.bool_routes.borrow().keys().cloned().collect();
-        bool_routes.sort_unstable();
+        bool_routes.compact_sort();
         formatter
             .debug_struct("UiValues")
             .field("paths", &paths)
@@ -215,7 +216,7 @@ pub struct UiBuildContext {
 impl fmt::Debug for UiBuildContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut components: Vec<_> = self.components.keys().collect();
-        components.sort_unstable();
+        components.compact_sort();
         formatter
             .debug_struct("UiBuildContext")
             .field("router", &self.router)
@@ -303,17 +304,9 @@ impl From<UiTextRole> for TextRole {
 /// Compile a validated serialized graph into ordinary Tilo widgets.
 pub trait UiDocumentExt {
     /// Build the retained widget subtree represented by this graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns a schema validation error before any widget is constructed.
     fn build(&self, theme: &Theme) -> Result<Element, UiGraphError>;
 
     /// Build with process-local services such as screen navigation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a schema validation error before any widget is constructed.
     fn build_with(&self, theme: &Theme, context: &UiBuildContext) -> Result<Element, UiGraphError>;
 }
 
@@ -821,10 +814,6 @@ const UI_GRAPH_HISTORY_LIMIT: usize = 100;
 
 impl UiGraphHandle {
     /// Create a live handle after validating its complete source graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns the graph's validation error.
     pub fn new(document: UiDocument) -> Result<Self, UiGraphError> {
         document.validate()?;
         Ok(Self {
@@ -841,10 +830,6 @@ impl UiGraphHandle {
     }
 
     /// Parse and validate a live graph handle from JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JSON or graph validation error.
     pub fn from_json(source: &str) -> Result<Self, UiGraphError> {
         Self::new(UiDocument::from_json(source)?)
     }
@@ -852,10 +837,6 @@ impl UiGraphHandle {
     /// Load a screen from the host's live graph directory when one is set,
     /// otherwise from the embedded source. The native runner fills that
     /// directory from `TILO_UI_GRAPH_DIR`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JSON, I/O, or graph validation error.
     pub fn from_embedded_or_live(screen: &str, embedded: &str) -> Result<Self, UiGraphError> {
         if let Some(dir) = crate::host::environment().ui_graph_dir.clone() {
             let path = dir.join(format!("{screen}.json"));
@@ -868,10 +849,6 @@ impl UiGraphHandle {
     ///
     /// Successful in-process edits are written back to the same path so the
     /// builder, `tilo-app ui apply`, and the running app share one document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O, JSON, or graph validation error.
     pub fn open_live(path: impl Into<PathBuf>) -> Result<Self, UiGraphError> {
         let path = path.into();
         let source = std::fs::read_to_string(&path)
@@ -923,10 +900,6 @@ impl UiGraphHandle {
     ///
     /// External edits become the new history baseline. Returns `true` when the
     /// in-memory document changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O, JSON, lock, or validation error.
     pub fn poll_live_source(&self) -> Result<bool, UiGraphError> {
         let path = {
             let state = self.inner.read().map_err(|_| UiGraphError::Poisoned)?;
@@ -970,10 +943,6 @@ impl UiGraphHandle {
     }
 
     /// Apply a batch of tagged edits and persist when this handle is live.
-    ///
-    /// # Errors
-    ///
-    /// Returns a lock, edit, validation, or I/O error.
     pub fn apply_edits(&self, edits: Vec<UiGraphEdit>) -> Result<(), UiGraphError> {
         self.edit(|candidate| candidate.apply_edits(edits))
     }
@@ -992,10 +961,6 @@ impl UiGraphHandle {
     }
 
     /// Serialize the current source document as formatted JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock or serialization error.
     pub fn to_json_pretty(&self) -> Result<String, UiGraphError> {
         self.document()?.to_json_pretty()
     }
@@ -1014,10 +979,6 @@ impl UiGraphHandle {
     }
 
     /// Validate and atomically replace the complete source graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns a validation or graph lock error.
     pub fn replace(&self, document: UiDocument) -> Result<(), UiGraphError> {
         document.validate()?;
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
@@ -1133,11 +1094,6 @@ impl UiGraphHandle {
 
     /// Mutate one source node, validate the complete candidate graph, then
     /// publish it atomically. A failed edit leaves the live graph unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock, unknown-node, concurrent-edit, or validation
-    /// error.
     pub fn update_node(
         &self,
         id: &str,
@@ -1161,11 +1117,6 @@ impl UiGraphHandle {
     ///
     /// This is intended for property typing and drag gestures; use
     /// [`Self::update_node`] for discrete operations.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock, unknown-node, concurrent-edit, or validation
-    /// error.
     pub fn update_node_grouped(
         &self,
         id: &str,
@@ -1233,19 +1184,11 @@ impl UiGraphHandle {
     }
 
     /// Compile the live graph into ordinary retained widgets.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph validation or widget-construction error.
     pub fn widget(&self, theme: &Theme) -> Result<LiveUi, UiGraphError> {
         self.widget_with(theme, UiBuildContext::default())
     }
 
     /// Build a live graph with process-local services such as routing.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph validation or widget-construction error.
     pub fn widget_with(
         &self,
         theme: &Theme,
@@ -1555,7 +1498,10 @@ fn filling() -> Style {
 }
 
 impl Widget for LiveUi {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -1597,7 +1543,9 @@ impl Widget for LiveUi {
                 .is_some_and(|revision| revision != self.seen_revision)
             || self.child.needs_idle_sync()
     }
+}
 
+impl crate::widget::ResourceOperations for LiveUi {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "tilo.ui.graph.dump",
@@ -1660,10 +1608,6 @@ pub struct UiGraphEditor {
 
 impl UiGraphEditor {
     /// Build an editor around an existing live graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock, validation, or widget-construction error.
     pub fn new(handle: UiGraphHandle, theme: Theme) -> Result<Self, UiGraphError> {
         let document = handle.document()?;
         let graph_revision = handle.revision().unwrap_or_default();
@@ -3183,6 +3127,20 @@ impl crate::undo::LocalUndo for UiGraphEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Replace `path`'s contents and move its mtime a second on, so the
+    /// change is seen on a filesystem whose timestamps are coarser than the
+    /// time between two writes.
+    fn rewrite(path: &std::path::Path, contents: impl AsRef<[u8]>) {
+        let before = std::fs::metadata(path).unwrap().modified().unwrap();
+        std::fs::write(path, contents).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(before + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
     use crate::a11y::{Action, Role};
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
@@ -3299,7 +3257,6 @@ mod tests {
                 .is_none(),
             "the input never writes the document"
         );
-        // What every input over the path shows is the app's value.
         title.set("Atlas II".to_owned());
         Widget::sync(root.as_mut(), &doc, &ROOT);
         assert_eq!(
@@ -4014,16 +3971,13 @@ mod tests {
         .unwrap();
         let handle = UiGraphHandle::open_live(&path).unwrap();
         let before = handle.to_json_pretty().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(&path, "{not-valid-graph").unwrap();
+        rewrite(&path, "{not-valid-graph");
         assert!(handle.poll_live_source().is_err());
         assert_eq!(handle.to_json_pretty().unwrap(), before);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(
+        rewrite(
             &path,
             r#"{"version":1,"root":{"type":"button","id":"title","label":"","accessibleName":null}}"#,
-        )
-        .unwrap();
+        );
         assert!(handle.poll_live_source().is_err());
         assert_eq!(handle.to_json_pretty().unwrap(), before);
     }
@@ -4087,13 +4041,10 @@ mod tests {
                 ..
             }) if value == "Before"
         ));
-        // Ensure the filesystem mtime advances on coarse clocks.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(
+        rewrite(
             &path,
             r#"{"version":1,"root":{"type":"text","id":"title","text":{"source":"static","value":"After"},"role":"title"}}"#,
-        )
-        .unwrap();
+        );
         assert!(handle.poll_live_source().unwrap());
         assert!(matches!(
             handle.node("title"),

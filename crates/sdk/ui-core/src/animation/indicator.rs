@@ -66,7 +66,6 @@ mod tests {
         assert_eq!(indicator_step(epoch, mid), 1);
         assert_eq!(indicator_elapsed(epoch, mid), INDICATOR_STEP);
         assert_eq!(next_indicator_step(epoch, mid), epoch + INDICATOR_STEP * 2);
-        // A frame inside one step shows the same pose as the step's start.
         let early = epoch + INDICATOR_STEP + Duration::from_millis(1);
         assert_eq!(
             indicator_elapsed(epoch, early),

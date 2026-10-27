@@ -5,6 +5,10 @@
 //! catalogue and stores it in the person's `shortcuts` section the
 //! compositor reads; a chord it refuses leaves the binding as it was and
 //! says why.
+//!
+//! "Paste in apps" is the other shortcut the person sets here: the chord
+//! the shell pastes with in an app (an image or files chosen from clipboard
+//! history). An app is chosen with the shell's app chooser, never typed.
 
 use std::collections::HashMap;
 
@@ -24,9 +28,14 @@ use winit::event::WindowEvent;
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
+use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, SettingsSection, note, rows, section, setting_row};
+use crate::widgets::{Item, SettingsSection, note, rows, section, section_action, setting_row};
+use settings_store::paste_shortcut::{PasteShortcut, default_for};
+use ui::shell_choosers::ChosenApp;
+
+crate::effects::effect_family!(ShortcutEffect => answer);
 
 /// The shell's desktop navigation preferences, as the person's settings
 /// hold them.
@@ -69,6 +78,10 @@ pub enum ShortcutEffect {
         #[param("The chord, such as `Super+K` or `Ctrl+Alt+T`")]
         chord: String,
     },
+    /// Choose an app with the shell's app chooser, to set how the shell
+    /// pastes in it.
+    #[effect(job, label = "Choose an app to set how it pastes")]
+    ChoosePasteApp,
 }
 
 /// Answer `effect`: a chord the catalogue refuses changes nothing and the
@@ -76,10 +89,31 @@ pub enum ShortcutEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: ShortcutEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     let host = app.host();
     match effect {
+        ShortcutEffect::ChoosePasteApp => {
+            let purpose = t("settings-paste-choose-purpose");
+            Ok(crate::device_read::job(
+                cx,
+                move || choose_app(&purpose),
+                |app: &mut SettingsApp, chosen: Result<Option<ChosenApp>, String>, _| {
+                    // Chose none: nothing changes.
+                    let Some(chosen) = chosen? else {
+                        return Ok(Effected::done());
+                    };
+                    remember_app_name(&chosen);
+                    let settings = app.host().settings::<InputPrefs>();
+                    let mut input = settings.get();
+                    add_paste_app(&mut input, &chosen)?;
+                    settings
+                        .set(&input)
+                        .map(|()| Effected::done())
+                        .map_err(|error| format!("the input settings could not be saved: {error}"))
+                },
+            ))
+        }
         ShortcutEffect::BindShortcut { shortcut, chord } => {
             let action = ShortcutAction::from_id(&shortcut)
                 .ok_or_else(|| format!("`{shortcut}` is not a shortcut that can be changed"))?;
@@ -96,6 +130,58 @@ pub(crate) fn answer(
             Ok(Effected::done())
         }
     }
+}
+
+/// The app the person chooses in the shell's app chooser for `purpose`;
+/// `None` when they choose none. Blocks until they choose: run it off the
+/// UI thread.
+fn choose_app(purpose: &str) -> Result<Option<ChosenApp>, String> {
+    let link =
+        ui::shell_choosers::ShellLink::inherited().ok_or_else(|| t("settings-paste-no-chooser"))?;
+    let (chosen_tx, chosen) = std::sync::mpsc::channel();
+    link.choose_app(purpose, move |outcome| {
+        let _ = chosen_tx.send(outcome);
+    });
+    chosen.recv().map_err(|_| t("settings-paste-no-chooser"))?
+}
+
+/// Set how the shell pastes in `app`, chosen to paste differently from
+/// what its id suggests: the other of Ctrl+V and Ctrl+Shift+V. One already
+/// set keeps its choice.
+fn add_paste_app(input: &mut InputPrefs, app: &ChosenApp) -> Result<(), String> {
+    if input
+        .paste_shortcuts
+        .keys()
+        .any(|id| id.eq_ignore_ascii_case(&app.id))
+    {
+        return Ok(());
+    }
+    let other = match default_for(&app.id) {
+        PasteShortcut::CtrlV => PasteShortcut::CtrlShiftV,
+        PasteShortcut::CtrlShiftV => PasteShortcut::CtrlV,
+    };
+    input.set_paste_shortcut(&app.id, other.id())
+}
+
+thread_local! {
+    /// The names of the apps chosen in the app chooser this session, by id:
+    /// what their rows are titled.
+    static APP_NAMES: std::cell::RefCell<HashMap<String, String>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn remember_app_name(app: &ChosenApp) {
+    APP_NAMES.with(|names| {
+        names.borrow_mut().insert(app.id.clone(), app.name.clone());
+    });
+}
+
+/// The name the person knows the app with id `id` by: the one the app
+/// chooser answered with, else what its id spells.
+fn app_name(id: &str) -> String {
+    APP_NAMES
+        .with(|names| names.borrow().get(id).cloned())
+        .unwrap_or_else(|| package_store::display_name_for_package_id(id))
 }
 
 /// Every rebindable action, in catalogue order.
@@ -172,6 +258,8 @@ pub struct ShortcutPane {
     /// The last chord refused, and why.
     refused: LocalState<Option<ui::framework::Refused>>,
     refusal_shown: Option<String>,
+    /// The person's input preferences: how the shell pastes in each app.
+    input: Followed<InputPrefs>,
     structure_dirty: bool,
     composed: ui::widget::Composed,
 }
@@ -183,6 +271,7 @@ impl ShortcutPane {
         ui::keycaps::set_active(active_keycaps(&document));
         let config = ShortcutConfig::from_section(document.section(SHORTCUTS_SECTION));
         let controls = cx.follow::<DesktopControls>();
+        let input = cx.follow::<InputPrefs>();
         let chords = rebindable()
             .map(|action| (action, LocalState::new(String::new())))
             .collect();
@@ -194,6 +283,7 @@ impl ShortcutPane {
             controls,
             chords,
             refusal_shown: None,
+            input,
             structure_dirty: false,
             composed: ui::widget::Composed::default(),
         };
@@ -259,13 +349,7 @@ impl ShortcutPane {
                     if let Some(reason) = &self.refusal_shown {
                         body.push(note(reason));
                     }
-                    body.push(
-                        self.cx
-                            .row(t("settings-shortcuts-vim"))
-                            .id("shortcuts.vim_mode")
-                            .of(&self.controls, DesktopControls::paths().vim_mode)
-                            .toggle(),
-                    );
+                    body.push(vim_mode(&self.cx, &self.controls));
                     body.push(note(&app_tab_chords_note()));
                 }
                 body.extend(
@@ -289,8 +373,91 @@ impl ShortcutPane {
             actions.push(note(&t("settings-shortcuts-actions-caption")));
             cards.push(section(&t("settings-shortcuts-actions"), rows(actions)));
         }
+        cards.push(self.paste_card());
         crate::widgets::page(cards)
     }
+
+    /// "Paste in apps": a row per app the person set, choosing Ctrl+V or
+    /// Ctrl+Shift+V, and the app chooser to add one.
+    fn paste_card(&self) -> SettingsSection {
+        let shortcuts = [PasteShortcut::CtrlV, PasteShortcut::CtrlShiftV];
+        let label = |shortcut: PasteShortcut| {
+            t(match shortcut {
+                PasteShortcut::CtrlV => "input-paste-ctrl-v",
+                PasteShortcut::CtrlShiftV => "input-paste-ctrl-shift-v",
+            })
+        };
+        let mut body = vec![note(&t("input-paste-caption"))];
+        let mut apps: Vec<(String, String)> = self
+            .input
+            .get()
+            .paste_shortcuts
+            .iter()
+            .map(|(id, shortcut)| (id.clone(), shortcut.clone()))
+            .collect();
+        apps.sort_by_cached_key(|(id, _)| app_name(id).to_lowercase());
+        for (index, (id, stored)) in apps.into_iter().enumerate() {
+            let name = app_name(&id);
+            let current = PasteShortcut::parse(&stored).unwrap_or(PasteShortcut::CtrlV);
+            let app = id.clone();
+            let segments = ui::widget::ToggleGroup::from_state(
+                shortcuts
+                    .iter()
+                    .map(|shortcut| (*shortcut, ui::widget::Segment::new(label(*shortcut))))
+                    .collect(),
+                &LocalState::new(current),
+            )
+            .with_id(format!("shortcuts.paste.{index}"))
+            .with_accessible_name(t_args(
+                "settings-paste-shortcut-for",
+                &[("app", name.as_str().into())],
+            ));
+            let segments = self.cx.bind(
+                segments,
+                effect(crate::panes::mouse_keyboard::InputEffect::SET_PASTE_SHORTCUT).map(
+                    move |chosen: usize| {
+                        let shortcut = shortcuts.get(chosen).copied().unwrap_or(current);
+                        (app.clone(), shortcut.id().to_owned())
+                    },
+                ),
+            );
+            let remove = self.cx.bind_invocation(
+                ui::widget::primitives::IconButton::regular(
+                    &format!("shortcuts.paste.{index}.remove"),
+                    ui::icons::Icon::X,
+                    &t_args("settings-paste-remove", &[("app", name.as_str().into())]),
+                ),
+                crate::panes::mouse_keyboard::InputEffect::SetPasteShortcut {
+                    app: id,
+                    shortcut: "default".into(),
+                },
+            );
+            body.push(setting_row(
+                &name,
+                Box::new(
+                    ui::widget::Row::new()
+                        .no_wrap()
+                        .with_align_items(taffy::AlignItems::Center)
+                        .with_rhythm(ui::tokens::Rhythm::Related)
+                        .push(Box::new(segments))
+                        .push(Box::new(remove)),
+                ),
+            ));
+        }
+        let choose = self.cx.bind_invocation(
+            ui::widget::Button::new("shortcuts.paste.choose", &t("settings-paste-choose"))
+                .with_icon(ui::icons::Icon::Plus),
+            ShortcutEffect::ChoosePasteApp,
+        );
+        section_action(&t("settings-paste-title"), choose, rows(body))
+    }
+}
+
+pub(crate) fn vim_mode(cx: &PaneCx, controls: &Followed<DesktopControls>) -> Item {
+    cx.row(t("settings-shortcuts-vim"))
+        .id("shortcuts.vim_mode")
+        .of(controls, DesktopControls::paths().vim_mode)
+        .toggle()
 }
 
 impl Widget for ShortcutPane {
@@ -320,6 +487,9 @@ impl Widget for ShortcutPane {
             self.show();
         }
         self.controls.refresh();
+        if self.input.refresh() {
+            self.structure_dirty = true;
+        }
         self.composed.sync(state, root);
     }
 
@@ -465,5 +635,74 @@ mod tests {
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
         assert_eq!(pane.chords[&ShortcutAction::Search].get(), "Super+j");
+    }
+
+    #[test]
+    fn an_app_is_chosen_for_its_paste_shortcut_never_typed() {
+        fn find<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+            if widget.test_id() == Some(id) {
+                return Some(widget);
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| find(child, id))
+        }
+        fn named(widget: &dyn Widget, name: &str) -> usize {
+            usize::from(widget.name() == name)
+                + widget
+                    .children()
+                    .into_iter()
+                    .map(|child| named(child, name))
+                    .sum::<usize>()
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let settings = cx.storage().settings::<InputPrefs>();
+        let mut input = settings.get();
+        input
+            .set_paste_shortcut("org.example.Writer", "ctrl_shift_v")
+            .unwrap();
+        settings.set(&input).unwrap();
+        let pane = ShortcutPane::new(cx);
+        let composed = pane.composition();
+        let said = crate::widgets::announced_text(composed.as_ref());
+        assert!(said.iter().any(|line| line == "Paste in apps"), "{said:#?}");
+        assert!(
+            find(composed.as_ref(), "shortcuts.paste.choose").is_some(),
+            "an app is added with the app chooser"
+        );
+        assert_eq!(
+            named(composed.as_ref(), "TextInput"),
+            0,
+            "no app id is typed"
+        );
+        assert!(said.iter().any(|line| line == "Writer"), "{said:#?}");
+
+        let mut input = InputPrefs::default();
+        let terminal = ChosenApp {
+            id: "org.example.Terminal".into(),
+            name: "Terminal".into(),
+            window_ids: vec!["org.example.Terminal".into()],
+        };
+        add_paste_app(&mut input, &terminal).unwrap();
+        assert_eq!(
+            input
+                .paste_shortcuts
+                .get("org.example.Terminal")
+                .map(String::as_str),
+            Some("ctrl_v")
+        );
+        input
+            .set_paste_shortcut("org.example.Terminal", "ctrl_shift_v")
+            .unwrap();
+        add_paste_app(&mut input, &terminal).unwrap();
+        assert_eq!(
+            input
+                .paste_shortcuts
+                .get("org.example.Terminal")
+                .map(String::as_str),
+            Some("ctrl_shift_v")
+        );
     }
 }

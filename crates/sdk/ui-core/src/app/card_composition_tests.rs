@@ -168,7 +168,16 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             phase: TouchPhase::Moved,
         };
         assert!(send_widget_then_host_fallback(&mut app, &wheel));
-        layout_in(&mut app, 480, 360);
+        // Pulled past the end, the content gives; let go, it springs back
+        // to the end.
+        let lifted = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 0.0)),
+            phase: TouchPhase::Ended,
+        };
+        send_widget_then_host_fallback(&mut app, &lifted);
+        let rested = crate::time::now() + std::time::Duration::from_secs(5);
+        crate::time::testing::with_monotonic_time(rested, || layout_in(&mut app, 480, 360));
         let after = app
             .inspect_node(final_node, |widget| widget.get_rect())
             .unwrap();

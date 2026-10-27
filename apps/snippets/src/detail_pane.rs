@@ -1,11 +1,10 @@
 //! The content column: the open snippet's language, folder and tags, what it
-//! is for, its main action, and its body in the code editor; and the two
-//! actions the column's header holds (favorite, more).
+//! is for, its main action, and its body in the code editor. Its favorite,
+//! duplicate and delete are the window bar's (`app::window_bar`).
 //!
 //! Every control is the toolkit's retained widget, so focus, keyboard
 //! activation, pressed states and tooltips are the toolkit's. The column is
-//! rebuilt (through `NavShell::set_content`) when what it shows changes;
-//! the header actions follow the open snippet in place.
+//! rebuilt (through `NavShell::set_content`) when what it shows changes.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -21,10 +20,10 @@ use ui::theme::Theme;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Button, ButtonRole, Chip, ChipLead, Column, ControlSize, Dropdown, Element,
-    EmptyState, ModelPath, Row, Text, Widget,
+    EmptyState, ModelPath, Row, TextInput, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use crate::app::{Action, Core, Requests, Shared};
@@ -61,25 +60,13 @@ impl DetailKey {
             library_empty: core.library.is_empty(),
         }
     }
-
-    /// Whether a snippet is open.
-    pub(crate) fn has_snippet(&self) -> bool {
-        self.snippet.is_some()
-    }
 }
 
 /// Build the content column for what `core` has open.
 pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     let key = DetailKey::of(&core.borrow());
     if key.library_empty {
-        // A fresh library: the one thing to do is create a snippet.
-        return Box::new(EmptyAction {
-            state: EmptyState::new(tr("snippets-empty-library"))
-                .with_icon(Icon::Code)
-                .with_action(tr("snippets-new"))
-                .with_action_id("snippets.library.new-snippet"),
-            requests: Rc::clone(requests),
-        });
+        return empty_library(requests);
     }
     let Some((id, language, folder, tags, description, templated)) = key.snippet else {
         return Box::new(EmptyState::new(tr("snippets-none-selected")).with_icon(Icon::Code));
@@ -122,13 +109,15 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             .with_accessible_name(format!("Folder: {folder}"));
         if let Some(reveal) = reveal(
             Snippets::folder_place(folder.clone()),
-            SnippetsView::RevealFolder { folder },
+            SnippetsView::RevealFolder {
+                folder: folder.clone(),
+            },
         ) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
     }
-    for tag in tags {
+    for tag in tags.iter() {
         let mut chip = Chip::new(tag.clone())
             .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
             .with_accessible_name(format!("Tag: {tag}"));
@@ -140,15 +129,35 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         }
         facts = facts.push(Box::new(chip));
     }
-    let mut about = Column::new()
+    let about = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .push(Box::new(facts));
-    if !description.trim().is_empty() {
-        about = about.push(Box::new(
-            Text::new(&description).with_role(TextRole::Body).dimmed(),
-        ));
-    }
+        .push(Box::new(name_field(core, requests, &id)))
+        .push(Box::new(facts))
+        // What the snippet is for, and which folder it is filed under: both
+        // are the library's organising model, so both are editable where the
+        // snippet is read rather than only when it is created.
+        .push(Box::new(field(
+            core,
+            requests,
+            &id,
+            "description",
+            "snippets-description",
+            "snippets-description-placeholder",
+            &description,
+            Action::SetDescription as fn(SnippetId, String) -> Action,
+        )))
+        .push(Box::new(field(
+            core,
+            requests,
+            &id,
+            "folder",
+            "snippets-folder",
+            "snippets-folder-placeholder",
+            &folder,
+            Action::SetFolder as fn(SnippetId, String) -> Action,
+        )))
+        .push(Box::new(tag_editor(core, requests, &id, &tags)));
     let about = about.with_rhythm(Rhythm::Sibling);
 
     // The main action: copy, through the fill-in dialog when the body has
@@ -165,7 +174,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             }),
         )
         .role(ButtonRole::Primary)
-        .on_effect(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
+        .on_own_device_effect(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
     };
 
     Box::new(
@@ -181,150 +190,118 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     )
 }
 
-/// A button that acts on the open snippet, from the header row.
-fn open_snippet_button(
+/// A fresh library: what a snippet is for, and the one thing to do, create
+/// one.
+fn empty_library(requests: &Requests) -> Element {
+    Box::new(EmptyAction {
+        state: EmptyState::new(tr("snippets-empty-library"))
+            .with_icon(Icon::Code)
+            .with_message(tr("snippets-empty-library-message"))
+            .with_action(tr("snippets-new"))
+            .with_action_id("snippets.library.new-snippet"),
+        requests: Rc::clone(requests),
+    })
+}
+
+/// The open snippet's name, edited in place: a new snippet starts
+/// untitled, and nothing else renames it.
+fn name_field(core: &Shared, requests: &Requests, id: &SnippetId) -> TextInput {
+    let title = core
+        .borrow()
+        .library
+        .get(id)
+        .map(|snippet| snippet.title.clone())
+        .unwrap_or_default();
+    let requests = Rc::clone(requests);
+    let renamed = id.clone();
+    TextInput::local()
+        .with_id(&format!("snippets.snippet:{id}.title"))
+        .with_accessible_name(tr("snippets-name"))
+        .with_placeholder("snippets-untitled")
+        .with_initial_value(&title)
+        .on_change(move |title| {
+            requests
+                .borrow_mut()
+                .push(Action::Rename(renamed.clone(), title.to_owned()));
+        })
+}
+
+/// A single-line field of the snippet's own facts, committing on every
+/// change: the title's editor, for the fields that are not the title.
+fn field(
     core: &Shared,
     requests: &Requests,
-    button: Button,
-    action: fn(SnippetId) -> Action,
-) -> Button {
-    let core = Rc::clone(core);
+    id: &SnippetId,
+    name: &str,
+    accessible: &str,
+    placeholder: &str,
+    value: &str,
+    make: fn(SnippetId, String) -> Action,
+) -> TextInput {
+    let initial = value.to_owned();
     let requests = Rc::clone(requests);
-    button.on_effect(move || {
-        if let Some(id) = core.try_borrow().ok().and_then(|core| core.open.clone()) {
-            requests.borrow_mut().push(action(id));
-        }
-    })
+    let changed = id.clone();
+    let _ = core;
+    TextInput::local()
+        .with_id(&format!("snippets.snippet:{id}.{name}"))
+        .with_accessible_name(&tr(accessible))
+        .with_placeholder(placeholder)
+        .with_initial_value(&initial)
+        .on_change(move |text| {
+            requests
+                .borrow_mut()
+                .push(make(changed.clone(), text.to_owned()));
+        })
 }
 
-/// The content header's actions: the open snippet's favorite toggle and
-/// overflow menu, or none while no snippet is open.
-pub(crate) fn header_actions(core: &Shared, requests: &Requests, open: bool) -> Vec<Element> {
-    if open {
-        vec![favorite_button(core, requests), more_button(core, requests)]
-    } else {
-        Vec::new()
+/// The snippet's tags, each removable, and a field to add one: the sidebar
+/// groups the library by these, so they are the snippet's to change.
+fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String]) -> Column {
+    let mut row = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Sibling);
+    for tag in tags.iter() {
+        let requests = Rc::clone(requests);
+        let removed = id.clone();
+        let name = tag.clone();
+        let remove = Button::icon_only(
+            &format!("snippets.snippet:{id}.tag:{tag}.remove"),
+            Icon::X,
+            &format!("Remove the tag {tag}"),
+        )
+        .control_size(ControlSize::Small)
+        .on_own_device_effect(move || {
+            requests
+                .borrow_mut()
+                .push(Action::RemoveTag(removed.clone(), name.clone()));
+        });
+        row = row.push(Box::new(
+            Row::new()
+                .push(Box::new(
+                    Chip::new(tag.clone()).with_accessible_name(format!("Tag: {tag}")),
+                ))
+                .push(Box::new(remove)),
+        ));
     }
-}
-
-/// The header's favorite toggle for the open snippet: a star that reads as
-/// on while the snippet is a favorite.
-fn favorite_button(core: &Shared, requests: &Requests) -> Element {
-    let button = Button::icon_only("snippets.favorite", Icon::Star, &tr("snippets-favorite"));
-    Box::new(Anchored {
-        button: open_snippet_button(core, requests, button, Action::ToggleFavorite),
-        core: Rc::clone(core),
-        part: Part::Favorite,
-        shown: None,
-    })
-}
-
-/// The header's overflow button: the open snippet's less frequent actions.
-fn more_button(core: &Shared, requests: &Requests) -> Element {
-    let button = Button::icon_only(
-        "snippets.more",
-        Icon::MoreHorizontal,
-        &tr("snippets-more-actions"),
-    );
-    Box::new(Anchored {
-        button: open_snippet_button(core, requests, button, Action::More),
-        core: Rc::clone(core),
-        part: Part::More,
-        shown: None,
-    })
-}
-
-/// Which of the header's buttons an [`Anchored`] is.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Part {
-    Favorite,
-    More,
-}
-
-/// One of the header's buttons that the core follows: the favorite toggle
-/// reads the snippet's state, and the overflow button tells the core where
-/// it is, so its menu opens under it.
-struct Anchored {
-    button: Button,
-    core: Shared,
-    part: Part,
-    /// The (enabled, on) state last applied.
-    shown: Option<(bool, bool)>,
-}
-
-impl Anchored {
-    fn refresh(&mut self) {
-        let Ok(core) = self.core.try_borrow() else {
-            return;
-        };
-        let open = core.open.as_ref().and_then(|id| core.library.get(id));
-        let state = (open.is_some(), open.is_some_and(|s| s.favorite));
-        drop(core);
-        if self.shown == Some(state) {
-            return;
-        }
-        self.shown = Some(state);
-        let (enabled, on) = state;
-        self.button.set_enabled(enabled);
-        if self.part == Part::Favorite {
-            self.button.set_toggled(on);
-            self.button.set_tooltip(Some(tr(if on {
-                "snippets-remove-favorite"
-            } else {
-                "snippets-add-favorite"
-            })));
-        }
-    }
-}
-
-impl ui::widget::Decorator for Anchored {
-    type Inner = Button;
-
-    fn inner(&self) -> &Button {
-        &self.button
-    }
-
-    fn inner_mut(&mut self) -> &mut Button {
-        &mut self.button
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.refresh();
-        Widget::sync(&mut self.button, state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.refresh();
-        Widget::update(&mut self.button, state, path)
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.button, taffy, theme, node_map);
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        Widget::apply_layout(&mut self.button, taffy, node, origin);
-        let rect = Widget::get_rect(&self.button);
-        if self.part == Part::More
-            && let Ok(mut core) = self.core.try_borrow_mut()
-        {
-            core.more_anchor = rect;
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self.part {
-            Part::Favorite => "SnippetFavorite",
-            Part::More => "SnippetMore",
-        }
-    }
+    let requests_add = Rc::clone(requests);
+    let added = id.clone();
+    let add = TextInput::local()
+        .with_id(&format!("snippets.snippet:{id}.new-tag"))
+        .with_accessible_name(&tr("snippets-add-tag"))
+        .with_placeholder(tr("snippets-add-tag-placeholder"))
+        .on_change(move |text| {
+            // Committed as the field is typed into and cleared by the app
+            // once the tag is in, the way a tag entry field behaves.
+            let tag = text.trim();
+            if !tag.is_empty() {
+                requests_add
+                    .borrow_mut()
+                    .push(Action::AddTag(added.clone(), tag.to_owned()));
+            }
+        });
+    let _ = core;
+    row.push(Box::new(add))
 }
 
 /// The language picker; it opens when the core asks for it (the palette's

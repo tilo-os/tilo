@@ -126,6 +126,8 @@ files-replica-counts = Kept on { $durable } other { $durable ->
    *[other] devices
 }
 files-transfer-state = Transfer: { $state }
+files-unavailable = Unavailable
+files-unavailable-offline = Unavailable until a device that keeps it is online
 files-transfer-idle = idle
 files-transfer-queued = queued
 files-transfer-downloading = downloading
@@ -304,6 +306,7 @@ files-history-current-version-label = Current version
 
 ## Accessible collaborative state
 files-a11y-transfer-failed = Transfer failed
+files-a11y-unavailable = Unavailable until a device that keeps it is online
 files-a11y-transfer-queued = Transfer queued
 files-a11y-downloading = Downloading
 files-a11y-uploading = Uploading
@@ -395,9 +398,6 @@ files-place-music = Music
 files-place-videos = Videos
 
 ## List, empty/error state and accessibility
-files-column-name = Name
-files-column-size = Size
-files-column-modified = Modified
 files-try-again = Try again
 files-loading = Loading…
 files-loading-folder = Loading { $path }
@@ -507,21 +507,20 @@ files-new-from-template = New { $name }
 files-drag-items = { $count } items
 
 ## Archives
-files-archive-extract = Extract archive…
+files-archive-extract = Extract
 files-archive-extract-here = Extract here
-files-archive-compress = Compress to ZIP
 files-archive-select-compress = Select files or folders to compress
 files-archive-read-only = Archives are read-only until extracted
-files-archive-select = Select a ZIP, TAR, or TAR.GZ archive to extract
-files-archive-extracted =
-    { $count ->
-        [one] Extracted 1 file
-       *[other] Extracted { $count } files
-    }
-files-archive-extracted-partial = Extracted { $count } files; { $failures }
-files-archive-extract-failed = Could not extract archive: { $error }
-files-archive-created = Created { $name }
-files-archive-create-failed = Could not create archive: { $error }
+files-archive-select = Select an archive to extract
+files-archive-extract-to = Extract to…
+files-archive-extract-to-title = Extract to
+files-archive-extract-to-accept = Extract here
+files-archive-extract-to-closed = The folder chooser closed without answering
+files-archive-extract-failed-title = Couldn’t extract
+files-archive-extract-failed-named = Couldn’t extract “{ $name }”
+files-archive-compress-zip = Compress to ZIP
+files-archive-compress-tar-zst = Compress to TAR.ZST
+files-archive-create-failed-title = Couldn’t compress
 
 ## File-operation validation
 files-folder-name-empty = Folder name cannot be empty
@@ -661,7 +660,8 @@ file-explorer-import-mounted = Created independent editable copies in { $folder 
 ## Notices
 files-notice-undo = Undo
 files-notice-open-with = Open With…
-files-notice-dismiss = Dismiss
+files-notice-try-again = Try again
+files-notice-open-history = Open Version history
 files-menu-undo = Undo
 files-open-failed = Couldn’t open “{ $name }”
 files-open-unavailable = Files can’t open documents in this window.
@@ -691,6 +691,11 @@ files-moving = Moving { $count } { $count ->
     [one] item
    *[other] items
 } to “{ $folder }”
+files-extracting = Extracting “{ $folder }”
+files-compressing = Compressing { $count } { $count ->
+    [one] item
+   *[other] items
+} in “{ $folder }”
 files-transfer-progress = { $done } of { $total }
 files-transfer-stopped = Stopped
 files-clash-title-one = “{ $name }” already exists in “{ $folder }”
@@ -701,3 +706,16 @@ files-clash-keep-both = Keep both
 files-clash-replace = Replace
 files-preview-detail = { $what }, modified { $modified }
 files-drop-nowhere = Open a folder to drop files into it.
+files-place-applications = Applications
+files-empty-applications = No apps yet
+files-menu-uninstall = Uninstall
+files-menu-remove-from-apps = Remove from apps
+files-applications-not-a-folder = Applications is not a folder; open one to add files
+files-applications-not-a-file = Apps can only be opened or uninstalled here
+files-applications-gone = This app is no longer in your apps.
+files-applications-failed = Could not reach your apps: { $error }
+files-app-kind-tilo = Tilo app
+files-app-kind-flatpak = Flatpak
+files-app-kind-appimage = AppImage
+files-app-kind-program = Program
+files-app-kind-system = System

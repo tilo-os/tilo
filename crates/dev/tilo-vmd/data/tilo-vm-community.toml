@@ -1,0 +1,7 @@
+# The community site of a dev slot's session (tilo-vm-session@.service sets
+# TILO_COMMUNITY_CONFIG to this file, installed as
+# /usr/share/tilo/tilo-vm-community.toml): none. A slot runs a throwaway test
+# identity and joins no public site, whatever the image's own community.toml
+# or the host's /etc/tilo/community.toml name; a check that needs a site
+# starts a room service of its own (crates/hosting/tilo-room-service/dev/run.py).
+site = ""

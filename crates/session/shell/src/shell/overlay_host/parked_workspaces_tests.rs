@@ -1,4 +1,3 @@
-//! A workspace switched away from is kept, and a switch back puts it back.
 use super::parked_workspaces::KEPT_WORKSPACES;
 use super::*;
 use crate::shell::state::{
@@ -63,6 +62,7 @@ fn stub_group(id: u64) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: format!("G{id}"),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,

@@ -262,6 +262,17 @@ def describe_painters(by: dict[str, int]) -> str:
     return ", ".join(f"{label} {n}" for label, n in by.items())
 
 
+def loop_wakes(rows: list[dict]) -> dict[str, int]:
+    """Loop ticks by what ended the park before them (the trace's `wake` column): `io`
+    for a readable fd (a client, input, a worker ping), else the deadline that fired.
+    An idle loop over budget names its waker without the window's trace file."""
+    out: dict[str, int] = {}
+    for r in rows:
+        label = str(r.get("wake") or "") or "unrecorded"
+        out[label] = out.get(label, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def named_threads(sample: dict, names: tuple[str, ...], seconds: float) -> list[dict]:
     """Every thread called one of `names` in any of the slot user's processes over the
     window, summed per process and name: its CPU and context switches. A thread started
@@ -298,6 +309,7 @@ def measure(ctx, seconds: int, name: str | None = None, threads: tuple[str, ...]
         "seconds": seconds,
         **summarize(sample, seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
+        "loop_woke_by": loop_wakes(rows),
         "frames_painted": len(painted),
         "painted_by": painters(painted),
         **({"named_threads": named_threads(sample, threads, seconds)} if threads else {}),
@@ -737,7 +749,9 @@ def _budget_problems(m, budgets, prefix, software=False):
         problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}"
                         + (f" ({why})" if why else ""))
     if m["shell_loop_ticks_per_s"] > budgets["idle_loop_ticks_per_s"]:
-        problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s")
+        woke = describe_painters(m.get("loop_woke_by") or {})
+        problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s"
+                        + (f" (woken by {woke})" if woke else ""))
     if m["user_cpu_pct_total"] > budgets[f"{prefix}_user_cpu_pct"]:
         top = ", ".join(f"{p['comm']} {p['cpu_pct']}%" for p in m["top"][:4])
         problems.append(f"session CPU {m['user_cpu_pct_total']}% > {budgets[f'{prefix}_user_cpu_pct']}% ({top})")
@@ -1043,6 +1057,7 @@ def frame_work(ctx, res):
         ctx.new_terminal_window()
     time.sleep(2)
     mark = core.trace_mark(ctx)
+    evidence_mark, cpu_before = core.session_log_mark(ctx), core.cpu_ticks(ctx)
     for _ in range(3):
         ctx.vm.key("super+Tab")
         time.sleep(0.8)
@@ -1080,10 +1095,13 @@ def frame_work(ctx, res):
             problems.append(f"frame CPU {pct} {st[f'cpu_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
         if display.get("hardware") and st[f"work_ms_{pct}"] > b[f"work_ms_{pct}"]:
             problems.append(f"frame wall time {pct} {st[f'work_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
-    expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+    where = f" [renderer: {ctx.facts.get('renderer')}]"
+    if problems:
+        where += core.frame_pacing_evidence(ctx, "R04", evidence_mark, cpu_before)
+    expect(not problems, "; ".join(problems) + where)
 
 
-# -- the installed-desktop gates of build-image.yml, on this run's VM -------------
+# -- the installed-desktop gates of os-acceptance-{arch}, on this run's VM ---------
 
 # Test tooling the image does not ship: the run copies it from the checkout into the guest.
 BOOT_GATE = Path(__file__).resolve().parents[4] / "os/tests/boot_performance_gate.sh"
@@ -1287,7 +1305,7 @@ RENDER_UNOBSERVABLE = ("no session flight record", "the compositor logged no DRM
 def render_gate(ctx, res):
     """The release gate's render check on this run's session: direct GPU scanout where
     the renderer shares the scanout GPU, and every DRM render phase and the painted
-    frames' main-thread work within the budgets build-image.yml holds a KVM guest to."""
+    frames' main-thread work within the budgets os-acceptance-{arch} holds a KVM guest to."""
     b = ctx.config["budgets"]
     text = ctx.vm.exec(f"{RENDER_REPORT} --render-gate --render-budget-ms {b['render_frame_ms']} "
                        f"--frame-work-budget-ms {b['render_frame_work_ms']} 2>&1; echo GATE-EXIT=$?",
@@ -1481,7 +1499,7 @@ home_peer_bundle = "$d/home-peer.toml"
 iroh_listen = "127.0.0.1:__PORT__"
 TOML
 systemd-run --user --quiet --collect --unit=__UNIT__ --service-type=notify -p TimeoutStartSec=60 \
-  /usr/bin/tilo-relay --config "$d/relay.toml" run
+  /usr/libexec/tilo/tilo-relay --config "$d/relay.toml" run
 echo "HOME-RELAY started"
 """
 
@@ -1625,7 +1643,8 @@ def invoke_settled(ctx, provider: str, action: str, args: dict, timeout: float =
 
 def _select_workspace(ctx, wid) -> None:
     if ctx.state()["workspace_tree"]["active"] != wid:
-        ctx.vm.invoke("actions", f"workspace.select.{wid}")
+        room = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
+        ctx.vm.invoke("actions", f"workspace.select.{room}")
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 

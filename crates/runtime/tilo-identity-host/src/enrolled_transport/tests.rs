@@ -545,7 +545,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
         });
     }
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;

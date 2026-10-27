@@ -166,11 +166,6 @@ impl KnownHostStore {
 
 /// Explicitly trust the exact fingerprint shown by a failed first-contact
 /// check. A changed key is never overwritten: callers must forget it first.
-///
-/// # Errors
-///
-/// Returns an error for an insecure/corrupt trust store or when the target
-/// already has a different trusted key.
 pub fn trust_host_key(
     store: &KnownHostStore,
     host: &str,
@@ -240,11 +235,6 @@ fn verify_known_host(
 /// password; key auth uses the first of the usual `~/.ssh` identities that
 /// exists, unlocked with the connection's saved passphrase if it has one.
 /// Credentials come from this device's secret store, never the document.
-///
-/// # Errors
-///
-/// Returns an error if key auth is requested and no default identity file
-/// exists, or if password auth is requested and no password is saved.
 pub fn resolve_auth(
     prefer_key: bool,
     secret: Option<String>,
@@ -360,11 +350,6 @@ impl SshSession {
     }
 
     /// Send keystrokes to the remote PTY.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when input is empty, too large, the bounded queue is
-    /// full, or the session worker has stopped.
     pub fn send_input(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.queue_input(InputMessage { bytes, ack: None })
     }
@@ -372,10 +357,6 @@ impl SshSession {
     /// Queue bytes and receive an acknowledgement only after russh has
     /// accepted them on the live channel. Resource actions use this instead
     /// of mistaking insertion into the UI→worker queue for delivery.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the input worker has already stopped.
     pub fn send_input_ack(
         &self,
         bytes: Vec<u8>,
@@ -590,8 +571,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     #[test]
     fn auth_resolution_reads_saved_secrets_and_default_keys() {
@@ -822,12 +802,11 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
     #[test]
     fn real_ssh_round_trip_over_loopback() {
-        // Stand up the server, bind an ephemeral port, and serve in the bg.
         let port = ui::rt::app()
             .block_on(async {
                 let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
                 let config = Arc::new(server::Config {
-                    inactivity_timeout: Some(Duration::from_secs(30)),
+                    inactivity_timeout: None,
                     auth_rejection_time: Duration::from_millis(50),
                     keys: vec![host_key],
                     ..Default::default()
@@ -867,9 +846,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         })
         .expect("the mock ssh transport connects");
 
-        // Poll to Connected.
         let mut connected = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
@@ -882,9 +860,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         }
         assert!(connected, "client never reached Connected");
 
-        // Drain the banner into the grid.
         let mut saw_banner = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
@@ -911,7 +888,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {

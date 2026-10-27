@@ -135,7 +135,6 @@ fn duplicate_playlist_or_invalid_member_refuses_atomically() {
         if invalid == "member" {
             let list = doc.get(ROOT, "playlists").unwrap().unwrap().1;
             let row = doc.get(&list, 0).unwrap().unwrap().1;
-            // A typed patch deliberately represents the historical malformed scalar.
             fixtures::InvalidMembership {
                 track_membership: [("tk_a1".into(), Atom("not a boolean".into()))].into(),
             }
@@ -198,15 +197,19 @@ fn opening_a_retained_profile_migrates_and_restores_live_player_actions() {
     use ui::framework::testing::TestApp;
     use ui::record::{RecordId, RecordKind};
 
+    // A retained profile kept the library in the record of the window that
+    // opened it; the app now keeps it in the workspace's one record, which
+    // adopts what that window record held.
     let mut doc = populated_legacy_library();
-    let record = RecordId::room_default();
+    let window = RecordId::room_default();
     assert!(ui::record::init_scoped(
         &mut doc,
-        &record,
+        &window,
         &RecordKind::new(Library::KIND),
         "test-workspace",
         Some("test-workspace"),
     ));
+    let record = RecordId::package_primary();
     let mut app = TestApp::<crate::MusicShell>::launched_replica(&[], &mut doc).unwrap();
     assert_eq!(app.record(), &record);
     assert_eq!(

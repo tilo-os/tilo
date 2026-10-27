@@ -44,10 +44,6 @@ pub enum ChannelError {
 
 impl Channel {
     /// Both ends of a new channel, close-on-exec.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses the socket pair.
     pub fn pair() -> io::Result<(Self, Self)> {
         let (a, b) = rustix::net::socketpair(
             AddressFamily::UNIX,
@@ -79,16 +75,7 @@ impl Channel {
         self.socket.as_fd()
     }
 
-    /// The socket, for the broker to hand over.
-    pub fn into_socket(self) -> OwnedFd {
-        self.socket
-    }
-
     /// Send `message` with `fds`.
-    ///
-    /// # Errors
-    ///
-    /// When the message does not encode, is too large, or the send fails.
     pub fn send<T: Serialize>(
         &self,
         message: &T,

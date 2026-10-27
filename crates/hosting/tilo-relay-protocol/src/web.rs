@@ -15,8 +15,9 @@
 //! | `/node` | — | [`NodeInfo`] |
 //! | `/certify` | `CertificationRequest` | `CertifyReply` |
 //! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
-//! | `/session` | [`Hello`] | [`SessionChallenge`]; `403` [`SessionRefusal`] |
+//! | `/session` | [`Hello`](crate::auth::Hello) | [`SessionChallenge`]; `403` [`SessionRefusal`] |
 //! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`]; `403` [`SessionRefusal`] |
+//! | `/session/end` ([`SESSION_END_PATH`]) | the session token, lowercase hex text | `204` |
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
@@ -28,7 +29,15 @@
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
+//! | `/private` ([`PRIVATE_PATH`](crate::rooms::private::PRIVATE_PATH)) | [`PrivateCall`](crate::rooms::private::PrivateCall) | [`PrivateReply`](crate::rooms::private::PrivateReply) (a watch long-polls) |
 //! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
+//! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
+//!
+//! `/fetch` is the host's fetch proxy, offered when the session grant
+//! carries [`FEATURE_FETCH_PROXY`]: an admitted member's page reads, through
+//! its host, the sites that send no CORS headers. Unlike every other route it
+//! takes the method of the request it relays, and its session token in
+//! [`SESSION_HEADER`] as the others do.
 //!
 //! `/workspace-join` is the host's workspace join exchange, the one its
 //! iroh endpoint serves on the workspace-join ALPN, for a native device that
@@ -54,6 +63,11 @@
 //! the handshake carry the session token in
 //! [`SESSION_HEADER`] (lowercase hex). A `401` means the session is gone:
 //! the device runs the handshake again, resubscribes and resends its outbox.
+//!
+//! `/session/end` takes its token as the body instead, so a page that is
+//! going away can say so with `navigator.sendBeacon`, which sends no
+//! headers of its own: the host ends that session at once rather than when
+//! its polls stop, and the people in the room stop counting the page.
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +78,8 @@ use crate::auth::{HelloAck, HelloAck2};
 pub const API_PREFIX: &str = "/peer/v1";
 /// Header carrying the session token.
 pub const SESSION_HEADER: &str = "x-tilo-session";
+/// Where a page ends its session as it leaves, the token its body.
+pub const SESSION_END_PATH: &str = "/session/end";
 /// Header carrying the install token of a host awaiting its certificate.
 pub const INSTALL_TOKEN_HEADER: &str = "x-tilo-install-token";
 /// The route that installs a waiting host's certificate.
@@ -72,7 +88,6 @@ pub const INSTALL_ROUTE: &str = "/install";
 /// What a waiting host says about itself on `GET /install` (JSON).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallInfo {
-    /// The host's device key, hex.
     pub device_public_key: String,
     /// On a node, the session that runs the person's apps and agents beside
     /// the host.
@@ -83,7 +98,6 @@ pub struct InstallInfo {
 /// The device key of the session beside a node, vouched for by the node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeSession {
-    /// The session's device key, hex.
     pub device_public_key: String,
     /// The node's device key's Ed25519 signature over
     /// [`node_session_message`], hex. A page that got the node's key out of
@@ -105,7 +119,6 @@ pub fn node_session_message(node: &[u8; 32], session: &[u8; 32]) -> Vec<u8> {
 /// `certifyDevice` resolves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallCertificates {
-    /// The host's certificate.
     pub certificate: String,
     /// The session's certificate, when the host has one beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,7 +128,6 @@ pub struct InstallCertificates {
 /// A waiting host's answer to an accepted `/install` (JSON).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installed {
-    /// The host's device key, hex.
     pub device_public_key: String,
     /// The identity it now serves, hex.
     pub user_public_key: String,
@@ -214,7 +226,7 @@ pub struct NodeInfo {
     pub session: Option<[u8; 32]>,
 }
 
-/// The host's answer to a session [`Hello`].
+/// The host's answer to a session [`Hello`](crate::auth::Hello).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionChallenge {
     /// The same [`HelloAck`] the relay stream answers with.
@@ -305,12 +317,15 @@ pub const FEATURE_VOICE: u64 = 4;
 /// (`/rooms`, `/join`; see [`crate::rooms`]).
 pub const FEATURE_ROOMS: u64 = 8;
 
+/// The host serves its members' pages a fetch proxy at [`FETCH_PATH`]
+/// (`tilo_net::proxy`, wire protocol v1).
+pub const FEATURE_FETCH_PROXY: u64 = 16;
+
+/// The host's fetch proxy, below [`API_PREFIX`].
+pub const FETCH_PATH: &str = "/fetch";
+
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits.
-///
-/// # Errors
-///
-/// Returns an error if postcard fails to encode.
 pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, postcard::Error> {
     let mut bytes = postcard::to_allocvec(grant)?;
     bytes.extend(postcard::to_allocvec(&features)?);
@@ -319,10 +334,6 @@ pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, post
 
 /// Decode a `/session/finish` answer into the grant and the host's feature
 /// bits.
-///
-/// # Errors
-///
-/// Returns an error if the grant or the feature bits do not decode.
 pub fn decode_grant(bytes: &[u8]) -> Result<(SessionGrant, u64), postcard::Error> {
     let (grant, rest) = postcard::take_from_bytes::<SessionGrant>(bytes)?;
     Ok((grant, postcard::from_bytes(rest)?))
@@ -416,7 +427,6 @@ pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
 /// The record whose channel's content keys a spectator asks for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelKeysRequest {
-    /// The record's app.
     pub app_id: String,
     /// The room (the record's cluster).
     pub room: String,
@@ -573,6 +583,10 @@ pub struct HerePerson {
     pub generated: bool,
     /// When the line last changed, Unix milliseconds.
     pub updated_ms: u64,
+    /// When the person last changed the profile this host keeps for them
+    /// (their name and picture), Unix milliseconds; 0 when it keeps none.
+    /// A page fetches the profile again when it changes.
+    pub profile_ms: u64,
 }
 
 #[cfg(test)]

@@ -55,29 +55,33 @@ case $group in
         2> "$out/fs-gate-$run.log" || status=$?
       TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
         2>> "$out/fs-gate-$run.log" || status=$?
-      grep '^PERF\| PERF ' "$out/fs-gate-$run.log" || true
+      # The gates' assertion messages name the scenario that failed.
+      grep '^PERF\| PERF \|exceeded \|panicked at' "$out/fs-gate-$run.log" || true
     done
     env_json dev none kvm > "$out/env.json"
     python3 tools/perf/adapters.py fs-gate --env-json "$out/env.json" "$out"/fs-gate-*.log > "$out/fs.jsonl"
     exit "$status"
     ;;
   agent)
-    cargo build --locked --release -p shell --bin shell --features dev-overrides
+    cargo build --locked --release -p shell --bin shell --bin tilo-runtime-mcp \
+      --example agent_task_desktop --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"
     bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
       --spawn "$target/release/shell" --samples 1000 --warmup 100 \
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
+    # A whole task as an agent in the login runs it: a scripted, streamed
+    # model at 0 ms think time, through tilo-runtime-mcp and the agent door.
+    bash tools/with-test-environment.sh python3 scripts/perf/agent_task.py \
+      --spawn "$target/release/shell" --repetitions 30 --warmup 3 \
+      --transport "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO" \
+      --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/task-compositor.log" \
+      --client-log "$out/task-client.log"
     env_json release none kvm > "$out/env-pipeline.json"
-    TILO_AGENT_PIPELINE_REPS=30 TILO_AGENT_PIPELINE_SAMPLES="$out/pipeline" \
-      cargo test --locked --release -p agent --lib pipelined_task_benchmark -- --nocapture
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
       cargo test --locked --release -p agent --lib native_task_benchmark -- --nocapture
     for plan in pipelined sequential; do
-      python3 tools/perf/record.py emit --kpi "agent.task.${plan}.wall" --unit ms \
-        --samples-file "$out/pipeline/${plan}.txt" --env-json "$out/env-pipeline.json" \
-        --meta steps=3 --meta step_ms=100 >> "$out/agent.jsonl"
       python3 tools/perf/record.py emit --kpi "agent.task.native.${plan}.wall" --unit ms \
         --samples-file "$out/native/${plan}.txt" --env-json "$out/env-pipeline.json" \
         --meta steps=3 --meta step_ms=100 >> "$out/agent.jsonl"
@@ -92,9 +96,13 @@ case $group in
     python3 tools/perf/record.py env --profile release --renderer none --virtualization none \
       --runner none --hardware "apps.tilo.so registry index" > "$out/env.json"
     python3 tools/perf/adapters.py tapp-sizes --env-json "$out/env.json" "$out/entries.json" > "$out/footprint.jsonl"
+    # The registry serves the last release until the next one publishes, so its packages are
+    # held to the budgets of the commit that built them, fetched from the forge.
+    release=(--git-dir "$TMPDIR/release.git" --fetch-from https://code.tilo.so/tilo/tilo.git)
     status=0
-    python3 tools/perf/tapp_size_ratchet.py fleet "$out/entries.json" --summary "$out/summary.md" || status=1
-    python3 tools/perf/runtime_size_ratchet.py published "$out/entries.json" \
+    python3 tools/perf/tapp_size_ratchet.py fleet "$out/entries.json" "${release[@]}" \
+      --summary "$out/summary.md" || status=1
+    python3 tools/perf/runtime_size_ratchet.py published "$out/entries.json" "${release[@]}" \
       --measurements "$out/runtime.json" --summary "$out/summary.md" || status=1
     [[ -s $out/runtime.json ]] || exit 1
     python3 tools/perf/adapters.py runtime-sizes --env-json "$out/env.json" "$out/runtime.json" \
@@ -107,7 +115,7 @@ case $group in
       https://code.tilo.so/tilo/tilo.git "$TMPDIR/history.git"
     status=0
     for arch in x86_64 aarch64; do
-      python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+      python3 tools/perf/image_size.py --dev-base "registry.tilo.so/tilo/tilo-vm:$arch-ci" \
         --arch "$arch" --records "$out/image-$arch.jsonl" --runner none \
         --update-from-previous 'main-{sha7}-{arch}' --git-dir "$TMPDIR/history.git" \
         --json "$out/image-size-$arch.json" --markdown "$out/image-size-$arch.md" > /dev/null || status=1
@@ -131,15 +139,19 @@ case $group in
     env_json release lavapipe kvm > "$out/env.json"
     python3 scripts/perf/render_bench.py timing "$examples/ui-perf" "$examples/redraw_bench" \
       --env-json "$out/env.json" --out "$out" --strip-pan-bench "$examples/strip_pan_bench" \
-      --records "$out/render.jsonl"
+      --records "$out/render.jsonl" || status=$?
     for plan in "5000,50000 open framework-open" "5000 scroll framework-scroll" "500,1000,2500 focus framework-focus"; do
       read -r sizes action adapter <<< "$plan"
-      "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log"
-      python3 tools/perf/adapters.py "$adapter" --env-json "$out/env.json" "$out/$adapter.log" >> "$out/render.jsonl"
+      "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log" || status=$?
+      python3 tools/perf/adapters.py "$adapter" --env-json "$out/env.json" "$out/$adapter.log" >> "$out/render.jsonl" || status=$?
     done
-    "$examples/notes-latency" | tee "$out/notes-latency.log"
-    python3 tools/perf/adapters.py notes-latency --env-json "$out/env.json" "$out/notes-latency.log" >> "$out/render.jsonl"
-    python3 scripts/perf/render_bench.py counters "$examples/ui-perf" --out "$out/counters"
+    "$examples/notes-latency" | tee "$out/notes-latency.log" || status=$?
+    python3 tools/perf/adapters.py notes-latency --env-json "$out/env.json" "$out/notes-latency.log" >> "$out/render.jsonl" || status=$?
+    python3 scripts/perf/render_bench.py counters "$examples/ui-perf" --out "$out/counters" || status=$?
+    # A benchmark that fails is reported by its own exit status, and its group
+    # still compares the records the others left: a pipeline's last command is
+    # what a shell reports, so each step keeps its own.
+    exit "$status"
     ;;
   wakeups)
     cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
@@ -148,7 +160,12 @@ case $group in
     for run in 1 2 3; do
       TILO_IDLE_SHELL_BIN="$target/debug/shell" TILO_IDLE_WAKEUP_WINDOW_SECS=60 \
         bash tools/test-env.sh "$target/debug/examples/idle-wakeups" > "$out/idle-$run.log" 2>&1 || status=$?
-      grep -A40 '^idle wakeups over' "$out/idle-$run.log" || tail -n 40 "$out/idle-$run.log"
+      # The report: every thread's row, the frame loop and what was logged.
+      if grep -q '^IDLE-WAKEUPS ' "$out/idle-$run.log"; then
+        sed -n '/^idle wakeups over/,/^IDLE-WAKEUPS /p' "$out/idle-$run.log"
+      else
+        tail -n 40 "$out/idle-$run.log"
+      fi
     done
     env_json dev lavapipe kvm > "$out/env.json"
     python3 tools/perf/adapters.py idle-wakeups --env-json "$out/env.json" "$out"/idle-*.log > "$out/wakeups.jsonl"
@@ -158,11 +175,15 @@ case $group in
     cargo test --locked -p shell --lib --no-run
     status=0
     for run in 1 2 3 4 5; do
-      TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p shell --lib \
+      TILO_SEARCH_PERF_GATE=1 TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p shell --lib \
         shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild \
         -- --exact --nocapture --test-threads=1 > "$out/files-name-index-$run.log" 2>&1 || status=$?
       grep 'FILES-NAME-INDEX' "$out/files-name-index-$run.log" || true
     done
+    TILO_SEARCH_PERF_GATE=1 bash tools/test-env.sh cargo test --locked -p shell --lib \
+      against_the_full_index_only_searches_it -- --nocapture --test-threads=1 > "$out/palette-keystroke.log" 2>&1 \
+      || status=$?
+    grep 'keystrokes: median' "$out/palette-keystroke.log" || tail -n 40 "$out/palette-keystroke.log"
     env_json dev none kvm > "$out/env.json"
     python3 tools/perf/adapters.py files-name-index --env-json "$out/env.json" "$out"/files-name-index-*.log \
       > "$out/search.jsonl"
@@ -180,9 +201,19 @@ case $group in
   hosting-room)
     cargo build --locked --release -p tilo-room-load --features tilo-relay/agents
     env_json release none kvm > "$out/env.json"
+    # t sizes TOKIO_WORKER_THREADS by the cores a job is given, which may be more than it asks
+    # for; the series was measured with a runtime worker per core of a 40-CPU quota.
+    # The host's state lives on memory. On the node's shared overlay disk a durable commit
+    # waits for every other job's writes: with the node's load average past 1000, single
+    # commits took up to 15 s and a quarter of the guests had no Ready within 60 s, while
+    # the same build on memory, in the same job, joined all 100 with p99 1.8 s, as in
+    # docs/benchmarks/room-host-capacity-2026-10.md's tmpfs runs. The disk measured other
+    # jobs; eu1 keeps its state on local NVMe.
     for run in 1 2 3; do
-      "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
-        > "$out/room-load-$run.json" 2> "$out/room-load-$run.log"
+      state=$(mktemp -d /dev/shm/room-load.XXXXXX)
+      TMPDIR=$state TOKIO_WORKER_THREADS=40 "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
+        > "$out/room-load-$run.json" 2> "$out/room-load-$run.log" || { rm -rf "$state"; exit 1; }
+      rm -rf "$state"
     done
     python3 tools/perf/adapters.py room-load --env-json "$out/env.json" "$out"/room-load-*.json \
       > "$out/hosting-room.jsonl"
@@ -209,12 +240,27 @@ case $group in
     cargo test --locked --release -p tilo-relay --features stream-source --example legacy_stream_source
     chrome
     env_json release swiftshader kvm > "$out/env.json"
-    node scripts/perf/native_stream_qualification.mjs "$out/bundle" --out "$out/stream.json" \
-      --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \
-      --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
-      | tee "$out/stream-summary.txt"
-    python3 tools/perf/adapters.py native-stream --env-json "$out/env.json" "$out/stream.json" > "$out/stream.jsonl"
+    # H.264, then software VP9 (vp9enc), which a session with no H.264 encoder
+    # (a stock device) streams and every browser decodes: its own series
+    # (stream.vp9.*), so neither codec's numbers judge the other's. Both run
+    # whatever the other's verdict.
+    status=0
+    for codec in h264 vp9; do
+      # The H.264 window opens after another closed (--reopen): the desktop
+      # must rest under a window that is not the page's first.
+      name=stream codec_args=(--reopen)
+      [[ $codec == vp9 ]] && name=stream-vp9 codec_args=(--codec vp9)
+      if node scripts/perf/native_stream_qualification.mjs "$out/bundle" --out "$out/$name.json" \
+        --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \
+        --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
+        "${codec_args[@]}" | tee "$out/$name-summary.txt"; then
+        python3 tools/perf/adapters.py native-stream --env-json "$out/env.json" "$out/$name.json" > "$out/$name.jsonl"
+      else
+        status=1
+      fi
+    done
     rm -rf "$out/bundle"
+    exit "$status"
     ;;
   *)
     echo "unknown KPI group: $group" >&2

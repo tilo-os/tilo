@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 import subprocess
 from pathlib import Path
@@ -218,22 +219,55 @@ class HandoffTests(unittest.TestCase):
             self.producer(mutate=True)
         self.assertFalse((self.root / "produced/manifest.json").exists())
 
-    def test_workflow_uses_same_run_artifact_and_authenticated_step_output(self):
-        workflow = (HERE.parents[1] / ".forgejo/workflows/vm-acceptance.yml").read_text()
-        self.assertIn("actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e", workflow)
-        self.assertIn("actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e", workflow)
-        self.assertEqual(workflow.count("name: vm-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.plan.outputs.target }}"), 2)
-        self.assertIn("RECEIPT_SHA256: ${{ steps.cohort.outputs.receipt-sha256 }}", workflow)
-        self.assertIn('--artifact-receipt-sha256 "$RECEIPT_SHA256"', workflow)
-        # The verifier is the workflow's own tilo-vm, never the ref's under test.
-        self.assertIn("--artifact-tilo-vm /usr/local/bin/tilo-vm-artifact", workflow)
-        self.assertLess(workflow.index("Build the artifact consumer from the workflow checkout"),
-                        workflow.index("Produce exact-source signed cohort layers"))
-        self.assertIn("if-no-files-found: error", workflow)
-        self.assertLess(workflow.index("Verify the same-run cohort handoff"), workflow.index("Prepare the libvirt session user"))
-        producer = workflow.split("Produce exact-source signed cohort layers", 1)[1].split("Build the fixture-matching", 1)[0]
-        self.assertNotIn("secrets.", producer)
-        self.assertNotIn("remote_builders", producer)
+
+class CohortChecksTests(unittest.TestCase):
+    """t's cohort checks keep the handoff's trust boundary (t.toml, tools/ci/vm-cohort.sh)."""
+
+    REPO = HERE.parents[1]
+
+    @classmethod
+    def setUpClass(cls):
+        t_toml = tomllib.loads((cls.REPO / "t.toml").read_text())
+        cls.image = t_toml["image"]
+        cls.checks = {check["name"]: check for check in t_toml["check"]}
+        script = (cls.REPO / "tools/ci/vm-cohort.sh").read_text()
+        cls.produce = script.split("\n  produce)\n", 1)[1].split("\n  verify)\n", 1)[0]
+        cls.verify = script.split("\n  verify)\n", 1)[1]
+        cls.acceptance = (cls.REPO / "tools/ci/vm-acceptance.sh").read_text()
+
+    def test_the_acceptance_takes_the_cohort_and_its_verifier_from_their_checks(self):
+        check = self.checks["vm-acceptance-cohort"]
+        self.assertEqual(check["run"], "bash tools/ci/vm-acceptance.sh cohort")
+        self.assertLessEqual({"vm-cohort-x86_64", "vm-cohort-verifier-x86_64"}, set(check["needs"]))
+        # The verifier verifies the producer's own outputs.
+        self.assertEqual(self.checks["vm-cohort-verifier-x86_64"]["needs"], ["vm-cohort-x86_64"])
+        self.assertIn('install -m 0755 "$verifier/tilo-vm-artifact" /usr/local/bin/tilo-vm-artifact', self.acceptance)
+        self.assertIn("--artifact-tilo-vm /usr/local/bin/tilo-vm-artifact", self.acceptance)
+        self.assertIn('--artifact-receipt-sha256 "$(field receipt_sha256)"', self.acceptance)
+
+    def test_the_verifier_is_built_from_main_never_from_the_tree_under_test(self):
+        verifier = self.checks["vm-cohort-verifier-x86_64"]
+        self.assertNotIn("tilo-vm-binary-x86_64", verifier["needs"])
+        self.assertNotIn("git", verifier)
+        self.assertIs(verifier["cache"], False)
+        self.assertIn('git ls-remote "$forge" refs/heads/main', self.verify)
+        self.assertIn('(cd "$src" && ', self.verify)
+        self.assertIn("cargo build --locked -p tilo-vm --bin tilo-vm", self.verify)
+        self.assertIn('python3 "$src/scripts/vm-acceptance/layer_artifacts.py" verify', self.verify)
+        self.assertNotIn("/target/tilo-vm-bin", self.verify)
+
+    def test_the_tree_under_test_packs_from_its_exact_commit_with_the_pinned_builder(self):
+        producer = self.checks["vm-cohort-x86_64"]
+        self.assertIn("tilo-vm-binary-x86_64", producer["needs"])
+        self.assertIs(producer["git"], True)
+        self.assertIn("--packer /target/tilo-vm-bin/tilo-vm", self.produce)
+        self.assertIn("source=$(git rev-parse --verify HEAD)", self.produce)
+        self.assertIn('["image"]', self.produce)
+        artifacts.identities(SOURCE, self.image, 1, 1)
+
+    def test_no_cohort_check_holds_credentials(self):
+        for name in ("vm-cohort-x86_64", "vm-cohort-verifier-x86_64", "vm-acceptance-cohort"):
+            self.assertFalse({"secrets", "id_token"} & set(self.checks[name]), name)
 
 
 if __name__ == "__main__":

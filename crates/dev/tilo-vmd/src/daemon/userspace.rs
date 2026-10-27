@@ -139,7 +139,12 @@ impl Daemon {
                     "userspace cohort requires the complete thin graph".into(),
                 ));
             }
-            let cohort = crate::cohort::verify(&path, base_registry, std::env::consts::ARCH)?;
+            let cohort = crate::cohort::verify(
+                &path,
+                base_registry,
+                std::env::consts::ARCH,
+                &self.cohort_staging()?,
+            )?;
             if cohort.source_inventory.as_deref() != Some(member.source_inventory.as_str()) {
                 return Err(DaemonError::InvalidParams(
                     "userspace cohort: signed system membership differs from the source inventory"
@@ -199,6 +204,7 @@ impl Daemon {
         let preview = self
             .slots
             .userspace_preview(&admitted.record, &admitted.entries)?;
+        self.check_interfaces(&admitted.record, &preview)?;
         let candidate_layers = self.system_layers(&admitted.record, self.layer_paths(&preview)?)?;
         // All builds and imports finished. Read actual running selections before
         // any sysext mutation, with the exact candidate catalog and old SDK view.
@@ -737,13 +743,26 @@ mod tests {
     fn userspace_cohort_admits_all_imports_and_preserves_one_owner_transition() {
         const SUBJECT: &str = "TILO_VMD_USERSPACE_SUBJECT";
         if let Ok(root) = std::env::var(SUBJECT) {
-            subject(Path::new(&root));
+            let root = Path::new(&root);
+            fs::create_dir_all(root).unwrap();
+            crate::cohort::tests::fixture_pair(root);
+            subject(root);
             return;
         }
-        let root = tempfile::tempdir().unwrap();
-        crate::cohort::tests::fixture_pair(root.path());
-        let output = Command::new("timeout").args(["60", "bwrap", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind"])
-            .arg(root.path()).arg(root.path()).args(["--setenv", SUBJECT]).arg(root.path())
+        // Every import and slot write is durable, and the subject makes
+        // hundreds of them. On a worker whose disk is busy with other builds
+        // each fsync waits for that writeback, which took the subject from
+        // seconds to past the hang bound. What it checks is admission and
+        // transition order, not durability, so its whole tree lives on a
+        // private tmpfs where those syncs return at once. The tmpfs covers
+        // only a fresh empty directory: the test binary and the source tree
+        // may themselves live under /tmp, and must stay visible to the child.
+        let tmpfs = tempfile::tempdir().unwrap();
+        let mount = tmpfs.path().to_str().unwrap();
+        let root = format!("{mount}/userspace-cohort");
+        let bound = tilo_test_env::hang_bound().as_secs().to_string();
+        let output = Command::new("timeout").args([bound.as_str(), "bwrap", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", mount])
+            .args(["--setenv", SUBJECT, root.as_str(), "--setenv", "TMPDIR", mount])
             .arg(std::env::current_exe().unwrap()).args(["daemon::userspace::tests::userspace_cohort_admits_all_imports_and_preserves_one_owner_transition", "--exact", "--nocapture"])
             .output().unwrap();
         assert!(

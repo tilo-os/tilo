@@ -623,7 +623,8 @@ The previous `NavShell` API (file-explorer, mail, maps, weather):
 | `drawer.draw_scrim(scene, transform)` | `drawer.draw_scrim(scene, transform, theme)` (`surfaces.scrim`, no literal black, no stepped shadow bands). |
 | Filling the sidebar rect yourself (`surfaces.sidebar`, `raised`, `bg_primary`, a literal), or `surface::region(.., Region::Sidebar, ..)` under a drawer | `let sidebar_theme = drawer.paint_panel(scene, transform, theme);` and draw the drawer's contents with `sidebar_theme`. Docked it is the region tier with no radius; as an overlay it is the floating material with `radii.panel` and the floating shadow, floating `s2` inside the window. |
 | `drawer.draw_toggle(scene, transform, theme, rect, hovered)` | `drawer.draw_toggle(scene, transform, text, theme, rect, hovered)`: the same Plain `Icon::PanelLeft` button `NavShell` draws. Put it at the top-leading corner (`rect` = `min_pointer_target` square in an `s3` inset). |
-| Default docked width 320, default breakpoint 760 | 280 (`sidebar_width`) and 840 (`compact_breakpoint`, the sidebar plus the 560 the content needs); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
+| Default docked width 280, default breakpoint 840 | 280 (`sidebar_width`) and 840 (`compact_breakpoint`, the sidebar plus the 560 the content needs); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
+| `.content_min_width(..)` for the column beside the panel, or a `.breakpoint(..)` restating the panel's width plus that column | `.content_is_column(..)` for the app's own content column: the panel docks at its own width beside it and pans it out of view below `panel_min_width` instead of shrinking. `.content_kind(..)` for a `NavShell`-shaped list-or-page. |
 | A collapse that the drawer forgot after the window crossed the breakpoint | Remembered per size class now; delete app code that re-applies it. |
 | An app holding a `FlapState` for its own sidebar or side panel, with its own breakpoint, scrim and slide arithmetic | A `SidebarDrawer` (`.right()` for a trailing panel). `FlapState::tick(layout, dt)` is now `tick(layout, dt, theme.tokens.motion.durations.base())` and `slide()` is gone: `reveal()` is already eased. |
 | A hand-placed toggle rect, its hover tracking, the sidebar shortcut and the toggle's semantic node | `let face = drawer.header(area, theme);` (`header_with_history(area, theme, opener.is_shown())` with History): the window's `HeaderRowFace` with the toggle in it. Route events with `drawer.handle_event(event, ctx)` (hit-test, hover, `HostShortcut::Sidebar`, Escape and a scrim press), paint with `drawer.paint_toggle(..)`, publish `drawer.toggle_accessibility()` and route its `Activate` with `perform_toggle_action`. The floating drawer opens under the row. |
@@ -1018,8 +1019,9 @@ open list, a focused button).
 
 One family, styled by `ChipStyle`: `Neutral` (quiet, raised; a selected chip
 is a lift), `Tinted(Tone)` (a status or a person, a faint wash with neutral
-ink) and `Live` (the one filled pill, in your colour: an unread count, a
-mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
+ink), `Live` (filled in your colour: an unread count, a mention,
+something live) and `Accent` (filled in the accent with its own label: what
+you picked, numbered). Danger red is only a status: `Tinted(Tone::Danger)`.
 `Tone` is the shared `ui::widget::Tone`: `Neutral`, `Info`, `Success`,
 `Warning`, `Danger`, or a person with `Tone::of_identity(id)` /
 `Tone::Presence(hue)` (yourself: `Tone::Presence(colors.you)`).
@@ -1367,6 +1369,7 @@ widgets use, so it behaves like them:
 | `DataTable` | Tabular data | db-client grid (`grid.rs`), logs (`app.rs:980-1060`), api-tester headers/params tables |
 | `MediaCard` (`MediaCardFace`) + `MediaGrid` / `justified_rows` | Covers, thumbnails, album art, photos, app art | ebook covers (`app.rs:7824-8180`), tube video tiles (`widgets/large_video_meta.rs`), music albums (`render.rs:784`, generated art `art.rs:120-127`), photos justified rows (`app.rs:11069-11200`), store artwork (`artwork.rs:42-62`) |
 | `DropZone` (`DropZoneFace`) | A drop target for files | ebook import (`app.rs:8182-8296`), imager source (`app.rs:2858-2958`) |
+| `FileOpenSurface` | An app that opens a file: its empty state, and a file dropped anywhere on the window | the hover flags and `DroppedFile` arms of ebook, the PDF viewer and the video player |
 | `Skeleton` (`SkeletonFace`) | Content still loading | music loading rows (`render.rs:8702`) |
 | `ProgressRing` (`ProgressRingFace`) | A countdown, progress or measured level in a ring | imager progress (`app.rs:3882-3942`), totp countdown (`ring.rs`), speed-test dial (`app.rs:527-575`) |
 | `Stepper` (`StepperFace`) | Where a wizard is | imager stations (`app.rs:2533-2657`) |
@@ -1943,37 +1946,29 @@ message.
 | What | Surface |
 |---|---|
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
-| A change worth noticing once: "Synced", a page turn, a zoom step | `StatusBubble` |
+| A change worth noticing once: "Synced", a page turn, a zoom step | The window bar's notice: a `Transient<T>` (or `Notice`) shown on the change, `expire()` and `publish(..)` on every sync, its `deadline()` in `next_wake_deadline` |
 | A readout that does something when clicked (a zoom level, an offset that opens Go to) | `ui::chrome::status_bar::draw_readouts(scene, t, tr, theme, bar, &left, &right, hovered)` with `StatusReadout::action(text)`; it returns each readout's rect to hit-test. `status_bar::height` grows with the `Caption` line at a large text scale |
 | An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns), with the action that resolves it inside it (`.with_action(button)`) |
 | A standing notice where nothing is wrong (a private window, a read-only copy) | `Banner::neutral(..)` |
-| A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
-| A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Autosave's saving and saved never show (expose them in the app's accessibility status via `state()`); a failure is an error card with Try again that stays until the save succeeds, and that success is a one-time "Saved" bubble. Delete any save pill, pinned bubble or hand-drawn failure text |
+| A transient result or a recoverable error ("Copied", "Upload failed, retrying") | The window bar's notice, as above; its one action (Undo, Try again) rides along as `ToolbarNotice::action`, taken with `window_toolbar::take_notice_press(id)` |
+| A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` and `advance(now)` on every sync, then `take_bar_action()` (`SaveAction::Retry`) and `publish()`; `seen()` when the window draws. Autosave's saving and saved never show (expose them in the app's accessibility status via `state()`); a failure is the bar's error notice with Try again, held until a save succeeds, and that success is a one-time "Saved". Delete any save pill or hand-drawn failure text |
 
-StatusBubble, replacing the hand-rolled pattern (`pill_size` + a margin
-rect + a reveal zone + `push_layer(alpha)` + `draw_pill` + `poke` on change):
+The bar's notice replaces the hand-rolled floating pill (`pill_size` + a
+margin rect + a reveal zone + `push_layer(alpha)` + a hover pin):
 
 ```rust
-// state: status_bubble: ui::StatusBubble
-let now = ui::time::now();
-self.status_bubble.show(&label, now);              // every frame is fine; pokes on change only
-// in CursorMoved:
-self.status_bubble.pointer_moved(self.rect, p, tr, theme, now);
-// in draw (or draw_overlay):
-self.status_bubble.paint(scene, transform, tr, theme, self.rect, now);
-// in needs_animation_frame:
-self.status_bubble.needs_frame(ui::time::now())
+// state: said: ui::widget::toast::Transient<String>
+self.said.show(label);                             // on the change, once
+// on every sync:
+self.said.expire();
+self.said.publish(|text| ui::window_toolbar::ToolbarNotice::new(text.clone(), ToastKind::Info));
+// in next_wake_deadline:
+self.said.deadline()
 ```
 
-Delete the app's `status_shown` copy of the text, its `margin`/zone
-constants, `text_size` literals and the alpha layer. Delete
-`arm_status_bubble_for_shots`, `shots_status` and any forced-visible flag: a
-plain `--shots` waits until the bubble has faded. A screenshot scenario that
-wants the bubble in frame stages it in its stage hook with
-`status_bubble.show(text, now)` followed by `status_bubble.set_hover(true,
-now)`. A bubble that hosts controls (ebook's page arrows) keeps `pill_size`
-and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
-`ChevronRight`.
+Delete the app's pill, its zone constants, its alpha layer and any
+forced-visible shot flag: under the capture clock a notice does not expire,
+so a scenario that stages one keeps it in frame.
 
 ### Scrims and media
 
@@ -2244,7 +2239,7 @@ writers of the appearance state.
 | `tokens::Material`, `Colors::of_material`, `Tokens::of_material`, `colors.material`, `colors.neutral_hue` | `tokens::Palette` (`Palette::dark()` …), `Colors::of_palette` / `Colors::stock`, `Tokens::around`, `colors.palette`, `colors.palette.hue` |
 | `Theme::high_contrast()` as the accessibility track | `theme.with_high_contrast()` (the high-contrast palette of the theme's own polarity); `Theme::high_contrast()` is the dark preset |
 | `Theme::ALL = ["Dark", "Light", "High Contrast"]`, the name `"High Contrast"` | `Preset::ALL` / `Theme::ALL` (seven presets, sentence case: `"High contrast"`, `"High contrast light"`). Never compare `theme.name`; ask `theme.colors_are_forced()` |
-| `Theme::with_your_colour([u8; 3])`, `Colors::set_you(Color)`, `DEFAULT_YOU_SLOT` | `Theme::with_your_colour(PresenceHue)`, `Colors::set_you(PresenceHue)`, `PresenceHue::Blue`; a host colour becomes `PresenceHue::nearest(colour)` |
+| `Theme::with_your_colour([u8; 3])`, `Colors::set_you(Color)`, `DEFAULT_YOU_SLOT` | `Theme::with_your_colour(PresenceHue)`, `Colors::set_you(PresenceHue)`, `PresenceHue::Blue`; a host colour becomes `tokens::nearest_presence_hue(colour)` |
 | `PIN_ICONS`, `PIN_CHROME`, `DistributionDefaults::{palette, custom}`, distribution schema 1 | `PIN_EMPHASIS`, `PIN_PRESENCE`, `PIN_SHAPE` beside `PIN_PALETTE`, `PIN_DENSITY`, `PIN_TYPE`, `PIN_MOTION`, `PIN_MATERIAL`; `DistributionDefaults::{theme, document}`, schema 2 |
 | `ThemeLayerStack::user_theme: Option<Theme>` | `Option<ThemeDocument>`, plus `your_colour: Option<PresenceHue>` |
 | `appearance.theme` (`"Dark"`, `"Light"`, `"Automatic"`, `"custom:<id>"`), `appearance.custom_theme`, `appearance.studio`, `appearance.app_accents`, `appearance.workspace_tint` | `appearance.mode`, `dark_theme`, `light_theme`, `custom_themes`, `density`, `workspace_temperatures`; `identity.colour` |

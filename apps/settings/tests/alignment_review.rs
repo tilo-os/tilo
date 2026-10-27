@@ -162,10 +162,7 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
 
     // Case `rows_grow_with_large_text`.
     // 1800 px is above the scaled breakpoint, so the sidebar stays docked.
-    let large = config
-        .app()
-        .with_category(Category::Appearance)
-        .with_width_hint(1800.0);
+    let large = config.app().with_category(Category::Appearance);
     let large = lay_out_scaled(large, (1800.0, 900.0), 2.0);
     let rows: Vec<_> = crate::support::nav_rows(&*large)
         .into_iter()
@@ -229,7 +226,6 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
             .find(|t| t.y0 >= row.y0 && t.y1 <= row.y1)
             .copied()
             .expect("the High contrast row carries a toggle");
-        // The toggle is centred on the label and its explanation together.
         same_centre_line(
             row.center().y,
             row_toggle.center().y,
@@ -258,7 +254,6 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
     }
 }
 
-/// Region form measure, choice rows and the large-text breakpoint.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -272,7 +267,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let app = lay_out(app, WIDE);
         let (row, wrapped) = row_of_control(&*app, "region.currency");
         let control = by_test_id(&*app, "region.currency");
-        // A wide page keeps the chooser beside its label, centred on the row.
         assert!(!wrapped, "wide: the currency chooser sits beside its label");
         same_centre_line(
             row.center().y,
@@ -286,7 +280,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             card_inner <= 720.0 + 0.5,
             "label to control span {card_inner} exceeds the readable measure"
         );
-        // Every chooser in the card shares the same trailing edge.
         for id in [
             "region.date",
             "region.time",
@@ -303,10 +296,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
 
         // A narrow window is a maximum, not a fixed width: the chooser stays
         // inside its row and the window.
-        let narrow = config
-            .app()
-            .with_category(Category::RegionFormats)
-            .with_width_hint(NARROW.0);
+        let narrow = config.app().with_category(Category::RegionFormats);
         let narrow = lay_out(narrow, NARROW);
         let control = by_test_id(&*narrow, "region.currency");
         let (row, _) = row_of_control(&*narrow, "region.currency");
@@ -333,10 +323,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             ("region.first_day", "First day of week"),
         ];
         let phone = (320.0, 844.0);
-        let app = config
-            .app()
-            .with_category(Category::RegionFormats)
-            .with_width_hint(phone.0);
+        let app = config.app().with_category(Category::RegionFormats);
         let app = lay_out(app, phone);
         for (id, _label) in rows {
             let control = by_test_id(&*app, id);
@@ -354,10 +341,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         // A page wide enough for the chooser and a label (beside the docked
         // category list): every row sits inline.
         let medium = (900.0, 820.0);
-        let app = config
-            .app()
-            .with_category(Category::RegionFormats)
-            .with_width_hint(medium.0);
+        let app = config.app().with_category(Category::RegionFormats);
         let app = lay_out(app, medium);
         for (id, _label) in rows {
             let control = by_test_id(&*app, id);
@@ -380,10 +364,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     // where the breakpoint and the sidebar width have grown with the type.
     {
         let config = crate::support::ScratchConfig::new();
-        let one_x = config
-            .app()
-            .with_category(Category::Appearance)
-            .with_width_hint(900.0);
+        let one_x = config.app().with_category(Category::Appearance);
         let one_x = lay_out(one_x, (900.0, 900.0));
         assert!(!one_x.is_narrow(), "900 px docks the sidebar at 1×");
         assert!(
@@ -391,10 +372,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             "1×: the docked sidebar lists its categories"
         );
 
-        let two_x = config
-            .app()
-            .with_category(Category::Appearance)
-            .with_width_hint(900.0);
+        let two_x = config.app().with_category(Category::Appearance);
         let two_x = lay_out_scaled(two_x, (900.0, 900.0), 2.0);
         assert!(
             two_x.is_narrow(),
@@ -421,10 +399,7 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
         (Category::Users, WIDE),
         (Category::RegionFormats, NARROW),
     ] {
-        let app = config
-            .app()
-            .with_category(category)
-            .with_width_hint(viewport.0);
+        let app = config.app().with_category(category);
         let app = lay_out(app, viewport);
         // Top-level sections only: a section nested inside another is that
         // section's own content, not a sibling.
@@ -433,6 +408,9 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
             .filter(|r| r.width() > 0.0 && r.height() > 0.0)
             .collect();
         sections.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        // A section that fills its parent exactly (an untitled card holding one
+        // section) is the same slot, not a sibling.
+        sections.dedup();
         let outer: Vec<Rect> = sections
             .iter()
             .copied()

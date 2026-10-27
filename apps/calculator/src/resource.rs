@@ -16,7 +16,7 @@ use crate::actions::{CalculatorEffect, GraphKind, HISTORY_CAP};
 use crate::app::CalculatorApp;
 use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 /// The calculator's record: its evaluated history, newest first, and its
 /// saved graphs, each row with its stable id. A formula merges per
@@ -187,13 +187,11 @@ const SCENARIOS: &[&str] = &[
     "calculator",
     "graph2d",
     "graph3d",
-    "history-open",
-    "history-closed",
     "empty",
     "narrow",
-    "narrow-history",
     "narrow-graph2d",
     "narrow-functions",
+    "narrow-functions-page",
     "narrow-graph3d",
     "long-formula",
     "error",
@@ -426,8 +424,9 @@ mod tests {
             .cloned()
             .unwrap();
         let delete = || Calculator::DELETE_HISTORY_ENTRY.with(e2.clone());
-        assert!(calculator.apply(delete()).is_err(), "deleting asks first");
-        calculator.apply_confirmed(delete()).unwrap();
+        calculator
+            .apply(delete())
+            .expect("Undo takes a deleted entry back, so deleting asks nothing");
         assert_eq!(
             history(&calculator)
                 .into_iter()
@@ -553,7 +552,9 @@ mod tests {
             .iter()
             .find(|action| action.id == "delete-history-entry")
             .unwrap();
-        assert_ne!(
+        // Undo takes a deleted entry back: it runs at once and asks nothing.
+        assert!(delete.contract.can_be_undone());
+        assert_eq!(
             delete.contract.confirmation,
             ui::tilo_actions::ConfirmationPolicy::None
         );
@@ -710,5 +711,28 @@ mod scenario_tests {
             full,
             "a plain capture is lived in too"
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::CalculatorShell::scenarios() {
+            let mut app = TestApp::<super::CalculatorShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

@@ -25,7 +25,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
         assert!(media.contains(&photos, hash).await);
         assert_eq!(media.len_of(&photos, hash).await, Some(8));
 
-        // Another app in the room may be handed the content by hash.
         assert!(media.contains(&scope("room-1", "so.tilo.chat"), hash).await);
 
         // Another room: the bytes are right there, and still unreadable, because
@@ -317,6 +316,200 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
     );
 }
 
+/// Content put piece by piece through room A's neutral scope (as the
+/// content put door does) is read by any app of room A that holds its hash
+/// and by nothing of room B; an upload dropped unfinished stores nothing.
+#[test]
+fn content_put_through_one_rooms_scope_is_unavailable_through_another_rooms() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("fs-blobs.sock");
+    let _server = {
+        let _guard = runtime.enter();
+        let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
+        serve_socket(&socket, media).unwrap()
+    };
+    let session = BlobClient::connect_session(&socket).unwrap();
+    let content = pattern(runtime_fs::blobs::MAX_PUT_CHUNK + 4321);
+    let mut upload = session
+        .scope("room-a", "tilo.content")
+        .unwrap()
+        .begin_upload("application/octet-stream")
+        .unwrap();
+    for piece in content.chunks(512 * 1024 + 7) {
+        upload.append(piece).unwrap();
+    }
+    assert_eq!(upload.len(), content.len() as u64);
+    let stored = upload.finish().unwrap();
+    assert_eq!(stored.hash, blake3::hash(&content).to_hex().to_string());
+    assert_eq!(stored.len, content.len() as u64);
+
+    let notes = launcher_connection(&socket, "room-a", "so.tilo.notes");
+    assert_eq!(
+        notes.read_all(&stored.hash).unwrap(),
+        ReadOutcome::Ready {
+            bytes: content.clone(),
+            total_len: content.len() as u64,
+        }
+    );
+    for (room, app) in [("room-b", "tilo.content"), ("room-b", "so.tilo.notes")] {
+        let elsewhere = launcher_connection(&socket, room, app);
+        assert_eq!(
+            elsewhere.read_all(&stored.hash).unwrap(),
+            ReadOutcome::Unavailable,
+            "{room}/{app}"
+        );
+        assert!(!elsewhere.has(&stored.hash).unwrap(), "{room}/{app}");
+    }
+
+    let abandoned = b"never finished";
+    let mut upload = session
+        .scope("room-a", "tilo.content")
+        .unwrap()
+        .begin_upload("application/octet-stream")
+        .unwrap();
+    upload.append(abandoned).unwrap();
+    drop(upload);
+    let hash = blake3::hash(abandoned).to_hex().to_string();
+    assert!(!notes.has(&hash).unwrap());
+    assert_eq!(notes.read_all(&hash).unwrap(), ReadOutcome::Unavailable);
+}
+
+/// A public file's origin that serves one version and answers "unchanged"
+/// to a request naming it, counting what it was asked.
+struct OneVersion(Vec<u8>, Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::public_content::Origin for OneVersion {
+    fn fetch(
+        &self,
+        _url: &'static str,
+        since: Option<crate::public_content::Validator>,
+        _limit: u64,
+    ) -> runtime_fs::blobs::BlobFuture<Result<crate::public_content::Answer, String>> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let validator = crate::public_content::Validator {
+            etag: Some("\"v1\"".into()),
+            last_modified: None,
+        };
+        let answer = if since.as_ref() == Some(&validator) {
+            crate::public_content::Answer::Unchanged
+        } else {
+            crate::public_content::Answer::Changed {
+                bytes: self.0.clone(),
+                validator,
+            }
+        };
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+/// The public copy end to end: apps in different rooms keep the device's
+/// one copy through their launcher-scoped sockets, read the same bytes
+/// under the same hash; the session asks for a refresh, which leaves a copy
+/// that was just fetched alone. Released by every app, the copy stays until
+/// the device needs its room, and then comes back on the next read.
+#[test]
+fn a_public_copy_is_one_per_device_for_apps_in_every_room() {
+    const NAME: &str = "gutenberg-catalogue";
+    let catalogue = b"Text#,Type,Title\n1,Text,The Declaration of Independence\n".to_vec();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("fs-blobs.sock");
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _guard = runtime.enter();
+    let store = Arc::new(ContentStore::memory());
+    let _server = {
+        let public = PublicContent::open(
+            &dir.path().join("public-content"),
+            Arc::clone(store.files()),
+            Arc::new(OneVersion(catalogue.clone(), Arc::clone(&asked))),
+        )
+        .unwrap();
+        serve_socket(
+            &socket,
+            DocumentMedia::with_public(Arc::clone(&store), public),
+        )
+        .unwrap()
+    };
+    let asked = || asked.load(std::sync::atomic::Ordering::SeqCst);
+
+    let books = launcher_connection(&socket, "room-1", "so.tilo.ebook");
+    let search = launcher_connection(&socket, "room-2", "so.tilo.search");
+    assert_eq!(
+        books.public_read_all(NAME).unwrap(),
+        Err(ReadOutcome::Unavailable),
+        "nobody keeps it yet"
+    );
+    assert!(books.public_keep("https://example.org/anything").is_err());
+
+    books.public_keep(NAME).unwrap();
+    let (bytes, hash) = arrived(&books, NAME);
+    assert_eq!(bytes, catalogue);
+    assert_eq!(hash, blake3::hash(&catalogue).to_hex().to_string());
+
+    search.public_keep(NAME).unwrap();
+    assert_eq!(
+        search.public_read_all(NAME).unwrap(),
+        Ok((catalogue.clone(), hash.clone())),
+        "another room reads the same copy"
+    );
+
+    let session = BlobClient::connect_session(&socket).unwrap();
+    assert_eq!(session.refresh_public().unwrap(), 0, "fetched just now");
+    assert!(
+        books.refresh_public().is_err(),
+        "only the session refreshes"
+    );
+
+    books.public_release(NAME).unwrap();
+    search.public_release(NAME).unwrap();
+    assert_eq!(
+        books.public_read_all(NAME).unwrap(),
+        Ok((catalogue.clone(), hash.clone())),
+        "released, it is still here: reopening Books downloads nothing"
+    );
+    assert_eq!(asked(), 1);
+
+    store.files().set_budget(0);
+    assert_eq!(store.files().evict_to_budget(&[]), catalogue.len() as u64);
+    store.files().set_budget(u64::MAX);
+    assert_eq!(arrived(&books, NAME), (catalogue, hash));
+    assert_eq!(asked(), 2, "evicted, it is fetched again on the next read");
+}
+
+/// The whole public copy `name` once it is here, reading again while it is
+/// on its way.
+fn arrived(client: &BlobClient, name: &str) -> (Vec<u8>, String) {
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(10))
+        .unwrap();
+    loop {
+        match client.public_read_all(name).unwrap() {
+            Ok(read) => return read,
+            Err(outcome) => {
+                assert_eq!(
+                    outcome,
+                    ReadOutcome::Pending,
+                    "a kept copy is here or on its way"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the copy never arrived"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 /// The daemon's document media, observed: every ranged read's length is
 /// logged, and reads can be made to answer other bytes than were stored.
 struct Observed {
@@ -404,7 +597,6 @@ impl DeviceHarness {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("fs-blobs.sock");
-        // The in-memory store spawns its actor on the ambient runtime.
         let daemon_store = {
             let _guard = runtime.enter();
             Arc::new(ContentStore::memory())
@@ -576,4 +768,63 @@ fn device_backend_state_does_not_download() {
         reads.iter().all(|max_len| *max_len == 0),
         "state() asked for content: {reads:?}"
     );
+}
+
+/// Only the session names the agent behind writes, over the session root of
+/// the document media socket, and only for paths under the mount: an app's
+/// connection cannot, a path outside the mount is refused, and what the
+/// session named covers those paths and what is under them.
+#[test]
+fn only_the_session_names_the_agent_behind_writes_under_the_mount() {
+    use crate::write_attribution::WriteAttributions;
+    use runtime_fs::blobs::WriteAttribution;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("fs-blobs.sock");
+    let mount = std::path::PathBuf::from("/var/workspace");
+    let leases = Arc::new(WriteAttributions::default());
+    let _server = {
+        let _guard = runtime.enter();
+        let media = DocumentMedia::new(Arc::new(ContentStore::memory()))
+            .with_write_attributions((Arc::clone(&leases), mount));
+        serve_socket(&socket, media).unwrap()
+    };
+    let scribe = |paths: Vec<&str>| WriteAttribution {
+        paths: paths.into_iter().map(str::to_owned).collect(),
+        actor: "agent:scribe".into(),
+        label: "Scribe".into(),
+        color: [10, 20, 30],
+        ttl: std::time::Duration::from_secs(30),
+    };
+
+    let app = launcher_connection(&socket, "room-1", "so.tilo.file-explorer");
+    assert!(
+        app.attribute_writes(scribe(vec!["/var/workspace/Reports"]))
+            .is_err()
+    );
+    assert!(leases.is_idle(), "an app names nobody");
+
+    let session = BlobClient::connect_session(&socket).unwrap();
+    assert!(
+        session
+            .attribute_writes(scribe(vec!["/etc/passwd"]))
+            .is_err()
+    );
+    let mut person = scribe(vec!["/var/workspace/Reports"]);
+    person.actor = "ada".into();
+    assert!(session.attribute_writes(person).is_err(), "only an agent");
+    assert!(leases.is_idle());
+
+    session
+        .attribute_writes(scribe(vec!["/var/workspace/Reports"]))
+        .unwrap();
+    let named = leases.for_path("/Reports/q3.txt").unwrap();
+    assert_eq!(named.actor, "agent:scribe");
+    assert_eq!(named.color, [10, 20, 30]);
+    assert_eq!(leases.for_path("/notes.txt"), None);
 }

@@ -44,12 +44,11 @@ impl Chat {
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
         });
+        // A report is found by what its message says: the summary, and the
+        // picks of one filed without words.
         let feedback = self.feedback.iter().filter_map(|(id, report)| {
-            let submission = report.submission.as_ref()?;
-            Some(
-                SearchEntry::new(&submission.feedback.text, "Feedback")
-                    .anchored(anchor("feedback", id)),
-            )
+            let message = crate::feedback::message::message(report)?;
+            Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
             SearchEntry::new(&person.name, "Person")
@@ -66,9 +65,6 @@ impl Chat {
     /// the room's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
     /// chain the window publishes, or with `read-room`.
-    ///
-    /// # Errors
-    /// When `item` names nothing in the chat.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
@@ -112,10 +108,6 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-long-thread",
     "agent-work",
     "bridged",
-    "agent-task",
-    "agent-task-compact",
-    "agent-task-queued",
-    "agent-task-queued-compact",
     "narrow",
     "history",
     "compact",
@@ -128,9 +120,12 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "lounge-call",
     "lounge-video",
     "lounge-share",
+    "lounge-bridged",
     "live-context",
     "context",
     "msgmenu",
+    "msgbar",
+    "msgbar-shift",
     "attach",
     "attach-loading",
     "attach-error",
@@ -163,6 +158,9 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the room's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
+        // The workspace's emoji are Chat's: every app of the room opens
+        // them, and their changes are decided against Chat's surface.
+        records.workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
@@ -200,11 +198,25 @@ impl ResourceApp for ChatShell {
             .with_drafts(drafts);
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
-        cx.surface(if live && ui::local_identity::bound().is_some() {
+        // The shell keeps the room's channels as its sidebar, their width,
+        // their drawer in a narrow window and their keys; the conversation
+        // is the window's point, a reading column beside them.
+        let places = ui::widget::NavFeed::new();
+        let shell = ui::widget::NavShell::new()
+            .with_id("chat-shell")
+            .content_kind(ui::widget::ContentKind::Reading)
+            .with_window_toolbar();
+        let app = app.in_shell(&places, shell.window_bar_link());
+        let app = if live && ui::local_identity::bound().is_some() {
             app.announcing()
         } else {
             app
-        })
+        };
+        Box::new(
+            shell
+                .sidebar(crate::sidebar::sidebar(&places))
+                .content(cx.surface(app)),
+        )
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -233,6 +245,22 @@ impl ResourceApp for ChatShell {
             }
             input.relayout();
         }
+        if name == Some("msgmenu") {
+            // The hovered message's bar is up; click its More as a person
+            // does, so the menu opens where that click opens it.
+            input.relayout();
+            let more = input
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("More"))
+                .and_then(|(_, node)| node.bounds())
+                .ok_or("the message's bar shows no More button")?;
+            input.click_at(
+                f64::midpoint(more.x0, more.x1),
+                f64::midpoint(more.y0, more.y1),
+            );
+            input.relayout();
+        }
         if name == Some("mention") {
             input.type_text("Could you take a look, @a");
             for _ in 0..3 {
@@ -242,50 +270,36 @@ impl ResourceApp for ChatShell {
         Ok(())
     }
 
-    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        match scenario {
-            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
-            _ => (1280, 800),
-        }
-    }
-
-    /// The agent scenarios are the demo workspace and what the agent did
-    /// in it, each change written by whoever made it; their messages are
-    /// staged in the chat's parts ([`part_scenario`]).
+    /// Every scenario but `starter` starts from the demo workspace, read by
+    /// the capture's own person: its people and its channels under the
+    /// fixed ids the scenarios name, which only the moderators' actions
+    /// make, minting their own. `agent-work` adds the agent introducing
+    /// itself and being named, each change written by whoever made it.
+    /// Their messages are staged in the chat's parts (`part_scenario`).
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
-        if matches!(
-            fixture.scenario(),
-            Some("agent-streaming" | "agent-failed" | "agent-reasoning" | "agent-long-thread")
-        ) {
-            for invoke in demo_invokes() {
-                fixture.version(crate::model::ME, crate::demo::NOW * 1000, invoke);
-            }
+        if fixture.scenario() == Some("starter") {
+            return;
         }
+        fixture.start(crate::demo::demo(crate::model::ME));
         if fixture.scenario() == Some("agent-work") {
-            for (author, invoke) in agent_work_scenario() {
+            for (author, invoke) in agent_work_steps() {
                 fixture.version(author, crate::demo::NOW * 1000, invoke);
             }
         }
     }
 
-    /// The first-run workspace for `starter`, the demo conversation for
-    /// every other scenario, both read by the capture's own person.
+    /// The first-run workspace for `starter`, read by the capture's own
+    /// person; every other scenario starts from its [`Self::fixture`].
     fn scenario(name: Option<&str>) -> Vec<Invoke<Chat>> {
-        match name {
-            Some(
-                "agent-work" | "agent-streaming" | "agent-failed" | "agent-reasoning"
-                | "agent-long-thread",
-            ) => Vec::new(),
-            Some("starter") => {
-                let you = LocalIdentity::demo();
-                vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
-                    name: you.name,
-                    initials: you.initials,
-                    color: u32::try_from(you.color_idx).unwrap_or_default(),
-                })]
-            }
-            _ => demo_invokes(),
+        if name != Some("starter") {
+            return Vec::new();
         }
+        let you = LocalIdentity::demo();
+        vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
+            name: you.name,
+            initials: you.initials,
+            color: u32::try_from(you.color_idx).unwrap_or_default(),
+        })]
     }
 
     /// A new record's creator, and the room's first channels, `#chat` and
@@ -306,36 +320,45 @@ impl ResourceApp for ChatShell {
     }
 }
 
-/// The messages a capture of `scenario` shows, each with who wrote it: the
-/// demo conversation and what the scenario adds to it, staged in the chat's
-/// parts once the window holds its chain ([`ChatApp::stage_parts`]). The
-/// first-run workspace has none.
-pub(crate) fn part_scenario(scenario: Option<&str>) -> Vec<(&'static str, Invoke<ChatPart>)> {
+/// The messages a capture of `scenario` shows, staged in the chat's parts
+/// once the window holds its chain ([`ChatApp::stage_parts`]): the first
+/// part's messages as it starts, by several people under the fixed ids the
+/// scenario names, which no one person's post makes; then what is done
+/// with them, each by who did it. The first-run workspace has none.
+pub(crate) fn part_scenario(
+    scenario: Option<&str>,
+) -> (Option<ChatPart>, Vec<(&'static str, Invoke<ChatPart>)>) {
     let me = crate::model::ME;
     if scenario == Some("starter") {
-        return Vec::new();
+        return (None, Vec::new());
     }
-    let mut staged: Vec<(&'static str, Invoke<ChatPart>)> = demo_part_invokes()
-        .into_iter()
-        .map(|invoke| (me, invoke))
-        .collect();
+    let mut start = crate::demo::demo_part(me);
+    let mut steps = Vec::new();
     match scenario {
-        Some("bridged") => staged.extend(Invoke::edit(&bridged_post()).map(|invoke| (me, invoke))),
+        Some("bridged") => {
+            let (id, message) = bridged_post();
+            start.messages.push(id, message);
+        }
         Some("channels") => {
-            staged.extend(Invoke::edit(&mention_post()).map(|invoke| (me, invoke)));
+            let (id, message) = mention_post();
+            start.messages.push(id, message);
         }
         Some(
             scenario @ ("agent-streaming" | "agent-failed" | "agent-reasoning"
             | "agent-long-thread"),
-        ) => staged.extend(
+        ) => steps.extend(
             provider_stream_scenario(scenario)
                 .into_iter()
                 .map(|invoke| (me, invoke)),
         ),
-        Some("agent-work") => staged.extend(agent_work_part_steps()),
+        Some("agent-work") => {
+            let (id, message) = agent_summons();
+            start.messages.push(id, message);
+            steps.extend(agent_work_part_steps());
+        }
         _ => {}
     }
-    staged
+    (Some(start), steps)
 }
 
 /// Provider output fixtures use the same durable action as a live host stream.
@@ -383,27 +406,9 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
         .collect()
 }
 
-/// The demo workspace's chat record, read by [`crate::model::ME`], as a
-/// scenario writes it.
-fn demo_invokes() -> Vec<Invoke<Chat>> {
-    crate::demo::edits(&crate::demo::demo(crate::model::ME))
-        .iter()
-        .filter_map(|edit| Invoke::edit(edit).ok())
-        .collect()
-}
-
-/// The demo conversation, read by [`crate::model::ME`], as a scenario
-/// writes it into the first part of the chat's messages.
-pub(crate) fn demo_part_invokes() -> Vec<Invoke<ChatPart>> {
-    crate::demo::part_edits(&crate::demo::demo_part(crate::model::ME))
-        .iter()
-        .filter_map(|edit| Invoke::edit(edit).ok())
-        .collect()
-}
-
 /// `channels`: a message elsewhere that mentions the reader, which the
 /// sidebar badges on its channel.
-fn mention_post() -> ui::tilo_resource::Edit<ChatPart> {
+fn mention_post() -> (Id, crate::record::Message) {
     let text = "@You could you check the hover states on the new sidebar before standup?";
     let post = crate::record::Message {
         channel: Id::from_raw("c_frontend"),
@@ -418,10 +423,7 @@ fn mention_post() -> ui::tilo_resource::Edit<ChatPart> {
         }],
         ..crate::record::Message::default()
     };
-    let at = crate::demo::demo_part(crate::model::ME).messages.len();
-    ChatPart::paths()
-        .messages
-        .insert_as(&Id::from_raw("m_mention"), at, &post)
+    (Id::from_raw("m_mention"), post)
 }
 
 /// The bridge the `bridged` scenario's post is by.
@@ -429,7 +431,7 @@ pub(crate) const DEMO_BRIDGE: &str = "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1";
 
 /// `bridged`: a bridge's post of a line someone wrote on Discord, shown
 /// under their name and picture while it stays the bridge's.
-fn bridged_post() -> ui::tilo_resource::Edit<ChatPart> {
+fn bridged_post() -> (Id, crate::record::Message) {
     let post = crate::record::Message {
         channel: Id::from_raw("c_crit"),
         author: ui::tilo_resource::Atom(DEMO_BRIDGE.to_owned()),
@@ -441,32 +443,18 @@ fn bridged_post() -> ui::tilo_resource::Edit<ChatPart> {
             persona: Some(crate::record::ShownPersona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         }),
         ..crate::record::Message::default()
     };
-    let at = crate::demo::demo_part(crate::model::ME).messages.len();
-    ChatPart::paths()
-        .messages
-        .insert_as(&Id::from_raw("m_bridged"), at, &post)
+    (Id::from_raw("m_bridged"), post)
 }
 
 /// The agent the `agent-work` scenario summons.
 pub(crate) const DEMO_AGENT: &str = "agent-task:11111111-1111-4111-8111-111111111111";
 /// The message summoning it.
 pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
-
-/// `agent-work`'s chat record: the demo workspace and the agent introducing
-/// itself and being named, each by its author. Its messages are
-/// [`agent_work_part_steps`].
-pub(crate) fn agent_work_scenario() -> Vec<(&'static str, Invoke<Chat>)> {
-    let me = crate::model::ME;
-    demo_invokes()
-        .into_iter()
-        .map(|invoke| (me, invoke))
-        .chain(agent_work_steps())
-        .collect()
-}
 
 /// On the demo workspace: the agent introducing itself and being named,
 /// each by its author.
@@ -491,13 +479,12 @@ pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
     ]
 }
 
-/// On the demo conversation: a person summoning the agent, and the agent's
-/// record of the work it took on, each by its author.
-pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
-    let me = crate::model::ME;
+/// In the demo conversation: the reader summoning the agent, under the id
+/// [`DEMO_SUMMONS`] the agent's record of its work names.
+pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
     let summons = crate::record::Message {
         channel: Id::from_raw("c_crit"),
-        author: ui::tilo_resource::Atom(me.to_owned()),
+        author: ui::tilo_resource::Atom(crate::model::ME.to_owned()),
         ts: crate::demo::NOW - 120,
         text: "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
         mentions: vec![crate::mention::Mention {
@@ -508,16 +495,13 @@ pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
         }],
         ..crate::record::Message::default()
     };
-    let at = crate::demo::demo_part(me).messages.len();
-    let ask = ChatPart::paths()
-        .messages
-        .insert_as(&Id::from_raw(DEMO_SUMMONS), at, &summons);
-    let mut steps: Vec<(&'static str, Invoke<ChatPart>)> = Invoke::edit(&ask)
-        .into_iter()
-        .map(|invoke| (me, invoke))
-        .collect();
-    steps.push((DEMO_AGENT, agent_work(&Id::from_raw(DEMO_SUMMONS))));
-    steps
+    (Id::from_raw(DEMO_SUMMONS), summons)
+}
+
+/// On the demo conversation holding [`agent_summons`]: the agent's record
+/// of the work it took on, by the agent.
+pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
+    vec![(DEMO_AGENT, agent_work(&Id::from_raw(DEMO_SUMMONS)))]
 }
 
 /// The demo agent's record of the work `summons` asked of it.
@@ -578,14 +562,51 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
                     self.adopt_private_draft(token, invocation)
                 });
             }
-            ChatEffect::OpenDirectConversation { .. }
-            | ChatEffect::SendDirectMessage { .. }
-            | ChatEffect::ReadDirectConversation { .. } => {
+            ChatEffect::OpenDirectConversation { .. } => {
                 return ui::person_chat::with_invocation(cx.invocation(), || {
                     self.answer_effect(effect)
                 });
             }
+            // The room answers these: at once from the native host, later in
+            // a page. Either way the effect answers when it has.
+            ChatEffect::SendDirectMessage { public_key, text } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.send_person_message(public_key, text)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.sent_person_answer(&public_key, answer),
+                ));
+            }
+            ChatEffect::ReadDirectConversation { public_key } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.read_person_conversation(public_key)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.read_person_answer(&public_key, answer),
+                ));
+            }
             _ => {}
+        }
+        if let ChatEffect::ReadMessages {
+            channel,
+            page_size,
+            cursor,
+        } = &effect
+        {
+            return crate::effects::read_messages(
+                &self.held_messages(),
+                (channel, &|id| self.display_name(id)),
+                *page_size,
+                cursor.as_deref(),
+            )
+            .map(ui::framework::Effected::value);
+        }
+        if let ChatEffect::ExportContent { channel, format } = &effect {
+            return self.export_transcript(&cx.live().get(), channel, format.as_deref());
         }
         if let ChatEffect::ReadRoom { message, channel } = &effect {
             let chat = cx.live().get();
@@ -640,5 +661,102 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 }
 
+impl ChatApp {
+    /// Keep `channel`'s transcript as content ([`ChatEffect::ExportContent`]).
+    fn export_transcript(&self, chat: &Chat, channel: &str, format: Option<&str>) -> EffectAnswer {
+        let id = Id::from_raw(channel);
+        let found = chat
+            .channels
+            .get(&id)
+            .filter(|found| found.conversation_with.is_none())
+            .ok_or_else(|| format!("there is no channel `{channel}` in this chat"))?;
+        let held = self.held_messages();
+        let mut messages: Vec<_> = held
+            .iter()
+            .filter(|(_, message)| message.channel == id)
+            .collect();
+        // Oldest first; posts of one second keep the chain's order.
+        messages.sort_by_key(|(_, message)| message.ts);
+        let transcript = crate::transcript::Channel {
+            id: channel,
+            name: &found.name,
+            messages,
+        };
+        let bytes = crate::transcript::transcript(&transcript, format, &|author| {
+            self.display_name(author)
+        })?;
+        let hash = self
+            .content
+            .put(&bytes)
+            .map_err(|error| format!("the transcript could not be kept: {error}"))?;
+        Ok(crate::transcript::exported(
+            &hash,
+            format,
+            transcript.messages.len(),
+            bytes.len(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// The walk's slices: a drive of one scenario walks dozens of actions,
+    /// so each slice is its own test and they run side by side.
+    const SLICES: usize = 6;
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// every `SLICES`th scenario from `slice`: none is advertised yet
+    /// handled only by a click. The scenarios stage fixtures; the app
+    /// someone opens acts on this machine, so it is not walked.
+    fn walk(slice: usize) {
+        for scenario in super::ChatShell::scenarios()
+            .iter()
+            .skip(slice)
+            .step_by(SLICES)
+        {
+            let mut app = TestApp::<super::ChatShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
+        walk(0);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
+        walk(1);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
+        walk(2);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
+        walk(3);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_4() {
+        walk(4);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_5() {
+        walk(5);
+    }
+}

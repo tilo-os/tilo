@@ -3,7 +3,7 @@ name = "tilo-ui"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 autoexamples = false
@@ -27,7 +27,7 @@ default = ["native", "broker-transport"]
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content-device", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
 # X11 windows (winit's X11 backend) and the X11 clipboard, for development
 # builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
 # `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
@@ -67,11 +67,12 @@ ux-bench = []
 # between words. The browser desktop uses this to keep them out of its start
 # module.
 lazy-hyphenation = []
-# The image decoders a web page's images need (`image`: PNG, JPEG, WebP)
-# are not linked into page drawing: the program fetches their code the first
-# time a page draws an image and hands it over (`defer_page_image_decoder`,
-# `install_page_image_decoder`); until then images are left out. The browser
-# desktop uses this to keep them out of its start module.
+# The image decoders (`image`: PNG, JPEG, WebP) a web page's images and an
+# `ImageStore`'s pictures need are not linked: the program fetches their code
+# the first time something decodes and hands it over
+# (`image_decoders::defer_image_decoders`, `install_image_decoders`); until
+# then images are left out. The browser desktop uses this to keep them out of
+# its start module.
 lazy-image-decode = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
@@ -121,6 +122,11 @@ priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
 portal = ["native", "tilo-host/portal"]
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+# Initials, as the login and boot sign-in screens draw them too.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 # Only the session vocabulary and the engine launch boundary: this crate is
 # in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must
@@ -133,9 +139,12 @@ fnv.workspace = true
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
+tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
 # The paint stream: a page as a layered display list the WebView can draw
-# instead of the engine's pixels, natively and in the WASM client alike.
-tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
+# instead of the engine's pixels, natively and in the WASM client alike. Its
+# SVG parser (`svg`, usvg) is native only, below: the browser toolkit core
+# leaves it out, so `Image::from_svg` there finds no supported artwork.
+tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
 # The desktop's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
@@ -156,7 +165,7 @@ tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 # The `native` build takes the launcher's content-store capability at launch
 # (`launch.rs`).
-tilo-content-device = { version = "0.1.0", path = "../../system/content-device", optional = true }
+tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
@@ -187,7 +196,7 @@ runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", def
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
-runtime-identity = { version = "0.1.0", path = "../../runtime/runtime-identity", optional = true }
+runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
@@ -200,7 +209,9 @@ tilo-spellcheck = { version = "0.1.0", path = "../../text/spellcheck" }
 tilo-highlight = { version = "0.1.0", path = "../../text/highlight" }
 tilo-highlight-grammars = { version = "0.1.0", path = "../../text/highlight-grammars" }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+# The app log reads RUST_LOG (`launch::app_log`): an app built outside this
+# workspace gets no env-filter from the workspace-hack.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zeroize.workspace = true
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
@@ -349,6 +360,7 @@ windows = { version = "0.62.2", optional = true, features = [
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
+runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true
@@ -365,6 +377,8 @@ tempfile.workspace = true
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+# Paused-clock tests of the collaboration lanes' deadlines.
+tokio = { workspace = true, features = ["test-util"] }
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
 threshold-identity = { path = "../../collab/threshold-identity" }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
@@ -491,4 +505,9 @@ wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }
 [[example]]
 name = "native-displays"
 path = "examples/native-displays.rs"
+required-features = ["native"]
+
+[[example]]
+name = "display-drag-frames"
+path = "examples/display-drag-frames.rs"
 required-features = ["native"]

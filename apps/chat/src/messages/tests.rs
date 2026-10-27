@@ -27,10 +27,12 @@ fn fill_part(room: &mut Room, part: u64) -> String {
 }
 
 fn react(message: &str, emoji: &str) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::REACT.with(chat_part::React {
-        message: Id::from_raw(message),
-        emoji: emoji.into(),
-    })
+    ChatPart::paths()
+        .messages
+        .item(&Id::from_raw(message))
+        .reactions
+        .react(emoji)
+        .into()
 }
 
 fn edit(message: &str, text: &str) -> ui::tilo_resource::Invoke<ChatPart> {
@@ -127,9 +129,9 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
     let chat = Rc::new(crate::demo::demo(crate::model::ME));
     let chain: Chain<ChatPart> =
         Chain::detached("so.tilo.chat", crate::model::ME, move || Rc::clone(&chat)).unwrap();
-    for invoke in crate::resource::demo_part_invokes() {
-        chain.invoke(&invoke).unwrap();
-    }
+    chain
+        .write_start(0, &crate::demo::demo_part(crate::model::ME))
+        .unwrap();
     assert_eq!(chain.head(), Some(0));
     let mut next = 0;
     for n in 0..=PART_TEXT_BYTES / long_post(0).len() + 1 {
@@ -164,7 +166,9 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
             .unwrap()
             .reactions
             .iter()
-            .any(|reaction| reaction.emoji == "👍" && reaction.users == [crate::model::ME])
+            .any(|reaction| reaction.emoji == "👍"
+                && reaction.includes(crate::model::ME)
+                && reaction.count() == 1)
     );
 }
 
@@ -332,4 +336,107 @@ fn a_store_told_of_a_kept_part_has_the_window_look_at_once() {
     assert_eq!(devices.guest_syncs(), seen, "a sync opens nothing");
     assert_ne!(devices.guest.revision(), seen, "the settle opens the part");
     assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
+}
+
+/// On a desktop the room does not keep a part another device started: the
+/// guest's window is told a peer wrote it, starts the same part itself
+/// (each part's genesis is the same everywhere), and the poster's changes
+/// then apply on it with nothing missing, as they arrive on its route.
+#[test]
+fn a_part_a_peer_started_is_started_here_and_takes_the_peers_changes() {
+    let devices = TwoDevices::new();
+    devices
+        .poster
+        .invoke(&crate::demo::post("c_general", "the first post", None))
+        .unwrap();
+    let seen = devices.guest_syncs();
+    devices.guest_store.announce([crate::parts::part(0)]);
+    assert_eq!(devices.guest_syncs(), seen, "a sync opens nothing");
+    assert_eq!(devices.guest.head(), Some(0), "the settle starts the part");
+    let mut written =
+        ui::automerge::AutoCommit::load(&devices.poster.part_bytes(0).unwrap()).unwrap();
+    let missing = devices
+        .guest_store
+        .with(&crate::parts::part(0), |doc| {
+            let changes = written.get_changes(&doc.get_heads());
+            tilo_automerge::ApplyIncoming::apply_incoming(doc, changes).unwrap();
+            doc.get_missing_deps(&[])
+        })
+        .unwrap();
+    assert!(
+        missing.is_empty(),
+        "the poster's part builds on the same genesis"
+    );
+    assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
+}
+
+/// read-messages reads a channel's messages from every part of the chat's
+/// messages, not the chat record (which holds none), page by page.
+#[test]
+fn read_messages_pages_through_a_channel_across_its_parts() {
+    let mut room = Room::demo().unwrap();
+    let later = fill_part(&mut room, 0);
+    assert_eq!(room.messages().part_of(&Id::from_raw(&later)), Some(1));
+    let held = room.messages();
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = crate::effects::read_messages(
+            &held,
+            ("c_general", &|id| format!("name of {id}")),
+            Some(7),
+            cursor.as_deref(),
+        )
+        .unwrap();
+        for message in page["messages"].as_array().unwrap() {
+            assert_eq!(
+                message["authorName"],
+                format!("name of {}", message["author"].as_str().unwrap()),
+                "each message names its author as the window does"
+            );
+        }
+        let ids: Vec<String> = page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(ids.len() <= 7);
+        seen.extend(ids);
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    assert!(seen.contains(&"m_welcome".to_owned()), "part 0's");
+    assert_eq!(seen.last(), Some(&later), "and part 1's, last");
+    let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), seen.len(), "each once");
+    assert!(
+        crate::effects::read_messages(&held, ("c_general", &str::to_owned), Some(0), None).is_err()
+    );
+}
+
+/// A post's step says which channel it went to, as everyone sees it
+/// named: what the automatic status reads to say "Writing in #general".
+#[test]
+fn a_post_records_the_channel_it_went_to() {
+    let mut room = Room::demo().unwrap();
+    room.say("u_aria", "c_general", "where this went").unwrap();
+    let bytes = room.part_bytes(0).unwrap();
+    let mut doc = ui::automerge::AutoCommit::load(&bytes).unwrap();
+    let places: Vec<String> = ui::HistorySource::new()
+        .entries(&mut doc)
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .context
+                .as_ref()?
+                .facets
+                .iter()
+                .find(|facet| facet.key == tilo_actions::PLACE_FACET)
+                .map(|facet| facet.value.clone())
+        })
+        .collect();
+    assert!(places.iter().any(|place| place == "#general"), "{places:?}");
 }

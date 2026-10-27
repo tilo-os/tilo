@@ -16,8 +16,6 @@ pub struct Proof;
 #[cfg(target_os = "linux")]
 impl Proof {
     /// Start an owned responder with a total handshake deadline.
-    /// # Errors
-    /// Returns socket creation or worker startup errors.
     pub fn start() -> io::Result<Self> {
         Self::start_with_timeout(std::time::Duration::from_secs(10))
     }
@@ -131,7 +129,7 @@ mod tests {
         let mut proof = Proof::start().unwrap();
         let mut host = proof.remote.try_clone().unwrap();
         super::super::arm(&host).unwrap();
-        host.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        host.set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let nonce = [53; 32];
         host.write_all(&super::super::MAGIC).unwrap();
@@ -154,16 +152,9 @@ mod tests {
     fn stalled_actual_proof_has_total_deadline() {
         let mut proof = Proof::start_with_timeout(std::time::Duration::from_millis(50))
             .expect("owned socketpair");
-        let until = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(2))
-            .unwrap();
-        while !proof.finished() && std::time::Instant::now() < until {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(
-            proof.finished(),
-            "actual handshake must stop without a challenge"
-        );
+        tilo_test_env::wait_until("the handshake to stop without a challenge", || {
+            proof.finished()
+        });
         assert!(
             proof.result().is_err(),
             "stalled peer never supplied kernel proof"
@@ -171,11 +162,16 @@ mod tests {
     }
     #[test]
     fn cancellation_stops_actual_proof_before_descriptor_custody_ends() {
-        let proof = Proof::start().expect("owned socketpair");
-        let started = std::time::Instant::now();
+        // A deadline no test outlives: only the drop can end the handshake.
+        let proof = Proof::start_with_timeout(std::time::Duration::from_secs(24 * 60 * 60))
+            .expect("owned socketpair");
         // Drop shuts down the exact owned endpoint and joins the responder;
         // no discovery, unrelated process signal or childwait approximation.
-        drop(proof);
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(proof);
+            let _ = dropped.send(());
+        });
+        tilo_test_env::recv("dropping the proof to stop its responder", &done);
     }
 }

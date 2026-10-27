@@ -44,7 +44,7 @@ use crate::model::key;
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
 use crate::model::{
     Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MAX_SPEED, MIN_GAIN_DB, MIN_SPEED, MediaId,
-    MediaItem, MediaKind, Project, TextAlign, TextSource, TrackId, TrackKind, Transition,
+    MediaItem, MediaKind, Project, Side, TextAlign, TextSource, TrackId, TrackKind, Transition,
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
@@ -57,16 +57,22 @@ use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 mod accessibility;
 mod bin_paint;
+mod go_to_clip;
 mod inspector_layout;
 mod inspector_paint;
 mod interaction;
 mod layout;
+mod notices;
 mod paint;
 mod preview_paint;
 mod project_workflow;
+mod render_action;
 mod scenario;
 mod selection;
+mod strip_menu;
+mod timeline_empty;
 mod timeline_paint;
+mod window_bar;
 use crate::layout::{self as chrome_layout, S1, S2, S3, S4, S6};
 use inspector_layout::InspectorLayout;
 use layout::Regions;
@@ -92,16 +98,15 @@ const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
 
 const GOTO_CARD_W: f64 = 260.0;
 
-// ---- layout constants ----------------------------------------------------
 /// The preview's share of the room under the header row, as the window
-/// opens: about a 320 px timeline in an ordinary window, more preview in a
+/// opens: about a 360 px timeline in an ordinary window, more preview in a
 /// small one. The person drags the divider; the lanes scroll.
-const PREVIEW_SHARE: f32 = 0.56;
+const PREVIEW_SHARE: f32 = 0.52;
 /// The preview / timeline divider's action target.
 const TIMELINE_SPLIT_TARGET: &str = "video-editor.timeline-split";
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
-const GUTTER_W: f64 = 128.0;
+const GUTTER_W: f64 = 160.0;
 const RULER_H: f64 = 30.0;
 const TRANSPORT_H: f64 = 58.0;
 const LANE_GAP: f64 = S1;
@@ -153,8 +158,19 @@ const MEDIA_UNREADABLE: &str = "Unreadable media";
 /// The compact form, for the media bin's fixed-width column.
 const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 
+/// Whether `m`'s bytes are missing on this device. A title is made from the
+/// document, so it has no file to miss; a clip this device imported by its
+/// contents (a browser page has no paths) has its bytes kept here, though no
+/// path resolves to them.
+fn media_missing_here(m: &MediaItem) -> bool {
+    if m.text.is_some() || crate::files::kept_here(&m.path) {
+        return false;
+    }
+    !m.source().hydration.is_local()
+}
+
 /// Below this allocated width the media bin stops being a docked pane and
-/// collapses into an overlay flap summoned by the topbar hamburger. Above it
+/// collapses into an overlay flap summoned by the window bar's media toggle. Above it
 /// the bin is docked beside the editor (the wide desktop layout).
 /// Height of a collapsible inspector section header.
 const SECTION_H: f64 = 24.0;
@@ -167,51 +183,6 @@ const PIP_INSET: f64 = 0.04;
 const KEY_BOX: f64 = 20.0;
 
 const BIN_BREAKPOINT: f64 = 900.0;
-
-const TOPBAR_EDGE: f64 = S3;
-const TOPBAR_GAP: f64 = S3;
-/// At this width the Split button is redundant with its stable `S` shortcut
-/// and prevents the two independent side-panel toggles from fitting.
-const TOPBAR_COMPACT_BREAKPOINT: f64 = 480.0;
-
-/// Stable accessibility routes for the controls painted in the top bar.
-/// These are deliberately independent from their rectangles: a compact layout
-/// can hide Split without letting a stale assistive-technology route operate a
-/// control that is no longer on screen.
-const TOPBAR_A11Y_KEY: &str = "topbar";
-const TOPBAR_BIN_KEY: &str = "topbar.bin";
-const TOPBAR_INSPECTOR_KEY: &str = "topbar.inspector";
-const TOPBAR_IMPORT_KEY: &str = "topbar.import";
-const TOPBAR_SPLIT_KEY: &str = "topbar.split";
-const TOPBAR_EXPORT_KEY: &str = "topbar.export";
-
-/// Width the project button takes when the topbar has room for it, and the
-/// least it will accept before being dropped instead. The floor exists
-/// because a name clipped to a few characters states a *different* project
-/// name, and the button's whole job is saying which project this is.
-const PROJECT_BTN_W: f64 = 210.0;
-const PROJECT_BTN_MIN_W: f64 = 120.0;
-
-/// The topbar's labelled commands. "Import" and "Export" open a dialog of
-/// their own, so they carry the ellipsis that says so.
-const IMPORT_LABEL: &str = "Import…";
-const SPLIT_LABEL: &str = "Split";
-const EXPORT_LABEL: &str = "Export…";
-
-/// How wide the topbar's labelled commands are; see
-/// [`VideoEditorApp::topbar_widths`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct TopbarWidths {
-    pub(super) import: f64,
-    pub(super) split: f64,
-    pub(super) export: f64,
-    pub(super) project: f64,
-}
-
-/// What the project button's dot means, spelled out wherever the dot cannot
-/// be seen. Not a warning — the autosave still holds the work; what the user
-/// does not have is a file of their own.
-const PROJECT_UNSAVED: &str = "Unsaved changes";
 
 /// The preview's and the inspector's empty states, in one place each so the
 /// painted words and the spoken ones cannot drift apart. They did: the
@@ -248,7 +219,7 @@ const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
 /// a 500px one — at which point the preview, the transport buttons and the
 /// timecode are all squeezed out by a panel that edits a clip the user can no
 /// longer see. Below the breakpoint the inspector gets out of the way and is
-/// summoned by the topbar toggle.
+/// summoned by the window bar's inspector toggle.
 ///
 /// Unlike the bin, an open inspector paints **no scrim**: its whole purpose
 /// is to change the picture, so dimming the picture while you drag a slider
@@ -285,27 +256,19 @@ enum NoticeLevel {
 }
 
 impl NoticeLevel {
-    /// The banner this level is told in.
-    fn banner_kind(self) -> ui::widget::BannerKind {
+    /// The kind of bar notice this level is told in.
+    fn toast_kind(self) -> ui::widget::toast::ToastKind {
+        use ui::widget::toast::ToastKind;
         match self {
-            Self::Ok => ui::widget::BannerKind::Info,
-            Self::Warning => ui::widget::BannerKind::Warning,
-            Self::Failed => ui::widget::BannerKind::Error,
-        }
-    }
-
-    /// The tone a badge or a progress fill takes at this level.
-    fn tone(self) -> ui::widget::Tone {
-        match self {
-            Self::Ok => ui::widget::Tone::Neutral,
-            Self::Warning => ui::widget::Tone::Warning,
-            Self::Failed => ui::widget::Tone::Danger,
+            Self::Ok => ToastKind::Info,
+            Self::Warning => ToastKind::Warning,
+            Self::Failed => ToastKind::Error,
         }
     }
 }
 
 /// How many refused files a batch names before it starts counting the rest.
-/// The bin's notice strip is one line; naming every refusal in a fifty-file
+/// The bar's notice is one line; naming every refusal in a fifty-file
 /// batch would elide the reasons away again.
 const IMPORT_REFUSALS_NAMED: usize = 2;
 
@@ -323,46 +286,13 @@ impl ImportReport {
     }
 }
 
-/// The export chip's painted text, cached against everything that produced it.
-///
-/// The chip is repainted on every animation frame for as long as a render
-/// runs, and its words only move when the whole-percent figure does. Without
-/// this, each of those frames reformatted a string and re-measured an
-/// elision that was already known.
-struct ExportChipText {
-    /// The render status the words were built from.
-    from: ExportStatus,
-    /// The chip width the elision was measured against.
-    width: f64,
-    /// The severity the chip paints at.
-    level: NoticeLevel,
-    /// The string as painted, already elided to the chip.
-    shown: String,
-}
-
-/// Whether two render statuses would paint the same chip.
-///
-/// Progress is shown to the whole percent, so two encoded frames inside one
-/// percent are the same picture and must not cost a reformat.
-fn chip_text_matches(a: &ExportStatus, b: &ExportStatus) -> bool {
-    match (a, b) {
-        (ExportStatus::Rendering { progress: x }, ExportStatus::Rendering { progress: y }) => {
-            chip_percent(*x) == chip_percent(*y)
-        }
-        _ => a == b,
-    }
-}
-
-/// The whole-percent figure the chip shows for `progress`.
-fn chip_percent(progress: f64) -> i64 {
-    (progress.clamp(0.0, 1.0) * 100.0).round() as i64
-}
-
 /// One line of standing feedback, carrying the severity it was created with.
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Notice {
     level: NoticeLevel,
     text: String,
+    /// What the person can do about it, when it asks them to act.
+    action: Option<notices::NoticeAction>,
 }
 
 impl Notice {
@@ -370,6 +300,7 @@ impl Notice {
         Self {
             level: NoticeLevel::Ok,
             text: text.into(),
+            action: None,
         }
     }
 
@@ -377,6 +308,7 @@ impl Notice {
         Self {
             level: NoticeLevel::Warning,
             text: text.into(),
+            action: None,
         }
     }
 
@@ -384,7 +316,14 @@ impl Notice {
         Self {
             level: NoticeLevel::Failed,
             text: text.into(),
+            action: None,
         }
+    }
+
+    /// The notice with `action` beside it in the bar.
+    fn with_action(mut self, action: notices::NoticeAction) -> Self {
+        self.action = Some(action);
+        self
     }
 
     #[cfg(test)]
@@ -1017,6 +956,11 @@ pub struct VideoEditorApp {
     /// the next edit of one of them is the difference from, and what the
     /// optimistic `project` returns to once a drag lets go.
     stored: std::rc::Rc<Project>,
+    /// The inspector's switches, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
+    /// The content store the host lent the window: where a render made for
+    /// a caller is kept.
+    content: Option<ui::framework::content::ContentStore>,
     /// The local state each existing clip had immediately before the current
     /// UI edit began. Optimistic actions diff this baseline against the local
     /// result, then check only those old values against the live CRDT. They
@@ -1037,6 +981,8 @@ pub struct VideoEditorApp {
     /// so a large-text desktop promotes them to their existing overlay modes
     /// before they crush the preview or overlap inspector controls.
     text_scale: f64,
+    /// UI zoom is independent from the additional accessibility text scale.
+    ui_scale: f64,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
     zoom: f64,   // pixels per second
@@ -1075,11 +1021,11 @@ pub struct VideoEditorApp {
     import_rx: Option<ImportChannel>,
     /// A contents chooser, where files have no path (a browser page).
     import_contents_rx: Option<ui::portal::ContentsChannel>,
-    /// A short, honest status line shown after an import attempt (how many
-    /// clips landed, which files were refused and why, or why the portal
-    /// round-trip failed). Never a fake success, and it carries its own
+    /// What the last import did, said in the window's bar: how many clips
+    /// landed, which files were refused and why, or why the portal
+    /// round-trip failed. Never a fake success, and it carries its own
     /// severity rather than leaving the tint to be guessed from its prose.
-    import_notice: Option<Notice>,
+    import_notice: ui::widget::toast::Transient<Notice>,
     /// A file queued to import on the next `sync` (deterministic `--shots` /
     /// tests seed a real clip here instead of opening the portal).
     pending_imports: Vec<PathBuf>,
@@ -1204,6 +1150,8 @@ pub struct VideoEditorApp {
     /// Delete). Owned as a field and driven directly (`open_at` / `item_at` /
     /// `take_selection`) because the editor is a canvas, not a taffy tree.
     bin_menu: ContextMenu,
+    /// The segmented strips painted folded, and the one whose menu is open.
+    strips: strip_menu::Strips,
     /// What the open context menu (or a pending menu action) targets — a bin
     /// media item or a timeline track header.
     menu_target: Option<MenuTarget>,
@@ -1281,9 +1229,6 @@ pub struct VideoEditorApp {
     /// An in-progress timecode entry, or `None`. Typing a timecode and
     /// pressing Enter jumps the playhead there.
     goto_entry: Option<ui::widget::TextInput>,
-    /// The window's History control, in the editor's own header row; while
-    /// the editor shows it the window draws no History bar above it.
-    history: ui::widget::HistoryOpener,
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
     thumbnails: crate::thumbnail::ThumbnailCache,
@@ -1310,16 +1255,18 @@ pub struct VideoEditorApp {
     /// destination, or why the round-trip failed. Distinct from
     /// [`ExportStatus`], which reports the *render*.
     export_notice: Option<String>,
-    /// Render cache for the topbar export chip. A render holds animation
-    /// frames open for its whole duration, so the chip's words are formatted
-    /// and elided when they change rather than once a frame.
-    export_chip_text: Option<ExportChipText>,
-    // --- project files ----------------------------------------------------
     /// The file this project is saved in, once it has one. `None` means the
     /// project has never been saved: the work is still safe (the autosave
     /// document holds it) but there is nothing on disk to hand anybody, and
     /// the project button says so.
     project_path: Option<PathBuf>,
+    /// Where the project was saved when that place has no path here (a
+    /// browser page's Save dialog file): kept, so every later Save writes
+    /// there quietly. Only Save As asks again.
+    project_destination: Option<ui::portal::SaveDestination>,
+    /// The document's heads a write to [`Self::project_destination`] in
+    /// flight is saving: what reads as saved once it lands.
+    saving_heads: Option<Vec<automerge::ChangeHash>>,
     /// Whether the document has changed since the last save to
     /// [`Self::project_path`]. Derived from the document's heads rather than
     /// from a flag each edit remembers to set, so an edit that arrives from a
@@ -1329,11 +1276,14 @@ pub struct VideoEditorApp {
     /// A project open/save portal round-trip in flight, drained each `sync`
     /// exactly like the import and export-destination ones.
     project_rx: Option<portal::ProjectChannel>,
-    /// A short, honest line about the last project-file operation. Never a
-    /// fake success: a save that failed says why, and a project opened with
-    /// sources this device cannot read says which. Carries its own severity —
-    /// see [`NoticeLevel`].
-    project_notice: Option<Notice>,
+    /// What the last project-file operation did, said in the window's bar.
+    /// Never a fake success: a save that failed says why, and a project
+    /// opened with sources this device cannot read says which. Carries its
+    /// own severity — see [`NoticeLevel`].
+    project_notice: ui::widget::toast::Transient<Notice>,
+    /// Why the last save of this project failed, until a save succeeds: its
+    /// notice stays in the bar with Try again for as long.
+    save_failure: Option<String>,
     /// The project file or render job an effect started, answered through
     /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
@@ -1341,13 +1291,6 @@ pub struct VideoEditorApp {
     /// A project open or save at a named path, run on the next sync, where
     /// the document is at hand.
     resource_pending_operation: Option<crate::actions::VideoEditorEffect>,
-    /// The project menu (Open / Save / Save As / recents), on the shared
-    /// [`ContextMenu`] every other menu in the app uses.
-    project_menu: ContextMenu,
-    /// What each row of the open project menu does. Built with the menu, so
-    /// a click resolves to an intent rather than to a row index that shifts
-    /// as the recents list grows.
-    project_menu_items: Vec<ProjectMenuItem>,
     /// Recently-opened projects, most recent first. Per-device and outside
     /// the CRDT — see [`crate::project_file::recents`].
     recents: Vec<PathBuf>,
@@ -1362,15 +1305,12 @@ pub struct VideoEditorApp {
     help_scroll: f64,
     /// What a `Save` should do once the destination comes back: just save, or
     /// save and then continue into the open that was interrupted.
-    save_then_open: Option<PathBuf>,
-    /// Save requested by either the UI or the resource-operation door. The
-    /// effect adapter only has an immutable document borrow, so sync performs
-    /// the file write with the normal mutable event-loop document.
+    save_then_open: Option<PendingOpen>,
     /// The project's format, worded once for the inspector to paint.
     ///
-    /// Cached against the numbers it was built from for the same reason the
-    /// export chip's words are: `draw` runs for every animation frame, and a
-    /// project's frame size and rate change a handful of times in a session.
+    /// Cached against the numbers it was built from: `draw` runs for every
+    /// animation frame, and a project's frame size and rate change a handful
+    /// of times in a session.
     project_format_shown: String,
     /// The `(width, height, fps-bits)` the string above was built from. The
     /// rate is carried as its bit pattern so the freshness test is an exact
@@ -1391,7 +1331,11 @@ enum ProjectMenuItem {
 /// unsaved project it would replace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingOpen {
+    /// The file to open; where files have no paths, only its name.
     path: PathBuf,
+    /// The file's contents, when the chooser handed those over instead of
+    /// a path (a browser page).
+    contents: Option<Vec<u8>>,
     /// The name of the project that would be discarded, so the question can
     /// say what is at stake instead of "you have unsaved changes".
     losing: String,
@@ -1437,6 +1381,8 @@ enum MenuTarget {
     AddEffect,
     /// A key control's menu: what to do with `param`'s curve at the playhead.
     Keyframe(Param),
+    /// A folded segmented strip's menu of segments ([`strip_menu`]).
+    Strip,
 }
 
 impl Default for VideoEditorApp {
@@ -1454,6 +1400,8 @@ impl VideoEditorApp {
         Self {
             project: Project::new("Untitled"),
             stored: std::rc::Rc::new(Project::new("Untitled")),
+            faces: ui::widget::FaceMotions::default(),
+            content: None,
             clip_edit_bases: HashMap::new(),
             shot_scenario: ShotScenario::Live,
             shot_lifecycle: ShotLifecycle::default(),
@@ -1469,9 +1417,10 @@ impl VideoEditorApp {
             render_pipeline: RenderPipelineState::default(),
             project_sync: ProjectSyncState::default(),
             text_scale: 1.0,
+            ui_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
             shot_presence: None,
-            playhead: 10.0,
+            playhead: 0.0,
             zoom: 34.0,
             scroll: 0.0,
             hbar: ui::widget::Scrollbar::horizontal(),
@@ -1490,7 +1439,7 @@ impl VideoEditorApp {
             export_status: ExportStatus::Idle,
             import_rx: None,
             import_contents_rx: None,
-            import_notice: None,
+            import_notice: ui::widget::toast::Transient::new(),
             pending_imports: Vec::new(),
             undo: ui::UndoAccess::default(),
             #[cfg(feature = "decode")]
@@ -1525,7 +1474,7 @@ impl VideoEditorApp {
             bin_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             bin_menu: ContextMenu::new(),
-            history: ui::widget::HistoryOpener::new(),
+            strips: strip_menu::Strips::default(),
             menu_target: None,
             // PROJECT starts folded — the one section that does. A folded
             // header still states what is inside it, and what is inside this
@@ -1556,16 +1505,16 @@ impl VideoEditorApp {
             export_job: None,
             export_dest_rx: None,
             export_notice: None,
-            export_chip_text: None,
             project_path: None,
+            project_destination: None,
+            saving_heads: None,
             saved_heads: None,
             project_rx: None,
-            project_notice: None,
+            project_notice: ui::widget::toast::Transient::new(),
+            save_failure: None,
             resource_operation: None,
             resource_reply: None,
             resource_pending_operation: None,
-            project_menu: ContextMenu::new(),
-            project_menu_items: Vec::new(),
             recents: crate::project_file::recents::load(),
             pending_open: None,
             chrome_theme: Theme::dark(),
@@ -1711,7 +1660,7 @@ impl VideoEditorApp {
     /// at 2× keeps the panel practical on a small display while still making
     /// the platform's largest advertised text setting fully usable.
     fn inspector_ui_scale(&self) -> f64 {
-        self.text_scale.clamp(1.0, 2.0)
+        self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 2.0)
     }
 
     /// The inspector gets wider with large text as well as taller.  At 200%
@@ -1719,7 +1668,7 @@ impl VideoEditorApp {
     /// values then have nowhere truthful to go.  The modest cap preserves a
     /// useful preview even when the panel is an overlay.
     fn inspector_width(&self) -> f64 {
-        INSPECTOR_W * self.inspector_ui_scale().min(1.5)
+        INSPECTOR_W * self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 1.5)
     }
 
     /// The bin is a compact catalogue at 100%, but its two text lines and
@@ -1727,7 +1676,7 @@ impl VideoEditorApp {
     /// Scale its *geometry* (not just its glyphs) together with the inspector,
     /// capped where an overlay would otherwise hide the entire small window.
     fn bin_ui_scale(&self) -> f64 {
-        self.text_scale.clamp(1.0, 1.6)
+        self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 1.6)
     }
 
     fn bin_width(&self) -> f64 {
@@ -1778,81 +1727,40 @@ impl VideoEditorApp {
         )
     }
 
-    /// The top bar has a different constraint from the side panes: it must
-    /// fit labelled *commands* on one short row.  A 1440px desktop at 200%
-    /// text has about the same room for those labels as a 720px window at the
-    /// default size, even though its physical rectangles are still 1440px
-    /// wide.  Treating only the latter as compact left the scaled labels to
-    /// run into one another.
-    fn topbar_is_compact(&self) -> bool {
-        let w = self.topbar_widths();
-        let target = self.topbar_target();
-        let gap = TOPBAR_GAP * self.chrome_scale();
-        let needed = 2.0 * TOPBAR_EDGE * self.chrome_scale()
-            + 2.0 * target
-            + w.import
-            + w.split
-            + w.export
-            + PROJECT_BTN_MIN_W.min(w.project)
-            + 6.0 * gap;
-        self.rect.width() < TOPBAR_COMPACT_BREAKPOINT.max(needed)
-            || (self.text_scale > 1.25 && self.rect.width() / self.text_scale < 800.0)
-    }
-
-    /// How wide each labelled topbar command is: as wide as its label, by
-    /// the toolkit's own button measure.
-    pub(super) fn topbar_widths(&self) -> TopbarWidths {
-        let project = self.project_label();
-        self.with_dialog_layout(|app, tr, theme| {
-            let mut w = |label: &str| ButtonFace::new(Rect::ZERO, label).intrinsic_width(tr, theme);
-            let import = w(IMPORT_LABEL);
-            let split = w(SPLIT_LABEL);
-            let export = w(EXPORT_LABEL);
-            let project = ButtonFace::new(Rect::ZERO, &project)
-                .icon(Icon::Film)
-                .intrinsic_width(tr, theme)
-                .min(PROJECT_BTN_W * app.chrome_scale());
-            TopbarWidths {
-                import,
-                split,
-                export,
-                project,
-            }
-        })
-    }
-
-    /// Canvas chrome has fixed logical geometry, whereas text is scaled by
-    /// `TextRenderer`.  Let the surrounding rhythm grow with large text too,
-    /// but cap it before a small laptop loses the entire preview to chrome.
+    /// UI zoom grows the whole canvas chrome. Additional accessibility type
+    /// growth is bounded separately, preserving room for footage and lanes.
     fn chrome_scale(&self) -> f64 {
-        self.text_scale.clamp(1.0, 1.35)
+        self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 1.35)
     }
 
-    /// The editor's one header row: the window's header height.
-    fn topbar_height(&self) -> f64 {
-        f64::from(self.chrome_theme.tokens.metrics.header_height) * self.chrome_scale()
-    }
-
-    /// A topbar control: a Regular control's height.
-    fn topbar_target(&self) -> f64 {
-        ButtonFace::height(ControlSize::Regular, &self.chrome_theme)
+    fn gutter_width(&self) -> f64 {
+        GUTTER_W * self.chrome_scale()
     }
 
     /// Where the timeline starts in the room between the header row and
-    /// the window's bottom edge: the divider the person drags.
+    /// the window's bottom edge: the divider the person drags, held where
+    /// the picture fills the preview's width so the room past it goes to
+    /// the timeline (the ratio stays for a wider window).
     fn timeline_top(&self, below_header: f64, bottom: f64) -> f64 {
-        (below_header
-            + self
-                .timeline_split
-                .ratio()
-                .first_extent((bottom - below_header).max(0.0)))
-        .round()
+        let extent = self
+            .timeline_split
+            .ratio()
+            .first_extent((bottom - below_header).max(0.0))
+            .min(self.preview_fill_height());
+        (below_header + extent).round()
     }
 
-    /// The room the divider moves in: everything under the header row.
+    /// Hand the divider its room and the most the preview can use.
+    fn place_timeline_split(&mut self) {
+        let bounds = self.timeline_split_bounds();
+        let most = self.preview_fill_height();
+        self.timeline_split.set_first_max(Some(most));
+        self.timeline_split.set_rect(bounds, &self.chrome_theme);
+    }
+
+    /// The room the divider moves in: the whole editor.
     fn timeline_split_bounds(&self) -> Rect {
-        let r = self.rect;
-        Rect::new(r.x0, r.y0 + self.topbar_height(), r.x1, r.y1)
+        self.rect
     }
 
     /// Give the preview / timeline divider the event. Returns whether it
@@ -1862,8 +1770,7 @@ impl VideoEditorApp {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, &self.chrome_theme);
+        self.place_timeline_split();
         self.timeline_split.handle_event(event, ctx)
     }
 
@@ -1874,10 +1781,10 @@ impl VideoEditorApp {
             .project
             .display_tracks()
             .iter()
-            .map(|t| self.lane_height(t.kind) + LANE_GAP)
+            .map(|t| self.lane_height(t.kind) + LANE_GAP * self.chrome_scale())
             .sum();
         let footer = 2.0 * S2 + ButtonFace::height(ControlSize::Small, &self.chrome_theme);
-        LANE_GAP + lanes + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
+        LANE_GAP * self.chrome_scale() + lanes + footer + SCROLLBAR_THICKNESS + SCROLLBAR_INSET
     }
 
     fn lanes_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
@@ -1931,16 +1838,12 @@ impl VideoEditorApp {
             && (!r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split()))
     }
 
-    // ---- region geometry -------------------------------------------------
-
     fn time_to_x(&self, t: f64, lanes: &Rect) -> f64 {
         lanes.x0 + (t - self.scroll) * self.zoom
     }
     fn x_to_time(&self, x: f64, lanes: &Rect) -> f64 {
         (self.scroll + (x - lanes.x0) / self.zoom).max(0.0)
     }
-
-    // ---- horizontal timeline scroll --------------------------------------
 
     /// How many seconds fit across the lane area at the current zoom.
     fn visible_seconds(&self, r: &Regions) -> f64 {
@@ -2035,7 +1938,7 @@ impl VideoEditorApp {
                 if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
                     continue;
                 }
-                let inner = clip_inner_rect(cr);
+                let inner = clip_inner_rect(cr, self.clip_header_rect(cr).height());
                 if inner.height() <= 4.0 || inner.width() <= 4.0 {
                     continue;
                 }
@@ -2043,6 +1946,9 @@ impl VideoEditorApp {
                 let Some(m) = self.project.media(clip.media) else {
                     continue;
                 };
+                if m.kind.is_generated() {
+                    continue;
+                }
                 want.push((
                     clip.media,
                     m.palette,
@@ -2086,12 +1992,13 @@ impl VideoEditorApp {
     /// full lane width.
     fn lane_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
         let mut out = Vec::new();
-        let mut y = r.lanes.y0 + LANE_GAP - self.lane_scroll;
+        let gap = LANE_GAP * self.chrome_scale();
+        let mut y = r.lanes.y0 + gap - self.lane_scroll;
         for t in self.project.display_tracks() {
             let h = self.lane_height(t.kind);
             let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
             out.push((t.id, t.kind, lane));
-            y += h + LANE_GAP;
+            y += h + gap;
         }
         out
     }
@@ -2129,7 +2036,8 @@ impl VideoEditorApp {
 
     /// The clip flag inside it: what is clicked to walk the overloads.
     fn clip_flag_rect(&self, r: &Regions) -> Rect {
-        let m = chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r));
+        let m =
+            chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r), self.chrome_scale());
         let words = self.clip_flag_words();
         let w = self
             .with_dialog_layout(|_, tr, theme| {
@@ -2206,8 +2114,7 @@ impl VideoEditorApp {
     /// already are.
     ///
     /// Empty when the strip is too narrow to hold them without reaching into
-    /// the readout — the same rule the readout itself follows, and the reason
-    /// the scrubber starts where it does.
+    /// the readout. The scrubber occupies the separate lower row.
     fn history_buttons(&self, r: &Regions) -> Vec<(ui::UndoRequest, Rect)> {
         let scale = self.chrome_scale();
         if r.transport.width() < HISTORY_MIN_STRIP_W * scale {
@@ -2233,9 +2140,8 @@ impl VideoEditorApp {
     /// history buttons when the strip is showing them, and where it always
     /// used to be when it is not.
     ///
-    /// One answer for the scrubber and the readout, because two would let
-    /// the buttons and the timecode drift onto each other — which is
-    /// precisely what happened the first time they were laid out apart.
+    /// The readout starts after the command cluster; the scrubber has its
+    /// own lower row, so it remains usable when that cluster fills the width.
     fn transport_content_x(&self, r: &Regions) -> f64 {
         let scale = self.chrome_scale();
         if self.history_buttons(r).is_empty() {
@@ -2251,12 +2157,14 @@ impl VideoEditorApp {
     /// outside its own track. Capped at [`MAX_SCRUBBER_W`] so a very wide
     /// window does not stretch a 6px knob across three thousand pixels of bar.
     fn scrubber_rect(&self, r: &Regions) -> Rect {
-        let left = r.transport.x0 + self.transport_content_x(r);
-        let right = r.transport.x1 - 16.0;
-        if right - left < MIN_SCRUBBER_W {
+        // The lower row spans the monitor, independent of the upper command
+        // cluster. UI zoom must not remove scrubbing just to fit Undo beside Play.
+        let left = r.transport.x0 + S4 * self.chrome_scale();
+        let right = r.transport.x1 - S4 * self.chrome_scale();
+        if right - left < MIN_SCRUBBER_W * self.chrome_scale() {
             return Rect::ZERO;
         }
-        let w = (right - left).min(MAX_SCRUBBER_W);
+        let w = (right - left).min(MAX_SCRUBBER_W * self.chrome_scale());
         let scale = self.chrome_scale();
         let y0 = r.transport.y0 + 38.0 * scale;
         Rect::new(left, y0, left + w, y0 + 8.0 * scale)
@@ -2579,8 +2487,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- metering --------------------------------------------------------
-
     /// Age the meters by one frame and take the copy `draw` reads.
     ///
     /// Three things happen here and nothing else does: the bars fall, a
@@ -2696,7 +2602,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- playback --------------------------------------------------------
     fn advance_playback(&mut self) {
         let now = ui::time::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
@@ -2766,7 +2671,7 @@ impl VideoEditorApp {
         self.inspector_flap.advance(insp, now, motion);
     }
 
-    /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).
+    /// Toggle the media bin flap (the window bar's media toggle / `B`).
     /// Tell both side panels which layout the window is in now, so a show,
     /// hide or choice lands in the size class it was made in rather than
     /// the one the panel last saw (a resize with no frame drawn since).
@@ -2815,7 +2720,7 @@ impl VideoEditorApp {
         self.bin_layout() == SplitLayout::Overlay && self.bin_flap.is_open(SplitLayout::Overlay)
     }
 
-    /// Toggle the inspector flap (the topbar toggle / `Tab`). On a wide
+    /// Toggle the inspector flap (the window bar's toggle / `Tab`). On a wide
     /// window the inspector is docked and this collapses it away, which is
     /// the same affordance the bin's hamburger offers there.
     fn toggle_inspector(&mut self) {
@@ -3021,8 +2926,6 @@ impl VideoEditorApp {
         self.dispatch_existing_clips(&group);
     }
 
-    // ---- selection ------------------------------------------------------
-
     /// The primary (anchor) selected clip — what the inspector edits.
     fn selected(&self) -> Option<ClipId> {
         self.selection.primary()
@@ -3129,6 +3032,21 @@ impl VideoEditorApp {
         if !right_halves.is_empty() {
             self.selection.set(right_halves);
         }
+    }
+
+    /// Put the two pictures that meet at the playhead beside each other, as
+    /// the editor's own gesture: the project's `place-two-angles` verb
+    /// submitted through the same dispatcher a palette press or an agent
+    /// goes through, so all three make one edit and one undo step. Offered
+    /// only where two pictures meet on tracks that may be edited.
+    fn place_side_by_side(&self) {
+        if !self.project.side_by_side_available(self.playhead) {
+            return;
+        }
+        let Some(dispatcher) = self.actions.as_ref() else {
+            return;
+        };
+        dispatcher.submit(Project::PLACE_SIDE_BY_SIDE.with(self.playhead));
     }
 
     /// Lift every editable selected clip, leaving the gaps where they were:
@@ -3348,8 +3266,6 @@ impl VideoEditorApp {
             self.dispatch_clip(*id);
         }
     }
-
-    // ---- linked audio and video -----------------------------------------
 
     /// A linked geometry edit must not bypass a lock or edit only half a shot.
     fn link_group_editable(&self, id: ClipId) -> bool {
@@ -4469,7 +4385,10 @@ impl VideoEditorApp {
             .find(|t| t.kind == TrackKind::Video && !t.locked)
             .map(|t| t.id);
         let track = existing.unwrap_or_else(|| self.add_track(TrackKind::Video));
-        let at = snap_to_frame(self.playhead, self.project.fps);
+        // Never past the end: a playhead parked beyond the last clip would
+        // open a gap of nothing before the title.
+        let content_end = self.project.clips.iter().map(Clip::end).fold(0.0, f64::max);
+        let at = snap_to_frame(self.playhead.clamp(0.0, content_end), self.project.fps);
         let cid = self.project.add_clip(track, mid, at)?;
         self.dispatch_clip(cid);
         Some(cid)
@@ -4775,8 +4694,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- media-bin clip management ---------------------------------------
-
     /// The sub-rect of a bin row where the media *name* is drawn — clicking it
     /// (on an already-selected item) begins an inline rename, and it's where the
     /// rename field is placed.
@@ -4914,6 +4831,7 @@ impl VideoEditorApp {
     /// builders for the current [`MenuTarget`]).
     fn bin_menu_choose(&mut self, idx: usize) {
         match self.menu_target {
+            Some(MenuTarget::Strip) => self.choose_strip_row(idx),
             Some(MenuTarget::Media(mid)) => match idx {
                 0 => {
                     self.add_media_to_timeline(mid);
@@ -5111,12 +5029,12 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- media import ----------------------------------------------------
     /// Open the host file picker to import media through the shared XDG portal
     /// (`ui::portal`). The picker is a pure-Rust round-trip compiled into every
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
-        self.import_notice = Some(Notice::ok("Choose media to import…"));
+        self.import_notice
+            .show_progress(Notice::ok("Choose media to import…"));
         if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.import_rx = Some(portal::request_import());
         } else {
@@ -5148,11 +5066,13 @@ impl VideoEditorApp {
                         Err(reason) => report.refused.push((file.name, reason)),
                     }
                 }
-                self.import_notice = Some(import_report_notice(&report));
+                self.import_notice.show(import_report_notice(&report));
             }
-            ui::portal::ContentsOutcome::Cancelled => self.import_notice = None,
+            ui::portal::ContentsOutcome::Cancelled => {
+                self.import_notice.dismiss();
+            }
             ui::portal::ContentsOutcome::Failed(reason) => {
-                self.import_notice = Some(Notice::failed(reason));
+                self.import_notice.show(Notice::failed(reason));
             }
         }
     }
@@ -5308,6 +5228,15 @@ impl VideoEditorApp {
             VideoEditorEffect::Save { path: None } => self.queue_save_project(),
             VideoEditorEffect::SaveAs { path: None } => self.request_save_as(),
             VideoEditorEffect::Export { path: None } => self.request_export(),
+            VideoEditorEffect::ShowExport => self.presentation.export_open = true,
+            VideoEditorEffect::ToggleMedia => self.toggle_bin(),
+            VideoEditorEffect::ToggleInspector => self.toggle_inspector(),
+            VideoEditorEffect::SplitSelection => self.split_selected(),
+            VideoEditorEffect::GoToClip => {
+                if !self.go_to_clip() {
+                    return Err("there is no clip to go to".into());
+                }
+            }
             VideoEditorEffect::Import { path: Some(path) } => {
                 self.pending_imports.push(PathBuf::from(path));
             }
@@ -5318,6 +5247,18 @@ impl VideoEditorApp {
             | VideoEditorEffect::Save { path: Some(_) }
             | VideoEditorEffect::SaveAs { path: Some(_) } => {
                 return Err("direct project I/O requires lifecycle dispatch".into());
+            }
+            VideoEditorEffect::RenderTimeline { .. } => {
+                return Err("a render is answered as a job of its own".into());
+            }
+            VideoEditorEffect::ExportVideoContent { .. }
+            | VideoEditorEffect::ExportVideoStatus { .. }
+            | VideoEditorEffect::CancelVideoExport { .. }
+            | VideoEditorEffect::ViewFrameContent { .. } => {
+                return Err(crate::agent_render::HOST_ONLY.into());
+            }
+            VideoEditorEffect::ImportContent { .. } | VideoEditorEffect::ExportTimelineContent => {
+                return Err("answered by crate::agent_timeline".into());
             }
             VideoEditorEffect::CancelExport => {
                 let Some(job) = self.export_job.as_ref() else {
@@ -5347,7 +5288,7 @@ impl VideoEditorApp {
             VideoEditorEffect::Import { .. }
                 if self.import_rx.is_none() && self.pending_imports.is_empty() =>
             {
-                self.import_notice.as_ref().map(|notice| {
+                self.import_notice.get().map(|notice| {
                     if notice.level == NoticeLevel::Failed {
                         Err(notice.text.clone())
                     } else {
@@ -5362,7 +5303,7 @@ impl VideoEditorApp {
                     && self.resource_pending_operation.is_none()
                     && self.pending_open.is_none() =>
             {
-                self.project_notice.as_ref().map(|notice| {
+                self.project_notice.get().map(|notice| {
                     if notice.level == NoticeLevel::Failed {
                         Err(notice.text.clone())
                     } else {
@@ -5398,7 +5339,7 @@ impl VideoEditorApp {
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
             let report = self.import_files(&paths);
-            self.import_notice = Some(import_report_notice(&report));
+            self.import_notice.show(import_report_notice(&report));
             if self.media_pipeline.auto_place_imports
                 && let Some(mid) = self.selected_media
             {
@@ -5423,10 +5364,10 @@ impl VideoEditorApp {
         match outcome {
             Some(ImportOutcome::Selected(paths)) => {
                 let report = self.import_files(&paths);
-                self.import_notice = Some(import_report_notice(&report));
+                self.import_notice.show(import_report_notice(&report));
             }
             Some(ImportOutcome::Cancelled) => {
-                self.import_notice = None;
+                self.import_notice.dismiss();
                 if self.resource_reply.is_some() {
                     self.settle_resource_job(Err("media selection was cancelled".into()));
                 }
@@ -5435,7 +5376,7 @@ impl VideoEditorApp {
             // the real-desktop build") is nothing like a probe's, which is
             // exactly why the tint cannot be read back out of the words.
             Some(ImportOutcome::Failed(reason)) => {
-                self.import_notice = Some(Notice::failed(reason));
+                self.import_notice.show(Notice::failed(reason));
             }
             None => {}
         }
@@ -5443,12 +5384,8 @@ impl VideoEditorApp {
 
     /// Import a batch of files, reporting what landed *and* what did not.
     ///
-    /// Every refusal is kept with the probe's own reason. The batch used to
-    /// return only a count, so a partly-failed import collapsed to "Imported
-    /// 3 of 5 files" — which names neither of the two files that were
-    /// refused nor why, even though the probe knew exactly.
     fn import_files(&mut self, paths: &[PathBuf]) -> ImportReport {
-        self.import_notice = None;
+        self.import_notice.dismiss();
         let mut report = ImportReport::default();
         for path in paths {
             match self.try_import_one(path) {
@@ -5568,7 +5505,6 @@ impl VideoEditorApp {
     /// layer draws its representative fill, which keeps a capture
     /// deterministic and free of any media pipeline.
     fn pump_compositor(&mut self, r: &Regions) {
-        // Match the canvas's aspect at a sane readback size.
         const MAX_W: f64 = 960.0;
         if !self.render_pipeline.compositor_tried {
             self.render_pipeline.compositor_tried = true;
@@ -6110,7 +6046,6 @@ struct ExportLayout {
     /// The shared frame: scrim, card, title band, close control, action row.
     modal: ModalLayout,
     type_sizes: DialogType,
-    /// Top of the filename line under the title.
     filename_top: f64,
     /// Top of the mix-words line, when the levels have something to say.
     mix_top: Option<f64>,
@@ -6130,7 +6065,7 @@ struct ExportLayout {
     notice_top: f64,
     /// Close, or Cancel while a render is running: the first action.
     cancel: Rect,
-    /// Export, or "Rendering…" while a render is running: the second action.
+    /// Export: the second action, absent (zero) while a render is running.
     confirm: Rect,
 }
 
@@ -6207,8 +6142,7 @@ impl VideoEditorApp {
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
 
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, theme);
+        self.place_timeline_split();
         let mut regions = self.regions();
         if !self.shot_lifecycle.interaction_applied
             && self.shot_scenario.is_interaction()
@@ -6282,7 +6216,8 @@ impl VideoEditorApp {
 impl Widget for VideoEditorApp {
     ui::provides!(
         dyn ui::undo::UndoControl,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::widget::controls::ActionControls
     );
 
     #[expect(
@@ -6291,6 +6226,7 @@ impl Widget for VideoEditorApp {
     )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
+        self.take_notice_actions();
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
@@ -6298,7 +6234,7 @@ impl Widget for VideoEditorApp {
             use crate::actions::VideoEditorEffect;
             match &operation {
                 VideoEditorEffect::OpenProject { path: Some(path) } => {
-                    self.begin_open(PathBuf::from(path));
+                    self.begin_open(PathBuf::from(path), None);
                 }
                 VideoEditorEffect::Save { path: Some(path) }
                 | VideoEditorEffect::SaveAs { path: Some(path) } => {
@@ -6371,7 +6307,7 @@ impl Widget for VideoEditorApp {
             .project
             .media
             .iter()
-            .filter(|m| !m.source().hydration.is_local())
+            .filter(|m| media_missing_here(m))
             .map(|m| m.id)
             .collect();
         // Keep audio waveforms current: drain completed background computes, then
@@ -6402,7 +6338,7 @@ impl Widget for VideoEditorApp {
             .project
             .media
             .iter()
-            .filter(|m| m.kind.is_visual())
+            .filter(|m| m.kind.is_visual() && !m.kind.is_generated())
             .map(|m| {
                 (
                     m.id,
@@ -6415,12 +6351,11 @@ impl Widget for VideoEditorApp {
         for (id, palette, src, at) in visual {
             self.thumbnails.ensure(id, palette, &src, at);
         }
-        // Apply a one-shot capture scenario once the project is loaded.
         if !self.shot_lifecycle.applied
             && self.shot_scenario != ShotScenario::Live
             && !self.project.clips.is_empty()
         {
-            self.apply_shot_scenario(state);
+            self.apply_shot_scenario();
             self.shot_lifecycle.applied = true;
         }
         // Let the meters fall, and take the one copy the frame will draw
@@ -6431,18 +6366,35 @@ impl Widget for VideoEditorApp {
         // the `--shots` warm-up (which pumps `sync`) captures a decoded frame.
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
+        self.publish_notices();
     }
 
-    /// Work a still capture can wait for: an import still being read, and
-    /// (with real decoding) an auto-placed import whose decoded frame has
-    /// not reached the canvas yet.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // A notice's time runs out, and Try again is pressed, between
+        // events; the bar shows the change without a frame of the editor's.
+        let retry = self.take_notice_actions();
+        self.publish_notices();
+        retry
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.notice_deadline()
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+        self.run_window_toolbar();
+        self.publish_notices();
+    }
+
+    /// Finite work a still capture must await: imports, thumbnails,
+    /// waveforms, and an auto-placed import's decoded preview frame.
     fn has_pending_visual_work(&self) -> bool {
         let importing = self.import_rx.is_some() || !self.pending_imports.is_empty();
         #[cfg(feature = "decode")]
         let prerolling = self.media_pipeline.auto_place_imports && self.preview_awaits_frame();
         #[cfg(not(feature = "decode"))]
         let prerolling = false;
-        importing || prerolling
+        importing || prerolling || self.thumbnails.has_pending() || self.waveforms.has_pending()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -6458,7 +6410,17 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.playback.playing
+        // A clip's switch asks the motion clock for its own frames
+        // (`FaceMotions`); the runner reads it.
+        #[cfg(feature = "decode")]
+        let decoding = self
+            .frame_source
+            .as_ref()
+            .is_some_and(crate::gpu::MediaFrameSource::has_pending_frames);
+        #[cfg(not(feature = "decode"))]
+        let decoding = false;
+        decoding
+            || self.playback.playing
             || self.shuttle != 0.0
             || self.flap_animating()
             || self.import_rx.is_some()
@@ -6476,7 +6438,9 @@ impl Widget for VideoEditorApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.text_scale = f64::from(theme.text_scale);
+        self.ui_scale = f64::from(theme.ui_scale);
+        self.text_scale = theme.responsive_scale();
+        self.chrome_theme = theme.clone();
         taffy.fill_leaf(node_map, self)
     }
 
@@ -6502,6 +6466,10 @@ impl Widget for VideoEditorApp {
         presence: &PresenceCtx,
     ) {
         let r = self.prepare_draw_frame(theme);
+        self.strips.begin_frame();
+        // A key (B, Ctrl+I, S) or a render's progress changes what the bar
+        // shows without a sync.
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
         // Everything below draws the room from here. In the live app that is
         // the host's own context, fed by the collaboration socket; a capture
         // scenario can stage one instead (see `seed_shot_collaborators`).
@@ -6537,7 +6505,6 @@ impl Widget for VideoEditorApp {
         // Composite this frame's preview picture before anything paints, so
         // `draw_preview` only has to blit it.
         self.pump_compositor(&r);
-        self.draw_chrome(scene, transform, tr, theme, &r);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
         // behind a scrim.
@@ -6557,7 +6524,7 @@ impl Widget for VideoEditorApp {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
         if r.bin_overlay {
-            // The modal scrim over everything under the header row — the
+            // The modal scrim over the whole editor — the
             // preview, the transport and the timeline alike — then the drawer
             // sliding in on top of it. One scrim, from the theme.
             if r.scrim.width() > 0.0 {
@@ -6590,10 +6557,6 @@ impl Widget for VideoEditorApp {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
         }
         self.draw_file_drop_invite(scene, transform, tr, theme);
-        self.draw_project_notice(scene, transform, tr, theme, &r);
-        // Above the dialog's own scrim: a render that is still going is
-        // reported whether or not the dialog that started it is up.
-        self.draw_export_chip(scene, transform, tr, theme, &r);
         if self.pending_open.is_some() {
             self.draw_discard_dialog(scene, transform, tr, theme);
         }
@@ -6617,19 +6580,9 @@ impl Widget for VideoEditorApp {
             .map(ui::framework::Dispatcher::begin_group);
         let r = self.regions();
         let bin_overlay_open = self.bin_overlay_is_open();
-        // The window's History control in the header row, unless a dialog
-        // holds the window.
         let modal_open = self.presentation.export_open
             || self.pending_open.is_some()
             || self.navigation.help_open;
-        if !modal_open
-            && self
-                .history
-                .handle_event(event, r.history_btn, ctx.scale_factor)
-        {
-            *ctx.handled = true;
-            return;
-        }
         if !modal_open && !bin_overlay_open && self.route_to_timeline_split(event, ctx) {
             return;
         }
@@ -6766,8 +6719,8 @@ impl Widget for VideoEditorApp {
                     if self.commit_marker_rename(target, &name) {
                         self.marker_rename = None;
                     } else {
-                        self.project_notice =
-                            Some(Notice::failed("A marker needs a name to be found by"));
+                        self.project_notice
+                            .show(Notice::failed("A marker needs a name to be found by"));
                     }
                 }
                 EditOutcome::Cancelled => self.marker_rename = None,
@@ -6782,19 +6735,6 @@ impl Widget for VideoEditorApp {
             self.bin_menu.handle_event(event, ctx);
             if let Some(idx) = self.bin_menu.take_selection() {
                 self.bin_menu_choose(idx);
-            }
-            if *ctx.handled {
-                return;
-            }
-        }
-        // Same for the project menu.
-        if self.project_menu.is_open() {
-            self.project_menu.handle_event(event, ctx);
-            if let Some(idx) = self.project_menu.take_selection() {
-                if let Some(item) = self.project_menu_intent(idx) {
-                    self.run_project_menu_item(item);
-                }
-                self.project_menu.close();
             }
             if *ctx.handled {
                 return;
@@ -6871,10 +6811,7 @@ impl Widget for VideoEditorApp {
                 // user was actually looking at when they clicked.
                 // A click on the bin's scrim is only a dismissal; it must not
                 // first move the hidden timeline or inspector focus cursor.
-                if !bin_overlay_open
-                    || r.bin.contains(self.last_mouse)
-                    || r.menu_btn.contains(self.last_mouse)
-                {
+                if !bin_overlay_open || r.bin.contains(self.last_mouse) {
                     self.place_cursor_at(&r, self.last_mouse);
                 }
                 self.handle_press(&ctx.state, &r, ctx.modifiers.state().shift_key());
@@ -6941,7 +6878,7 @@ impl Widget for VideoEditorApp {
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
                 let report = self.import_files(std::slice::from_ref(path));
-                self.import_notice = Some(import_report_notice(&report));
+                self.import_notice.show(import_report_notice(&report));
                 *ctx.handled = true;
             }
             WindowEvent::HoveredFile(_) => {
@@ -7098,20 +7035,6 @@ impl Widget for VideoEditorApp {
                 return Some(CursorIcon::Pointer);
             }
         }
-        // Topbar buttons, and the export chip that hangs below them.
-        if [
-            r.import_btn,
-            r.split_btn,
-            r.export_btn,
-            r.menu_btn,
-            r.inspector_btn,
-        ]
-        .iter()
-        .any(|b| b.contains(point))
-            || (self.export_chip_is_shown() && r.export_chip.contains(point))
-        {
-            return Some(CursorIcon::Pointer);
-        }
         // Bin rows can be dragged onto the timeline.
         if self.bin_is_visible(&r) && r.bin.contains(point) {
             if VideoEditorApp::bin_viewport(&r).contains(point)
@@ -7148,7 +7071,6 @@ impl Widget for VideoEditorApp {
         if r.ruler.contains(point) {
             return Some(CursorIcon::ColResize);
         }
-        // Track-header pills and the add-track buttons.
         if r.gutter.contains(point) {
             for (_, _, lane) in self.lane_rects(&r) {
                 let header = VideoEditorApp::track_head_rect(&r, &lane);
@@ -7178,7 +7100,8 @@ impl Widget for VideoEditorApp {
                 }
                 if let Some(clip) = self.project.clip(cid) {
                     let cr = self.clip_rect(clip, &lane, &r);
-                    if (point.x - cr.x0).abs() <= TRIM_HIT || (point.x - cr.x1).abs() <= TRIM_HIT {
+                    let trim_hit = TRIM_HIT * self.chrome_scale();
+                    if (point.x - cr.x0).abs() <= trim_hit || (point.x - cr.x1).abs() <= trim_hit {
                         return Some(CursorIcon::EwResize);
                     }
                 }
@@ -7224,6 +7147,7 @@ impl Widget for VideoEditorApp {
                     || l.transitions.iter().any(|(_, rc)| rc.contains(point))
                     || l.colors.iter().any(|(_, rc)| rc.contains(point))
                     || l.pip.iter().any(|(_, _, rc)| rc.contains(point))
+                    || l.sides.iter().any(|(_, _, rc)| rc.contains(point))
                     || l.speed_presets.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_align.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_colors.iter().any(|(_, rc)| rc.contains(point))
@@ -7297,9 +7221,6 @@ impl Widget for VideoEditorApp {
         if self.bin_menu.is_open() {
             v.push(&self.bin_menu);
         }
-        if self.project_menu.is_open() {
-            v.push(&self.project_menu);
-        }
         if let Some((_, label)) = &self.bin_rename {
             v.push(label);
         }
@@ -7319,9 +7240,6 @@ impl Widget for VideoEditorApp {
         }
         if self.bin_menu.is_open() {
             v.push(&mut self.bin_menu);
-        }
-        if self.project_menu.is_open() {
-            v.push(&mut self.project_menu);
         }
         if let Some((_, label)) = &mut self.bin_rename {
             v.push(label);
@@ -7346,13 +7264,10 @@ impl Widget for VideoEditorApp {
     fn accessibility(&self) -> Option<AccessNode> {
         let mut kids = if self.bin_overlay_is_open() {
             // The scrim says the bin owns input, so the semantic tree must
-            // not leave a reader walking controls it cannot use. The topbar
-            // contributes only the pressed bin toggle in this state.
-            vec![self.a11y_topbar(), self.a11y_bin()]
+            // not leave a reader walking controls it cannot use.
+            vec![self.a11y_bin()]
         } else {
             vec![
-                self.a11y_topbar(),
-                self.a11y_project(),
                 self.a11y_bin(),
                 self.a11y_transport(),
                 self.timeline_split
@@ -7401,8 +7316,8 @@ impl Widget for VideoEditorApp {
         )
     }
 
-    /// The window's History control answers to its own target; everything
-    /// else the tree publishes is a keyed route to [`Self::perform_action`].
+    /// The divider answers to its own target; everything else the tree
+    /// publishes is a keyed route to [`Self::perform_action`].
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -7410,9 +7325,6 @@ impl Widget for VideoEditorApp {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        if self.history.perform_semantic_action(target, action) {
-            return true;
-        }
         if target == TIMELINE_SPLIT_TARGET {
             return self.timeline_split.perform_action(action);
         }
@@ -7467,32 +7379,17 @@ impl Widget for VideoEditorApp {
                 return self.a11y_export_action(action, &key_path[1..]);
             }
             if pane_key == hash_key(&"export-status") {
-                // Activating the chip does what clicking it does: opens the
-                // dialog it is reporting for. With nothing to report there is
-                // nothing to open, and it says so rather than claiming a
-                // success.
-                if matches!(action, Action::Activate) && self.export_chip_is_shown() {
+                // Activating the render's status opens the dialog it reports
+                // for, as the window bar's Export does. With nothing to
+                // report there is nothing to open, and it says so rather than
+                // claiming a success.
+                if matches!(action, Action::Activate)
+                    && !matches!(self.export_status, ExportStatus::Idle)
+                {
                     self.presentation.export_open = true;
                     return true;
                 }
                 return false;
-            }
-            if pane_key == hash_key(&"project") {
-                // Activating it does what clicking it does: opens the menu.
-                // Whether the menu is reachable this way is exactly whether
-                // the button is painted, so the node's focusable flag and this
-                // cannot disagree.
-                if matches!(action, Action::Activate) {
-                    let btn = self.regions().project_btn;
-                    if btn.width() > 0.0 {
-                        self.open_project_menu(Point::new(btn.x0, btn.y1 + 4.0));
-                        return true;
-                    }
-                }
-                return false;
-            }
-            if pane_key == hash_key(&TOPBAR_A11Y_KEY) {
-                return self.a11y_topbar_action(action, &key_path[1..]);
             }
             if pane_key == hash_key(&"discard") {
                 let Some(&which) = key_path.get(1) else {
@@ -7600,12 +7497,31 @@ impl VideoEditorApp {
     ) -> ui::framework::EffectAnswer {
         use crate::actions::VideoEditorEffect;
         match &effect {
+            VideoEditorEffect::RenderTimeline {
+                start,
+                end,
+                format,
+                size,
+            } => {
+                let request = render_action::RenderRequest {
+                    start: *start,
+                    end: *end,
+                    format: format.clone(),
+                    size: size.clone(),
+                };
+                return self.render_effect(&request, cx);
+            }
             VideoEditorEffect::RevealTrack { .. }
             | VideoEditorEffect::RevealClip { .. }
             | VideoEditorEffect::RevealEffect { .. }
             | VideoEditorEffect::RevealMarker { .. }
             | VideoEditorEffect::RevealMedia { .. }
-            | VideoEditorEffect::CancelExport => {
+            | VideoEditorEffect::CancelExport
+            | VideoEditorEffect::ShowExport
+            | VideoEditorEffect::ToggleMedia
+            | VideoEditorEffect::ToggleInspector
+            | VideoEditorEffect::SplitSelection
+            | VideoEditorEffect::GoToClip => {
                 self.perform_resource_operation(effect)?;
                 return Ok(ui::framework::Effected::done());
             }
@@ -7740,7 +7656,6 @@ fn help_columns(two_col: bool, m: HelpMetrics) -> (usize, f64) {
 /// way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PickField {
-    /// One project frame-size preset, by index into [`FRAME_PRESETS`].
     Frame(usize),
     /// One project frame-rate preset, by index into [`RATE_PRESETS`].
     Rate(usize),
@@ -8274,149 +8189,6 @@ impl VideoEditorApp {
 // Drawing helpers
 // ==========================================================================
 impl VideoEditorApp {
-    /// The editor's one header row: the bin toggle and the project at the
-    /// leading end, the commands, History and the inspector toggle at the
-    /// trailing end. It stands on the window's ground with one hairline under
-    /// it; the OS names the app, so nothing here does.
-    fn draw_chrome(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: &Regions,
-    ) {
-        ui::widget::toolbar::paint_band(scene, tf, theme, r.topbar);
-        let hovered = |rect: Rect| rect.contains(self.last_mouse);
-        // The two panel toggles: the toolkit's plain panel buttons, lifted
-        // while their panel is shown.
-        let bin_open = self.bin_flap.is_open(self.bin_layout());
-        draw_toggle_button(
-            &mut PaintCtx::new(scene, tf, tr, theme),
-            r.menu_btn,
-            ToggleContent::Icon(Icon::PanelLeft, "Media"),
-            bin_open && r.bin_overlay,
-            hovered(r.menu_btn),
-        );
-        let inspector_open = self.inspector_flap.is_open(self.inspector_split());
-        draw_toggle_button(
-            &mut PaintCtx::new(scene, tf, tr, theme),
-            r.inspector_btn,
-            ToggleContent::Icon(Icon::PanelRight, "Inspector"),
-            inspector_open && r.inspector_overlay,
-            hovered(r.inspector_btn),
-        );
-        self.history.paint(scene, tf, tr, theme, r.history_btn);
-        // The project button: which file is open, whether it is written down,
-        // and the way to open or save one. The app name and the window title
-        // remain the OS's, and this is neither.
-        self.draw_project_button(scene, tf, tr, theme, r);
-        let compact = self.topbar_is_compact();
-        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        if compact {
-            draw_icon_button(
-                &mut ctx,
-                r.import_btn,
-                Icon::FolderOpen,
-                "Import media",
-                ButtonRole::Plain,
-                hovered(r.import_btn),
-                true,
-            );
-            draw_icon_button(
-                &mut ctx,
-                r.export_btn,
-                Icon::Upload,
-                "Export video",
-                ButtonRole::Primary,
-                hovered(r.export_btn),
-                true,
-            );
-        } else {
-            draw_button_enabled(
-                &mut ctx,
-                r.import_btn,
-                IMPORT_LABEL,
-                ButtonRole::Secondary,
-                hovered(r.import_btn),
-                true,
-            );
-            if r.split_btn.width() > 0.0 {
-                draw_button_enabled(
-                    &mut ctx,
-                    r.split_btn,
-                    SPLIT_LABEL,
-                    ButtonRole::Secondary,
-                    hovered(r.split_btn),
-                    true,
-                );
-            }
-            draw_button_enabled(
-                &mut ctx,
-                r.export_btn,
-                EXPORT_LABEL,
-                ButtonRole::Primary,
-                hovered(r.export_btn),
-                true,
-            );
-        }
-    }
-
-    /// The project button: which project is open, whether it has been written
-    /// to a file, and the way to open or save one — the toolkit's own button
-    /// face, with the unsaved dot as a corner mark rather than part of the
-    /// label.
-    fn draw_project_button(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: &Regions,
-    ) {
-        let rect = r.project_btn;
-        if rect.width() <= 0.0 {
-            return;
-        }
-        let c = &theme.tokens.colors;
-        let hovered = rect.contains(self.last_mouse) || self.project_menu.is_open();
-        let label = if self.topbar_is_compact() {
-            String::new()
-        } else {
-            self.project_label()
-        };
-        let face = if label.is_empty() {
-            ButtonFace::icon_only(rect, Icon::Film, PROJECT_UNSAVED)
-        } else {
-            ButtonFace::new(rect, &label)
-                .icon(Icon::Film)
-                .role(ButtonRole::Plain)
-        }
-        .hovered(hovered)
-        .pressed(self.project_menu.is_open());
-        Button::paint(scene, tf, tr, theme, &face);
-
-        if self.project_is_dirty() {
-            // A dot on the corner, ringed in the ground it stands on so it
-            // reads as a mark on the button rather than a speck in it.
-            let ctr = Point::new(rect.x1 - S1, rect.y0 + S1);
-            scene.fill(
-                Fill::NonZero,
-                tf,
-                c.surfaces.content,
-                None,
-                &Circle::new(ctr, S1 + 1.0),
-            );
-            scene.fill(
-                Fill::NonZero,
-                tf,
-                c.text_primary,
-                None,
-                &Circle::new(ctr, S1 - 0.5),
-            );
-        }
-    }
-
     /// Invite an external file drop, over the whole window.
     ///
     /// `DroppedFile` is accepted anywhere in the window, so the invitation has
@@ -8457,233 +8229,6 @@ impl VideoEditorApp {
             plate.x0 + S6,
             plate.y0 + S4,
         );
-    }
-
-    /// The last thing that happened to the project file, as a status badge
-    /// in the strip under the topbar: full width and above the panes,
-    /// because it is not about the bin or the timeline — and because a save
-    /// that failed must not be findable only by opening a panel.
-    fn draw_project_notice(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: &Regions,
-    ) {
-        let Some(notice) = &self.project_notice else {
-            return;
-        };
-        let gap = TOPBAR_GAP * self.chrome_scale();
-        let x0 = if r.project_btn.width() > 0.0 {
-            r.project_btn.x1
-        } else {
-            r.menu_btn.x1
-        } + gap;
-        let room = self.project_notice_limit(r) - x0;
-        let pad = ui::widget::BadgeFace::intrinsic_width("", tr, theme);
-        if room <= pad + S6 {
-            return;
-        }
-        let shown = elide_at(
-            &notice.text,
-            (room - pad) as f32,
-            &theme.text(TextRole::Caption),
-            tr,
-        );
-        let w = ui::widget::BadgeFace::intrinsic_width(&shown, tr, theme).min(room);
-        let h = ui::widget::BadgeFace::height(theme);
-        let cy = r.topbar.center().y;
-        let plate = Rect::new(x0, cy - h / 2.0, x0 + w, cy + h / 2.0);
-        ui::widget::BadgeFace::new(plate, &shown)
-            .style(ui::widget::ChipStyle::Tinted(notice.level.tone()))
-            .paint(scene, tf, tr, theme);
-    }
-
-    /// Whether a render has anything to report right now. A job that is still
-    /// encoding, and the outcome of the one that just finished, both stand —
-    /// the outcome until the next export replaces it, exactly like the
-    /// project notice above it.
-    fn export_chip_is_shown(&self) -> bool {
-        !matches!(self.export_status, ExportStatus::Idle)
-    }
-
-    /// The words the export chip carries and the severity they read at.
-    ///
-    /// This is the whole point of the chip: `export_status` used to be read in
-    /// two places and both were gated on the dialog being open, so dismissing
-    /// the dialog while a render was in flight left the render with nowhere at
-    /// all to report — no bar, no outcome, no failure, and nothing in the
-    /// accessibility tree. The only evidence was a file appearing on disk.
-    fn export_chip_notice(&self) -> Option<Notice> {
-        match &self.export_status {
-            ExportStatus::Idle => None,
-            ExportStatus::Rendering { progress } => Some(Notice::ok(format!(
-                "Exporting… {}%",
-                (progress * 100.0).round() as i64
-            ))),
-            ExportStatus::Done { path } => Some(Notice::ok(format!(
-                "Exported {}",
-                display_name(Path::new(path))
-            ))),
-            // The reason is the dialog's to give in full (the chip opens it, and
-            // its hover and its accessible value carry the reason too); the
-            // header row only has room to say that it happened.
-            ExportStatus::Failed { .. } => Some(Notice::failed("Export failed".to_string())),
-        }
-    }
-
-    /// How wide the export chip wants to be: as wide as its words. A render in
-    /// flight is measured at its widest reading, so the chip does not jitter
-    /// as the percentage counts up.
-    pub(super) fn export_chip_width(&self) -> f64 {
-        let Some(notice) = self.export_chip_notice() else {
-            return 0.0;
-        };
-        self.with_dialog_layout(|app, tr, theme| match app.export_status {
-            ExportStatus::Failed { .. } => {
-                ui::widget::BadgeFace::intrinsic_width(&notice.text, tr, theme)
-            }
-            ExportStatus::Rendering { .. } => ButtonFace::new(Rect::ZERO, "Exporting… 100%")
-                .control_size(ControlSize::Small)
-                .intrinsic_width(tr, theme),
-            _ => ButtonFace::new(Rect::ZERO, &notice.text)
-                .control_size(ControlSize::Small)
-                .intrinsic_width(tr, theme),
-        })
-    }
-
-    /// The chip's words and severity, formatted and elided only when they
-    /// have actually changed.
-    ///
-    /// A render keeps animation frames coming for its whole duration, so this
-    /// is on the hot path: the text is rebuilt when the whole-percent figure
-    /// moves (or the window width does), not on every encoded frame.
-    fn export_chip_text(
-        &mut self,
-        chip: Rect,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<&ExportChipText> {
-        if !self.export_chip_is_shown() {
-            self.export_chip_text = None;
-            return None;
-        }
-        let fresh = self.export_chip_text.as_ref().is_some_and(|c| {
-            (c.width - chip.width()).abs() < 0.5 && chip_text_matches(&c.from, &self.export_status)
-        });
-        if !fresh {
-            // Only on a real change: the format and the elision both live
-            // behind this branch, so a steady render costs neither.
-            let notice = self.export_chip_notice()?;
-            let style = theme.text(TextRole::Caption).numeric();
-            // The chip is sized to its words; they are elided only when the
-            // header row could not give it that much room.
-            let fits = self.export_chip_width() <= chip.width() + 0.5;
-            let shown = if fits {
-                notice.text.clone()
-            } else {
-                elide_at(&notice.text, (chip.width() - S4) as f32, &style, tr)
-            };
-            self.export_chip_text = Some(ExportChipText {
-                from: self.export_status.clone(),
-                width: chip.width(),
-                level: notice.level,
-                shown,
-            });
-        }
-        self.export_chip_text.as_ref()
-    }
-
-    /// Paint the render's own state into the window chrome: a floating chip
-    /// under the Export button with its words, filled from the leading edge
-    /// as the render encodes.
-    ///
-    /// The worker was built to run while the editor stays editable — it clones
-    /// the project precisely so the UI thread can keep working — so closing
-    /// the dialog is a reasonable thing to do mid-render, and the render has
-    /// to keep reporting somewhere when it happens.
-    fn draw_export_chip(
-        &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: &Regions,
-    ) {
-        let chip = r.export_chip;
-        if chip.width() <= S6 {
-            self.export_chip_text = None;
-            return;
-        }
-        let progress = match self.export_status {
-            ExportStatus::Rendering { progress } => Some(progress.clamp(0.0, 1.0)),
-            _ => None,
-        };
-        let Some(cached) = self.export_chip_text(chip, tr, theme) else {
-            return;
-        };
-        let level = cached.level;
-        // Cloned off the cache so the scene draws below can borrow `tr` again;
-        // one short string, and only while a render has something to say.
-        let shown = cached.shown.clone();
-        if level == NoticeLevel::Failed {
-            // A failed render is a status, in danger: the toolkit's badge.
-            // At a badge's own height, centred in the chip's slot: a pill
-            // pads its label by its height, so a taller rect would elide it.
-            let h = ui::widget::BadgeFace::height(theme);
-            let badge = Rect::new(
-                chip.x0,
-                chip.center().y - h / 2.0,
-                chip.x1,
-                chip.center().y + h / 2.0,
-            );
-            ui::widget::BadgeFace::new(badge, &shown)
-                .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Danger))
-                .paint(scene, tf, tr, theme);
-            return;
-        }
-        // Otherwise it is the way back into the dialog: a raised well that
-        // fills from its leading edge as the render encodes, with a plain
-        // button over it whose label is the render's state.
-        let c = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.control);
-        let well = c.surfaces.raised;
-        ui::surface::card(scene, tf, chip, radius, well);
-        if let Some(p) = progress {
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                tf,
-                &RoundedRect::from_rect(chip, radius),
-            );
-            let done = Rect::new(chip.x0, chip.y0, chip.x0 + chip.width() * p, chip.y1);
-            fill_rect(scene, tf, done, c.lift_on(well, 1.0));
-            scene.pop_layer();
-        }
-        let face = ButtonFace::new(chip, &shown)
-            .role(ButtonRole::Plain)
-            .control_size(ControlSize::Small)
-            .hovered(chip.contains(self.last_mouse));
-        Button::paint(scene, tf, tr, theme, &face);
-    }
-
-    /// How far right the project-notice plate may run. It shares the strip
-    /// under the topbar with the export chip, which is anchored to the right;
-    /// a plate that ran to the window edge would be drawn straight through it.
-    fn project_notice_limit(&self, r: &Regions) -> f64 {
-        let gap = TOPBAR_GAP * self.chrome_scale();
-        if self.export_chip_is_shown() {
-            r.export_chip.x0 - gap
-        } else {
-            r.import_btn.x0 - gap
-        }
-    }
-
-    /// A Small control's height, for the statuses in the header row.
-    fn topbar_small_height(&self) -> f64 {
-        ButtonFace::height(ControlSize::Small, &self.chrome_theme)
     }
 
     /// Card and buttons for the unsaved-work question.
@@ -8921,10 +8466,6 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "the export dialog paint pass shares one geometry calculation across its presets, status, and controls"
     )]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "the dialog's paint shorthands: layout l, colours c, and each run's measured w/h"
-    )]
     fn draw_export_modal(
         &self,
 
@@ -8952,7 +8493,7 @@ impl VideoEditorApp {
         let x0 = body.x0;
         let width = body.width() as f32;
         let sp = &theme.tokens.spacing;
-        let (s1, s2) = (f64::from(sp.s1), f64::from(sp.s2));
+        let s1 = f64::from(sp.s1);
         let line_xs = line_height(tr, &ty.xs);
         // Clipped to the body: on a window too small for the card the frame
         // clamps it and reports the overflow, and the content must not paint
@@ -8985,7 +8526,6 @@ impl VideoEditorApp {
             text(scene, tr, tf, &words, &ty.xs, tint, x0, top);
         }
 
-        let cursor = self.last_mouse;
         let seg_group = |scene: &mut Scene,
                          tr: &mut TextRenderer,
                          caption: &str,
@@ -9003,7 +8543,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, selected, cursor);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (strip_menu::StripHost::Export, &rects),
+                (&labels, selected),
+            );
         };
         let res: Vec<_> = l
             .resolution
@@ -9055,17 +8601,25 @@ impl VideoEditorApp {
         let status = l.status;
         match &self.export_status {
             ExportStatus::Rendering { progress } => {
-                let bar = Rect::new(status.x0, status.y0, status.x1, status.y0 + s2);
-                let radius = f64::from(theme.tokens.radii.detail);
-                well(scene, tf, theme, bar, radius);
-                let f = Rect::new(
-                    bar.x0,
-                    bar.y0,
-                    bar.x0 + bar.width() * progress.max(0.04),
-                    bar.y1,
+                // The toolkit's progress bar, as every app shows a running
+                // job; the dialog's Cancel stops it.
+                let bar = Rect::new(
+                    status.x0,
+                    status.y0,
+                    status.x1,
+                    status.y0 + ui::widget::ProgressBarFace::height(theme),
                 );
-                fill_round(scene, tf, f, radius, c.intent.neutral_fill);
-                text(scene, tr, tf, "Rendering…", &ty.xs, dim, x0, bar.y1 + s1);
+                ui::widget::ProgressBarFace::new(*progress as f32)
+                    .paint(&mut PaintCtx::new(scene, tf, tr, theme), bar);
+                // A full bar with the file still being closed reads as what
+                // it is, not as a render stuck at its end.
+                let percent = (progress * 100.0).round() as i32;
+                let words = if percent >= 100 {
+                    "Finishing the file".to_owned()
+                } else {
+                    format!("Rendering, {percent}%")
+                };
+                text(scene, tr, tf, &words, &ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
                 let done = elide_at(&format!("Done: {path}"), width, &ty.xs, tr);
@@ -9100,10 +8654,11 @@ impl VideoEditorApp {
                 }
             }
             ExportStatus::Idle => {
-                // One source of truth for the availability copy — the export
-                // module knows what it can actually do, this dialog does not.
-                if let Some(reason) = crate::export::unavailable_reason() {
-                    let reason = elide_at(reason, width, &ty.xs, tr);
+                // One source of truth for what stands in the way — the export
+                // module knows what it can actually do and which footage it has
+                // not read, this dialog does not.
+                if let Some(reason) = self.export_blocker() {
+                    let reason = elide_at(&reason, width, &ty.xs, tr);
                     text(scene, tr, tf, &reason, &ty.xs, dim, x0, status.y0);
                 }
             }
@@ -9222,6 +8777,14 @@ impl VideoEditorApp {
     }
 }
 
+impl ui::widget::controls::ActionControls for VideoEditorApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+}
+
 impl HelpMetrics {
     fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: &DialogType) -> Self {
         let s1 = f64::from(theme.tokens.spacing.s1);
@@ -9235,6 +8798,8 @@ impl HelpMetrics {
 
 #[cfg(test)]
 mod chrome_geometry_tests;
+#[cfg(test)]
+mod scale_tests;
 
 impl VideoEditorApp {
     fn track_head_layout(&self, header: Rect) -> chrome_layout::TrackHead {
@@ -9265,17 +8830,18 @@ impl VideoEditorApp {
 }
 
 impl VideoEditorApp {
-    fn export_actions(&self) -> [ModalAction<'static>; 2] {
-        let running = self.export_running();
-        [
-            // A render in flight turns Close into Cancel — the only way to
-            // stop it.
-            ModalAction::secondary(if running { "Cancel" } else { "Close" }),
+    fn export_actions(&self) -> Vec<ModalAction<'static>> {
+        if self.export_running() {
+            // A render in flight: Cancel, the only way to stop it, and
+            // nothing else. The progress bar above says how far it has got.
+            return vec![ModalAction::secondary("Cancel")];
+        }
+        vec![
+            ModalAction::secondary("Close"),
             // Export is offered only when it can actually happen. The dialog
             // used to say "Export needs the GStreamer build" and put a
             // bright, enabled Export button directly underneath it.
-            ModalAction::primary(if running { "Rendering…" } else { "Export" })
-                .enabled(self.export_is_offered()),
+            ModalAction::primary("Export").enabled(self.export_is_offered()),
         ]
     }
     fn discard_words(pending: &PendingOpen) -> (String, [String; 2]) {
@@ -9308,7 +8874,8 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
         effect: crate::actions::VideoEditorEffect,
         cx: &mut ui::framework::EffectCx<Project, Self>,
     ) -> ui::framework::EffectAnswer {
-        self.answer_effect(effect, cx)
+        crate::agent_timeline::effect(&effect, self.content.as_ref(), cx)
+            .unwrap_or_else(|| self.answer_effect(effect, cx))
     }
 
     /// Export needs an encoder in this build; cancelling needs a render
@@ -9319,6 +8886,11 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
         if let Some(reason) = crate::export::unavailable_reason() {
             statuses.push(ui::framework::EffectStatus::unavailable(
                 VideoEditorEffect::EXPORT,
+                "export_unavailable",
+                reason,
+            ));
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                VideoEditorEffect::RENDER_TIMELINE,
                 "export_unavailable",
                 reason,
             ));
@@ -9357,6 +8929,7 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
     /// version of anything else is hermetic.
     fn attach(&mut self, cx: ui::framework::SurfaceCx<Project>) {
         self.actions = Some(cx.dispatcher());
+        self.content = cx.content();
         let mode = cx.mode();
         self.seed.capture = mode == ui::framework::RunMode::Capture;
         let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();

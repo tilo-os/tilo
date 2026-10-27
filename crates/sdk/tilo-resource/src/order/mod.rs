@@ -31,7 +31,7 @@ fn char_of(value: u8) -> char {
 /// remaining tie by item identity.
 ///
 /// Toward an open end the key steps rather than halves the gap (see
-/// [`after`] and [`before`]), so a list appended or prepended to one item
+/// `after` and `before`), so a list appended or prepended to one item
 /// at a time keeps keys a few characters long instead of growing one
 /// character every few items.
 #[must_use]
@@ -93,7 +93,6 @@ fn after(low: &str) -> String {
     };
     let mut body = body.to_vec();
     loop {
-        // Add one to the body, carrying.
         let mut carry = true;
         for value in body.iter_mut().rev() {
             if !carry {
@@ -128,7 +127,6 @@ fn before(high: &str) -> String {
     let run = digits.iter().take_while(|&&value| value == 0).count();
     let mut body = digits.get(run..).unwrap_or_default().to_vec();
     loop {
-        // Take one from the body, borrowing.
         let mut borrow = true;
         for value in body.iter_mut().rev() {
             if !borrow {

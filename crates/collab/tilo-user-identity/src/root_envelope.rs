@@ -91,7 +91,6 @@ pub enum RootWrap {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootEnvelope {
-    /// [`ROOT_ENVELOPE_VERSION`].
     pub version: u32,
     /// The root's Ed25519 public key, hex.
     pub root_public_key: String,
@@ -448,7 +447,6 @@ mod tests {
             Some(RootEnvelopeError::Rejected)
         );
 
-        // A flipped ciphertext bit, a moved credential id, another salt.
         let mut flipped = envelope.clone();
         if let RootWrap::Recovery { ciphertext, .. } = &mut flipped.wraps[0] {
             let mut bytes = decode(ciphertext, "").unwrap();
@@ -476,7 +474,6 @@ mod tests {
             Some(RootEnvelopeError::Rejected)
         );
 
-        // A wrap of another root under the same recovery key, pasted in.
         let foreign = RootEnvelope::create(&SigningKey::from_bytes(&[6; 32]), &recovery).unwrap();
         let mut pasted = envelope.clone();
         pasted.wraps[0] = foreign.wraps[0].clone();

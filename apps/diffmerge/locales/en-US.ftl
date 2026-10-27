@@ -11,18 +11,25 @@ merge-status-changes =
         [one] 1 change, { $resolved } resolved
        *[other] { $count } changes, { $resolved } resolved
     }
-merge-status-conflicts =
+diff-status-summary =
+    { $added } added, { $removed } removed, { $modified } modified, in { $blocks ->
+        [one] 1 change
+       *[other] { $blocks } changes
+    }
+diff-status-summary-at = { $added } added, { $removed } removed, { $modified } modified. Change { $current } of { $total }
+merge-status-summary =
     { $count ->
-        [0] All conflicts resolved
-        [one] 1 conflict remaining
-       *[other] { $count } conflicts remaining
+        [one] 1 change
+       *[other] { $count } changes
+    }, { $resolved } resolved, { $conflicts ->
+        [one] 1 conflict left
+       *[other] { $conflicts } conflicts left
     }
 
 ## Resource labels
 merge-title = Merge of { $name }
 merge-title-pair = Merge of { $ours } and { $theirs }
 merge-title-empty = Merged result
-compare-title-empty = Local comparison
 
 ## Merged result
 merged-title = Merged result
@@ -32,8 +39,6 @@ merged-conflicts =
        *[other] { $count } conflicts
     }
 merged-resolved = All resolved
-merged-saved = Saved merged result (original inputs unavailable)
-merged-unavailable = Original inputs are unavailable for this saved output. Load new inputs to resolve changes.
 
 ## Change resolution
 hunk-conflict = Conflict
@@ -42,6 +47,7 @@ hunk-auto-theirs = Auto-resolved: theirs
 hunk-took-ours = Resolved: ours
 hunk-took-theirs = Resolved: theirs
 hunk-took-both = Resolved: both
+hunk-written = Resolved: own text
 take-ours = Take ours
 take-theirs = Take theirs
 take-both = Take both
@@ -58,7 +64,41 @@ source-right = Right
 
 ## Empty and error states
 empty-title = Open two files to compare them
+empty-message = Choose two text files with Open files, or load a sample to see how a comparison reads.
+merge-empty-title = No merge open
+merge-empty-message = A three-way merge starts from a common base and two edited versions of it. Load a sample to try one.
 error-title = Couldn’t open the files
+
+## Saving the merged result
+save-title = Save the merged result
+save-accept = Save
+save-saved = Saved to { $name }
+save-failed = Could not save: { $reason }
+save-cancelled = The merged result was not saved
+
+## Comparing folders
+folder-choose-left = Choose the left folder
+folder-choose-right = Choose the right folder
+folder-choose-accept = Choose
+folder-cancelled = Choosing folders was cancelled
+folder-failed = Could not compare the folders: { $reason }
+folder-summary = { $left } and { $right }: { $added ->
+    [one] 1 file only on the left
+   *[other] { $added } files only on the left
+}, { $removed ->
+    [one] 1 file only on the right
+   *[other] { $removed } files only on the right
+}, { $modified ->
+    [one] 1 changed file
+   *[other] { $modified } changed files
+}
+folder-truncated = Only the first part of the folders was compared
+folder-status-counts = { $added } added, { $removed } removed, { $modified } modified
+folder-meta-only-here = only here, { $size }
+folder-meta-only-other = only there, { $size }
+folder-meta-size = { $left } became { $right }
+folder-meta-contents = different contents
+source-absent = (no such file)
 
 ## Toolbar
 toolbar-diff = Diff
@@ -69,6 +109,14 @@ toolbar-next = Next change
 toolbar-open = Open files
 toolbar-sample = Load sample
 toolbar-sample-short = Sample
+toolbar-save = Save merged result
+toolbar-save-short = Save
+toolbar-saved = Save again
+toolbar-saved-short = Save
+toolbar-save-as = Save as…
+toolbar-folders = Folder list
+toolbar-compare-folders = Compare folders…
+toolbar-compare-folders-short = Folders
 
 ## History
 history-title = Merged result

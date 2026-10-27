@@ -149,8 +149,8 @@ fn an_offer_reaches_only_a_host_that_copies() {
 fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
     let before_tree = window(0.0);
     let after_tree = window(10.0);
-    let before = placed(&before_tree);
-    let after = placed(&after_tree);
+    let before = crate::damage::widget_boxes(&before_tree);
+    let after = crate::damage::widget_boxes(&after_tree);
     // The trees are different values; give them one identity.
     let after: Vec<Placed> = before
         .iter()
@@ -210,9 +210,9 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
             .len(),
         2
     );
-    // A row that came into the content (a list mounting what the scroll
-    // brought near) is damage where it is; one that went, where it was (the
-    // copy carries that).
+    // A row that came into the content where the view showed something
+    // else (a list replacing a row in view) is damage where it is; one that
+    // went from the view, where the copy carried its pixels.
     let came = Rect::new(0.0, 240.0, 380.0, 290.0);
     let mut grown = after.clone();
     grown.push(((std::ptr::from_ref(&came).cast::<()>(), 2), came));
@@ -228,8 +228,26 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
         moves_besides(&before, &gone, std::slice::from_ref(&offer)),
         Moves {
             besides: vec![],
-            carried: vec![before[5].1],
+            carried: vec![after[5].1],
         }
+    );
+    // One the scroll brought in from out of view stands where the copy
+    // exposed, which is repainted; one it took out of view went with the
+    // copy. Neither is damage of its own: the walk of a long content
+    // reaches only the rows near its view.
+    let entering = Rect::new(0.0, 295.0, 380.0, 345.0);
+    let mut entered = after.clone();
+    entered.push(((std::ptr::from_ref(&entering).cast::<()>(), 2), entering));
+    assert_eq!(
+        moves_besides(&before, &entered, std::slice::from_ref(&offer)),
+        Moves::default()
+    );
+    let leaving = Rect::new(0.0, 60.0, 380.0, 105.0);
+    let mut left = before.clone();
+    left.push(((std::ptr::from_ref(&leaving).cast::<()>(), 2), leaving));
+    assert_eq!(
+        moves_besides(&left, &after, std::slice::from_ref(&offer)),
+        Moves::default()
     );
     // A widget that came outside any scrolled content is not.
     let mut sibling = after.clone();
@@ -534,4 +552,167 @@ fn peer_marks_repaint_where_they_are_and_where_a_copy_took_them() {
         "without copies the marks cost nothing here"
     );
     assert_eq!(carried(&[copy], &[far]), Vec::<Rect>::new());
+}
+
+/// A scene that fills `rect` with `rgb`.
+fn filled(rect: Rect, rgb: [u8; 3]) -> Scene {
+    let mut scene = Scene::new();
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        vello::peniko::Color::from_rgba8(rgb[0], rgb[1], rgb[2], 255),
+        None,
+        &rect,
+    );
+    scene
+}
+
+/// A row 20 px tall at `top`, 100 px wide.
+fn row(top: f64) -> Rect {
+    Rect::new(0.0, top, 100.0, top + 20.0)
+}
+
+const VIEWPORT: Rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+/// The `rows` of a content scrolled `offset` down in
+/// a 100 × 100 viewport, each drawn where it stands in the content, and a
+/// bar over them that does not scroll; `changed` is drawn another colour.
+fn painted_rows(
+    offset: f64,
+    rows: std::ops::Range<u32>,
+    changed: Option<u32>,
+) -> Showing<Around, Painted> {
+    let pieces = rows
+        .map(|index| {
+            let top = f64::from(index) * 20.0;
+            let rgb = if changed == Some(index) {
+                [10, 20, 30]
+            } else {
+                [200, 100, 50]
+            };
+            Piece {
+                key: piece_key(index),
+                rect: row(top - offset),
+                paint: Painted(filled(row(top), rgb)),
+            }
+        })
+        .collect();
+    let bar = Rect::new(90.0, 0.0, 100.0, 100.0);
+    let fixed = vec![Piece {
+        key: piece_key("bar"),
+        rect: bar,
+        paint: Painted(filled(bar, [200, 100, 50])),
+    }];
+    let around = Around {
+        bounds: VIEWPORT,
+        outside: Painted(Scene::new()),
+    };
+    Showing::painted(
+        Vec2::new(0.0, offset),
+        VIEWPORT,
+        Affine::IDENTITY,
+        around,
+        pieces,
+        fixed,
+    )
+    .unwrap()
+}
+
+/// What a frame `next` after `previous` repaints, and the copies it offers
+/// to a host that copies (`copies`) or none.
+fn painted_damage(
+    previous: Showing<Around, Painted>,
+    next: Showing<Around, Painted>,
+    copies: bool,
+) -> (Vec<Rect>, Vec<ScrollOffer>) {
+    let mut frames = PaintedFrames::default();
+    frames.note(previous);
+    frames.present();
+    frames.note(next);
+    let owner = 0_u8;
+    let mut regions = Vec::new();
+    let offers = if copies {
+        accepting(|| frames.damage_within(&owner, VIEWPORT, &mut regions))
+    } else {
+        frames.damage_within(&owner, VIEWPORT, &mut regions);
+        Vec::new()
+    };
+    (regions, offers)
+}
+
+#[test]
+fn rows_a_scroll_only_moved_are_offered_as_a_copy_and_repaint_nothing() {
+    // Scrolled 20 px down: row 0 went, row 5 came into the strip the copy
+    // exposes, rows 1–4 moved up.
+    let (regions, offers) = painted_damage(
+        painted_rows(0.0, 0..5, None),
+        painted_rows(20.0, 1..6, None),
+        true,
+    );
+    assert_eq!(offers.len(), 1);
+    assert_eq!(offers[0].delta(), Vec2::new(0.0, -20.0));
+    assert_eq!(offers[0].viewport(), VIEWPORT);
+    assert!(
+        regions.is_empty(),
+        "the row that came is in the exposed strip, the one that went left the view: {regions:?}"
+    );
+}
+
+#[test]
+fn a_row_that_changed_during_a_scroll_repaints_where_it_is() {
+    let (regions, offers) = painted_damage(
+        painted_rows(0.0, 0..5, None),
+        painted_rows(20.0, 1..6, Some(3)),
+        true,
+    );
+    assert_eq!(offers.len(), 1);
+    assert!(!regions.is_empty());
+    assert!(regions.iter().all(|rect| *rect == row(40.0)), "{regions:?}");
+}
+
+#[test]
+fn a_frame_that_did_not_scroll_repaints_only_the_rows_that_changed() {
+    let (regions, offers) = painted_damage(
+        painted_rows(20.0, 1..6, None),
+        painted_rows(20.0, 1..6, Some(2)),
+        true,
+    );
+    assert!(offers.is_empty(), "nothing moved: {offers:?}");
+    assert!(!regions.is_empty());
+    assert!(regions.iter().all(|rect| *rect == row(20.0)), "{regions:?}");
+}
+
+#[test]
+fn a_host_that_copies_nothing_repaints_the_whole_scroller() {
+    let (regions, _) = painted_damage(
+        painted_rows(0.0, 0..5, None),
+        painted_rows(20.0, 1..6, None),
+        false,
+    );
+    assert!(!regions.is_empty());
+    assert!(regions.iter().all(|rect| *rect == VIEWPORT), "{regions:?}");
+}
+
+#[test]
+fn rows_that_share_a_key_prove_nothing() {
+    let piece = |top: f64| Piece {
+        key: piece_key(1_u32),
+        rect: row(top),
+        paint: Painted(filled(row(top), [1, 2, 3])),
+    };
+    let around = Around {
+        bounds: VIEWPORT,
+        outside: Painted(Scene::new()),
+    };
+    assert!(
+        Showing::painted(
+            Vec2::ZERO,
+            VIEWPORT,
+            Affine::IDENTITY,
+            around,
+            vec![piece(0.0), piece(20.0)],
+            Vec::new(),
+        )
+        .is_none()
+    );
 }

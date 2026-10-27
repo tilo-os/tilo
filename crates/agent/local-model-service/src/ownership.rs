@@ -23,9 +23,6 @@ fn digest(value: &str) -> bool {
 
 impl ContainerOwnership {
     /// Refuse malformed persistent identities before passing any value to a process.
-    ///
-    /// # Errors
-    /// Returns an error for noncanonical IDs or an image without its exact digest.
     pub fn validate(&self) -> Result<(), String> {
         let image = self
             .image
@@ -53,9 +50,6 @@ impl ContainerOwnership {
     }
 
     /// Require actual podman metadata to agree with the entire prepared identity.
-    ///
-    /// # Errors
-    /// Returns an error for missing fields, a foreign container or changed image/labels.
     pub fn verify_observation(&self, body: &serde_json::Value) -> Result<(), String> {
         self.validate()?;
         let labels = body

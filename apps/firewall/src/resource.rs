@@ -25,9 +25,10 @@ use ui::tilo_resource::{self, Availability, Derived, Id, Invoke, Refusal, Search
 use ui::widget::Element;
 
 use crate::app::{FirewallApp, Notice, Tone};
-use crate::backend::{Backend, Mode};
+use crate::backend::Backend;
 pub use crate::model::Firewall;
 use crate::model::{FirewallConfig, ZoneKind};
+use ui::capability_door::Door;
 
 #[resource(
     kind = "firewall.config",
@@ -46,13 +47,19 @@ impl Firewall {
     }
 
     /// Stop firewall.
-    #[action(destructive)]
+    ///
+    /// Undo starts it again but cannot take back what reached the machine
+    /// while it was open, so this is asked first.
+    #[action(destructive, irreversible)]
     pub fn stop(&mut self) {
         self.enabled = false;
     }
 
     /// Enter panic mode: drop all traffic in and out.
-    #[action(destructive)]
+    ///
+    /// Undo lifts it but cannot restore the connections it cut, so this is
+    /// asked first.
+    #[action(destructive, irreversible)]
     pub fn enter_panic_mode(&mut self) {
         self.panic_mode = true;
     }
@@ -160,7 +167,7 @@ impl Firewall {
 
 /// What the firewall does outside the document, for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "firewall.effect", device_only)]
+#[effect(operation = "firewall.effect")]
 pub enum FirewallEffect {
     /// Apply firewall configuration.
     #[effect(job)]
@@ -168,6 +175,9 @@ pub enum FirewallEffect {
     /// Retry firewalld connection.
     #[effect(job)]
     Retry,
+    /// Read dropped traffic from the system journal.
+    #[effect(kind = "read")]
+    ReadBlocked,
 }
 
 /// What this device last pushed to (or read from) its firewalld, so the
@@ -200,33 +210,47 @@ pub(crate) fn pending_apply(
     vec![(canonical, config.clone())]
 }
 
-/// How one apply ended: the backend's mode and how many commands it ran or
-/// planned, or why it failed.
-pub(crate) type Applied = Result<(Mode, usize), String>;
+/// How one apply ended: how many commands ran, or why it failed.
+pub(crate) type Applied = Result<usize, String>;
 
-/// Push `config` to this device's firewalld (or only plan it, unless the
-/// live apply is armed). Blocking: runs off the UI thread.
-pub(crate) fn apply_on_device(config: &FirewallConfig) -> Applied {
-    let mut backend = Backend::detect();
-    backend
-        .apply(config)
-        .map(|()| (backend.mode(), backend.last_plan().len()))
+/// Push `config` to this device's firewalld. Only a granted capability may
+/// apply: the app passes its door, and no other caller can slip past it.
+/// Blocking: runs off the UI thread.
+pub(crate) fn apply_on_device(config: &FirewallConfig, door: &Door, allow_host: bool) -> Applied {
+    if !door.is_granted() {
+        return Err(format!(
+            "changing firewall rules needs the {} capability, which is not granted",
+            door.capability()
+        ));
+    }
+    #[cfg(test)]
+    {
+        let _ = allow_host;
+        // A unit test must never change the host it runs on. The plan is
+        // the same data the product path would execute.
+        let mut backend = Backend::new();
+        backend.plan_only(config)?;
+        return Ok(backend.last_plan().len());
+    }
+    #[cfg(not(test))]
+    {
+        let mut backend = Backend::new();
+        if allow_host {
+            backend.apply(config).map(|()| backend.last_plan().len())
+        } else {
+            backend.plan_only(config)?;
+            Ok(backend.last_plan().len())
+        }
+    }
 }
 
 /// What one apply reports.
 pub(crate) fn applied_status(applied: &Applied) -> Notice {
     let changes = |n: usize| if n == 1 { "change" } else { "changes" };
     match applied {
-        Ok((Mode::Live, n)) => Notice {
+        Ok(n) => Notice {
             text: format!("Applied {n} {}", changes(*n)),
             tone: Tone::Success,
-        },
-        Ok((Mode::DryRun, n)) => Notice {
-            text: format!(
-                "{n} {} checked. This device does not allow applying them.",
-                changes(*n)
-            ),
-            tone: Tone::Info,
         },
         Err(error) => Notice {
             text: format!("Could not apply the configuration: {error}"),
@@ -269,7 +293,10 @@ const SCENARIOS: &[&str] = &[
     "stopped",
     "service-error",
     "services",
+    "blocked",
     "selected",
+    "switch-confirmation",
+    "stop-confirmation",
     "narrow",
     "drawer",
 ];
@@ -277,6 +304,7 @@ const SCENARIOS: &[&str] = &[
 impl ResourceApp for FirewallShell {
     type Resource = Firewall;
     const ID: &'static str = "so.tilo.firewall";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Network];
     const TITLE: &'static str = "Firewall";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -353,7 +381,12 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
         let applied = cx.settings::<AppliedConfig>();
         self.attach_framework(cx.dispatcher(), applied);
         // Apply the stored configuration to this device after every change.
-        self.follow_jobs(cx.jobs());
+        // A capture stages a sample and neither queues nor runs the job.
+        let writes = cx.mode() == ui::framework::RunMode::Live || cfg!(test);
+        self.set_host_writes(writes);
+        if writes {
+            self.follow_jobs(cx.jobs());
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -373,14 +406,26 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
                 if config.zones.is_empty() {
                     return Err("Firewall service is unavailable".into());
                 }
+                let door = self.capability().clone();
+                let writes = self.host_writes();
                 Ok(cx.thread(
                     move |_| {
-                        let result = apply_on_device(&config);
+                        let result = apply_on_device(&config, &door, writes);
                         (config, result)
                     },
                     |app: &mut Self, (config, result): (FirewallConfig, Applied), _| {
                         app.finish_apply(&config, &result);
                         result.map(|_| Effected::done())
+                    },
+                ))
+            }
+            FirewallEffect::ReadBlocked => {
+                self.mark_blocked_loading();
+                Ok(cx.thread(
+                    |_| crate::blocked::read(ui::time::Duration::from_secs(60 * 60)),
+                    |app: &mut Self, read: Result<crate::blocked::BlockedReport, String>, _| {
+                        app.finish_blocked(read);
+                        Ok(Effected::done())
                     },
                 ))
             }
@@ -496,8 +541,8 @@ mod tests {
     /// The published root offers start/stop and panic as document edits
     /// bound to the stored state, and apply/retry as effects whose
     /// availability follows whether there is a configuration. Once there
-    /// is one, this device applies it (only planned here: the live apply is
-    /// not armed) and remembers that it did.
+    /// is one, this device applies it (planned only in a unit test) and
+    /// remembers that it did.
     #[test]
     fn stored_configuration_is_applied_on_the_device_and_toggles_are_edits() {
         let empty = ui::tilo_resource::publish::<Firewall>(
@@ -537,11 +582,9 @@ mod tests {
 
         let remembered = app.settings::<AppliedConfig>();
         let stored = app.state().config().to_json();
-        let applied = app
-            .harness()
-            .wait_until(ui::time::Duration::from_secs(30), |_| {
-                remembered.get().config.as_deref() == Some(stored.as_str())
-            });
+        let applied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+            remembered.get().config.as_deref() == Some(stored.as_str())
+        });
         assert!(applied, "the device remembers the configuration it applied");
 
         // Stopping the firewall is an edit like any other: confirmed, in
@@ -549,12 +592,45 @@ mod tests {
         app.invoke_confirmed(Firewall::STOP.invoke()).unwrap();
         assert!(!app.state().enabled);
         let stopped = app.state().config().to_json();
-        let reapplied = app
-            .harness()
-            .wait_until(ui::time::Duration::from_secs(30), |_| {
-                remembered.get().config.as_deref() == Some(stopped.as_str())
-            });
+        let reapplied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+            remembered.get().config.as_deref() == Some(stopped.as_str())
+        });
         assert!(reapplied, "the edit reached this device's firewall");
+    }
+
+    /// The palette row and the confirmation's title name the switch by the
+    /// first line of its doc alone; why it asks first stays in the
+    /// description, never runs on into the name.
+    #[test]
+    fn the_traffic_cutting_switches_are_named_by_what_they_do() {
+        let published = ui::tilo_resource::publish::<Firewall>(
+            "firewall.config",
+            "Firewall",
+            &Firewall::default(),
+        );
+        let spec = |id: &str| {
+            published
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("{id} is published"))
+        };
+        for (id, label) in [
+            ("stop", "Stop firewall"),
+            (
+                "enter-panic-mode",
+                "Enter panic mode: drop all traffic in and out",
+            ),
+        ] {
+            let spec = spec(id);
+            assert_eq!(spec.label, label, "{id}");
+            assert!(
+                spec.description
+                    .as_deref()
+                    .is_some_and(|text| text.contains("asked first")),
+                "{id}: why it asks stays in the description"
+            );
+        }
     }
 
     /// Every screenshot is the sample ruleset staged through actions, with
@@ -696,11 +772,18 @@ mod tests {
                 .is_err(),
             "a malformed service name is refused"
         );
-        app.call(
-            "field-edit",
-            serde_json::json!({ "edit": Firewall::paths().default_zone.set(ZoneKind::Home) }),
-        )
-        .unwrap();
+        let zone = |zone| serde_json::json!({ "edit": Firewall::paths().default_zone.set(zone) });
+        assert!(
+            matches!(
+                app.call("field-edit", zone(ZoneKind::Home)),
+                Err(tilo_actions::DoorError::ConfirmationRequired)
+            ),
+            "a more trusted active zone weakens the firewall, so it asks"
+        );
+        app.call("field-edit", zone(ZoneKind::Block))
+            .expect("a stricter zone asks nothing");
+        app.call_confirmed("field-edit", zone(ZoneKind::Home))
+            .unwrap();
         let catalogue =
             tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
         let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
@@ -747,5 +830,28 @@ mod tests {
             last.as_deref(),
             Some("Deleted a rule from the “public” zone")
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::FirewallShell::scenarios() {
+            let mut app = TestApp::<super::FirewallShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

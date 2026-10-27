@@ -63,6 +63,7 @@ pub mod approved_checks;
 pub mod audit;
 pub mod broker;
 pub mod editor;
+pub mod file_actions;
 pub mod fleet;
 pub mod guard;
 pub mod guest;
@@ -74,9 +75,12 @@ pub mod policy;
 pub mod records;
 pub mod relay;
 pub mod runs;
+mod runtime_import;
 pub mod seccomp;
+pub mod shell_start;
 pub mod store;
 pub mod supervisor;
+pub mod terminal_sessions;
 
 pub use store::Store;
 /// The package id every `ush` grant is written against.
@@ -106,6 +110,24 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "app",
     "store",
     "system",
+    // The file actions: GNU's names, each one an action the broker checks
+    // against the environment's grants and records so it can be taken back.
+    // A guest that ships its own copy of one of these gets this one instead,
+    // because the copy could neither see the grants nor keep the history.
+    "cp",
+    "mv",
+    "rm",
+    "mkdir",
+    "rmdir",
+    "ln",
+    "truncate",
+    // Changing a text file's contents is what a note, a list or a paragraph
+    // is for, and with only `truncate` and `cp` the only way was to rewrite
+    // the whole file; `touch` creates without truncating, `append` adds.
+    "touch",
+    "append",
+    "history",
+    "undo",
 ];
 
 /// Commands for the user's installed legacy apps, from the legacy VM's
@@ -117,7 +139,6 @@ pub fn legacy_commands() -> Vec<String> {
     legacy_command_names(&legacy_vm::apps::Registry::load(&paths.apps()))
 }
 
-/// [`legacy_commands`] for one registry.
 pub fn legacy_command_names(registry: &legacy_vm::apps::Registry) -> Vec<String> {
     let mut names: Vec<String> = registry
         .apps

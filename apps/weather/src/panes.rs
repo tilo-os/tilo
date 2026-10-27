@@ -6,7 +6,7 @@
 //! one source of truth — selecting a city in the overview is immediately
 //! reflected in the detail because both read the same `Core`.
 //!
-//! The shell owns the header row, the responsive geometry, the
+//! The shell owns the responsive geometry, the
 //! push/side-by-side transition and the Back button; these panes just paint
 //! their content into whatever rect the shell hands them, which is how the
 //! same code works side-by-side (wide) and full-screen-push (narrow).

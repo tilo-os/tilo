@@ -29,6 +29,10 @@
 //! - the cloud account service's runtime directory with its control socket:
 //!   sync now, pause and resume a mounted account (no credential crosses it,
 //!   and file requests are served only on a socket outside this grant);
+//! - the filesystem daemon's storage directory ([`STORAGE_DIR`]) with its
+//!   accounting socket: what synced files hold locally, the cache policy,
+//!   and evicting copies the daemon verifies are safe to drop. The daemon's
+//!   blob and authority sockets live elsewhere and are not bound;
 //! - the NTFS mount service's directory with its control socket
 //!   ([`NTFS_MOUNT_DIR`]): the person's remembered drives, to list, forget
 //!   or switch to opening safely. Opening a drive is not among them: the
@@ -123,7 +127,6 @@ pub struct SystemAuthorityPlan {
     /// Sockets the app connects to: the filtered system bus and the
     /// authorities' own sockets.
     pub sockets: Vec<SocketBind>,
-    /// Set when the filtered system bus is bound.
     pub system_bus: bool,
     /// The compositor's runtime state directory, bound read-only.
     pub runtime_state: Option<RuntimeState>,
@@ -186,6 +189,41 @@ fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     ]
 }
 
+/// The filesystem daemon's storage directory, as Settings sees it: the
+/// image's (`runtime_fs::storage::STORAGE_DIR`), which holds the accounting
+/// socket and nothing else. Bound as a directory, like the cloud service's,
+/// so a restarted daemon's new socket shows through.
+pub const STORAGE_DIR: &str = "/run/tilo/fs-storage";
+/// Names the storage directory of a session whose daemon runs elsewhere (a
+/// host session's runs from the person's runtime directory). It is bound at
+/// [`STORAGE_DIR`], so Settings connects to one path either way.
+pub const STORAGE_DIR_ENV: &str = "TILO_FS_STORAGE_DIR";
+
+/// The storage directory bind: `named` (from [`STORAGE_DIR_ENV`]) or the
+/// image's. A session-named directory is created private when the daemon has
+/// not started yet, so a Settings opened first still sees it start. Only a
+/// real directory is bound, never a symlink to some other tree.
+fn storage_bind(named: Option<PathBuf>) -> Option<SocketBind> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let host = match named.filter(|dir| dir.is_absolute()) {
+        Some(dir) => {
+            // A failure leaves the directory absent, which the check below refuses.
+            let _ = std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&dir);
+            dir
+        }
+        None => PathBuf::from(STORAGE_DIR),
+    };
+    std::fs::symlink_metadata(&host)
+        .is_ok_and(|metadata| metadata.is_dir())
+        .then(|| SocketBind {
+            host,
+            sandbox: PathBuf::from(STORAGE_DIR),
+        })
+}
+
 /// Where an app looks for the person's app store: under the `XDG_DATA_HOME`
 /// its sandbox environment names.
 fn sandbox_user_apps() -> PathBuf {
@@ -194,7 +232,6 @@ fn sandbox_user_apps() -> PathBuf {
         .join("tilo-apps")
 }
 
-/// The upstream system bus address.
 fn system_bus_address() -> String {
     std::env::var("DBUS_SYSTEM_BUS_ADDRESS")
         .ok()
@@ -230,6 +267,11 @@ pub fn resolve(
             });
         }
     }
+    plan.sockets.extend(storage_bind(
+        std::env::var_os(STORAGE_DIR_ENV)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from),
+    ));
     plan.runtime_state = runtime_state(uid);
     plan.user_apps = package_store::layout::default_user_root()
         .filter(|store| store.is_dir())
@@ -381,6 +423,27 @@ mod tests {
             !sockets.iter().any(|bound| files.starts_with(bound)),
             "Settings' grant reaches the cloud file socket: {sockets:?}"
         );
+    }
+
+    #[test]
+    fn the_storage_grant_binds_only_the_storage_directory_at_one_path() {
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("run/tilo/files-storage");
+        let bind = storage_bind(Some(session.clone())).expect("created and bound");
+        assert_eq!(bind.host, session);
+        assert_eq!(bind.sandbox, PathBuf::from(STORAGE_DIR));
+        assert!(session.is_dir());
+        // The blob and authority sockets' directory is never reached.
+        let workspace = root.path().join("run/tilo/files-workspace/fs-blobs.sock");
+        assert!(!workspace.starts_with(&bind.host));
+        // A symlink is not followed into another tree, and a relative
+        // name never stands for the image's directory.
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(root.path(), &link).unwrap();
+        assert!(storage_bind(Some(link)).is_none());
+        let relative = storage_bind(Some("relative".into()));
+        assert!(relative.is_none_or(|bind| bind.host == std::path::Path::new(STORAGE_DIR)));
+        assert!(!PathBuf::from("relative").exists());
     }
 
     #[test]

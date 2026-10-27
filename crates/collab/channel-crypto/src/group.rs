@@ -44,7 +44,6 @@ pub struct MemberAddition {
     /// The joiner's content-key history ([`KeyHistory::to_bytes`]): every
     /// content key the adder holds, sealed for the post-add epoch.
     pub key_history: Vec<u8>,
-    /// The epoch the group moves to.
     pub epoch: u64,
 }
 
@@ -207,10 +206,6 @@ impl ChannelGroup {
     /// Seal this member's complete key history for the current epoch, so a
     /// member who joined at this epoch (and missed the admission's bundle)
     /// can be handed it again by anyone currently in the group.
-    ///
-    /// # Errors
-    ///
-    /// Export, sealing or encoding errors.
     pub fn current_key_history(&self) -> Result<Vec<u8>> {
         let epoch = self.epoch();
         let transport = self.export_key(
@@ -373,11 +368,6 @@ impl ChannelGroup {
     /// persistence failure leaves the epoch unchanged, allowing the caller to
     /// retry instead of creating a locally admitted member with no durable
     /// delivery record.
-    ///
-    /// # Errors
-    ///
-    /// Returns the MLS/codec error, the callback's persistence error, or a
-    /// storage error if rolling back a failed handoff fails.
     pub fn add_member_transactional<F>(
         &mut self,
         candidate_key_package: KeyPackage,
@@ -735,11 +725,6 @@ impl ChannelGroup {
     /// Removal counterpart to [`Self::add_member_transactional`]. The opaque
     /// commit is durably handed to the caller before the local pending commit
     /// is merged.
-    ///
-    /// # Errors
-    ///
-    /// Returns the MLS/codec error, the callback's persistence error, or a
-    /// storage error if rolling back a failed handoff fails.
     pub fn remove_member_transactional<F>(&mut self, leaf_index: u32, persist: F) -> Result<Vec<u8>>
     where
         F: FnOnce(&ChannelGroup, &[u8], u64) -> Result<()>,

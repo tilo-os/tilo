@@ -63,7 +63,6 @@ const MAX_LIVE_SESSIONS: usize = 64;
 pub mod device_type {
     pub const KEYBOARD: u32 = 1;
     pub const POINTER: u32 = 2;
-    pub const TOUCHSCREEN: u32 = 4;
     /// Device classes with real compositor delivery. Touch is deliberately
     /// omitted until a dedicated touch protocol path exists.
     pub const ALL: u32 = KEYBOARD | POINTER;
@@ -100,7 +99,6 @@ pub struct RemoteInputInjectorHandle {
 }
 
 impl RemoteInputInjectorHandle {
-    /// Create a new handle wrapping the given injector.
     pub fn new(inner: Arc<dyn RemoteInputInjector>) -> Self {
         Self { inner }
     }
@@ -112,7 +110,6 @@ impl RemoteInputInjectorHandle {
         }
     }
 
-    /// Inject a remote action into the wrapped injector.
     pub fn inject(&self, action: RemoteAction) -> bool {
         self.inner.inject(action)
     }
@@ -137,14 +134,12 @@ pub struct RecordingInjector {
 }
 
 impl RecordingInjector {
-    /// Create a new recording injector.
     pub fn new() -> Self {
         Self {
             actions: Mutex::new(Vec::new()),
         }
     }
 
-    /// Return a clone of all recorded actions.
     pub fn actions(&self) -> Vec<RemoteAction> {
         self.actions.lock().map(|a| a.clone()).unwrap_or_default()
     }
@@ -303,7 +298,6 @@ impl super::clipboard::ClipboardSessionProvider for RemoteDesktopSessionHandle {
 }
 
 impl RemoteDesktopBackend {
-    /// Create a new `RemoteDesktop` portal backend.
     #[cfg(target_os = "linux")]
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -501,8 +495,11 @@ impl RemoteDesktopBackend {
                 app_id: auth.caller.app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
+            let prompts = self.ctx.prompts.clone();
+            let withdrawn = request_path.clone();
             let cancel = move |_: &LifecycleEntry| {
                 cancellation.store(true, Ordering::Release);
+                prompts.cancel_request(&withdrawn);
             };
             self.lifecycle
                 .with_request(connection, &request_path, request_entry, cancel, async {
@@ -539,11 +536,12 @@ impl RemoteDesktopBackend {
                         scope: Expiry::AfterUse,
                     };
                     let allowed = restored.is_some()
-                        || flow::resolve(
+                        || flow::resolve_for_request(
                             &self.ctx,
                             auth.caller,
                             CapabilityKind::RemoteDesktop,
                             cap_template,
+                            request_path.clone(),
                         )
                         .await
                         .is_allowed();
@@ -1021,7 +1019,6 @@ mod tests {
 
     #[test]
     fn remote_desktop_injectors_record_forward_or_drop() {
-        // Phase `recording_injector_captures_actions`.
         {
             let rec = Arc::new(RecordingInjector::new());
             let h = RemoteInputInjectorHandle::new(rec.clone());
@@ -1031,7 +1028,6 @@ mod tests {
             }));
             assert_eq!(rec.actions().len(), 1);
         }
-        // Phase `channel_injector_forwards`.
         {
             let (tx, rx) = std::sync::mpsc::channel();
             let inj = ChannelInjector::new(tx);
@@ -1042,7 +1038,6 @@ mod tests {
                 RemoteAction::PointerMotionRelative { dx: 1.0, dy: 2.0 }
             );
         }
-        // Phase `null_injector_drops`.
         {
             let h = RemoteInputInjectorHandle::null();
             assert!(!h.inject(RemoteAction::PointerMotionRelative { dx: 0.0, dy: 0.0 }));
@@ -1115,7 +1110,6 @@ mod tests {
             assert_eq!(actions.len(), 1, "only the granted pointer action routes");
             assert!(matches!(actions[0], RemoteAction::PointerButton { .. }));
         }
-        // Phase `eis_actions_are_limited_to_the_granted_device_classes`.
         {
             let keyboard = RemoteAction::KeyboardKeycode {
                 keycode: 30,
@@ -1131,7 +1125,6 @@ mod tests {
 
     #[test]
     fn remote_desktop_wire_values_follow_the_standard() {
-        // Phase `state_pressed_maps_freedesktop_convention`.
         assert!(state_pressed(1));
         assert!(!state_pressed(0));
         // Phase `v2_restore_data_is_a_standard_vendor_tuple`.

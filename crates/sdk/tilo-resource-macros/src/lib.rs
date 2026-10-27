@@ -43,7 +43,16 @@ fn krate() -> Tokens {
 /// remove (removing one by field edit asks no confirmation),
 /// `#[model(default = expr)]` (what the field reads as when the document
 /// holds none: a required field with a sensible derivation, so an item
-/// missing it still reads; the next whole write stores it).
+/// missing it still reads; the next whole write stores it),
+/// `#[model(trust = "sensitive")]` (every edit of it asks for confirmation:
+/// a change can expose the person), `#[model(trust = "weakening")]`
+/// (it also crosses a security boundary: any change can weaken the person's
+/// security, so an agent or script acting for them needs their own grant)
+/// and `#[model(weaker = ..)]` (only a change making it weaker than it is
+/// now does: `weaker = "higher"` or `"lower"` for a number, with
+/// `weakest = N` for the value weaker than any, such as a lock delay's `0`
+/// for never; `weaker = true` or `false` for a switch; a list of values
+/// from the strongest to the weakest for a choice).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -104,15 +113,24 @@ mod schema;
 /// scripts alike. See `tilo_resource::effect`.
 ///
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
-/// type; `device_only` beside it marks every effect device-only. Each variant is unit or has named fields (the effect's typed
+/// type. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, device_only, programmatic, untrusted, opens_path, member, risk = "path", kind = "read")]`.
-/// A `device_only` effect reaches the files, hardware or services of the
-/// device it runs on: only the person at that device may invoke it. In a
-/// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
-/// one effect that reaches nothing of the device (a personal setting). Generates `impl Effect` and one `ActionRef`
+/// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
+/// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
+/// answers in a render service of its own rather than the record's app
+/// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
+/// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
+/// when that parameter is given (an export writing the file it names).
+/// Who may run an effect is decided by its kind, like any action. An
+/// `own_device` effect's whole scope is the invoking person's own device,
+/// touching nothing shared and no one else (their clipboard, their own
+/// appearance): a room's grants have nothing to consent to. An `attended`
+/// effect needs its person attending (a chooser, a sign-in, a secret shown):
+/// whoever acts for them is always asked first, while the person's own click
+/// is their decision and, like an `own_device` effect, needs no room's
+/// consent and runs only on their own device. Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {
@@ -142,6 +160,115 @@ struct FieldOptions {
     resource: bool,
     /// `default = expr`: what an absent field reads as.
     default: Option<Expr>,
+    /// `trust = "sensitive" | "weakening"`: the `Trust` variant it names.
+    trust: Option<syn::LitStr>,
+    /// `weaker = "higher" | "lower" | bool | ["strongest", .., "weakest"]`:
+    /// which way a change weakens security.
+    weaker: Option<Expr>,
+    /// `weakest = N`: the number weaker than any (a delay's `0`, never).
+    weakest: Option<syn::LitInt>,
+}
+
+impl FieldOptions {
+    /// The field's `Trust`, as an expression.
+    fn trust(&self, krate: &Tokens) -> syn::Result<Tokens> {
+        let named = self.trust.as_ref().map(syn::LitStr::value);
+        let numeric = matches!(
+            &self.weaker,
+            Some(Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(_),
+                ..
+            }))
+        );
+        if let Some(weakest) = self.weakest.as_ref().filter(|_| !numeric) {
+            return Err(syn::Error::new(
+                weakest.span(),
+                "`weakest` goes with `weaker = \"higher\"` or `weaker = \"lower\"`",
+            ));
+        }
+        let Some(weaker) = &self.weaker else {
+            return Ok(match named.as_deref() {
+                None => quote!(#krate::Trust::Ordinary),
+                Some("sensitive") => quote!(#krate::Trust::Sensitive),
+                Some("weakening") => quote!(#krate::Trust::Weakening),
+                Some(_) => {
+                    return Err(syn::Error::new(
+                        self.trust.span(),
+                        "expected `trust = \"sensitive\"` or `trust = \"weakening\"`",
+                    ));
+                }
+            });
+        };
+        if named.as_deref().is_some_and(|named| named != "weakening") {
+            return Err(syn::Error::new(
+                self.trust.span(),
+                "`weaker` makes the field weaken one way: drop `trust` or make it \"weakening\"",
+            ));
+        }
+        let unexpected = || {
+            syn::Error::new(
+                weaker.span(),
+                "expected `weaker = \"higher\"`, `\"lower\"`, `true`, `false` or a list of \
+                 values from the strongest to the weakest",
+            )
+        };
+        let weakest = if let Some(weakest) = &self.weakest {
+            let weakest: i64 = weakest.base10_parse()?;
+            quote!(::core::option::Option::Some(#weakest))
+        } else {
+            quote!(::core::option::Option::None)
+        };
+        let string = |expr: &Expr| match expr {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        };
+        let weaker = match weaker {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(rule),
+                ..
+            }) if rule.value() == "higher" => {
+                quote!(#krate::Weaker::Higher { weakest: #weakest })
+            }
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(rule),
+                ..
+            }) if rule.value() == "lower" => quote!(#krate::Weaker::Lower { weakest: #weakest }),
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Bool(weak),
+                ..
+            }) => {
+                let order = if weak.value {
+                    ["false", "true"]
+                } else {
+                    ["true", "false"]
+                };
+                quote!(#krate::Weaker::Order(&[#(#order),*]))
+            }
+            Expr::Array(values) => {
+                // Each value as the JSON text of the string it serializes to.
+                let order = values
+                    .elems
+                    .iter()
+                    .map(|value| {
+                        string(value)
+                            .filter(|text| {
+                                !text
+                                    .chars()
+                                    .any(|c| c == '"' || c == '\\' || c.is_control())
+                            })
+                            .map(|text| format!("\"{text}\""))
+                            .ok_or_else(unexpected)
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
+                quote!(#krate::Weaker::Order(&[#(#order),*]))
+            }
+            _ => return Err(unexpected()),
+        };
+        Ok(quote!(#krate::Trust::Weakens(#weaker)))
+    }
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -167,6 +294,12 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.resource = true;
             } else if meta.path.is_ident("default") {
                 options.default = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("trust") {
+                options.trust = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("weaker") {
+                options.weaker = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("weakest") {
+                options.weakest = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -176,7 +309,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource`, `default = ..` or `remove = \"quiet\"`",
+                     `whole`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
+                     `weakest = N` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -200,6 +334,24 @@ struct ContainerOptions {
     /// counts (not reads): adding or removing one can break it, an edit
     /// inside one cannot.
     check_items: Vec<String>,
+}
+
+/// `audience = "people" | "agents" | "everyone"` on an action or effect:
+/// the `tilo_actions::Audience` variant it names.
+fn audience_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Ident> {
+    let value = meta.value()?.parse::<syn::LitStr>()?;
+    let variant = match value.value().as_str() {
+        "everyone" => "Everyone",
+        "people" => "People",
+        "agents" => "Agents",
+        _ => {
+            return Err(syn::Error::new(
+                value.span(),
+                "expected `audience = \"people\"`, `\"agents\"` or `\"everyone\"`",
+            ));
+        }
+    };
+    Ok(syn::Ident::new(variant, value.span()))
 }
 
 /// Fields named by a space-separated `"a b"` list.
@@ -246,6 +398,18 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             Span::call_site(),
             "`check_reads` and `check_items` say what a `check = path` reads",
         ));
+    }
+    // A field named twice is not the label twice: the second mention would
+    // silently name no field, and the label would read as if it had.
+    let mut named: Vec<&str> = Vec::new();
+    for part in &options.label {
+        if named.contains(&part.as_str()) {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                format!("`label = \"..\"` names `{part}` twice"),
+            ));
+        }
+        named.push(part);
     }
     Ok(options)
 }
@@ -438,7 +602,6 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
 
                 impl #impl_generics #krate::Model for #name #type_generics #where_clause {
-                    // Run by one set of functions for every such enum.
                     const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_unit(&Self::__UNIT);
                     type Paths<__R> = #krate::Path<__R, Self>;
 
@@ -561,7 +724,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 || humanize(&field_name),
                 |line| line.trim_end_matches('.').to_owned(),
             );
-        let (unit, readonly, is_label) = (options.unit, options.readonly, options.label);
+        // An outbox is its own storage unit: what a change queues in it is
+        // what reaches outside the record, and a receiver tells that from
+        // the units the change wrote without the app's code.
+        let outbox = last_ident(ty).is_some_and(|(name, _)| name == "Outbox");
+        let (unit, readonly, is_label) = (options.unit || outbox, options.readonly, options.label);
         let label_part = label_parts
             .iter()
             .position(|part| *part == field_name)
@@ -572,6 +739,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_fields.push((label_part, descs.len()));
         }
         let quiet_remove = options.quiet_remove;
+        let trust = options.trust(&krate)?;
         if is_label {
             if label.is_some() {
                 return Err(syn::Error::new(
@@ -586,7 +754,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         } else {
             quote!(<#ty as #krate::Model>::TABLE)
         };
-        if last_ident(ty).is_some_and(|(name, _)| name == "Outbox") {
+        if outbox {
             outbox_names.push(field_name.clone());
         }
         let keyed = last_ident(ty).is_some_and(|(name, _)| name == "Keyed" || name == "Ordered");
@@ -640,6 +808,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label: #is_label,
             label_part: #label_part,
             quiet_remove: #quiet_remove,
+            trust: #trust,
             schema: <#ty as #krate::Model>::value_schema,
             text: #krate::stored_text::<#ty>,
             absent: #krate::absent_scalar::<#ty>,
@@ -1192,6 +1361,35 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
     Some((segment.ident.to_string(), inner))
 }
 
+/// How a parameter of Rust type `ty` holds bytes, when it does (`Vec<u8>`,
+/// or a list of them): the decoder that takes them inline or by a content
+/// reference, and the schema saying both. Actions carry intent and
+/// references; bytes travel by session transport into the content store.
+fn byte_param(ty: &Type) -> Option<(Tokens, Tokens)> {
+    let krate = krate();
+    let is_bytes = |ty: &Type| {
+        last_ident(ty).is_some_and(|(name, inner)| {
+            name == "Vec"
+                && inner
+                    .and_then(last_ident)
+                    .is_some_and(|(byte, _)| byte == "u8")
+        })
+    };
+    let (name, inner) = last_ident(ty)?;
+    if is_bytes(ty) {
+        return Some((
+            quote!(#krate::content::bytes),
+            quote!(#krate::content::bytes_schema),
+        ));
+    }
+    (name == "Vec" && inner.is_some_and(is_bytes)).then(|| {
+        (
+            quote!(#krate::content::byte_lists),
+            quote!(#krate::content::byte_list_schema),
+        )
+    })
+}
+
 /// The declared type of a parameter of Rust type `ty`, and whether it is
 /// optional. An app's own type is what its schema says it is written as
 /// when `schema` (the type implements `JsonSchema`), else an object.
@@ -1315,10 +1513,16 @@ fn is_action_cx(ty: &Type) -> bool {
 /// like the parameter, or the record's only one; `#[action(item = field)]`
 /// names it otherwise, and anything else does not compile.
 ///
-/// Action options: `label = "..."`, `destructive` (people confirm it, through
-/// any door), `housekeeping` (a change about the record rather than to it,
+/// Action options: `label = "..."`, `destructive` (it deletes or overwrites:
+/// when Undo takes it back, as it does any change of the document alone, it
+/// runs at once and offers Undo; otherwise people confirm it, through any
+/// door), `irreversible` (it also loses what Undo cannot bring back, such
+/// as a secret every device forgets: a destructive one is confirmed even
+/// though Undo reverts its document change), `housekeeping` (a change
+/// about the record rather than to it,
 /// such as a read marker), `external` (content from outside, nobody's undo
-/// step), `field = "..."` (an action that writes only that field is placed
+/// step), `local` (an action of a record with a `queue` that queues nothing,
+/// so an undoable change rather than one reaching outside), `field = "..."` (an action that writes only that field is placed
 /// below it, so a grant on the field reaches it: someone who may only
 /// comment may add to the `comments`).
 ///
@@ -1330,7 +1534,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
 /// Result<serde_json::Value, String>`), `read_content_in_doc = path` (the same
 /// read, `fn(&Self, &Doc, Option<&Id>) -> ...`, for one that needs the
-/// document itself) and `views = path`.
+/// document itself), `facts = path` (`fn(&Self) -> Result<serde_json::Value,
+/// String>`, the compact summary `Resource::facts` states) and `views = path`.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = match verbs::resource_options(attr) {

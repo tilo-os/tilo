@@ -1,6 +1,3 @@
-//! Mouse side buttons navigate any view that owns history, through the same
-//! `on_nav_gesture` door as touchpad swipes and edge pulls.
-
 use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;

@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use automerge::ObjId;
 
 use crate::collection::{Id, VALUE, store_in_order, stored_entries};
-use crate::keyed::{Identified, ItemStorage, Items, removed_and_changed};
+use crate::keyed::{Identified, ItemStorage, Items, removed_and_changed_in};
 use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot};
 use crate::path::{Edit, EditOp, Path, Segment};
@@ -35,7 +35,7 @@ impl<R, T: Model + Identified> Path<R, Ordered<T>> {
     pub fn insert(&self, at: usize, item: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: Some(item.id()),
-            at,
+            at: crate::At::Index(at),
             value: item.to_json(),
         })
     }
@@ -43,7 +43,10 @@ impl<R, T: Model + Identified> Path<R, Ordered<T>> {
     /// Move the item `id` to position `at`.
     #[must_use]
     pub fn move_to(&self, id: &Id, at: usize) -> Edit<R> {
-        self.edit(EditOp::MoveTo { id: id.clone(), at })
+        self.edit(EditOp::MoveTo {
+            id: id.clone(),
+            at: crate::At::Index(at),
+        })
     }
 }
 
@@ -76,41 +79,59 @@ impl ItemStorage for Arranged {
         store_in_order(doc, slot, &items, false, &|_| false)
     }
 
-    #[inline(never)]
-    fn diff<T: Model + Identified, R>(
-        before: &[T],
-        after: &[T],
-        path: &[Segment],
-        out: &mut Vec<Edit<R>>,
-    ) {
-        let after_ids: Vec<Id> = after.iter().map(Identified::id).collect();
-        let before_ids = removed_and_changed(before, after, &after_ids, path, out);
-        let present: HashSet<&Id> = after_ids.iter().collect();
-        // Walk `after` against the order the edits so far leave: what
-        // survived of `before`, then each item put where `after` has it.
-        let mut order: Vec<Id> = before_ids
-            .into_iter()
-            .filter(|id| present.contains(id))
-            .collect();
-        for (index, (item, id)) in after.iter().zip(after_ids.iter().cloned()).enumerate() {
-            match order.iter().position(|candidate| candidate == &id) {
-                Some(now) if now == index => {}
-                Some(now) => {
-                    order.remove(now);
-                    order.insert(index.min(order.len()), id.clone());
-                    out.push(Edit::new(path.to_vec(), EditOp::MoveTo { id, at: index }));
-                }
-                None => {
-                    order.insert(index.min(order.len()), id.clone());
-                    out.push(Edit::new(
-                        path.to_vec(),
-                        EditOp::InsertItem {
-                            id: Some(id),
-                            at: index,
-                            value: item.to_json(),
-                        },
-                    ));
-                }
+    const DIFF: crate::keyed::ErasedDiff = arranged_diff_in;
+}
+
+/// [`Arranged`]'s [`ItemStorage::diff`] over items whose type `table`
+/// describes, compiled once for every item type.
+#[inline(never)]
+fn arranged_diff_in(
+    table: &'static crate::table::ModelTable,
+    (before, after): (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    path: &[Segment],
+    out: &mut Vec<Edit<()>>,
+) {
+    let after_ids: Vec<Id> = (0..after.count())
+        .filter_map(|at| Some(after.item(at)?.0))
+        .collect();
+    let before_ids = removed_and_changed_in(table, (before, after), &after_ids, path, out);
+    let present: HashSet<&Id> = after_ids.iter().collect();
+    // Walk `after` against the order the edits so far leave: what
+    // survived of `before`, then each item put where `after` has it.
+    let mut order: Vec<Id> = before_ids
+        .into_iter()
+        .filter(|id| present.contains(id))
+        .collect();
+    for (index, id) in after_ids.iter().cloned().enumerate() {
+        match order.iter().position(|candidate| candidate == &id) {
+            Some(now) if now == index => {}
+            Some(now) => {
+                order.remove(now);
+                order.insert(index.min(order.len()), id.clone());
+                out.push(Edit::new(
+                    path.to_vec(),
+                    EditOp::MoveTo {
+                        id,
+                        at: crate::At::Index(index),
+                    },
+                ));
+            }
+            None => {
+                let Some((_, item)) = after.item(index) else {
+                    continue;
+                };
+                order.insert(index.min(order.len()), id.clone());
+                out.push(Edit::new(
+                    path.to_vec(),
+                    EditOp::InsertItem {
+                        id: Some(id),
+                        at: crate::At::Index(index),
+                        value: (table.ops.to_json)(table, item),
+                    },
+                ));
             }
         }
     }

@@ -6,10 +6,7 @@ use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
 };
-use tilo_desktop_model::{
-    DesktopTree, Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute,
-    WorkspaceTaskStatus,
-};
+use tilo_desktop_model::DesktopTree;
 
 pub mod index;
 pub mod morning;
@@ -17,17 +14,14 @@ pub mod view_actions;
 pub use view_actions::WorkspaceViewRequest;
 mod pane;
 mod replay;
-mod task_review;
-pub use task_review::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
 #[cfg(test)]
 mod testing;
 pub use index::*;
 pub use pane::{
-    ACTIVITY_ACKNOWLEDGE, ACTIVITY_TASKS, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE,
-    HISTORY_UNDO, NativeManagedTaskRequest, NativeManualTaskRequest, Period, RoomActivityOutcome,
-    RoomActivityPane, RoomScope, TaskDispatchRequest,
+    ACTIVITY_ACKNOWLEDGE, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period,
+    RoomActivityOutcome, RoomActivityPane, RoomScope, ServedTree, TASKS_APP, is_document_write,
+    is_personal, is_read, refused_to_agent,
 };
-pub use pane::{ConfirmationNotice, PausedDraft, RunGlance};
 
 /// A causal document paired with its admitted desktop projection. Implementors
 /// retain native mutation/persistence authority; the default snapshot is read-only.
@@ -35,10 +29,6 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     fn document(&self) -> &AutoCommit;
     fn document_mut(&mut self) -> &mut AutoCommit;
     /// Rebuild the desktop projection from the causal document.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the document no longer projects to a desktop.
     fn resync_activity_cache(&mut self) -> Result<(), String>;
     fn replay_presentation_note(&self) -> Option<String> {
         None
@@ -51,29 +41,6 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
         Vec::new()
     }
     fn commit_activity_change(&mut self) {}
-    fn native_manual_tasks(&self, _workspace: WorkspaceId) -> bool {
-        false
-    }
-    fn create_workspace_task(
-        &mut self,
-        _workspace: WorkspaceId,
-        _title: String,
-        _actor: String,
-        _agent: Option<String>,
-        _route: WorkspaceTaskRoute,
-        _resource: Option<WorkspaceTaskResource>,
-    ) -> Option<String> {
-        None
-    }
-    fn set_workspace_task_status(
-        &mut self,
-        _workspace: WorkspaceId,
-        _id: &str,
-        _status: WorkspaceTaskStatus,
-        _actor: &str,
-    ) -> bool {
-        false
-    }
 }
 
 /// Read-only admitted single-room history. Construct from the actual admitted
@@ -87,29 +54,17 @@ pub struct ActivitySnapshot {
 }
 impl ActivitySnapshot {
     /// Snapshot the active room of `desktop` from its admitted owner document.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when there is no active workspace or the room does not project.
     pub fn new(desktop: DesktopTree, doc: AutoCommit) -> Result<Self, String> {
         let room = desktop
             .active_workspace()
             .ok_or("active workspace unavailable")?
-            .room;
+            .room();
         let mut snapshot = Self { desktop, doc, room };
         tilo_desktop_model::projection::apply_admitted_room(
             &mut snapshot.desktop,
             room,
             &snapshot.doc,
         )?;
-        if let Some(workspace) = snapshot
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.room == room)
-        {
-            workspace.tasks = tilo_desktop_model::projection::workspace_tasks_of(&snapshot.doc);
-        }
         Ok(snapshot)
     }
 }
@@ -138,7 +93,7 @@ impl ActivityTree for ActivitySnapshot {
         // A historical projection must not retain tabs that only exist in the
         // current cache. Room documents do not record local width or active-tab
         // selection, so reconstructed groups use neutral presentation defaults.
-        self.desktop.workspaces.retain(|w| w.room == self.room);
+        self.desktop.workspaces.retain(|w| w.room() == self.room);
         for workspace in &mut self.desktop.workspaces {
             workspace.strips.clear();
         }
@@ -168,9 +123,6 @@ pub trait ActivityHost {
         None
     }
     /// Submit a chosen source command through the existing admitted action session.
-    ///
-    /// # Errors
-    /// Returns a localized refusal if the source or caller is no longer admitted.
     fn submit_morning_command(
         &self,
         _room: &str,
@@ -209,89 +161,58 @@ pub trait ActivityHost {
     fn app_display_name(&self, _app: &str) -> Option<String> {
         None
     }
-    fn agent_members(&self, _workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
-        Vec::new()
-    }
-    fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
-        false
-    }
-    /// Cached, asynchronously refreshed evidence from the admitted room owner.
-    /// `None` means loading; an error means unavailable, never an empty success.
-    fn task_review_required(&self, _room: &str) -> bool {
-        false
-    }
-
-    fn task_review_snapshot(
-        &self,
-        _room: &str,
-    ) -> Option<Result<std::sync::Arc<TaskReviewSnapshot>, String>> {
-        Some(Err(crate::i18n::t("activity-task-review-unavailable")))
-    }
-    /// Queue an authenticated owner command without blocking the paint/input thread.
+    /// Undo an agent's run of task `task`: each document in `steps` (its
+    /// app and record) undoes the changes grouped under the task, through
+    /// its own history, as the person at the screen.
     ///
     /// # Errors
-    /// The owner adapter is unavailable or its bounded queue is full.
-    fn submit_task_review(&self, _request: TaskReviewRequest) -> Result<(), String> {
-        Err(crate::i18n::t("activity-task-review-unavailable"))
+    /// The host cannot undo here, or refused to start.
+    fn undo_task_run(&self, _undo: TaskRunUndo) -> Result<(), String> {
+        Err(crate::i18n::t("activity-undo-task-unavailable"))
     }
-    /// A command is successful only after its durable owner receipt is verified.
-    fn poll_task_review(&self, _invocation: uuid::Uuid) -> Option<Result<(), String>> {
+    /// How the undo `invocation` ended: the records it was carried out in,
+    /// or why nothing was undone. `None` while it runs.
+    fn poll_task_run_undo(
+        &self,
+        _invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<TaskRunDocument>, String>> {
         None
     }
-    /// Dispatch a workspace task to its agent.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when dispatch is unavailable or refused.
-    fn dispatch_task(&self, _room: &str, _task: &str) -> Result<(), String> {
-        Err(crate::i18n::t("activity-agent-dispatch-unavailable"))
-    }
-    /// Launch an agent into `workspace`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when launching is unavailable or refused.
-    fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
-        Err(crate::i18n::t("activity-agent-launch-unavailable"))
-    }
+}
+
+/// One document an undo of an agent's task was carried out in: the step's
+/// app and record, so the task view reports what came back and what did not.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRunDocument {
+    pub app: String,
+    pub record: String,
+}
+
+/// An agent's run of a task to undo as one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskRunUndo {
+    pub room: String,
+    pub invocation: uuid::Uuid,
+    pub task_id: String,
+    /// The documents the run changed: each step's app and record.
+    pub steps: Vec<(String, String)>,
 }
 pub struct UnavailableActivityHost;
 impl ActivityHost for UnavailableActivityHost {}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityDeepLink {
-    pub task_id: Option<String>,
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,
     pub resource_id: Option<String>,
     pub resource_version: Option<[u8; 16]>,
 }
-#[derive(Clone, Debug)]
-pub struct AgentLaunchEvent {
-    pub managed_agent_id: Option<String>,
-    pub managed_workspace_id: Option<String>,
-    pub kind: AgentLaunchEventKind,
-}
-#[derive(Clone, Debug)]
-pub enum AgentLaunchEventKind {
-    Started {
-        pid: u32,
-    },
-    SpawnFailed {
-        detail: String,
-    },
-    Failed {
-        code: Option<i32>,
-        stderr_tail: String,
-    },
-    Exited,
-}
-
 #[cfg(test)]
 mod admitted_history_tests {
     use super::*;
     use automerge::{ROOT, transaction::Transactable};
+    use tilo_desktop_model::{Workspace, WorkspaceId};
 
     #[test]
     fn workspace_activity_real_room_topology_enters_pane_feed_and_replay() {
@@ -300,7 +221,7 @@ mod admitted_history_tests {
         };
         let workspace = Workspace::new(WorkspaceId(9), "Actual room");
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+        doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
         doc.put(ROOT, "name", "Actual room").unwrap();
         doc.commit();
         let mut strips = vec![Strip {
@@ -319,6 +240,7 @@ mod admitted_history_tests {
                         kind: AppKind::Other("so.tilo.notes".into()),
                         label: "Notes".into(),
                     },
+                    app_title: None,
                 }],
             }],
         }];
@@ -354,9 +276,15 @@ mod admitted_history_tests {
         let mut pane = RoomActivityPane::new();
         pane.begin_view(9);
         pane.refresh(&mut snapshot);
-        // Setup/layout commits are omitted from the explorer feed; the
-        // title change is the one Change row people should see.
-        assert_eq!(pane.entries().len(), 1);
+        // The window opened and the title change are listed; setup and
+        // layout commits are not.
+        let summaries = pane
+            .entries()
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(summaries.len(), 2, "{summaries:?}");
+        assert!(summaries.contains(&"Opened Before"), "{summaries:?}");
         let labels = pane
             .replay_frames
             .iter()

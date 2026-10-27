@@ -57,7 +57,8 @@ struct DeclaredDirectory {
 impl Widget for DeclaredDirectory {
     crate::provides!(
         dyn crate::resources::PublishesResources,
-        dyn crate::search::capability::SearchSource
+        dyn crate::search::capability::SearchSource,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
@@ -76,6 +77,9 @@ impl Widget for DeclaredDirectory {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
         Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
     }
+}
+
+impl crate::widget::ResourceOperations for DeclaredDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
@@ -101,7 +105,7 @@ impl crate::resources::PublishesResources for DeclaredDirectory {
                     format!("declared:{index}"),
                     "declared",
                     if doc.get(ROOT, "large-label").unwrap().is_some() {
-                        "L".repeat(8192)
+                        "L".repeat(32 * 1024)
                     } else {
                         format!("Declared {index}")
                     },
@@ -250,7 +254,10 @@ fn retained_local_directory_survives_mutation_but_never_resolves_ordinary_stale_
     let (mut app, calls) = declared_directory(1);
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
-    let pin = app.pin_local_document_action_directory(&revision).unwrap();
+    let pin = app
+        .try_pin_local_document_action_directory(&revision)
+        .ok()
+        .unwrap();
     app.state_mut_for_test()
         .doc
         .put(ROOT, "removed", true)
@@ -294,11 +301,19 @@ fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() 
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
     let pins = (0..1024)
-        .map(|_| app.pin_local_document_action_directory(&revision).unwrap())
+        .map(|_| {
+            app.try_pin_local_document_action_directory(&revision)
+                .ok()
+                .unwrap()
+        })
         .collect::<Vec<_>>();
     assert!(pins.iter().all(|pin| std::rc::Rc::ptr_eq(&pins[0], pin)));
     assert_eq!(app.actions.local_document_directory_pins.len(), 1);
-    assert!(app.pin_local_document_action_directory("wrong").is_none());
+    assert!(
+        app.try_pin_local_document_action_directory("wrong")
+            .ok()
+            .is_none()
+    );
     assert!(matches!(
         app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::Found { .. }
@@ -308,20 +323,126 @@ fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() 
         app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
-    assert!(app.pin_local_document_action_directory(&revision).is_some());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_some()
+    );
 }
 
 #[test]
 fn retained_local_directory_rejects_oversized_snapshot() {
-    let (mut app, _) = declared_directory(16);
+    // 64 resources with 32 KiB labels: several times the pin budget in
+    // memory actually held, not only in the estimate.
+    let (mut app, _) = declared_directory(64);
     app.state_mut_for_test()
         .doc
         .put(ROOT, "large-label", true)
         .unwrap();
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
-    assert!(app.pin_local_document_action_directory(&revision).is_none());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_none()
+    );
     assert!(app.actions.local_document_directory_pins.is_empty());
+}
+
+/// The estimate a pin is charged is an upper bound on what a snapshot holds,
+/// and close to it: an estimate many times the memory refused every local
+/// action of an ordinary app (a directory of 40 resources holding 2.8 MB was
+/// charged 25 MB against the 4 MiB pin budget).
+#[test]
+fn directory_snapshot_estimate_bounds_its_measured_memory() {
+    use crate::semantic_document_read::retirement::tests::allocations::allocations_only;
+    let resources = |count: usize, label: usize, extra: usize| -> Vec<Resource> {
+        (0..count)
+            .map(|index| {
+                let mut resource = Resource::new(
+                    format!("declared:{index}"),
+                    "declared",
+                    if label > 0 {
+                        "L".repeat(label)
+                    } else {
+                        format!("Declared {index}")
+                    },
+                )
+                .with_action(
+                    ActionSpec::operation(
+                        "inspect",
+                        "Inspect",
+                        OperationKind::View,
+                        COUNTER_TYPE,
+                        &CounterAction::Bump,
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                );
+                for action in 0..extra {
+                    resource = resource.with_action(
+                        ActionSpec::operation(
+                            format!("extra:{action}"),
+                            "Extra action",
+                            OperationKind::Effect,
+                            COUNTER_TYPE,
+                            &CounterAction::Bump,
+                        )
+                        .unwrap()
+                        .with_contract(tilo_actions::ActionContract::default()),
+                    );
+                }
+                resource
+            })
+            .collect()
+    };
+    for (what, count, label, extra) in [
+        ("long labels", 16, 8192, 0),
+        ("many small resources", 137, 0, 0),
+        ("one wide resource", 1, 0, 140),
+        ("an app's directory", 40, 0, 12),
+    ] {
+        let resources = resources(count, label, extra);
+        let descriptors = tilo_actions::door::survey(&resources);
+        let (snapshot, held) = allocations_only(|| {
+            crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+                &resources,
+                &descriptors,
+                |_| None,
+            )
+        });
+        let estimate = snapshot.retained_bytes();
+        assert!(
+            estimate >= held.live,
+            "{what}: estimated {estimate} bytes, holds {}",
+            held.live
+        );
+        assert!(
+            estimate <= held.live.saturating_mul(3),
+            "{what}: estimated {estimate} bytes for {} held",
+            held.live
+        );
+    }
+}
+
+/// Every publication builds a snapshot, and serializing each of its actions
+/// to estimate what it holds cost an app with many resources most of a
+/// publication: the estimate waits for the local input that pins it.
+#[test]
+fn a_snapshot_is_estimated_only_when_an_input_pins_it() {
+    let (mut app, _) = declared_directory(40);
+    publish_declared_directory(&mut app);
+    let snapshot = app.actions.action_directory_snapshot.clone().unwrap();
+    assert!(
+        !snapshot.retention_estimated(),
+        "a publication estimated a snapshot nothing pinned"
+    );
+    let revision = app.action_directory_revision();
+    let _pin = app
+        .try_pin_local_document_action_directory(&revision)
+        .ok()
+        .unwrap();
+    assert!(snapshot.retention_estimated(), "a pin is bounded by it");
 }
 
 #[test]
@@ -333,7 +454,11 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
         clippy::collection_is_never_read,
         reason = "the pins are guards: holding them fills the limit, popping one frees a slot"
     )]
-    let mut pins = vec![app.pin_local_document_action_directory(&old).unwrap()];
+    let mut pins = vec![
+        app.try_pin_local_document_action_directory(&old)
+            .ok()
+            .unwrap(),
+    ];
     // Tiny subsequent snapshots isolate the count limit from the byte limit.
     app.state_mut_for_test()
         .doc
@@ -347,7 +472,11 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
         publish_declared_directory(&mut app);
         let revision = app.action_directory_revision();
         assert_ne!(revision, old);
-        pins.push(app.pin_local_document_action_directory(&revision).unwrap());
+        pins.push(
+            app.try_pin_local_document_action_directory(&revision)
+                .ok()
+                .unwrap(),
+        );
     }
     assert_eq!(app.actions.local_document_directory_pins.len(), 64);
     app.state_mut_for_test()
@@ -356,13 +485,21 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
         .unwrap();
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
-    assert!(app.pin_local_document_action_directory(&revision).is_none());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_none()
+    );
     assert!(matches!(
         app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     pins.pop();
-    assert!(app.pin_local_document_action_directory(&revision).is_some());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_some()
+    );
 }
 
 #[test]
@@ -374,7 +511,11 @@ fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dr
         .unwrap();
     publish_declared_directory(&mut app);
     let old = app.action_directory_revision();
-    let mut pins = vec![app.pin_local_document_action_directory(&old).unwrap()];
+    let mut pins = vec![
+        app.try_pin_local_document_action_directory(&old)
+            .ok()
+            .unwrap(),
+    ];
     let mut rejected = None;
     for generation in 1..64 {
         app.state_mut_for_test()
@@ -383,7 +524,7 @@ fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dr
             .unwrap();
         publish_declared_directory(&mut app);
         let revision = app.action_directory_revision();
-        if let Some(pin) = app.pin_local_document_action_directory(&revision) {
+        if let Ok(pin) = app.try_pin_local_document_action_directory(&revision) {
             pins.push(pin);
         } else {
             rejected = Some(revision);
@@ -401,7 +542,11 @@ fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dr
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
     pins.clear();
-    assert!(app.pin_local_document_action_directory(&rejected).is_some());
+    assert!(
+        app.try_pin_local_document_action_directory(&rejected)
+            .ok()
+            .is_some()
+    );
     assert!(matches!(
         app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
@@ -844,7 +989,10 @@ impl ExtendedDirectory {
     }
 }
 impl Widget for ExtendedDirectory {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn build_layout(
         &mut self,
@@ -857,6 +1005,9 @@ impl Widget for ExtendedDirectory {
     fn name(&self) -> &'static str {
         "extended-directory"
     }
+}
+
+impl crate::widget::ResourceOperations for ExtendedDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
@@ -1077,6 +1228,47 @@ fn directory_revision_describes_search_sources_without_making_them() {
     );
     assert_eq!(made.get(), 0, "the witness never makes a provider");
 }
+/// A name asked under a parent is answered among that parent's children
+/// alone, whole: the child is found without a page of its siblings, and
+/// neither the top level nor another parent's children answer for it.
+#[test]
+fn directory_names_a_child_among_its_parents_children_alone() {
+    let (mut app, _) = declared_directory(3);
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "hierarchy", true)
+        .unwrap();
+    let named = |app: &mut App, parent: &str, name: &str| {
+        let mut query = directory_query("", parent, 8, 65536, 1);
+        query.resource_name = name.into();
+        app.action_directory_page(query)
+    };
+    for published in [false, true] {
+        if published {
+            publish_declared_directory(&mut app);
+        }
+        let page = named(&mut app, "declared:0", "declared 2");
+        assert_eq!(
+            page.rows
+                .iter()
+                .map(|row| (row.parent_resource.as_str(), row.resource.as_str()))
+                .collect::<Vec<_>>(),
+            [("declared:0", "declared:2")],
+            "published: {published}"
+        );
+        assert!(page.exhausted && page.next_cursor.is_empty());
+        assert!(page.rows[0].action.is_none());
+        assert!(
+            named(&mut app, "", "Declared 2").rows.is_empty(),
+            "not at the top level (published: {published})"
+        );
+        assert!(
+            named(&mut app, "declared:1", "Declared 2").rows.is_empty(),
+            "not under another parent (published: {published})"
+        );
+    }
+}
+
 #[test]
 fn directory_names_a_resource_whole_wherever_a_listing_would_page_it() {
     let (mut app, _) = declared_directory(137);

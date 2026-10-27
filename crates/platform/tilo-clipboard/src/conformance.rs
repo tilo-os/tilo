@@ -15,6 +15,7 @@ use crate::{Availability, ClipboardBackend, ClipboardTarget, Feature, availabili
 /// a shared copy or an image.
 pub fn check_local(backend: &dyn ClipboardBackend) {
     round_trips(backend);
+    rich_round_trips(backend);
     targets_are_independent(backend);
     assert!(
         !backend.set_shared_text(ClipboardTarget::Clipboard, "secret"),
@@ -71,6 +72,40 @@ fn round_trips(backend: &dyn ClipboardBackend) {
         backend.text(ClipboardTarget::Clipboard).as_deref(),
         Some(payload),
         "{}: paste must return what was copied",
+        backend.name()
+    );
+}
+
+/// A formatted copy pastes its formatting where it is read, its words
+/// everywhere else, and a later plain copy leaves no stale formatting.
+fn rich_round_trips(backend: &dyn ClipboardBackend) {
+    let html = "<p>plain <b>bold</b></p>";
+    assert!(
+        backend.set_rich_text(html, "plain bold"),
+        "{}: a formatted copy must succeed, if only inside the process",
+        backend.name()
+    );
+    assert_eq!(
+        backend.text(ClipboardTarget::Clipboard).as_deref(),
+        Some("plain bold"),
+        "{}: a formatted copy pastes its words as plain text",
+        backend.name()
+    );
+    let rich = backend.rich_text();
+    assert_eq!(
+        rich.as_ref().map(|rich| rich.html.as_str()),
+        Some(html),
+        "{}: a formatted copy pastes its formatting",
+        backend.name()
+    );
+    assert_eq!(
+        rich.and_then(|rich| rich.plain).as_deref(),
+        Some("plain bold")
+    );
+    assert!(backend.set_text(ClipboardTarget::Clipboard, "later"));
+    assert!(
+        backend.rich_text().is_none(),
+        "{}: a plain copy replaces the formatting of the one before",
         backend.name()
     );
 }

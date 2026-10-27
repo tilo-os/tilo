@@ -69,7 +69,6 @@ pub struct ChangesDraw {
     pub viewport_height: f64,
 }
 
-/// The title a section is listed under.
 pub fn section_title(area: ChangeArea) -> String {
     t(match area {
         ChangeArea::Staged => "git-section-staged",
@@ -118,7 +117,6 @@ struct Metrics {
     header_h: f64,
     /// Gap between a section header and its first row.
     header_gap: f64,
-    /// Height of the commit field and the commit button.
     control_h: f64,
     /// Gap between the commit field and the button.
     control_gap: f64,
@@ -281,7 +279,9 @@ impl ListPass<'_, '_> {
         count: usize,
     ) {
         let theme = ctx.theme;
-        let pad = f64::from(theme.tokens.spacing.s3);
+        // The rows stand inside `band` by their bleed: the title starts and
+        // the action ends on their text edge.
+        let pad = ui::chrome::row_bleed(theme);
         let gap = f64::from(theme.tokens.spacing.s2);
 
         // The action trails, its label ending on the rows' text edge (where

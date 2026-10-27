@@ -37,6 +37,8 @@ mod browser_projection;
 pub mod capabilities;
 pub mod capture;
 #[cfg(target_os = "linux")]
+pub mod chromium_frame;
+#[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod dev_env;
 pub mod gpu;

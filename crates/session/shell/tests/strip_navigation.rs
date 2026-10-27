@@ -74,6 +74,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             kind: AppKind::Other("Test".into()),
             label: label.into(),
         },
+        app_title: None,
     };
 
     let window_groups = groups
@@ -93,13 +94,14 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
         })
         .collect();
 
-    let ws = Workspace {
-        strips: vec![Strip {
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![Strip {
             id: strip_id,
             name: "Main".into(),
             window_groups,
-        }],
-        ..Workspace::new(ws_id, "Test")
+        }];
+        workspace
     };
 
     let mut active_strip = HashMap::new();
@@ -373,6 +375,7 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
                         kind: AppKind::Other("Test".into()),
                         label: format!("Below {id}"),
                     },
+                    app_title: None,
                 })
                 .collect(),
             active_tab: 91,
@@ -438,6 +441,43 @@ fn invoke(
             &args,
         )
         .map(drop)
+}
+
+/// Invoke shell action `id` as [`invoke`] does, let the overlay host run
+/// what it queued, and return how the action says it went: what an agent
+/// waiting on `tilo-control actions invoke` hears.
+fn invoke_answered(
+    h: &mut Harness,
+    id: &str,
+    args: &serde_json::Value,
+) -> Result<(), shell::shell::search::action_api::ActionError> {
+    use shell::shell::search::InvocationDisposition;
+    use shell::shell::search::action_api::ActionError;
+    use shell::shell::search::action_api::{AllVisible, ResourceRef};
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT;
+    let catalog = {
+        let st = h.chrome.borrow();
+        h.host
+            .exact_action_catalog("actions", id, &st, &doc, &root, &AllVisible)
+    };
+    let selected = catalog
+        .select(&ResourceRef::new("actions", id))
+        .ok_or_else(|| ActionError::Refused(format!("{id} is not on the action door")))?;
+    let args = args.as_object().cloned().unwrap_or_default();
+    let disposition = selected.invoke_json(
+        &mut ui::widget::Edits::lend(&mut doc),
+        &root,
+        &h.chrome,
+        &args,
+    )?;
+    h.host.run_requested_shortcut_actions();
+    match disposition {
+        InvocationDisposition::Accepted(_) => Ok(()),
+        InvocationDisposition::Pending(ticket) => ticket()?
+            .map(drop)
+            .ok_or_else(|| ActionError::Refused(format!("{id} was not answered"))),
+    }
 }
 
 /// Ctrl+Super+Up/Down moves focus between strips and
@@ -682,6 +722,218 @@ fn window_actions_run_the_operations_their_chords_run() {
     );
 }
 
+/// A window action tells its caller whether anything changed: a move past
+/// the edge, a second maximize, a second restore or a resize past the limit
+/// says nothing changed, and why, rather than reporting a move that did not
+/// happen or a reason that is not the one.
+#[test]
+fn window_actions_say_when_nothing_changed() {
+    use shell::shell::search::action_api::ActionError;
+    let (mut h, upper, _lower, _resident, groups) = two_strip_harness();
+    let none = serde_json::json!({});
+    let unchanged = |outcome: Result<(), ActionError>, why: &str, what: &str| {
+        assert_eq!(
+            outcome,
+            Err(ActionError::Explained(shell::shell::i18n::t(why))),
+            "{what}"
+        );
+    };
+    assert_eq!(plane(&h).2, Some(groups[0]), "the leftmost group has focus");
+    let before = plane(&h);
+    unchanged(
+        invoke_answered(&mut h, "group.move-left", &none),
+        "search-action-window-unchanged-edge",
+        "the leftmost group moves no further left",
+    );
+    assert_eq!(plane(&h), before);
+    unchanged(
+        invoke_answered(&mut h, "group.move-to-strip-previous", &none),
+        "search-action-window-unchanged-edge",
+        "there is no strip above the top one",
+    );
+    assert_eq!(plane(&h), before);
+    unchanged(
+        invoke_answered(&mut h, "tab.move-to-group-previous", &none),
+        "search-action-tab-unchanged-edge",
+        "no window left of the leftmost one takes its tab",
+    );
+    assert_eq!(plane(&h), before);
+
+    invoke_answered(&mut h, "group.move-right", &none).expect("a group moves right");
+    assert_eq!(plane(&h).0[0].1[1], groups[0]);
+    invoke_answered(&mut h, "group.move-left", &none).expect("and back");
+    assert_eq!(plane(&h), before);
+
+    let upper_maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    invoke_answered(&mut h, "group.maximize", &none).expect("a normal group maximizes");
+    assert!(upper_maximized(&mut h));
+    unchanged(
+        invoke_answered(&mut h, "group.maximize", &none),
+        "search-action-window-unchanged-maximized",
+        "group.maximize maximizes, it does not toggle",
+    );
+    assert!(
+        upper_maximized(&mut h),
+        "a second maximize leaves it maximized"
+    );
+    invoke_answered(&mut h, "group.restore", &none).expect("a maximized group restores");
+    assert!(!upper_maximized(&mut h));
+    unchanged(
+        invoke_answered(&mut h, "group.restore", &none),
+        "search-action-window-unchanged-restored",
+        "restoring a normal group changes nothing",
+    );
+
+    // Narrower step by step until the window is as narrow as it goes: that
+    // last step says so.
+    let narrowest = (0..100)
+        .map(|_| invoke_answered(&mut h, "group.narrower", &none))
+        .find(Result::is_err)
+        .expect("a window stops getting narrower");
+    unchanged(
+        narrowest,
+        "search-action-window-unchanged-narrowest",
+        "a window at its narrowest gets no narrower",
+    );
+}
+
+/// `group.move-to-strip` carries the focused group into the strip it names,
+/// offers each strip by name, and says so when the group is already there
+/// or the strip does not exist.
+#[test]
+fn group_move_to_strip_carries_the_focused_group_into_the_named_strip() {
+    use shell::shell::search::action_api::{ActionError, AllVisible, ResourceRef};
+    let (mut h, _upper, lower, resident, groups) = two_strip_harness();
+    let offered = {
+        let doc = automerge::AutoCommit::new();
+        let st = h.chrome.borrow();
+        let catalog = h.host.exact_action_catalog(
+            "actions",
+            "group.move-to-strip",
+            &st,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let selected = catalog
+            .select(&ResourceRef::new("actions", "group.move-to-strip"))
+            .expect("group.move-to-strip is on the action door");
+        let strip = selected
+            .params()
+            .iter()
+            .find(|param| param.name == "strip")
+            .expect("it asks which strip");
+        strip
+            .choices
+            .iter()
+            .map(|choice| strip.choice_label(choice).unwrap_or(choice).to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(offered, ["Main", "Below"], "each strip by its name");
+
+    invoke_answered(
+        &mut h,
+        "group.move-to-strip",
+        &serde_json::json!({ "strip": 2 }),
+    )
+    .expect("the focused group moves to the second strip");
+    let (strips, active, focused) = plane(&h);
+    assert_eq!(strips[1], (lower, vec![resident, groups[0]]));
+    assert_eq!(
+        (active, focused),
+        (lower, Some(groups[0])),
+        "focus follows it"
+    );
+    let before = plane(&h);
+    assert!(
+        matches!(
+            invoke_answered(
+                &mut h,
+                "group.move-to-strip",
+                &serde_json::json!({ "strip": 2 })
+            ),
+            Err(ActionError::Explained(_))
+        ),
+        "a group already in that strip changes nothing"
+    );
+    assert!(
+        invoke_answered(
+            &mut h,
+            "group.move-to-strip",
+            &serde_json::json!({ "strip": 3 })
+        )
+        .is_err(),
+        "there is no third strip"
+    );
+    assert_eq!(plane(&h), before);
+}
+
+/// `group.close` closes the focused window with all its tabs as one close,
+/// so Reopen Closed Tab brings the whole window back.
+#[test]
+fn group_close_closes_the_focused_window_and_reopen_brings_it_back() {
+    let (mut h, upper, _lower, _resident, groups) = two_strip_harness();
+    let titles_in = |h: &Harness, group: GroupId| {
+        let st = h.chrome.borrow();
+        let tree = st.tree();
+        tree.desktop.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|candidate| candidate.id == group)
+            .map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.title.clone())
+                    .collect::<Vec<_>>()
+            })
+    };
+    let all_titles = |h: &Harness| {
+        let st = h.chrome.borrow();
+        let tree = st.tree();
+        tree.desktop.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|strip| strip.window_groups.iter())
+            .map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.title.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(plane(&h).2, Some(groups[0]));
+    assert_eq!(
+        titles_in(&h, groups[0]),
+        Some(vec!["G0-A".to_string(), "G0-B".to_string()])
+    );
+    let upper_count = |h: &Harness| plane(h).0[0].1.len();
+    let before = upper_count(&h);
+
+    invoke_answered(&mut h, "group.close", &serde_json::json!({})).expect("the window closes");
+    assert_eq!(titles_in(&h, groups[0]), None, "the whole window is gone");
+    assert_eq!(upper_count(&h), before.saturating_sub(1));
+    assert_eq!(plane(&h).1, upper);
+
+    invoke_answered(&mut h, "tab.reopen", &serde_json::json!({})).expect("reopen");
+    assert_eq!(upper_count(&h), before, "one reopen brings the window back");
+    assert!(
+        all_titles(&h).contains(&vec!["G0-A".to_string(), "G0-B".to_string()]),
+        "with both its tabs: {:?}",
+        all_titles(&h)
+    );
+}
+
 #[test]
 fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
     // Phase `the_fixture_strip_is_wider_than_its_viewport`.
@@ -760,7 +1012,7 @@ fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
         let filter = h.host.palette_kind_filter();
         assert_eq!(
             filter,
-            vec!["Applications".to_string(), "Host Apps".to_string()],
+            vec!["Apps".to_string()],
             "the + chip must pre-filter the picker to the kinds that can be a \
              tab, and to nothing else"
         );
@@ -944,7 +1196,6 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         // layout pass too, before advancing the resulting focus animation.
         h.tick();
         let home = h.scroll_x();
-        // The last group is entirely off the right of the viewport at rest.
         let g2 = h
             .host
             .group_at_for_tests(h.strip, GROUPS - 1)
@@ -991,7 +1242,6 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         let by_swipe = {
             let mut h = Harness::new();
             for _ in 0..3 {
-                // A rightward wheel steps forward, matching the chord's direction.
                 h.scroll_horizontally(4.0);
                 h.tick();
             }
@@ -1197,7 +1447,6 @@ fn the_rail_maps_the_strip_and_travels_on_click() {
              one the rail exists to advertise"
         );
 
-        // Travel to the far end and the lit run follows.
         for _ in 0..GROUPS * 2 {
             h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
             h.tick();
@@ -1400,10 +1649,6 @@ fn every_close_route_commits_the_exact_surface_durably() {
     }
 
     // Phase `pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent`.
-    // Drive the two independent close affordances and then ordinary group
-    // navigation as one user session.  This deliberately runs a frame between
-    // each mutation: historically the stale widget tree written back on the
-    // following frame was enough to resurrect a just-closed group.
     {
         let mut h = Harness::new();
         let state_dir = tempfile::tempdir().expect("temporary state directory");
@@ -1948,7 +2193,7 @@ fn configure_terminal_group(
 fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
     let mut h = Harness::new();
     let tab = h.tabs[0][0];
-    let room = h.chrome.borrow().tree().desktop.workspaces[0].room;
+    let room = h.chrome.borrow().tree().desktop.workspaces[0].room();
     let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
     let records = h.chrome.borrow().records().clone();
     let before = records.read(&checkout.id, ui::record::identity);

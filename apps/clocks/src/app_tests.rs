@@ -108,16 +108,20 @@ fn semantic_alarm_open_rejects_missing_targets_without_changing_selection() {
 
 #[test]
 fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
-    // The shared navigation is a grouped list. Back exposes it on a phone;
-    // every screen retains a full, independent pointer target.
-    for width in [360_u32, 520_u32] {
+    // The shared navigation is a rail of four screens. Back exposes it as
+    // a list on a phone; a little wider, the rail docks beside the screen.
+    // Every destination retains a full, independent pointer target.
+    let phone_width = 360_u32;
+    for width in [phone_width, 520_u32] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
         harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
-        harness
-            .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
-            .unwrap();
-        assert!(harness.settle_for_capture(ui::time::Duration::from_secs(1)));
+        if width <= phone_width {
+            harness
+                .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
+                .unwrap();
+        }
+        assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
         for label in ["World", "Alarms", "Timers", "Stopwatch"] {
             let (_, row) = harness
                 .a11y_nodes()
@@ -299,9 +303,12 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     app.invoke(Clocks::REMOVE_TIMER.with(ui::prelude::Id::from_raw(id.as_str())))
         .unwrap();
     app.invoke(Clocks::RESET_STOPWATCH.invoke()).unwrap();
+    // The wall clock is held, then moved past the timer's end.
+    let added = ui::time::wall();
+    ui::time::freeze_wall(added);
     app.invoke(Clocks::ADD_TIMER.with(("Tea".into(), 1)))
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    ui::time::freeze_wall(added + std::time::Duration::from_secs(1));
     app.settle();
     assert!(snapshot().notification_id.is_some(), "the timer rang");
     let first = snapshot();
@@ -388,8 +395,9 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
     // Case: world clock search covers the timezone catalogue without jargon.
     assert_eq!(
         timezone_label("America/Argentina/Buenos_Aires"),
-        "Buenos Aires, in America"
+        "Buenos Aires, Americas"
     );
+    assert_eq!(timezone_label("Europe/London"), "London, Europe");
     assert!(
         timezone_results("reykjavik")
             .iter()
@@ -407,6 +415,76 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
             .iter()
             .all(|zone| !zone.starts_with("Etc/"))
     );
+}
+
+#[test]
+fn every_section_has_its_own_icon() {
+    let icons: Vec<_> = super::SECTIONS.iter().map(|(_, _, icon)| *icon).collect();
+    for (i, icon) in icons.iter().enumerate() {
+        assert!(
+            !icons[i + 1..].contains(icon),
+            "{icon:?} names two sections"
+        );
+    }
+}
+
+#[test]
+fn the_repeat_days_are_one_strip_that_sets_the_new_alarms_days() {
+    let mut app = TestApp::<ClocksShell>::capture_at(None, (1280, 1400)).unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::ALARMS))
+        .unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    let week = targets["clocks.alarm.repeat"];
+    let control = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
+    assert!(
+        week.height() < 2.0 * control,
+        "the week reads as one row, not four days over three: {week:?}"
+    );
+    for segment in [
+        "clocks.alarm.repeat:segment:0",
+        "clocks.alarm.repeat:segment:2",
+    ] {
+        app.harness()
+            .perform_semantic_named(
+                "clocks.alarm.repeat",
+                Some(segment),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        app.settle();
+    }
+    app.harness().click_named("clocks.alarm.add").unwrap();
+    app.settle();
+    let clocks = app.state();
+    let alarm = clocks.alarms.values().next().expect("the alarm was added");
+    assert_eq!(alarm.repeat, 0b101, "Monday and Wednesday");
+}
+
+#[test]
+fn clicking_a_suggested_city_adds_its_clock() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::WORLD))
+        .unwrap();
+    app.settle();
+    assert!(app.state().world_clocks.is_empty());
+    app.harness()
+        .click_named("clocks.world.add.europe-london")
+        .unwrap();
+    app.settle();
+    let clocks = app.state();
+    let added: Vec<_> = clocks
+        .world_clocks
+        .values()
+        .map(|clock| (clock.city.as_str(), clock.timezone.0.as_str()))
+        .collect();
+    assert_eq!(added, [("London", "Europe/London")]);
+    let targets = app.harness().targets();
+    assert!(
+        !targets.contains_key("clocks.world.add.europe-london"),
+        "a city already shown is not offered again"
+    );
+    assert!(targets.contains_key("clocks.world.add.asia-tokyo"));
 }
 
 #[test]
@@ -496,4 +574,143 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
         );
     })
     .unwrap();
+}
+
+/// A running stopwatch counts up with no input: the window's own second
+/// tick shows the time that has passed, not the time it was started at.
+#[test]
+fn a_running_stopwatch_counts_up_with_no_input() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::STOPWATCH))
+        .unwrap();
+    let started = ui::time::wall();
+    ui::time::freeze_wall(started);
+    app.invoke(Clocks::START_STOPWATCH.invoke()).unwrap();
+    app.settle();
+    let shows = |app: &mut TestApp<ClocksShell>, text: &str| {
+        app.with_surface::<super::ClocksApp, _>(|surface| {
+            ui::a11y::texts(surface).iter().any(|shown| shown == text)
+        })
+        .unwrap()
+    };
+    assert!(shows(&mut app, "0:00"), "the stopwatch starts at nought");
+    ui::time::freeze_wall(started + std::time::Duration::from_secs(3));
+    let bound = ui::time::now() + tilo_test_env::hang_bound();
+    while !shows(&mut app, "0:03") {
+        assert!(
+            ui::time::now() < bound,
+            "the running stopwatch still shows the time it was started at"
+        );
+        // The tick is due a second after the last sync, on the monotonic
+        // clock, which the held wall clock leaves running.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = app.harness().poll_frame().unwrap();
+    }
+}
+
+#[test]
+fn the_window_bar_names_the_open_section_and_the_page_draws_no_heading() {
+    for (scenario, section) in [
+        ("timers", "Timers"),
+        ("world", "World clocks"),
+        ("alarms", "Alarms"),
+        ("stopwatch", "Stopwatch"),
+    ] {
+        let mut app = TestApp::<ClocksShell>::capture_at(Some(scenario), (1280, 800)).unwrap();
+        app.harness().present_in_window_bar();
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some(section),
+            "{scenario}: the bar names the open section"
+        );
+        let headings: Vec<String> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::Heading)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        assert!(
+            !headings.iter().any(|heading| heading == section),
+            "{scenario}: the page repeats no title: {headings:?}"
+        );
+    }
+}
+
+#[test]
+fn the_window_search_narrows_the_cities_to_add() {
+    use ui::widget::{FindOptions, InPlace, SearchDriver};
+    let mut app = TestApp::<ClocksShell>::capture_at(Some("world"), (1280, 800)).unwrap();
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key("clocks.world.add.europe-paris")
+            && targets.contains_key("clocks.world.add.asia-kolkata"),
+        "well-known cities are offered before anything is typed"
+    );
+    assert!(
+        !targets.contains_key("clocks.world.add.europe-london"),
+        "London is shown already, so it is not offered"
+    );
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        assert_eq!(
+            InPlace::of(surface),
+            InPlace::List,
+            "the search narrows a list"
+        );
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::List);
+        driver.drive(surface, "paris", FindOptions::default(), None, false);
+    })
+    .unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    assert!(targets.contains_key("clocks.world.add.europe-paris"));
+    assert!(!targets.contains_key("clocks.world.add.asia-kolkata"));
+    assert!(
+        !targets.contains_key("clocks.world.search"),
+        "the page draws no field of its own"
+    );
+}
+
+/// The timer setup fills the page's width: the custom timer takes what the
+/// quick starts beside it leave, so its duration fields stand in one row
+/// and nothing past them is left empty.
+#[test]
+fn the_timer_setup_fills_the_width_of_the_page() {
+    let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (1280, 800)).unwrap();
+    let harness = app.harness();
+    let targets = harness.targets();
+    let at = |id: &str| {
+        targets
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("missing {id}"))
+    };
+    let hours = at("clocks.timer.custom.hours");
+    let seconds = at("clocks.timer.custom.seconds");
+    assert!(
+        (hours.y0 - seconds.y0).abs() < 0.5,
+        "the duration fields share one row: {hours:?} {seconds:?}"
+    );
+    let label = at("clocks.timer.custom.label");
+    let quick = harness
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Laundry"))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .expect("the Laundry quick start");
+    assert!(
+        quick.x0 > label.x1,
+        "the quick starts stand beside the custom timer: {quick:?} {label:?}"
+    );
+    assert!(
+        quick.x1 > 1280.0 * 0.75,
+        "the quick starts reach the page's trailing side: {quick:?}"
+    );
 }

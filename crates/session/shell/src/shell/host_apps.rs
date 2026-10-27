@@ -10,19 +10,17 @@
 //! directory. `launch` accepts only an opaque portal-attribution room string:
 //! it lets an existing Flatpak's authenticated portal request resolve to the
 //! workspace containing its window, but is not passed to the app and grants
-//! no Tilo service or sandbox authority. The palette labels host apps under
-//! [`ResourceKind::HostApplication`] so a user can tell which kind of
-//! app they're looking at. Software that cannot speak Wayland reaches the
+//! no Tilo service or sandbox authority. Search lists host apps with every
+//! other app and states on each row which kind of app it is (Flatpak,
+//! `AppImage`, program or part of the system). Software that cannot speak Wayland reaches the
 //! private rootless-Xwayland display of the workspace it opens in, and only
 //! that one: X11 has no client isolation, so one X server never spans two
 //! workspaces.
-//!
-//! [`ResourceKind::HostApplication`]: crate::shell::search::ResourceKind::HostApplication
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use desktop_entry::{DesktopEntry, EntrySource};
+use desktop_entry::DesktopEntry;
 
 use crate::shell::launcher::{self, LaunchError};
 use tilo_lock::MutexRecover as _;
@@ -34,9 +32,8 @@ pub struct HostApp {
     /// The identity `run-host` resolves and window correlation matches on.
     pub desktop_id: String,
     pub name: String,
-    /// `Flatpak` or `System`: the entry's provenance, as a stable name. People
-    /// read it through [`HostApp::source_display`].
-    pub source_label: &'static str,
+    /// What kind of app it is, the same answer the person's app list gives.
+    pub kind: desktop_entry::EntryKind,
     pub categories: Vec<String>,
     pub keywords: Vec<String>,
     /// Every string this app's window might announce itself as. See
@@ -50,6 +47,9 @@ pub struct HostApp {
     /// `Icon=`: an icon-theme name or an absolute path, resolved by
     /// [`crate::app_icons`].
     pub icon: Option<String>,
+    /// For a program the person downloaded: the file it starts and whether
+    /// that file is still there ([`desktop_entry::downloaded`]).
+    pub downloaded: Option<desktop_entry::downloaded::DownloadedProgram>,
 }
 
 /// A palette launch held until the compositor can mint its external
@@ -61,7 +61,7 @@ pub struct QueuedLaunch {
     pub portal_workspace_id: Option<String>,
     pub requested_at: std::time::Instant,
     /// Whether an app that is still running in the tray with no window may
-    /// be reopened through its tray item ([`reopen_from_tray`]) instead.
+    /// be reopened through its tray item (`reopen_from_tray`) instead.
     /// Cleared on the launch that follows an item refusing.
     pub reopen_from_tray: bool,
 }
@@ -204,6 +204,24 @@ pub(crate) struct X11Session {
     pub authority: PathBuf,
 }
 
+fn push_x11_args(args: &mut Vec<String>, x11: &X11Session) {
+    args.push("--x11-display".to_string());
+    args.push(x11.display.clone());
+    args.push("--x11-authority".to_string());
+    args.push(x11.authority.display().to_string());
+}
+
+/// Give a host launch its workspace's X11 display, on the launch's own
+/// thread ([`launcher::LaunchCommand::x11_workspace`]).
+pub(crate) fn attach_x11_display(command: &mut launcher::LaunchCommand) {
+    let Some(workspace) = command.x11_workspace.take() else {
+        return;
+    };
+    if let Some(x11) = x11_session_for(Some(&workspace)) {
+        push_x11_args(&mut command.args, &x11);
+    }
+}
+
 /// The X11 connection a host launch into `workspace` may inherit: that
 /// workspace's own display, created on first use. A launch attributed to no
 /// workspace gets none, and callers never fall back to ambient
@@ -225,36 +243,38 @@ impl HostApp {
         Self {
             desktop_id: entry.id.clone(),
             name: entry.name.clone(),
-            source_label: entry.source.label(),
+            kind: entry.kind(
+                tilo_paths::xdg::data_home()
+                    .map(|home| home.join("applications"))
+                    .as_deref(),
+            ),
             categories: entry.categories.clone(),
             keywords: entry.keywords.clone(),
             window_identities: entry.window_identities(),
             mime_types: entry.mime_types.clone(),
             terminal: entry.terminal,
             icon: entry.icon.clone(),
+            downloaded: entry.downloaded.clone(),
         }
     }
 
-    /// The provenance as people read it, so it is visible without opening.
-    pub fn source_display(&self) -> String {
-        if self.is_flatpak() {
-            crate::shell::i18n::t("host-app-source-flatpak")
-        } else {
-            crate::shell::i18n::t("host-app-source-system")
-        }
+    /// What kind of app it is, in the words the person's app list uses.
+    pub fn kind_label(&self) -> String {
+        crate::shell::i18n::t(match self.kind {
+            desktop_entry::EntryKind::Flatpak => "app-kind-flatpak",
+            desktop_entry::EntryKind::AppImage => "app-kind-appimage",
+            desktop_entry::EntryKind::Program => "app-kind-program",
+            desktop_entry::EntryKind::System => "app-kind-system",
+        })
     }
 
     pub fn is_flatpak(&self) -> bool {
-        self.source_label
-            == EntrySource::Flatpak {
-                app_id: String::new(),
-            }
-            .label()
+        self.kind == desktop_entry::EntryKind::Flatpak
     }
 }
 
 pub fn host_apps() -> Vec<HostApp> {
-    deduplicate_host_apps(
+    deduplicate(
         desktop_entry::cache::cached_scan()
             .entries
             .iter()
@@ -269,7 +289,7 @@ pub fn host_apps_snapshot() -> (u64, Vec<HostApp>) {
     let (generation, scan) = desktop_entry::cache::cached_scan_snapshot();
     (
         generation,
-        deduplicate_host_apps(scan.entries.iter().map(HostApp::from_entry).collect()),
+        deduplicate(scan.entries.iter().map(HostApp::from_entry).collect()),
     )
 }
 
@@ -283,7 +303,7 @@ pub fn host_apps_generation() -> u64 {
 /// modes. A shared display name alone is not identity; a shared declared
 /// window identity is. Prefer Flatpak when a user/system export and a distro
 /// file both describe the same app because it retains its original sandbox.
-fn deduplicate_host_apps(apps: Vec<HostApp>) -> Vec<HostApp> {
+pub(crate) fn deduplicate(apps: Vec<HostApp>) -> Vec<HostApp> {
     let mut out: Vec<HostApp> = Vec::new();
     for app in apps {
         let duplicate = out.iter().position(|existing| {
@@ -349,10 +369,7 @@ pub(crate) fn build_launch_command(
         args.push(path.display().to_string());
     }
     if let Some(x11) = x11 {
-        args.push("--x11-display".to_string());
-        args.push(x11.display.clone());
-        args.push("--x11-authority".to_string());
-        args.push(x11.authority.display().to_string());
+        push_x11_args(&mut args, x11);
     }
     let mut env = vec![(
         "XDG_RUNTIME_DIR".to_string(),
@@ -370,6 +387,7 @@ pub(crate) fn build_launch_command(
         service_identity: None,
         portal_workspace_id,
         managed_agent_id: None,
+        x11_workspace: None,
     }
 }
 
@@ -539,16 +557,17 @@ fn launch_resolved(
             return Err(error);
         }
     };
-    let x11 = x11_session_for(portal_workspace_id.as_deref());
+    let x11_workspace = portal_workspace_id.clone();
     let mut command = build_launch_command(
         &app,
         &launcher_bin,
         &socket,
         document,
-        x11.as_ref(),
+        None,
         portal_workspace_id,
         activation_token,
     );
+    command.x11_workspace = x11_workspace;
     if let Some(HostOpen::Url(url)) = open {
         command.args.push("--open-url".to_string());
         command.args.push(url.to_string());
@@ -561,6 +580,64 @@ fn launch_resolved(
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
     let _ = launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
     Ok(app)
+}
+
+/// Run the program file at `program` itself, unconfined like every host
+/// application: a downloaded `AppImage` or executable opened in Files. The
+/// launcher makes it runnable first. Returns the name it runs under (the
+/// file's), as soon as the launch is handed to its worker.
+///
+/// # Errors
+///
+/// No display, no launcher, or no host execution on this platform.
+pub(crate) fn launch_program(
+    program: &Path,
+    portal_workspace_id: Option<String>,
+) -> Result<String, LaunchError> {
+    require_host_execution()?;
+    let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
+    let launcher_bin = launcher::resolve_launcher_bin()?;
+    let command = build_program_command(program, &launcher_bin, &socket, portal_workspace_id);
+    let name = program
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let _ = launcher::spawn_launch(name.clone(), name.clone(), command);
+    Ok(name)
+}
+
+/// The `tilo-launcher run-host --program` command for [`launch_program`].
+/// Pure, like [`build_launch_command`].
+pub(crate) fn build_program_command(
+    program: &Path,
+    launcher_bin: &Path,
+    wayland_socket: &Path,
+    portal_workspace_id: Option<String>,
+) -> launcher::LaunchCommand {
+    let name = program
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    launcher::LaunchCommand {
+        program: launcher_bin.to_path_buf(),
+        args: vec![
+            "run-host".to_string(),
+            "--desktop-id".to_string(),
+            name,
+            "--program".to_string(),
+            program.display().to_string(),
+            "--wayland-socket".to_string(),
+            wayland_socket.display().to_string(),
+        ],
+        env: vec![(
+            "XDG_RUNTIME_DIR".to_string(),
+            launcher::runtime_dir().display().to_string(),
+        )],
+        service_identity: None,
+        x11_workspace: portal_workspace_id.clone(),
+        portal_workspace_id,
+        managed_agent_id: None,
+    }
 }
 
 /// The `tilo-launcher run-host` command for an XDG autostart entry. It names
@@ -640,7 +717,6 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
     for (path, reason) in &scan.skipped {
         tracing::info!(path = %path.display(), ?reason, "autostart entry not started");
     }
-    let x11 = x11_session_for(portal_workspace_id);
     let startable: Vec<&desktop_entry::autostart::Autostart> = scan
         .start
         .iter()
@@ -653,13 +729,14 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
         .collect();
     for start in &startable {
         let entry = &start.entry;
-        let command = build_autostart_command(
+        let mut command = build_autostart_command(
             entry,
             &launcher_bin,
             &socket,
-            x11.as_ref(),
+            None,
             portal_workspace_id.map(str::to_string),
         );
+        command.x11_workspace = portal_workspace_id.map(str::to_string);
         launcher::note_session_helper(&entry.id);
         if start.auto_restart {
             launcher::note_restartable_session_helper(&entry.id, &entry.name, command.clone());
@@ -746,12 +823,13 @@ mod tests {
         HostApp {
             desktop_id: desktop_id.to_string(),
             name: name.to_string(),
-            source_label: "Flatpak",
+            kind: desktop_entry::EntryKind::Flatpak,
             categories: Vec::new(),
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
             icon: None,
+            downloaded: None,
             window_identities: identities
                 .iter()
                 .map(std::string::ToString::to_string)
@@ -820,7 +898,7 @@ mod tests {
             };
             let cmd = build_launch_command(
                 &app,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-2"),
                 None,
                 Some(&x11),
@@ -875,19 +953,19 @@ mod tests {
 
         fn cross_source_aliases_are_one_app_and_keep_flatpak_confinement() {
             let system = HostApp {
-                source_label: "System",
+                kind: desktop_entry::EntryKind::System,
                 ..app("vendor-chat", "Chat", &["Chat"])
             };
             let flatpak = HostApp {
-                source_label: "Flatpak",
+                kind: desktop_entry::EntryKind::Flatpak,
                 ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
             };
-            let apps = deduplicate_host_apps(vec![system, flatpak.clone()]);
+            let apps = deduplicate(vec![system, flatpak.clone()]);
             assert_eq!(apps, vec![flatpak]);
         }
 
         fn same_named_distinct_modes_remain_visible() {
-            let apps = deduplicate_host_apps(vec![
+            let apps = deduplicate(vec![
                 app("org.example.Editor", "Editor", &["Editor"]),
                 app("org.example.EditorSafe", "Editor", &["EditorSafe"]),
             ]);
@@ -896,14 +974,14 @@ mod tests {
 
         fn window_adoption_uses_the_canonical_alias() {
             let system = HostApp {
-                source_label: "System",
+                kind: desktop_entry::EntryKind::System,
                 ..app("vendor-chat", "Chat", &["Chat"])
             };
             let flatpak = HostApp {
-                source_label: "Flatpak",
+                kind: desktop_entry::EntryKind::Flatpak,
                 ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
             };
-            let canonical = deduplicate_host_apps(vec![system, flatpak.clone()]);
+            let canonical = deduplicate(vec![system, flatpak.clone()]);
             assert_eq!(app_for_window_id_in("Chat", canonical), Some(flatpak));
         }
 
@@ -1072,7 +1150,7 @@ mod unavailable_provider_tests {
         };
         let command = build_autostart_command(
             &start.entry,
-            Path::new("/usr/bin/tilo-launcher"),
+            Path::new("/usr/libexec/tilo/tilo-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             None,
             Some("room".to_string()),

@@ -8,7 +8,7 @@
 //! boundary here makes the same profile safe to render in Settings, sync as
 //! non-secret device intent, or hand to a sandboxed agent.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,8 @@ use serde_json::{Map, Value};
 
 pub mod local;
 pub mod management;
+/// Known providers a new profile starts from.
+pub mod presets;
 pub mod protocol;
 /// Single-shot model calls in either provider dialect.
 pub mod transform;
@@ -122,6 +124,56 @@ impl SecretReference {
 /// The issuer of a [`SignInCredential`] that signs in with Google.
 pub const GOOGLE_SIGN_IN: &str = "google";
 
+/// Who a [`SignInCredential`] signs the person in with. Each decides how the
+/// gateway turns the sealed grant into a request credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SignInIssuer {
+    /// Google: Vertex AI, or the Gemini API, billed to a Cloud project.
+    Google,
+    /// The person's `OpenAI` account, for their `ChatGPT` subscription. Not an
+    /// `OpenAI` API key: requests go to the `ChatGPT` backend
+    /// ([`presets::CHATGPT_ENDPOINT`]) in the `OpenAI` Responses format.
+    ChatGpt,
+    /// GitHub, for a Copilot subscription: the gateway trades the GitHub
+    /// grant for a short-lived Copilot token.
+    GitHubCopilot,
+    /// Hugging Face, for inference billed to the person's account.
+    HuggingFace,
+}
+
+impl SignInIssuer {
+    pub const ALL: [Self; 4] = [
+        Self::Google,
+        Self::ChatGpt,
+        Self::GitHubCopilot,
+        Self::HuggingFace,
+    ];
+
+    /// The stored issuer name.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Google => GOOGLE_SIGN_IN,
+            Self::ChatGpt => "chatgpt",
+            Self::GitHubCopilot => "github-copilot",
+            Self::HuggingFace => "huggingface",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|issuer| issuer.id() == id)
+    }
+
+    /// Who the person signs in with.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Google => "Google",
+            Self::ChatGpt => "ChatGPT",
+            Self::GitHubCopilot => "GitHub",
+            Self::HuggingFace => "Hugging Face",
+        }
+    }
+}
+
 /// A sign-in held by account custody in place of an API key: the gateway
 /// mints a short-lived access token from it for each request and refreshes
 /// it when due. The grant itself lives in this device's vault under
@@ -130,11 +182,14 @@ pub const GOOGLE_SIGN_IN: &str = "google";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct SignInCredential {
-    /// Who signed the person in; [`GOOGLE_SIGN_IN`] is the one supported.
+    /// Who signed the person in: a [`SignInIssuer::id`]. Kept as text so a
+    /// reader that does not know a newer issuer still reads the profile,
+    /// and shows it as unsupported rather than losing the configuration.
     pub issuer: String,
     /// The Google Cloud project billed for requests made with a person's own
     /// credentials, sent as `x-goog-user-project`. Without it Google bills
     /// the project of Tilo's `OAuth` client, which the person cannot use.
+    /// Google sign-ins only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_project: Option<String>,
 }
@@ -142,11 +197,24 @@ pub struct SignInCredential {
 settings_store::read_through_json_value!(SignInCredential);
 
 impl SignInCredential {
+    /// A sign-in with `issuer` and no billing project.
+    pub fn new(issuer: SignInIssuer) -> Self {
+        Self {
+            issuer: issuer.id().to_string(),
+            billing_project: None,
+        }
+    }
+
     pub fn google(billing_project: impl Into<String>) -> Self {
         Self {
-            issuer: GOOGLE_SIGN_IN.to_string(),
             billing_project: Some(billing_project.into()),
+            ..Self::new(SignInIssuer::Google)
         }
+    }
+
+    /// The issuer, `None` for one this build does not know.
+    pub fn issuer(&self) -> Option<SignInIssuer> {
+        SignInIssuer::from_id(&self.issuer)
     }
 }
 
@@ -374,6 +442,13 @@ pub struct ProviderProfile {
     /// `messages`, `tools` and `tool_choice` cannot be listed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub omit_params: Vec<String>,
+    /// The `OpenAI` API an OpenAI-compatible profile's agent turns take.
+    /// `None` takes Responses at `OpenAI`'s own API, whose reasoning models
+    /// call tools only there, and chat completions at any other endpoint
+    /// ([`transform::openai_api`]). A `ChatGPT` sign-in always takes
+    /// Responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_api: Option<OpenAiApi>,
 }
 
 settings_store::read_through_json_value!(ProviderProfile);
@@ -401,6 +476,18 @@ impl TokenLimitParam {
         }
     }
 }
+
+/// The request API of an OpenAI-compatible endpoint's agent turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", rename_all = "snake_case")]
+pub enum OpenAiApi {
+    /// `POST /chat/completions`, which every compatible server speaks.
+    ChatCompletions,
+    /// `POST /responses`.
+    Responses,
+}
+
+settings_store::read_through_json_value!(OpenAiApi);
 
 /// Where a provider takes its reasoning effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +542,7 @@ impl Default for ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
         }
     }
 }
@@ -487,6 +575,7 @@ impl ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
         }
     }
 
@@ -510,6 +599,7 @@ impl ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
         }
     }
 
@@ -538,14 +628,28 @@ impl ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
+        }
+    }
+
+    /// A Gemini API profile signed in with Google, billed to `project`.
+    pub fn google_gemini(project: &str) -> Self {
+        Self {
+            sign_in: Some(SignInCredential::google(project)),
+            credential: None,
+            ..presets::Preset::Gemini.profile()
         }
     }
 
     /// Whether this profile signs in with Google instead of using a key.
     pub fn signs_in_with_google(&self) -> bool {
-        self.sign_in
-            .as_ref()
-            .is_some_and(|sign_in| sign_in.issuer == GOOGLE_SIGN_IN)
+        self.sign_in_issuer() == Some(SignInIssuer::Google)
+    }
+
+    /// Who this profile signs in with, `None` for a key, no credential or
+    /// an issuer this build does not know.
+    pub fn sign_in_issuer(&self) -> Option<SignInIssuer> {
+        self.sign_in.as_ref().and_then(SignInCredential::issuer)
     }
 
     pub fn display_label(&self) -> &str {
@@ -602,9 +706,10 @@ pub struct HostedProfiles {
 
 settings_store::read_through_json_value!(HostedProfiles);
 
-/// A portable profile list and the user's deliberate default. Kept separate
-/// from a task: tasks capture a chosen model at start so changing this default
-/// does not change work already in progress.
+/// A portable profile list, the user's deliberate default and the models
+/// they chose for particular agents. Kept separate from a task: tasks capture
+/// a chosen model at start so changing these does not change work already in
+/// progress.
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
@@ -612,9 +717,49 @@ pub struct ProviderConfig {
     pub profiles: Vec<ProviderProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
+    /// The model an agent plans with in place of the default, by agent id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_models: BTreeMap<String, AgentModel>,
 }
 
 settings_store::read_through_json_value!(ProviderConfig);
+
+/// A model of one profile, chosen for an agent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", default)]
+pub struct AgentModel {
+    pub profile: String,
+    pub model: String,
+}
+
+settings_store::read_through_json_value!(AgentModel);
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(AgentModel);
+
+pub use tilo_agent_models::{OfferedModel, OfferedModels};
+
+impl ProviderConfig {
+    /// Every model of the enabled providers, in Settings' order: what a
+    /// model picker offers besides the agent's own.
+    pub fn offered_models(&self) -> impl Iterator<Item = OfferedModel> + '_ {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .flat_map(|profile| {
+                profile.models.iter().map(|model| OfferedModel {
+                    profile: profile.id.clone(),
+                    provider: profile.label.clone(),
+                    model: model.id.clone(),
+                    label: if model.label.trim().is_empty() {
+                        model.id.clone()
+                    } else {
+                        model.label.clone()
+                    },
+                })
+            })
+    }
+}
 
 impl ProviderConfig {
     pub fn load() -> Self {
@@ -657,6 +802,7 @@ impl ProviderConfig {
             Self {
                 profiles: local,
                 default_profile: self.default_profile,
+                agent_models: self.agent_models,
             },
             HostedProfiles { profiles: hosted },
         )
@@ -675,6 +821,7 @@ impl ProviderConfig {
         Self {
             profiles,
             default_profile: local.default_profile,
+            agent_models: local.agent_models,
         }
     }
 
@@ -833,6 +980,19 @@ impl ProviderConfig {
                 ));
             }
         }
+        for (agent, chosen) in &self.agent_models {
+            if agent.trim().is_empty()
+                || !self.profiles.iter().any(|profile| {
+                    profile.id == chosen.profile
+                        && profile.models.iter().any(|m| m.id == chosen.model)
+                })
+            {
+                issues.push(ProfileIssue::new(
+                    &chosen.profile,
+                    "An agent's model is not offered by its provider.",
+                ));
+            }
+        }
         if self
             .default_profile
             .as_ref()
@@ -844,6 +1004,50 @@ impl ProviderConfig {
             ));
         }
         issues
+    }
+
+    /// The profile and model `agent` plans with: the one chosen for it, else
+    /// the default profile's default model. `None` while the choice names a
+    /// provider that is switched off, or nothing is chosen at all: a caller
+    /// asks rather than guessing another model.
+    pub fn selection_for(&self, agent: &str) -> Option<(&ProviderProfile, &ModelDescriptor)> {
+        let (profile, model) = if let Some(chosen) = self.agent_models.get(agent) {
+            let profile = self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == chosen.profile && profile.enabled)?;
+            (profile, &chosen.model)
+        } else {
+            let profile = self.active_profile()?;
+            (profile, profile.default_model.as_ref()?)
+        };
+        Some((profile, profile.models.iter().find(|m| &m.id == model)?))
+    }
+
+    /// Choose `model` of `profile` for `agent`, or with `None` let it follow
+    /// the default again.
+    ///
+    /// # Errors
+    /// When `agent` is empty or `profile` does not offer `model`.
+    pub fn set_agent_model(
+        &mut self,
+        agent: &str,
+        chosen: Option<AgentModel>,
+    ) -> Result<(), &'static str> {
+        let Some(chosen) = chosen else {
+            self.agent_models.remove(agent);
+            return Ok(());
+        };
+        if agent.trim().is_empty() {
+            return Err("Name the agent.");
+        }
+        if !self.profiles.iter().any(|profile| {
+            profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
+        }) {
+            return Err("That provider does not offer this model.");
+        }
+        self.agent_models.insert(agent.to_owned(), chosen);
+        Ok(())
     }
 
     pub fn active_profile(&self) -> Option<&ProviderProfile> {
@@ -872,11 +1076,13 @@ impl ProviderConfig {
         if self.default_profile.as_deref() == Some(id) {
             self.default_profile = None;
         }
+        self.agent_models.retain(|_, chosen| chosen.profile != id);
         Some(removed)
     }
 
     /// The configuration as it is stored and read: profiles without an id,
-    /// models without an id and defaults naming no model are dropped.
+    /// models without an id, and defaults and agents' models naming no model
+    /// are dropped.
     #[must_use]
     pub fn sanitised(mut self) -> Self {
         // Do not turn unknown/malformed input into a usable provider.
@@ -892,6 +1098,12 @@ impl ProviderConfig {
                 profile.default_model = None;
             }
         }
+        let profiles = &self.profiles;
+        self.agent_models.retain(|_, chosen| {
+            profiles.iter().any(|profile| {
+                profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
+            })
+        });
         self
     }
 }
@@ -921,10 +1133,16 @@ fn sign_in_issues(profile: &ProviderProfile, issues: &mut Vec<ProfileIssue>) {
                 "Profile uses both an API key and a sign-in.",
             ));
         }
-        if sign_in.issuer != GOOGLE_SIGN_IN {
+        if sign_in.issuer().is_none() {
             issues.push(ProfileIssue::new(
                 &profile.id,
                 "Profile signs in with an unsupported provider.",
+            ));
+        }
+        if sign_in.billing_project.is_some() && sign_in.issuer() != Some(SignInIssuer::Google) {
+            issues.push(ProfileIssue::new(
+                &profile.id,
+                "Only a Google sign-in names a billing project.",
             ));
         }
         if sign_in
@@ -957,6 +1175,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_agent_plans_with_its_own_model_and_otherwise_the_default() {
+        let mut first = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        first.models = vec![ModelDescriptor::new("large"), ModelDescriptor::new("small")];
+        first.default_model = Some("large".into());
+        let mut second = ProviderProfile::local_vllm();
+        second.models = vec![ModelDescriptor::new("local")];
+        let mut config = ProviderConfig {
+            default_profile: Some(first.id.clone()),
+            profiles: vec![first.clone(), second.clone()],
+            ..Default::default()
+        };
+        let chosen = |config: &ProviderConfig, agent| {
+            config
+                .selection_for(agent)
+                .map(|(profile, model)| (profile.id.clone(), model.id.clone()))
+        };
+        assert_eq!(
+            chosen(&config, "writer"),
+            Some((first.id.clone(), "large".into()))
+        );
+
+        let local = AgentModel {
+            profile: second.id.clone(),
+            model: "local".into(),
+        };
+        config
+            .set_agent_model("writer", Some(local.clone()))
+            .unwrap();
+        assert_eq!(
+            chosen(&config, "writer"),
+            Some((second.id.clone(), "local".into()))
+        );
+        assert_eq!(
+            chosen(&config, "other"),
+            Some((first.id.clone(), "large".into()))
+        );
+        let unknown = AgentModel {
+            profile: second.id.clone(),
+            model: "large".into(),
+        };
+        assert!(config.set_agent_model("writer", Some(unknown)).is_err());
+
+        let (stored, hosted) = config.clone().stored();
+        assert_eq!(stored.agent_models["writer"], local);
+        assert_eq!(
+            ProviderConfig::from_stored(stored, hosted).agent_models,
+            config.agent_models
+        );
+
+        // A switched-off provider is not swapped for another one.
+        config.profiles[1].enabled = false;
+        assert_eq!(chosen(&config, "writer"), None);
+        config.profiles[1].enabled = true;
+
+        // A model the provider no longer offers is forgotten, as is every
+        // choice of a removed provider; the agent follows the default again.
+        config.profiles[1].models.clear();
+        assert!(config.clone().sanitised().agent_models.is_empty());
+        config.remove(&second.id);
+        assert!(config.agent_models.is_empty());
+        config.set_agent_model("writer", None).unwrap();
+        assert_eq!(chosen(&config, "writer"), Some((first.id, "large".into())));
+    }
+
+    #[test]
     fn model_request_limits_preserve_legacy_and_validate_runtime_room() {
         let legacy = ModelDescriptor::new("m");
         assert!(
@@ -970,6 +1253,7 @@ mod tests {
         let mut config = ProviderConfig {
             profiles: vec![profile],
             default_profile: None,
+            ..Default::default()
         };
         for (output, context, source, valid) in [
             (512, Some(4096), Some(262_144), true),
@@ -1047,6 +1331,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![profile.clone()],
             default_profile: None,
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
         let encoded = serde_json::to_value(&config).unwrap();
@@ -1066,6 +1351,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![invalid],
             default_profile: None,
+            ..Default::default()
         };
         assert_eq!(config.validation_errors().len(), 1);
         let mut omitted = profile.clone();
@@ -1076,6 +1362,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![omitted],
             default_profile: None,
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
 
@@ -1085,6 +1372,7 @@ mod tests {
             let config = ProviderConfig {
                 profiles: vec![invalid],
                 default_profile: None,
+                ..Default::default()
             };
             assert_eq!(config.validation_errors().len(), 1, "{bad:?}");
         }
@@ -1093,6 +1381,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![cerebras],
             default_profile: None,
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
 
@@ -1102,6 +1391,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![plain],
             default_profile: None,
+            ..Default::default()
         };
         assert!(!config.validation_errors().is_empty());
         // Absent fields keep older settings documents byte-compatible.
@@ -1155,6 +1445,7 @@ mod tests {
             let config = ProviderConfig {
                 default_profile: Some("gone".into()),
                 profiles: vec![ProviderProfile::local_vllm()],
+                ..Default::default()
             };
             assert!(config.active_profile().is_none());
             assert!(
@@ -1197,6 +1488,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![vertex.clone()],
             default_profile: Some(vertex.id.clone()),
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
         let written = serde_json::to_value(&config).unwrap();
@@ -1209,22 +1501,40 @@ mod tests {
             config
         );
 
-        for (credential, issuer, project) in [
-            (true, GOOGLE_SIGN_IN, "tilo-509618"),
-            (false, "elsewhere", "tilo-509618"),
-            (false, GOOGLE_SIGN_IN, "Not A Project"),
+        for (credential, issuer, project, issues) in [
+            (true, GOOGLE_SIGN_IN, Some("tilo-509618"), 1),
+            (false, "elsewhere", None, 1),
+            (false, GOOGLE_SIGN_IN, Some("Not A Project"), 1),
+            (false, "chatgpt", None, 0),
+            (false, "chatgpt", Some("tilo-509618"), 1),
         ] {
             let mut invalid = vertex.clone();
             invalid.credential = credential.then(|| SecretReference::provider_api_key(&invalid.id));
             invalid.sign_in = Some(SignInCredential {
                 issuer: issuer.into(),
-                billing_project: Some(project.into()),
+                billing_project: project.map(Into::into),
             });
             let config = ProviderConfig {
                 profiles: vec![invalid],
                 default_profile: None,
+                ..Default::default()
             };
-            assert_eq!(config.validation_errors().len(), 1, "{issuer} {project}");
+            assert_eq!(
+                config.validation_errors().len(),
+                issues,
+                "{issuer} {project:?}"
+            );
+        }
+        // An issuer a newer build added still reads: the profile is kept
+        // and shown unsupported, the rest of the configuration intact.
+        let newer = serde_json::json!({"profiles": [{
+            "id": "n", "label": "Newer", "endpoint": "https://example.com/v1",
+            "sign_in": {"issuer": "from-the-future"}
+        }]});
+        let config: ProviderConfig = serde_json::from_value(newer).unwrap();
+        assert_eq!(config.profiles[0].sign_in_issuer(), None);
+        for issuer in SignInIssuer::ALL {
+            assert_eq!(SignInIssuer::from_id(issuer.id()), Some(issuer));
         }
         assert_ne!(sign_in_grant_id("p"), "agent-provider-p");
     }
@@ -1289,6 +1599,7 @@ mod tests {
         let config = ProviderConfig {
             default_profile: Some(profile.id.clone()),
             profiles: vec![profile],
+            ..Default::default()
         };
         config.save_at(&path).unwrap();
         assert_eq!(ProviderConfig::load_at(&path), config);
@@ -1308,6 +1619,7 @@ mod tests {
         let config = ProviderConfig {
             default_profile: Some(local.id.clone()),
             profiles: vec![local.clone(), hosted.clone()],
+            ..Default::default()
         };
         config.save_at(&path).unwrap();
         assert_eq!(ProviderConfig::load_at(&path), config);

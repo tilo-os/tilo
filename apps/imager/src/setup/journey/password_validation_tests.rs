@@ -1,4 +1,3 @@
-//! Exercise password feedback through the launched app and shared input focus routing.
 use super::visual_tests::control;
 use super::*;
 use crate::resource::GuidedInstallerShell;

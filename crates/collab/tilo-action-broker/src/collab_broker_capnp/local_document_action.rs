@@ -28,6 +28,12 @@ pub(super) struct ReceiptRecord {
 }
 
 impl ReceiptRecord {
+    /// The connection whose report this admitted.
+    #[cfg(test)]
+    pub(super) const fn peer_id(&self) -> u64 {
+        self.peer_id
+    }
+
     #[cfg(test)]
     pub(super) fn admitted_request_is(&self, request: &serde_json::Value) -> bool {
         self.request_digest == admission_request_digest(request)
@@ -124,9 +130,6 @@ fn validate_report_custody(
     Ok(())
 }
 
-/// Called only under admission serialization. A cached report needs current
-/// caller and host custody, but no longer needs the SDK's pre-event pin or a
-/// second policy decision (which could spend another one-use grant).
 #[allow(
     clippy::significant_drop_tightening,
     reason = "`state` is a borrow of the channel's broker state, not a guard; the journal and receipt locks are taken and released in their own helpers"
@@ -142,13 +145,18 @@ fn cached_receipt(
     }
     let current = state.revalidate_admission(route, &channel.verified_identity)?;
     validate_report_custody(request, route, &current)?;
+    // A worker is registered on a route when its connection joins it, for
+    // as long as the connection lives, so a connection that is no worker
+    // here never was: nothing reported on it can have been admitted, and
+    // nothing will be. Say so definitively, or the caller keeps every
+    // report (and the surface it was made under) forever.
     let target = state
         .host_workers
         .lock()
         .map_err(|_| capnp::Error::failed("worker registry unavailable".into()))?
-        .get(&channel.peer_id)
+        .get(channel.peer_id, route)
         .cloned()
-        .ok_or_else(|| capnp::Error::failed("original worker retired".into()))?;
+        .ok_or_else(|| not_a_host_worker(state))?;
     state.revalidate_admission(route, &target)?;
     let certificate = current
         .certificate
@@ -250,6 +258,18 @@ fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<
     Ok(())
 }
 
+/// The answer to a report on a route its connection is no worker on: a
+/// connection no launcher authenticated, or a route of another app than the
+/// one launched. Retirement clears every registration, and says nothing
+/// about what was admitted before it: that stays uncertain.
+fn not_a_host_worker(state: &CapnpBrokerState) -> capnp::Error {
+    if state.is_accepting() {
+        rejected(runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING.into())
+    } else {
+        capnp::Error::failed("invocation broker retired".into())
+    }
+}
+
 fn rejected(mut reason: String) -> capnp::Error {
     reason.insert_str(0, runtime_collab::LOCAL_DOCUMENT_REJECTED);
     capnp::Error::failed(reason)
@@ -315,7 +335,7 @@ pub(super) fn admit(
                 &request.action,
             )
             .await;
-        let _admission = state
+        let admission = state
             .admission_lock
             .lock()
             .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
@@ -346,9 +366,9 @@ pub(super) fn admit(
             .host_workers
             .lock()
             .map_err(|_| rejected("worker registry unavailable".into()))?
-            .get(&peer)
+            .get(peer, &route)
             .cloned()
-            .ok_or_else(|| rejected("original worker retired".into()))?;
+            .ok_or_else(|| not_a_host_worker(state))?;
         state
             .revalidate_admission(&route, &target)
             .map_err(|error| rejected(error.to_string()))?;
@@ -368,7 +388,7 @@ pub(super) fn admit(
         let invocation = tilo_actions::InvocationId(request.invocation);
         // No confirmation is synthesized from a report. Actions requiring it
         // fail closed at the same policy gate as ordinary invocation.
-        let job = state
+        let staged = state
             .admit_invocation_from_offered_owned(
                 peer,
                 offered,
@@ -395,7 +415,8 @@ pub(super) fn admit(
                 Some(&request),
             )
             .map_err(capnp::Error::failed)?;
-        drop(job);
+        drop(admission);
+        drop(staged.start(state).await.map_err(capnp::Error::failed)?);
         let key = InvocationKey {
             room: route.cluster_id,
             host: journal_host(state)?,

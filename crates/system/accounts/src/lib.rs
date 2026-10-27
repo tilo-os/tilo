@@ -60,13 +60,10 @@ pub mod cloud_types {
         }
     }
 
-    /// Google Drive.
     pub const GOOGLE_DRIVE: &str = "google-drive";
     /// `OneDrive` (personal or work/school) and `SharePoint` libraries.
     pub const ONEDRIVE: &str = "onedrive";
-    /// Dropbox.
     pub const DROPBOX: &str = "dropbox";
-    /// `iCloud` Drive.
     pub const ICLOUD_DRIVE: &str = "icloud-drive";
     /// Nextcloud (files, calendars, contacts).
     pub const NEXTCLOUD: &str = "nextcloud";
@@ -86,7 +83,7 @@ pub use handoff::{
     HandoffStore, RefreshError,
 };
 pub mod vault;
-pub use vault::{Secret, SecretCustody, SecretVault};
+pub use vault::{Saved, Secret, SecretCustody, SecretVault};
 pub mod secrets;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,
@@ -374,7 +371,6 @@ impl AccountStore {
         }
     }
 
-    /// The active account id for a type, if one is recorded.
     pub fn active_id(&self, type_id: &AccountTypeId) -> Option<&AccountId> {
         self.active(type_id).map(|a| &a.id)
     }
@@ -477,7 +473,6 @@ mod tests {
 
     #[test]
     fn store_upserts_by_id_and_tracks_the_active_account_per_type() {
-        // Phase `upsert_replaces_by_id_and_lists_by_type`.
         {
             let mut store = AccountStore::new();
             store.upsert(email("a@x.example", "imap.x"));
@@ -503,7 +498,6 @@ mod tests {
             );
         }
 
-        // Phase `active_defaults_to_first_and_follows_selection_and_removal`.
         {
             let mut store = AccountStore::new();
             store.upsert(email("a@x.example", "imap.x"));
@@ -512,10 +506,8 @@ mod tests {
 
             // First account of a type is active by default.
             assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
-            // Explicit selection wins.
             store.set_active(&email_ty, &"b@y.example".into());
             assert_eq!(store.active(&email_ty).unwrap().id, "b@y.example".into());
-            // Removing the active account falls back to a remaining one.
             assert!(store.remove(&"b@y.example".into()));
             assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
         }
@@ -523,7 +515,6 @@ mod tests {
 
     #[test]
     fn store_round_trips_through_disk_without_carrying_a_secret() {
-        // Phase `store_round_trips_through_disk`.
         {
             let root = temp_root();
             let mut store = AccountStore::new();
@@ -533,13 +524,11 @@ mod tests {
 
             let back = AccountStore::load_in(&root);
             assert_eq!(back, store);
-            // Pretty JSON on disk.
             let raw = std::fs::read_to_string(store_path_in(&root)).unwrap();
             assert!(raw.contains('\n'), "the store is written as pretty JSON");
             std::fs::remove_dir_all(&root).ok();
         }
 
-        // Phase `account_config_carries_no_secret_by_construction`.
         {
             // The envelope has no secret field; a type's config is plain data, so persisting a store
             // cannot leak a credential.

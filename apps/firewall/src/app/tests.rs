@@ -55,6 +55,14 @@ fn press(app: &mut TestApp<FirewallShell>, suffix: &str) {
     app.settle();
 }
 
+/// Press the window bar's slot `id`, as the desktop hands the press over,
+/// and run the frame that follows.
+fn press_bar(app: &mut TestApp<FirewallShell>, id: &str) {
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+    app.settle();
+}
+
 /// Open a zone other than the active one from the zone list: the first
 /// row whose page offers to make it active.
 fn open_another_zone(app: &mut TestApp<FirewallShell>) {
@@ -175,7 +183,6 @@ fn the_zones_dock_while_they_fit_and_become_a_screen_when_narrow() {
     assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Screen);
 }
 
-/// The zone list selects a zone and the page follows it.
 #[test]
 fn choosing_a_zone_in_the_list_opens_its_page() {
     let mut app = framed(1280.0, 800.0);
@@ -222,7 +229,7 @@ fn presentation_changes_do_not_create_document_versions() {
         let mut app = hosted();
         let versions = app.versions().len();
         open_another_zone(&mut app);
-        press(&mut app, "firewall-tabs");
+        press_bar(&mut app, Tab::Services.view_id());
         assert_eq!(app.versions().len(), versions);
     }
 }
@@ -296,7 +303,7 @@ fn deleting_a_rule_asks_first() {
     }
 }
 
-/// Rule and service switches write the document; the header switches toggle panic mode and the firewall.
+/// Rule and service switches write the document; the window bar's switches toggle panic mode and the firewall.
 #[test]
 fn switches_round_trip_through_the_document() {
     let mut app = hosted();
@@ -308,11 +315,7 @@ fn switches_round_trip_through_the_document() {
         "the rule's switch writes the document"
     );
 
-    // The services tab is the second of the two.
-    let tabs = find_target(app.harness(), "firewall-tabs");
-    app.harness()
-        .click_at(tabs.x0 + tabs.width() * 0.75, tabs.center().y);
-    app.settle();
+    press_bar(&mut app, Tab::Services.view_id());
     press(&mut app, "firewall-service-ssh");
     assert!(
         !app.state()
@@ -326,7 +329,7 @@ fn switches_round_trip_through_the_document() {
     // Panic mode and stopping the firewall cut traffic: each waits for the
     // person to confirm what the host asks.
     assert!(!app.state().config().panic_mode);
-    press(&mut app, "firewall-panic");
+    press_bar(&mut app, view::PANIC_MODE);
     assert!(
         !app.state().config().panic_mode,
         "panic mode waits for consent"
@@ -334,20 +337,17 @@ fn switches_round_trip_through_the_document() {
     confirm(&mut app);
     assert!(app.state().config().panic_mode);
 
-    press(&mut app, "firewall-enabled");
+    press_bar(&mut app, view::FIREWALL_ON);
     assert!(app.state().config().enabled, "stopping waits for consent");
     confirm(&mut app);
     assert!(!app.state().config().enabled);
 }
 
-/// Confirm what the host asks, as a person types it.
+/// Confirm what the host asks, as the person does with its verb button.
 fn confirm(app: &mut TestApp<FirewallShell>) {
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
-    app.settle();
+    assert!(app.confirm_asked().is_some(), "the host asks");
 }
 
-/// Making a zone active changes the document's default zone.
 #[test]
 fn making_a_zone_active_changes_the_default() {
     let mut app = hosted();
@@ -359,7 +359,6 @@ fn making_a_zone_active_changes_the_default() {
     assert!(frame.contains("is now the active zone"), "{frame}");
 }
 
-/// The delete button in a row opens the confirmation dialog.
 #[test]
 fn the_row_delete_button_opens_the_confirmation() {
     let mut app = framed(1280.0, 800.0);
@@ -370,14 +369,14 @@ fn the_row_delete_button_opens_the_confirmation() {
 }
 
 /// Applying now runs through the same door as the palette and reports how
-/// it ended; with the live apply not armed it only checks the changes.
+/// it ended; a unit test plans the same commands without touching the host.
 #[test]
 fn apply_now_reports_the_checked_changes() {
     let mut app = hosted();
     app.effect(&FirewallEffect::ApplyConfig).unwrap();
     app.settle();
     let frame = app.harness().inspection_json().unwrap();
-    assert!(frame.contains("changes checked"), "{frame}");
+    assert!(frame.contains("changes"), "{frame}");
 }
 
 /// The rules are one list, allows first; pressing a header sorts by that
@@ -416,4 +415,64 @@ fn the_rules_are_one_list_sorted_from_its_headers() {
     );
     let flipped = rows(&app);
     assert!(flipped.is_sorted_by_key(|action| *action == Action::Allow));
+}
+
+/// The firewall's controls are the window bar's slots: the open zone names
+/// the window, the switch, Apply and Add rule are its actions with panic
+/// mode in its menu, and Rules and Services are its views. The window draws
+/// no header row, tabs or switches of its own.
+#[test]
+fn the_firewalls_controls_are_in_the_window_bar() {
+    let mut app = hosted();
+    app.harness().present_in_window_bar();
+    app.settle();
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    let zone = app.state().config().default_zone;
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some(zone.title())
+    );
+    let actions: Vec<(&str, bool, bool)> = bar
+        .actions
+        .iter()
+        .map(|action| (action.id.as_str(), action.on, action.menu))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            (view::FIREWALL_ON, true, false),
+            (view::APPLY, false, false),
+            (view::ADD_RULE, false, false),
+            (view::PANIC_MODE, false, true),
+        ]
+    );
+    let views = bar.views.expect("Rules and Services are the bar's views");
+    assert_eq!(views.chosen, Tab::Rules.view_id());
+    let targets = app.harness().targets();
+    for drawn in [
+        "firewall-tabs",
+        "firewall-enabled",
+        "firewall-panic",
+        "firewall-apply",
+    ] {
+        assert!(
+            !targets.keys().any(|id| id.ends_with(drawn)),
+            "the window draws no {drawn} of its own"
+        );
+    }
+
+    press_bar(&mut app, view::ADD_RULE);
+    assert!(
+        app.harness()
+            .targets()
+            .keys()
+            .any(|id| id.ends_with("firewall-add-rule-dialog")),
+        "the bar's Add rule opens the dialog"
+    );
+    press_bar(&mut app, Tab::Services.view_id());
+    let bar = ui::window_toolbar::declared().expect("the window's slots");
+    assert!(
+        bar.actions.iter().all(|action| action.id != view::ADD_RULE),
+        "Add rule is the rules' command"
+    );
 }

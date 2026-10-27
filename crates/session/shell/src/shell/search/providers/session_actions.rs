@@ -103,7 +103,6 @@ impl SessionActionPolicy {
         self.user_switching.set(supported);
     }
 
-    /// Whether this session offers `action` at all.
     pub fn offers(&self, action: os_actions::SessionAction) -> bool {
         use os_actions::SessionAction::{Restart, ShutDown, Suspend, SwitchUser};
         match action {
@@ -124,10 +123,6 @@ impl SessionActionPolicy {
     }
 
     /// Refuse inhibited actions before publishing an edge or touching the OS.
-    ///
-    /// # Errors
-    ///
-    /// The user-facing reason when a portal inhibitor blocks `action`.
     pub fn admit(&self, action: os_actions::SessionAction) -> Result<(), String> {
         if self.detached_from_host.get() && !self.offers(action) {
             return Err(t("search-session-not-offered"));
@@ -449,12 +444,10 @@ fn retirement_admin(chrome: &crate::shell::chrome_state::ChromeState) -> bool {
     if chrome.session_locked() {
         return false;
     }
-    let Ok(store) = crate::shell::identity_provisioning::DiskIdentityStore::from_env() else {
-        return false;
-    };
-    store.path().parent().is_some_and(|path| {
-        crate::compositor::admin_control::authentication_session_decision(path).is_ok()
-    })
+    // Listing the actions runs on the compositor's loop: the session keeps
+    // the answer current on a worker.
+    crate::watched_identity::device_admin()
+        .unwrap_or_else(crate::watched_identity::read_device_admin)
 }
 #[cfg(target_os = "linux")]
 fn retirement_result() -> SearchResult {
@@ -541,7 +534,6 @@ mod tests {
 
     #[test]
     fn every_power_flyout_row_is_a_typed_action_queued_for_the_session_executor() {
-        // Phase `each_row_is_exactly_addressable_with_a_contract_matching_its_risk`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -563,7 +555,6 @@ mod tests {
             }
         }
 
-        // Phase `switch_user_is_offered_only_where_the_display_manager_supports_it`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -581,7 +572,6 @@ mod tests {
             );
         }
 
-        // Phase `a_session_detached_from_the_host_never_offers_its_power`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -618,7 +608,6 @@ mod tests {
 
     #[test]
     fn invoking_a_session_action_queues_it_and_honours_inhibits() {
-        // Phase `invoking_queues_for_the_executor_and_actuates_nothing_itself`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -665,7 +654,6 @@ mod tests {
             );
         }
 
-        // Phase `an_inhibited_action_is_refused_before_it_is_queued`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
@@ -764,7 +752,6 @@ mod tests {
 
     #[test]
     fn logout_is_addressable_confirmed_and_inhibited_only_like_the_power_menu() {
-        // Phase `logout_is_exactly_addressable_and_declares_destructive_confirmation`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let mut registry = SearchRegistry::new();
@@ -803,7 +790,6 @@ mod tests {
             );
         }
 
-        // Phase `typed_logout_policy_refuses_the_same_portal_inhibitor_as_the_power_menu`.
         {
             let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
             let _hold = inhibitors.acquire_for(
@@ -823,7 +809,6 @@ mod tests {
             );
         }
 
-        // Phase `logout_inhibitor_does_not_block_unrelated_session_actions`.
         {
             let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
             let _hold = inhibitors.acquire_for(

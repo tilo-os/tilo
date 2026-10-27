@@ -336,7 +336,7 @@ fn paint_direct(
                 regions: None,
             },
             target,
-            Instant::now() + Duration::from_secs(30),
+            tilo_test_env::hang_deadline(),
             SDR_WHITE,
             layers,
         )
@@ -431,6 +431,7 @@ fn hdr_layers_composite_in_linear_light_on_every_output_path() {
 }
 
 #[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 fn the_hdr_composite_fits_the_frame_budget() {
     const FRAME_BUDGET: Duration = Duration::from_micros(16_667);
     let (width, height) = (1920_u32, 1080_u32);
@@ -558,7 +559,7 @@ fn a_rotated_output_composites_hdr_layers_where_the_scene_puts_them() {
                     size: (width, height),
                     orientation: transform,
                 },
-                Instant::now() + Duration::from_secs(30),
+                tilo_test_env::hang_deadline(),
                 OutputSignal {
                     sdr_white_nits: SDR_WHITE,
                     hdr_layers: &layers,

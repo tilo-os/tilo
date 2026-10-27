@@ -7,14 +7,18 @@
 //! and recordings with `cargo run --bin shots`. `--backend winit` (the default)
 //! runs the compositor in a window inside an existing X11/Wayland session.
 
+pub(crate) mod action_authority;
 pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
+pub mod app_list;
 pub mod app_notice_card;
+pub mod app_opens;
 pub mod app_tabs;
 pub(crate) mod app_versions;
+pub mod attention;
 pub(crate) mod audio_output;
 pub(crate) mod audio_writer;
 pub mod automation_folders;
@@ -23,8 +27,9 @@ pub mod automation_records;
 pub mod automation_triggers;
 pub(crate) mod broker_services;
 pub use broker_services::decide_receipt_against_surfaces;
+pub(crate) mod activity_provider;
+pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
-pub mod arrival_line;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
@@ -45,11 +50,15 @@ pub(crate) mod collaborator_versions;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
+pub mod crash_notice;
+pub mod crash_records;
 pub mod desk_widgets;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
 pub(crate) mod desktop_continuation;
+pub mod desktop_control;
+pub(crate) mod device_certification;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
@@ -57,6 +66,8 @@ pub mod device_local_actions;
 pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
+#[cfg(target_os = "linux")]
+pub mod device_vpn;
 pub mod device_wake;
 pub mod directory_sheet;
 #[cfg(test)]
@@ -69,12 +80,14 @@ pub mod display_identify;
 pub(crate) mod display_persistence;
 pub mod doc_open;
 pub mod document_import;
+pub mod downloaded_apps;
 #[cfg(target_os = "linux")]
 pub mod drives;
 pub mod durable_writer;
 pub mod emoji_recents;
 pub mod fabric_clock;
 pub(crate) mod feedback_entry;
+pub(crate) mod feedback_pick;
 mod file_picker_overlay;
 pub mod fixed_chords;
 pub mod fixture_inputs;
@@ -84,6 +97,7 @@ mod foreign_damage;
 pub mod frame;
 pub mod fs_authority;
 pub mod gpu_frames;
+pub mod graphics_notice;
 pub mod hdr_display;
 pub mod hdr_surface;
 pub mod hdr_tonemap;
@@ -91,6 +105,7 @@ pub mod heap_trim;
 pub(crate) mod held_layers;
 pub mod history_narrative;
 pub mod host_apps;
+pub(crate) mod host_runtime;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
@@ -98,6 +113,7 @@ pub(crate) mod identity_admin;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
+pub(crate) mod input_sources;
 pub(crate) mod invite_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
@@ -105,7 +121,9 @@ pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod link_open;
 pub mod live_activities;
+pub(crate) mod live_embeds;
 pub mod live_presence;
+pub mod live_waves;
 pub(crate) mod local_audio_graph;
 mod local_person;
 pub mod magnifier;
@@ -122,17 +140,18 @@ pub mod network;
 pub mod notification;
 pub mod notification_history;
 pub mod now_playing;
-pub mod opening_card;
 pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
 pub mod overview;
+pub mod owner_session;
 pub mod pad_map;
 pub mod peer_actions;
 pub mod peer_presence;
 pub mod peer_sync_overlay;
 pub mod peer_view;
 pub mod peer_windows;
+pub mod pending_window;
 pub mod persist;
 pub(crate) mod person_quick_composer;
 pub mod personal_continuity;
@@ -142,6 +161,7 @@ pub mod personal_tethering_runtime;
 pub mod personal_workspaces;
 pub mod physical_gamepad;
 pub mod placement;
+pub mod pointer_readiness;
 pub mod portal_dialog;
 mod power_menu;
 pub mod present;
@@ -159,8 +179,10 @@ pub mod remote_capture;
 pub mod remote_use;
 pub mod render;
 pub mod room_activity;
+pub(crate) mod room_app_versions;
 pub mod room_records;
 pub(crate) mod room_sync;
+pub(crate) mod room_task_import;
 pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
@@ -169,6 +191,7 @@ pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub mod settings_failures;
+pub(crate) mod settings_records;
 pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod software_dim;
@@ -180,12 +203,12 @@ pub mod speaker_group_runtime;
 pub mod speaker_settings;
 pub mod state;
 pub mod status;
+pub mod stepped_back;
 pub mod storage_notice;
 pub mod system_sounds;
 pub(crate) mod system_update;
 pub mod tab_binding;
 pub mod tab_documents;
-pub(crate) mod task_review;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
@@ -193,9 +216,11 @@ pub mod test_support;
 pub mod tool_intents;
 pub mod topbar_chrome;
 pub mod trusted_ui;
+pub mod uninstall_sheet;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_appearance;
+pub mod window_menu;
 pub mod window_previews;
 pub mod window_transfer;
 #[cfg(target_os = "linux")]
@@ -206,158 +231,15 @@ pub mod workspace_governance;
 pub mod workspace_history;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
-use ui::widget::context_menu::MenuItem;
 use ui::widget::{
     AppKind as UiKind, GroupRow, TabDescriptor, TileContent as UiTile, Widget,
-    WindowGroup as UiGroup, context_menu::ContextMenu,
+    WindowGroup as UiGroup,
 };
 
 pub use tilo_desktop::launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
     EMPTY_WORKSPACE_NOTES, EMPTY_WORKSPACE_TASKS,
 };
-
-/// One action a tab's right-click menu offers. The
-/// [`overlay_host::ShellOverlayHost`] builds its menu from
-/// [`tab_context_menu_items`], and every action here is reachable by pointer, keyboard (arrows + Enter in
-/// the open menu) and by its [`Self::semantic_key`] through accessibility,
-/// scripts and the bench — a menu row is not a capability on its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TabMenuAction {
-    /// Close this tab through the same durable lifecycle the `✕` and the
-    /// keyboard chord use (`ShellOverlayHost::close_tab_in_group`).
-    CloseTab,
-    /// Detach the tab into a new window group immediately to the right of
-    /// its current group — the drag-out gesture, without the drag.
-    SplitRight,
-    /// Detach the tab into a new window group at the end of the strip.
-    MoveToNewGroup,
-}
-
-impl TabMenuAction {
-    /// User-facing label, from the shell's catalogue.
-    pub fn label(self) -> String {
-        use crate::shell::i18n::t;
-        match self {
-            Self::CloseTab => t("shell-tab-menu-close"),
-            Self::SplitRight => t("shell-tab-menu-split-right"),
-            Self::MoveToNewGroup => t("shell-tab-menu-new-group"),
-        }
-    }
-
-    /// The glyph leading the row, so the menu reads at a glance like every
-    /// other menu with icons (HIG 9.3): close, a second column, a window of
-    /// its own.
-    pub fn icon(self) -> ui::icons::Icon {
-        match self {
-            Self::CloseTab => ui::icons::Icon::X,
-            Self::SplitRight => ui::icons::Icon::Columns2,
-            Self::MoveToNewGroup => ui::icons::Icon::AppWindow,
-        }
-    }
-
-    /// Stable semantic address of the menu row (`tabmenu:<slug>`): the
-    /// `semantic:` target a script or the bench names, and the
-    /// `perform_semantic_action` target an assistive technology activates.
-    pub fn semantic_key(self) -> &'static str {
-        match self {
-            Self::CloseTab => "tabmenu:close",
-            Self::SplitRight => "tabmenu:split-right",
-            Self::MoveToNewGroup => "tabmenu:new-group",
-        }
-    }
-
-    /// The action a semantic target names, if it is one of ours.
-    pub fn from_semantic_key(key: &str) -> Option<Self> {
-        [Self::CloseTab, Self::SplitRight, Self::MoveToNewGroup]
-            .into_iter()
-            .find(|action| action.semantic_key() == key)
-    }
-}
-
-/// The tab menu's rows in order; `None` is a separator. A group with a
-/// single tab is not offered the two split actions — detaching its only
-/// tab would dissolve the group and re-create it one slot over, a no-op
-/// that reads as a glitch.
-pub fn tab_context_menu_items(tab_count: usize) -> Vec<Option<TabMenuAction>> {
-    let mut items = vec![Some(TabMenuAction::CloseTab)];
-    if tab_count >= 2 {
-        items.push(None);
-        items.push(Some(TabMenuAction::SplitRight));
-        items.push(Some(TabMenuAction::MoveToNewGroup));
-    }
-    items
-}
-
-/// A closed [`ContextMenu`] holding [`tab_context_menu_items`] for a group
-/// of `tab_count` tabs, plus the index-aligned action list the host reads a
-/// selection back through (`ContextMenu::take_selection` yields the row
-/// index; the `Arc<dyn Fn()>` callbacks are deliberately inert because the
-/// host has to mutate itself and the persisted tree).
-pub fn build_tab_context_menu(tab_count: usize) -> (ContextMenu, Vec<Option<TabMenuAction>>) {
-    let items = tab_context_menu_items(tab_count);
-    let mut menu = ContextMenu::new();
-    for item in &items {
-        match item {
-            Some(action) => {
-                menu.push(MenuItem::icon_action(action.icon(), action.label(), || {}));
-            }
-            None => menu.push(MenuItem::separator()),
-        }
-    }
-    (menu, items)
-}
-
-#[cfg(test)]
-mod tab_menu_item_tests {
-    use super::*;
-
-    #[test]
-    fn tab_menu_items_depend_on_group_size_and_keys_round_trip() {
-        fn a_single_tab_group_is_offered_only_close() {
-            let items = tab_context_menu_items(1);
-            assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
-            let (menu, _) = build_tab_context_menu(1);
-            assert_eq!(menu.items().len(), 1);
-        }
-
-        fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
-            let items = tab_context_menu_items(3);
-            assert_eq!(
-                items,
-                vec![
-                    Some(TabMenuAction::CloseTab),
-                    None,
-                    Some(TabMenuAction::SplitRight),
-                    Some(TabMenuAction::MoveToNewGroup),
-                ]
-            );
-            let (menu, actions) = build_tab_context_menu(3);
-            assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
-            let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
-            assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
-        }
-
-        fn semantic_keys_round_trip_and_are_unique() {
-            for action in [
-                TabMenuAction::CloseTab,
-                TabMenuAction::SplitRight,
-                TabMenuAction::MoveToNewGroup,
-            ] {
-                assert_eq!(
-                    TabMenuAction::from_semantic_key(action.semantic_key()),
-                    Some(action)
-                );
-                assert!(action.semantic_key().starts_with("tabmenu:"));
-            }
-            assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
-        }
-
-        a_single_tab_group_is_offered_only_close();
-        a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator();
-        semantic_keys_round_trip_and_are_unique();
-    }
-}
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {
     // `ui::AppKind` has only five variants; the shell's own `AppKind` still
@@ -413,6 +295,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         id: 1,
         title: String::new(),
         tile: t.clone(),
+        app_title: None,
     };
     let request = tilo_desktop::resolver::TileRequest {
         room: state::RoomId::new(),
@@ -427,6 +310,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         UiTile::App(_) => "App",
         UiTile::Stub { .. } => "Stub",
         UiTile::Notice { .. } => "Notice",
+        UiTile::Arriving => "Arriving",
     }
 }
 
@@ -443,8 +327,6 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
         | ShellTile::PeerWindow { app_id, .. }
         | ShellTile::HostedWindow { app_id, .. }
         | ShellTile::LocalApp { app_id, .. } => UiKind::App(ui::icons::app_glyph(app_id, None)),
-        // The device-local activity tile has no app of its own.
-        ShellTile::WorkspaceActivity => UiKind::Settings,
     }
 }
 
@@ -497,14 +379,6 @@ fn try_to_ui_tile_for_tab(
     tab: Option<state::TabId>,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
     Ok(match t {
-        // The retained activity controller is painted into this ordinary
-        // tile by `ShellOverlayHost`, which also owns the workspace-history
-        // index. The neutral body exists only for the first reconciliation
-        // frame before that controller has its content rect.
-        ShellTile::WorkspaceActivity => UiTile::Notice {
-            title: crate::shell::i18n::t("shell-activity-title"),
-            detail: crate::shell::i18n::t("shell-activity-loading"),
-        },
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),
             label: label.clone(),
@@ -540,7 +414,7 @@ fn try_to_ui_tile_for_tab(
             ),
         },
         // Its instance here is starting, or being installed first: the
-        // place it will open in, moving until it does.
+        // place it will open in, where its window arrives.
         ShellTile::PeerWindow {
             label,
             note,
@@ -550,11 +424,11 @@ fn try_to_ui_tile_for_tab(
             || tab.is_some_and(crate::shell::peer_windows::installing) =>
         {
             let wait = match tab.and_then(crate::shell::peer_windows::installing_package) {
-                Some((package_id, app)) => opening_card::Wait::Installing { package_id, app },
-                None => opening_card::Wait::Opening,
+                Some((package_id, _)) => pending_window::Wait::Install { package_id },
+                None => pending_window::Wait::Start,
             };
             UiTile::App(Box::new(
-                opening_card::OpeningCard::new(label, wait).for_tab(tab),
+                pending_window::PendingWindow::new(label, wait).for_tab(tab),
             ))
         }
         // A legacy window runs only on its host; until a stream of it is
@@ -597,7 +471,7 @@ fn try_to_ui_tile_for_tab(
             label,
             note,
         } if tab.is_some() && !note.is_empty() && note != peer_windows::OPENING => {
-            UiTile::App(Box::new(app_notice_card::AppNoticeCard::retry(
+            UiTile::App(Box::new(app_notice_card::ReopenCard::new(
                 tab.unwrap_or_default(),
                 app_id,
                 label,
@@ -605,23 +479,16 @@ fn try_to_ui_tile_for_tab(
             )))
         }
         // Asked for (a launch, a restore) and not yet arrived: the place
-        // it will open in, moving until it does.
+        // it will open in, where its window arrives.
         ShellTile::LocalApp {
             app_id,
             label,
             note,
-        } if note.is_empty() || note == peer_windows::OPENING => {
-            let wait = if note.is_empty() {
-                opening_card::Wait::Restoring
-            } else {
-                opening_card::Wait::Opening
-            };
-            UiTile::App(Box::new(
-                opening_card::OpeningCard::new(label, wait)
-                    .for_tab(tab)
-                    .for_package(app_id),
-            ))
-        }
+        } if note.is_empty() || note == peer_windows::OPENING => UiTile::App(Box::new(
+            pending_window::PendingWindow::new(label, pending_window::Wait::Start)
+                .for_tab(tab)
+                .for_package(app_id),
+        )),
         ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {
             UiTile::Notice {
                 title: label.clone(),
@@ -740,6 +607,13 @@ pub fn to_ui_window_group_with_inputs(
                     title: t.title.clone(),
                     app_kind: Some(kind),
                     icon: crate::app_icons::for_tile(&t.tile),
+                    attention: crate::shell::attention::is_asking(
+                        t.id,
+                        match &t.tile {
+                            state::TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+                            _ => None,
+                        },
+                    ),
                 },
                 to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
             )
@@ -1011,6 +885,35 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
     }
 }
 
+/// Mount Terminal in `tab`, lent the window it is shown in: where it says
+/// where its shell runs (the bar's location) and closes its tab when the
+/// shell exits.
+fn mount_terminal(
+    apps: &mut in_process::InProcessApps,
+    room: &str,
+    tab: u64,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
+    let window = apps.hosted_window(tab);
+    apps.mount(
+        terminal::definition(),
+        room,
+        tab,
+        ui::record::RecordId::for_tab(tab),
+        |context| {
+            context.lend(window);
+            // Only a real session's terminals open sessions; a test's or a
+            // capture's show a terminal with none.
+            if inputs.opens_sessions() {
+                // Discovery and connect belong to the open worker, too.
+                context.lend(terminal::HostedSessionSource);
+            } else {
+                context.lend(terminal::HostedProcessServices::unavailable());
+            }
+        },
+    )
+}
+
 fn mount_private_feedback(
     apps: &mut in_process::InProcessApps,
     room: &str,
@@ -1046,22 +949,7 @@ pub fn mount_in_process(
         ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
             mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
         }
-        ShellKind::Terminal => apps.borrow_mut().mount(
-            terminal::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::for_tab(tab),
-            |context| {
-                // Only a real session's terminals open sessions; a test's or
-                // a capture's show a terminal with none.
-                if inputs.opens_sessions() {
-                    // Discovery and connect belong to the open worker, too.
-                    context.lend(terminal::HostedSessionSource);
-                } else {
-                    context.lend(terminal::HostedProcessServices::unavailable());
-                }
-            },
-        ),
+        ShellKind::Terminal => mount_terminal(&mut apps.borrow_mut(), &room, tab, inputs),
         ShellKind::FileExplorer => {
             let startup = inputs.files_for_tab(tab).or_else(|| inputs.files.clone());
             // Without a starting place the shell names, only a Linux
@@ -1142,6 +1030,9 @@ pub fn mount_in_process(
             let collaboration = apps.borrow().collaboration(&component, &room);
             TileResolution::App(component, collaboration)
         }
+        // The loop never waits on the disk for an app's record: the store's
+        // thread opens it, and its wake has the tab resolved again.
+        Err(error) if error.is_opening() => TileResolution::Opening,
         Err(error) => TileResolution::Failed(error),
     })
 }
@@ -1149,11 +1040,12 @@ pub fn mount_in_process(
 /// Spacing of the strip column under the top bar: a small step between the
 /// desktop's bar and the windows' own bars, enough that the two read as two
 /// bars rather than one cramped stack without leaving an empty band; the
-/// windows keep a margin over the bottom edge, which nothing else provides.
+/// windows keep the desktop's margin over the bottom edge (the token
+/// [`ui::widget::STRIP_BOTTOM_GUTTER_PX`] is), which nothing else provides.
 pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
     tilo_desktop::composition::WorkArea::Flush {
         top: 4.0,
-        bottom: 12.0,
+        bottom: ui::tokens::Spacing::BASE.s3,
     };
 
 /// The native chrome the shared desktop surface is built with: the session's
@@ -1355,8 +1247,8 @@ pub fn build_tilo_overlay_host_with_inputs(
     // construction; feeds only the *initial* layout, the live chrome
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
-    launcher::action_authority::Export::of(&tree).publish();
-    launcher::action_authority::follow_tree(&tree_handle);
+    action_authority::Export::of(&tree).publish();
+    action_authority::follow_tree(&tree_handle);
     for room in tree.rooms() {
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }

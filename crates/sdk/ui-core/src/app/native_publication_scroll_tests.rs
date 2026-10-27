@@ -23,7 +23,7 @@ struct PublicationProbeRoot {
     edit_on_wheel: bool,
 }
 impl crate::widget::Decorator for PublicationProbeRoot {
-    crate::provides!(dyn crate::resources::PublishesResources; inner = inner);
+    crate::provides!(dyn crate::resources::PublishesResources, dyn crate::widget::ResourceOperations; inner = inner);
     type Inner = crate::widget::Scrollable;
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -35,11 +35,6 @@ impl crate::widget::Decorator for PublicationProbeRoot {
         self.inner
             .accessibility()
             .map(|node| node.with_hashed_key("native.scroll-probe"))
-    }
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.inner.resource_operation_handlers();
-        handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        handlers
     }
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         self.view_only && matches!(event, WindowEvent::MouseWheel { .. })
@@ -57,6 +52,14 @@ impl crate::widget::Decorator for PublicationProbeRoot {
                 .unwrap();
         }
         self.inner.handle_event(event, ctx);
+    }
+}
+
+impl crate::widget::ResourceOperations for PublicationProbeRoot {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers = crate::widget::resource_operation_handlers(&self.inner);
+        handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        handlers
     }
 }
 impl crate::widget::AppWidget for PublicationProbeRoot {
@@ -254,10 +257,10 @@ fn bound_scroll_app(
         .unwrap();
     let binding = component.callback_binding();
     // The new record's first write lands only after its writer's debounce.
-    // Until then the component reports it Saving and resamples that every
-    // `SAVING_RESAMPLE` of wall time through a full model sync, so a loaded
-    // runner whose wheel and frame straddle a resample sees a sync no scroll
-    // caused. Measure from the durable record a settled window shows.
+    // Until then the component reports it Saving, and the store's wake once
+    // it lands brings a full model sync, so a loaded runner whose wheel and
+    // frame straddle that wake sees a sync no scroll caused. Measure from
+    // the durable record a settled window shows.
     binding
         .records
         .try_flush_record(&binding.checkout.id)
@@ -483,7 +486,9 @@ fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry(
 #[test]
 fn view_only_native_scroll_refuses_pending_and_dispatch_edits() {
     use automerge::{ReadDoc, transaction::Transactable};
-    for (edit_during_dispatch, declared) in [(false, true), (true, true), (false, false), (true, false)] {
+    for (edit_during_dispatch, declared) in
+        [(false, true), (true, true), (false, false), (true, false)]
+    {
         let mut fixture = ViewScrollFixture::new(declared, edit_during_dispatch);
         if !edit_during_dispatch {
             fixture
@@ -543,8 +548,9 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
         let syncs = fixture.syncs.get();
         let declarations = fixture.declarations.get();
         fixture.wheel();
-        // A loaded runner: a durability resample interval passes between the
-        // wheel and its frame. Only a record still being written resamples.
+        // A saved record is never sampled again on a timer: however long a
+        // loaded runner takes between the wheel and its frame, only the
+        // wheel syncs.
         let component = &mut fixture
             .app
             .root_widget
@@ -552,7 +558,6 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
             .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
             .expect("a bound component")
             .component;
-        component.age_record_save_sample();
         assert_eq!(
             component.sampled_record_save(),
             Some(&crate::record::RecordSaveStatus::Saved)
@@ -587,10 +592,11 @@ fn view_only_native_scroll_keeps_modified_input_and_model_work_on_full_path() {
         if model_pending {
             fixture.app.needs_sync = true;
         } else {
+            // Alt, not Ctrl: Ctrl+wheel zooms the window instead of scrolling.
             fixture
                 .app
                 .set_surface_modifiers(winit::event::Modifiers::from(
-                    winit::keyboard::ModifiersState::CONTROL,
+                    winit::keyboard::ModifiersState::ALT,
                 ));
         }
         let syncs = fixture.syncs.get();

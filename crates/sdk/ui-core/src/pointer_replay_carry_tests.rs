@@ -65,7 +65,6 @@ impl Widget for Shows {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        // A column the width of a page's content, which the control fills.
         let style = taffy::Style {
             flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
@@ -145,7 +144,6 @@ impl Stage {
         }
     }
 
-    /// Rest the pointer at `point`.
     fn point_at(&mut self, point: Point) {
         self.harness.send(&moved(point));
         self.harness.relayout();
@@ -267,7 +265,6 @@ fn a_list_row_action_carries_its_press_across_a_rebuild() {
             ))
         },
         |h| {
-            // A row shows its actions to the pointer over it.
             let row = centre_of(h, "inbox");
             h.send(&moved(row));
             h.relayout();

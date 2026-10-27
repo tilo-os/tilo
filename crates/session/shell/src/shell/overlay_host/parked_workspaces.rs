@@ -10,8 +10,9 @@
 //! strips' scroll where the person left them; only what changed in the tree
 //! while it was away is reconciled.
 //!
-//! Kept content is not drawn, laid out or updated, and nothing routes input to
-//! it. Its apps stay mounted, as they would on screen, until the content is
+//! Kept content is not laid out or updated, and nothing routes input to it.
+//! It is drawn only as it was laid out: leaving the screen in a workspace
+//! slide (`workspace_slide`) and into a window's picture in picture. Its apps stay mounted, as they would on screen, until the content is
 //! dropped: when more than [`KEPT_WORKSPACES`] are kept, when its workspace is
 //! removed or becomes another room, or when one of its tabs moves to another
 //! workspace (which then mounts the tab itself).
@@ -86,6 +87,14 @@ impl ParkedWorkspaces {
         Some(self.entries.remove(index).content)
     }
 
+    /// The content kept for `workspace`, still kept.
+    pub(super) fn content_mut(&mut self, workspace: u64) -> Option<&mut (dyn Widget + 'static)> {
+        self.entries
+            .iter_mut()
+            .find(|e| e.workspace == workspace)
+            .map(|entry| entry.content.as_mut())
+    }
+
     /// Remove and return the content `desktop` has moved on from: its
     /// workspace is gone or is another room now, or (with `moved_tabs`, which
     /// walks every tab) one of its tabs lives in another workspace. Without
@@ -125,7 +134,7 @@ impl ParkedWorkspaces {
                 && desktop
                     .workspaces
                     .iter()
-                    .any(|workspace| workspace.id == id && workspace.room == room)
+                    .any(|workspace| workspace.id == id && workspace.room() == room)
                 && surface
                     .tab_ids()
                     .all(|tab| homes.get(&tab).is_none_or(|home| *home == id))
@@ -150,7 +159,8 @@ impl ParkedWorkspaces {
         self.entries.iter().map(|entry| entry.content.as_ref())
     }
 
-    /// The kept content, for the session's close lifecycle.
+    /// The kept content, for the session's close lifecycle and for painting
+    /// a window kept off screen into its picture in picture.
     pub(super) fn contents_mut(&mut self) -> impl Iterator<Item = &mut (dyn Widget + 'static)> {
         self.entries.iter_mut().map(|entry| entry.content.as_mut())
     }

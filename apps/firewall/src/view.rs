@@ -13,18 +13,22 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::a11y::AccessNode;
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{CellAlign, ColumnDef, ColumnWidth, DataTable, TableSort};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Badge, Banner, Button, ButtonRole, ChipStyle, Column, Decorator, Dropdown, Element, EmptyState,
-    Field, FormControl, LabelPlacement, ModalDialog, NavItem, NavList, NavSection, Property,
-    PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer, StatGroup, StatTile, Text,
-    TextInput, TextInputKind, Toggle, ToggleGroup, Tone, Widget,
+    Banner, Button, Column, Decorator, Dropdown, Element, EmptyState, Field, FormControl,
+    LabelPlacement, ModalDialog, NavItem, NavList, NavSection, Property, PropertyList, Row,
+    Scrollable, Section, Spacer, StatGroup, StatTile, Text, TextInput, TextInputKind, Toggle,
+    ToggleGroup, Tone, Widget,
 };
 
+use ui::window_toolbar::{ToolbarAction, ToolbarView, ToolbarViews};
+
+use crate::blocked::BlockedReport;
 use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, Zone, ZoneKind};
 
 /// What a control in the window asks for. The app applies each one to the
@@ -39,6 +43,7 @@ pub(crate) enum Intent {
     SetProto(Proto),
     SetAction(Action),
     OpenAddRule,
+    EditRule(RuleId),
     CancelAddRule,
     AddRule,
     AskDelete(RuleId),
@@ -47,6 +52,17 @@ pub(crate) enum Intent {
     MakeActive,
     Apply,
     Retry,
+    ConfirmSwitch,
+    CancelSwitch,
+    RefreshBlocked,
+}
+
+/// The global switches whose change can cut the session being used to fix the
+/// machine. Both ask before they act.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingSwitch {
+    Stop,
+    PanicOn,
 }
 
 /// Rules that let traffic through come before the ones that stop it.
@@ -113,15 +129,26 @@ impl Switches {
 pub(crate) enum Tab {
     Rules,
     Services,
+    Blocked,
 }
 
 impl Tab {
-    pub(crate) const ALL: [Tab; 2] = [Tab::Rules, Tab::Services];
+    pub(crate) const ALL: [Tab; 3] = [Tab::Rules, Tab::Services, Tab::Blocked];
+
+    /// The view's id in the window bar's switcher.
+    pub(crate) fn view_id(self) -> &'static str {
+        match self {
+            Tab::Rules => "firewall.view.rules",
+            Tab::Services => "firewall.view.services",
+            Tab::Blocked => "firewall.view.blocked",
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
             Tab::Rules => "Rules",
             Tab::Services => "Services",
+            Tab::Blocked => "Blocked",
         }
     }
 }
@@ -129,6 +156,8 @@ impl Tab {
 /// The add-rule draft. The typed values live in local state so they
 /// survive a rebuild of the page; the choices are the app's.
 pub(crate) struct Draft {
+    /// The rule being edited, or `None` when adding.
+    pub editing: Option<RuleId>,
     pub service: bool,
     pub proto: Proto,
     pub action: Action,
@@ -142,6 +171,7 @@ pub(crate) struct Draft {
 impl Draft {
     pub(crate) fn new() -> Self {
         Self {
+            editing: None,
             service: true,
             proto: Proto::Tcp,
             action: Action::Allow,
@@ -200,100 +230,70 @@ pub(crate) fn zone_id(zone: ZoneKind) -> String {
     format!("zone:{}", zone.name())
 }
 
-/// The content header's controls: the firewall's two switches and Apply.
-pub(crate) fn header_actions(
-    intents: &Intents,
-    enabled: &LocalState<bool>,
-    panic: &LocalState<bool>,
-) -> Vec<Element> {
-    let apply = intents.clone();
-    vec![
-        Box::new(LabelledSwitch::new(
-            "Firewall",
-            "firewall-enabled",
-            enabled.clone(),
-        )),
-        Box::new(LabelledSwitch::new(
-            "Panic mode",
-            "firewall-panic",
-            panic.clone(),
-        )),
-        Box::new(
-            Button::new("firewall-apply", "Apply")
-                .role(ButtonRole::Primary)
-                .tooltip("Apply the configuration to the system")
-                .on_effect(move || apply.push(Intent::Apply)),
-        ),
-    ]
-}
+/// The window bar's action that turns the firewall on and off.
+pub(crate) const FIREWALL_ON: &str = "firewall.enabled";
+/// The window bar's action that enters and leaves panic mode.
+pub(crate) const PANIC_MODE: &str = "firewall.panic";
+/// The window bar's action that applies the configuration to the system.
+pub(crate) const APPLY: &str = "firewall.apply";
+/// The window bar's action that opens the add-rule dialog.
+pub(crate) const ADD_RULE: &str = "firewall.add-rule";
 
-/// A switch with its name beside it, as one header action: the row keeps
-/// the name and the switch together, and the overflow menu lists it by that
-/// name with its state.
-struct LabelledSwitch {
-    row: Row,
-    name: &'static str,
-    id: String,
-    state: LocalState<bool>,
-}
-
-impl LabelledSwitch {
-    fn new(name: &'static str, id: &str, state: LocalState<bool>) -> Self {
-        let row = Row::new()
-            .no_wrap()
-            .push(Box::new(Text::new(name).with_role(TextRole::Label)))
-            .push(Box::new(
-                Toggle::from_state(&state)
-                    .with_id(id)
-                    .with_accessible_name(name),
-            ));
-        Self {
-            row,
-            name,
-            id: id.to_string(),
-            state,
-        }
-    }
-}
-
-impl Decorator for LabelledSwitch {
-    type Inner = Row;
-
-    fn inner(&self) -> &Row {
-        &self.row
-    }
-
-    fn inner_mut(&mut self) -> &mut Row {
-        &mut self.row
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        Some(
-            ui::widget::toggle_accessibility(
-                self.state.with(|on| *on),
-                false,
-                true,
-                Some(self.name),
-            )
-            .with_semantic_key(&self.id)
-            .with_action_target(&self.id),
+/// The firewall's commands in the window bar: its switch, Apply, Add rule
+/// while the rules show, and panic mode in the bar's menu.
+pub(crate) fn window_actions(
+    enabled: bool,
+    panic: bool,
+    tab: Tab,
+    applying: bool,
+) -> Vec<ToolbarAction> {
+    let mut actions = vec![
+        // The switch is named by what a press does; it shows on while the
+        // rules are enforced.
+        ToolbarAction::new(
+            FIREWALL_ON,
+            Icon::Shield.name(),
+            if enabled {
+                "Turn off the firewall"
+            } else {
+                "Turn on the firewall"
+            },
         )
+        .on(enabled),
+        ToolbarAction::new(
+            APPLY,
+            Icon::Upload.name(),
+            if applying {
+                "Applying the rules to the system"
+            } else {
+                "Apply the rules to the system"
+            },
+        )
+        .enabled(!applying),
+    ];
+    if tab == Tab::Rules {
+        actions.push(ToolbarAction::new(ADD_RULE, Icon::Plus.name(), "Add rule"));
     }
+    actions.push(
+        ToolbarAction::new(PANIC_MODE, Icon::Ban.name(), "Panic mode")
+            .on(panic)
+            .in_menu(),
+    );
+    actions
+}
 
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        _key_path: &[u64],
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        match action {
-            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck => {
-                self.state.update(|on| *on = !*on);
-                true
-            }
-            _ => self.row.perform_action(action, &[], state, path),
-        }
+/// The zone's two views, as the window bar's switcher.
+pub(crate) fn window_views(tab: Tab) -> ToolbarViews {
+    ToolbarViews {
+        name: "View".to_owned(),
+        choices: Tab::ALL
+            .into_iter()
+            .map(|tab| ToolbarView {
+                id: tab.view_id().to_owned(),
+                label: tab.label().to_owned(),
+            })
+            .collect(),
+        chosen: tab.view_id().to_owned(),
     }
 }
 
@@ -322,9 +322,14 @@ pub(crate) struct PageModel<'a> {
     /// The order a person chose for the rules, kept across rebuilds.
     pub rule_sort: &'a LocalState<Option<TableSort>>,
     pub pending_delete: Option<&'a Rule>,
+    pub pending_switch: Option<PendingSwitch>,
     pub draft: &'a Draft,
-    /// The add-rule dialog is open.
+    /// The add/edit-rule dialog is open.
     pub adding: bool,
+    pub applying: bool,
+    pub blocked: Option<&'a BlockedReport>,
+    pub blocked_error: Option<&'a str>,
+    pub blocked_loading: bool,
     /// The content column is wide enough for the services' descriptions.
     pub wide: bool,
 }
@@ -349,19 +354,23 @@ pub(crate) fn zone_page(
             Column::push,
         )));
     }
-    let tab = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(tab_bar(model.tab, intents)));
     let tab = match model.tab {
-        Tab::Rules => tab.push(rules(model, intents, switches)),
-        Tab::Services => tab.push(Box::new(services(model.zone, model.wide, switches))),
+        Tab::Rules => rules(model, intents, switches),
+        Tab::Services => Box::new(services(model.zone, model.wide, switches)),
+        Tab::Blocked => blocked_page(model, intents),
     };
     page = page
         .push(Box::new(zone_status(model, intents)))
         .push(Box::new(stats(model.zone)))
         .push(Box::new(details(model.zone)))
-        .push(Box::new(tab));
+        .push(tab);
+    if model.applying {
+        page = page.push(Box::new(
+            Text::new("Applying the stored rules to this device…")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ));
+    }
     if model.adding {
         page = page.push(Box::new(add_rule_dialog(
             model.zone.kind,
@@ -371,6 +380,9 @@ pub(crate) fn zone_page(
     }
     if let Some(rule) = model.pending_delete {
         page = page.push(Box::new(delete_dialog(rule, intents)));
+    }
+    if let Some(which) = model.pending_switch {
+        page = page.push(Box::new(switch_dialog(which, intents)));
     }
     Box::new(
         Scrollable::new_vertical()
@@ -400,35 +412,56 @@ fn banners(config: &FirewallConfig) -> Vec<Element> {
 /// Whether this zone is the active one, and what it is for.
 fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
     let active = model.zone.kind == model.config.default_zone;
-    let status: Element = if active {
-        Box::new(Badge::text("Active zone").style(ChipStyle::Tinted(Tone::Success)))
-    } else {
+    let mut column = Column::new().with_intrinsic_height().with_no_padding();
+    // The zone list marks the active zone; the page offers to make another
+    // one active, and says nothing more about it.
+    if !active {
         let intents = intents.clone();
-        Box::new(
-            Button::new("firewall-make-active", "Make active zone")
-                .on_effect(move || intents.push(Intent::MakeActive)),
-        )
-    };
-    Column::new()
-        .with_intrinsic_height()
-        .with_no_padding()
-        .push(Box::new(Row::new().push(status)))
-        .push(Box::new(
-            Text::new(model.zone.kind.description())
-                .with_role(TextRole::Body)
-                .dimmed(),
-        ))
+        column = column.push(Box::new(
+            Row::new().push(Box::new(
+                Button::new("firewall-make-active", "Make active zone")
+                    .on_effect(move || intents.push(Intent::MakeActive)),
+            )),
+        ));
+    }
+    column.push(Box::new(
+        Text::new(model.zone.kind.description())
+            .with_role(TextRole::Body)
+            .dimmed(),
+    ))
 }
 
 fn stats(zone: &Zone) -> StatGroup {
     let (allow, deny) = zone.rule_counts();
+    let now = ui::time::wall();
+    let tile = |label: &str, value: usize, measure: &str| {
+        let fact = Measured::known(
+            Measure::new(measure),
+            value.to_string(),
+            "this configuration",
+            now,
+            None,
+        );
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Tight)
+                .push(Box::new(StatTile::new(
+                    label,
+                    fact.value_or_dash().to_owned(),
+                )))
+                .push(Box::new(
+                    Text::new(&fact.caption(now))
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                )),
+        ) as Element
+    };
     StatGroup::new(vec![
-        Box::new(StatTile::new(
-            "Allowed services",
-            zone.services.len().to_string(),
-        )),
-        Box::new(StatTile::new("Allow rules", allow.to_string())),
-        Box::new(StatTile::new("Deny rules", deny.to_string())),
+        tile("Allowed services", zone.services.len(), "allowed services"),
+        tile("Allow rules", allow, "allow rules"),
+        tile("Deny rules", deny, "deny rules"),
     ])
 }
 
@@ -448,38 +481,6 @@ fn details(zone: &Zone) -> Section {
         ]))],
     )
 }
-
-/// The page's two halves, and on the rules half the command that adds one.
-fn tab_bar(selected: Tab, intents: &Intents) -> Row {
-    let tab_intents = intents.clone();
-    let index = Tab::ALL
-        .iter()
-        .position(|tab| *tab == selected)
-        .unwrap_or(0);
-    let tabs = ToggleGroup::new(
-        Tab::ALL
-            .iter()
-            .map(|tab| Segment::new(tab.label()))
-            .collect(),
-        index,
-    )
-    .with_style(SegmentedStyle::Tabs)
-    .on_view("firewall-tabs", move |i| {
-        if let Some(tab) = Tab::ALL.get(i) {
-            tab_intents.push(Intent::SetTab(*tab));
-        }
-    });
-    let bar = Row::new().no_wrap().push(Box::new(tabs));
-    if selected != Tab::Rules {
-        return bar;
-    }
-    let add = intents.clone();
-    bar.push(Box::new(Spacer::new())).push(Box::new(
-        Button::new("firewall-rule-new", "Add rule").on_view(move || add.push(Intent::OpenAddRule)),
-    ))
-}
-
-// ---- rules ---------------------------------------------------------------
 
 /// One row of the rules table.
 #[derive(Clone)]
@@ -535,6 +536,7 @@ fn rule_table(
 ) -> DataTable<RuleRow> {
     let toggles = switches.clone();
     let delete = intents.clone();
+    let edit = intents.clone();
     let mut table = DataTable::new(vec![
         ColumnDef::new("action", "Action", ColumnWidth::Auto)
             .sorted_by(|a: &RuleRow, b: &RuleRow| action_rank(a.action).cmp(&action_rank(b.action)))
@@ -573,6 +575,18 @@ fn rule_table(
                         .with_accessible_name(&format!("Enable the {} rule", row.title)),
                 )
             }),
+        ColumnDef::new("edit", "", ColumnWidth::Auto).with_widget(move |row: &RuleRow, _| {
+            let intents = edit.clone();
+            let id = row.id;
+            Box::new(
+                Button::icon_only(
+                    &format!("firewall-rule-edit-{id}"),
+                    Icon::Pencil,
+                    &format!("Edit the {} rule", row.title),
+                )
+                .on_view(move || intents.push(Intent::EditRule(id))),
+            )
+        }),
         ColumnDef::new("delete", "", ColumnWidth::Auto).with_widget(move |row: &RuleRow, _| {
             let intents = delete.clone();
             let id = row.id;
@@ -683,6 +697,7 @@ fn choice_field(label: &str, control: Choice) -> Field {
 /// The add-rule dialog: what the rule matches, what it does and where the
 /// traffic comes from. Each field says what is wrong with it.
 fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDialog<Column> {
+    let editing = draft.editing.is_some();
     let mut fields: Vec<Field> = vec![choice_field(
         "Match",
         choice(
@@ -740,7 +755,7 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
         "Source",
         TextInput::from_state(&draft.source)
             .with_id("firewall-rule-source")
-            .with_kind(TextInputKind::Number)
+            .with_kind(TextInputKind::Path)
             .with_placeholder("Anywhere"),
     );
     fields.push(match &draft.source_error {
@@ -757,11 +772,173 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
     let add = intents.clone();
     let cancel = intents.clone();
     let dismiss = intents.clone();
-    ModalDialog::new(format!("Add a rule to {}", zone.title()), body)
+    let title = if editing {
+        format!("Edit the rule in {}", zone.title())
+    } else {
+        format!("Add a rule to {}", zone.title())
+    };
+    let primary = if editing { "Save rule" } else { "Add rule" };
+    ModalDialog::new(title, body)
         .with_test_id("firewall-add-rule-dialog")
-        .primary_action("Add rule", move || add.push(Intent::AddRule))
+        .primary_action(primary, move || add.push(Intent::AddRule))
         .secondary_action("Cancel", move || cancel.push(Intent::CancelAddRule))
         .on_dismiss(move || dismiss.push(Intent::CancelAddRule))
+        .open(true)
+}
+
+/// What the kernel dropped, grouped by rule, with the window's shape.
+fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
+    if model.blocked_loading {
+        return Box::new(
+            Text::new("Reading dropped traffic from the system journal…")
+                .with_role(TextRole::Body)
+                .dimmed(),
+        );
+    }
+    if let Some(error) = model.blocked_error {
+        let retry = intents.clone();
+        return Box::new(
+            EmptyState::error("Dropped traffic couldn't be read", error)
+                .with_icon(Icon::Shield)
+                .with_action("Try again")
+                .with_action_id("firewall.blocked-retry")
+                .on_effect(move || retry.push(Intent::RefreshBlocked)),
+        );
+    }
+    let Some(report) = model.blocked else {
+        return Box::new(
+            Text::new("Open Blocked again to read the system journal.")
+                .with_role(TextRole::Body)
+                .dimmed(),
+        );
+    };
+    let now = ui::time::wall();
+    let dropped = Measured::known(
+        Measure::new("Packets dropped"),
+        report.total.to_string(),
+        "system journal",
+        report.read_at,
+        Some(ui::time::Duration::from_secs(60)),
+    );
+    let mut page = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Group)
+        .push(Box::new(
+            Row::new()
+                .no_wrap()
+                .push(Box::new(
+                    Text::new(dropped.value_or_dash())
+                        .with_role(TextRole::Heading)
+                        .numeric(),
+                ))
+                .push(Box::new(
+                    Text::new(&format!(
+                        "packets in the last {} min",
+                        report.window_minutes
+                    ))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+                ))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(
+                    Text::new(&dropped.caption(now))
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                )),
+        ));
+    if let Some(note) = &report.note {
+        page = page.push(Box::new(
+            Text::new(note).with_role(TextRole::Caption).dimmed(),
+        ));
+    }
+    if report.groups.is_empty() {
+        page = page.push(Box::new(
+            EmptyState::new("Nothing was dropped")
+                .with_icon(Icon::Shield)
+                .with_message(format!(
+                    "The kernel logged no dropped or rejected packets in the last {} minutes.",
+                    report.window_minutes
+                )),
+        ));
+        return Box::new(page);
+    }
+    let retry = intents.clone();
+    page = page.push(Box::new(blocked_table(report))).push(Box::new(
+        Button::new("firewall-blocked-refresh", "Refresh")
+            .with_icon(Icon::Refresh)
+            .on_view(move || retry.push(Intent::RefreshBlocked)),
+    ));
+    Box::new(page)
+}
+
+fn blocked_table(report: &BlockedReport) -> DataTable<BlockedRow> {
+    let mut table = DataTable::new(vec![
+        ColumnDef::new("rule", "Rule", ColumnWidth::Flex(1.0))
+            .with_text(|row: &BlockedRow| row.rule.clone()),
+        ColumnDef::new("packets", "Packets", ColumnWidth::Auto)
+            .with_kind(TextKind::Numeric)
+            .with_text(|row: &BlockedRow| row.packets.to_string()),
+        ColumnDef::new("sources", "Sources", ColumnWidth::Auto)
+            .with_text(|row: &BlockedRow| row.sources.clone()),
+        ColumnDef::new("trend", "Over time", ColumnWidth::Flex(1.0))
+            .with_text(|row: &BlockedRow| row.trend.clone()),
+        ColumnDef::new("scale", "Scale", ColumnWidth::Auto)
+            .with_text(|row: &BlockedRow| row.scale.clone()),
+    ])
+    .with_id("firewall-blocked")
+    .with_accessible_name("Dropped traffic, grouped by rule");
+    table.set_rows(
+        report
+            .groups
+            .iter()
+            .map(|group| BlockedRow {
+                rule: group.title(),
+                packets: group.packets,
+                sources: group.sources_label(),
+                trend: group.trend(),
+                scale: group.trend_scale(),
+            })
+            .collect(),
+    );
+    table
+}
+
+#[derive(Clone)]
+struct BlockedRow {
+    rule: String,
+    packets: u64,
+    sources: String,
+    trend: String,
+    scale: String,
+}
+
+/// Asks before a global switch that can cut the session it is used from.
+fn switch_dialog(which: PendingSwitch, intents: &Intents) -> ModalDialog<Text> {
+    let (title, body, confirm) = match which {
+        PendingSwitch::Stop => (
+            "Turn off the firewall?",
+            "No rules will be enforced until you turn it on again. If this machine is \
+             reachable from a network you do not control, that connection can reach it \
+             without the rules you set.",
+            "Turn off the firewall",
+        ),
+        PendingSwitch::PanicOn => (
+            "Enter panic mode?",
+            "All incoming and outgoing traffic is dropped, including the remote session \
+             you may be using to fix this machine. Anything already connected is cut.",
+            "Drop all traffic",
+        ),
+    };
+    let ask = intents.clone();
+    let cancel = intents.clone();
+    let dismiss = intents.clone();
+    ModalDialog::new(title, Text::new(body).with_role(TextRole::Body))
+        .with_test_id("firewall-switch-dialog")
+        .with_destructive(true)
+        .primary_action(confirm, move || ask.push(Intent::ConfirmSwitch))
+        .secondary_action("Cancel", move || cancel.push(Intent::CancelSwitch))
+        .on_dismiss(move || dismiss.push(Intent::CancelSwitch))
         .open(true)
 }
 
@@ -793,8 +970,6 @@ fn delete_dialog(rule: &Rule, intents: &Intents) -> ModalDialog<Text> {
     .on_dismiss(move || dismiss.push(Intent::CancelDelete))
     .open(true)
 }
-
-// ---- services ------------------------------------------------------------
 
 /// One row of the services table.
 #[derive(Clone)]

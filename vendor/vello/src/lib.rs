@@ -150,6 +150,7 @@ pub use wgpu;
 pub use image_source::ImageSource;
 pub use scene::{DrawGlyphs, Scene};
 pub use vello_encoding::ImageCacheStats;
+pub use vello_encoding::{ImageRect, image_delta, register_image_delta};
 pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 /// A stable identity of the compute shaders this build of vello creates
 /// pipelines from: a pipeline cache kept across processes is only valid for
@@ -1680,6 +1681,11 @@ pub(crate) fn sparse_coarse_adaptive_selection(
     }
 }
 
+/// How many waits [`Renderer::settle_bump_budget`] gives a counter readback
+/// whose callback another thread's poll is running.
+#[cfg(feature = "wgpu")]
+const SETTLE_POLLS: usize = 10_000;
+
 #[cfg(feature = "wgpu")]
 impl Renderer {
     /// Run every GPU pipeline's first dispatch now, spread over this device and up to
@@ -1813,7 +1819,20 @@ impl Renderer {
     pub async fn new_async_deferring(
         device: &Device,
         options: RendererOptions,
+        deferral: PipelineDeferral,
+    ) -> Result<Self> {
+        Self::new_async_deferring_reporting(device, options, deferral, &mut || {}).await
+    }
+
+    /// [`Self::new_async_deferring`], calling `built` each time one of the
+    /// awaited pipelines is compiled (Tilo patch): a caller bounding how long
+    /// the start may take can tell a slow compile that keeps finishing
+    /// pipelines from one that stopped.
+    pub async fn new_async_deferring_reporting(
+        device: &Device,
+        options: RendererOptions,
         mut deferral: PipelineDeferral,
+        built: &mut dyn FnMut(),
     ) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
@@ -1826,7 +1845,7 @@ impl Renderer {
         let shaders = shaders::full_shaders(device, &mut engine, &options);
         engine.set_pipeline_deferral(PipelineDeferral::None);
         let shaders = shaders?;
-        engine.build_shaders_async(device).await;
+        engine.build_shaders_async(device, built).await;
         Self::with_engine(device, options, engine, shaders)
     }
 
@@ -3668,9 +3687,14 @@ impl Renderer {
         let mut overflowed = self.unsettled_bump_overflow.take();
         // A one-shot readback has already waited for the rendered texture,
         // but the tiny counter buffer's map callback can become observable a
-        // poll later. Give it a bounded blocking settle so "not ready yet" is
-        // never mistaken for "the frame fit".
-        for _ in 0..4 {
+        // poll later, and on a device other threads poll too (the process
+        // shares one) it runs on whichever thread's poll took it: this
+        // thread's wait can return while another thread is still running
+        // the callback. Keep waiting until it has landed, so "not ready yet"
+        // is never mistaken for "the frame fit". The GPU work is done by
+        // then, so the wait is short; the bound only keeps a device that
+        // never answers (one that was lost) from holding the thread.
+        for _ in 0..SETTLE_POLLS {
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
             let (changed, frame_overflowed) = self.budget.collect(device, &mut self.engine);
             overflowed |= frame_overflowed;
@@ -3680,6 +3704,7 @@ impl Renderer {
             if !self.budget.has_pending_readback() {
                 break;
             }
+            std::thread::yield_now();
         }
         overflowed
     }
@@ -4204,7 +4229,7 @@ mod tests {
                 Ok(BumpBudgetPoll::Pending)
             );
             assert!(renderer.engine.get_download(proxy).is_some());
-            assert!(!renderer.budget.wants_readback());
+            assert!(renderer.budget.has_pending_readback());
         }
         set_ready(&mut renderer.budget, Some(true));
         assert_eq!(
@@ -4285,6 +4310,107 @@ mod tests {
             overflows(&mut capped),
             "a cap that cannot grow keeps reporting, frame after frame"
         );
+    }
+
+    /// A small render, then a large one before the small one's counters
+    /// land: a backdrop blur's ground, then the frame drawn over it. The
+    /// large render is measured as well, so its overflow is seen and grows
+    /// the reservation until it fits. Measured one readback at a time, the
+    /// large render was never measured while the small one's was in flight:
+    /// it overflowed, unseen, on every attempt (a 2560x1600@2 desktop with
+    /// Quick Settings open never produced a screenshot).
+    /// A device shared by threads runs a map callback on whichever
+    /// thread's poll took it, so the counters' callback can land after this
+    /// thread's own wait returned. Settling waits for it: an overflow it
+    /// reports late is still this frame's, never mistaken for a fit (a
+    /// frame reported complete then overflowed on its next render).
+    #[test]
+    fn settling_waits_for_counters_whose_callback_lands_on_another_thread() {
+        use bump_budget::test_helpers::hold_ready;
+        let (device, queue) = checked_bump_device();
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 512,
+            height: 512,
+            antialiasing_method: AaConfig::Area,
+        };
+        let (_texture, view) = damage_target_with_size(&device, &queue, 512, 512);
+        // Five zigzags over one another overflow a fresh 512x512 reservation.
+        let mut large = Scene::new();
+        for _ in 0..5 {
+            large.append(&zigzag_scene(), None);
+        }
+        let mut renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+        renderer
+            .render_to_texture(&device, &queue, &large, &view, &params)
+            .unwrap();
+        // The counters are mapped; their callback is held, and lands from
+        // another thread a moment after this thread starts waiting.
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let slot = hold_ready(&mut renderer.budget);
+        let overflowed = thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(std::time::Duration::from_millis(1));
+                *slot.lock().unwrap() = Some(true);
+            });
+            renderer.settle_bump_budget(&device)
+        });
+        assert!(
+            overflowed,
+            "the overflow its late callback reports is this frame's"
+        );
+    }
+
+    #[test]
+    fn a_render_issued_while_another_readback_is_in_flight_is_measured() {
+        use bump_budget::test_helpers::set_ready;
+        let (device, queue) = checked_bump_device();
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 512,
+            height: 512,
+            antialiasing_method: AaConfig::Area,
+        };
+        let (_texture, view) = damage_target_with_size(&device, &queue, 512, 512);
+        // Five zigzags over one another: about 320K segments, past what a
+        // 512x512 viewport's floors reserve.
+        let mut large = Scene::new();
+        for _ in 0..5 {
+            large.append(&zigzag_scene(), None);
+        }
+        let mut renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+        let reserved = renderer.memory_stats().bump_budget_bytes;
+
+        renderer
+            .render_to_texture(
+                &device,
+                &queue,
+                &solid_scene(),
+                &target(&device),
+                &checked_bump_params(),
+            )
+            .unwrap();
+        // The small render's counters stay in flight from here on.
+        set_ready(&mut renderer.budget, None);
+        renderer
+            .render_to_texture(&device, &queue, &large, &view, &params)
+            .unwrap();
+        assert!(
+            renderer.settle_bump_budget(&device),
+            "the large render's overflow is seen while the small one's counters are in flight"
+        );
+        assert!(
+            renderer.memory_stats().bump_budget_bytes > reserved,
+            "and grows the reservation"
+        );
+        // Each attempt learns the next stage's needs; a handful suffice.
+        let fits = (0..8).any(|_| {
+            renderer
+                .render_to_texture(&device, &queue, &large, &view, &params)
+                .unwrap();
+            !renderer.settle_bump_budget(&device)
+        });
+        assert!(fits, "the large render comes to fit");
     }
 
     #[test]

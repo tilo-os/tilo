@@ -778,7 +778,7 @@ impl ListPane {
         let sink = Rc::clone(&self.sink);
         let selecting = Rc::clone(&self.requests);
         let activating = Rc::clone(&self.requests);
-        let list = VirtualList::with_selection_delegate(rows, 56.0, move |rows, _, key, _, _| {
+        let list = VirtualList::with_selection_delegate(rows, 56.0, move |rows, _, key, _| {
             rows.find(key).map_or_else(
                 || Box::new(ListRow::new(key.clone(), "")) as Element,
                 |data| row(&data, rows.shows_avatars(), &requests, &sink),

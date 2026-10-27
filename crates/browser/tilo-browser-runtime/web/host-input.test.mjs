@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createPanorama} from './panorama.mjs';
+import {draggingFiles,droppedFiles,pastedPicture,MAX_DROPPED_FILE,MAX_DROPPED_FILES,MAX_PASTED_PICTURE} from './host-core.mjs';
 
 // Exercise the mount's real event bindings; only WASM/GPU/storage are replaced.
 class DomEvent {
@@ -39,7 +40,7 @@ async function fixture({standalone=false,legacy=false,models,providerManagement,
  };
  let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[],windowFocus=[];let update;
  // Winit's web backend reports the canvas's own focus and blur as the window's.
- const runtime={mount(canvas,_config,_assets,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+ const runtime={provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
 
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop disposed');if(standalone)throw Error('Desktop navigation unavailable');return JSON.stringify(state);},desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,searchToggles:0,desktop_search_toggle(){this.searchToggles++;},
   desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state={sequence:String(Number(state.sequence)+1),activation:String(Number(state.activation)+1),owner:command.route,ime:command.route==='calculator'?null:{x:0,y:0,height:20}};},
@@ -51,7 +52,7 @@ async function fixture({standalone=false,legacy=false,models,providerManagement,
  source=source.replace("import init,* as runtime from './pkg/tilo_browser_runtime.js';","const init=async()=>{};const runtime=globalThis.__hostFixture.runtime;")
   .replace("import {acquireStorage} from './storage.mjs';","const acquireStorage=async()=>globalThis.__hostFixture.storage;")
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
- const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${Math.random()}`);
+ const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
  const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement});await tick();
  return {host,runtime,document,delivered,deliveredOwners,windowFocus,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
 }
@@ -162,6 +163,14 @@ test('Rust-internal Search selection hands off only for a local surface gesture'
  const external=new Node('textarea');f.document.body.append(external);external.focus();
  f.state={sequence:'3',activation:'3',owner:'writer',ime:{x:0,y:0,height:20}};f.update({phase:'presented',frames:2});await tick();assert.equal(f.document.activeElement,external);
 });
+test('the hidden IME editor paints nothing over the canvas',async()=>{
+ const f=await fixture();
+ const invisible=editor=>{for(const rule of ['background:transparent','color:transparent','caret-color:transparent','outline:none'])assert.ok(editor.style.cssText.includes(rule),`the IME editor sets ${rule}`);};
+ invisible(f.host.editor);
+ // A committed composition retires the editor for a copy of it.
+ invisible(f.host.editor.cloneNode(false));
+});
+
 test('focus moving between the canvas and its IME editor is not a window blur',async()=>{
  const f=await fixture();f.host.editor.focus();f.windowFocus.length=0;f.delivered.length=0;
  // A press on the canvas takes focus from the editor; the next status hands it back.
@@ -319,4 +328,29 @@ test('desktop chords and text-editing keys typed in a focused text field reach t
  const address=new DomEvent('keydown',{key:'l',code:'KeyL',metaKey:true});f.host.editor.dispatchEvent(address);
  assert.equal(address.defaultPrevented,false,'Cmd+L stays native');
  assert.deepEqual(canvasKeys,[],'browser chords are not the app\'s');
+});
+
+const file=(name,type,bytes,size=bytes.length)=>({name,type,size,arrayBuffer:async()=>new Uint8Array(bytes).buffer});
+
+test('a pasted picture is the first image file a paste carries, within the paste limit',()=>{
+  const screenshot=file('image.png','image/png',[1,2]);
+  assert.equal(pastedPicture({files:[file('notes.txt','text/plain',[1]),screenshot]}),screenshot);
+  assert.equal(pastedPicture({files:[file('huge.png','image/png',[1],MAX_PASTED_PICTURE+1)]}),null);
+  assert.equal(pastedPicture({files:[file('vector.svg','image/svg+xml',[1])]}),null,'only the types an app decodes');
+  assert.equal(pastedPicture({}),null);
+});
+
+test('a drop hands over its files with their bytes, a bounded number of them',async()=>{
+  assert.equal(draggingFiles({types:['text/plain','Files']}),true);
+  assert.equal(draggingFiles({types:['text/plain']}),false,'dragged text is no file');
+  const many=Array.from({length:MAX_DROPPED_FILES+3},(_,at)=>file(`f${at}.txt`,'text/plain',[at]));
+  const dropped=await droppedFiles({files:many});
+  assert.equal(dropped.length,MAX_DROPPED_FILES+1,'one more says the rest were not taken');
+  assert.deepEqual(dropped[1],{name:'f1.txt',type:'text/plain',bytes:new Uint8Array([1])});
+  assert.deepEqual(dropped.at(-1),{name:`f${MAX_DROPPED_FILES}.txt`,type:'text/plain',size:1,unread:'tooMany'});
+});
+
+test('a file too large to drop is named with its size, its contents never read',async()=>{
+  const huge={name:'film.mov',type:'video/quicktime',size:MAX_DROPPED_FILE+1,arrayBuffer:async()=>{throw new Error('read');}};
+  assert.deepEqual(await droppedFiles({files:[huge]}),[{name:'film.mov',type:'video/quicktime',size:MAX_DROPPED_FILE+1,unread:'tooLarge'}]);
 });

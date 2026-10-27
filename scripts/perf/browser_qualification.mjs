@@ -4,7 +4,7 @@
 // in headless Chrome, measured the way a person uses it, and checked against
 // the runtime's documented goals. It writes one report; `tools/perf/adapters.py
 // browser-qualification` turns that into the `browser` KPI group's records
-// (Perf / scheduled, tools/perf/kpi-budgets.toml).
+// (t's perf-browser, tools/perf/kpi-budgets.toml).
 //
 // usage: node scripts/perf/browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON
 //          --renderer gpu|swiftshader [--rounds N]
@@ -12,8 +12,9 @@
 //          [--expect-revision SHA] [--allow-dev] [--max-load L] [--cpu-throttle F]
 //          [--frame-timeout S] [--viewport WxH] [--enforce-goals]
 //
-// Each round is a fresh browser context (empty HTTP cache and storage) at FHD
-// (1920x1080, DPR 1), and measures, in order:
+// Each round is a fresh browser context (empty HTTP cache and storage) at the
+// workload's viewport (FHD, 1920x1080 at DPR 1, unless --viewport), and
+// measures, in order:
 //   load      navigation to the desktop's first presented frame
 //   open      every demo app launched once: launch command to the first
 //             presented frame holding its new window, and to the first frame
@@ -637,9 +638,10 @@ async function main() {
     const after = hostState();
     checkHost(after, options.maxLoad, 'after the run');
     const summary = summarize(rounds);
+    const host = {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`};
     const report = {schema: 1, measuredAt: new Date().toISOString(), bundle, renderer: options.renderer,
       adapter: rounds[0].adapter, browser: {product: version.product, userAgent: version.userAgent},
-      viewport: options.viewport, host: {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`},
+      viewport: options.viewport, host,
       workload: {rounds: options.rounds, activations: options.activations, demoSeconds: options.demoSeconds,
         idleSeconds: options.idleSeconds, cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: flags},
       summary, goals: judgeGoals(summary), attribution: attribute(rounds),

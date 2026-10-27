@@ -10,6 +10,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+use tilo_sort::CompactSort as _;
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
@@ -39,7 +40,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, TouchPhase, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroize;
 
@@ -59,9 +60,37 @@ struct AlternateLayout {
     signature: u64,
 }
 
+#[path = "text_input_damage.rs"]
+mod damage;
 #[path = "text_input_reveal.rs"]
 mod reveal;
+#[path = "text_input_scroll.rs"]
+mod scroll;
+#[path = "text_input_single_line.rs"]
+mod single_line;
 use reveal::RevealToggle;
+
+#[path = "text_input_spelling.rs"]
+mod spelling;
+
+#[path = "text_input_touch.rs"]
+mod touch;
+use touch::TouchIntent;
+
+/// Outline a field whose content was refused (a wrong password) in the
+/// danger colour, over the field's own edge at the control radius.
+pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, theme: &Theme) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.5),
+        transform,
+        theme.tokens.colors.semantic.danger,
+        None,
+        &vello::kurbo::RoundedRect::from_rect(
+            field,
+            crate::chrome::ChromeRole::Control.radius(theme, field.height()),
+        ),
+    );
+}
 
 /// Paint the pending input method composition on a shaped line. Editors
 /// supply the segment from their own projection (proportional formula text
@@ -99,7 +128,6 @@ enum CtxAction {
     IgnoreInField(String),
     UndoAutocorrection,
     TextAction(usize),
-    AskAgent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -320,6 +348,9 @@ pub struct TextInput {
     /// deliberately separate so a secondary finger cannot steal or complete
     /// an in-progress selection gesture.
     active_touch: Option<u64>,
+    /// Where that finger came down, in the window's pixels.
+    touch_origin: winit::dpi::PhysicalPosition<f64>,
+    touch_intent: TouchIntent,
     drag_unit: DragUnit,
     /// Anchor span snapped to `drag_unit` boundaries; the drag extends from
     /// whichever end is "opposite" the current pointer.
@@ -336,9 +367,12 @@ pub struct TextInput {
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
     local_state: Option<crate::local_state::LocalBinding<String>>,
-    /// A programmatic/model change can alter multiline measurement without
-    /// pretending to be a user edit through `take_dirty`.
-    model_layout_dirty: bool,
+    /// The text or its shaping changed since the last `measure`, by the
+    /// person's edit or a model write, in a way measuring reads (multiline or
+    /// attributed text). Separate from [`Self::dirty`], which says the edit
+    /// is not yet published: an edit the owner publishes later is measured
+    /// once, not on every frame until it is taken.
+    layout_dirty: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
     /// zero/clear it immediately after use.
@@ -392,6 +426,9 @@ pub struct TextInput {
     /// local for the owner to submit ([`Self::take_dirty`]); how
     /// `BlockEditor` binds text nested inside a `List`.
     bound_text: Option<ObjId>,
+    /// Where the document stood, and what the field showed, when it last
+    /// read the bound text: a sync over an unchanged document reads nothing.
+    adopted: Option<preparation::Adopted>,
     /// Stamped on every inserted run so peers can highlight "what they wrote".
     local_author: Option<String>,
     /// Horizontal alignment of wrapped text within the input's width.
@@ -419,6 +456,7 @@ pub struct TextInput {
     /// once they are in.
     spell_generation: u64,
     spell_spans: Vec<(usize, usize)>,
+    shown: crate::scroll_copy::ShownFrames<damage::FieldShown>,
     /// `spell_spans` were cleared while idle and no longer describe the
     /// cached text, so the next check cannot splice into them.
     spell_spans_stale: bool,
@@ -463,6 +501,11 @@ pub struct TextInput {
     /// Unmasked multiline fields use the shared cosmic-text paragraph,
     /// including attributed syntax-highlighted code.
     multiline_shaped: bool,
+    /// A multiline field's glide after fingers lift off a touchpad or a
+    /// screen while moving: the shared fling every scroller uses.
+    wheel_glide: crate::virtual_viewport::ScrollMomentum,
+    /// Reduced motion, as the latest draw saw it: fingers leave no glide.
+    reduce_motion: bool,
     /// Plain `Enter` submits instead of inserting a newline; multiline keeps
     /// `Shift+Enter` for a real newline (chat-composer pattern).
     enter_submits: bool,
@@ -479,6 +522,10 @@ pub struct TextInput {
     goal_x: Option<f64>,
     scroll_y: f64,
     preserve_unfocused_scroll: bool,
+    /// The wheel or a finger scrolled the field since its focus last
+    /// changed: an unfocused field keeps that scroll rather than showing
+    /// its start again ([`Self::set_preserve_unfocused_scroll`]).
+    hand_scrolled: bool,
     gutter: bool,
     /// Width measured from the same scaled line-number style used to paint.
     measured_gutter_width: f64,
@@ -510,7 +557,6 @@ pub struct TextInput {
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
-    /// Called with the text on a submitting Enter.
     on_submit: Option<TextChangeCallback>,
     /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
@@ -521,6 +567,8 @@ pub struct TextInput {
     content_sized: bool,
     /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
     span_highlighter: Option<SpanHighlighter>,
+    /// Marks what the owner judges wrong in the text ([`Self::with_mistakes`]).
+    mistakes: Option<MistakeMarker>,
     /// The text can be selected and copied but not changed ([`Self::with_read_only`]).
     read_only: bool,
     /// Link targets over byte ranges of a read-only text
@@ -540,6 +588,10 @@ struct PendingPaste {
 /// formula, in the colour of the cells it outlines).
 pub type SpanHighlighter =
     Box<dyn Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>>;
+
+/// The byte ranges of a field's text its owner judges wrong (a word outside
+/// the list an entry must come from); see [`TextInput::with_mistakes`].
+pub type MistakeMarker = Box<dyn Fn(&str) -> Vec<std::ops::Range<usize>>>;
 
 /// Where a detected address opens: a web link as it is (a bare host gets
 /// `https://`), an email address as `mailto:`; mentions and room aliases are
@@ -674,9 +726,7 @@ impl TextInput {
     }
     /// Empty `path` opts the widget out of presence rendering.
     pub fn new(path: Vec<PathSegment>) -> Self {
-        let spell_language = spellcheck::default_language();
-        spellcheck::warm_up_language(&spell_language);
-        Self::with_language(path, spell_language)
+        Self::with_language(path, spellcheck::default_language())
     }
 
     fn with_language(path: Vec<PathSegment>, spell_language: String) -> Self {
@@ -695,6 +745,8 @@ impl TextInput {
             typing: TypingRun::default(),
             is_dragging: false,
             active_touch: None,
+            touch_origin: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+            touch_intent: TouchIntent::Undecided,
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
             drag_select: DragSelect::new(),
@@ -716,7 +768,7 @@ impl TextInput {
             action: None,
             last_notified_text: String::new(),
             local_state: None,
-            model_layout_dirty: false,
+            layout_dirty: false,
             external_buffer: None,
             text_role: TextRole::Body,
             themed_role_size: None,
@@ -725,6 +777,7 @@ impl TextInput {
             gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
+            adopted: None,
             local_author: None,
             align: TextAlign::Left,
             secret: false,
@@ -737,6 +790,7 @@ impl TextInput {
             spell_cache_key: None,
             spell_generation: spellcheck::dictionaries_generation(),
             spell_spans: Vec::new(),
+            shown: crate::scroll_copy::ShownFrames::default(),
             spell_spans_stale: false,
             spell_dictionary: None,
             personal_spelling: None,
@@ -759,6 +813,8 @@ impl TextInput {
             family: None,
             multiline: false,
             multiline_shaped: false,
+            wheel_glide: crate::virtual_viewport::ScrollMomentum::new(),
+            reduce_motion: false,
             enter_submits: false,
             submit_requested: false,
             reveal: RevealToggle::new(),
@@ -767,6 +823,7 @@ impl TextInput {
             goal_x: None,
             scroll_y: 0.0,
             preserve_unfocused_scroll: false,
+            hand_scrolled: false,
             gutter: false,
             measured_gutter_width: 0.0,
             highlight_current_line: false,
@@ -788,6 +845,7 @@ impl TextInput {
             accessory: None,
             content_sized: false,
             span_highlighter: None,
+            mistakes: None,
             read_only: false,
             links: Vec::new(),
         }
@@ -800,6 +858,7 @@ impl TextInput {
             self.align = align;
             self.drop_shaped_layouts();
             self.dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -842,6 +901,10 @@ impl TextInput {
             .bound_text
             .as_ref()
             .ok_or_else(|| crate::view::ThawError::State("text is not bound".into()))?;
+        let seen = preparation::Adopted::of(state, obj, &self.text);
+        if self.adopted.as_ref() == Some(&seen) {
+            return Ok(());
+        }
         let text = state
             .text(obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
@@ -849,6 +912,7 @@ impl TextInput {
         self.adopt_model_text(text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
+        self.adopted = Some(seen.showing(&self.text));
         Ok(())
     }
 
@@ -856,7 +920,7 @@ impl TextInput {
     fn adopt_model_text(&mut self, text: String) {
         if self.text != text {
             self.text = text;
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
     }
 
@@ -864,7 +928,7 @@ impl TextInput {
     pub(super) fn capture_layout_text_scale(&mut self, text_scale: f32) {
         if self.layout_text_scale != Some(text_scale) {
             self.layout_text_scale = Some(text_scale);
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
     }
 
@@ -884,7 +948,7 @@ impl TextInput {
     /// Change the field's text role; see [`Self::with_text_role`].
     pub fn set_text_role(&mut self, role: TextRole) {
         if self.text_role != role || self.font_size_override.is_some() {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.text_role = role;
             self.font_size_override = None;
             self.content_sized = false;
@@ -901,7 +965,7 @@ impl TextInput {
     /// sets its own 1× base size; chrome fields take a role.
     pub(crate) fn set_base_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
         }
     }
@@ -919,7 +983,7 @@ impl TextInput {
 
     pub fn set_mono(&mut self, mono: bool) {
         if self.mono != mono {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         self.mono = mono;
         if mono {
@@ -1124,6 +1188,9 @@ impl TextInput {
         self.spell_cache_key = None;
         self.autocorrection_preview_key = None;
         self.autocorrection_preview = None;
+        if self.spell_active {
+            self.warm_up_spelling();
+        }
     }
 
     pub fn spell_language(&self) -> &str {
@@ -1162,7 +1229,7 @@ impl TextInput {
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         if self.family != family {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
         }
     }
@@ -1222,6 +1289,7 @@ impl TextInput {
             span.background.hash(&mut hash);
             span.baseline.hash(&mut hash);
             span.kind.hash(&mut hash);
+            span.workspace_emoji.hash(&mut hash);
         }
         hash.finish()
     }
@@ -1230,7 +1298,7 @@ impl TextInput {
         if self.rich_spans != spans {
             self.rich_spans = spans;
             self.shaped_preparation = None;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -1271,7 +1339,7 @@ impl TextInput {
                 }
             }
         }
-        colored.sort_by_key(|&(start, end, _)| (start, end));
+        colored.compact_sort_by_key(|&(start, end, _)| (start, end));
 
         let mut spans = Vec::new();
         let mut cursor = 0usize;
@@ -1366,7 +1434,7 @@ impl TextInput {
         {
             self.single_attributes = Some(attributes);
             self.drop_shaped_layouts();
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -1495,7 +1563,7 @@ impl TextInput {
         self.clamp_to_text();
         self.scroll_x = 0.0;
         self.dirty = false;
-        self.model_layout_dirty = self.multiline || self.single_attributes.is_some();
+        self.layout_dirty = self.multiline || self.single_attributes.is_some();
         self.typing.close();
         self.last_notified_text.clone_from(&self.text);
         if self.action.is_none() {
@@ -1612,6 +1680,14 @@ impl TextInput {
             .then(|| (self.core.anchor(), self.core.caret()))
     }
 
+    /// The selection a host mirroring this field should paint after a
+    /// pointer event: the anchor and caret, collapsed to the caret when
+    /// nothing is selected. A click that collapses a selection has to reach
+    /// the host too, or it keeps painting the selection it used to show.
+    pub fn selection_anchor_focus_or_caret(&self) -> (usize, usize) {
+        (self.core.anchor(), self.core.caret())
+    }
+
     /// Capture only private editor state for an authenticated ephemeral handoff.
     /// The caller must never publish this value as an action argument.
     pub fn private_draft_editor(&self) -> crate::private_draft::Editor {
@@ -1628,7 +1704,7 @@ impl TextInput {
     /// This does not insert text or write a document/history entry.
     pub fn restore_private_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
         self.core.set_preedit(text, cursor);
-        self.model_layout_dirty = true;
+        self.layout_dirty = true;
     }
 
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
@@ -1644,10 +1720,6 @@ impl TextInput {
     /// Does not enable focus, caret painting, input handling or document binding.
     pub fn set_preserve_unfocused_scroll(&mut self, preserve: bool) {
         self.preserve_unfocused_scroll = preserve;
-    }
-
-    pub fn scroll_y(&self) -> f64 {
-        self.scroll_y
     }
 
     pub fn body_line_height(&self) -> f64 {
@@ -1673,16 +1745,6 @@ impl TextInput {
     /// Exact caret position under a point, including mixed-BiDi affinity.
     pub fn position_at_point(&self, point: Point) -> TextPosition {
         self.resolve_position(point)
-    }
-
-    /// No-op for a single-line field.
-    pub fn scroll_by(&mut self, dy: f64) {
-        if !self.multiline {
-            return;
-        }
-        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let max = (self.content_height() - self.multiline_padding_y() * 2.0 - view_h).max(0.0);
-        self.scroll_y = (self.scroll_y + dy).clamp(0.0, max);
     }
 
     pub fn is_plain(&self) -> bool {
@@ -1730,7 +1792,7 @@ impl TextInput {
     pub(crate) fn first_row_band(&self) -> (f64, f64) {
         if self.multiline {
             (
-                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+                self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
                 self.line_height(),
             )
         } else {
@@ -1879,7 +1941,7 @@ impl TextInput {
             if x1 - x0 < 0.5 {
                 continue;
             }
-            let y0 = self.rect.y0 + py + r.y - self.scroll_y;
+            let y0 = self.rect.y0 + py + r.y - self.shown_scroll_y();
             out.push(Rect::new(
                 self.rect.x0 + px + x0,
                 y0,
@@ -1978,7 +2040,7 @@ impl TextInput {
         let (i, x) = self.locate_ml(byte);
         let y = self.lines.get(i).map_or(0.0, |r| r.y);
         let cx = self.rect.x0 + self.ml_left() + x;
-        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.scroll_y;
+        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.shown_scroll_y();
         Rect::new(cx, cy, cx + width, cy + self.line_height())
     }
 
@@ -1988,7 +2050,7 @@ impl TextInput {
             return 0;
         }
         let lh = self.line_height();
-        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.scroll_y;
+        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.shown_scroll_y();
         let max_row = self.lines.len().saturating_sub(1);
         let row = {
             let row_f = (local_y / lh).floor().max(0.0);
@@ -2393,13 +2455,21 @@ impl TextInput {
         }
         self.refresh_highlight();
         let display = self.layout_display_text();
-        let spans = self.palette_display_spans(syntax);
-        debug_assert_eq!(
-            spans
-                .iter()
-                .map(|span| span.text.as_str())
-                .collect::<String>(),
-            display
+        // Syntax colours paint with the visible rows
+        // ([`Self::highlight_color_at`]), so highlighted code is shaped as
+        // plain paragraphs and a keystroke reshapes only its line.
+        let spans = if self.paints_highlight() {
+            Vec::new()
+        } else {
+            self.palette_display_spans(syntax)
+        };
+        debug_assert!(
+            spans.is_empty()
+                || spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+                    == display
         );
         let signature = Self::attributed_signature(
             self.shaped_signature(&display, &style.family, style.size, Some(available_width)),
@@ -2495,7 +2565,7 @@ impl TextInput {
             } else if f64::from(caret_top + caret_height) - self.scroll_y > view_height {
                 self.scroll_y = f64::from(caret_top + caret_height) - view_height;
             }
-        } else if !self.is_focused && !self.preserve_unfocused_scroll {
+        } else if !self.is_focused && !self.preserve_unfocused_scroll && !self.hand_scrolled {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.core.caret());
@@ -2538,7 +2608,7 @@ impl TextInput {
         self.measure_wrapped_content(width, tr, theme);
         self.single_origin = Point::new(
             self.rect.x0 + self.ml_left(),
-            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
     }
@@ -2632,46 +2702,6 @@ impl TextInput {
             gutter.letter_spacing /= scale;
         }
         gutter
-    }
-
-    fn draw_gutter_line_numbers(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        style: &TextStyle,
-        caret_byte: usize,
-        gutter_width: f64,
-    ) {
-        if gutter_width <= 0.0 {
-            return;
-        }
-        let Some(layout) = &self.single_layout else {
-            return;
-        };
-        let current_line = layout.logical_line_index(caret_byte);
-        for (line, top, _height) in layout.logical_line_origins() {
-            let number = line.saturating_add(1).to_string();
-            let (width, _) = tr.measure_style(&number, None, style);
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine transform composition over f64 screen coordinates"
-            )]
-            let origin = transform
-                * Affine::translate((
-                    self.rect.x0 + gutter_width
-                        - GUTTER_PAD_R * self.gutter_text_scale
-                        - f64::from(width),
-                    self.single_origin.y + f64::from(top),
-                ));
-            let color = if line == current_line {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            };
-            tr.draw_style(scene, &number, color, origin, None, style);
-        }
     }
 
     pub(crate) fn suppress_caret_paint(&mut self, suppressed: bool) {
@@ -2793,7 +2823,11 @@ impl TextInput {
             reason = "widget width is a bounded on-screen size for vello/layout math, never near f32's range"
         )]
         let available_width = (self.rect.width() - left - self.ml_pad_x()).max(1.0) as f32;
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("text.shape");
         self.ensure_shaped_layout(tr, theme, &style, available_width);
+        #[cfg(test)]
+        drop(probe);
 
         let caret_position = if self.core.has_preedit() {
             TextPosition::new(self.preedit_layout_caret())
@@ -2822,7 +2856,7 @@ impl TextInput {
         self.update_ml_scroll(caret_top, caret_height, layout_height);
         self.single_origin = Point::new(
             self.rect.x0 + left,
-            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
         self.lines.clear();
@@ -2839,12 +2873,15 @@ impl TextInput {
         self.draw_code_gutter_background(scene, transform, theme, gutter_width);
         self.draw_current_line_band(scene, transform, theme, caret_byte, gutter_width);
 
-        if let Some((start, end)) = self.selection_range() {
-            let color = theme.tokens.colors.intent.selection_tint;
-            for rect in self.selection_rects(theme, start, end) {
-                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
-            }
-        }
+        // What a copy keeps on screen is not encoded again (`draw_cull`).
+        let _kept = crate::draw_cull::keep_scope(scene, self.field_keep(transform, theme));
+        let leave_out = self.paint_selection_keeping_lines(
+            (scene, transform),
+            tr,
+            theme,
+            &style,
+            (visible, gutter_width, caret_byte),
+        );
 
         // `Affine * Affine` composes two geometric transforms over f64
         // coordinates; it has no integer overflow/wrap semantics.
@@ -2872,15 +2909,24 @@ impl TextInput {
             };
             // A long note is taller than the window: paint only the rows the
             // field's clip and the viewport let through.
-            tr.draw_rich_in_clip(
+            let syntax = &theme.tokens.syntax;
+            let paint = |byte: usize| self.highlight_color_at(byte, syntax);
+            #[cfg(test)]
+            let _probe = crate::profiling::frame_probe::span("text.rows");
+            tr.draw_rich_in_clip_painted_leaving_out(
                 scene,
                 layout,
                 text_transform,
                 color,
-                transform.transform_rect_bbox(visible),
+                (transform.transform_rect_bbox(visible), &leave_out),
+                self.paints_highlight()
+                    .then_some(&paint as &dyn Fn(usize) -> Option<vello::peniko::Color>),
             );
+            self.tint_selected_emoji(scene, text_transform, theme, layout);
         }
 
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("text.gutter");
         self.draw_gutter_line_numbers(
             scene,
             transform,
@@ -2888,8 +2934,10 @@ impl TextInput {
             theme,
             &style,
             caret_byte,
-            gutter_width,
+            (gutter_width, visible, &leave_out),
         );
+        #[cfg(test)]
+        drop(probe);
         self.draw_ml_caret(scene, transform, theme, (caret_position, shape));
         scene.pop_layer();
     }
@@ -2911,7 +2959,7 @@ impl TextInput {
                     self.scroll_y = caret_bot - view_h;
                 }
             }
-        } else if !self.preserve_unfocused_scroll {
+        } else if !self.preserve_unfocused_scroll && !self.hand_scrolled {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.core.caret());
@@ -2973,7 +3021,7 @@ impl TextInput {
             if lor != caret_line {
                 continue;
             }
-            let top = row.y - self.scroll_y;
+            let top = row.y - self.shown_scroll_y();
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
@@ -3014,7 +3062,7 @@ impl TextInput {
             .zip(is_line_start.iter())
             .enumerate()
         {
-            let top = line.y - self.scroll_y;
+            let top = line.y - self.shown_scroll_y();
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
@@ -3253,10 +3301,8 @@ impl TextInput {
     /// `Some(text)` if a user-initiated edit landed since the last call.
     pub fn take_dirty(&mut self) -> Option<String> {
         if self.dirty {
-            // Publishing the edit to the document does not mean the host has
-            // measured its new intrinsic height yet. Keep those lifecycles
-            // separate so CRDT projection cannot swallow layout invalidation.
-            self.model_layout_dirty |= self.multiline;
+            // The edit marked the layout itself; publishing it changes
+            // nothing measuring reads.
             self.dirty = false;
             Some(self.text.clone())
         } else {
@@ -3265,7 +3311,7 @@ impl TextInput {
     }
 
     pub(super) fn acknowledge_layout_measure(&mut self) {
-        self.model_layout_dirty = false;
+        self.layout_dirty = false;
     }
 
     /// Places the input without a layout tree — only safe on local-mode
@@ -3451,7 +3497,7 @@ impl TextInput {
     pub(super) fn set_compact_multiline(&mut self, compact: bool) {
         if self.compact_multiline != compact {
             self.compact_multiline = compact;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3544,6 +3590,43 @@ impl TextInput {
 
     fn ml_left(&self) -> f64 {
         self.ml_pad_x() + self.code_gutter_w()
+    }
+
+    /// Whether the highlighter's colours paint over plainly shaped text:
+    /// always, unless authored runs style the text instead.
+    fn paints_highlight(&self) -> bool {
+        self.highlighter.is_some() && self.rich_spans.is_none()
+    }
+
+    /// The highlighter's colour at `byte` of the laid-out text (the source
+    /// with any composition shown at the caret), in `syntax`'s colours.
+    /// `None` between tokens and within the composition.
+    fn highlight_color_at(
+        &self,
+        byte: usize,
+        syntax: &SyntaxPalette,
+    ) -> Option<vello::peniko::Color> {
+        let byte = if self.core.has_preedit() {
+            let caret = self.core.caret().min(self.text.len());
+            let composed = self.core.preedit().len();
+            if byte >= caret.saturating_add(composed) {
+                byte.saturating_sub(composed)
+            } else if byte >= caret {
+                return None;
+            } else {
+                byte
+            }
+        } else {
+            byte
+        };
+        let line = self
+            .hl_line_starts
+            .partition_point(|start| *start <= byte)
+            .checked_sub(1)?;
+        let local = byte.saturating_sub(*self.hl_line_starts.get(line)?);
+        let spans = self.hl_spans.get(line)?;
+        let span = spans.get(spans.partition_point(|span| span.range.end <= local))?;
+        span.range.contains(&local).then(|| syntax.color(span.kind))
     }
 
     /// Threads the cross-line carry over all lines so block comments / fenced
@@ -3643,7 +3726,7 @@ impl TextInput {
     pub fn set_control_size(&mut self, size: ControlSize) {
         if self.control_size != size {
             self.control_size = size;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3653,7 +3736,7 @@ impl TextInput {
     pub fn with_min_lines(mut self, lines: usize) -> Self {
         self.multiline = true;
         self.min_lines = lines;
-        self.model_layout_dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -3728,7 +3811,7 @@ impl TextInput {
         if self.font_size_override != px || self.content_sized != sized {
             self.font_size_override = px;
             self.content_sized = sized;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3742,6 +3825,20 @@ impl TextInput {
         + 'static,
     ) -> Self {
         self.span_highlighter = Some(Box::new(highlighter));
+        self
+    }
+
+    /// Underline what `marker` finds wrong in the text, as a misspelling is,
+    /// for entries checked against something other than a dictionary: the
+    /// words of a recovery key. The marker sees the text as it is drawn, so
+    /// the marks never lag an edit; it should leave the word still being
+    /// typed alone.
+    #[must_use]
+    pub fn with_mistakes(
+        mut self,
+        marker: impl Fn(&str) -> Vec<std::ops::Range<usize>> + 'static,
+    ) -> Self {
+        self.mistakes = Some(Box::new(marker));
         self
     }
 
@@ -3761,7 +3858,7 @@ impl TextInput {
             self.read_only = read_only;
             self.pending_paste = None;
             self.drop_shaped_layouts();
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3815,7 +3912,7 @@ impl TextInput {
         if self.links != links {
             self.links = links;
             self.drop_shaped_layouts();
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3850,7 +3947,7 @@ impl TextInput {
                 found.push((span.range, target));
             }
         }
-        found.sort_by_key(|(range, _)| range.start);
+        found.compact_sort_by_key(|(range, _)| range.start);
         found
     }
 
@@ -3895,7 +3992,6 @@ impl TextInput {
         })
     }
 
-    /// The room the accessory takes from the text.
     fn accessory_room(&self) -> f64 {
         self.accessory_rect().map_or(0.0, |rect| rect.width())
     }
@@ -3986,7 +4082,7 @@ impl TextInput {
             return;
         }
         let mut ranges = highlight(&self.text, theme);
-        ranges.sort_by_key(|(range, _)| (range.start, range.end));
+        ranges.compact_sort_by_key(|(range, _)| (range.start, range.end));
         let mut spans = Vec::new();
         let mut cursor = 0usize;
         for (range, color) in ranges {
@@ -4094,7 +4190,6 @@ impl TextInput {
         self.control_size.height(theme).max(grown)
     }
 
-    /// Adopt the theme's field geometry.
     fn adopt_field_theme(&mut self, theme: &Theme) {
         let role_size = (
             self.text_role,
@@ -4102,14 +4197,14 @@ impl TextInput {
         );
         if self.themed_role_size != Some(role_size) {
             self.themed_role_size = Some(role_size);
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         let pad = f64::from(theme.padding_standard);
         let band = self.band_in(theme);
         if (pad - self.field_pad_x).abs() > f64::EPSILON || (band - self.band_height).abs() > 0.01 {
             self.field_pad_x = pad;
             self.band_height = band;
-            self.model_layout_dirty |= self.multiline;
+            self.layout_dirty |= self.multiline;
         }
     }
 
@@ -4207,6 +4302,24 @@ impl TextInput {
             .map(|range| (range.start, range.end))
     }
 
+    /// The selection over the pictures of the workspace emoji it covers,
+    /// which hide the band painted under the text. A composition shifts
+    /// the layout's bytes; it is typed with nothing selected.
+    fn tint_selected_emoji(
+        &self,
+        scene: &mut Scene,
+        text_transform: Affine,
+        theme: &Theme,
+        layout: &RichTextLayout,
+    ) {
+        if let Some((start, end)) = self.selection_range()
+            && !self.core.has_preedit()
+        {
+            let tint = theme.tokens.colors.intent.selection_tint;
+            layout.tint_selected_emoji(scene, text_transform, start..end, tint);
+        }
+    }
+
     fn has_selection(&self) -> bool {
         self.core.has_selection()
     }
@@ -4244,6 +4357,7 @@ impl TextInput {
         self.goal_x = None;
         self.typing.touch();
         self.dirty = true;
+        self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         true
     }
 
@@ -4308,6 +4422,55 @@ impl TextInput {
     /// For `BlockEditor`'s cross-block drag coordinator.
     pub fn is_dragging(&self) -> bool {
         self.is_dragging
+    }
+
+    /// Handle a pointer event for a chrome surface that owns this field
+    /// outside the retained widget tree: the chrome lays the field out
+    /// itself but still wants the toolkit's caret placement, drag selection,
+    /// double-click words and right-click menu. Returns whether the field
+    /// took the event.
+    ///
+    /// The caller keeps its own text and selection; read the selection back
+    /// with [`Self::selection_anchor_focus_or_caret`] after a `true` answer.
+    pub fn handle_chrome_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+    ) -> bool {
+        let mut handled = false;
+        let mut focus = None;
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(*position, scale_factor, &mut handled);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_left_click(*state, modifiers, &mut focus, NodeId::new(0), &mut handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.handle_right_click(&mut focus, NodeId::new(0), &mut handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                self.handle_middle_click(&mut focus, NodeId::new(0), &mut handled);
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.handle_mouse_wheel(delta, *phase, scale_factor, &mut handled);
+            }
+            _ => {}
+        }
+        handled
     }
 
     /// For `BlockEditor`'s cross-block drag coordinator, painting a selection
@@ -4627,7 +4790,7 @@ impl TextInput {
     }
 
     fn autocorrection_candidate(&mut self) -> Option<AutocorrectionPreview> {
-        self.spell_active = true;
+        self.activate_spelling();
         self.refresh_personal_spelling();
         let (start, end) = self.word_ending_at_caret()?;
         let original = self.text.get(start..end)?.to_string();
@@ -4698,108 +4861,14 @@ impl TextInput {
         true
     }
 
-    fn refresh_spelling(&mut self) {
-        self.refresh_personal_spelling();
-        let generation = spellcheck::dictionaries_generation();
-        if self.spell_generation != generation {
-            self.spell_generation = generation;
-            self.spell_cache_key = None;
-        }
-        if !self.checks_spelling() || self.text.is_empty() {
-            self.spell_spans.clear();
-            self.spell_cache_key = None;
-            return;
-        }
-        if !self.spell_active {
-            self.spell_spans.clear();
-            self.spell_spans_stale = true;
-            return;
-        }
-        let Some((language, checked)) = self.spell_cache_key.take() else {
-            self.spell_spans = self.misspelled_in(0..self.text.len());
-            self.spell_spans_stale = false;
-            self.spell_cache_key = Some((self.spell_language.clone(), self.text.clone()));
-            return;
-        };
-        if language == self.spell_language && checked == self.text {
-            self.spell_cache_key = Some((language, checked));
-            return;
-        }
-        if language == self.spell_language && !self.spell_spans_stale {
-            // Words never cross a line feed: check only the lines the edit
-            // touched and move the marks after them.
-            let edit = crate::text_break::LineEdit::between(&checked, &self.text);
-            let fresh = self.misspelled_in(edit.start..edit.new_end);
-            let (old_len, new_len) = (checked.len(), self.text.len());
-            let previous = std::mem::take(&mut self.spell_spans);
-            self.spell_spans = previous
-                .iter()
-                .copied()
-                .filter(|&(_, end)| end < edit.start)
-                .chain(fresh)
-                .chain(
-                    previous
-                        .iter()
-                        .copied()
-                        .filter(|&(start, _)| start > edit.old_end)
-                        .map(|(start, end)| {
-                            (
-                                start.saturating_add(new_len).saturating_sub(old_len),
-                                end.saturating_add(new_len).saturating_sub(old_len),
-                            )
-                        }),
-                )
-                .collect();
-        } else {
-            self.spell_spans = self.misspelled_in(0..self.text.len());
-        }
-        self.spell_spans_stale = false;
-        let mut checked = checked;
-        checked.clone_from(&self.text);
-        self.spell_cache_key = Some((self.spell_language.clone(), checked));
-    }
-
-    /// Misspelled words of `range` (whole lines of the text), in text bytes.
-    fn misspelled_in(&mut self, range: Range<usize>) -> Vec<(usize, usize)> {
-        self.spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::default);
-        let Some(text) = self.text.get(range.clone()) else {
-            return Vec::new();
-        };
-        let dictionary = self.spell_dictionary.as_ref();
-        let personal = self.personal_spelling.as_ref();
-        spellcheck::spans_for_language(&self.spell_language, text)
-            .into_iter()
-            .filter(|&(start, end)| {
-                text.get(start..end).is_some_and(|word| {
-                    !dictionary.is_some_and(|dictionary| dictionary.contains(word))
-                        && !personal.is_some_and(|personal| {
-                            personal
-                                .snapshot
-                                .as_ref()
-                                .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
-                        })
-                        && !self.ignored_spellings.contains(&word.to_lowercase())
-                })
-            })
-            .map(|(start, end)| {
-                (
-                    start.saturating_add(range.start),
-                    end.saturating_add(range.start),
-                )
-            })
-            .collect()
-    }
-
     /// The word currently being formed. Checking is immediate, but its result
     /// is hidden briefly; all completed words remain visible during typing.
     fn actively_edited_word(&self) -> Option<(usize, usize)> {
         if !self.is_focused
             || self.has_selection()
-            || self
-                .typing
-                .last_edit()
-                .is_none_or(|edited| edited.elapsed() >= SPELL_EDIT_SETTLE)
+            || self.typing.last_edit().is_none_or(|edited| {
+                crate::time::now().saturating_duration_since(edited) >= SPELL_EDIT_SETTLE
+            })
         {
             return None;
         }
@@ -4820,8 +4889,9 @@ impl TextInput {
             .is_none_or(|(active_start, active_end)| end <= active_start || start >= active_end)
     }
 
-    /// Draw a theme-aware wavy underline using the same range geometry as
-    /// selection, so it follows shaping, `BiDi`, and soft wrapping.
+    /// Draw a theme-aware wavy underline under misspellings and the owner's
+    /// marked mistakes, using the same range geometry as selection, so it
+    /// follows shaping, `BiDi`, and soft wrapping.
     #[allow(
         clippy::while_float,
         reason = "x advances by a fixed positive 2px and is clamped to x1"
@@ -4830,10 +4900,21 @@ impl TextInput {
         self.refresh_autocorrection_preview();
         self.refresh_spelling();
         let color = theme.tokens.colors.semantic.danger;
-        for &(start, end) in &self.spell_spans {
-            if !self.spelling_span_is_visible(start, end) {
-                continue;
-            }
+        let spelling = self
+            .spell_spans
+            .iter()
+            .copied()
+            .filter(|&(start, end)| self.spelling_span_is_visible(start, end));
+        let mistakes = self
+            .mistakes
+            .as_ref()
+            .map(|marker| marker(&self.text))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|range| self.text.get(range.clone()).is_some())
+            .map(|range| (range.start, range.end));
+        let marked: Vec<(usize, usize)> = spelling.chain(mistakes).collect();
+        for (start, end) in marked {
             for rect in self.selection_rects(theme, start, end) {
                 let x0 = rect.x0.max(self.rect.x0);
                 let x1 = rect.x1.min(self.rect.x1);
@@ -4946,7 +5027,7 @@ impl TextInput {
     /// If nothing is selected, the word under the click is selected first
     /// (matches every native editor's right-click-on-a-word behaviour).
     fn open_context_menu(&mut self, pos: [f32; 2]) {
-        self.spell_active = true;
+        self.activate_spelling();
         if !self.has_selection() {
             let byte = self.resolve_cursor(Point::new(f64::from(pos[0]), f64::from(pos[1])));
             let (start, end) = word_boundaries(&self.text, byte);
@@ -5017,15 +5098,6 @@ impl TextInput {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
-        if can_share && crate::shared_selection::agent_host_available() {
-            menu.push(MenuItem::action(
-                crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
-                || {},
-            ));
-            actions.push(Some(CtxAction::AskAgent));
-            menu.push(MenuItem::separator());
-            actions.push(None);
-        }
         if can_share {
             if !self.read_only {
                 menu.push(MenuItem::action("Cut", || {}));
@@ -5044,7 +5116,11 @@ impl TextInput {
         }
         menu.push(MenuItem::action("Select All", || {}));
         actions.push(Some(CtxAction::SelectAll));
-
+        menu.set_about(
+            self.shareable_selection().map(|text| {
+                crate::shared_selection::SharedSelection::of_text(text).within(self.rect)
+            }),
+        );
         menu.open_at(pos);
         self.context_menu = menu;
         self.context_actions = actions;
@@ -5127,12 +5203,6 @@ impl TextInput {
                         range: (start, end),
                     });
                 }
-            }
-            CtxAction::AskAgent => {
-                crate::shared_selection::ask_agent(
-                    self.shareable_selection()
-                        .map(crate::shared_selection::SharedSelection::of_text),
-                );
             }
         }
         self.context_menu.close();
@@ -5327,7 +5397,6 @@ pub struct FieldFace<'a> {
 }
 
 impl<'a> FieldFace<'a> {
-    /// A field at `rect` showing `text`.
     #[must_use]
     pub fn new(rect: Rect, text: &'a str) -> Self {
         Self {
@@ -5492,8 +5561,7 @@ impl Widget for TextInput {
             value.push_str(&self.text);
             // This edit has been published. Replaying it on every sync can
             // resurrect a secret after its owner clears an acknowledged save.
-            // Keep measurement invalidation separate from publication.
-            self.model_layout_dirty = true;
+            // The edit marked its own measurement when it landed.
             self.dirty = false;
         }
         if self.bound_text.is_some() {
@@ -5535,6 +5603,15 @@ impl Widget for TextInput {
                 width: Dimension::percent(1.0),
                 height,
             },
+            // A single-line field is its band tall, never squashed to
+            // nothing when what is above or below it outgrows a column.
+            flex_shrink: if self.multiline { 1.0 } else { 0.0 },
+            // Its only child (the reveal control) is placed absolutely, so
+            // the direction lays nothing out; a column says it is no nested
+            // row, which a `Row` would shrink to its children's width (none,
+            // here) where it lets a full-width field shrink to the room its
+            // siblings leave.
+            flex_direction: taffy::FlexDirection::Column,
             ..Default::default()
         };
         self.refresh_reveal_control();
@@ -5580,7 +5657,7 @@ impl Widget for TextInput {
                     scale,
                 );
             }
-            self.model_layout_dirty = false;
+            self.layout_dirty = false;
             return taffy::Size::ZERO;
         }
         let width = known.width.unwrap_or(match available.width {
@@ -5644,7 +5721,7 @@ impl Widget for TextInput {
                 || f64::from(style.line_height_px()),
                 |layout| f64::from(layout.height()),
             ) + ML_PAD_Y * 2.0;
-            self.model_layout_dirty = false;
+            self.layout_dirty = false;
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
@@ -5667,7 +5744,7 @@ impl Widget for TextInput {
             .content_height()
             .max(self.multiline_floor(self.layout_text_scale.unwrap_or(1.0)))
             as f32;
-        self.model_layout_dirty = false;
+        self.layout_dirty = false;
         taffy::Size { width, height }
     }
 
@@ -5681,6 +5758,10 @@ impl Widget for TextInput {
     ) {
         self.last_caret_width = theme.caret_width;
         self.ml_caret = None;
+        self.reduce_motion = theme.reduce_motion;
+        if self.reduce_motion {
+            self.wheel_glide.stop();
+        }
         self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
         self.prepare_theme(theme);
         if self.holds_secret() && (!self.text.is_empty() || self.core.has_preedit()) {
@@ -5717,6 +5798,9 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
             self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
+            #[cfg(test)]
+            let _probe = crate::profiling::frame_probe::span("text.note");
+            self.note_shown(transform, theme, text_renderer);
             return;
         }
         self.multiline_shaped = false;
@@ -5751,7 +5835,8 @@ impl Widget for TextInput {
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
-        self.update_single_line_scroll(cursor_x_offset, padding_x, theme.caret_width);
+        let content_w = f64::from(total_w).max(cursor_x_offset);
+        self.update_single_line_scroll(cursor_x_offset, content_w, padding_x, theme.caret_width);
 
         // Text never runs under the show/hide control.
         let text_clip = if self.has_reveal_control() {
@@ -5859,6 +5944,7 @@ impl Widget for TextInput {
             ..
         } = event
             && self.is_focused
+            && self.active_touch.is_none()
             && self
                 .suggestion_chip
                 .is_some_and(|chip| chip.contains(self.last_mouse_pos))
@@ -5881,12 +5967,20 @@ impl Widget for TextInput {
             return;
         }
 
+        if self.touch_takes_wheel(event, ctx) {
+            self.notify_user_change(false);
+            return;
+        }
+
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
-            WindowEvent::MouseWheel { delta, .. }
-                if self.multiline && self.is_hovered && !self.effectively_disabled() =>
+            WindowEvent::MouseWheel { delta, phase, .. }
+                if self.multiline
+                    && self.is_hovered
+                    && !self.effectively_disabled()
+                    && !crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
             {
-                self.handle_mouse_wheel(delta, ctx.handled);
+                self.handle_mouse_wheel(delta, *phase, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
@@ -5979,16 +6073,17 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+        self.is_layout_dirty()
     }
 
     /// Same inputs as [`Self::layout_needs_measure`]: an input's size follows
-    /// its content only through a user edit (`dirty`, drained by the owner's
-    /// `take_dirty`) or a model change that reshapes multiline or attributed
-    /// text (`model_layout_dirty`, cleared by `measure`). Idle inputs would
-    /// otherwise be re-measured on every retained frame.
+    /// its content only through an edit or a model change that reshapes
+    /// multiline or attributed text (`layout_dirty`, cleared by `measure`).
+    /// Whether the owner has taken the edit yet (`dirty`) is not one of
+    /// them, so an edit is measured in one frame however long its owner
+    /// waits to publish it, and idle inputs are never re-measured.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+        self.rect == Rect::ZERO || self.layout_dirty
     }
 
     /// A disabled input claims no cursor and defers to the host default.
@@ -6052,6 +6147,15 @@ impl Widget for TextInput {
         true
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.collect_damage_for(self, regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.mark_shown();
+        super::defaults::mark_drawn(self.children_mut());
+    }
+
     fn is_focusable(&self) -> bool {
         !self.effectively_disabled()
     }
@@ -6059,9 +6163,12 @@ impl Widget for TextInput {
         self.invalid = invalid;
     }
     fn set_focus(&mut self, focused: bool) {
+        if focused != self.is_focused {
+            self.hand_scrolled = false;
+        }
         self.is_focused = focused;
         if focused {
-            self.spell_active = true;
+            self.activate_spelling();
         }
         if !focused {
             self.pending_paste = None;
@@ -6284,6 +6391,21 @@ impl Widget for TextInput {
     /// into a sibling widget.
     fn wants_pointer_capture(&self) -> bool {
         self.is_dragging
+    }
+
+    /// A glide after the fingers lifted moves the text on in the frames it
+    /// asks for.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.advance_wheel_glide();
+        super::defaults::update(self.children_mut(), state, path)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.wheel_glide.is_active()
+            || self
+                .wheel_glide
+                .give_needs_frame(crate::motion::frame_now())
+            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -6532,7 +6654,6 @@ impl TextInput {
         }
     }
 
-    /// The binding of the field's own value.
     fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
         let mut bindings = self.value_bindings(control_id);
@@ -6599,348 +6720,6 @@ impl TextInput {
                 disabled: self.effectively_disabled(),
             },
         );
-    }
-
-    /// Rebuilds `self.char_x_positions` (and, when unmasked, `self.single_layout`)
-    /// for the current single-line text and returns the total shaped width.
-    fn build_single_line_metrics(
-        &mut self,
-        text_renderer: &mut TextRenderer,
-        display: &str,
-        text_size: f32,
-        text_scale: f32,
-    ) -> f32 {
-        self.shaped_preparation = None;
-        self.refresh_layout_epoch(text_renderer);
-        self.char_x_positions.clear();
-        self.char_x_positions
-            .resize(self.text.len().saturating_add(1), 0.0);
-        if self.masked() {
-            self.drop_shaped_layouts();
-            for (byte_idx, _) in grapheme_indices(&self.text) {
-                let (w, _) =
-                    self.measure_str(text_renderer, &self.display_prefix(byte_idx), text_size);
-                if let Some(slot) = self.char_x_positions.get_mut(byte_idx) {
-                    *slot = f64::from(w);
-                }
-            }
-            let (width, _) = self.measure_str(text_renderer, display, text_size);
-            if let Some(slot) = self.char_x_positions.get_mut(self.text.len()) {
-                *slot = f64::from(width);
-            }
-            width
-        } else {
-            let family = self.family.clone().unwrap_or(self.role_family());
-            let layout_size = text_size * text_scale;
-            let mut style = TextStyle::new(layout_size)
-                .with_line_height(LINE_HEIGHT_RATIO)
-                .with_weight(self.text_role.weight())
-                .with_family(family.clone());
-            style.kind = self.kind.text_kind();
-            let base = self.shaped_signature(display, &family, layout_size, None);
-            let attributes = self.valid_single_attributes();
-            let signature = attributes.map_or(base, |a| {
-                Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
-            });
-            if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-                #[cfg(test)]
-                let _phase = crate::profiling::frame_probe::span("single_line_shape");
-                let browser_emoji = text_renderer.browser_color_emoji_installed();
-                let mut layout = if let Some(attributes) = attributes {
-                    RichTextLayout::shape_styled_browser(
-                        &mut text_renderer.font_system,
-                        &self.insert_preedit_span(attributes.spans.clone()),
-                        &style,
-                        None,
-                        TextAlign::Left,
-                        self.display_ranges(&attributes.underlines),
-                        self.display_ranges(&attributes.strikes),
-                        browser_emoji,
-                    )
-                } else {
-                    RichTextLayout::shape_plain_browser(
-                        &mut text_renderer.font_system,
-                        display,
-                        &style,
-                        None,
-                        browser_emoji,
-                    )
-                };
-                if self.holds_secret() {
-                    layout.discard_prepared_inputs();
-                }
-                text_renderer.note_browser_rich_layout(&layout);
-                if self.core.has_preedit() {
-                    let start = self.core.caret().min(self.text.len());
-                    layout.add_underline(start..start.saturating_add(self.core.preedit().len()));
-                }
-                self.single_layout = Some(layout);
-                self.shaped_layout_signature = signature;
-            }
-            let Some(layout) = self.single_layout.as_ref() else {
-                return 0.0;
-            };
-            let end_byte = self.text_to_layout_byte(self.text.len());
-            let bytes: Vec<_> = grapheme_indices(&self.text)
-                .map(|(byte_idx, _)| byte_idx)
-                .chain(std::iter::once(self.text.len()))
-                .collect();
-            // These bytes already come from the grapheme iterator. Re-clamping
-            // each one would segment the full string again for every caret.
-            // Resolve the composition insertion point once as well.
-            let preedit = self.core.preedit_display_range(&self.text);
-            let positions: Vec<_> = bytes
-                .iter()
-                .map(|byte| {
-                    TextPosition::new(if *byte == self.text.len() {
-                        end_byte
-                    } else if let Some(range) = &preedit
-                        && *byte > range.start
-                    {
-                        byte.saturating_add(range.len())
-                    } else {
-                        *byte
-                    })
-                })
-                .collect();
-            #[cfg(test)]
-            let _phase = crate::profiling::frame_probe::span("single_line_caret_batch");
-            let geometries = layout.caret_geometries(&positions);
-            let width = layout.width();
-            for (byte, geometry) in bytes.into_iter().zip(geometries) {
-                if let Some(slot) = self.char_x_positions.get_mut(byte) {
-                    *slot = f64::from(geometry.0);
-                }
-            }
-            width
-        }
-    }
-
-    fn single_line_cursor_x_offset(&self, total_w: f32) -> f64 {
-        let cursor_pos = self.core.caret().min(self.text.len());
-        if self.core.has_preedit()
-            && !self.masked()
-            && let Some(layout) = &self.single_layout
-        {
-            f64::from(layout.caret_geometry(self.preedit_layout_caret()).0)
-        } else if !self.masked()
-            && let Some(layout) = &self.single_layout
-        {
-            f64::from(
-                layout
-                    .caret_geometry_at(self.text_to_layout_position(self.caret_position()))
-                    .0,
-            )
-        } else if let Some(&x) = self.char_x_positions.get(cursor_pos) {
-            x
-        } else {
-            f64::from(total_w)
-        }
-    }
-
-    fn update_single_line_scroll(
-        &mut self,
-        cursor_x_offset: f64,
-        padding_x: f64,
-        caret_width: f64,
-    ) {
-        // Include the caret's painted width, especially for padding-free code
-        // lines: putting its left edge on the clip boundary hides it entirely.
-        let visible_width = (self.rect.width()
-            - padding_x
-            - self.trailing_text_inset(padding_x)
-            - self.accessory_room()
-            - caret_width * 2.0)
-            .max(0.0);
-        if self.is_focused {
-            if cursor_x_offset - self.scroll_x < 0.0 {
-                self.scroll_x = cursor_x_offset;
-            } else if cursor_x_offset - self.scroll_x > visible_width {
-                self.scroll_x = cursor_x_offset - visible_width;
-            }
-        } else {
-            // Unfocused (e.g. a block-editor cell after load) must not scroll to the caret.
-            self.scroll_x = 0.0;
-        }
-    }
-
-    fn draw_single_line_selection(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let Some((sel_start, sel_end)) = self.selection_range() else {
-            return;
-        };
-        let sel_color = theme.tokens.colors.intent.selection_tint;
-        for sel_rect in self.selection_rects(theme, sel_start, sel_end) {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                sel_color,
-                None,
-                &sel_rect,
-            );
-        }
-    }
-
-    /// Code chips precede selection and glyphs; accent link rules follow
-    /// glyphs. All bounds come from the exact layout used for interaction.
-    fn draw_single_line_decorations(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        backgrounds: bool,
-    ) {
-        if self.masked() {
-            return;
-        }
-        let (Some(attributes), Some(layout)) =
-            (self.valid_single_attributes(), &self.single_layout)
-        else {
-            return;
-        };
-        let ranges = if backgrounds {
-            &attributes.chips
-        } else {
-            &attributes.links
-        };
-        for (start, end) in self.display_ranges(ranges) {
-            for (x0, y0, x1, y1) in layout.selection_rects(start, end) {
-                let x = self.single_origin.x - self.scroll_x;
-                let y = self.single_origin.y;
-                let rect = if backgrounds {
-                    Rect::new(
-                        x + f64::from(x0) - 2.0,
-                        y + f64::from(y0) + 1.0,
-                        x + f64::from(x1) + 2.0,
-                        y + f64::from(y1) - 1.0,
-                    )
-                } else {
-                    Rect::new(
-                        x + f64::from(x0),
-                        y + f64::from(y1) - 2.0,
-                        x + f64::from(x1),
-                        y + f64::from(y1) - 1.0,
-                    )
-                };
-                let color = if backgrounds {
-                    theme.tokens.colors.surfaces.raised
-                } else {
-                    theme.tokens.colors.text_primary
-                };
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    color,
-                    None,
-                    &RoundedRect::from_rect(rect, if backgrounds { 3.0 } else { 0.0 }),
-                );
-            }
-        }
-    }
-
-    /// Paint the placeholder and the field's text from `single_origin`, as
-    /// laid out by `draw`; `display` is the masked text of a secret field.
-    fn draw_single_line_text(&self, ctx: &mut PaintCtx<'_>, display: &str) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let text_size = self.effective_font_size();
-        let text_y = self.single_origin.y;
-        let text_color = if self.effectively_disabled() {
-            theme.text_dim
-        } else {
-            theme.text_primary
-        };
-        if self.shows_placeholder() {
-            let placeholder = crate::i18n!(&self.placeholder);
-            // `Affine * Affine` composes two geometric transforms over f64
-            // coordinates; it has no integer overflow/wrap semantics.
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine transform composition over f64 screen coordinates"
-            )]
-            let placeholder_origin = transform * Affine::translate((self.single_origin.x, text_y));
-            // The placeholder sets in the field's own style, in the tertiary
-            // ink: a prompt, clearly weaker than any value.
-            text_renderer.draw_style(
-                scene,
-                &placeholder,
-                theme.tokens.colors.text_tertiary,
-                placeholder_origin,
-                None,
-                &self.placeholder_style(text_size),
-            );
-        }
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine transform composition over f64 screen coordinates"
-        )]
-        let text_origin =
-            transform * Affine::translate((self.single_origin.x - self.scroll_x, text_y));
-        if !self.masked() {
-            if let Some(layout) = &self.single_layout {
-                text_renderer.draw_rich(scene, layout, text_origin, text_color);
-            }
-        } else if let Some(fam) = &self.family {
-            text_renderer.draw_style(
-                scene,
-                display,
-                text_color,
-                text_origin,
-                None,
-                &TextStyle::new(text_size).with_family(fam.clone()),
-            );
-        } else {
-            text_renderer.draw_style(
-                scene,
-                display,
-                text_color,
-                text_origin,
-                None,
-                &TextStyle::new(text_size).with_family(self.role_family()),
-            );
-        }
-    }
-
-    fn draw_single_line_caret(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if self.caret_paint_suppressed {
-            return;
-        }
-        let cursor_rect = if self.core.has_preedit()
-            && !self.masked()
-            && let Some(layout) = &self.single_layout
-        {
-            let (x, top, height) = layout.caret_geometry(self.preedit_layout_caret());
-            Rect::new(
-                self.single_origin.x + f64::from(x) - self.scroll_x,
-                self.single_origin.y + f64::from(top),
-                self.single_origin.x + f64::from(x) - self.scroll_x + theme.caret_width,
-                self.single_origin.y + f64::from(top + height),
-            )
-        } else {
-            self.caret_rect_at(theme, self.caret_position())
-        };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.intent.accent_ink,
-            None,
-            &cursor_rect,
-        );
-    }
-
-    fn handle_mouse_wheel(&mut self, delta: &winit::event::MouseScrollDelta, handled: &mut bool) {
-        let dy = match delta {
-            winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * self.line_height(),
-            winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
-        };
-        let before = self.scroll_y;
-        self.scroll_by(dy);
-        if (self.scroll_y - before).abs() > f64::EPSILON {
-            *handled = true;
-        }
     }
 
     fn handle_cursor_moved(
@@ -7085,8 +6864,9 @@ impl TextInput {
         }
         match element_state {
             // The tap the toolkit synthesises when a finger lifts: that
-            // finger's own touch already pressed, and a second press would
-            // count as a double click.
+            // finger's own lift, which follows, presses once
+            // (`text_input_touch.rs`), and a second press would count as a
+            // double click.
             ElementState::Pressed if self.active_touch.is_some() => *handled = true,
             ElementState::Pressed if self.is_hovered && self.press_accessory() => {
                 *handled = true;
@@ -7095,17 +6875,8 @@ impl TextInput {
                 self.handle_left_press(modifiers, focus_target, node_id, handled);
             }
             ElementState::Released if self.is_dragging => {
-                self.is_dragging = false;
-                self.drag_select.release();
-                self.publish_primary_selection();
+                self.end_drag();
                 *handled = true;
-                // A click, not a drag, on a link of read-only text opens it.
-                if self.read_only && !self.has_selection() {
-                    let byte = self.resolve_position(self.last_mouse_pos).byte;
-                    if let Some(target) = self.link_at(byte) {
-                        crate::widget::open_external_url(&target);
-                    }
-                }
             }
             _ => {}
         }
@@ -7304,51 +7075,6 @@ impl TextInput {
         }
     }
 
-    fn handle_touch_event(
-        &mut self,
-        touch: &winit::event::Touch,
-        scale_factor: f64,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        handled: &mut bool,
-    ) {
-        let point = Point::new(
-            touch.location.x / scale_factor,
-            touch.location.y / scale_factor,
-        );
-        match touch.phase {
-            TouchPhase::Started if self.active_touch.is_none() && self.rect.contains(point) => {
-                self.active_touch = Some(touch.id);
-                self.last_mouse_pos = point;
-                self.is_hovered = true;
-                self.handle_left_press(Modifiers::default(), focus_target, node_id, handled);
-            }
-            TouchPhase::Moved if self.active_touch == Some(touch.id) => {
-                self.handle_cursor_moved(touch.location, scale_factor, handled);
-                // Movement that leaves the field can retain the same resolved
-                // cursor, but the owned gesture is consumed until release.
-                *handled = true;
-            }
-            TouchPhase::Ended if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                self.is_dragging = false;
-                self.is_hovered = self.rect.contains(point);
-                *handled = true;
-            }
-            TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                self.is_dragging = false;
-                *handled = true;
-            }
-            _ if self.active_touch.is_some() => {
-                // A secondary finger cannot leak to a control below while
-                // this field owns the selection gesture.
-                *handled = true;
-            }
-            _ => {}
-        }
-    }
-
     fn handle_keyboard_input(
         &mut self,
         logical_key: &Key,
@@ -7491,3 +7217,7 @@ mod tests;
 #[cfg(test)]
 #[path = "text_input_preparation_tests.rs"]
 mod preparation_tests;
+
+#[cfg(test)]
+#[path = "text_input_touch_tests.rs"]
+mod touch_tests;

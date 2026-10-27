@@ -39,10 +39,6 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
 /// Run an accept loop forever. Each accepted stream gets its own
 /// capnp-rpc system + service instance backed by the shared package store
 /// and its `catalog`.
-///
-/// # Errors
-///
-/// Returns an error if accepting a connection off the listener fails.
 pub async fn serve(
     listener: UnixListener,
     store: Arc<PackageStore>,
@@ -67,11 +63,6 @@ pub async fn serve(
 }
 
 /// Handle one accepted Unix stream as a capnp-rpc session.
-///
-/// # Errors
-///
-/// Returns an error if the capnp-rpc system fails (a malformed message,
-/// a protocol violation, or the peer disconnecting mid-call).
 // This future is driven via `tokio::task::spawn_local` in `serve` and is
 // never meant to cross a thread: capnp-rpc's `RpcSystem` future is
 // inherently non-`Send` (the same non-atomic `capnp::capability::Rc`

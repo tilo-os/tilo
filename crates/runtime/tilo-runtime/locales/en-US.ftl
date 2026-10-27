@@ -25,7 +25,7 @@ device-grant-revoke-description = Forget this decision: a running capture stops,
 # What an agent acting for the person asks before it first acts in an app
 # for a task. $action is the label the app declares for the action it starts
 # with, $app the app's name: never text a web page wrote.
-agent-confirm-question = Let your agent work in { $app } for this task?
-agent-confirm-detail = It wants to start with “{ $action }”. Until the task ends it can act in { $app } without asking again; actions that always ask, such as deleting, still ask.
-agent-confirm-allow = Allow for this task
+agent-confirm-question = Let your agent use “{ $action }” in { $app }?
+agent-confirm-detail = This allows this one action; your agent asks again next time.
+agent-confirm-allow = Allow
 agent-confirm-deny = Don’t Allow

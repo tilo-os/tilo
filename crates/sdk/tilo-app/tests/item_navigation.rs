@@ -1,6 +1,3 @@
-//! Framework item presentation uses the item's bound opener and the live
-//! owner dispatch, without moving another participant's private view.
-
 use tilo_app::prelude::*;
 
 #[derive(Model, Default, Clone, PartialEq)]

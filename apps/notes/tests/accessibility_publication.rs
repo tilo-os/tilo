@@ -123,6 +123,11 @@ fn a_note_holding_among(app: &mut App, damage: &mut SurfaceDamage, text: &str, n
     ] {
         input(app, damage, event);
     }
+    // The new note opens to be named; Enter keeps its name and goes to its
+    // body.
+    let enter = Key::Named(ui::winit::keyboard::NamedKey::Enter);
+    input(app, damage, key_input(&enter, ElementState::Pressed));
+    input(app, damage, key_input(&enter, ElementState::Released));
     // The pointer rests in the empty page below the note.
     input(app, damage, cursor_moved(640.0, 700.0));
     for letter in text.chars() {
@@ -191,6 +196,10 @@ fn a_pointer_moving_within_a_block_walks_no_widgets() {
         // Over the text: the block is hovered from here on.
         input(app, &mut damage, cursor_moved(text.x, text.y));
         rest(app, &mut damage);
+        // On a slow machine the rest outlasts the drag handles' hold and they
+        // fade; the pointer arriving again brings them back. What is measured
+        // is the pointer moving on within a hovered block, inside that hold.
+        input(app, &mut damage, cursor_moved(text.x, text.y));
 
         let builds = app.semantic_tree_builds_for_test();
         for step in 1..=6_u8 {

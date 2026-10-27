@@ -304,7 +304,6 @@ mod tests {
     /// Desktop and full OS availability.
     #[test]
     fn experience_availability_requires_host_evidence() {
-        // Phase `windows_does_not_offer_desktop_from_a_malformed_probe`.
         {
             let caps = Capabilities {
                 host: HostOs::Windows,
@@ -315,7 +314,6 @@ mod tests {
             assert!(!caps.supports(Experience::FullOs));
         }
 
-        // Phase `linux_desktop_requires_session_evidence`.
         {
             let unavailable = Capabilities {
                 host: HostOs::Linux,
@@ -331,7 +329,6 @@ mod tests {
             assert!(available.supports(Experience::Desktop));
         }
 
-        // Phase `full_os_requires_dual_boot_evidence_on_a_supported_host`.
         {
             for host in [HostOs::Windows, HostOs::Linux] {
                 let unavailable = Capabilities {
@@ -356,7 +353,6 @@ mod tests {
             assert!(!other.supports(Experience::FullOs));
         }
 
-        // Phase `unsupported_experience_is_reported`.
         {
             let plan = SetupPlan {
                 experience: Experience::Desktop,
@@ -379,7 +375,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn storage_and_access_requirements_follow_each_folder_mode() {
-        // Phase `storage_counts_copy_and_connected_but_not_later`.
         {
             let plan = plan(vec![
                 folder("/source/copy", "/tilo/copy", 7, FolderMode::Copy),
@@ -403,7 +398,6 @@ mod tests {
             assert_eq!(plan.validate(&full_os_caps(), 73), Ok(()));
         }
 
-        // Phase `storage_overflow_is_reported`.
         {
             let overflowing = SetupPlan {
                 system_bytes: u64::MAX,
@@ -418,7 +412,6 @@ mod tests {
             );
         }
 
-        // Phase `copy_requires_a_readable_source`.
         {
             let mut selection = folder("/source", "/tilo/source", 1, FolderMode::Copy);
             selection.readable = false;
@@ -429,7 +422,6 @@ mod tests {
             );
         }
 
-        // Phase `connected_requires_readability_and_safe_sync`.
         {
             let mut unreadable = folder("/source", "/tilo/source", 1, FolderMode::Connected);
             unreadable.readable = false;
@@ -446,7 +438,6 @@ mod tests {
             );
         }
 
-        // Phase `later_ignores_access_paths_and_storage`.
         {
             let selection = FolderSelection {
                 source: PathBuf::from("relative/../source"),
@@ -461,14 +452,12 @@ mod tests {
         }
     }
 
-    /// Path validity and overlap rules.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn active_paths_are_absolute_and_never_duplicate_or_overlap() {
-        // Phase `active_paths_must_be_absolute_without_parent_traversal`.
         {
             let cases = [
                 ("relative/source", "/tilo/source", FolderPath::Source),
@@ -489,7 +478,6 @@ mod tests {
             }
         }
 
-        // Phase `source_and_destination_must_not_overlap`.
         {
             let cases = [
                 ("/home/user/Documents", "/home/user/Documents/tilo"),
@@ -511,7 +499,6 @@ mod tests {
             }
         }
 
-        // Phase `active_sources_must_not_duplicate_or_overlap`.
         {
             for second_source in [
                 "/home/user",
@@ -534,7 +521,6 @@ mod tests {
             }
         }
 
-        // Phase `active_destinations_must_not_duplicate_or_overlap`.
         {
             for second_destination in ["/tilo", "/tilo/first", "/tilo/first/nested"] {
                 let selections = vec![
@@ -553,7 +539,6 @@ mod tests {
             }
         }
 
-        // Phase `source_destination_overlap_across_selections_is_rejected`.
         {
             let selections = vec![
                 folder("/source/first", "/tilo/first", 1, FolderMode::Copy),
@@ -571,7 +556,6 @@ mod tests {
             );
         }
 
-        // Phase `path_comparisons_use_components_not_string_prefixes`.
         {
             let selections = vec![
                 folder("/home/a", "/tilo/a", 1, FolderMode::Copy),
@@ -581,7 +565,6 @@ mod tests {
             assert_eq!(plan(selections).validate(&full_os_caps(), 57), Ok(()));
         }
 
-        // Phase `later_entries_do_not_reserve_paths`.
         {
             let selections = vec![
                 folder("/source", "/tilo/source", 1, FolderMode::Copy),

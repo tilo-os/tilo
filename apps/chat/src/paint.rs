@@ -2,7 +2,7 @@
 //!
 //! Thin wrappers over the toolkit's role-based text painting so the render
 //! code reads as layout intent. Every style comes from a `TextRole` of the
-//! [`Theme`] the caller passes, and every colour from its tokens.
+//! [`Theme`](ui::theme::Theme) the caller passes, and every colour from its tokens.
 
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
@@ -50,12 +50,10 @@ pub fn line_in(
     f64::from(w)
 }
 
-/// The width of one line of `s` in `style`.
 pub fn width_of(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style(s, None, style).0)
 }
 
-/// The height of one line in `style`.
 pub fn line_of(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style("Ag", None, style).1)
 }

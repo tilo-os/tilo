@@ -67,15 +67,29 @@ fn assert_cold_geometry(
     width: f32,
 ) {
     let display = input.layout_display_text();
-    let fresh = RichTextLayout::shape_styled(
-        &mut tr.font_system,
-        &input.highlighted_display_spans(theme),
-        style,
-        Some(width),
-        input.align,
-        vec![],
-        vec![],
-    );
+    // Syntax colours paint with the rows: highlighted code is shaped plain.
+    let fresh = if input.paints_highlight() {
+        RichTextLayout::shape_paragraphs_reusing_browser(
+            &mut tr.font_system,
+            &display,
+            style,
+            Some(width),
+            input.align,
+            None,
+            false,
+            None,
+        )
+    } else {
+        RichTextLayout::shape_styled(
+            &mut tr.font_system,
+            &input.highlighted_display_spans(theme),
+            style,
+            Some(width),
+            input.align,
+            vec![],
+            vec![],
+        )
+    };
     let retained = input.single_layout.as_ref().unwrap();
     assert_eq!(
         (retained.width(), retained.height()),

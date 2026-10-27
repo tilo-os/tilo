@@ -38,7 +38,6 @@ pub enum Sealing {
 pub struct Sibling {
     /// The sibling's fleet key, hex. It answers challenges as this device.
     pub device: String,
-    /// Its label in the fleet.
     #[serde(default)]
     pub label: String,
     /// Its peer-network address (JSON of an iroh `EndpointAddr`); empty when
@@ -80,9 +79,6 @@ pub struct Token {
 
 impl Token {
     /// The one key slot this token opens.
-    ///
-    /// # Errors
-    /// When the token names no slot, several, or one that is not a number.
     pub fn keyslot(&self) -> Result<u32> {
         match self.keyslots.as_slice() {
             [slot] => slot
@@ -93,9 +89,6 @@ impl Token {
     }
 
     /// The boot key's certificate.
-    ///
-    /// # Errors
-    /// When the stored certificate does not decode.
     pub fn cert(&self) -> Result<BootKeyCert> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&self.cert)
@@ -112,9 +105,6 @@ impl Token {
     }
 
     /// Checks the fields early boot depends on.
-    ///
-    /// # Errors
-    /// When the token is of another type or version, or names no sibling.
     pub fn validate(&self) -> Result<()> {
         if self.kind != TOKEN_TYPE {
             bail!("token type {:?} is not {TOKEN_TYPE}", self.kind);

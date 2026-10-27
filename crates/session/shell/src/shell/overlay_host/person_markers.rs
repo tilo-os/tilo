@@ -42,8 +42,8 @@ impl super::ShellOverlayHost {
         let Some(workspace) = tree.desktop.active_workspace() else {
             return Vec::new();
         };
-        let room = workspace.room.to_string();
-        let mut principals = tree.room_peer_principals(workspace.room);
+        let room = workspace.room().to_string();
+        let mut principals = tree.room_peer_principals(workspace.room());
         principals.retain(|_, person| {
             workspace.role_of(person).is_some() && !workspace.is_blocked(person)
         });
@@ -109,7 +109,7 @@ impl super::ShellOverlayHost {
         let caller = chrome.active_local_user();
         let tree = chrome.tree();
         let workspace = tree.desktop.active_workspace()?;
-        if workspace.room.to_string() != cursor.workspace
+        if workspace.room().to_string() != cursor.workspace
             || caller == cursor.person_key
             || workspace.role_of(&cursor.person_key).is_none()
             || workspace.is_blocked(&cursor.person_key)
@@ -117,7 +117,7 @@ impl super::ShellOverlayHost {
             return None;
         }
         if !tree
-            .room_peer_principals(workspace.room)
+            .room_peer_principals(workspace.room())
             .values()
             .any(|person| person == &cursor.person_key)
         {
@@ -179,13 +179,13 @@ impl super::ShellOverlayHost {
             let Some(workspace) = tree.desktop.active_workspace() else {
                 return false;
             };
-            workspace.room.to_string() == owner.workspace
+            workspace.room().to_string() == owner.workspace
                 && workspace.role_of(&owner.caller).is_some()
                 && !workspace.is_blocked(&owner.caller)
                 && workspace.role_of(&owner.person_key).is_some()
                 && !workspace.is_blocked(&owner.person_key)
                 && tree
-                    .room_peer_principals(workspace.room)
+                    .room_peer_principals(workspace.room())
                     .values()
                     .any(|person| person == &owner.person_key)
                 && self
@@ -210,7 +210,7 @@ mod tests {
     fn only_painted_certified_remote_people_publish_chat_targets() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         tree.adopt_ownerless_workspaces(&"owner".into());
-        let room = tree.desktop.active_workspace().unwrap().room;
+        let room = tree.desktop.active_workspace().unwrap().room();
         let endpoint = iroh::SecretKey::generate().public();
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);
         let mut certificate = tilo_user_identity::DeviceCert {

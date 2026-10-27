@@ -57,7 +57,7 @@ pub(super) async fn restart_after_offline_snapshot(
                 .unwrap();
             doc.commit_edit("fixture", "real-clock-offline-edit");
             let expected = doc.get_heads();
-            let mut message = view.peer().clone().publish_incremental(
+            let mut message = view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
@@ -325,6 +325,25 @@ pub(super) fn publish_committed(
         sent.push(bytes.to_vec());
     }
     sent
+}
+/// Publish what the governor's last commit changed ([`TestGovernor::changes`]),
+/// each with the retention it was committed with.
+pub(super) fn publish_changes(owner: &TestGovernor, publisher: &tilo_relay::RelayCoeditSession) {
+    for (bytes, kind) in owner.changes() {
+        let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
+        let (channel, _) =
+            neighbour_wire::retention(&message, kind == neighbour_wire::Retention::Checkpoint)
+                .unwrap();
+        match kind {
+            neighbour_wire::Retention::Checkpoint => {
+                publisher.publish_checkpoint(channel, bytes.to_vec())
+            }
+            neighbour_wire::Retention::Delta => {
+                publisher.publish_retained_delta(channel, bytes.to_vec())
+            }
+        }
+        .unwrap();
+    }
 }
 /// Admit exactly `messages` the way the shell dispatcher does: each admission
 /// is followed by `NativePublish`, because governor admission can enable a

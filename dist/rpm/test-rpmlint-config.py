@@ -137,9 +137,11 @@ class RuntimeFilterContract(unittest.TestCase):
         builder = (ROOT / "dist/rpm/build-rpm.sh").read_text()
         self.assertLess(builder.index("test-rpmlint-config.py"),
                         builder.index("cargo build --release"))
-        workflow = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_text()
-        self.assertLess(workflow.index("test-rpmlint-config.py"),
-                        workflow.index("Fetch the env-runtime environment image"))
+        lane = (ROOT / "dist/ci/package-lane.sh").read_text()
+        self.assertLess(lane.index("python3 dist/rpm/test-rpmlint-config.py"),
+                        lane.index("bash dist/ci/fetch-package-env-runtime.sh"))
+        self.assertLess(lane.index("python3 dist/rpm/test-rpmlint-config.py"),
+                        lane.index("dist/ci/run-package-job.sh"))
 
 
 if __name__ == "__main__":

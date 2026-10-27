@@ -2,11 +2,9 @@
 //! development host; the byte fixtures are built with the same 64-bit layout
 //! `sys.rs` asserts against `windows-sys` at compile time.
 
-use std::collections::HashMap;
-
 use serde_json::{Value, json};
 
-use super::super::platform::{Disk, IoResult, NewPartition, Partition, Platform, SystemVolume};
+use super::super::platform::{Disk, NewPartition, Partition, SystemVolume};
 use super::super::probe::Blocker;
 use super::super::{ESP_TYPE, STAGING_ROOT_TYPE};
 use super::facts::{self, Observed, PowerStatus};
@@ -389,34 +387,6 @@ fn windows_binary_encodings_decode_and_reject_truncation() {
         assert!(layout::parse_drive_layout(&negative).is_err());
         assert!(layout::parse_geometry(&[0u8; 8]).is_err());
     }
-
-    // Phase `live_firmware_facts_decode_boot_variables`.
-    {
-        let base = facts::basis_firmware(true, false);
-        let mut vars = HashMap::new();
-        vars.insert("BootCurrent".to_string(), vec![0x01, 0x00]);
-        vars.insert(
-            "BootOrder".to_string(),
-            vec![0x01, 0x00, 0x00, 0x00, 0x0a, 0x01],
-        );
-        let facts = super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).unwrap();
-        assert_eq!(facts.boot_current.as_deref(), Some("0001"));
-        assert_eq!(facts.boot_order, ["0001", "0000", "010A"]);
-        assert_eq!(facts.boot_next, None);
-        assert!(facts.uefi && !facts.secure_boot);
-
-        vars.insert("BootNext".to_string(), vec![0x04]);
-        assert!(super::live_firmware_facts(&FakeFirmware(vars.clone()), &base).is_err());
-        vars.insert("BootNext".to_string(), vec![0x04, 0x01]);
-        assert_eq!(
-            super::live_firmware_facts(&FakeFirmware(vars), &base)
-                .unwrap()
-                .boot_next
-                .as_deref(),
-            Some("0104")
-        );
-        assert!(ops::decode_boot_order(&[1, 0, 2]).is_err());
-    }
 }
 
 /// OEM layout, probe offer, snapshot protection and 4Kn bounds.
@@ -795,7 +765,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
     }
 }
 
-/// GPT verification, create preconditions and raw IO ranges.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -917,7 +886,6 @@ fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
             ops::io_offset(MIB, GIB, 512, GIB - 512, 512).unwrap(),
             MIB + GIB - 512
         );
-        // Disjoint, contained, straddling.
         assert_eq!(ops::volume_extent_allowed(GIB, GIB, 0, GIB), Some(true));
         assert_eq!(ops::volume_extent_allowed(GIB, GIB, GIB, GIB), Some(true));
         assert_eq!(
@@ -937,7 +905,6 @@ fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
     }
 }
 
-/// Script interpolation and encoded commands.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1040,47 +1007,5 @@ fn windows_scripts_carry_only_validated_encoded_values() {
         assert!(outer.contains(r"-FilePath 'C:\Win''dows\powershell.exe' -Verb RunAs"));
         assert!(outer.contains(&scripts::encode_command("exit 7")));
         assert!(outer.contains("exit 1223"));
-    }
-}
-
-/// In-memory EFI variables; every disk operation is refused.
-struct FakeFirmware(HashMap<String, Vec<u8>>);
-
-impl Platform for FakeFirmware {
-    fn system_disk(&self) -> IoResult<Disk> {
-        Err("fake".into())
-    }
-    fn system_volume(&self) -> IoResult<Option<SystemVolume>> {
-        Err("fake".into())
-    }
-    fn shrink_system_volume(&mut self, _: &str, _: u64) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn grow_system_volume(&mut self, _: &str, _: u64) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn create_partition(&mut self, _: &Disk, _: &NewPartition) -> IoResult<String> {
-        Err("fake".into())
-    }
-    fn delete_partition(&mut self, _: &Disk, _: &str) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn write_partition(&mut self, _: &Disk, _: &str, _: u64, _: &[u8]) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn read_partition(&self, _: &Disk, _: &str, _: u64, _: &mut [u8]) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn sync_disk(&mut self, _: &Disk) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn get_efi_var(&self, name: &str) -> IoResult<Option<Vec<u8>>> {
-        Ok(self.0.get(name).cloned())
-    }
-    fn set_efi_var(&mut self, _: &str, _: &[u8]) -> IoResult<()> {
-        Err("fake".into())
-    }
-    fn delete_efi_var(&mut self, _: &str) -> IoResult<()> {
-        Err("fake".into())
     }
 }

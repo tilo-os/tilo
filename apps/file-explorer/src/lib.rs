@@ -13,6 +13,7 @@
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;
+pub mod applications;
 pub mod archive;
 pub mod breadcrumbs;
 mod cloud_jobs;

@@ -72,7 +72,6 @@ pub enum IncomingDisposition {
 /// Why a projected batch selection ended the way it did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchProjectionReason {
-    /// Every input is represented by the projected basis.
     Represented,
     /// Some input stays an original in the final basis.
     FinalBasisOmission,
@@ -139,7 +138,6 @@ pub trait ShellStore: Send + Sync {
         destination: &Path,
         stats: &mut WorkStats,
     ) -> Result<(), StoreError>;
-    /// An owned handle on the same store.
     fn handle(&self) -> Arc<dyn ShellStore>;
 }
 
@@ -232,7 +230,6 @@ pub trait ShellSelection: Send {
     fn stats(&self) -> &WorkStats;
     /// Keep `key`'s tail cursor too if this pass commits cleanly.
     fn want_route(&mut self, key: String);
-    /// The current phase, for diagnostics.
     fn diagnostic_phase(&self) -> String;
 }
 
@@ -267,11 +264,6 @@ pub trait ShellTail: Send {
 pub trait ShellReplay: Send + Sync + 'static {
     /// Check `authority` (the adapter's serialised form) against `store`
     /// and any binding it holds or persisted, persist it, and install it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `authority` is not one this adapter reads,
-    /// names another workspace, or conflicts with a prior binding.
     fn bind(
         &self,
         store: &mut dyn ShellStore,

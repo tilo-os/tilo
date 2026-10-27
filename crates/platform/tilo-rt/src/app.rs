@@ -30,11 +30,6 @@ pub struct AppRuntime {
 static APP: OnceLock<Result<AppRuntime, String>> = OnceLock::new();
 
 /// The app runtime, started on first use.
-///
-/// # Panics
-///
-/// When the OS refuses to start the runtime thread. [`try_app`] reports
-/// that instead.
 #[allow(
     clippy::panic,
     reason = "a process that cannot start one thread cannot run an app; try_app reports it"

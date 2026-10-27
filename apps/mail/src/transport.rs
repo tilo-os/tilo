@@ -182,14 +182,39 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         .map(std::string::ToString::to_string)
         .or_else(|| parsed.in_reply_to().as_text().map(str::to_string));
 
+    let referenced = html_body
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
     let attachments: Vec<Attachment> = parsed
         .attachments()
         .map(|part| {
+            // A part the HTML shows in place (`cid:`) is an image of the
+            // message, not a file attached to it.
+            let inline_id = part
+                .content_id()
+                .map(|id| {
+                    id.trim()
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_owned()
+                })
+                .filter(|id| {
+                    !id.is_empty()
+                        && referenced.contains(&format!("cid:{}", id.to_ascii_lowercase()))
+                });
             let filename = part
                 .attachment_name()
                 .unwrap_or("attachment.bin")
                 .to_string();
-            let mime = mime_from_filename(&filename).to_string();
+            let declared = part.content_type().map(|kind| {
+                format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or_default())
+                    .to_ascii_lowercase()
+            });
+            let mime = match declared {
+                Some(declared) if inline_id.is_some() => declared,
+                _ => mime_from_filename(&filename).to_string(),
+            };
             // Keep the decoded bytes so the reader can save the real file.
             let content = part.contents().to_vec();
             Attachment {
@@ -200,6 +225,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
                 content_id: None,
                 content,
                 kept: false,
+                inline_id,
             }
         })
         .collect();
@@ -337,7 +363,6 @@ mod tests {
 
     #[test]
     fn mime_build_parses_addresses_and_embeds_verified_attachments() {
-        // Phase `parse_addr_list_handles_named_and_bare`.
         {
             let v = parse_addr_list("Ada Lovelace <ada@x.example>, bob@y.example");
             assert_eq!(v.len(), 2);
@@ -371,7 +396,6 @@ mod tests {
             assert!(text.contains("me@example.test"));
         }
 
-        // Phase `build_then_parse_round_trips_headers`.
         {
             let content = tilo_content::ContentStore::memory();
             // Prove the two libraries interoperate: build a message, parse it
@@ -390,7 +414,6 @@ mod tests {
             assert!(msg.body.contains("algebraic patterns"));
         }
 
-        // Phase `build_mime_embeds_verified_portable_attachment_bytes`.
         {
             let content = tilo_content::ContentStore::memory();
             let attachment = crate::attachment_store::stage_bytes(
@@ -417,7 +440,6 @@ mod tests {
             );
         }
 
-        // Phase `calendar_invitation_attachment_declares_the_itip_method`.
         {
             let content = tilo_content::ContentStore::memory();
             let draft = Draft {
@@ -432,7 +454,6 @@ mod tests {
             assert!(wire.contains("text/calendar; method=REQUEST"), "{wire}");
         }
 
-        // Phase `build_mime_refuses_missing_portable_attachment`.
         {
             let content = tilo_content::ContentStore::memory();
             // A missing blob must not be silently omitted from an otherwise
@@ -455,7 +476,6 @@ mod tests {
 
     #[test]
     fn parsed_messages_dedupe_and_keep_rfc_thread_linkage() {
-        // Phase `refetching_the_same_message_id_dedupes_not_duplicates`.
         {
             // The confirmed defect: a re-fetch minted a fresh UUID per parse, so
             // the same server message piled up as N copies in the mailbox and the
@@ -481,7 +501,6 @@ mod tests {
             );
         }
 
-        // Phase `parse_eml_retains_rfc_reply_linkage_for_threading`.
         {
             let raw = b"From: Ada <ada@x.example>\r\n\
     To: you@example.test\r\n\
@@ -501,7 +520,6 @@ mod tests {
             );
         }
 
-        // Phase `parse_eml_uses_the_references_root_over_an_intermediate_reply`.
         {
             let raw = b"From: Ada <ada@x.example>\r\n\
     To: you@example.test\r\n\
@@ -518,7 +536,6 @@ mod tests {
             );
         }
 
-        // Phase `messages_without_a_message_id_stay_distinct`.
         {
             // No Message-ID → a random id, so two genuinely-separate mails without
             // the header don't collapse into one.
@@ -531,7 +548,6 @@ mod tests {
 
     #[test]
     fn parse_eml_extracts_html_and_hydrated_attachments() {
-        // Phase `parse_eml_captures_the_html_part`.
         {
             let raw = b"From: a@x.example\r\n\
     Subject: Rich\r\n\
@@ -546,7 +562,6 @@ mod tests {
             assert!(msg.body.to_ascii_lowercase().contains("hi"));
         }
 
-        // Phase `parse_eml_hydrates_attachment_content`.
         {
             let raw = b"From: A <a@x.example>\r\n\
     To: b@y.example\r\n\
@@ -574,7 +589,6 @@ mod tests {
             assert_eq!(att.size, att.content.len() as u64);
         }
 
-        // Phase `parse_eml_extracts_attachment`.
         {
             let raw = b"From: A <a@x.example>\r\n\
     To: b@y.example\r\n\
@@ -602,7 +616,6 @@ mod tests {
 
     #[test]
     fn fetched_messages_overlay_flags_and_prefer_internaldate() {
-        // Phase `parse_fetched_overlays_flags_and_uses_header_date`.
         {
             // A real fetched blob: the \Seen/\Flagged state comes from IMAP FLAGS,
             // and with no INTERNALDATE the timestamp falls back to the Date header.
@@ -622,10 +635,8 @@ mod tests {
             assert_eq!(msg.subject, "Fetched");
         }
 
-        // Phase `parse_fetched_prefers_internaldate_over_header`.
         {
             let raw = b"From: a@x.example\r\nSubject: S\r\nDate: Thu, 01 Jan 1970 00:30:00 +0000\r\n\r\nbody\r\n";
-            // INTERNALDATE wins when the server supplied one.
             let msg = parse_fetched(raw, Folder::Sent, false, false, Some(120), 999).unwrap();
             assert_eq!(msg.timestamp_min, 120);
             assert!(!msg.read && !msg.starred);

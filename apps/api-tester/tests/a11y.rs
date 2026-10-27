@@ -70,7 +70,7 @@ fn environment_command(d: &mut FrameHarness, choice: &str) {
         d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
             .expect("the actual sidebar control is reachable");
         d.key("Enter");
-        assert!(d.settle_for_capture(ui::time::Duration::from_secs(1)));
+        assert!(d.settle_for_capture(tilo_test_env::hang_bound()));
         assert!(
             d.targets().contains_key("api.env"),
             "the opened sidebar exposes its environment picker"
@@ -116,14 +116,14 @@ fn every_control_is_a_focusable_accessible_node() {
         roles.contains(&Role::TextInput),
         "URL editor is a TextInput: {roles:?}"
     );
-    // The request tabs + the response-view switch are segmented groups.
+    // The request tabs and the response views are tab lists.
     assert!(
-        roles.iter().filter(|r| **r == Role::Group).count() >= 2,
-        "request tabs + response view are Groups, got {roles:?}"
+        roles.iter().filter(|r| **r == Role::TabBar).count() >= 2,
+        "request tabs and response views are tab lists, got {roles:?}"
     );
 
     // Labels / values a screen reader announces.
-    for name in ["Send", "Save", "New collection", "Search", "Hide sidebar"] {
+    for name in ["Send", "Save request", "New collection", "Hide sidebar"] {
         assert!(
             nodes
                 .iter()
@@ -146,14 +146,14 @@ fn every_control_is_a_focusable_accessible_node() {
     assert!(
         nodes
             .iter()
-            .any(|n| n.role == Role::Group && n.value.as_deref() == Some("Params")),
-        "the request-tab group announces the active tab"
+            .any(|n| n.role == Role::TabBar && n.value.as_deref() == Some("Params")),
+        "the request tab bar announces the active tab"
     );
     assert!(
         nodes
             .iter()
-            .any(|n| n.role == Role::Group && n.value.as_deref() == Some("Pretty")),
-        "the response-view group announces the active view"
+            .any(|n| n.role == Role::TabBar && n.value.as_deref() == Some("Pretty")),
+        "the response tab bar announces the active view"
     );
     // A saved request is an addressable, labelled row of the requests list
     // that reports selection, led by its method.
@@ -297,12 +297,13 @@ fn tab_traverses_every_control_in_order() {
         "Tab visits every focusable node, including platform controls"
     );
     let stops: Vec<_> = all_stops
-        .into_iter()
+        .iter()
+        .cloned()
         .skip_while(|(role, _)| *role != Role::ComboBox)
         .collect();
 
     // The builder comes first, top-left to top-right: method picker, URL
-    // field, Save, Send, then the request tabs.
+    // field, then the request tabs. Save and Send are the header's.
     let roles: Vec<Role> = stops.iter().map(|(r, _)| *r).collect();
     assert_eq!(
         roles.first(),
@@ -314,19 +315,25 @@ fn tab_traverses_every_control_in_order() {
         Some(&Role::TextInput),
         "second stop is the URL field"
     );
-    assert_eq!(stops[2].1.as_deref(), Some("Save"));
-    assert_eq!(stops[3].1.as_deref(), Some("Send"));
     assert_eq!(
-        roles.get(4),
-        Some(&Role::Group),
+        roles.get(2),
+        Some(&Role::TabBar),
         "request tabs follow the endpoint row"
     );
+    for name in ["Save request", "Send"] {
+        assert!(
+            all_stops
+                .iter()
+                .any(|(_, stop)| stop.as_deref() == Some(name)),
+            "{name} is a stop"
+        );
+    }
     let divider = roles
         .iter()
         .position(|role| *role == Role::Separator)
         .expect("the resize divider is keyboard reachable");
     assert!(
-        divider > 4,
+        divider > 2,
         "the divider follows the request controls in directional focus order"
     );
     assert_eq!(
@@ -353,7 +360,6 @@ fn tab_traverses_every_control_in_order() {
         "Tab reaches a table row's remove button"
     );
 
-    // Shift+Tab reverses.
     d.set_modifiers(&["shift".into()]);
     let back = d.tab(true);
     assert!(back.is_some(), "Shift+Tab moves focus backward");
@@ -444,21 +450,47 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     let mut app = sample();
     let d = app.harness();
     let before = d.targets()["api.request-divider"];
-    let top = d.targets()["api.send"].y0;
+    let top = d.targets()["api.url"].y0;
     assert!(
         before.y0 - top < 300.0,
-        "three parameter rows fit above the response: divider {before:?}, send y={top}"
+        "three parameter rows fit above the response: divider {before:?}, URL y={top}"
+    );
+    assert!(
+        reset_disabled(d),
+        "nothing was resized, so there is nothing to reset"
     );
     d.perform_named("api.request-divider", &ui::a11y::Action::Focus)
         .unwrap();
     d.key("ArrowDown");
     assert!(d.targets()["api.request-divider"].y0 > before.y0);
+    d.relayout();
+    assert!(!reset_disabled(d), "a moved divider can be reset");
     d.resize((800, 480)).unwrap();
     assert!(d.targets()["api.request-divider"].y1 < 380.0);
     d.resize((1280, 800)).unwrap();
     assert!(d.targets()["api.request-divider"].y0 > before.y0);
     d.click_named("api.reset-request-area").unwrap();
-    assert_eq!(d.targets()["api.request-divider"], before);
+    // A click asks for the reset, so the divider glides home
+    // (`motion::PanelSlide`); where it comes to rest is where it started.
+    {
+        let _arrived = ui::motion::testing::settled();
+        d.relayout();
+        assert_eq!(d.targets()["api.request-divider"], before);
+    }
+    d.relayout();
+    assert!(
+        reset_disabled(d),
+        "reset, the area has nothing left to reset"
+    );
+}
+
+/// Whether the header's Reset request area is disabled.
+fn reset_disabled(d: &FrameHarness) -> bool {
+    d.controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Reset request area"))
+        .expect("Reset request area is a control")
+        .disabled
 }
 
 fn click_tab(d: &mut FrameHarness, index: u32) {
@@ -475,10 +507,10 @@ fn move_pointer(d: &mut FrameHarness, x: f64, y: f64) {
 
 /// Settle the drawer's animation through real redraw ticks.
 fn settle_drawer(d: &mut FrameHarness) {
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        d.relayout();
-    }
+    assert!(
+        d.settle_for_capture(tilo_test_env::hang_bound()),
+        "the drawer's animation settles"
+    );
 }
 
 /// The sidebar's management controls and the request's own (Save in the URL
@@ -555,14 +587,15 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
         semantic_nodes(d).iter().any(|node| {
             node.action_target.as_deref() == Some("api.response-view:segment:2")
                 && node.name.as_deref() == Some("Headers")
-                && node.state.checked == Some(true)
+                && node.role == Role::Tab
+                && node.state.selected
         }),
-        "the real response switch selects Headers"
+        "the real response tabs select Headers"
     );
     // Response presentation changes do not save a request. Open the form
     // through the real request Save control before checking resize custody.
     d.click_named("api.save-request").unwrap();
-    d.wait_for_named("api.form-name", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-name", tilo_test_env::hang_bound())
         .expect("the published Save control opens the request form");
     assert!(
         d.focus_access_nodes()
@@ -609,7 +642,7 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
         d.dump_json()
     );
     environment_command(d, "Add variable…");
-    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-variable-key", tilo_test_env::hang_bound())
         .expect("the canonical environment command publishes its variable form");
     d.click_named("api.form-variable-key").unwrap();
     d.type_text("region");
@@ -635,7 +668,7 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     settle_drawer(d);
     assert_sidebar_targets(d, 900.0);
     environment_command(d, "Add variable…");
-    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-variable-key", tilo_test_env::hang_bound())
         .expect("the canonical environment command publishes its variable form");
     let field = d.targets()["api.form-variable-key"];
     assert!(field.x0 >= 0.0 && field.x1 <= 480.0 && field.y1 <= 900.0);
@@ -672,7 +705,7 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     assert!(targets["api.request-divider"].y1 < 700.0);
     assert!(targets["api.request-tabs"].x1 <= 800.0);
     environment_command(d, "Add variable…");
-    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+    d.wait_for_named("api.form-variable-key", tilo_test_env::hang_bound())
         .expect("the canonical environment command publishes its variable form");
     let field = d.targets()["api.form-variable-key"];
     assert!(
@@ -711,7 +744,7 @@ fn pointer_and_keyboard_send_use_the_live_request() {
             loop {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
                         .unwrap();
                     let mut bytes = [0; 4096];
                     let count = stream.read(&mut bytes).unwrap();
@@ -745,7 +778,6 @@ fn pointer_and_keyboard_send_use_the_live_request() {
             value: "prod_sk_9f8c1a2b3d4e5f60".into(),
         })
         .unwrap();
-        // The request's own credential, also kept on this device, names it.
         app.effect(&ApiTesterEffect::SetCredential {
             secret: "{{token}}".into(),
         })

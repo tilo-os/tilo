@@ -9,17 +9,13 @@
 //! scopes.
 
 use serde::Deserialize;
-use tilo_oauth::{ClientId, Provider, Revocation};
+use tilo_oauth::{ClientId, Provider, Refresh, Revocation};
 
-/// Account type id of a Google Drive account.
 pub const GOOGLE_DRIVE_TYPE: &str = accounts::cloud_types::GOOGLE_DRIVE;
 /// Account type id of a `OneDrive` account (personal or work/school).
 pub const ONEDRIVE_TYPE: &str = accounts::cloud_types::ONEDRIVE;
-/// Account type id of a Dropbox account.
 pub const DROPBOX_TYPE: &str = accounts::cloud_types::DROPBOX;
-/// Account type id of an `iCloud` Drive account.
 pub const ICLOUD_DRIVE_TYPE: &str = accounts::cloud_types::ICLOUD_DRIVE;
-/// Account type id of a Nextcloud account.
 pub const NEXTCLOUD_TYPE: &str = accounts::cloud_types::NEXTCLOUD;
 /// Account type id of a plain `WebDAV` account.
 pub const WEBDAV_TYPE: &str = accounts::cloud_types::WEBDAV;
@@ -31,6 +27,11 @@ pub enum OAuthIssuer {
     Microsoft,
     Dropbox,
     Spotify,
+    /// The person's `OpenAI` account, for their `ChatGPT` subscription.
+    OpenAi,
+    /// GitHub, for a Copilot subscription.
+    GitHub,
+    HuggingFace,
 }
 
 pub(crate) fn valid_mailbox(email: &str) -> bool {
@@ -64,7 +65,15 @@ impl OAuthIssuer {
         })
     }
 
-    pub const ALL: [Self; 4] = [Self::Google, Self::Microsoft, Self::Dropbox, Self::Spotify];
+    pub const ALL: [Self; 7] = [
+        Self::Google,
+        Self::Microsoft,
+        Self::Dropbox,
+        Self::Spotify,
+        Self::OpenAi,
+        Self::GitHub,
+        Self::HuggingFace,
+    ];
 
     /// Stable identifier, also the issuer's table in `oauth-clients.toml`.
     pub fn id(self) -> &'static str {
@@ -73,6 +82,9 @@ impl OAuthIssuer {
             Self::Microsoft => "microsoft",
             Self::Dropbox => "dropbox",
             Self::Spotify => "spotify",
+            Self::OpenAi => "openai",
+            Self::GitHub => "github",
+            Self::HuggingFace => "huggingface",
         }
     }
 
@@ -83,6 +95,9 @@ impl OAuthIssuer {
             Self::Microsoft => "Microsoft",
             Self::Dropbox => "Dropbox",
             Self::Spotify => "Spotify",
+            Self::OpenAi => "OpenAI",
+            Self::GitHub => "GitHub",
+            Self::HuggingFace => "Hugging Face",
         }
     }
 
@@ -106,6 +121,18 @@ impl OAuthIssuer {
                 "TILO_OAUTH_DROPBOX_CLIENT_ID",
                 option_env!("TILO_OAUTH_DROPBOX_CLIENT_ID"),
             ),
+            Self::OpenAi => ClientId::new(
+                "TILO_OAUTH_OPENAI_CLIENT_ID",
+                option_env!("TILO_OAUTH_OPENAI_CLIENT_ID"),
+            ),
+            Self::GitHub => ClientId::new(
+                "TILO_OAUTH_GITHUB_CLIENT_ID",
+                option_env!("TILO_OAUTH_GITHUB_CLIENT_ID"),
+            ),
+            Self::HuggingFace => ClientId::new(
+                "TILO_OAUTH_HUGGINGFACE_CLIENT_ID",
+                option_env!("TILO_OAUTH_HUGGINGFACE_CLIENT_ID"),
+            ),
         }
     }
 
@@ -117,7 +144,7 @@ impl OAuthIssuer {
                 "TILO_OAUTH_GOOGLE_CLIENT_SECRET",
                 option_env!("TILO_OAUTH_GOOGLE_CLIENT_SECRET"),
             )),
-            Self::Microsoft | Self::Dropbox | Self::Spotify => None,
+            _ => None,
         }
     }
 
@@ -144,6 +171,8 @@ impl OAuthIssuer {
                 // Without both, Google issues no refresh token on a repeat
                 // consent.
                 authorization_params: pairs(&[("access_type", "offline"), ("prompt", "consent")]),
+                refresh: Refresh::RefreshToken,
+                device_authorization_endpoint: None,
             },
             // The `common` tenant accepts both personal Microsoft accounts
             // and work or school accounts; `offline_access` (in each use's
@@ -157,6 +186,8 @@ impl OAuthIssuer {
                 revocation: Revocation::Unsupported,
                 scopes: Vec::new(),
                 authorization_params: pairs(&[("prompt", "select_account")]),
+                refresh: Refresh::RefreshToken,
+                device_authorization_endpoint: None,
             },
             Self::Spotify => Provider {
                 id: self.id().into(),
@@ -166,6 +197,8 @@ impl OAuthIssuer {
                 revocation: Revocation::Unsupported,
                 scopes: Vec::new(),
                 authorization_params: Vec::new(),
+                refresh: Refresh::RefreshToken,
+                device_authorization_endpoint: None,
             },
             Self::Dropbox => Provider {
                 id: self.id().into(),
@@ -177,6 +210,50 @@ impl OAuthIssuer {
                 },
                 scopes: Vec::new(),
                 authorization_params: pairs(&[("token_access_type", "offline")]),
+                refresh: Refresh::RefreshToken,
+                device_authorization_endpoint: None,
+            },
+            // OpenAI's own sign-in page, as its Codex clients open it: the
+            // ChatGPT account's token, not an API organisation's.
+            Self::OpenAi => Provider {
+                id: self.id().into(),
+                label: self.label().into(),
+                authorization_endpoint: "https://auth.openai.com/oauth/authorize".into(),
+                token_endpoint: "https://auth.openai.com/oauth/token".into(),
+                revocation: Revocation::Unsupported,
+                scopes: Vec::new(),
+                authorization_params: pairs(&[
+                    ("id_token_add_organizations", "true"),
+                    ("codex_cli_simplified_flow", "true"),
+                    ("originator", "codex_cli_rs"),
+                ]),
+                refresh: Refresh::RefreshToken,
+                device_authorization_endpoint: None,
+            },
+            // GitHub signs Copilot's editors in with a device code; the
+            // grant's GitHub token is then traded for Copilot tokens
+            // (see `ClientTable::descriptor`).
+            Self::GitHub => Provider {
+                id: self.id().into(),
+                label: self.label().into(),
+                authorization_endpoint: "https://github.com/login/oauth/authorize".into(),
+                token_endpoint: "https://github.com/login/oauth/access_token".into(),
+                revocation: Revocation::Unsupported,
+                scopes: Vec::new(),
+                authorization_params: Vec::new(),
+                refresh: Refresh::RefreshToken,
+                device_authorization_endpoint: Some("https://github.com/login/device/code".into()),
+            },
+            Self::HuggingFace => Provider {
+                id: self.id().into(),
+                label: self.label().into(),
+                authorization_endpoint: "https://huggingface.co/oauth/authorize".into(),
+                token_endpoint: "https://huggingface.co/oauth/token".into(),
+                revocation: Revocation::Unsupported,
+                scopes: Vec::new(),
+                authorization_params: Vec::new(),
+                refresh: Refresh::RefreshToken,
+                device_authorization_endpoint: Some("https://huggingface.co/oauth/device".into()),
             },
         }
     }
@@ -197,10 +274,14 @@ pub enum Capability {
     Identity,
     Music,
     MusicStreaming,
-    /// Hosted agent models the model gateway calls (Google Vertex AI). A
-    /// grant of its own, so the broad cloud scope it needs never rides on a
-    /// mail or storage token, and forgetting it leaves those untouched.
+    /// Hosted agent models the model gateway calls (Google Vertex AI and the
+    /// Gemini API, a `ChatGPT` or Copilot subscription, Hugging Face). A grant
+    /// of its own, so the broad scope it may need never rides on a mail or
+    /// storage token, and forgetting it leaves those untouched.
     Models,
+    /// Model weights the model manager downloads (Hugging Face's gated
+    /// models), apart from any grant the gateway calls models with.
+    ModelDownloads,
 }
 
 /// One use of an issuer's client: who signs the person in, and what for.
@@ -235,11 +316,18 @@ impl OAuthUse {
         match (self.issuer, self.capability) {
             (OAuthIssuer::Spotify, _) => "Spotify",
             (OAuthIssuer::Google, Capability::Models) => "Google Vertex AI",
+            (OAuthIssuer::OpenAi, Capability::Models) => "ChatGPT",
+            (OAuthIssuer::GitHub, Capability::Models) => "GitHub Copilot",
+            (OAuthIssuer::HuggingFace, Capability::Models) => "Hugging Face",
             (_, Capability::Models) => "Agent models",
             (_, Capability::Music | Capability::MusicStreaming) => "Music",
             (OAuthIssuer::Google, Capability::Calendar) => "Google Calendar",
             (_, Capability::Calendar) => "Calendar",
-            (_, Capability::Identity) => self.issuer.label(),
+            (_, Capability::Identity | Capability::ModelDownloads)
+            | (
+                OAuthIssuer::OpenAi | OAuthIssuer::GitHub | OAuthIssuer::HuggingFace,
+                Capability::Files | Capability::Mail,
+            ) => self.issuer.label(),
             (OAuthIssuer::Google, Capability::Files) => "Google Drive",
             (OAuthIssuer::Google, Capability::Mail) => "Gmail",
             (OAuthIssuer::Microsoft, Capability::Files) => "OneDrive",
@@ -293,7 +381,6 @@ impl OAuthCloud {
         self.oauth_use().label()
     }
 
-    /// Who the person signs in with.
     pub fn sign_in_with(self) -> &'static str {
         self.issuer().label()
     }
@@ -354,7 +441,7 @@ mod tests {
             .into_iter()
             .map(|issuer| issuer.client_id().key)
             .collect();
-        assert_eq!(keys.len(), 4);
+        assert_eq!(keys.len(), OAuthIssuer::ALL.len());
         assert_eq!(OAuthCloud::from_type_id(WEBDAV_TYPE), None);
     }
 

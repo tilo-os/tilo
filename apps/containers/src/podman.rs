@@ -165,8 +165,6 @@ fn podman_connection_label() -> String {
     format!("Podman {version}, rootless")
 }
 
-// --- podman ps -------------------------------------------------------
-
 #[derive(Deserialize)]
 struct PsEntry {
     #[serde(default, rename = "Id")]
@@ -248,14 +246,13 @@ fn list_containers() -> Option<Vec<Container>> {
                 stats: stat,
                 logs_error: None,
                 logs: Vec::new(),
+                logs_fetched_unix_ms: None,
             }
         })
         .collect();
     containers.sort_by(|a, b| a.name.cmp(&b.name));
     Some(containers)
 }
-
-// --- podman stats ----------------------------------------------------
 
 #[derive(Deserialize)]
 struct StatEntry {
@@ -291,6 +288,7 @@ fn collect_stats() -> Vec<(String, Stats)> {
                 e.id,
                 Stats {
                     available: true,
+                    fetched_unix_ms: ui::time::try_unix_now_ms(),
                     cpu_percent,
                     mem_bytes,
                     mem_limit_bytes,
@@ -341,8 +339,6 @@ fn parse_size(s: &str) -> u64 {
     };
     (value * mult) as u64
 }
-
-// --- podman images ---------------------------------------------------
 
 #[derive(Deserialize)]
 struct ImageEntry {
@@ -396,8 +392,6 @@ fn split_reference(reference: &str) -> (String, String) {
         _ => (reference.to_string(), "latest".to_string()),
     }
 }
-
-// --- podman volume ls ------------------------------------------------
 
 #[derive(Deserialize)]
 struct VolumeEntry {
@@ -457,8 +451,6 @@ fn volume_usage() -> Vec<String> {
         .collect()
 }
 
-// --- distrobox -------------------------------------------------------
-
 /// distrobox boxes are plain containers with the `manager:distrobox` label.
 /// `distrobox list` is the canonical reader; when the CLI is absent we fall
 /// back to filtering podman's container list by label.
@@ -485,8 +477,6 @@ fn list_distroboxes() -> Vec<DistroBox> {
     }
     boxes
 }
-
-// --- lifecycle actions ----------------------------------------------
 
 /// Run a lifecycle verb against a container by id. Returns the command's
 /// stderr on failure (for surfacing a toast); `Ok(())` on success or when no
@@ -767,10 +757,6 @@ fn finish(cmd: Command) -> Result<(), String> {
 }
 
 /// Run one finite podman operation with bounded diagnostics and a deadline.
-///
-/// # Errors
-///
-/// Returns bounded runner failures or the command's capped stderr.
 pub fn run_once(args: &[String]) -> Result<(), String> {
     let mut command = Command::new("podman");
     command.args(args);

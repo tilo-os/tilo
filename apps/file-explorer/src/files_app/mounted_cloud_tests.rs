@@ -10,7 +10,8 @@ use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse};
 fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
     let mount = root.path().join("Drive");
     let destination = root.path().join("Copies");
     std::fs::create_dir(&mount).unwrap();
@@ -26,7 +27,7 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).unwrap();
     }
     std::fs::write(mount.join("Uploaded.docx"), b"uploaded bytes").unwrap();
-    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
     let server = std::thread::spawn(move || {
@@ -85,7 +86,7 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
             .pending
             .take()
             .unwrap()
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
         let (tx, rx) = channel();
         tx.send(replies).unwrap();
@@ -135,10 +136,13 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
     app.call_on(&id, "import-converted", serde_json::json!({}))
         .unwrap();
     assert!(recorder.pick_requests()[0].is_writable_directory());
-    tilo_test_env::wait_until("the converted import to settle", || {
+    let deadline = tilo_test_env::hang_deadline();
+    while !destination.join("Document.docx").exists() || app.state().ops.pending().next().is_some()
+    {
+        assert!(std::time::Instant::now() < deadline);
         app.settle();
-        destination.join("Document.docx").exists() && app.state().ops.pending().next().is_none()
-    });
+        std::thread::yield_now();
+    }
     app.with_surface(|files: &mut FileExplorerWidget| {
         assert!(
             destination.join("Document.docx").exists(),

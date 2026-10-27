@@ -460,7 +460,7 @@ fn history_pages_newest_first_and_lists_every_change_once() {
 }
 
 #[test]
-fn the_first_page_of_a_long_history_reads_only_that_page() {
+fn the_first_page_of_a_long_history_is_its_newest_end() {
     let mut replica = Replica::<Notebook>::new();
     for n in 0..2_000 {
         replica
@@ -468,22 +468,16 @@ fn the_first_page_of_a_long_history_reads_only_that_page() {
             .unwrap();
     }
     let doc = &mut replica.doc().clone();
-    let started = std::time::Instant::now();
+    // How much of the history a page reads is counted in `history`'s own
+    // tests; here the page is the newest end of the whole history.
     let page = history::page(doc, None, 50);
-    let paged = started.elapsed();
-    let started = std::time::Instant::now();
     let all = history::versions(doc);
-    let listed = started.elapsed();
     assert_eq!(page.versions.len(), 50);
     assert_eq!(
         page.versions.first().map(|v| v.hash),
         all.last().map(|v| v.hash)
     );
     assert!(page.older.is_some());
-    assert!(
-        paged < listed,
-        "a page ({paged:?}) should cost less than the whole history ({listed:?})"
-    );
     // Every change records what the action that made it did.
     assert!(
         page.versions
@@ -987,7 +981,6 @@ fn a_one_item_change_asks_only_the_items_it_touched_for_their_ids() {
         replica
             .apply(tilo_resource::Invoke::edit(&edit).unwrap())
             .unwrap();
-        // A view keeps the state it was shown, as a surface's `present` may.
         let shown = Rc::clone(reader.state());
         let before = ids_asked();
         assert!(reader.sync(replica.doc()).unwrap());
@@ -1399,15 +1392,12 @@ fn the_edits_of_a_local_copy_match_comparing_every_item() {
             edits_of(&apart(&before), &apart(&after)),
             "seed {seed}"
         );
-        // Items whose ids changed in place are found by their new ids.
         for shot in &after.shots {
             let first = after.shots.iter().position(|other| other.id == shot.id);
             assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
         }
     }
 }
-
-// --- Saving a map over the state it was copied from --------------------------
 
 thread_local! {
     static PAGES_COMPARED: Cell<usize> = const { Cell::new(0) };
@@ -1907,6 +1897,386 @@ fn the_edits_of_a_local_copy_items_were_added_to_match_comparing_every_item() {
 }
 
 #[test]
+fn items_removed_from_a_local_copy_are_compared_with_nothing() {
+    let before = cut(300);
+    let mut after = before.clone();
+    let changed = Id::from_raw("s0150");
+    after.shots.find_mut(&changed).unwrap().opacity = 0.5;
+    after
+        .shots
+        .retain(|shot| shot.id != "s0100" && shot.id != "s0200");
+    assert_eq!(
+        after.shots.take(&Id::from_raw("s0250")).unwrap().id,
+        "s0250"
+    );
+    assert_eq!(after.stack.remove(10).id, "s0010");
+    after.stack.push(shot("s9001", "newer"));
+    let (edits, compared, _) = counted(|| edits_of(&before, &after));
+    assert!(
+        compared <= 2,
+        "{compared} labels of 600 compared for four removed, one changed and one new item"
+    );
+    let paths = Cut::paths();
+    assert_eq!(
+        edits,
+        [
+            paths.shots.remove(&Id::from_raw("s0100")),
+            paths.shots.item(&changed).opacity.set(0.5),
+            paths.shots.remove(&Id::from_raw("s0200")),
+            paths.shots.remove(&Id::from_raw("s0250")),
+            paths.stack.remove(&Id::from_raw("s0010")),
+            paths.stack.insert(299, &shot("s9001", "newer")),
+        ],
+    );
+    assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
+
+    // Keeping every item changes nothing and copies nothing.
+    let mut kept = before.clone();
+    kept.shots.retain(|_| true);
+    assert!(kept.shots.stores_as(&before.shots));
+}
+
+/// Change `cut`'s lists at random, items removed among the changes: one at
+/// a time by id or position, several at once, items added under the id of
+/// one removed, items changed after others left.
+fn remove_and_change(cut: &mut Cut, rng: &mut Lcg, step: usize) {
+    let id = Id::from_raw(format!("s{:04}", rng.next(48)));
+    match rng.next(10) {
+        0 => {
+            cut.shots.take(&id);
+        }
+        1 => {
+            if !cut.stack.is_empty() {
+                let at = rng.next(cut.stack.len());
+                cut.stack.remove(at);
+            }
+        }
+        2 => {
+            if !cut.shots.is_empty() {
+                let at = rng.next(cut.shots.len());
+                cut.shots.remove(at);
+            }
+        }
+        3 => {
+            let (every, offset) = (2 + rng.next(5), rng.next(5));
+            cut.shots.retain(|shot| {
+                let n: usize = shot.id.get(1..).and_then(|n| n.parse().ok()).unwrap_or(0);
+                n % every != offset
+            });
+        }
+        4 => {
+            let (every, offset) = (2 + rng.next(5), rng.next(5));
+            cut.stack.retain(|shot| {
+                let n: usize = shot.id.get(1..).and_then(|n| n.parse().ok()).unwrap_or(1);
+                n % every != offset
+            });
+        }
+        5 => {
+            // Out, then in again under the same id.
+            let label = format!("again {step}");
+            if cut.stack.take(&id).is_some() {
+                cut.stack.push(shot(id.as_str(), &label));
+            }
+        }
+        6 => {
+            // Changed by position, perhaps after others left.
+            if !cut.stack.is_empty() {
+                let at = rng.next(cut.stack.len());
+                cut.stack.at_mut(at).unwrap().label = Compared(format!("at {step}"));
+            }
+        }
+        _ => add_and_change(cut, rng, step),
+    }
+}
+
+#[test]
+fn the_edits_of_a_local_copy_items_were_removed_from_match_comparing_every_item() {
+    for seed in 0..120 {
+        let mut rng = Lcg(seed);
+        let mut before = cut(40);
+        if seed % 2 == 0 {
+            before.shots.settle();
+        }
+        let mut after = before.clone();
+        for step in 0..rng.next(12) {
+            remove_and_change(&mut after, &mut rng, step);
+        }
+        assert_eq!(
+            edits_of(&before, &after),
+            edits_of(&apart(&before), &apart(&after)),
+            "seed {seed}"
+        );
+        for shot in &after.shots {
+            let first = after.shots.iter().position(|other| other.id == shot.id);
+            assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
+        }
+    }
+}
+
+#[test]
+fn saving_an_ordered_list_changed_removed_from_and_added_to_visits_only_those_items() {
+    use tilo_resource::__private::ROOT;
+    let held: Ordered<Folio> = (0..300)
+        .map(|n| Folio {
+            id: format!("f{n:04}"),
+            page: Page(format!("page {n}")),
+        })
+        .collect();
+    let mut doc = Doc::new().with_actor(actor("base"));
+    tilo_resource::write_key(&mut doc, &ROOT, "stack", &held).unwrap();
+    commit_at_zero(&mut doc);
+    // As read: its order keys are known to rise.
+    let before: Ordered<Folio> = tilo_resource::read_key(&doc, &ROOT, "stack").unwrap();
+
+    let mut after = before.clone();
+    after.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
+    after.take(&Id::from_raw("f0100")).unwrap();
+    after.retain(|folio| folio.id != "f0299");
+    after.push(Folio {
+        id: "f9000".into(),
+        page: Page("new".into()),
+    });
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        tilo_resource::write_key_changed(
+            &mut changed,
+            &ROOT,
+            "stack",
+            &after,
+            &before,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    });
+    assert_eq!(stored, 2, "the changed item and the new one are written");
+    assert!(compared <= 4, "{compared} items of 300 compared");
+    let mut whole = doc.fork().with_actor(actor("me"));
+    tilo_resource::write_key(&mut whole, &ROOT, "stack", &after).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+    let read: Ordered<Folio> = tilo_resource::read_key(&changed, &ROOT, "stack").unwrap();
+    assert_eq!(read, after, "read back in the order saved");
+}
+
+#[test]
+fn saving_a_keyed_list_removed_from_visits_only_those_items() {
+    use tilo_resource::__private::ROOT;
+    let held: Keyed<Folio> = (0..300)
+        .map(|n| Folio {
+            id: format!("f{n:04}"),
+            page: Page(format!("page {n}")),
+        })
+        .collect();
+    let mut doc = Doc::new().with_actor(actor("base"));
+    tilo_resource::write_key(&mut doc, &ROOT, "folios", &held).unwrap();
+    commit_at_zero(&mut doc);
+    let before: Keyed<Folio> = tilo_resource::read_key(&doc, &ROOT, "folios").unwrap();
+
+    let mut after = before.clone();
+    after.retain(|folio| folio.id != "f0100" && folio.id != "f0200");
+    after.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
+    after.remove(0);
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        tilo_resource::write_key_changed(
+            &mut changed,
+            &ROOT,
+            "folios",
+            &after,
+            &before,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    });
+    assert_eq!(stored, 1, "only the changed item is written");
+    assert!(compared <= 2, "{compared} items of 300 compared");
+    let mut whole = doc.fork().with_actor(actor("me"));
+    tilo_resource::write_key(&mut whole, &ROOT, "folios", &after).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+    let read: Keyed<Folio> = tilo_resource::read_key(&changed, &ROOT, "folios").unwrap();
+    assert_eq!(read.len(), 297, "three items left");
+}
+
+/// Write the entry `{ k: key, v: item }` under `id` into the Ordered map
+/// `map`, as a collaborator's store would.
+fn put_ordered_entry(doc: &mut Doc, map: &ObjId, id: &str, key: &str, item: &Shot) {
+    use tilo_resource::__private::ObjType;
+    let entry =
+        automerge::transaction::Transactable::put_object(doc, map, id, ObjType::Map).unwrap();
+    automerge::transaction::Transactable::put(doc, &entry, "k", key).unwrap();
+    tilo_resource::write_key(doc, &entry, "v", item).unwrap();
+}
+
+/// The order key of the Ordered entry `id` of `map`.
+fn order_key(doc: &Doc, map: &ObjId, id: &str) -> Option<String> {
+    use tilo_resource::__private::{ObjType, ReadDoc};
+    match doc.get(map, id).unwrap() {
+        Some((Value::Object(ObjType::Map), entry)) => {
+            tilo_resource::read_key(doc, &entry, "k").ok()
+        }
+        _ => None,
+    }
+}
+
+/// What a collaborator writes into the Ordered list `stack` meanwhile: an
+/// item inserted under an order key another item holds (as two people
+/// inserting at one place at once do) or a new one, one removed, one moved
+/// onto another's key, or a field of one changed.
+fn peer_stack(doc: &mut Doc, rng: &mut Lcg, step: usize) {
+    use tilo_resource::__private::{ObjType, ReadDoc};
+    let mut peer = doc.fork().with_actor(actor("peer"));
+    let stack = root_map(&peer, "stack");
+    let ids: Vec<String> = peer.keys(&stack).collect();
+    for _ in 0..=rng.next(3) {
+        let other = ids.get(rng.next(ids.len() + 1)).cloned();
+        let other_key = other.as_deref().and_then(|id| order_key(&peer, &stack, id));
+        match rng.next(5) {
+            0 => {
+                let id = format!("p{step:04}-{}", rng.next(1000));
+                let key = other_key.unwrap_or_else(|| "zz".to_owned());
+                put_ordered_entry(&mut peer, &stack, &id, &key, &shot(&id, "peer"));
+            }
+            1 => {
+                if let Some(other) = &other
+                    && peer.get(&stack, other.as_str()).unwrap().is_some()
+                {
+                    automerge::transaction::Transactable::delete(&mut peer, &stack, other.as_str())
+                        .unwrap();
+                }
+            }
+            2 => {
+                let mover = ids.get(rng.next(ids.len() + 1));
+                if let (Some(mover), Some(key)) = (mover, other_key)
+                    && let Some((Value::Object(ObjType::Map), entry)) =
+                        peer.get(&stack, mover.as_str()).unwrap()
+                {
+                    automerge::transaction::Transactable::put(&mut peer, &entry, "k", key).unwrap();
+                }
+            }
+            _ => {
+                if let Some(other) = &other
+                    && let Some((Value::Object(ObjType::Map), entry)) =
+                        peer.get(&stack, other.as_str()).unwrap()
+                    && let Some((Value::Object(ObjType::Map), value)) =
+                        peer.get(&entry, "v").unwrap()
+                {
+                    automerge::transaction::Transactable::put(&mut peer, &value, "opacity", -1.0)
+                        .unwrap();
+                }
+            }
+        }
+    }
+    peer.commit();
+    doc.merge_incoming(&mut peer).unwrap();
+}
+
+/// Change the Ordered list `stack` of `cut` at random: items changed,
+/// removed, added and moved (which a copy cannot follow item by item).
+fn change_stack(cut: &mut Cut, rng: &mut Lcg, step: usize) {
+    match rng.next(8) {
+        0 => {
+            let len = cut.stack.len();
+            if len > 1 {
+                cut.stack.swap(rng.next(len), rng.next(len));
+            }
+        }
+        1 => cut
+            .stack
+            .push(shot(&format!("n{step:04}-{}", rng.next(1000)), "new")),
+        _ => remove_and_change(cut, rng, step),
+    }
+}
+
+#[test]
+fn an_ordered_list_saved_over_its_copy_writes_what_a_whole_write_does() {
+    use tilo_resource::__private::ROOT;
+    let root = tilo_resource::Path::<Ordered<Shot>, Ordered<Shot>>::root();
+    let apart = |items: &Ordered<Shot>| -> Ordered<Shot> { items.to_vec().into() };
+    let mut saves = 0;
+    for seed in 0..40 {
+        let mut rng = Lcg(seed);
+        let mut held: Ordered<Shot> = (0..rng.next(80))
+            .map(|n| shot(&format!("s{n:04}"), &format!("shot {n}")))
+            .collect();
+        let mut doc = Doc::new().with_actor(actor("base"));
+        tilo_resource::write_key(&mut doc, &ROOT, "stack", &held).unwrap();
+        commit_at_zero(&mut doc);
+        let mut tracker = tilo_resource::Tracker::new();
+        tracker.start(&mut doc);
+        for step in 0..8 {
+            if rng.next(3) == 0 {
+                peer_stack(&mut doc, &mut rng, step);
+            }
+            let dirty = tracker.delta(&mut doc);
+            // What the slot holds now, brought up to date as a reader does.
+            let mut was = held.clone();
+            let id = root_map(&doc, "stack");
+            let value = Value::Object(tilo_resource::__private::ObjType::Map);
+            was.refresh(&doc, &value, &id, &dirty).unwrap();
+            let read: Ordered<Shot> = tilo_resource::read_key(&doc, &ROOT, "stack").unwrap();
+            assert_eq!(was, read, "seed {seed} step {step}: refreshed as read");
+
+            let mut copy = Cut {
+                title: String::new(),
+                shots: Keyed::new(),
+                stack: was.clone(),
+            };
+            for _ in 0..rng.next(6) {
+                change_stack(&mut copy, &mut rng, step);
+            }
+            let now = copy.stack;
+            assert_eq!(
+                edit_parts(&root.edits(&was, &now)),
+                edit_parts(&root.edits(&apart(&was), &apart(&now))),
+                "seed {seed} step {step}: the edits"
+            );
+
+            let mut changed = doc.fork().with_actor(actor("me"));
+            let mut whole = doc.fork().with_actor(actor("me"));
+            tilo_resource::write_key_changed(&mut changed, &ROOT, "stack", &now, &was, &dirty)
+                .unwrap();
+            tilo_resource::write_key(&mut whole, &ROOT, "stack", &now).unwrap();
+            commit_at_zero(&mut changed);
+            commit_at_zero(&mut whole);
+            assert_eq!(
+                changed.get_heads(),
+                whole.get_heads(),
+                "seed {seed} step {step}: the saved change"
+            );
+            // Saving a copy no one changed writes what a whole write does.
+            let mut same = doc.fork().with_actor(actor("me"));
+            let mut same_whole = doc.fork().with_actor(actor("me"));
+            tilo_resource::write_key_changed(&mut same, &ROOT, "stack", &was.clone(), &was, &dirty)
+                .unwrap();
+            tilo_resource::write_key(&mut same_whole, &ROOT, "stack", &was).unwrap();
+            commit_at_zero(&mut same);
+            commit_at_zero(&mut same_whole);
+            assert_eq!(
+                same.get_heads(),
+                same_whole.get_heads(),
+                "seed {seed} step {step}: the unchanged copy saved"
+            );
+            saves += 1;
+            doc = changed;
+            tracker.start(&mut doc);
+            // Two items under one id are one item in the document.
+            let mut ids: Vec<Id> = now.iter().map(Identified::id).collect();
+            ids.sort();
+            ids.dedup();
+            held = if ids.len() == now.len() {
+                now
+            } else {
+                tilo_resource::read_key(&doc, &ROOT, "stack").unwrap()
+            };
+        }
+    }
+    assert_eq!(saves, 320);
+}
+
+#[test]
 fn saving_a_keyed_list_changed_and_added_to_visits_only_those_items() {
     use tilo_resource::__private::ROOT;
     use tilo_resource::Fields;
@@ -2064,6 +2434,18 @@ fn ids_unique(items: &Keyed<Shot>) -> bool {
 
 #[test]
 fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
+    keyed_saves_write_what_a_whole_write_does(add_and_change);
+}
+
+#[test]
+fn a_keyed_list_removed_from_saved_over_its_copy_writes_what_a_whole_write_does() {
+    keyed_saves_write_what_a_whole_write_does(remove_and_change);
+}
+
+/// 40 random sequences of 8 saves of a Keyed list, each copy changed by
+/// `change`, with a collaborator's concurrent writes: each save writes what
+/// a whole write does, and the edits are those of comparing every item.
+fn keyed_saves_write_what_a_whole_write_does(change: fn(&mut Cut, &mut Lcg, usize)) {
     use tilo_resource::__private::ROOT;
     let root = tilo_resource::Path::<Keyed<Shot>, Keyed<Shot>>::root();
     let apart = |items: &Keyed<Shot>| -> Keyed<Shot> { items.to_vec().into() };
@@ -2084,7 +2466,6 @@ fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
                 peer_shots(&mut doc, &mut rng, step);
             }
             let dirty = tracker.delta(&mut doc);
-            // What the slot holds now, brought up to date as a reader does.
             let mut was = held.clone();
             let id = root_map(&doc, "shots");
             let value = Value::Object(tilo_resource::__private::ObjType::Map);
@@ -2099,7 +2480,7 @@ fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
                 stack: Ordered::new(),
             };
             for _ in 0..rng.next(6) {
-                add_and_change(&mut copy, &mut rng, step);
+                change(&mut copy, &mut rng, step);
             }
             let now = copy.shots;
             assert_eq!(
@@ -2123,7 +2504,6 @@ fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
             saves += 1;
             doc = changed;
             tracker.start(&mut doc);
-            // Two items under one id are one item in the document.
             held = if ids_unique(&now) {
                 now
             } else {

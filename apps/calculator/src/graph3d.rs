@@ -5,7 +5,6 @@
 //! pass so surfaces occlude each other correctly), and paints each cell in its
 //! function's series colour with a Lambert shade. Drag orbits, scroll zooms.
 
-use ui::ColorCompat;
 use ui::charts::ChartPalette;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -77,7 +76,6 @@ struct SurfaceCell {
 struct SurfaceKey {
     /// `(expr, visible)` for every surface, in order.
     surfaces: Vec<(String, bool)>,
-    deg: bool,
     yaw: u64,
     pitch: u64,
     zoom: u64,
@@ -135,7 +133,6 @@ impl SurfaceKey {
                 .iter()
                 .map(|f| (f.expr.clone(), f.visible))
                 .collect(),
-            deg: model.deg,
             yaw: bits(model.view3d.yaw),
             pitch: bits(model.view3d.pitch),
             zoom: bits(model.view3d.zoom),
@@ -151,17 +148,12 @@ impl SurfaceKey {
 
 impl Graph3dScreen {
     /// Resolve the panel, the content column and the plot for the window
-    /// `area` (the header row included).
+    /// `area`. The plot fills the content column: its controls are the
+    /// window bar's.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.area = area;
         self.panel.layout(area, model.surfaces.len());
-        let content = self.panel.side().content();
-        self.canvas = Rect::new(
-            content.x0,
-            (content.y0 + self.panel.side().header_height()).min(content.y1),
-            content.x1,
-            content.y1,
-        );
+        self.canvas = self.panel.side().content();
     }
 
     /// Measure the formulas and lay the screen out for this frame, then
@@ -296,10 +288,11 @@ impl Graph3dScreen {
         }
         let rebuilds = self.surface_cache.rebuilds.wrapping_add(1);
 
-        let resample =
-            self.surface_cache.key.as_ref().is_none_or(|previous| {
-                previous.surfaces != key.surfaces || previous.deg != key.deg
-            });
+        let resample = self
+            .surface_cache
+            .key
+            .as_ref()
+            .is_none_or(|previous| previous.surfaces != key.surfaces);
         let sample_rebuilds = self.surface_cache.sample_rebuilds + u32::from(resample);
         let (sampled, mut zmin, mut zmax) = if resample {
             Self::sample_surfaces(model)
@@ -349,7 +342,7 @@ impl Graph3dScreen {
             if !f.visible || f.expr.trim().is_empty() {
                 continue;
             }
-            let Ok(comp) = engine::compile(&f.expr, model.deg, true) else {
+            let Ok(comp) = engine::compile(&f.expr, engine::PLOT_IN_DEGREES, true) else {
                 continue;
             };
             let mut zs = vec![[0.0f64; N + 1]; N + 1];
@@ -498,14 +491,19 @@ impl Graph3dScreen {
     }
 }
 
-/// Stroke `path` in `color` at `width`.
 fn stroke_path(scene: &mut Scene, t: Affine, width: f64, color: Color, path: &BezPath) {
     scene.stroke(&Stroke::new(width), t, color, None, path);
 }
 
 fn scale_rgb(c: Color, f: f64) -> Color {
-    let s = |x: u8| (f64::from(x) * f).round().clamp(0.0, 255.0) as u8;
-    Color::from_rgba8(s(c.r()), s(c.g()), s(c.b()), c.a())
+    let [r, g, b, a] = c.components;
+    let factor = f as f32;
+    vello::peniko::color::AlphaColor::<vello::peniko::color::Srgb>::new([
+        (r * factor).clamp(0.0, 1.0),
+        (g * factor).clamp(0.0, 1.0),
+        (b * factor).clamp(0.0, 1.0),
+        a,
+    ])
 }
 
 fn normalize3(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
@@ -553,8 +551,6 @@ mod tests {
             assert!(s.panel.side().is_overlay() && !s.panel.side().is_open());
             assert_eq!(s.panel.side().column(), Rect::ZERO);
             assert!((s.canvas.width() - 560.0).abs() < 0.5);
-            let toggle = s.panel.toggle_rect().expect("a button opens the drawer");
-            assert!(s.panel.side().toggle_at(toggle.center()));
             // Open it → drawer + scrim; a press inside must not orbit.
             s.panel.side_mut().toggle();
             s.panel.side_mut().snap(true);
@@ -625,9 +621,27 @@ mod tests {
         model.surfaces.first_mut().unwrap().expr = "x*y".into();
         screen.ensure_surfaces(&model);
         assert_eq!(screen.surface_cache.sample_rebuilds, 2);
+        // The angle unit is for calculations; a plot's axes stay numbers.
         model.deg = true;
         screen.ensure_surfaces(&model);
-        assert_eq!(screen.surface_cache.sample_rebuilds, 3);
+        assert_eq!(screen.surface_cache.sample_rebuilds, 2);
+    }
+
+    /// With Degrees chosen, a surface still reads x and y as plain numbers:
+    /// `sin(x)` waves through its full range over the plotted domain
+    /// instead of lying flat near zero.
+    #[test]
+    fn surfaces_plot_in_radians_whatever_the_angle_unit() {
+        let mut model = CalcModel::seeded();
+        for surface in &mut model.surfaces {
+            surface.visible = false;
+        }
+        let first = model.surfaces.first_mut().unwrap();
+        first.expr = "sin(x)".into();
+        first.visible = true;
+        model.deg = true;
+        let (_, zmin, zmax) = Graph3dScreen::sample_surfaces(&model);
+        assert!(zmin < -0.9 && zmax > 0.9, "sin(x) spans {zmin}..{zmax}");
     }
 
     /// The sampled-surface cache: the first draw samples every visible surface
@@ -643,7 +657,6 @@ mod tests {
             s.ensure_surfaces(&m);
             assert_eq!(s.surface_cache.rebuilds, 1);
             assert!(!s.surface_cache.cells.is_empty(), "expected sampled grids");
-            // Cells from more than one series prove multiple surfaces are drawn.
             let distinct: std::collections::BTreeSet<usize> =
                 s.surface_cache.cells.iter().map(|c| c.series).collect();
             assert!(

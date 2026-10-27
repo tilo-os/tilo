@@ -371,11 +371,6 @@ impl SurfaceStreamSender {
 
     /// Ships one frame to every subscribed viewer. The sequence counter
     /// advances once regardless of viewer count; returns the minted sequence.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed when the payload is too large or the finite sequence space
-    /// is exhausted. In either case no frame is queued and no sequence wraps.
     pub fn publish(&self, keyframe: bool, payload: Vec<u8>) -> Result<u64, FrameError> {
         if payload.len() > MAX_ENCODED_FRAME_LEN {
             return Err(FrameError::PayloadTooLarge(payload.len()));

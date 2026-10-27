@@ -42,7 +42,7 @@ impl RecentFolders {
 /// What the analyzer does that changes no document: scanning a folder and
 /// moving between the views.
 #[derive(Clone, Debug, PartialEq, ui::framework::Effect)]
-#[effect(operation = "disk-usage.effects", device_only)]
+#[effect(operation = "disk-usage.effects")]
 pub enum DiskUsageEffect {
     /// Analyze a folder.
     ///
@@ -55,7 +55,7 @@ pub enum DiskUsageEffect {
     /// Choose folder.
     ///
     /// Asks for a folder, then analyzes it.
-    #[effect(job)]
+    #[effect(attended, job)]
     Choose,
     /// Go back.
     ///
@@ -117,6 +117,7 @@ pub struct DiskUsageShell;
 impl ResourceApp for DiskUsageShell {
     type Resource = DiskUsage;
     const ID: &'static str = "so.tilo.disk-usage";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Files];
     const TITLE: &'static str = "Disk Usage Analyzer";
     const ICON: Option<&'static str> = Some("disk-usage");
 
@@ -132,6 +133,8 @@ impl ResourceApp for DiskUsageShell {
             "analysis-hover-narrow",
             "home",
             "home-narrow",
+            "scanning",
+            "scanning-narrow",
         ]
     }
 
@@ -171,6 +174,8 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
         self.actions = (cx.mode() == RunMode::Live).then(|| cx.actions());
         match cx.mode() {
             RunMode::Capture => {
+                // A capture names the sample's places, never this machine's.
+                self.places = crate::app::sample_places();
                 if let Some(recent) = cx.fixture::<RecentFolders>() {
                     self.recent.clone_from(&recent.folders);
                 }
@@ -181,6 +186,9 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
         self.refresh_home();
         if let Some(scan) = cx.fixture::<ScanResult>() {
             self.set_result((*scan).clone());
+            if self.immediate {
+                self.sample_job("Home");
+            }
         }
     }
 
@@ -243,14 +251,10 @@ mod tests {
     /// Run frames until the scan a row started has shown and remembered
     /// `folder`.
     fn settle_until_recent(app: &mut TestApp<DiskUsageShell>, folder: &std::path::Path) {
-        for _ in 0..600 {
+        tilo_test_env::wait_until(format!("{} to be remembered", folder.display()), || {
             app.settle();
-            if recent(app).first().map(PathBuf::as_path) == Some(folder) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        panic!("{} was never remembered", folder.display());
+            recent(app).first().map(PathBuf::as_path) == Some(folder)
+        });
     }
 
     /// Navigation, the folders on screen and the remembered folders are one
@@ -303,8 +307,9 @@ mod tests {
         // on the locations.
         app.effect(&DiskUsageEffect::Home).unwrap();
         app.effect(&DiskUsageEffect::Back).unwrap();
+        app.settle();
         let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("Choose folder"), "{frame}");
+        assert!(frame.contains("File system"), "{frame}");
 
         let missing = folder.join("not-there");
         assert!(app.effect(&analyze(&missing)).is_err());
@@ -329,6 +334,51 @@ mod tests {
         );
         app.settle();
         assert_eq!(recent(&app), std::slice::from_ref(&folder));
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// The window's bar names the place on screen and holds Choose folder
+    /// and Back; the window draws no title or header row of its own.
+    #[test]
+    fn the_window_bar_names_the_place_and_holds_choose_folder_and_back() {
+        let folder = scratch_folder("bar");
+        let mut app = TestApp::<DiskUsageShell>::new().unwrap();
+        app.harness().present_in_window_bar();
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Analyze storage")
+        );
+        let choose = bar
+            .actions
+            .iter()
+            .find(|action| action.name == "Choose folder")
+            .expect("Choose folder is the bar's action");
+        assert!(choose.enabled && !choose.menu, "it stands in the bar's row");
+        assert!(bar.leading.is_empty(), "home has no way back");
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(!frame.contains("Analyze storage"), "{frame}");
+
+        app.effect(&analyze(&folder)).unwrap();
+        settle_until_recent(&mut app, &folder);
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        let name = folder.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            bar.location.map(|location| location.label),
+            Some(name),
+            "the bar names the analyzed folder"
+        );
+        let back = bar.leading.first().expect("Back leads the bar").id.clone();
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: back });
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Analyze storage"),
+            "the bar's Back went home"
+        );
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -410,18 +460,35 @@ mod tests {
         let id = format!("disk-usage.place:{}", folder.display());
         let target = app.harness().targets()[&id];
         app.harness().click_at(target.center().x, target.center().y);
-        let mut frame = String::new();
-        for _ in 0..600 {
+        tilo_test_env::wait_until("the click to analyze the folder", || {
             app.settle();
-            frame = app.harness().inspection_json().unwrap();
-            if frame.contains("photos") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(frame.contains("photos"), "the click must analyze: {frame}");
+            app.harness().inspection_json().unwrap().contains("photos")
+        });
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "analysis: {audit:?}");
         let _ = std::fs::remove_dir_all(&folder);
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::DiskUsageShell::scenarios() {
+            let mut app = TestApp::<super::DiskUsageShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

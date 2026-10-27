@@ -59,7 +59,6 @@ pub fn yt_thumb_url(video_id: &str) -> String {
 /// it can cross the worker-thread boundary cheaply.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Query {
-    /// Full-text search for videos.
     Search(String),
     /// Full metadata for one video (description, likes, comments, streams …).
     Video(String),
@@ -204,21 +203,26 @@ pub trait YtBackend: Send + Sync {
     /// backend that can reach a real extractor (yt-dlp) produces one. The UI
     /// degrades to the poster when this fails.
     ///
+    /// `max_height` is the height the person chose (`Some(480)` for 480p,
+    /// `None` for the best available): a backend that can choose a format
+    /// stays at or under it, so choosing a smaller size spends less data
+    /// rather than being silently ignored.
+    ///
     /// # Errors
     ///
     /// Returns `Err` unless overridden by a backend that can resolve a
     /// playable source.
-    fn resolve_playback_source(&self, _id: &str) -> Result<PlaybackSource, BackendError> {
+    fn resolve_playback_source(
+        &self,
+        _id: &str,
+        _max_height: Option<u32>,
+    ) -> Result<PlaybackSource, BackendError> {
         Err(BackendError(
             "this backend cannot resolve a playback source".into(),
         ))
     }
 
     /// Dispatch a [`Query`] to the right method. Lets the worker stay generic.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` under the same conditions as the dispatched method.
     fn run(&self, query: Query) -> BackendOutcome {
         match query {
             Query::Search(q) => self.search(&q),
@@ -245,7 +249,6 @@ mod tests {
 
     #[test]
     fn default_offline_backend_searches_and_dispatches_trending() {
-        // Case `default_backend_is_offline_and_searches`.
         {
             let b = default_backend();
             let out = b.search("rust").expect("offline search never errors");
@@ -254,7 +257,6 @@ mod tests {
                 _ => panic!("search returns Videos"),
             }
         }
-        // Case `run_dispatches_trending`.
         {
             let b = default_backend();
             assert!(matches!(

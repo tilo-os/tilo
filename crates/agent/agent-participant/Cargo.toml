@@ -16,6 +16,11 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # published tree is the door.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The dates a step's computed arguments (`{{= workday(…) }}`) work with.
+chrono.workspace = true
+# The patterns a step's argument takes a part of a value out with
+# (`{{…|match:INV-\d+}}`): matched in linear time, compiled size bounded.
+regex.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
@@ -28,6 +33,7 @@ agent = { path = "../../../apps/agent" }
 # The apps an agent can open in a browser session: the browser desktop's
 # registry, generated from the app manifests.
 # generated apps: begin (tools/web/generate_web_desktop.py)
+activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar", default-features = false, features = [] }
@@ -49,12 +55,14 @@ notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }
 pdf-viewer = { path = "../../../apps/pdf-viewer" }
 photos = { path = "../../../apps/photos" }
+poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
 sheets = { path = "../../../apps/sheets" }
 shortcuts = { path = "../../../apps/shortcuts" }
 slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
+tasks = { path = "../../../apps/tasks" }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
 tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }
@@ -64,6 +72,11 @@ video-player = { path = "../../../apps/video-player" }
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
+# Apps an agent's worker holds that a browser page cannot mount
+# (`apps::agent_only_apps`). Mail's account engine is built in (main's Mail
+# does not build without `live`) but idle: a worker holds no account and
+# reaches no network.
+mail = { path = "../../../apps/mail" }
 # The certified relay session (iroh for a host-side agent) and its live
 # plane; the same code a browser page runs.
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", features = ["toolkit"] }
@@ -93,6 +106,18 @@ workspace-hack = { version = "0.1" }
 # isolate before the host signs it.
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
+# The content records reference: lent to a record's view, held in memory in
+# its worker, carried between the two by hash.
+tilo-content = { version = "0.1.0", path = "../../system/content" }
+# Pictures shown to a planning model: sent base64-encoded, and decoded and
+# shrunk only in a confined worker (`worker::shrink_picture`).
+base64.workspace = true
+# A room's content store is kept under the room's id.
+uuid.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# The render service's side of `tilo-video-render`, the confined helper an
+# agent's video renders run in (the helper itself is its binary).
+tilo-video-render = { path = "../../media/video-render", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
@@ -112,6 +137,7 @@ tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
+tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
@@ -133,6 +159,8 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
 # Reads the links the host mints back the way a page does.
 tilo-reference = { path = "../../collab/reference" }
+# The campaign benchmark's `TILO_BENCH_TRACE`.
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.

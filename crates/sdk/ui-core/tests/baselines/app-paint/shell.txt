@@ -2,6 +2,7 @@
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 crates/session/shell/src/bin/shots/mode.rs transparent_shot 2
+crates/session/shell/src/bin/shots/scenario/window_bar_reactions.rs glyph_icon 2
 crates/session/shell/src/bluetooth_prompt.rs raw_paint 1
 crates/session/shell/src/collab/flatpak_share.rs glyph_icon 1
 crates/session/shell/src/compositor/capture.rs glyph_icon 8
@@ -29,11 +30,7 @@ crates/session/shell/src/shell/frame.rs literal_radius 1
 crates/session/shell/src/shell/frame.rs raw_paint 7
 crates/session/shell/src/shell/hdr_surface.rs glyph_icon 1
 crates/session/shell/src/shell/osd.rs raw_paint 2
-crates/session/shell/src/shell/overlay_host/mod.rs glyph_icon 2
-crates/session/shell/src/shell/overlay_host/mod.rs literal_alpha 4
-crates/session/shell/src/shell/overlay_host/mod.rs literal_radius 6
-crates/session/shell/src/shell/overlay_host/mod.rs ramp_slot 3
-crates/session/shell/src/shell/overlay_host/mod.rs raw_paint 31
+crates/session/shell/src/shell/overlay_host/overview_layout.rs glyph_icon 1
 crates/session/shell/src/shell/peer_sync_overlay.rs raw_paint 9
 crates/session/shell/src/shell/peer_view.rs raw_paint 1
 crates/session/shell/src/shell/power_menu.rs raw_paint 1

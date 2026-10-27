@@ -42,13 +42,16 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(select(["os/hardware/profiles/lenovo-83ed/input/touchpad.json"]), "B04,W17,input")
         self.assertEqual(select(["crates/runtime/tilo-runtime/src/session_door.rs"]), "agent")
         self.assertEqual(select([S + "guest/mcp_client.py"]), "agent")
+        self.assertEqual(select(["crates/system/secret-service/src/store.rs"]), "secrets")
+        self.assertEqual(select(["crates/session/shell/src/portal/secret.rs"]), "secrets")
+        self.assertEqual(select(["crates/session/shell/src/shell/mls_vault.rs"]), "secrets")
         both = set(select(["crates/dev/tilo-vmd/src/input.rs",
                            "crates/runtime/tilo-runtime/src/mcp.rs"]).split(","))
         self.assertEqual(both, {"B04", "W17", "input", "agent"})
 
-    def test_unrelated_paths_in_a_whole_diff_are_ignored_and_the_workflow_runs_all(self):
+    def test_unrelated_paths_in_a_whole_diff_are_ignored_and_the_runner_runs_all(self):
         self.assertEqual(select(["apps/notes/src/lib.rs", "crates/dev/tilo-vmd/src/input.rs"]), "B04,W17,input")
-        self.assertEqual(select(["crates/dev/tilo-vmd/src/input.rs", ".forgejo/workflows/vm-acceptance.yml"]), "")
+        self.assertEqual(select(["crates/dev/tilo-vmd/src/input.rs", "tools/ci/vm-acceptance.sh"]), "")
 
     def test_a_removed_check_module_runs_everything(self):
         self.assertEqual(select([S + "acceptance/checks/gone.py"]), "")

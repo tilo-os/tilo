@@ -54,10 +54,6 @@ fn parse(text: &str) -> Option<Value> {
 
 /// The verification rows in cosign's output: one JSON document, or one per
 /// line, arrays flattened; between 1 and 128 objects.
-///
-/// # Errors
-/// Empty or oversized output, a line that is not JSON, or rows that are not
-/// all objects.
 pub fn wrappers(output: &str) -> Result<Vec<serde_json::Map<String, Value>>> {
     require(
         !output.is_empty() && output.len() <= MAX_OUTPUT,
@@ -99,9 +95,6 @@ pub fn wrappers(output: &str) -> Result<Vec<serde_json::Map<String, Value>>> {
 
 /// The one predicate of type `predicate_type` whose statement names exactly
 /// `digest` as its only subject.
-///
-/// # Errors
-/// None or more than one, or a predicate that is not an object.
 pub fn statements(output: &str, predicate_type: &str, digest: &str) -> Result<Value> {
     let subject_digest = json!({"sha256": digest.get(7..).unwrap_or_default()});
     let mut result = Vec::new();
@@ -175,9 +168,7 @@ pub fn provenance(output: &str, digest: &str) -> Result<(String, u64)> {
             || get(definition, "buildType")?
                 != Some(&json!("https://tilo.sh/buildtypes/bootc-os/v1"))
             || get(details, "builder")?
-                != Some(
-                    &json!({"id": "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"}),
-                )
+                != Some(&json!({"id": "https://code.tilo.so/tilo/t/os-release-v1"}))
         {
             return Ok(false);
         }
@@ -241,10 +232,6 @@ pub fn provenance(output: &str, digest: &str) -> Result<(String, u64)> {
 }
 
 /// When the freshness statement for this exact release expires.
-///
-/// # Errors
-/// A statement that is expired, not yet issued, longer than a week or
-/// shorter than five minutes, or names another release.
 pub fn freshness(
     output: &str,
     digest: &str,

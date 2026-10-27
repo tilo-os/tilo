@@ -74,6 +74,16 @@ pub fn workspace_root() -> Option<PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
+/// Where the language packs a person installed live
+/// (`$XDG_DATA_HOME/tilo/language-packs`, one directory per locale): the
+/// installer service writes them there, on the path it installs runtimes
+/// on, and the runtime reads them before the packs the OS image carries.
+/// `None` without a home.
+#[must_use]
+pub fn language_packs_dir() -> Option<PathBuf> {
+    xdg::data_home().map(|data| data.join("tilo").join("language-packs"))
+}
+
 #[cfg(windows)]
 mod legacy {
     pub fn data_home() -> Option<std::path::PathBuf> {
@@ -678,19 +688,12 @@ mod platform {
 /// home directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UserDir {
-    /// `XDG_DESKTOP_DIR`.
     Desktop,
-    /// `XDG_DOCUMENTS_DIR`.
     Documents,
-    /// `XDG_DOWNLOAD_DIR`.
     Download,
-    /// `XDG_MUSIC_DIR`.
     Music,
-    /// `XDG_PICTURES_DIR`.
     Pictures,
-    /// `XDG_VIDEOS_DIR`.
     Videos,
-    /// `XDG_TEMPLATES_DIR`.
     Templates,
     /// `XDG_PUBLICSHARE_DIR`.
     PublicShare,
@@ -963,7 +966,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn base_directories_follow_absolute_variables_or_home_defaults() {
-        // Phase `an_absolute_variable_wins_over_the_home_default`.
         {
             let vars = [
                 ("XDG_DATA_HOME", "/data"),
@@ -986,7 +988,6 @@ mod tests {
                 );
             }
         }
-        // Phase `unset_variables_fall_back_to_the_spec_defaults_under_home`.
         {
             let var = env(&[]);
             for (base, expected) in [
@@ -1003,7 +1004,6 @@ mod tests {
                 );
             }
         }
-        // Phase `relative_and_empty_variables_are_ignored`.
         {
             // A relative value would resolve against whatever directory the
             // process happened to start in; the spec says to ignore it.
@@ -1022,7 +1022,6 @@ mod tests {
                 );
             }
         }
-        // Phase `explicit_values_follow_the_same_rules`.
         {
             let home = Some(OsStr::new("/home/u"));
             assert_eq!(
@@ -1039,7 +1038,6 @@ mod tests {
             assert_eq!(Base::Runtime.resolve_from(None, home), None);
             assert_eq!(Base::Config.env_var(), "XDG_CONFIG_HOME");
         }
-        // Phase `home_prefers_the_variable_and_rejects_an_empty_one`.
         {
             let account = || Some(PathBuf::from("/var/home/account"));
             assert_eq!(
@@ -1053,7 +1051,6 @@ mod tests {
             );
             assert_eq!(home_from(&env(&[]), || Some(PathBuf::new())), None);
         }
-        // Phase `search_paths_drop_invalid_entries_and_default_when_nothing_is_left`.
         {
             let defaults = ["/usr/local/share", "/usr/share"];
             let expected_defaults: Vec<PathBuf> = defaults.iter().map(PathBuf::from).collect();
@@ -1078,7 +1075,6 @@ mod tests {
 
     #[test]
     fn app_and_user_dir_names_follow_the_spec_without_a_home() {
-        // Phase `without_a_home_only_an_explicit_variable_resolves`.
         {
             assert_eq!(Base::Config.resolve(&env(&[]), || None), None);
             #[cfg(unix)]
@@ -1087,13 +1083,11 @@ mod tests {
                 Some(PathBuf::from("/cfg"))
             );
         }
-        // Phase `user_dir_names_match_the_spec_keys`.
         {
             assert_eq!(UserDir::Download.env_var(), "XDG_DOWNLOAD_DIR");
             assert_eq!(UserDir::PublicShare.env_var(), "XDG_PUBLICSHARE_DIR");
             assert_eq!(UserDir::Download.conventional_name(), "Downloads");
         }
-        // Phase `app_dirs_join_the_app_name_onto_each_base`.
         {
             let app = AppDirs::new("tilo-example");
             for (joined, base) in [
@@ -1122,7 +1116,6 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
     #[cfg(unix)]
     #[test]
     fn user_dirs_files_resolve_below_home_and_yield_to_variables() {
-        // Phase `user_dirs_file_entries_resolve_below_home_or_as_written`.
         {
             let home = std::path::Path::new("/home/u");
             let resolve = |dir: UserDir| dir.resolve_from(None, Some(USER_DIRS), home);
@@ -1146,7 +1139,6 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
                 "double-quote escapes are undone"
             );
         }
-        // Phase `disabled_unquoted_relative_and_missing_entries_are_absent`.
         {
             let home = std::path::Path::new("/home/u");
             for dir in [UserDir::Pictures, UserDir::Videos, UserDir::Templates] {
@@ -1159,7 +1151,6 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
             assert_eq!(UserDir::Desktop.resolve_from(None, None, home), None);
             assert_eq!(UserDir::Desktop.resolve_from(None, Some(b""), home), None);
         }
-        // Phase `an_absolute_variable_overrides_the_user_dirs_file`.
         {
             let home = std::path::Path::new("/home/u");
             assert_eq!(

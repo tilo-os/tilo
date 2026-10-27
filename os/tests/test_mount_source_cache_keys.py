@@ -12,7 +12,6 @@ compares, so these files must declare it before the first such RUN.
 """
 from pathlib import Path
 import re
-import subprocess
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -21,8 +20,9 @@ MOUNT_FROM = re.compile(r'--mount=\S*?\bfrom=([^,\s]+)')
 
 
 def containerfiles():
-    listed = subprocess.run(['git', 'ls-files', '--', 'os'], cwd=REPO, check=True,
-                            capture_output=True, text=True).stdout.split()
+    # The tree as it is, not Git's index: the check reads the files it is keyed on, with no .git.
+    listed = sorted(path.relative_to(REPO).as_posix() for path in (REPO / 'os').rglob('Containerfile*')
+                    if path.is_file())
     return [REPO / name for name in listed if re.search(r'(^|/)Containerfile(\.[^/.]+)?$', name)
             and not name.endswith('.dockerignore') and '/fixtures/' not in name]
 

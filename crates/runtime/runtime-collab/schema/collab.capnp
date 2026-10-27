@@ -410,6 +410,16 @@ interface ChannelHandle {
   # the opaque ids the shell publishes; PipeWire identities are not
   # representable.
   speakerCommand @52 (appId :Text, commandJson :Data) -> (replyJson :Data);
+  # Resolves once what `speakerCommand`'s snapshot would show (devices and
+  # their outputs, speaker groups and their members, calibrations, playback)
+  # may have changed since `after`: 0 at first, then the `change` the
+  # previous call returned. It carries no device, group or label; the
+  # endpoint asks for a fresh snapshot through `speakerCommand`, which
+  # re-checks the route and the person's media policy on every answer. An
+  # endpoint keeps one call pending instead of asking on a timer. Only the
+  # certified Settings route is answered; a host without speaker groups
+  # answers unimplemented.
+  speakerChanged @68 (after :UInt64) -> (change :UInt64);
 
   # This application's settings in the session's records: its own
   # `app_personal` and `app_device_local` entries and the shared sections
@@ -458,6 +468,23 @@ interface ChannelHandle {
   # call pending instead of asking on a timer. Only the certified Files
   # route is answered; a host without Nearby Send answers unimplemented.
   nearbyTransferChanged @62 (after :UInt64) -> (change :UInt64);
+  # Resolves once the drives the shell lists to Files (through the tools
+  # service's drive list: each drive, its size and whether it is open) may
+  # have changed since `after`: 0 at first, then the `change` the previous
+  # call returned. It carries no drive, label or path; the endpoint asks the
+  # tools service for the list again. An endpoint keeps one call pending
+  # instead of asking on a timer. Only the certified Files route is
+  # answered; a host that cannot say when its drives change answers
+  # unimplemented.
+  drivesChanged @69 (after :UInt64) -> (change :UInt64);
+  # Resolves once the person's apps the tools service lists to Files (each
+  # app's id, name and kind) may have changed since `after`: 0 at first,
+  # then the `change` the previous call returned. It carries no app; the
+  # endpoint asks the tools service for the list again. An endpoint keeps one
+  # call pending instead of asking on a timer. Only the certified Files route
+  # is answered; a host that cannot say when its apps change answers
+  # unimplemented.
+  applicationsChanged @70 (after :UInt64) -> (change :UInt64);
 
   # Private website session custody for the certified Browser Read route.
   # Identity, person and source are derived by the broker, never caller claims.
@@ -750,12 +777,25 @@ interface Stream {
   # this field on the RPC rather than folding it into the postcard
   # envelope lets non-Rust clients cheaply route by author without
   # decoding the payload.
-  read @0 () -> (op :Data, fromUserId :Text, kind :OpKind);
+  #
+  # `admission` is the broker's verdict for this op on its channel: the
+  # broker alone decides whether cleartext is admitted, and the app applies
+  # that verdict.
+  read @0 () -> (op :Data, fromUserId :Text, kind :OpKind, admission :OpAdmission);
 }
 
 enum OpKind {
   # Every live stream frame is a postcard-encoded SignedOp.
   signed @0;
+}
+
+enum OpAdmission {
+  # A broker that predates the verdict.
+  unstated @0;
+  # The channel admits cleartext for this op.
+  cleartextAdmitted @1;
+  # The channel requires this op sealed.
+  encryptionRequired @2;
 }
 
 interface PresenceHandle {
@@ -836,15 +876,31 @@ interface ContextStream {
 }
 
 interface BlobStream {
-  # Pull the next piece of arrived content. Promise resolves when the
-  # broker has content for this channel.
+  # Pull the next news of content for this channel. Promise resolves when
+  # the broker has some.
   #
   # `hash` is the blake3 hex the content is addressed by in every store
-  # on every machine. A reader MUST verify the bytes against it before
-  # storing them: the key *is* the content, so bytes that hash to
-  # something else are not what was asked for, and taking them on trust
-  # would let one peer poison every replica that later reads that hash.
-  read @0 () -> (hash :Text, bytes :Data);
+  # on every machine. With `state` `arrived`, `bytes` are the content. A
+  # reader MUST verify the bytes against it before storing them: the key
+  # *is* the content, so bytes that hash to something else are not what
+  # was asked for, and taking them on trust would let one peer poison
+  # every replica that later reads that hash.
+  #
+  # Any other `state` says where a `wantBlob` of `hash` has got to, and
+  # `bytes` are empty. It changes as devices that could hand the content
+  # over connect and leave, never on a timer.
+  read @0 () -> (hash :Text, bytes :Data, state :BlobState);
+}
+
+enum BlobState {
+  # The content is here: `bytes` carry it.
+  arrived @0;
+  # A connected device that could hand it over is being asked for it.
+  fetching @1;
+  # No device that could hand it over is connected right now.
+  waiting @2;
+  # Every connected device that could hold it said it does not.
+  unavailable @3;
 }
 
 # Presence update as delivered on `PresenceStream`. `userId` is the
@@ -948,6 +1004,12 @@ struct ChannelContext {
   # it reads an empty roster frame, and roster rows are upserts.
   historyAgents @6 :List(HistoryAgent);
   historyAgentsChanged @7 :Bool;
+  # Session-local control frame: records of this application's trees (a
+  # chain's next part, a container's child) that a peer wrote and no window
+  # here holds. Clients leave the roster snapshot untouched and hold them as
+  # their trees' own. Empty on every other frame; never relayed to peers.
+  # Additive: a client that predates it reads an empty roster frame.
+  recordsArrived @8 :List(Text);
 }
 
 # One verified delegated agent in a `ChannelContext.historyAgents` frame.
@@ -1037,8 +1099,10 @@ interface AppSettings {
   read @0 (after :UInt64) -> (revision :UInt64, documentJson :Data);
   # Merge `valuesJson`, `{"<app id>": {...}}`, into the app's entry in
   # `section` (`app_personal` or `app_device_local`), answering the view
-  # after the write. Any other section or entry is refused.
-  update @1 (section :Text, valuesJson :Data) -> (revision :UInt64, documentJson :Data);
+  # after the write. Any other section or entry is refused. `action` names
+  # the action that made the change, kept with it in the session's history;
+  # empty when none did.
+  update @1 (section :Text, valuesJson :Data, action :Text) -> (revision :UInt64, documentJson :Data);
   # Narrow display intent over an independently admitted private Settings
   # worker. The host owns validation, prior state and transaction persistence.
   displayControl @2 (commandJson :Data, publishedInvocation :Data, origin :DisplayRequestOrigin) -> (replyJson :Data);

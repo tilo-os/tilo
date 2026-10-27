@@ -100,7 +100,6 @@ fn splice(old: &[Item], new: &[Item]) -> Option<Splice> {
 }
 
 impl Frame {
-    /// The patch that turns `self` into `next`.
     #[must_use]
     pub fn diff(&self, next: &Self) -> Patch {
         let mut changes = Vec::new();

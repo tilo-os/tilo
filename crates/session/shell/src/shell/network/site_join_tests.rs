@@ -71,6 +71,9 @@ pub(super) fn until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
 /// front of it.
 pub(super) struct Site {
     pub runtime: tokio::runtime::Runtime,
+    /// The wall clock the host's threads read: their own, unless a test
+    /// pins it.
+    wall: tilo_clock::testing::SharedWall,
     pub relay: Option<tilo_relay::daemon::Relay>,
     pub web: Option<tilo_relay::web::WebHandle>,
     pub host_cert: DeviceCert,
@@ -151,6 +154,7 @@ fn start_host(
                 live_origin: None,
                 limits: tilo_relay::web::WebLimits::default(),
                 country: None,
+                fetch_proxy: None,
             })
             .await
             .unwrap();
@@ -162,12 +166,10 @@ fn start_host(
     (relay, web, host_cert, lounge)
 }
 
-fn json(status: u16, value: &serde_json::Value) -> Option<test_http::Reply> {
-    Some(
-        test_http::Reply::status(status)
-            .header("content-type", "application/json")
-            .body(value.to_string()),
-    )
+fn json(status: u16, value: &serde_json::Value) -> test_http::Reply {
+    test_http::Reply::status(status)
+        .header("content-type", "application/json")
+        .body(value.to_string())
 }
 
 /// The door's `/join`: pre-admit the person the request names to the room
@@ -190,7 +192,7 @@ fn door_join(
         role: RoomRole::Editor,
         token_sha256: sha2::Sha256::digest(token.as_bytes()).into(),
         label: asked["displayName"].as_str().unwrap_or("Guest").into(),
-        expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         owner_user_public_key: root.verifying_key().to_bytes(),
         signature: [0; 64],
     };
@@ -218,20 +220,25 @@ fn door_join(
             ))
             .unwrap();
     }
-    json(
+    Some(json(
         200,
         &serde_json::json!({
             "invitation": tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
             "admissionToken": token,
             "origin": behind.origin,
         }),
-    )
+    ))
 }
 
 impl Site {
     pub(super) fn start(dir: &std::path::Path) -> Self {
+        let wall = tilo_clock::testing::SharedWall::default();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .on_thread_start({
+                let wall = wall.clone();
+                move || wall.follow()
+            })
             .enable_all()
             .build()
             .unwrap();
@@ -261,7 +268,7 @@ impl Site {
                         if open.load(std::sync::atomic::Ordering::SeqCst) {
                             home["admission"] = "door/".into();
                         }
-                        json(200, &serde_json::json!({ "home": home }))
+                        Some(json(200, &serde_json::json!({ "home": home })))
                     }
                     ("POST", "/door/join") => door_join(
                         &handle,
@@ -276,6 +283,7 @@ impl Site {
         let entry = url::Url::parse(&format!("{}/", door.url())).unwrap();
         Self {
             runtime,
+            wall,
             relay: Some(relay),
             web: Some(web),
             host_cert,
@@ -327,6 +335,25 @@ impl Site {
     /// does: the door pre-admits its person and the device redeems the
     /// invitation as itself.
     pub(super) fn admit_device(&self, cert: &DeviceCert, device: &SigningKey, name: &str) {
+        let (invitation, token) = self.door_admission(cert.user_public_key, name);
+        let reply = self
+            .runtime
+            .block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+                self.http().as_ref(),
+                &invitation,
+                cert,
+                device,
+                random(),
+                name,
+                token.as_bytes(),
+            ))
+            .unwrap();
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    }
+
+    /// The door's pre-admission of the person `user`: the invitation and
+    /// its one-time admission token.
+    fn door_admission(&self, user: [u8; 32], name: &str) -> (Vec<u8>, String) {
         let workspace = hosted_sites::SiteWorkspace {
             entry: self.entry.clone(),
             name: "Lounge".into(),
@@ -337,25 +364,41 @@ impl Site {
         };
         let answer = self
             .runtime
-            .block_on(hosted_sites::admit(&workspace, cert.user_public_key, name))
+            .block_on(hosted_sites::admit(&workspace, user, name))
             .unwrap();
         let invitation = base64::Engine::decode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             &answer.invitation,
         )
         .unwrap();
-        let reply = self
-            .runtime
-            .block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
-                self.http().as_ref(),
-                &invitation,
-                cert,
-                device,
-                random(),
-                name,
-                answer.admission_token.as_bytes(),
-            ))
-            .unwrap();
+        (invitation, answer.admission_token)
+    }
+
+    /// [`Self::admit_device`] with the door's `admission`, the host reading
+    /// its wall clock at `at` while it admits the device.
+    fn admit_device_at(
+        &self,
+        (invitation, token): &(Vec<u8>, String),
+        cert: &DeviceCert,
+        device: &SigningKey,
+        name: &str,
+        at: std::time::SystemTime,
+    ) {
+        self.wall.pin(at);
+        let reply = tilo_clock::testing::with_wall(at, || {
+            self.runtime
+                .block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+                    self.http().as_ref(),
+                    invitation,
+                    cert,
+                    device,
+                    random(),
+                    name,
+                    token.as_bytes(),
+                ))
+                .unwrap()
+        });
+        self.wall.release();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     }
 
@@ -445,14 +488,7 @@ pub(super) fn held(
 ) {
     until("the computer to hold the site's workspace", || {
         net.tick();
-        let tree = tree.read();
-        (tree.requires_native_owner(room)
-            && tree
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room))
-        .then_some(())
+        tree.read().holds_room(room).then_some(())
     });
 }
 
@@ -477,7 +513,29 @@ fn a_computer_joins_a_sites_workspace_through_its_door_and_shares_it_with_a_brow
         matches!(joined, SiteJoin::Enrolling { room: named, .. } if named == room),
         "{joined:?}"
     );
+    // The workspace is the site's room from the moment the join starts, under
+    // the room's own id, and says Joining… until the room installs into it:
+    // never a placeholder of another room.
+    {
+        let tree = tree.read();
+        let joining: Vec<_> = tree
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.id)
+            .collect();
+        assert_eq!(
+            joining,
+            vec![crate::shell::state::WorkspaceId::of_room(room)]
+        );
+        assert!(tree.holds_room(room) || tree.is_joining(room));
+        assert_eq!(tree.one_record_violations(), Vec::<String>::new());
+        drop(tree);
+    }
     held(&net, &tree, room);
+    assert!(!tree.read().is_joining(room));
+    assert_eq!(tree.read().one_record_violations(), Vec::<String>::new());
     assert!(
         site.member(ada.verifying_key().to_bytes()),
         "the room's governance lists the computer's person"
@@ -487,7 +545,7 @@ fn a_computer_joins_a_sites_workspace_through_its_door_and_shares_it_with_a_brow
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| workspace.name.clone())
             .as_deref(),
         Some("Lounge"),
@@ -564,9 +622,8 @@ fn a_link_to_a_sites_workspace_joins_it_and_the_join_field_takes_the_site() {
     assert!(net.join_link(&elsewhere).is_err());
 
     // The join field takes the site as typed.
-    let local = tree.read().desktop.active;
     assert_eq!(
-        net.join_from_field(local, site.entry.as_str()),
+        net.join_from_field(site.entry.as_str()),
         Ok(crate::shell::peer_sync_overlay::PeerSyncResponse::Message(
             room.to_string()
         )),
@@ -606,9 +663,15 @@ fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
     let site = Site::start(dir.path());
     let room = RoomId::parse(&site.room).unwrap();
 
+    // The page is admitted at a moment its certificate lives, as the host
+    // reads its clock, and the certificate has expired by the time the
+    // computer joins. The host admits it a millisecond before it expires,
+    // and no earlier than the door issued its invitation.
     let grace = key(2);
     let page = key(3);
-    let expires = tilo_clock::unix_now_ns() + 1_500_000_000;
+    let admission = site.door_admission(grace.verifying_key().to_bytes(), "Grace");
+    let admitted_ms = tilo_clock::unix_now_ms() + 1;
+    let expires = (admitted_ms + 1) * 1_000_000;
     let mut cert = certify(
         &grace,
         &page,
@@ -617,7 +680,13 @@ fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
     );
     cert.expires_at_ns = Some(expires);
     sign_device_cert(&mut cert, &grace).unwrap();
-    site.admit_device(&cert, &page, "Grace");
+    site.admit_device_at(
+        &admission,
+        &cert,
+        &page,
+        "Grace",
+        std::time::UNIX_EPOCH + Duration::from_millis(admitted_ms),
+    );
     until("the page's certificate to expire", || {
         (tilo_clock::unix_now_ns() > expires).then_some(())
     });
@@ -667,11 +736,12 @@ fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
 }
 
 /// A join the host refuses says why where the person looks, is logged as
-/// the failure it is, and leaves no empty workspace behind; joining again
-/// once the host lets the person in makes exactly one workspace.
+/// the failure it is, and keeps its workspace, the room, for the person to
+/// try again; joining again once the host lets the person in installs into
+/// that same workspace, never a second one.
 #[test]
 #[serial_test::serial]
-fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one() {
+fn a_refused_join_says_why_keeps_its_workspace_and_joining_again_installs_into_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let site = Site::start(dir.path());
@@ -686,21 +756,34 @@ fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one
     site.stale.store(true, std::sync::atomic::Ordering::SeqCst);
     let joined = net.join_site(&site.entry).unwrap();
     assert!(matches!(joined, SiteJoin::Enrolling { .. }), "{joined:?}");
-    let reason = until("the join to fail", || {
+    let (reason, workspace) = until("the join to fail", || {
         net.tick();
         net.site_joins()
             .into_iter()
             .find_map(|join| match join.progress {
-                hosted_sites::JoinProgress::Failed(reason) if join.room == room => Some(reason),
+                hosted_sites::JoinProgress::Failed(reason) if join.room == room => {
+                    Some((reason, join.workspace))
+                }
                 _ => None,
             })
     });
     assert!(reason.contains("cancelled"), "{reason}");
     assert_eq!(
         workspaces(&tree),
-        before,
-        "the empty workspace the join made is gone with it"
+        before + 1,
+        "the workspace stays, saying why it was not joined"
     );
+    assert_eq!(
+        workspace,
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.id),
+        "the failure is the room's own workspace's"
+    );
+    assert!(tree.read().is_joining(room), "not held, still the room");
 
     site.stale.store(false, std::sync::atomic::Ordering::SeqCst);
     net.join_site(&site.entry).unwrap();
@@ -708,9 +791,10 @@ fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one
     assert_eq!(
         workspaces(&tree),
         before + 1,
-        "exactly one workspace for it"
+        "exactly one workspace for it, the same one"
     );
     assert!(net.site_joins().is_empty());
+    assert_eq!(tree.read().one_record_violations(), Vec::<String>::new());
     drop(net);
     site.shutdown();
 }
@@ -732,13 +816,12 @@ fn two_computers_in_a_sites_workspace_see_each_others_pointer() {
     for (net, tree) in [(&ada, &ada_tree), (&ben, &ben_tree)] {
         net.join_site(&site.entry).unwrap();
         held(net, tree, room);
-        // In the Lounge, as a person who arrived there is.
         let mut tree = tree.write();
         let lounge = tree
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| workspace.id)
             .unwrap();
         tree.desktop.active = lounge;

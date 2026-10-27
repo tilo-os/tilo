@@ -60,6 +60,7 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
                 kind: AppKind::Other("Test".into()),
                 label: "solo".into(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: WindowWidth::Normal,
@@ -71,11 +72,10 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
         name: "Solo".into(),
         window_groups: vec![group],
     };
-    let ws = Workspace {
-        strips: vec![strip],
-        // Everything else comes from the builder, so a field added to
-        // `Workspace` does not break this fixture.
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip];
+        workspace
     };
 
     let mut active_strip = HashMap::new();

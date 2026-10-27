@@ -1,8 +1,8 @@
 //! The serialisable shortcut program.
 //!
 //! Everything here is inert data: it can be stored, synced, diffed and shown
-//! in an editor without a host. Meaning comes from [`check`](crate::check),
-//! which types it against live descriptors, and [`run`](crate::run), which
+//! in an editor without a host. Meaning comes from [`check`](fn@crate::check),
+//! which types it against live descriptors, and [`run`](fn@crate::run), which
 //! executes it.
 
 use std::collections::BTreeMap;
@@ -31,6 +31,13 @@ pub struct Shortcut {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ActionParam>,
     pub steps: Vec<Step>,
+    /// How long one step may take before the run stops waiting for it, in
+    /// seconds. Absent, [`DEFAULT_STEP_TIMEOUT`](crate::run::DEFAULT_STEP_TIMEOUT)
+    /// applies. A run nobody is present at needs a bound: a step whose action
+    /// never answers would otherwise hold the run — and the one on its heels
+    /// — for ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_timeout_secs: Option<u64>,
     /// The value a finished run reports back to whoever started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Binding>,
@@ -165,6 +172,13 @@ pub enum Binding {
     /// `{{step.ID/json/pointer}}` placeholders. Strings are inserted as they
     /// are; other values as compact JSON.
     Template(String),
+    /// A JSON object of bound values, a member left out when its binding
+    /// has no value. A value built of parts shows its shape to whoever reads
+    /// the program: a field edit's path names the field it changes, so its
+    /// grant reaches that field only ([`crate::grant::edit_reach`]).
+    Object(BTreeMap<String, Binding>),
+    /// A JSON array of bound values, `null` where a binding has no value.
+    List(Vec<Binding>),
 }
 
 impl Binding {
@@ -514,7 +528,6 @@ pub struct ScheduleClaim {
     pub trigger: usize,
     /// The fire time taken, in milliseconds since the Unix epoch.
     pub due_ms: i64,
-    /// The device that runs it.
     pub device: String,
 }
 
@@ -525,7 +538,6 @@ impl ScheduleClaim {
         format!("{}/{}", self.shortcut, self.trigger)
     }
 
-    /// Whether this claim supersedes `other` for the same schedule.
     #[must_use]
     pub fn supersedes(&self, other: &Self) -> bool {
         (self.due_ms, other.device.as_str()) > (other.due_ms, self.device.as_str())

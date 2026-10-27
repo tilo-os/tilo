@@ -54,9 +54,6 @@ impl RuntimeTarget {
 }
 
 /// Runs exclusively on the Store worker, never by reading host install paths.
-///
-/// # Errors
-/// Returns host admission failures, unavailable service, or missing installed root.
 pub fn inspect(
     host: Option<&app_host::client::BlockingClient>,
     target: &RuntimeTarget,

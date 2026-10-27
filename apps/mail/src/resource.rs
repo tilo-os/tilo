@@ -63,6 +63,10 @@ pub struct Mail {
     /// What servers still have to be told: flags, moves and deletes the
     /// reader made that a message's server does not hold yet.
     pub server: Outbox<ServerUpdate>,
+    /// Messages the room holds whole, under the ids their state is kept
+    /// under in `messages`: mail delivered without a server
+    /// ([`crate::held`]).
+    pub held: Collection<crate::held::HeldMessage>,
 }
 
 /// What the reader did with one message, and what its server holds.
@@ -165,6 +169,11 @@ pub struct DraftState {
     /// device and after every restart.
     #[model(readonly)]
     pub shown_as: Option<String>,
+    /// What `draft-message` or `draft-reply` wrote, as a fingerprint
+    /// ([`DraftState::fingerprint`]): while the draft still matches it,
+    /// nobody took it up and those verbs may write over it.
+    #[model(readonly)]
+    pub drafted: Option<String>,
 }
 
 impl DraftState {
@@ -230,7 +239,52 @@ impl DraftState {
             attachments: data.attachments,
             rich_body: self.rich_body.clone(),
             shown_as: self.shown_as.clone(),
+            drafted: None,
         }
+    }
+
+    /// A fingerprint of this draft as written, its body started from the
+    /// file `body_digest` names: every field a person changes, and the
+    /// import its body was started from.
+    pub(crate) fn fingerprint(&self, body_digest: &str) -> String {
+        let written = serde_json::json!([
+            self.sender,
+            self.to,
+            self.cc,
+            self.bcc,
+            self.subject,
+            self.body,
+            self.html_body,
+            self.calendar_ics,
+            self.attachments,
+            body_digest,
+        ]);
+        tilo_content::hash_bytes(written.to_string().as_bytes())
+    }
+
+    /// Whether `draft-message` or `draft-reply` wrote this draft and nobody
+    /// changed it since: no field, and its body not started again.
+    pub(crate) fn untouched_since_drafted(&self) -> bool {
+        let (Some(drafted), Some(digest)) = (
+            &self.drafted,
+            self.rich_body
+                .as_ref()
+                .and_then(RichText::state)
+                .and_then(tilo_document::RichTextState::file_digest),
+        ) else {
+            return false;
+        };
+        *drafted == self.fingerprint(digest)
+    }
+
+    /// Whether `sent` is this draft: it goes to the same recipients under
+    /// the same subject.
+    fn is_written_as(&self, sent: &DraftData) -> bool {
+        let written = DraftData::from_draft(&self.draft());
+        written.to == sent.to
+            && written.cc == sent.cc
+            && written.bcc == sent.bcc
+            && written.subject == sent.subject
     }
 
     /// Whether it holds anything: a recipient, a subject, a body, an
@@ -248,6 +302,8 @@ impl DraftState {
     search = Mail::search,
     scopes = Mail::scopes,
     queue = Mail::queue,
+    read_content = Mail::read_held,
+    answer = crate::held::answer,
 )]
 impl Mail {
     /// Mark messages read
@@ -371,14 +427,12 @@ impl Mail {
         #[param("Its HTML, when it starts formatted")] html: Option<String>,
     ) {
         let mut body = RichText::default();
-        let html = html
-            .filter(|html| !html.trim().is_empty())
-            .unwrap_or_else(|| quoted_html(&text));
         body.perform(RichTextAction::ReplaceFormatted {
             format: tilo_document::action::ImportFormat::Html,
-            bytes: bounded_text(&html, MAX_DRAFT_BODY_CHARS, true).into_bytes(),
+            bytes: started_body(&text, html),
         });
         self.draft.rich_body = Some(body);
+        self.draft.drafted = None;
     }
 
     /// Save draft
@@ -474,8 +528,64 @@ impl Mail {
                 "a message needs a sending account and a recipient",
             ));
         }
+        // The message being written is done with once it is sent: its draft
+        // empties, so it leaves Drafts and the next message starts afresh.
+        // Another message sent meanwhile leaves the draft alone.
+        if self.draft.is_written_as(&outgoing.draft) {
+            self.draft = DraftState::default();
+        } else {
+            self.draft.drafted = None;
+        }
         outbox.push(id, outgoing);
         Ok(())
+    }
+
+    /// Deliver message
+    ///
+    /// Puts an incoming message in the mailbox itself, in a folder, as mail
+    /// fetched from a server would arrive: for a scenario, an event a room
+    /// hands on, or a worker with no account. A reply joins the
+    /// conversation it answers. Nothing is sent. Answers its id.
+    #[action(answers, local, audience = "agents")]
+    pub fn deliver_message(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(flatten)] message: crate::held::Delivery,
+    ) -> Result<(), Refusal> {
+        self.deliver(cx, &message).map(drop)
+    }
+
+    /// Draft message
+    ///
+    /// Writes the draft a person reviews and sends: who it goes to, its
+    /// subject and text. Nothing is sent. A draft drafted here before and
+    /// changed by nobody since is written over; one a person is writing is
+    /// left alone.
+    #[action(answers, local, audience = "agents")]
+    pub fn draft_message(
+        &mut self,
+        #[param("Recipients, comma-separated")] to: String,
+        #[param("The subject")] subject: String,
+        #[param("The message, as plain text")] body: String,
+        #[param("Copy recipients, comma-separated")] cc: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.draft_held(&to, cc.as_deref().unwrap_or(""), &subject, &body)
+    }
+
+    /// Draft reply
+    ///
+    /// Writes a reply to a message held in the mailbox as the draft, the
+    /// original quoted below it, for a person to review and send. Nothing
+    /// is sent. A draft drafted here before and changed by nobody since is
+    /// written over; one a person is writing is left alone.
+    #[action(answers, local, audience = "agents")]
+    pub fn draft_reply(
+        &mut self,
+        #[param("The id of the held message it answers")] message: String,
+        #[param("The reply, as plain text")] body: String,
+        #[param("Copy everyone else the message went to")] all: Option<bool>,
+    ) -> Result<(), Refusal> {
+        self.draft_reply_held(&message, &body, all.unwrap_or(false))
     }
 
     /// Cancel sending
@@ -514,11 +624,9 @@ fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
             "{address:?} is not a content address: attach what another step handed over"
         ));
     }
+    let bytes = tilo_resource::content::read_hash(hash).map_err(|refusal| refusal.to_string())?;
     let store = tilo_resource::content::current()
         .ok_or("this window has no content store to attach from")?;
-    let bytes = store
-        .read(hash)
-        .ok_or("the handed-over file is not on this device; hand it over again here")?;
     let staged = crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?;
     params.content = staged.content_id;
     params.name = staged.filename;
@@ -527,13 +635,33 @@ fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
     Ok(())
 }
 
+/// The HTML a draft body starts from: `html`, or `text` with its `>` lines
+/// quoted.
+pub(crate) fn started_body(text: &str, html: Option<String>) -> Vec<u8> {
+    let html = html
+        .filter(|html| !html.trim().is_empty())
+        .unwrap_or_else(|| quoted_html(text));
+    bounded_text(&html, MAX_DRAFT_BODY_CHARS, true).into_bytes()
+}
+
 /// `text` as HTML: each line a paragraph, a line starting with `> `
-/// quoted, nothing in it taken as markup.
+/// quoted, nothing in it taken as markup. A blank line only separates
+/// paragraphs, which stand apart already: no empty paragraph of its own. A
+/// bare `>` is a quoted blank line, as a reply quotes the original's
+/// paragraph breaks: it stays a quoted line rather than a `>` of its own.
 fn quoted_html(text: &str) -> String {
     text.split('\n')
-        .map(|line| match line.strip_prefix("> ") {
-            Some(quoted) => format!("<blockquote><p>{}</p></blockquote>", escape_html(quoted)),
-            None => format!("<p>{}</p>", escape_html(line)),
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let quoted = if line == ">" {
+                Some("")
+            } else {
+                line.strip_prefix("> ")
+            };
+            match quoted {
+                Some(quoted) => format!("<blockquote><p>{}</p></blockquote>", escape_html(quoted)),
+                None => format!("<p>{}</p>", escape_html(line)),
+            }
         })
         .collect()
 }
@@ -886,6 +1014,19 @@ impl Mail {
             .with_effect(&MailEffect::Forward {
                 message: id.to_owned(),
             })
+            .with_effect(&MailEffect::LoadRemoteContent {
+                message: id.to_owned(),
+            })
+            .with_effect(&MailEffect::AlwaysLoadRemoteContent {
+                message: id.to_owned(),
+            })
+            .with_effect_asking(
+                &MailEffect::OpenLink {
+                    message: id.to_owned(),
+                    url: String::new(),
+                },
+                &["url"],
+            )
             .with(
                 Self::MARK_READ
                     .bind(mailbox::MarkRead::paths().messages, ids.clone())
@@ -1109,14 +1250,14 @@ const SCENARIOS: &[&str] = &[
     "mid",
     "compose",
     "compose_narrow",
-    "setup",
-    "setup_narrow",
-    "setup_add",
-    "setup_blank",
-    "setup_discovering",
-    "setup_oauth",
     "firstrun",
     "html_mail",
+    "html_newsletter",
+    "html_github",
+    "html_receipt",
+    "html_dark",
+    "html_inline",
+    "plain_text",
     "search",
     "preview",
     "bulk",
@@ -1126,7 +1267,6 @@ const SCENARIOS: &[&str] = &[
     "loading",
     "empty",
     "offline",
-    "error",
 ];
 
 /// What the binary runs instead of opening a window.
@@ -1207,16 +1347,18 @@ impl ResourceApp for MailShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            Some(
-                "narrow" | "narrow_detail" | "narrow_drawer" | "compose_narrow" | "setup_narrow",
-            ) => (560, 860),
+            Some("narrow" | "narrow_detail" | "narrow_drawer" | "compose_narrow") => (560, 860),
             Some("mid") => (1000, 720),
             Some("compose" | "reply") => (1180, 820),
-            Some(
-                "setup" | "setup_add" | "setup_blank" | "setup_discovering" | "setup_oauth"
-                | "firstrun" | "error",
-            ) => (1100, 780),
+            Some("firstrun") => (1100, 780),
             Some("html_mail") => (1280, 820),
+            Some(gallery)
+                if crate::app::GALLERY_SCENARIOS
+                    .iter()
+                    .any(|(name, _)| *name == gallery) =>
+            {
+                (1280, 900)
+            }
             _ => (1280, 800),
         }
     }
@@ -1225,6 +1367,13 @@ impl ResourceApp for MailShell {
         let mail = match fixture.scenario() {
             Some("firstrun") => MailFixture::without_accounts(),
             Some("empty") => MailFixture::before_first_fetch(),
+            Some(gallery)
+                if crate::app::GALLERY_SCENARIOS
+                    .iter()
+                    .any(|(name, _)| *name == gallery) =>
+            {
+                MailFixture::html_gallery()
+            }
             _ => MailFixture::bundled(),
         };
         fixture.provide(mail);
@@ -1286,6 +1435,9 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
             if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
                 self.follow_person_accounts(accounts);
             }
+            if let Some(copies) = cx.person::<crate::copies::MailCopies>() {
+                self.share_copies(copies);
+            }
         }
         let outbox = self.server_outbox();
         let shared = std::rc::Rc::clone(&self.shared);
@@ -1333,6 +1485,10 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
     }
 
     fn effect(&mut self, effect: MailEffect, cx: &mut EffectCx<Mail, Self>) -> EffectAnswer {
+        // Held mail is read from the record alone, in a window or a worker.
+        if let Some(answer) = crate::held::effect(&effect, &cx.live().get()) {
+            return answer;
+        }
         if let MailEffect::Save { message, index } = &effect {
             let (name, bytes) = self.attachment_to_save(message, *index)?;
             let resource = format!("mail.attachment:{message}:{index}");
@@ -1654,14 +1810,8 @@ mod tests {
                     "{scenario}"
                 );
                 let frame = app.harness().inspection_json().unwrap();
-                match *scenario {
-                    "firstrun" => assert!(frame.contains("No email account yet"), "{frame}"),
-                    "setup" | "setup_narrow" => {
-                        let email = crate::sample::sample_account_store().active_config().email;
-                        assert!(frame.contains(&email), "{scenario}: {frame}");
-                    }
-                    "error" => assert!(frame.contains("That password didn’t work."), "{frame}"),
-                    _ => {}
+                if *scenario == "firstrun" {
+                    assert!(frame.contains("No email account yet"), "{frame}");
                 }
             }
         }
@@ -2084,6 +2234,29 @@ mod tests {
             assert!(shown.contains("from an agent"), "the composer shows it");
             assert!(app.undo());
             assert_eq!(body(&app), [""]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::MailShell::scenarios() {
+            let mut app = TestApp::<super::MailShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
         }
     }
 }

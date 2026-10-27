@@ -1,5 +1,3 @@
-//! Native surface presence reaches the portable browser session over the
-//! production HTTPS/WebTransport carriers, and browser input returns privately.
 #![allow(clippy::unwrap_used, reason = "in a test these are assertions")]
 
 mod support;
@@ -8,12 +6,35 @@ use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::Host;
 use tilo_media::realtime::negotiate;
 use tilo_media::{CodecCapabilities, StreamCodec};
+use tilo_moq::live::peer::MemberOps;
 use tilo_relay_client::{AttributedPresence, Envelope};
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_relay_session::RelayClient;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{TestHost, enrol, ready, start_host, start_peer, workspace};
+
+/// The next frame `ops` delivers, waited on as long as the caller's bound
+/// allows. Seal frames and failed groups never reach it: [`MemberOps`]
+/// skips them as the page does.
+async fn next_frame(ops: &mut MemberOps) -> wire::Frame {
+    loop {
+        if let Some(frame) = ops.next(std::time::Duration::from_secs(1)).await {
+            return wire::Frame::decode(&frame).unwrap();
+        }
+    }
+}
+
+/// The frame after the replayed `start`: a renewed subscription starts at
+/// the latest group again, so its start frame can repeat.
+async fn after_start(video: &mut MemberOps, start: &wire::Frame) -> wire::Frame {
+    loop {
+        let frame = next_frame(video).await;
+        if frame != *start {
+            return frame;
+        }
+    }
+}
 
 fn publish(client: &RelayClient, author: [u8; 32], message: &NeighbourMsg) {
     client
@@ -218,52 +239,26 @@ async fn native_window_scenario() {
         },
     );
     let path = tilo_moq::live::namespace_path(&grant.room, &hex::encode(author)).unwrap();
-    let namespace = tilo_test_env::within("the native stream namespace", live.member(&path))
-        .await
-        .unwrap();
     let track = |record: &tilo_relay_protocol::live::LiveRecord| {
         format!("ops/{}", hex::encode(record.digest()))
     };
-    let mut index = namespace
-        .track(&track(&wire::index_record()))
-        .unwrap()
-        .subscribe(None)
-        .await
-        .unwrap();
+    let mut index = MemberOps::follow(&live, &path, &track(&wire::index_record()));
     let expected = wire::Stream::new(7, "org.chromium.Chromium", "h264", 640, 480);
     tilo_test_env::within("the stream index", async {
-        loop {
-            if let Some(mut group) = index.recv_group().await.unwrap()
-                && let Some(frame) = group.read_frame().await.unwrap()
-                && wire::Frame::decode(&frame.payload).unwrap()
-                    == wire::Frame::Index(vec![expected.clone()])
-            {
-                break;
-            }
-        }
+        while next_frame(&mut index).await != wire::Frame::Index(vec![expected.clone()]) {}
     })
     .await;
     // No subsequent native frame is needed: a new browser receives the cached keyframe.
-    let mut video = namespace
-        .track(&track(&wire::stream_record(7)))
-        .unwrap()
-        .subscribe(None)
-        .await
-        .unwrap();
-    let mut group = tilo_test_env::within("the replayed video group", video.recv_group())
-        .await
-        .unwrap()
-        .unwrap();
-    let start = group.read_frame().await.unwrap().unwrap();
-    assert_eq!(
-        wire::Frame::decode(&start.payload).unwrap(),
-        wire::Frame::Start(expected)
-    );
-    let chunk = group.read_frame().await.unwrap().unwrap();
-    assert!(
-        matches!(wire::Frame::decode(&chunk.payload).unwrap(), wire::Frame::Chunk { flags, data, .. }
-        if flags == wire::CHUNK_KEY | wire::CHUNK_FIRST | wire::CHUNK_LAST && data == encoded)
-    );
+    let mut video = MemberOps::follow(&live, &path, &track(&wire::stream_record(7)));
+    let (start, chunk) = tilo_test_env::within("the replayed video group", async {
+        let start = next_frame(&mut video).await;
+        let chunk = after_start(&mut video, &start).await;
+        (start, chunk)
+    })
+    .await;
+    assert_eq!(start, wire::Frame::Start(expected));
+    assert!(matches!(chunk, wire::Frame::Chunk { flags, data, .. }
+        if flags == wire::CHUNK_KEY | wire::CHUNK_FIRST | wire::CHUNK_LAST && data == encoded));
     request.events = vec![wire::InputEvent::PointerEnter { surface: 999 }];
     assert!(input(&browser, request.clone()).await.unwrap());
     tilo_test_env::within("private native input", async {
@@ -322,14 +317,9 @@ async fn native_window_scenario() {
         },
     );
     tilo_test_env::within("the revoked stream index", async {
-        loop {
-            if let Some(mut group) = index.recv_group().await.unwrap()
-                && let Some(frame) = group.read_frame().await.unwrap()
-                && matches!(wire::Frame::decode(&frame.payload), Ok(wire::Frame::Index(streams)) if streams.is_empty()) {
-                    break;
-                }
-        }
-    }).await;
+        while next_frame(&mut index).await != wire::Frame::Index(Vec::new()) {}
+    })
+    .await;
     let refusal = input(&browser, request).await.unwrap_err();
     assert!(
         refusal == "host unavailable: status 404: no such window",
@@ -559,51 +549,25 @@ async fn a_session_without_an_h264_encoder_streams_vp9_to_a_browser_that_decodes
         },
     );
     let path = tilo_moq::live::namespace_path(&grant.room, &hex::encode(author)).unwrap();
-    let namespace = tilo_test_env::within("the native stream namespace", live.member(&path))
-        .await
-        .unwrap();
     let track = |record: &tilo_relay_protocol::live::LiveRecord| {
         format!("ops/{}", hex::encode(record.digest()))
     };
-    let mut index = namespace
-        .track(&track(&wire::index_record()))
-        .unwrap()
-        .subscribe(None)
-        .await
-        .unwrap();
+    let mut index = MemberOps::follow(&live, &path, &track(&wire::index_record()));
     let expected = wire::Stream::new(7, "org.chromium.Chromium", wire::VP9, 640, 480);
     tilo_test_env::within("the VP9 stream index", async {
-        loop {
-            if let Some(mut group) = index.recv_group().await.unwrap()
-                && let Some(frame) = group.read_frame().await.unwrap()
-                && wire::Frame::decode(&frame.payload).unwrap()
-                    == wire::Frame::Index(vec![expected.clone()])
-            {
-                break;
-            }
-        }
+        while next_frame(&mut index).await != wire::Frame::Index(vec![expected.clone()]) {}
     })
     .await;
-    let mut video = namespace
-        .track(&track(&wire::stream_record(7)))
-        .unwrap()
-        .subscribe(None)
-        .await
-        .unwrap();
-    let mut group = tilo_test_env::within("the replayed VP9 group", video.recv_group())
-        .await
-        .unwrap()
-        .unwrap();
-    let start = group.read_frame().await.unwrap().unwrap();
-    assert_eq!(
-        wire::Frame::decode(&start.payload).unwrap(),
-        wire::Frame::Start(expected)
-    );
-    let chunk = group.read_frame().await.unwrap().unwrap();
-    assert!(
-        matches!(wire::Frame::decode(&chunk.payload).unwrap(), wire::Frame::Chunk { flags, data, .. }
-        if flags == wire::CHUNK_KEY | wire::CHUNK_FIRST | wire::CHUNK_LAST && data == key_frame)
-    );
+    let mut video = MemberOps::follow(&live, &path, &track(&wire::stream_record(7)));
+    let (start, chunk) = tilo_test_env::within("the replayed VP9 group", async {
+        let start = next_frame(&mut video).await;
+        let chunk = after_start(&mut video, &start).await;
+        (start, chunk)
+    })
+    .await;
+    assert_eq!(start, wire::Frame::Start(expected));
+    assert!(matches!(chunk, wire::Frame::Chunk { flags, data, .. }
+        if flags == wire::CHUNK_KEY | wire::CHUNK_FIRST | wire::CHUNK_LAST && data == key_frame));
     drop(live);
     browser.close();
     native.close().await;

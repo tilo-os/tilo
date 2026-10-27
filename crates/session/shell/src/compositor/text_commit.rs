@@ -447,7 +447,14 @@ impl State {
         .is_some_and(|app_id| {
             use settings_store::paste_shortcut as paste;
             let input = settings_store::load_section(paste::SECTION);
-            paste::resolve(&app_id, &paste::overrides_from_section(&input))
+            // Settings names a host app by its desktop-file id (the app
+            // chooser's), whatever its window announces itself as.
+            let installed =
+                crate::shell::host_apps::app_for_window_id(&app_id).map(|app| app.desktop_id);
+            let ids: Vec<&str> = std::iter::once(app_id.as_str())
+                .chain(installed.as_deref())
+                .collect();
+            paste::resolve_ids(&ids, &paste::overrides_from_section(&input))
                 == paste::PasteShortcut::CtrlShiftV
         });
         let v = self.keysym_to_keycode(KEYSYM_V).unwrap_or(KEY_V);
@@ -893,7 +900,6 @@ mod tests {
                 "hint {hint:#x}"
             );
         }
-        // Spellcheck, multiline, e-mail and terminal fields are ordinary.
         assert!(
             !ContentType {
                 hint: 0x2 | 0x200,

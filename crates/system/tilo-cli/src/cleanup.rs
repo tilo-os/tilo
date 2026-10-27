@@ -225,9 +225,6 @@ impl Conditions {
 }
 
 /// Whether one entry goes: `Ok(())` to remove it, `Err` with why it stays.
-///
-/// # Errors
-/// The reason it stays, and for a recent entry when it becomes eligible.
 pub fn decide(
     last_used: SystemTime,
     policy: &AgePolicy,
@@ -889,12 +886,15 @@ mod tests {
         age_dir(&layout.join("blobs/sha256"), 20);
         age_dir(&layout.join("blobs"), 20);
         age_dir(&layout, 20);
+        // A compressing filesystem may store the blob in far fewer blocks
+        // than its length, and counts them only once written out.
+        rustix::fs::syncfs(File::open(root.path()).unwrap()).unwrap();
         let mut record = Record::default();
         clean_vm_image(&mut record, root.path(), &policy, plenty).unwrap();
         assert!(!layout.exists(), "{record:?}");
         assert_eq!(record.removed.len(), 1);
         assert_eq!(record.removed[0].kind, Kind::VmImage);
-        assert!(record.removed[0].bytes >= 8192, "{record:?}");
+        assert!(record.removed[0].bytes > 0, "{record:?}");
 
         // In use: an upgrade holds image.lock while it copies.
         file(&layout.join("index.json"), 100, 20);

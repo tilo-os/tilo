@@ -180,10 +180,6 @@ impl SecureNearbyDestination {
 impl SecureNearbySource {
     /// Open `requested` beneath one exact granted file/directory without
     /// following any symlink in the relative walk.
-    ///
-    /// # Errors
-    /// Returns an error when the grant/source is unavailable, outside the
-    /// grant, contains symlinks, or is not a regular file/directory.
     pub fn open_beneath(grant: &Path, requested: &Path) -> Result<Self, String> {
         let name = portable_name(requested)?;
         let canonical_grant = fs::canonicalize(grant).map_err(display)?;
@@ -430,9 +426,6 @@ pub(crate) struct Staging {
 
 impl Staging {
     /// The file or folder at `source`, named after it, as transfer `id`.
-    ///
-    /// # Errors
-    /// Returns an error when the source's name is not portable.
     pub(crate) fn for_path(
         source: &Path,
         target: String,
@@ -443,9 +436,6 @@ impl Staging {
     }
 
     /// The regular file behind a media handoff, shown as `name`.
-    ///
-    /// # Errors
-    /// Returns an error when `name` is not portable.
     pub(crate) fn for_media(
         name: String,
         target: String,
@@ -599,9 +589,6 @@ impl ReservedStage {
 impl NearbyTransferStore {
     /// Open and repair a private transfer spool. Uncheckpointed crash tails are
     /// truncated before a resume offset is advertised.
-    ///
-    /// # Errors
-    /// Returns an error for unsafe storage, invalid metadata, or failed repair.
     pub fn open(root: PathBuf, now_unix_ms: u64) -> Result<Self, String> {
         ensure_private_dir(&root)?;
         ensure_private_dir(&root.join("outbox"))?;
@@ -670,9 +657,6 @@ impl NearbyTransferStore {
     }
 
     /// Stage a source under a new random identity.
-    ///
-    /// # Errors
-    /// Returns an error for unsafe sources, quota exhaustion, or failed persistence.
     pub fn stage(
         &mut self,
         source: &Path,
@@ -693,9 +677,6 @@ impl NearbyTransferStore {
     }
 
     /// Stage a source under a caller-issued identity.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid/in-use ID, unsafe source, quota, or I/O failure.
     pub fn stage_with_id(
         &mut self,
         source: &Path,
@@ -709,10 +690,6 @@ impl NearbyTransferStore {
 
     /// Stage the regular file behind a media handoff under a caller-issued
     /// identity and portable display name.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid/in-use ID or name, a source that is not
-    /// one regular file, quota or free-space exhaustion, or I/O failure.
     pub fn stage_media_with_id(
         &mut self,
         source: &Path,
@@ -735,11 +712,6 @@ impl NearbyTransferStore {
     /// caller writes it ([`ReservedStage::write_path`],
     /// [`ReservedStage::write_secure`]) without holding the store, then
     /// records it with [`Self::record_stage`].
-    ///
-    /// # Errors
-    /// Returns an error for an in-use ID, a source that is not a regular file
-    /// (or, outside a media handoff, a folder), or quota or free-space
-    /// exhaustion.
     pub(crate) fn reserve_stage(
         &self,
         staging: Staging,
@@ -784,10 +756,6 @@ impl NearbyTransferStore {
 
     /// Stage from an already-open Files grant capability. No app-controlled
     /// absolute path is reopened, including on the deferred worker path.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid/in-use ID, unsafe directory contents,
-    /// quota exhaustion, or I/O failure.
     pub fn stage_secure_with_id(
         &mut self,
         source: SecureNearbySource,
@@ -869,9 +837,6 @@ impl NearbyTransferStore {
     }
 
     /// Create or resume one exact-source, exact-request incoming object.
-    ///
-    /// # Errors
-    /// Returns an error for invalid/mismatched manifests, quota, or durable I/O failure.
     pub fn begin_incoming(
         &mut self,
         manifest: IncomingManifest,
@@ -928,9 +893,6 @@ impl NearbyTransferStore {
     /// Accept a fresh, explicitly consented offer for the same immutable object.
     /// A sender restart/retry changes the request ID, not the certified source
     /// or manifest. Ordinary `begin_incoming` remains exact-request bound.
-    ///
-    /// # Errors
-    /// Returns an error for a changed source/manifest or durable I/O failure.
     pub(crate) fn accept_incoming_offer(
         &mut self,
         manifest: IncomingManifest,
@@ -1006,9 +968,6 @@ impl NearbyTransferStore {
     }
 
     /// Append one in-order chunk and durably checkpoint bounded prefixes.
-    ///
-    /// # Errors
-    /// Returns an error for an unknown ID, invalid ordering/size, or failed I/O.
     pub fn append(&mut self, id: [u8; 16], offset: u64, bytes: &[u8]) -> Result<u64, String> {
         let entry = self
             .index
@@ -1064,9 +1023,6 @@ impl NearbyTransferStore {
     }
 
     /// Verify and collision-safely install a completed object.
-    ///
-    /// # Errors
-    /// Returns an error on integrity failure, unsafe extraction, collision, or I/O failure.
     pub fn finish(&mut self, id: [u8; 16], downloads: &Path) -> Result<PathBuf, String> {
         let entry = self
             .index
@@ -1095,10 +1051,6 @@ impl NearbyTransferStore {
     /// Verify a completed media handoff and move it into the private media
     /// cache, bound to its exact sender and transfer. The object never enters
     /// Downloads or a Files destination.
-    ///
-    /// # Errors
-    /// Returns an error for an unknown or non-media transfer, an integrity
-    /// failure (the transfer is then discarded), or failed I/O.
     pub fn finish_to_cache(&mut self, id: [u8; 16]) -> Result<PathBuf, String> {
         let entry = self
             .index
@@ -1237,9 +1189,6 @@ impl NearbyTransferStore {
     }
 
     /// Truncate a mismatched incoming prefix to zero.
-    ///
-    /// # Errors
-    /// Returns an error for an unknown ID or failed truncation/persistence.
     pub fn restart_incoming(&mut self, id: [u8; 16]) -> Result<[u8; 32], String> {
         let entry = self
             .index

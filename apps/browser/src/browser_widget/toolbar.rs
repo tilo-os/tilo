@@ -67,7 +67,7 @@ impl BrowserWidget {
     }
 
     /// The resource and action a press of the settings row performs.
-    fn settings_command(&self) -> (&'static str, &'static str) {
+    pub(super) fn settings_command(&self) -> (&'static str, &'static str) {
         if self.show_settings {
             (crate::resource::Browser::KIND, "show-page")
         } else {
@@ -75,10 +75,13 @@ impl BrowserWidget {
         }
     }
 
-    /// The bookmark command: the hosted document edit, or the canonical
-    /// action when the widget stands alone.
+    /// The bookmark command: into the person's own library when the window
+    /// keeps one, as the star and Ctrl+D do; otherwise the hosted document
+    /// edit, or the canonical action when the widget stands alone.
     fn bookmark_command(&self) -> Box<dyn FnMut()> {
-        if self.is_framework_hosted() {
+        if self.person_bookmarks.is_some() {
+            Box::new(self.queue_command("browser.page", "bookmark-personal-page"))
+        } else if self.is_framework_hosted() {
             let action = self.page_bookmark_action();
             let dispatcher = self.dispatch.clone();
             Box::new(move || {
@@ -107,7 +110,7 @@ impl BrowserWidget {
                 self.site.open_command(true),
             ));
             items.push(row(
-                &t(if self.bookmarks.contains(&self.current_uri) {
+                &t(if self.page_bookmarked() {
                     "browser-page-bookmarked"
                 } else {
                     "browser-bookmark-page"
@@ -223,6 +226,7 @@ impl BrowserWidget {
             "browser.page",
             if loading { "stop" } else { "reload" },
         );
+        // window-bar: fallback, the bar's location is the address while it hosts the window
         let address = TextInput::from_state(&self.address)
             .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)

@@ -4,12 +4,12 @@
 //! grids, track lists, detail pages, search and the now-playing transport
 //! bar), so the app owns its layout math and hit-testing rather than
 //! composing stock taffy widgets. User-authored library state is the
-//! [`Library`](crate::model::Library) resource; `sync` refreshes that render
+//! [`Library`] resource; `sync` refreshes that render
 //! snapshot each frame. Playback, downloads and other device effects stay
 //! local so one device can never start audio or consume another device's disk.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::Receiver;
@@ -26,15 +26,13 @@ use vello::peniko::{Color, Fill};
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::ImageStore;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest, PortalChannel};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
-#[cfg(test)]
-use ui::widget::SplitLayout;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{Notice, ToastKind};
-use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, Widget};
+use ui::widget::{ModalDialog, NavFeed, PromptBody, TransportFeed, Widget, WindowBarLink};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -65,7 +63,7 @@ const OFFLINE_FAILED: &str = "Couldn\u{2019}t download for offline listening";
 
 fn cover_request() -> PickRequest {
     PickRequest::open("Choose a playlist cover", "Set cover")
-        .thread_name("music-portal-cover")
+        .max_contents_bytes(usize::try_from(MAX_COVER_SOURCE_BYTES).unwrap_or(usize::MAX))
         .filter(
             FileFilter::new("Images")
                 .mimetype("image/png")
@@ -93,9 +91,69 @@ pub enum View {
     Browse,
     Queue,
     Lyrics,
+    /// The song playing, large: what the transport's cover opens.
+    NowPlaying,
     Album(String),
     Artist(String),
     Playlist(String),
+    /// What the window bar's search field asks of the library and the
+    /// catalogue.
+    Search,
+    /// A query view the person kept, by its id.
+    Kept(String),
+}
+
+/// Whether this build can reach an online catalogue. The browser build has
+/// no live backend yet (it waits for a fetch path out of the page), so it
+/// must not offer online search or sources it cannot serve.
+const ONLINE_CATALOGUE: bool = cfg!(feature = "live");
+
+/// What Home says before the person has music or a source: it invites
+/// connecting one (a folder of their own files, Spotify, `YouTube` Music), and
+/// fetches nothing until they do.
+const HOME_EMPTY_TITLE: &str = "Add music";
+const HOME_EMPTY_MESSAGE: &str =
+    "Choose Open audio file to play a file from this device, or connect Spotify or YouTube Music.";
+const HOME_EMPTY_ACTION: &str = "Connect a source";
+
+/// The first-run Home message, and whether searching is worth offering.
+fn first_run_copy(online: bool) -> (&'static str, bool) {
+    if online {
+        ("Find a song, album or artist, or open an audio file.", true)
+    } else {
+        (
+            "This version can't find music online yet. Choose Open audio file to play a file from this device.",
+            false,
+        )
+    }
+}
+
+/// What a failed Home fetch tells the user. Without an online catalogue the
+/// failure is expected and the first-run copy already says why, so the
+/// backend's own wording stays in the log.
+fn home_failure_note(online: bool, error: String) -> Option<String> {
+    online.then_some(error)
+}
+
+impl View {
+    /// A sidebar destination, a view the person kept included: reaching one
+    /// starts a fresh trail, so it never shows a back button that would walk
+    /// through unrelated sections.
+    fn is_section(&self) -> bool {
+        matches!(
+            self,
+            Self::Home
+                | Self::Songs
+                | Self::Albums
+                | Self::Artists
+                | Self::Playlists
+                | Self::Downloads
+                | Self::Liked
+                | Self::Browse
+                | Self::Queue
+                | Self::Kept(_)
+        )
+    }
 }
 
 /// A click action captured during draw and dispatched on the next mouse
@@ -133,9 +191,6 @@ enum Action {
     VolumeFrac(f64),
     /// Toggle mute: drop the volume to 0, or restore the pre-mute level.
     ToggleMute,
-    /// Open / close the volume popover (shown when the inline slider collapses
-    /// to a button on a narrower bar).
-    ToggleVolumePopover,
     /// Open the native file portal to pick a cover image for this playlist.
     PickPlaylistCover(String),
     /// Append a track to the end of the play queue.
@@ -211,19 +266,26 @@ enum Action {
     /// current view), or, when already on it, hide it and return to where the
     /// user was before.
     ToggleQueue,
-    /// Show or hide the adaptive navigation sidebar.
-    ToggleSidebar,
-    /// Dismiss the overlay sidebar (scrim tap / Esc).
-    CloseSidebar,
+    /// Ask the query view this: a chip picked or taken away.
+    SetQuery(ui::framework::views::QuerySpec),
+    /// Open the values of the query view's filter with this key.
+    OpenFacet(String),
+    /// Keep the query view shown beside the designed views.
+    KeepQuery,
+    /// Stop keeping the kept view with this id.
+    ForgetKept(String),
+    /// Take the person to where the control running `action` lives, and
+    /// highlight it there.
+    ShowControl {
+        home: String,
+        action: Box<Action>,
+    },
+    /// Ask the remote source with this id again for the open query, after
+    /// it could not answer.
+    RetryRemote(String),
     /// A no-op hit used to swallow clicks inside a modal surface so they don't
     /// fall through to the scrim behind it.
     None,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Drag {
-    Scrubber,
-    Volume,
 }
 
 #[derive(Clone)]
@@ -239,6 +301,13 @@ struct TrackTableSlot {
     queue: Arc<Vec<String>>,
     playlist: Option<String>,
     queue_offset: Option<usize>,
+}
+
+/// An Open audio file chooser in flight: a path where files have them,
+/// else the chosen file's contents.
+enum LocalFilePick {
+    Path(PortalChannel),
+    Contents(ui::portal::ContentsChannel),
 }
 
 #[derive(Clone, Debug)]
@@ -279,7 +348,19 @@ pub struct MusicApp {
     persist_device_profile: bool,
     pb: Playback,
     view: View,
-    nav_back: Vec<View>,
+    /// The window's views: Back returns to the one before as it was left.
+    nav: ui::framework::views::ViewStack<View>,
+    /// The window bar's search and what it found.
+    search: render::SearchView,
+    /// The query views the person kept, a personal setting that follows them
+    /// to their other devices. `None` before the surface is attached (a
+    /// test drives the app alone), when they are kept in `kept_here`.
+    kept: Option<ui::framework::Setting<ui::framework::views::KeptViews>>,
+    kept_here: ui::framework::views::KeptViews,
+    /// Bumped whenever the library the document holds changes.
+    library_revision: u64,
+    /// The songs to select in the view just returned to.
+    restore_selection: Option<Vec<String>>,
     /// The query the live catalogue is answering. Search belongs to the
     /// platform: the app draws no field, it only runs the remote query the
     /// platform's search provider asks for.
@@ -287,11 +368,11 @@ pub struct MusicApp {
     /// The exchange with the platform search's live-catalogue provider.
     pending_catalogue_query: Option<String>,
     catalogue_invocation: Option<tilo_actions::InvocationId>,
-    /// The header's two actions, real retained buttons: open an audio file,
-    /// and open the platform search for this app.
-    open_file_button: ui::widget::Button,
     source_buttons: Vec<ui::widget::Button>,
     spotify_catalogue: bool,
+    /// Whether the person connected an online catalogue on this device; Home
+    /// fetches nothing until they have.
+    catalogue_connected: bool,
     source_invocation: Option<tilo_actions::InvocationId>,
     source_disconnect_pending: bool,
     spotify_jobs: HashMap<u64, spotify::PendingJob>,
@@ -304,10 +385,13 @@ pub struct MusicApp {
     spotify_menu_controls: Vec<ui::widget::ActionEmitter<()>>,
     control_domain: Option<ui::ControlDomain>,
     source_error: Option<String>,
-    open_file_layout_visible: Option<(bool, bool, u8)>,
-    back_button: ui::widget::Button,
+    /// Which of the source buttons the tree holds, as last reported.
+    open_file_layout_visible: Option<u8>,
+    /// Back was pressed in the window's bar; the next settle goes back.
     back_requested: std::rc::Rc<std::cell::Cell<bool>>,
-    search_button: ui::widget::Button,
+    /// Open an audio file, pressed in the window's bar: its invocation, for
+    /// the window's controls to run ([`Self::sync_window_toolbar`]).
+    bar_controls: std::collections::VecDeque<tilo_actions::ControlInvocation>,
     /// Search opened from the app's own painted controls (a Browse tile).
     search_opener: ui::search::SearchOpener,
     audio: AudioEngine,
@@ -373,11 +457,13 @@ pub struct MusicApp {
     handoff: media::handoff::AppPlaybackHandle,
     pending_media_handoff: Option<PendingMediaHandoff>,
     local_file: Option<crate::local_file::LocalFile>,
-    local_file_pick: Option<(tilo_actions::InvocationId, PortalChannel)>,
+    local_file_pick: Option<(tilo_actions::InvocationId, LocalFilePick)>,
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
-    cover_pick: Option<PortalChannel>,
+    /// The cover image being chosen, read by the host: a browser page has
+    /// no path to hand over, only the file's contents.
+    cover_pick: Option<ui::portal::ContentsChannel>,
     /// Which playlist an in-flight cover pick belongs to. The portal only ever
     /// answers "which file", so the app remembers "for what".
     cover_pick_for: Option<String>,
@@ -422,20 +508,20 @@ pub struct MusicApp {
     frame_theme: Option<Theme>,
     content_height: f64,
 
-    /// Adaptive navigation sidebar: the shared [`ui::widget::sidebar::SidebarDrawer`]
-    /// primitive. It owns the docked-vs-overlay decision, the eased reveal, the
-    /// dimming scrim and the user-toggle memory, and hands back the resolved
-    /// sidebar/content rects — so collapse clears cleanly (its own clip) and the
-    /// panel never resizes against the content.
-    drawer: SidebarDrawer,
-    /// The window's History control, held in the content column's header
-    /// row: the window draws no History bar above the app.
-    history: ui::widget::HistoryOpener,
-    /// Where the History control stands in the header row.
-    history_rect: Rect,
-    /// Height of the now-playing bar in the last painted theme, so the event
-    /// path hit-tests the bar that was drawn.
-    bar_h: f64,
+    /// The places the window's shell shows in its sidebar.
+    places: NavFeed,
+    /// What plays, as the transport in the shell's band shows it.
+    transport: TransportFeed,
+    /// The Now Playing page's song and its cover's flight from the band.
+    now_playing: render::NowPlaying,
+    /// What the transport's actions read when they are invoked.
+    playing_now: std::sync::Arc<shell::Playing>,
+    /// The shell's own buttons in the window's bar; none outside a shell.
+    bar: Option<WindowBarLink>,
+    /// The shell's front screen in a narrow window.
+    pane: Option<ui::LocalState<ui::widget::NavPane>>,
+    /// The view the shell was last told about.
+    shown_view: Option<View>,
 
     mouse: Point,
     hits: Vec<Hit>,
@@ -456,33 +542,9 @@ pub struct MusicApp {
     page_parts_drawn: usize,
     /// The name of the row control under the pointer, for its tooltip.
     table_tooltip: Option<String>,
-    drag: Option<Drag>,
-    /// A horizontal swipe in progress on the now-playing bar: `(start point,
-    /// tap action under the press)`. On release a large horizontal delta skips
-    /// track (swipe left → next, right → previous); a small delta falls back to
-    /// the captured tap. Enables touch-style prev/next on the bottom bar.
-    bar_press: Option<(Point, Option<Action>)>,
-    /// Interactive bar rects in the now-playing transport, captured during
-    /// draw so the event handler can map drags to fractions.
-    scrubber_rect: Rect,
-    volume_rect: Rect,
-    /// Where a pointer takes the scrubber and the volume slider: their
-    /// faces' hit rects, captured at paint.
-    scrubber_hit: Rect,
-    volume_hit: Rect,
-    /// The volume button's hit rect (shown when the inline slider is collapsed)
-    /// and the open state + slider rect of its popover.
-    volume_btn_rect: Rect,
-    volume_popover_open: bool,
-    volume_popover_rect: Rect,
-    volume_popover_slider: Rect,
-    /// The now-playing bar's queue-button rect, captured during draw. Hovering
-    /// it opens the queue preview overlay; clicking it toggles the queue view.
-    queue_btn_rect: Rect,
     /// The view (+ scroll offset) to return to when the queue view is toggled
     /// back off, so "Queue" restores exactly where the user was rather than
     /// resetting. `None` when the queue view wasn't opened via the toggle.
-    queue_return: Option<(View, f64)>,
     dirty: bool,
     toast: Notice,
 
@@ -546,7 +608,9 @@ pub struct MusicApp {
     /// pointer.
     staged_row_pointer: Option<usize>,
     /// Open the narrow transport's More menu once the bar is laid out.
-    staged_player_menu: bool,
+    /// A capture opens this filter's values over its chip once the chips
+    /// are laid out.
+    staged_facet: Option<String>,
 
     // ---- real artwork + live content -------------------------------------
     /// Async remote-image cache: real album/artist/playlist covers fetched off
@@ -561,7 +625,8 @@ pub struct MusicApp {
     /// The real YouTube-Music Home page (charts / new releases / top artists),
     /// once fetched. `None` offline / before it lands → the sample home shows.
     home: Option<HomeContent>,
-    home_requested: bool,
+    /// When the Home fetch was asked: its placeholder steps on from then.
+    home_asked: Option<Instant>,
     /// Set once a Home fetch has come back empty-handed (offline build, network
     /// error). Stops the loading skeleton — and the animation loop — so the
     /// empty Home settles instead of shimmering forever.
@@ -569,6 +634,9 @@ pub struct MusicApp {
     /// Detail pages (artist / album / playlist ids) whose live fetch failed, so
     /// their skeleton stops and an honest "couldn't load" state shows instead.
     failed_pages: HashSet<String>,
+    /// When each live detail page was asked of the catalogue: its
+    /// placeholder steps on from then.
+    pages_asked: HashMap<String, Instant>,
     /// Real artist pages keyed by channel id, and the set already requested.
     artist_pages: HashMap<String, ArtistPage>,
     artist_requested: HashSet<String>,
@@ -711,6 +779,7 @@ impl MusicApp {
     pub(crate) fn offline() -> Self {
         let mut app = Self::new_with_device_profile(false);
         app.allow_network = false;
+        app.search = render::SearchView::hermetic();
         app
     }
 
@@ -735,7 +804,8 @@ impl MusicApp {
         // A preset search query (`TILO_MUSIC_VIEW=search:…`) arms the debounce so
         // the live-shot loop dispatches it after the usual idle beat.
         let preset_search_at = (!query.is_empty()).then(ui::time::now);
-        let persist_device_profile = load_device_profile && !cfg!(test);
+        let persist_device_profile =
+            load_device_profile && !cfg!(test) && crate::storage::device_profile_has_a_place();
         let device_profile = persist_device_profile
             .then(crate::storage::load_device_profile)
             .unwrap_or_default();
@@ -782,13 +852,22 @@ impl MusicApp {
             persist_device_profile,
             pb: device_profile.playback,
             view: View::Home,
-            nav_back: Vec::new(),
+            nav: ui::framework::views::ViewStack::new(View::Home),
+            #[cfg(test)]
+            search: render::SearchView::local_only(),
+            #[cfg(not(test))]
+            search: render::SearchView::live(),
+            kept: None,
+            kept_here: ui::framework::views::KeptViews::default(),
+            library_revision: 0,
+            restore_selection: None,
             search_query: query,
             pending_catalogue_query: None,
             catalogue_invocation: None,
-            open_file_button: Self::make_open_file_button(),
             source_buttons: Self::make_source_buttons(),
             spotify_catalogue: device_profile.spotify_catalogue,
+            catalogue_connected: device_profile.catalogue_connected
+                || device_profile.spotify_catalogue,
             source_invocation: None,
             source_disconnect_pending: false,
             spotify_jobs: HashMap::new(),
@@ -802,13 +881,8 @@ impl MusicApp {
             control_domain: None,
             source_error: None,
             open_file_layout_visible: None,
-            back_button: {
-                let requested = std::rc::Rc::clone(&back_requested);
-                ui::widget::Button::icon_only("music-back", ui::icons::Icon::ChevronLeft, "Back")
-                    .on_view(move || requested.set(true))
-            },
             back_requested,
-            search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
+            bar_controls: std::collections::VecDeque::new(),
             search_opener: ui::search::SearchOpener::new(),
             audio: AudioEngine::new(),
             worker: None,
@@ -851,12 +925,13 @@ impl MusicApp {
             scroll_target: None,
             frame_theme: None,
             content_height: 0.0,
-            drawer: SidebarDrawer::new()
-                .left()
-                .content_kind(ui::widget::ContentKind::List),
-            history: ui::widget::HistoryOpener::new(),
-            history_rect: Rect::ZERO,
-            bar_h: 0.0,
+            places: NavFeed::new(),
+            transport: TransportFeed::new(),
+            now_playing: render::NowPlaying::default(),
+            playing_now: std::sync::Arc::default(),
+            bar: None,
+            pane: None,
+            shown_view: None,
             mouse: Point::ZERO,
             hits: Vec::new(),
             body_hits: 0,
@@ -867,18 +942,6 @@ impl MusicApp {
             page_parts: Vec::new(),
             page_parts_drawn: 0,
             table_tooltip: None,
-            drag: None,
-            bar_press: None,
-            scrubber_rect: Rect::ZERO,
-            volume_rect: Rect::ZERO,
-            scrubber_hit: Rect::ZERO,
-            volume_hit: Rect::ZERO,
-            volume_btn_rect: Rect::ZERO,
-            volume_popover_open: false,
-            volume_popover_rect: Rect::ZERO,
-            volume_popover_slider: Rect::ZERO,
-            queue_btn_rect: Rect::ZERO,
-            queue_return: None,
             dirty: true,
             toast: Notice::default(),
             context: ContextMenu::new(),
@@ -899,14 +962,15 @@ impl MusicApp {
             shot_stage: None,
             staged_menu_track: None,
             staged_row_pointer: None,
-            staged_player_menu: false,
+            staged_facet: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             playlist_mosaics: std::cell::RefCell::default(),
             home: None,
-            home_requested: false,
+            home_asked: None,
             home_failed: false,
             failed_pages: HashSet::new(),
+            pages_asked: HashMap::new(),
             artist_pages: HashMap::new(),
             artist_requested: HashSet::new(),
             album_pages: HashMap::new(),
@@ -975,6 +1039,8 @@ impl MusicApp {
         }
         let next_library =
             <crate::model::Library as ui::tilo_resource::Resource>::read(state).unwrap_or_default();
+        self.stored_library.clone_from(&next_library);
+        self.library_revision = self.library_revision.wrapping_add(1);
         self.lib = next_library;
         self.inject_live_hits();
         self.library_heads = Some(heads);
@@ -1082,7 +1148,8 @@ impl MusicApp {
         }
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
             spotify_catalogue: self.spotify_catalogue,
-            local_file: self.local_file.clone(),
+            catalogue_connected: self.catalogue_connected,
+            local_file: self.kept_local_file(),
             playback: self.pb.clone(),
             queue_catalogue: self.queue_catalogue(),
         })
@@ -1111,10 +1178,11 @@ impl MusicApp {
             .collect()
     }
 
-    /// Show a transient message: a confirmation (`Success`), something under
-    /// way (`Info`) or a failure (`Error`).
+    /// Show a transient message in the window's bar: a confirmation
+    /// (`Success`), something under way (`Info`) or a failure (`Error`).
     fn notify(&mut self, kind: ToastKind, text: impl Into<String>) {
         self.toast.show(text, kind);
+        self.toast.publish();
     }
 
     fn update_device_cache(&mut self, id: &str, state: CacheState) {
@@ -1156,6 +1224,7 @@ impl MusicApp {
     /// An empty projection does not wipe a library that has not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Library) {
         self.stored_library.clone_from(state);
+        self.library_revision = self.library_revision.wrapping_add(1);
         if state.tracks.is_empty()
             && state.albums.is_empty()
             && state.artists.is_empty()
@@ -1570,26 +1639,6 @@ impl MusicApp {
             .map_or(0, super::model::Track::duration_ms)
     }
 
-    /// The next few queued track ids (after the current one), for the queue
-    /// hover preview. Respects the linear queue order; empty when nothing is
-    /// queued up next.
-    fn queue_preview_tracks(&self) -> Vec<String> {
-        self.pb
-            .queue
-            .iter()
-            .skip(self.pb.queue_index + 1)
-            .take(4)
-            .cloned()
-            .collect()
-    }
-
-    /// Whether the queue hover preview should be showing: the pointer is over
-    /// the now-playing bar's queue button. Captured geometry, so this reflects
-    /// the real, laid-out button rect.
-    pub(crate) fn queue_preview_active(&self) -> bool {
-        self.queue_btn_rect.width() > 0.0 && self.queue_btn_rect.contains(self.mouse)
-    }
-
     /// The best cover-art id for a track: the track's own recorded cover when
     /// present, else its album's cover. Album-track hits frequently omit a
     /// per-track thumbnail (only the album carries one), so the now-playing bar
@@ -1794,16 +1843,17 @@ impl MusicApp {
         self.cover_pick = None;
         let playlist_id = self.cover_pick_for.take();
         match outcome {
-            PortalOutcome::Opened(path) => {
-                let Some(playlist_id) = playlist_id else {
+            ui::portal::ContentsOutcome::Picked(files) => {
+                let (Some(playlist_id), Some(file)) = (playlist_id, files.into_iter().next())
+                else {
                     return;
                 };
                 self.cover_embed_for = Some(playlist_id);
-                self.cover_embed = Some(embed_cover_off_thread(path));
+                self.cover_embed = Some(embed_cover_off_thread(file.bytes));
                 self.notify(ToastKind::Info, "Preparing the playlist cover");
             }
-            PortalOutcome::Cancelled => {}
-            PortalOutcome::Failed(reason) => {
+            ui::portal::ContentsOutcome::Cancelled => {}
+            ui::portal::ContentsOutcome::Failed(reason) => {
                 tracing::warn!(%reason, "the cover picker failed");
                 self.notify(
                     ToastKind::Error,
@@ -2102,8 +2152,13 @@ impl MusicApp {
             self.play_index(0);
             return;
         }
+        if self.pb.shuffle {
+            self.ensure_shuffle_order();
+        }
         let at = (self.pb.queue_index + 1).min(self.pb.queue.len());
         self.pb.queue.insert(at, id);
+        shuffle_inserted(&mut self.shuffle_order, at);
+        shuffle_put_next(&mut self.shuffle_order, at, self.pb.queue_index);
     }
 
     /// Remove the queue entry at an absolute index, keeping `queue_index`
@@ -2114,19 +2169,24 @@ impl MusicApp {
             return;
         }
         self.pb.queue.remove(index);
+        let slot = shuffle_removed(&mut self.shuffle_order, index);
         if index < self.pb.queue_index {
             self.pb.queue_index = self.pb.queue_index.saturating_sub(1);
         } else if index == self.pb.queue_index {
             self.pb.position_ms = 0;
             self.playhead_ms = 0.0;
             // The current track was dropped: clamp and re-bind to whatever now
-            // sits at this slot (or stop if the queue emptied).
+            // sits at this slot, or to the next shuffled song, which is what
+            // would have played after it (or stop if the queue emptied).
             if self.pb.queue.is_empty() {
                 self.pb.current = None;
                 self.pb.playing = false;
                 self.pb.queue_index = 0;
             } else {
-                self.pb.queue_index = self.pb.queue_index.min(self.pb.queue.len() - 1);
+                let shuffled = slot.and_then(|slot| self.shuffle_order.get(slot).copied());
+                self.pb.queue_index = shuffled
+                    .unwrap_or(self.pb.queue_index)
+                    .min(self.pb.queue.len() - 1);
                 self.pb.current = self.pb.queue.get(self.pb.queue_index).cloned();
             }
         }
@@ -2142,16 +2202,11 @@ impl MusicApp {
         let item = self.pb.queue.remove(from);
         self.pb.queue.insert(to, item);
         // Track the occurrence, not its song id: a queue can hold duplicates.
-        let current = self.pb.queue_index;
-        self.pb.queue_index = if current == from {
-            to
-        } else if from < current && current <= to {
-            current - 1
-        } else if to <= current && current < from {
-            current + 1
-        } else {
-            current
-        };
+        // The shuffled order follows its songs to their new places too.
+        self.pb.queue_index = moved_index(self.pb.queue_index, from, to);
+        for index in &mut self.shuffle_order {
+            *index = moved_index(*index, from, to);
+        }
     }
 
     // --- name-prompt dialog (shared ModalDialog + real TextInput) --------
@@ -2362,9 +2417,6 @@ impl MusicApp {
             Action::OpenPlayerMenu(anchor) => self.open_player_menu(anchor),
             Action::SeekFrac(f) => self.on_seek_frac(f, state),
             Action::VolumeFrac(f) => self.on_volume_frac(f, state),
-            Action::ToggleVolumePopover => {
-                self.volume_popover_open = !self.volume_popover_open;
-            }
             Action::ToggleMute => self.on_toggle_mute(state),
             Action::PickPlaylistCover(playlist_id) => self.on_pick_playlist_cover(playlist_id),
             Action::AddToQueue(id) => self.on_add_to_queue(&id, state),
@@ -2373,28 +2425,7 @@ impl MusicApp {
             Action::MoveQueueItem { from, to } => self.on_move_queue_item(from, to, state),
             Action::ToggleLike(id) => self.on_toggle_like(&id, state),
             Action::ToggleSaveAlbum(id) => self.on_toggle_save_album(&id, state),
-            Action::SetOffline { track, keep } => {
-                if keep {
-                    if let Err(error) = self.request_offline_download(&track) {
-                        self.offline_errors.insert(track, error);
-                        self.notify(ToastKind::Error, OFFLINE_FAILED);
-                    }
-                } else {
-                    if let Some(download) = self.downloads.remove(&track) {
-                        download.cancel();
-                    }
-                    self.offline_resolves.retain(|_, pending| pending != &track);
-                    self.offline_errors.remove(&track);
-                    if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
-                        self.notify(
-                            ToastKind::Error,
-                            format!("Couldn’t remove the download: {error}"),
-                        );
-                    }
-                    self.update_device_cache(&track, CacheState::Streamed);
-                    self.settle_offline_track(&track, Some("offline download cancelled".into()));
-                }
-            }
+            Action::SetOffline { track, keep } => self.on_set_offline(track, keep),
             Action::ToggleFollow(id) => self.on_toggle_follow(&id, state),
             Action::AddToPlaylist { playlist, track } => {
                 self.on_add_to_playlist(&playlist, &track, state);
@@ -2436,11 +2467,43 @@ impl MusicApp {
             }
             Action::OpenSpotifyPlaylistMenu(playlist) => self.open_spotify_playlist_menu(&playlist),
             Action::ToggleQueue => self.on_toggle_queue(),
-            Action::ToggleSidebar => self.toggle_sidebar(),
-            Action::CloseSidebar => self.drawer.close(),
             Action::CloseNamePrompt => self.on_close_name_prompt(),
+            Action::SetQuery(query) => self.on_set_query(query),
+            Action::OpenFacet(key) => self.open_facet(&key),
+            Action::KeepQuery => self.on_keep_query(),
+            Action::ForgetKept(id) => self.on_forget_kept(&id),
+            Action::ShowControl { home, action } => self.on_show_control(&home, *action),
+            Action::RetryRemote(source) => {
+                if self.search.engine.retry(&source) {
+                    self.dirty = true;
+                }
+            }
             Action::None => {}
         }
+    }
+
+    /// Keep `track` on this device, or let it go back to streaming.
+    fn on_set_offline(&mut self, track: String, keep: bool) {
+        if keep {
+            if let Err(error) = self.request_offline_download(&track) {
+                self.offline_errors.insert(track, error);
+                self.notify(ToastKind::Error, OFFLINE_FAILED);
+            }
+            return;
+        }
+        if let Some(download) = self.downloads.remove(&track) {
+            download.cancel();
+        }
+        self.offline_resolves.retain(|_, pending| pending != &track);
+        self.offline_errors.remove(&track);
+        if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
+            self.notify(
+                ToastKind::Error,
+                format!("Couldn’t remove the download: {error}"),
+            );
+        }
+        self.update_device_cache(&track, CacheState::Streamed);
+        self.settle_offline_track(&track, Some("offline download cancelled".into()));
     }
 
     fn track_title(&self, track_id: &str) -> String {
@@ -2537,23 +2600,17 @@ impl MusicApp {
     }
 
     fn on_nav(&mut self, v: View) {
-        if v != self.view {
-            self.nav_back.push(self.view.clone());
-            self.view = v;
-            self.set_scroll_y(0.0);
-        }
-        // Picking a destination dismisses the overlay sidebar so the
-        // chosen screen takes the full width (Adwaita flap behaviour).
-        if self.drawer.is_overlay() {
-            self.drawer.close();
+        if v.is_section() {
+            if v != self.view {
+                self.open_section(v);
+            }
+        } else {
+            self.open_view(v);
         }
     }
 
     fn on_back(&mut self) {
-        if let Some(v) = self.nav_back.pop() {
-            self.view = v;
-            self.set_scroll_y(0.0);
-        }
+        self.go_back();
     }
 
     fn on_browse_genre(&mut self, genre: &str) {
@@ -2561,9 +2618,6 @@ impl MusicApp {
         // the genre; the live catalogue answers through the search provider.
         self.search_opener
             .open(ui::search::SearchRequest::this_app().with_query(genre));
-        if self.drawer.is_overlay() {
-            self.drawer.close();
-        }
     }
 
     fn on_play(
@@ -2653,16 +2707,58 @@ impl MusicApp {
     }
 
     fn on_toggle_mute(&mut self, state: &mut ui::widget::Edits<'_>) {
-        if self.pb.volume > 0 {
-            self.premute_volume = Some(self.pb.volume);
-            self.pb.volume = 0;
-        } else {
-            // Restore the pre-mute level (default to a sensible level if
-            // we were already at zero with nothing captured).
-            self.pb.volume = self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80);
-        }
+        self.pb.volume = self.toggled_mute();
         self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
         self.persist_playback(state);
+    }
+
+    /// The song that plays on this device now, if any.
+    pub(crate) fn playing_track(&self) -> Option<String> {
+        self.pb.current.clone()
+    }
+
+    /// The volume a mute toggle leaves: zero, keeping the level to come
+    /// back to, or that level again (a sensible one if there is none).
+    fn toggled_mute(&mut self) -> u8 {
+        if self.pb.volume > 0 {
+            self.premute_volume = Some(self.pb.volume);
+            0
+        } else {
+            self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80)
+        }
+    }
+
+    /// The playback `effect` (next, previous or mute) steps to, by the
+    /// steps the person's own controls take: next and previous follow this
+    /// device's shuffle order, previous starts a song that has played a
+    /// while over, and mute keeps the level to come back to. The playback
+    /// itself is left for the effect to apply.
+    pub(crate) fn stepped_playback(
+        &mut self,
+        effect: &crate::actions::MusicEffect,
+    ) -> crate::model::Playback {
+        use crate::actions::MusicEffect;
+        let before = self.pb.clone();
+        let (playhead, bound) = (self.playhead_ms, self.bound_track.clone());
+        match effect {
+            MusicEffect::Next => self.advance(false),
+            MusicEffect::Previous => self.previous(),
+            MusicEffect::ToggleMute => self.pb.volume = self.toggled_mute(),
+            _ => {}
+        }
+        let mut next = std::mem::replace(&mut self.pb, before);
+        if matches!(effect, MusicEffect::Next | MusicEffect::Previous) {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a position within the song, in whole milliseconds"
+            )]
+            let position_ms = self.playhead_ms.max(0.0) as u64;
+            next.position_ms = position_ms;
+        }
+        self.playhead_ms = playhead;
+        self.bound_track = bound;
+        next
     }
 
     fn on_pick_playlist_cover(&mut self, playlist_id: String) {
@@ -2670,12 +2766,13 @@ impl MusicApp {
         // The pick is async; the frame loop drains the
         // outcome and applies the cover.
         self.cover_pick_for = Some(playlist_id);
-        self.cover_pick = Some(cover_request().send());
+        self.cover_pick = Some(cover_request().send_contents());
         self.notify(ToastKind::Info, "Choose a cover image");
     }
 
     fn on_add_to_queue(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         self.pb.queue.push(id.to_string());
+        shuffle_inserted(&mut self.shuffle_order, self.pb.queue.len() - 1);
         self.notify(ToastKind::Success, "Added to the queue");
         self.persist_playback(state);
     }
@@ -2691,6 +2788,9 @@ impl MusicApp {
     }
 
     fn on_toggle_like(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
+        // A catalogue song (a search result) joins the library with its
+        // album and artist first: it is liked as the same song everywhere.
+        self.import_live_track(id, state);
         let liked = !self.lib.is_liked(id);
         self.perform_action(state, crate::model::Library::like(id, liked));
         self.reload_library(state);
@@ -2810,9 +2910,7 @@ impl MusicApp {
         self.name_prompt = None;
         self.name_input.clear();
         self.name_dialog = None;
-        self.nav_back.push(self.view.clone());
-        self.view = View::Playlist(id);
-        self.set_scroll_y(0.0);
+        self.open_view(View::Playlist(id));
         self.notify(
             ToastKind::Success,
             if added_track.is_some() {
@@ -2864,34 +2962,23 @@ impl MusicApp {
                 .with(ui::tilo_resource::Id::from_raw(id.as_str())),
         );
         self.reload_library(state);
-        // Leave the now-deleted detail page.
-        if self.view == View::Playlist(id) {
+        // Leave the now-deleted detail page, and forget it in the stack.
+        let gone = View::Playlist(id);
+        self.nav.forget(|view| *view == gone);
+        if self.view == gone {
             self.view = View::Playlists;
+            self.nav.replace(View::Playlists);
             self.set_scroll_y(0.0);
         }
     }
 
     fn on_toggle_queue(&mut self) {
         if self.view == View::Queue {
-            // Toggle off: restore exactly where the user was (view +
-            // scroll), not a reset. Fall back to nav-back if the queue
-            // was reached some other way.
-            if let Some((v, s)) = self.queue_return.take() {
-                self.view = v;
-                self.set_scroll_y(s);
-            } else if let Some(v) = self.nav_back.pop() {
-                self.view = v;
-                self.set_scroll_y(0.0);
-            }
+            // Toggle off: back to exactly where the user was (view, scroll
+            // and selection), not a reset.
+            self.go_back();
         } else {
-            // Toggle on: remember the current view + scroll so the next
-            // toggle returns here.
-            self.queue_return = Some((self.view.clone(), self.scroll_y()));
-            self.view = View::Queue;
-            self.set_scroll_y(0.0);
-        }
-        if self.drawer.is_overlay() {
-            self.drawer.close();
+            self.open_view(View::Queue);
         }
     }
 
@@ -3149,6 +3236,17 @@ impl MusicApp {
         }
     }
 
+    /// A newer playback choice (Next pressed again, another song chosen)
+    /// settles the stream start still resolving as superseded: the newest
+    /// choice is the one that plays.
+    pub(super) fn supersede_pending_stream_start(&mut self) {
+        self.fail_resource_stream(
+            "music.stream_start_superseded",
+            "A newer playback choice superseded this stream start.",
+            None,
+        );
+    }
+
     /// Time out a hosted stream start if neither the resolver nor the audio
     /// backend has produced the advertised terminal evidence by its deadline.
     /// Late events are ignored because the active request is cleared first.
@@ -3170,7 +3268,7 @@ impl MusicApp {
         self.audio.stop();
         let message = "Audio startup timed out before playback could begin.";
         self.playback_error = Some(message.into());
-        self.toast.show(message, ToastKind::Error);
+        self.notify(ToastKind::Error, message);
         self.fail_resource_stream(
             "music.stream_start_timed_out",
             message,
@@ -3226,19 +3324,21 @@ impl MusicApp {
             }
             _ => {}
         }
+        // Transport preferences must not discard which shuffled tracks have
+        // already played. Only a different shuffle mode, or a different
+        // queue the order was not carried over to (`follow_shuffled_edit`),
+        // invalidates it.
+        if self.pb.shuffle != playback.shuffle
+            || (self.pb.queue != playback.queue && self.shuffle_order.len() != playback.queue.len())
+        {
+            self.shuffle_order.clear();
+        }
         let requested_playing = playback.playing;
         let changed_track = self.pb.current != playback.current;
         let changed_position = self.pb.position_ms != playback.position_ms;
-        let changed_shuffle =
-            self.pb.shuffle != playback.shuffle || self.pb.queue != playback.queue;
         self.pb = playback;
         self.playhead_ms = self.pb.position_ms as f64;
         self.bound_track.clone_from(&self.pb.current);
-        // Transport preferences must not discard which shuffled tracks have
-        // already played. Only a different queue or shuffle mode invalidates it.
-        if changed_shuffle {
-            self.shuffle_order.clear();
-        }
         self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
         if changed_track && !self.pb.playing {
             self.retire_replaced_playback();
@@ -3276,6 +3376,50 @@ impl MusicApp {
             return Err(error);
         }
         Ok(request)
+    }
+
+    /// Carry the shuffled order over to the queue `edit` turns this one
+    /// into, `next`'s, as the person's own queue edits do; a removed playing
+    /// song hands over to the next shuffled one in `next`. Answers the order
+    /// as it was, or `None` when nothing is shuffled.
+    pub(super) fn follow_shuffled_edit(
+        &mut self,
+        edit: crate::actions::QueueEdit,
+        next: &mut Playback,
+    ) -> Option<Vec<usize>> {
+        use crate::actions::QueueEdit;
+        if !self.pb.shuffle || next.shuffle != self.pb.shuffle {
+            return None;
+        }
+        if matches!(edit, QueueEdit::PutNext(_)) {
+            self.ensure_shuffle_order();
+        }
+        if self.shuffle_order.len() != self.pb.queue.len() {
+            // No order drawn for this queue yet: one is drawn when needed.
+            self.shuffle_order.clear();
+            return None;
+        }
+        let before = self.shuffle_order.clone();
+        match edit {
+            QueueEdit::Added(at) => shuffle_inserted(&mut self.shuffle_order, at),
+            QueueEdit::PutNext(at) => {
+                shuffle_inserted(&mut self.shuffle_order, at);
+                shuffle_put_next(&mut self.shuffle_order, at, self.pb.queue_index);
+            }
+            QueueEdit::Removed(index) => {
+                let slot = shuffle_removed(&mut self.shuffle_order, index);
+                let shuffled = slot.and_then(|slot| self.shuffle_order.get(slot).copied());
+                if index == self.pb.queue_index
+                    && next.current.is_some()
+                    && let Some(following) = shuffled
+                    && let Some(song) = next.queue.get(following)
+                {
+                    next.queue_index = following;
+                    next.current = Some(song.clone());
+                }
+            }
+        }
+        Some(before)
     }
 
     fn retire_replaced_playback(&mut self) {
@@ -3475,6 +3619,8 @@ impl MusicApp {
                     self.finish_spotify_operation(request_id, result);
                 }
                 StreamUpdate::SourceSelected { result } => {
+                    // The search asks the catalogue the person chose.
+                    self.search.source_changed();
                     if let Some(invocation) = self.source_invocation.take() {
                         let update = match result {
                             Ok((name, live)) => {
@@ -3495,6 +3641,9 @@ impl MusicApp {
                                     self.audio.stop();
                                     self.pb.playing = false;
                                 }
+                                // The person chose a catalogue, or left the one
+                                // they had: Home follows what they chose.
+                                self.catalogue_connected = !self.source_disconnect_pending;
                                 self.source_disconnect_pending = false;
                                 self.source_error = None;
                                 self.spotify_catalogue = name.starts_with("Spotify");
@@ -3516,7 +3665,7 @@ impl MusicApp {
                                 self.home = None;
                                 self.spotify_library_offset = 50;
                                 self.spotify_library_more = true;
-                                self.home_requested = false;
+                                self.home_asked = None;
                                 self.home_failed = false;
                                 self.live_results = None;
                                 self.live_bundle = None;
@@ -3576,7 +3725,7 @@ impl MusicApp {
                     // No live Home (offline build / network error): stop the
                     // skeleton and let the honest empty Home settle.
                     self.home_failed = true;
-                    self.source_error = Some(error);
+                    self.source_error = home_failure_note(ONLINE_CATALOGUE, error);
                 }
                 StreamUpdate::PageUnavailable { id } => {
                     // A live detail fetch failed: stop that page's skeleton so it
@@ -4077,14 +4226,17 @@ impl MusicApp {
     // ---- live content requests -------------------------------------------
 
     /// Request the real Home page once, when networking is allowed.
+    /// Fetch Home from the connected catalogue, once. Without one nothing
+    /// is fetched: opening Music contacts no provider the person did not
+    /// choose.
     fn ensure_home(&mut self) {
-        if self.home_requested || !self.allow_network {
+        if self.home_asked.is_some() || !self.allow_network || !self.catalogue_connected {
             return;
         }
         self.ensure_worker();
         if let Some(w) = &self.worker {
             match w.request(StreamRequest::Home) {
-                Ok(()) => self.home_requested = true,
+                Ok(()) => self.home_asked = Some(ui::time::now()),
                 Err(error) => {
                     self.home_failed = true;
                     self.notify(
@@ -4134,7 +4286,10 @@ impl MusicApp {
             return false;
         };
         match w.request(request) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.pages_asked.insert(id.to_string(), ui::time::now());
+                true
+            }
             Err(error) => {
                 self.failed_pages.insert(id.to_string());
                 self.notify(
@@ -4162,48 +4317,6 @@ impl MusicApp {
         let hovered = rect.contains(self.mouse);
         self.hits.push(Hit { rect, action });
         hovered
-    }
-
-    // ---- adaptive sidebar geometry (delegated to `SidebarDrawer`) --------
-
-    /// The width-driven sidebar layout (docked vs overlay). Computed straight
-    /// from the allocated width so it's valid even before the first `resolve`.
-    #[cfg(test)]
-    fn sidebar_layout(&self) -> SplitLayout {
-        self.drawer.layout_for(self.rect.width())
-    }
-
-    /// The width the content column is inset by on the left for the docked
-    /// sidebar (0 while overlaying — the flap floats over the content). Read
-    /// from the drawer's last-resolved geometry.
-    #[cfg(test)]
-    fn content_inset(&self) -> f64 {
-        (self.drawer.content_rect().x0 - self.rect.x0).max(0.0)
-    }
-
-    /// The sidebar's on-screen rect, ending above the persistent transport.
-    fn sidebar_rect(&self) -> Rect {
-        self.drawer.sidebar_rect()
-    }
-
-    /// Playback belongs to every destination, so its transport spans the
-    /// window rather than competing with the sidebar for the song's width.
-    fn nowplaying_rect(&self) -> Rect {
-        let r = self.rect;
-        Rect::new(r.x0, r.y1 - self.bar_h, r.x1, r.y1)
-    }
-
-    /// Whether the sidebar toggle sits in the window's header row rather
-    /// than in the docked sidebar's own row: whenever the sidebar is hidden
-    /// or floats.
-    fn toggle_in_content(&self) -> bool {
-        !self.drawer.is_open() || self.drawer.is_overlay()
-    }
-
-    /// Flip the sidebar open/closed for the current layout.
-    fn toggle_sidebar(&mut self) {
-        self.drawer.toggle();
-        self.dirty = true;
     }
 
     /// Take up what the launch named: a `music://` link plays the track
@@ -4253,6 +4366,10 @@ impl MusicApp {
                 .open(ui::search::SearchRequest::this_app()),
             "skeleton" => self.snap_skeleton(),
             "nowplaying" => self.snap_nowplaying(),
+            "nowplaying-page" => {
+                self.shot_stage = Some(ShotStage::NowPlaying);
+                self.view = View::NowPlaying;
+            }
             "queue" => self.snap_queue(),
             "lyrics" => self.snap_lyrics(),
             "downloading" => self.snap_downloading(),
@@ -4267,16 +4384,44 @@ impl MusicApp {
             "membership-open" => self.snap_membership_open(),
             "spotify-home" | "spotify-devices" | "spotify-error" | "spotify-queue"
             | "spotify-create" => self.snap_spotify(scenario),
+            "library" => {
+                // The library as a person left it: two songs selected.
+                self.view = View::Songs;
+                self.restore_selection = Some(vec!["tk_g2".into(), "tk_g3".into()]);
+            }
+            "search" => self.stage_query("light", &[], None),
+            "search-chips" => self.stage_query(
+                "light",
+                &[ui::framework::views::Chip::value(
+                    crate::views::ARTIST,
+                    "Aurora Skies",
+                )],
+                None,
+            ),
+            "search-remote-loading" => self.stage_query_waiting("light"),
+            "search-actions" => self.stage_query("shuffle", &[], None),
+            "search-facet" => {
+                self.stage_query(
+                    "light",
+                    &[ui::framework::views::Chip::value(
+                        crate::views::ARTIST,
+                        "Aurora Skies",
+                    )],
+                    None,
+                );
+                self.staged_facet = Some(crate::views::ARTIST.to_owned());
+            }
+            "kept-view" => self.stage_kept_view("light"),
             _ => {}
         }
     }
 
-    /// Stage the sidebar for a deterministic `--shots` frame (no event loop to
-    /// drive the reveal animation). `open` snaps it fully revealed.
-    /// Before the first layout the drawer keeps the snap until it knows the
-    /// window's size class.
+    /// Stage the shell's sidebar open or closed for a `--shots` frame, through
+    /// the window bar's toggle.
     pub fn snap_sidebar(&mut self, open: bool) {
-        self.drawer.snap(open);
+        if let Some(bar) = &self.bar {
+            bar.stage_sidebar(open);
+        }
         self.dirty = true;
     }
 
@@ -4601,9 +4746,10 @@ impl MusicApp {
                 self.name_dialog = None;
             }
             ShotStage::Skeleton => {
-                // Force the loading state offline so the shimmer skeleton renders
+                // Home asked of the catalogue a moment ago, past the ground
+                // its placeholder keeps at first: its skeleton shows,
                 // hermetically (no network fetch actually runs).
-                self.home_requested = true;
+                self.home_asked = ui::time::now().checked_sub(Duration::from_millis(500));
                 self.home = None;
             }
             ShotStage::NowPlaying => {
@@ -5310,21 +5456,15 @@ fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
     Ok(value)
 }
 
-fn portable_cover_path(path: &Path) -> Result<String, String> {
-    let metadata = crate::files::metadata(path).map_err(|error| error.to_string())?;
-    if metadata.len > MAX_COVER_SOURCE_BYTES {
-        return Err("image is larger than 8 MiB".to_string());
-    }
-    let source = crate::files::read(path).map_err(|error| error.to_string())?;
-    portable_cover_data_url(&source)
-}
-
-/// Run local disk I/O and decode/resize/encode work away from the UI thread.
-fn embed_cover_off_thread(path: PathBuf) -> Receiver<Result<String, String>> {
+/// Decode, resize and encode the chosen cover image away from the UI
+/// thread, as background work every host runs (a browser page included).
+fn embed_cover_off_thread(source: Vec<u8>) -> Receiver<Result<String, String>> {
     let (sender, receiver) = std::sync::mpsc::channel();
-    if let Err(error) = ui::rt::spawn_thread("music-cover-embed", move || {
-        let _ = sender.send(portable_cover_path(&path));
-    }) {
+    if let Err(error) =
+        ui::background::Background::current().spawn("music-cover-embed", move || {
+            let _ = sender.send(portable_cover_data_url(&source));
+        })
+    {
         let (fallback_sender, fallback_receiver) = std::sync::mpsc::channel();
         let _ = fallback_sender.send(Err(error.to_string()));
         return fallback_receiver;
@@ -5391,14 +5531,82 @@ pub(crate) fn image_fetcher() -> ui::Fetcher {
     Arc::new(embedded_cover_bytes)
 }
 
+/// Where a queue position moves when the song at `from` moves to `to`.
+fn moved_index(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
+    }
+}
+
+/// A song joined the queue at `at`: the shuffled order keeps its songs, and
+/// the new one is heard after every song still to come. Nothing changes
+/// while no order is shuffled.
+fn shuffle_inserted(order: &mut Vec<usize>, at: usize) {
+    if order.is_empty() {
+        return;
+    }
+    for index in order.iter_mut() {
+        if *index >= at {
+            *index += 1;
+        }
+    }
+    order.push(at);
+}
+
+/// Under shuffle, play the queue's song at `index` right after the one at
+/// `current`: "Play next" means next in the order heard, not only in the
+/// queue's own order.
+fn shuffle_put_next(order: &mut Vec<usize>, index: usize, current: usize) {
+    let Some(from) = order.iter().position(|&i| i == index) else {
+        return;
+    };
+    order.remove(from);
+    let after = order
+        .iter()
+        .position(|&i| i == current)
+        .map_or(order.len(), |at| at + 1);
+    order.insert(after, index);
+}
+
+/// The song at `index` left the queue: the shuffled order drops it and
+/// keeps every other song in its place. Answers where in the order it was.
+fn shuffle_removed(order: &mut Vec<usize>, index: usize) -> Option<usize> {
+    let slot = order.iter().position(|&i| i == index);
+    if let Some(slot) = slot {
+        order.remove(slot);
+    }
+    for i in order.iter_mut() {
+        if *i > index {
+            *i -= 1;
+        }
+    }
+    slot
+}
+
 mod local_files;
 mod media_grid;
 mod page_part;
 mod recommendations;
 mod render;
+mod shell;
+#[cfg(test)]
+use shell::place_id as shell_place;
 mod spotify;
 mod track_table;
+mod window_bar;
 
+#[cfg(test)]
+#[path = "app/home_arrival_tests.rs"]
+mod home_arrival_tests;
+#[cfg(test)]
+#[path = "app/stream_start_tests.rs"]
+mod stream_start_tests;
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests;

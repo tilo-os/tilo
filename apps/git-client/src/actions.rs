@@ -5,7 +5,7 @@
 //!
 //! The Tilo action-model recipe (`docs/action-model-recipe.md`) sorts every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an [`Action`] (a serializable value that deterministically changes
+//! becomes an [`Action`](tilo_actions::Action) (a serializable value that deterministically changes
 //! the shared Automerge document, so undo and multi-peer replay come for free),
 //! while presentation / view state stays plain app code. The git client is a
 //! near-textbook case of a mostly-**external** app:
@@ -50,7 +50,7 @@ use crate::model::{ChangeArea, FileChange, RepoModel};
 /// stash or remote it acts on, named by path, id or name and resolved again
 /// when invoked.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
-#[effect(operation = "git_client.effect", device_only)]
+#[effect(operation = "git_client.effect")]
 pub enum GitClientEffect {
     /// Open repository
     ///
@@ -63,10 +63,10 @@ pub enum GitClientEffect {
     ///
     /// Pick the repository's folder with the system's file chooser, then
     /// open it.
-    #[effect(job)]
+    #[effect(attended, job)]
     ChooseRepository,
     /// Run approved project check
-    #[effect(job, cancellable, returns, untrusted, device_only = false)]
+    #[effect(job, cancellable, returns, untrusted)]
     RunApprovedCheck {
         #[param("Check ID approved by this exact project host")]
         check_id: String,
@@ -113,6 +113,10 @@ pub enum GitClientEffect {
         path: String,
     },
     /// Discard file changes
+    ///
+    /// The worktree's edits to this file are thrown away and the file goes
+    /// back to what the index holds. Anything staged for it stays staged,
+    /// and edits that were never staged are gone.
     #[effect(row, destructive)]
     DiscardFile {
         #[param("Path of the file in the repository")]
@@ -149,6 +153,10 @@ pub enum GitClientEffect {
         name: String,
     },
     /// Delete branch
+    ///
+    /// The branch's name goes and any commit only this branch holds is left
+    /// with nothing pointing at it. Its commits stay in the repository for a
+    /// while, but nothing here names them again.
     #[effect(row, destructive)]
     DeleteBranch {
         #[param("Branch name")]
@@ -187,25 +195,25 @@ pub enum GitClientEffect {
     ///
     /// Between unified and side-by-side: a preference of this person, which
     /// follows them to their other devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     DiffLayout,
     /// Turn syntax highlighting on or off
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     SyntaxHighlight,
     /// Show or hide whitespace
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     ShowWhitespace,
     /// Wrap long lines or stop wrapping them
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     WrapLines,
 }
 
@@ -214,7 +222,7 @@ pub enum GitClientEffect {
 // ===========================================================================
 
 /// Keep the palette's contextual tree cheap even for monorepos. Every omitted
-/// item is still addressable by id ([`repository_row`], [`working_tree_row`]).
+/// item is still addressable by id (`repository_row`, `working_tree_row`).
 pub const MAX_CONTEXT_CHANGES: usize = 48;
 pub const MAX_CONTEXT_COMMITS: usize = 48;
 pub const MAX_CONTEXT_REFS: usize = 32;
@@ -241,7 +249,7 @@ pub(crate) fn change_resource_id(area: ChangeArea, path: &str) -> String {
     )
 }
 
-fn commit_resource_id(id: &str) -> String {
+pub(crate) fn commit_resource_id(id: &str) -> String {
     format!("git_client.commit:{id}")
 }
 
@@ -406,7 +414,7 @@ pub(crate) fn repository_rows(model: &RepoModel) -> Vec<LiveRow> {
         ),
         collection(
             "git_client.stashes",
-            "Stashes".to_owned(),
+            t("git-section-stashes"),
             &model.stashes,
             MAX_CONTEXT_STASHES,
             stash_resource,

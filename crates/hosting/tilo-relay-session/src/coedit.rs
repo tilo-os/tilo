@@ -625,44 +625,71 @@ impl RelayCoeditSession {
                         pending: pending_deltas,
                     });
                 }
-                Envelope::RecordOpened {
-                    workspace_id,
-                    channel,
-                    frames,
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::RecordOpened { channel, frames });
-                }
-                Envelope::VoiceCallResult {
-                    workspace_id,
-                    request,
-                    result,
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::Voice(VoiceEvent::Result { request, result }));
-                }
-                Envelope::VoiceGranted {
-                    workspace_id,
-                    grant,
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::Voice(VoiceEvent::Granted(grant)));
-                }
-                Envelope::VoiceRefused {
-                    workspace_id,
-                    call,
-                    reason,
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::Voice(VoiceEvent::Refused { call, reason }));
-                }
-                Envelope::VoiceCallList {
-                    workspace_id,
-                    result,
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::Voice(VoiceEvent::Calls(result)));
+                envelope @ (Envelope::LiveMember { .. }
+                | Envelope::RecordOpened { .. }
+                | Envelope::VoiceCallResult { .. }
+                | Envelope::VoiceGranted { .. }
+                | Envelope::VoiceRefused { .. }
+                | Envelope::VoiceCallList { .. }) => {
+                    if let Some(inbound) = self.workspace_news(envelope) {
+                        return Some(inbound);
+                    }
                 }
                 Envelope::NotAuthorised { .. } => return None,
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.
                 _ => {}
             }
+        }
+    }
+
+    /// What the host tells this session about its workspace: a member
+    /// joining or leaving the live plane, a record opened, a call's news.
+    /// `None` for another workspace's.
+    fn workspace_news(&self, envelope: Envelope) -> Option<Inbound> {
+        match envelope {
+            Envelope::LiveMember {
+                workspace_id,
+                device_public_key,
+                active,
+            } if workspace_id == self.workspace_id => Some(Inbound::Member {
+                device: device_public_key,
+                active,
+            }),
+            Envelope::RecordOpened {
+                workspace_id,
+                channel,
+                frames,
+            } if workspace_id == self.workspace_id => {
+                Some(Inbound::RecordOpened { channel, frames })
+            }
+            Envelope::VoiceCallResult {
+                workspace_id,
+                request,
+                result,
+            } if workspace_id == self.workspace_id => {
+                Some(Inbound::Voice(VoiceEvent::Result { request, result }))
+            }
+            Envelope::VoiceGranted {
+                workspace_id,
+                grant,
+            } if workspace_id == self.workspace_id => {
+                Some(Inbound::Voice(VoiceEvent::Granted(grant)))
+            }
+            Envelope::VoiceRefused {
+                workspace_id,
+                call,
+                reason,
+            } if workspace_id == self.workspace_id => {
+                Some(Inbound::Voice(VoiceEvent::Refused { call, reason }))
+            }
+            Envelope::VoiceCallList {
+                workspace_id,
+                result,
+            } if workspace_id == self.workspace_id => {
+                Some(Inbound::Voice(VoiceEvent::Calls(result)))
+            }
+            _ => None,
         }
     }
 

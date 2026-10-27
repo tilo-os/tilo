@@ -455,7 +455,7 @@ mod tests {
             DaemonError::LoggedOut("device".into()),
             DaemonError::DeviceSlot("removed".into()),
             DaemonError::SessionStopped("a".into()),
-            DaemonError::ControlMissing("/usr/bin/tilo-control".into()),
+            DaemonError::ControlMissing("/usr/libexec/tilo/tilo-control".into()),
             DaemonError::Apply {
                 step: "s".into(),
                 detail: "d".into(),

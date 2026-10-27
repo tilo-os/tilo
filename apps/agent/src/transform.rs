@@ -6,7 +6,7 @@
 //! they reach any other app's actions — through the session's action host,
 //! as the invoking person, recorded like every other invocation. The caller
 //! never talks to a model: the agent asks the model gateway for one bounded
-//! single-shot answer ([`tilo_model_gateway::transform`]) and holds that
+//! single-shot answer ([`tilo_model_client::transform`]) and holds that
 //! answer to the shape the caller asked for before returning it.
 //!
 //! ## An answer is checked, not trusted
@@ -27,12 +27,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use ui::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::contract::{
-    ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, PROGRAMMATIC_TAG, ResultSpec,
+    AGENTS_AUDIENCE_TAG, ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec,
     RetryPolicy, RiskLevel,
 };
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -45,7 +46,6 @@ use tilo_automation::{
 };
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 
-/// The one transform resource the agent publishes.
 pub const RESOURCE_ID: &str = tilo_automation::AGENT_TRANSFORM_RESOURCE;
 
 /// Largest text input, inline or read from content.
@@ -328,7 +328,7 @@ fn contract_of(action: &str) -> ActionContract {
         result: ResultSpec::Json {
             schema: result_schema_of(action),
         },
-        tags: vec![PROGRAMMATIC_TAG.to_string()],
+        tags: vec![AGENTS_AUDIENCE_TAG.to_string()],
         ..ActionContract::default()
     }
 }
@@ -821,6 +821,24 @@ pub trait TransformModel: Send + Sync {
         max_output_tokens: u32,
         timeout: Duration,
     ) -> Result<String, String>;
+
+    /// [`Self::answer`], given up on once `stop` is set: the caller
+    /// cancelled, so the call stops rather than running, billed, to its
+    /// end. A stand-in that cannot be stopped answers in full.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::answer`], and a call stopped part way.
+    fn answer_until(
+        &self,
+        (instructions, input): (&str, &str),
+        max_output_tokens: u32,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<String, String> {
+        let _ = stop;
+        self.answer(instructions, input, max_output_tokens, timeout)
+    }
 }
 
 /// The provider the agent chose when it started (a managed agent's arrives
@@ -832,6 +850,21 @@ pub struct GatewayModel {
     pub launched: Option<crate::providers::ProviderSelection>,
 }
 
+impl GatewayModel {
+    /// The provider to ask, once the gateway is reachable.
+    fn selection(&self) -> Result<crate::providers::ProviderSelection, String> {
+        let selection = self
+            .launched
+            .clone()
+            .or_else(crate::providers::default_selection)
+            .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
+        if !tilo_model_client::available() {
+            return Err("the model gateway is not available to the agent".into());
+        }
+        Ok(selection)
+    }
+}
+
 impl TransformModel for GatewayModel {
     fn answer(
         &self,
@@ -840,21 +873,32 @@ impl TransformModel for GatewayModel {
         max_output_tokens: u32,
         timeout: Duration,
     ) -> Result<String, String> {
-        let selection = self
-            .launched
-            .clone()
-            .or_else(crate::providers::default_selection)
-            .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
-        if !tilo_model_gateway::available() {
-            return Err("the model gateway is not available to the agent".into());
-        }
-        tilo_model_gateway::transform(
+        let selection = self.selection()?;
+        tilo_model_client::transform(
             &selection.profile_id,
             &selection.model.id,
             instructions,
             input,
             max_output_tokens,
             timeout,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn answer_until(
+        &self,
+        asked: (&str, &str),
+        max_output_tokens: u32,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<String, String> {
+        let selection = self.selection()?;
+        tilo_model_client::transform_until(
+            (&selection.profile_id, &selection.model.id),
+            asked,
+            max_output_tokens,
+            timeout,
+            &|| stop.load(Ordering::Relaxed),
         )
         .map_err(|error| error.to_string())
     }
@@ -890,6 +934,20 @@ fn first_chars(text: &str, most: usize) -> String {
 /// [`code::TIMED_OUT`] when [`TIMEOUT`] passed, and
 /// [`code::INVALID_OUTPUT`] when both answers failed the shape.
 pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Failure> {
+    run_until(call, model, &AtomicBool::new(false))
+}
+
+/// [`run`], given up on once `stop` is set: the attempt in progress is
+/// stopped and no repair attempt is made.
+///
+/// # Errors
+///
+/// As [`run`], and [`code::MODEL_UNAVAILABLE`] once stopped.
+pub fn run_until(
+    call: &Call,
+    model: &dyn TransformModel,
+    stop: &AtomicBool,
+) -> Result<ActionOutput, Failure> {
     let began = ui::time::now();
     let instructions = call.transform.instructions();
     let expected = call.transform.expected();
@@ -914,8 +972,15 @@ pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Fail
                 true,
             ));
         };
+        if stop.load(Ordering::Relaxed) {
+            return Err(failure(
+                code::MODEL_UNAVAILABLE,
+                "the transform was cancelled",
+                false,
+            ));
+        }
         let answer = model
-            .answer(&instructions, &turn, MAX_OUTPUT_TOKENS, left)
+            .answer_until((&instructions, &turn), MAX_OUTPUT_TOKENS, left, stop)
             .map_err(|why| failure(code::MODEL_UNAVAILABLE, why, true))?;
         match answer_value(&answer).and_then(|value| {
             tilo_actions::params::validate_json_schema(&value, &expected)
@@ -967,8 +1032,8 @@ pub struct TransformService {
     finished_tx: Sender<(u64, InvocationUpdate)>,
     finished_rx: Receiver<(u64, InvocationUpdate)>,
     /// Invocations whose worker has not reported yet, with the invocation
-    /// each update names.
-    running: HashMap<u64, InvocationId>,
+    /// each update names and the flag that stops its model call.
+    running: HashMap<u64, (InvocationId, Arc<AtomicBool>)>,
     /// Of those, the ones the caller cancelled: their answer is dropped.
     cancelled: HashSet<u64>,
 }
@@ -1039,10 +1104,12 @@ impl TransformService {
         );
         let model = Arc::clone(&self.model);
         let finished = self.finished_tx.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
         let spawned = std::thread::Builder::new()
             .name("tilo-agent-transform".into())
             .spawn(move || {
-                let update = match run(&call, model.as_ref()) {
+                let update = match run_until(&call, model.as_ref(), &stopped) {
                     Ok(output) => InvocationUpdate::Succeeded { invocation, output },
                     Err(error) => {
                         tracing::info!(code = %error.code, reason = %error.message, "a transform produced no value");
@@ -1061,14 +1128,17 @@ impl TransformService {
                 true,
             ));
         }
-        self.running.insert(id, invocation);
+        self.running.insert(id, (invocation, stop));
         None
     }
 
-    /// Cancel a running invocation. Returns the terminal update to send, or
-    /// `None` when the id is not running here or was already cancelled.
+    /// Cancel a running invocation: its model call is stopped. Returns the
+    /// terminal update to send, or `None` when the id is not running here
+    /// or was already cancelled.
     pub fn cancel(&mut self, id: u64) -> Option<InvocationUpdate> {
-        let invocation = *self.running.get(&id)?;
+        let (invocation, stop) = self.running.get(&id)?;
+        let invocation = *invocation;
+        stop.store(true, Ordering::Relaxed);
         if !self.cancelled.insert(id) {
             return None;
         }
@@ -1127,7 +1197,7 @@ mod tests {
         assert_eq!(descriptors.len(), 5);
         for descriptor in &descriptors {
             assert!(descriptor.contract.validate_declaration().is_empty());
-            assert!(descriptor.contract.is_programmatic());
+            assert!(!descriptor.contract.reaches_people());
             assert_eq!(descriptor.contract.risk, RiskLevel::Low);
             assert_eq!(descriptor.contract.confirmation, ConfirmationPolicy::None);
             assert!(matches!(
@@ -1322,7 +1392,6 @@ mod tests {
                 "{wrong}"
             );
         }
-        // Nothing selected is still a request.
         assert!(
             bind(
                 AGENT_RESPOND_ACTION,
@@ -1420,5 +1489,117 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(service.running.is_empty());
+    }
+
+    /// A model that works until it is told to stop: it says when its call
+    /// began, and whether the stop reached it.
+    struct Working {
+        began: Sender<()>,
+        told: Sender<bool>,
+    }
+
+    impl TransformModel for Working {
+        fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
+            Err("only a stoppable call is made".into())
+        }
+
+        fn answer_until(
+            &self,
+            _: (&str, &str),
+            _: u32,
+            _: Duration,
+            stop: &AtomicBool,
+        ) -> Result<String, String> {
+            let _ = self.began.send(());
+            let deadline = tilo_test_env::hang_deadline();
+            while !stop.load(Ordering::Relaxed) && ui::time::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = self.told.send(stop.load(Ordering::Relaxed));
+            Err("stopped".into())
+        }
+    }
+
+    /// Start invocation 4, a summary.
+    fn start_summary(service: &mut TransformService) {
+        let argument = format!("{ARGUMENTS_JSON_PREFIX}{}", json!({"input": "text"}));
+        assert!(
+            service
+                .start(
+                    directed(4),
+                    RESOURCE_ID,
+                    "summarise",
+                    Some(&argument),
+                    "ada",
+                    None,
+                )
+                .is_none(),
+            "the transform runs"
+        );
+    }
+
+    /// Wait until the cancelled invocation's worker reported, checking its
+    /// answer is dropped.
+    fn drain_cancelled(service: &mut TransformService) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !service.running.is_empty() && ui::time::now() < deadline {
+            assert!(
+                service.finished().is_empty(),
+                "a cancelled answer is dropped"
+            );
+            std::thread::yield_now();
+        }
+        assert!(service.running.is_empty(), "its slot is free again");
+    }
+
+    /// Cancelling a transform used to drop only its answer: the model call
+    /// ran on to its end, billed, holding the agent's one gateway channel
+    /// from its planning turns. A call in progress is now told to stop.
+    #[test]
+    fn a_cancelled_transform_stops_its_model_call() {
+        let (began_by, began) = channel();
+        let (told, stopped) = channel();
+        let mut service = TransformService::new(
+            Arc::new(Working {
+                began: began_by,
+                told,
+            }),
+            store(),
+        );
+        start_summary(&mut service);
+        // Cancel while the call runs, not before its worker reached it.
+        tilo_test_env::recv("the model call beginning", &began);
+        assert!(matches!(
+            service.cancel(4),
+            Some(InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(
+            tilo_test_env::recv("the model call ending", &stopped),
+            "the model call was told to stop"
+        );
+        drain_cancelled(&mut service);
+    }
+
+    /// A transform cancelled before its worker asks the model never asks it.
+    #[test]
+    fn a_transform_cancelled_before_its_call_never_asks_the_model() {
+        let (began_by, began) = channel();
+        let (told, _stopped) = channel();
+        let model = Arc::new(Working {
+            began: began_by,
+            told,
+        });
+        let call = bind_wire(
+            "summarise",
+            Some(&format!(
+                "{ARGUMENTS_JSON_PREFIX}{}",
+                json!({"input": "text"})
+            )),
+            &store(),
+        )
+        .unwrap();
+        let failure = run_until(&call, model.as_ref(), &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(failure.code, code::MODEL_UNAVAILABLE);
+        assert!(began.try_recv().is_err(), "the model was not asked");
     }
 }

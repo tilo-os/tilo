@@ -11,9 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 landlock = "0.4"
 postcard = { version = "1", features = ["alloc"] }
-serde_json = "1"
 
-collab-types = { path = "../crates/collab/collab-types" }
 tilo-app-package = { path = "../crates/packaging/tilo-app-package" }
 launcher = { path = "../crates/packaging/launcher" }
 tilo-user-identity = { path = "../crates/collab/tilo-user-identity" }

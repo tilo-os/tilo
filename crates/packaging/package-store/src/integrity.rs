@@ -169,10 +169,6 @@ fn sanitise(raw: &str) -> String {
 
 /// Read and check the record in `dir` against `package_id_hex`: identity,
 /// signature, and both hashes the signature covers.
-///
-/// # Errors
-///
-/// Returns the first broken link as an [`IntegrityError`].
 pub fn read_record(
     dir: &Path,
     app_id: &str,
@@ -383,7 +379,6 @@ mod tests {
             BlobHash::of(&collection_bytes),
             signing_key.verifying_key().to_bytes(),
         );
-        // The has-signature bit is part of the signed preimage.
         signed.signature = Some([0; 64]);
         signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
         let signed_bytes = signed.encode().to_vec();

@@ -723,6 +723,10 @@ fn native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets(
     const HEIGHT: u32 = 2_160;
     let mut one_bridge = required_bridge(WIDTH, HEIGHT);
     let mut two_bridge = required_bridge(WIDTH, HEIGHT);
+    // It checks the pixels of 4K frames, not how fast llvmpipe draws them: on a
+    // loaded runner a 4K fence can miss the one-second production allowance.
+    one_bridge.wait_for_gpu_completion_for_test();
+    two_bridge.wait_for_gpu_completion_for_test();
     let width = usize::try_from(WIDTH).expect("native width");
     let height = usize::try_from(HEIGHT).expect("native height");
     let pitch = width
@@ -898,7 +902,6 @@ fn native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets(
 fn versioned_damage_copies_dirty_regions_until_invalidated() {
     // Phase `versioned_damage_copies_exactly_the_dirty_region`.
     {
-        // Phase `l_shaped_damage_does_not_expand_to_a_bounding_box`.
         {
             // A QS popover overlapping a full-width top bar is the common case that made a bounding
             // union look like a near-full frame. Keep both copies precise; Vello unions their tiles.
@@ -934,7 +937,6 @@ fn versioned_damage_copies_dirty_regions_until_invalidated() {
             );
         }
 
-        // Phase `shared_coarse_diagnostic_accepts_full_damage_without_relaxing_sparse_policy`.
         {
             let full = [vello::FineDamageRect {
                 x: 0,
@@ -965,7 +967,6 @@ fn versioned_damage_copies_dirty_regions_until_invalidated() {
             );
         }
 
-        // Phase `versioned_damage_retains_full_pixels_and_copies_only_dirty_rectangles`.
         {
             let (width, height) = (64_u32, 48_u32);
             let mut bridge = required_bridge(width, height);
@@ -1056,7 +1057,6 @@ fn versioned_damage_copies_dirty_regions_until_invalidated() {
             }
         }
 
-        // Phase `overlapping_disjoint_and_edge_damage_matches_dense_oracle`.
         {
             let (width, height) = (64_u32, 48_u32);
             let mut bridge = required_bridge(width, height);
@@ -1127,7 +1127,6 @@ fn versioned_damage_copies_dirty_regions_until_invalidated() {
             assert_xrgb_pixels_eq(&actual, &expected, width as usize, height as usize, pitch);
         }
 
-        // Phase `revision_gap_and_empty_damage_force_full_readback`.
         {
             let (width, height) = (32_u32, 24_u32);
             let mut bridge = required_bridge(width, height);
@@ -1190,7 +1189,6 @@ fn versioned_damage_copies_dirty_regions_until_invalidated() {
 
     // Phase `failed_paint_base_color_and_resize_invalidate_sparse_backing`.
     {
-        // Phase `failed_versioned_paint_invalidates_sparse_backing_before_retry`.
         {
             let (width, height) = (32_u32, 24_u32);
             let mut bridge = required_bridge(width, height);
@@ -1262,7 +1260,6 @@ fn versioned_damage_copies_dirty_regions_until_invalidated() {
             assert_eq!(bridge.last_full_render_attempts(), 1);
         }
 
-        // Phase `base_color_and_resize_invalidate_versioned_sparse_backing`.
         {
             let (width, height) = (32_u32, 24_u32);
             let mut bridge = required_bridge(width, height);

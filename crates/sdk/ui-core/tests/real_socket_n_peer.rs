@@ -26,7 +26,6 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let _ = b.poll();
     let _ = c.poll();
 
-    // --- 1. Fan-out excludes the sender -----------------------------
     a.send(CollabRequest::document_incremental(b"X".to_vec()));
 
     let count_incremental = |evs: &[CollabEvent]| {
@@ -72,7 +71,6 @@ fn n_peer_fanout_and_per_peer_attribution() {
         key: PresenceKey::Workspace { id: "2".into() },
         payload: PresencePayload::Pointer { x: 2.0, y: 2.0 },
     });
-    // Extract the attributed user_id for each source by its distinct key.
     let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<String> {
         evs.iter().find_map(|e| match e {
             CollabEvent::RemotePresenceUpdate {

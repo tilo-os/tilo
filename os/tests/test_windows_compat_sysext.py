@@ -10,17 +10,18 @@ the wiring cannot silently drift back.
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "tools/ci"))
+import t_matrix  # noqa: E402
 CONTAINERFILE = (REPO / "os/Containerfile").read_text()
 CATALOGUE = json.loads(
     (REPO / "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json").read_text())
-BUILD_IMAGE = (REPO / ".forgejo/workflows/build-image.yml").read_text()
 # t's extension-manifests-{x86_64,aarch64} and publish-extension-manifests checks run this.
 MANIFESTS = (REPO / "tools/ci/publish/extension-manifests.sh").read_text()
-T_TOML = (REPO / "t.toml").read_text()
 BUILD_SCRIPT = (REPO / "os/dev/build-windows-compat-sysext.sh").read_text()
 # /usr/libexec/tilo-extension, built from this crate.
 HELPER = "".join(path.read_text() for path in sorted((REPO / "crates/system/extension-helper/src").glob("*.rs")))
@@ -125,21 +126,15 @@ class CatalogueOffersIt(unittest.TestCase):
 
 
 class CiBuildsAndPublishesIt(unittest.TestCase):
-    def test_image_workflow_exports_the_target_and_publishes_it(self):
-        self.assertIn("target: windows-compat-sysext", BUILD_IMAGE)
-        self.assertIn("name: windows-compat-sysext-${{ matrix.arch }}", BUILD_IMAGE)
-        self.assertIn("publish-windows-compat:", BUILD_IMAGE)
-        self.assertIn("tilo-windows-compat-image/$arch-$sha256/tilo-windows-compat.raw", BUILD_IMAGE)
-        # The descriptor the manifest job pins is checked against the bytes first.
-        self.assertIn("does not match its descriptor", BUILD_IMAGE)
-
     def test_manifest_script_pins_it_for_the_promoted_image(self):
         self.assertIn("tools/extensions/sysext_image.py manifest --id windows-compat", MANIFESTS)
         self.assertIn("tilo-windows-compat-image/$arch-$revision/descriptor.json", MANIFESTS)
         self.assertIn("tilo-windows-compat-image/$arch-$sha256/tilo-windows-compat.raw", MANIFESTS)
+        runs = [check.get("run", "") for check in t_matrix.checks(REPO)]
         for arch in ("x86_64", "aarch64"):
-            self.assertIn(f'run = "bash tools/ci/publish/extension-manifests.sh resolve {arch} ', T_TOML)
-        self.assertIn('run = "bash tools/ci/publish/extension-manifests.sh publish ', T_TOML)
+            self.assertTrue(any(run.startswith(f"bash tools/ci/publish/extension-manifests.sh resolve {arch} ")
+                                for run in runs), arch)
+        self.assertTrue(any(run.startswith("bash tools/ci/publish/extension-manifests.sh publish ") for run in runs))
 
     def test_published_url_matches_the_catalogue_manifest_location(self):
         self.assertIn("tilo-extension-windows-compat/{arch}-{base}/manifest.json", CATALOGUE["manifest"])

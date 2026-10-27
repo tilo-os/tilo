@@ -22,10 +22,10 @@
 //! machine".
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 
 mod channels;
 mod clock;
+pub mod content;
 pub mod custody;
 pub mod document;
 pub mod health;
@@ -33,6 +33,7 @@ mod held_live;
 pub mod invite;
 pub mod live;
 pub mod remote_page;
+mod room_layout;
 pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;
@@ -40,6 +41,7 @@ pub mod voice;
 mod watching;
 
 pub use channel_crypto::ChannelContentKeys;
+pub use channels::document_admission;
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
     certify, certify_with_root, decide_pairing, issue_device_cert, pending_pairings,

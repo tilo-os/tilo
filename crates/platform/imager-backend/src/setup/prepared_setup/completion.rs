@@ -128,14 +128,19 @@ impl PreparedSetupReview {
         destination_security::check_private_file(&pin.file)?;
         let mut sealed_artifacts = std::collections::BTreeMap::new();
         // Copy only the already-password-sealed artifacts. Do not activate,
-        // decrypt, remint or rewrite the person's identity, accounts or sessions.
-        for name in [IDENTITY_FILE, ACCOUNTS_FILE, SERVICE_SESSIONS_FILE] {
-            let selected = name == IDENTITY_FILE
-                || (name == ACCOUNTS_FILE && !manifest.account_ids.is_empty())
-                || (name == SERVICE_SESSIONS_FILE && manifest.service_sessions.is_some());
-            if !selected {
-                continue;
-            }
+        // decrypt, remint or rewrite the person's identity, accounts, sessions
+        // or selected mail.
+        let selected_names = std::iter::once(IDENTITY_FILE.to_owned())
+            .chain((!manifest.account_ids.is_empty()).then(|| ACCOUNTS_FILE.to_owned()))
+            .chain(
+                manifest
+                    .service_sessions
+                    .is_some()
+                    .then(|| SERVICE_SESSIONS_FILE.to_owned()),
+            )
+            .chain(manifest.mail.iter().map(|mail| mail.filename.clone()));
+        for name in selected_names {
+            let name = name.as_str();
             let bytes = Zeroizing::new(bounded_file(&self.pin, name, LIMITS.plaintext_bytes)?);
             sealed_artifacts.insert(name.to_owned(), Sha256::digest(bytes.as_slice()).into());
             let mut options = OpenOptions::new();

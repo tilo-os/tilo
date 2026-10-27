@@ -77,6 +77,13 @@ fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
+/// Press one of the library's actions in the window bar.
+fn press_bar(app: &mut TestApp<SnippetsShell>, id: &str) {
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+    app.settle();
+}
+
 /// The list's item for the snippet titled `title`: the node the list
 /// exports around the row, named by the row's language badge and title.
 fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::NodeId {
@@ -149,8 +156,6 @@ fn presented_library_fills_the_list() {
     assert!(app.open_id_for_test().is_some());
 }
 
-/// The sidebar lists the library's places with their counts, and choosing
-/// one narrows the list.
 #[test]
 fn sidebar_places_narrow_the_list() {
     let mut app = demo();
@@ -166,8 +171,9 @@ fn sidebar_places_narrow_the_list() {
     let favorites = app.visible_count_for_test();
     assert!(favorites > 0 && favorites < all);
     assert_eq!(
-        app.titles.0, "Favorites",
-        "the list column is titled by its place"
+        app.core.borrow().selection_title(),
+        "Favorites",
+        "the window bar names the list by its place"
     );
     let core = app.core.borrow();
     assert!(
@@ -189,7 +195,7 @@ fn sidebar_places_narrow_the_list() {
 fn controls_submit_library_actions_as_one_undo_step_each() {
     let mut app = launched(&[snippet("Plain", "echo hi"), snippet("Templated", "")]);
     open_row(&mut app, "Plain");
-    activate(&mut app, "Favorite");
+    press_bar(&mut app, window_bar::FAVORITE);
     assert!(by_title(&app, "Plain").1.favorite);
     assert!(app.undo(), "the favorite is one undo step");
     assert!(!by_title(&app, "Plain").1.favorite);
@@ -201,7 +207,7 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
         "copying records a use"
     );
 
-    activate(&mut app, "New snippet");
+    press_bar(&mut app, window_bar::NEW_SNIPPET);
     assert_eq!(app.state().snippets.len(), 3);
     let (made, _) = by_title(&app, "Untitled snippet");
     assert_eq!(
@@ -209,17 +215,13 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
         Some(made.clone()),
         "the new snippet opens"
     );
-    // The new snippet is the one open, so its menu deletes it, once the
-    // person confirms what the host asks.
-    activate(&mut app, "More actions");
-    activate(&mut app, "Delete");
-    assert_eq!(app.state().snippets.len(), 3, "deleting waits for consent");
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
-    app.settle();
+    // The new snippet is the one open, so the bar's Delete deletes it. Undo
+    // takes a deletion back, so it runs at once and nobody is asked.
+    press_bar(&mut app, window_bar::DELETE);
+    assert!(app.asking().is_none(), "the host asks nothing");
     assert!(
         app.state().snippets.get(&made).is_none(),
-        "the confirmed delete applied: {:?}",
+        "the delete applied: {:?}",
         app.harness().control_failures()
     );
     assert_eq!(titles(&app), ["Plain", "Templated"]);
@@ -227,8 +229,8 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
     assert_eq!(app.state().snippets.len(), 3);
 }
 
-/// The language picker sets the chosen language; the overflow menu
-/// duplicates the open snippet and opens the copy.
+/// The language picker sets the chosen language; the window bar's
+/// Duplicate duplicates the open snippet and opens the copy.
 #[test]
 fn the_snippet_menus_set_the_language_and_duplicate() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
@@ -246,8 +248,7 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
     app.settle();
     assert_eq!(by_title(&app, "Deploy").1.language, Language::Rust);
 
-    activate(&mut app, "More actions");
-    activate(&mut app, "Duplicate");
+    press_bar(&mut app, window_bar::DUPLICATE);
     let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.body, "kubectl apply");
     assert_eq!(app.state().snippets.len(), 2);
@@ -271,8 +272,7 @@ fn duplicating_from_most_used_opens_the_copy_for_editing() {
         Selection::Smart(SmartFolder::MostUsed)
     );
     open_row(&mut app, "Deploy");
-    activate(&mut app, "More actions");
-    activate(&mut app, "Duplicate");
+    press_bar(&mut app, window_bar::DUPLICATE);
     let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.uses.get(), 0);
     assert_eq!(
@@ -399,7 +399,6 @@ fn copying_a_templated_snippet_opens_the_variables_dialog() {
     assert!(app.expand_open_for_test());
 }
 
-/// The list is one focus stop whose keys move the open snippet.
 #[test]
 fn the_list_moves_the_open_snippet_by_keys() {
     let mut app = launched(&[
@@ -511,46 +510,33 @@ fn variable_dialog_is_semantic_and_local() {
     assert_eq!(doc.get_heads(), heads, "the dialog writes nothing");
 }
 
-/// Focusing the New button does not author a snippet; activating it does.
+/// The window bar offers New snippet without authoring one; pressing it
+/// creates one.
 #[test]
-fn focusing_new_snippet_does_not_activate_it() {
+fn showing_the_bars_new_snippet_authors_nothing_and_pressing_it_does() {
     let mut app = launched(&[snippet("Only", "")]);
-    let label = crate::tr("snippets-new");
-    let button = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| {
-            node.label() == Some(label.as_str())
-                && node.supports_action(ui::accesskit::Action::Click)
-        })
-        .map(|(id, _)| id)
-        .expect("the New button");
-    app.harness()
-        .perform_a11y_action(button, &ui::a11y::Action::Focus)
-        .expect("the New button takes focus");
+    app.harness().present_in_window_bar();
     app.settle();
-    assert_eq!(
-        app.state().snippets.len(),
-        1,
-        "focusing a button authors nothing"
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert!(
+        bar.actions
+            .iter()
+            .any(|action| action.id == window_bar::NEW_SNIPPET),
+        "{bar:?}"
     );
-    activate(&mut app, &label);
+    assert_eq!(app.state().snippets.len(), 1, "the bar authors nothing");
+    press_bar(&mut app, window_bar::NEW_SNIPPET);
     assert_eq!(
         app.state().snippets.len(),
         2,
-        "activating it creates a snippet"
+        "pressing it creates a snippet"
     );
 }
-
-// ---- responsive layout ---------------------------------------------
 
 fn framed(app: SnippetsApp, width: u32) -> Framed<SnippetsApp> {
     Framed::new(ui::State::new(), app, (width, 800), Theme::dark())
 }
 
-/// The shell docks the sidebar when wide, makes it a drawer when narrow,
-/// and pushes the snippet in front of the list when very narrow.
 #[test]
 fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
     // Case `wide_keeps_sidebar_docked_and_open`.
@@ -627,11 +613,20 @@ fn the_content_column_lays_out_its_controls() {
     let (language, copy) = sizes(&app);
     assert_eq!(app.open_id_for_test(), Some(other));
     assert!(language.width() > language.height() && copy.width() > copy.height());
-    let targets = Framed::harness(&app).targets();
-    assert!(targets.contains_key("snippets.favorite") && targets.contains_key("snippets.more"));
+    let actions: Vec<String> = app
+        .window_toolbar()
+        .actions
+        .into_iter()
+        .map(|action| action.id)
+        .collect();
+    for id in [
+        window_bar::FAVORITE,
+        window_bar::DUPLICATE,
+        window_bar::DELETE,
+    ] {
+        assert!(actions.iter().any(|have| have == id), "{id} in {actions:?}");
+    }
 }
-
-// ---- the published tree, agents and history ------------------------------
 
 fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
     app.harness()
@@ -654,11 +649,18 @@ fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
     let mut detail = TestApp::<SnippetsShell>::capture(Some("detail")).unwrap();
     assert_eq!(detail.harness().inspection().viewport, [420, 760]);
     assert!(detail.state().snippets.len() >= 10);
-    assert!(has_control(&mut detail, "Back"), "the detail is pushed in");
-    detail.harness().click_named("nav-shell-back").unwrap();
+    let offers_back = || ui::window_toolbar::declared().is_some_and(|bar| !bar.leading.is_empty());
+    assert!(offers_back(), "the detail is pushed in, Back in the bar");
+    detail
+        .harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
     detail.settle();
     assert!(
-        !has_control(&mut detail, "Back"),
+        detail
+            .surface_mut::<SnippetsApp>()
+            .window_toolbar()
+            .leading
+            .is_empty(),
         "Back returns to the snippet list"
     );
 
@@ -766,10 +768,9 @@ fn an_agent_edits_and_opens_snippets_one_call_each() {
     .unwrap();
     assert!(by_title(&app, "Deploy").1.tags.is_empty());
 
+    // Undo takes a deletion back, so it runs at once.
     app.call_on(&item, "delete", serde_json::json!({}))
-        .expect_err("deleting asks for confirmation");
-    app.call_confirmed_on(&item, "delete", serde_json::json!({}))
-        .unwrap();
+        .expect("an undoable delete runs at once");
     assert_eq!(app.state().snippets.len(), 2);
 }
 
@@ -859,4 +860,266 @@ fn history_entries_render_as_the_apps_sentences() {
         (ActorKind::Agent, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
+}
+
+/// Click the control assistive technology names `label`, at the centre of
+/// where it is drawn, as a pointer does.
+fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
+    let nodes = app.harness().a11y_nodes();
+    let names: Vec<_> = nodes.iter().filter_map(|(_, node)| node.label()).collect();
+    let bounds = nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some(label))
+        .find_map(|(_, node)| node.bounds().filter(|b| b.width() > 0.0))
+        .unwrap_or_else(|| panic!("no drawn control named {label:?} among {names:?}"));
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    app.harness().click_at(x, y);
+    app.settle();
+}
+
+/// The language picked with the pointer applies: a click opens the list
+/// below the picker and a click on a language there chooses it.
+#[test]
+fn a_pointer_click_picks_the_language() {
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+    open_row(&mut app, "Deploy");
+    let nodes = app.harness().a11y_nodes();
+    let picker = nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some("Language"))
+        .find_map(|(_, node)| node.bounds().filter(|b| b.width() > 0.0))
+        .expect("the language picker is drawn");
+    click_label(&mut app, "Language");
+    // The list opens under the picker, one 32 px row per language: Plain
+    // text, Shell, then Rust.
+    app.harness()
+        .click_at(picker.x0 + 30.0, picker.y1 + 28.0 + 64.0);
+    app.settle();
+    assert_eq!(
+        by_title(&app, "Deploy").1.language,
+        Language::Rust,
+        "the clicked language applies: {:?}",
+        app.harness().control_failures()
+    );
+}
+
+#[test]
+fn a_pointer_click_on_copy_copies() {
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+    open_row(&mut app, "Deploy");
+    click_label(&mut app, "Copy");
+    assert_eq!(
+        by_title(&app, "Deploy").1.uses.get(),
+        1,
+        "a click on Copy copies: {:?}",
+        app.harness().control_failures()
+    );
+}
+
+/// A picked language and a typed name apply for the record's owner and
+/// for an editor of a shared workspace alike.
+#[test]
+fn owners_and_editors_set_the_language_and_the_name() {
+    for role in [None, Some(ui::Role::Editor)] {
+        let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+        if let Some(role) = role {
+            app.set_role(role);
+        }
+        open_row(&mut app, "Deploy");
+        {
+            let harness = app.harness();
+            let picker = harness.a11y_node_named("Language").unwrap();
+            harness
+                .perform_a11y_action(picker, &ui::a11y::Action::SetValue("Rust".into()))
+                .unwrap();
+        }
+        app.settle();
+        assert_eq!(
+            by_title(&app, "Deploy").1.language,
+            Language::Rust,
+            "{role:?}: the picked language applies: {:?}",
+            app.harness().control_failures()
+        );
+        let (id, _) = by_title(&app, "Deploy");
+        app.harness()
+            .click_named(&format!("snippets.snippet:{id}.title"))
+            .unwrap();
+        app.harness().type_text(" prod");
+        app.settle();
+        assert_eq!(by_title(&app, "Deploy prod").0, id, "{role:?}: renamed");
+    }
+}
+
+/// A guest (an Editor in a public room) copies a snippet as the owner does:
+/// the copy lands on their own clipboard and touches nothing shared, so no
+/// one is asked first.
+#[test]
+fn a_guest_copies_a_snippet_without_being_asked() {
+    let mut app = launched(&[snippet("Plain", "echo hi")]);
+    app.set_role(ui::Role::Editor);
+    open_row(&mut app, "Plain");
+    let (id, _) = by_title(&app, "Plain");
+    app.harness()
+        .click_named(&format!("snippets.snippet:{id}.copy"))
+        .unwrap();
+    app.settle();
+    assert_eq!(app.asking(), None, "a device-local copy asks nobody");
+    assert_eq!(
+        by_title(&app, "Plain").1.uses.get(),
+        1,
+        "the guest's copy ran: {:?}",
+        app.harness().control_failures()
+    );
+}
+
+#[test]
+fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
+    // Every motion reads as arrived: a frame that comes after the slide's
+    // whole time (a busy device), where the collapse lands in one tick.
+    let _arrived = ui::motion::testing::settled();
+    let mut app = TestApp::<SnippetsShell>::new().unwrap();
+    // Frames as the window's host draws them: the one the input asked
+    // for, then more only while the app asks.
+    let pump = |app: &mut TestApp<SnippetsShell>| {
+        app.harness().relayout();
+        for _ in 0..32 {
+            let schedule = app.harness().frame_schedule();
+            if !(schedule.needs_animation_frame || schedule.queued_work) {
+                return;
+            }
+            app.harness().relayout();
+        }
+    };
+    let width = |app: &mut TestApp<SnippetsShell>| {
+        app.with_widget(|shell: &mut SnippetsApp| shell.sidebar_width_for_test())
+            .unwrap()
+    };
+    // The sidebar toggle is the window bar's.
+    let toggle = |app: &mut TestApp<SnippetsShell>| {
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+    };
+    pump(&mut app);
+    let open = width(&mut app);
+    assert!(open > 0.0, "a wide window docks its sidebar");
+    toggle(&mut app);
+    pump(&mut app);
+    assert!(
+        width(&mut app) < 0.5,
+        "the toggle collapsed the sidebar on screen"
+    );
+    toggle(&mut app);
+    pump(&mut app);
+    assert!(
+        (width(&mut app) - open).abs() < 0.5,
+        "the toggle expanded it again"
+    );
+}
+
+/// In the desktop the window's bar shows the library's "New snippet", and a
+/// press there adds one. An empty library's one action is in the window
+/// itself, so its bar offers none that would do nothing.
+#[test]
+fn the_window_bars_new_snippet_adds_one() {
+    let bar_actions = |app: &mut TestApp<SnippetsShell>| -> Vec<String> {
+        app.harness().present_in_window_bar();
+        app.settle();
+        ui::window_toolbar::declared()
+            .map(|toolbar| {
+                toolbar
+                    .actions
+                    .into_iter()
+                    .map(|action| action.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut empty = launched(&[]);
+    let offered = bar_actions(&mut empty);
+    assert!(
+        !offered.iter().any(|id| id == "snippets.new"),
+        "{offered:?}"
+    );
+    drop(empty);
+
+    let mut app = launched(&[snippet("Deploy", "make deploy")]);
+    let offered = bar_actions(&mut app);
+    assert!(offered.iter().any(|id| id == "snippets.new"), "{offered:?}");
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "snippets.new".into(),
+        });
+    app.settle();
+    let failures = format!("{:?}", app.harness().control_failures());
+    assert_eq!(app.state().snippets.len(), 2, "{failures}");
+}
+
+/// The folder, the description and the tags are editable where the snippet
+/// is read: the library's organising model is not write-once.
+#[test]
+fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+    let (id, _) = by_title(&app, "Deploy");
+
+    let view = app.surface_mut::<SnippetsApp>();
+    view.request_for_test(Action::SetFolder(id.clone(), "  Releases  ".into()));
+    view.request_for_test(Action::SetDescription(
+        id.clone(),
+        "Roll the cluster forward".into(),
+    ));
+    view.request_for_test(Action::AddTag(id.clone(), " k8s ".into()));
+    view.request_for_test(Action::AddTag(id.clone(), "k8s".into()));
+    view.request_for_test(Action::AddTag(id.clone(), "   ".into()));
+    app.settle();
+
+    let (_, stored) = by_title(&app, "Deploy");
+    assert_eq!(
+        stored.folder.0, "Releases",
+        "the folder name is trimmed, not padded"
+    );
+    assert_eq!(stored.description, "Roll the cluster forward");
+    assert_eq!(
+        stored.tags.iter().cloned().collect::<Vec<_>>(),
+        vec!["k8s".to_owned()],
+        "a tag is trimmed and never doubled, and a blank tag is nothing"
+    );
+
+    // The sidebar lists the folder and the tag the snippet was given.
+    let sections = app.surface_mut::<SnippetsApp>().nav_sections_for_test();
+    let labels: Vec<String> = sections
+        .into_iter()
+        .flat_map(|section| section.items)
+        .map(|item| item.label)
+        .collect();
+    assert!(labels.iter().any(|label| label == "Releases"), "{labels:?}");
+    assert!(labels.iter().any(|label| label == "k8s"), "{labels:?}");
+
+    // Taking the tag off leaves the snippet without it.
+    let id = by_title(&app, "Deploy").0;
+    app.surface_mut::<SnippetsApp>()
+        .request_for_test(Action::RemoveTag(id.clone(), "k8s".into()));
+    app.settle();
+    assert!(by_title(&app, "Deploy").1.tags.is_empty());
+}
+
+/// A snippet that carries a credential is copied through the expiring path,
+/// so an API key does not sit in the clipboard history; ordinary text takes
+/// the shared path. The guess errs towards "secret", which costs one copy and
+/// not the key.
+#[test]
+fn a_snippet_holding_a_credential_is_treated_as_one() {
+    assert!(looks_like_a_credential("export API_KEY=sk-live-1234"));
+    assert!(looks_like_a_credential(
+        "curl -H 'Authorization: Bearer abc.def'"
+    ));
+    assert!(looks_like_a_credential("password: hunter2"));
+    // Assembled rather than written out: a test fixture is not a key, and
+    // the repository's own policy scans for the header that introduces one.
+    let key_header = format!("-----BEGIN {} PRIVATE KEY-----", "OPENSSH");
+    assert!(looks_like_a_credential(&key_header));
+    assert!(!looks_like_a_credential("kubectl apply -f deployment.yaml"));
+    assert!(!looks_like_a_credential("SELECT * FROM tracks;"));
 }

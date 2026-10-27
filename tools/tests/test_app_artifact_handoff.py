@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import tomllib
 import unittest
+from hang import HANG_BOUND
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +35,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/collect-runtime-dependencies.py",
             "os/scripts/verify-runtime-bundle-closure.sh",
             "os/scripts/stamp-runtime.sh", "tools/apps/stage_sdk_services.py",
-            "tools/apps/pack-runtime-package.sh",
+            "tools/apps/pack-runtime-package.sh", "tools/apps/language_packs.py",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
@@ -126,6 +127,9 @@ if a[:2] == ['key', 'generate']:
     pathlib.Path(a[a.index('--out')+1]).write_text('PRIVATE_TEST_IDENTITY')
 elif a[:2] == ['key', 'pubkey']:
     print('ab'*32)
+elif a[0] == 'font-index':
+    # What the bake records of a catalog's faces, beside its fonts.
+    (pathlib.Path(a[1])/'face-index.json').write_text('{}')
 elif a[0] == 'build':
     version = a[a.index('--release')+1] + '+native.' + 'ab'*16
     out = pathlib.Path(a[a.index('--out-root')+1]) / version; out.mkdir(parents=True)
@@ -166,7 +170,7 @@ if a[0] == 'pack':
     else:
         assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
         assert manifest['package']['runtime'] == runtime, manifest
-        assert manifest['sandbox']['services']['identity'] == 'optional@2', manifest
+        assert manifest['sandbox']['services']['identity'] == 'optional@10', manifest
         payload = pathlib.Path(a[a.index('--payload')+1])
         output = pathlib.Path(a[a.index('--output')+1])
         output.write_bytes((payload/'bin/calculator').read_bytes())
@@ -206,7 +210,7 @@ else:
 
     def command(self, *command, env=None):
         result = subprocess.run(command, cwd=self.root, env=env or self.env,
-                                text=True, capture_output=True, timeout=60)
+                                text=True, capture_output=True, timeout=HANG_BOUND)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
@@ -225,7 +229,7 @@ exit 99
 """)
             result = subprocess.run(["bash", "dist/apps/package-apps.sh"],
                                     cwd=self.root, env=self.env, text=True,
-                                    capture_output=True, timeout=60)
+                                    capture_output=True, timeout=HANG_BOUND)
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
             self.assertIn("packing app=calculator binary=", result.stdout)
             self.assertIn("application tapp is too large", result.stderr)
@@ -251,7 +255,7 @@ exit 99
                        (self.root / "os/scripts/build-thin-apps.sh").read_text().replace(
                            "62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183", "62"))
             result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                    env=self.env, text=True, capture_output=True, timeout=60)
+                                    env=self.env, text=True, capture_output=True, timeout=HANG_BOUND)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
             self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
@@ -264,7 +268,7 @@ exit 99
                 with self.subTest(key=key):
                     env = dict(self.env, FIXTURE_ARCH="x86_64", **{key: value})
                     result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                            env=env, text=True, capture_output=True, timeout=60)
+                                            env=env, text=True, capture_output=True, timeout=HANG_BOUND)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(f"{key} overrides", result.stderr)
                     self.assertFalse((self.root / "cargo.log").exists())
@@ -281,7 +285,7 @@ exit 99
                         result = subprocess.run([
                             "python3", "tools/apps/app_package_isa.py", "flags", "--root", str(self.root),
                             "--arch", arch], cwd=self.root, env=self.env,
-                            text=True, capture_output=True, timeout=10)
+                            text=True, capture_output=True, timeout=HANG_BOUND)
                         self.assertNotEqual(result.returncode, 0)
                         self.assertIn("unaudited", result.stderr)
                         self.assertEqual(result.stdout, "")
@@ -390,7 +394,7 @@ exit 99
             "shutil.copyfile(source, out/'lib'/source.name)",
             "if source.name != 'libc.so.6': shutil.copyfile(source, out/'lib'/source.name)"))
         result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                env=self.env, text=True, capture_output=True, timeout=60)
+                                env=self.env, text=True, capture_output=True, timeout=HANG_BOUND)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("signed runtime is missing libc.so.6", result.stderr)
         self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
@@ -399,7 +403,7 @@ exit 99
         self.env["FIXTURE_ARCH"] = "x86_64"
         (self.root / "keyboard/libxkbcommon.so.0").unlink()
         result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                env=self.env, text=True, capture_output=True, timeout=60)
+                                env=self.env, text=True, capture_output=True, timeout=HANG_BOUND)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("default SDK keyboard library is missing", result.stderr)
         self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
@@ -417,7 +421,7 @@ exit 99
     def test_invalid_product_fonts_stop_before_signing_app_packages(self):
         self.env.update(FIXTURE_ARCH='aarch64', FIXTURE_INVALID_FONTS='1')
         result = subprocess.run(['bash', 'dist/apps/package-apps.sh'], cwd=self.root,
-                                env=self.env, text=True, capture_output=True, timeout=60)
+                                env=self.env, text=True, capture_output=True, timeout=HANG_BOUND)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('invalid product font catalog', result.stderr)
         self.assertFalse(list((self.root / 'dist/app-release/tapp').glob('*.tapp')))
@@ -428,7 +432,7 @@ exit 99
         tool.write_text(tool.read_text().replace(
             "shutil.copytree(source, out/'lib'/source.name)", 'pass'))
         result = subprocess.run(['bash', 'dist/apps/package-apps.sh'], cwd=self.root,
-                                env=self.env, text=True, capture_output=True, timeout=60)
+                                env=self.env, text=True, capture_output=True, timeout=HANG_BOUND)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('signed SDK is missing its verified product font catalog', result.stderr)
         self.assertFalse(list((self.root / 'dist/app-release/tapp').glob('*.tapp')))

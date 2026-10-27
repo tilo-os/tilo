@@ -1,4 +1,3 @@
-//! Exercise the overview's production composition with explicitly chosen fixture roots.
 use super::super::{
     super::strings::{t, t_args},
     InstallerPreview, Page,
@@ -35,8 +34,10 @@ fn preview(config_text: &str) -> (tempfile::TempDir, InstallerPreview) {
         home: fixture.path().into(),
         config,
     };
-    let mut preview = InstallerPreview::default();
-    preview.live = true;
+    let mut preview = InstallerPreview {
+        live: true,
+        ..Default::default()
+    };
     preview.journey.page = Page::Belongings;
     preview.journey.migrate = Some(true);
     preview.journey.categories[2] = true;

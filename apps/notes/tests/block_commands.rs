@@ -1,4 +1,3 @@
-//! Whole-block commands through the mounted Notes body and canonical history.
 use crate::component_support::*;
 use notes::read;
 use ui::widget::BlockContent;

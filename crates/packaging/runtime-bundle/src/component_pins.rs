@@ -11,9 +11,6 @@ const PINS: [&str; 3] = [
 ];
 
 /// Combine the operator's existing trust with immutable installed pins.
-///
-/// # Errors
-/// A present component pin is unreadable, mutable, malformed or insecure.
 pub fn load_with_components(operator_list: &Path) -> std::io::Result<Option<Vec<String>>> {
     let mut keys = match std::fs::read_to_string(operator_list) {
         Ok(text) => Some(
@@ -122,9 +119,6 @@ impl BundleTrust {
 
 /// Existing pins plus retained identities scoped to this exact signed bundle.
 /// A mutable, mismatched or replaced retention record fails closed.
-///
-/// # Errors
-/// Policy or signed bundle metadata is invalid or inaccessible.
 pub fn load_for_bundle(operator_list: &Path, bundle: &Path) -> std::io::Result<BundleTrust> {
     let mut trust = BundleTrust {
         publishers: load_with_components(operator_list)?,

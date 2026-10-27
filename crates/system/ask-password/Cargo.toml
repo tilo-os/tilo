@@ -1,0 +1,23 @@
+[package]
+name = "tilo-ask-password"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "systemd's password agent protocol: the pending requests and their answers."
+
+[lib]
+name = "tilo_ask_password"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+libc.workspace = true
+zeroize.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

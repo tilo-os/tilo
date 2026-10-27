@@ -173,8 +173,6 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
     }
 }
 
-// ----- Live regions -----
-
 /// One live region whose spoken value is mutable between frames.
 struct LiveWidget {
     name: String,
@@ -298,8 +296,6 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
         app.scan_live_regions();
     }
 }
-
-// ----- Text review (caret movement over existing content) -----
 
 fn app_with_focused_input(initial: &str) -> (App, SharedRecorder, NodeId) {
     let rec = SharedRecorder::default();

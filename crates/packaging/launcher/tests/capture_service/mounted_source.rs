@@ -1,4 +1,3 @@
-//! Actual signed shim/worker, native-byte Directory/File projection and DAC.
 use super::*;
 use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 const SELECTOR: &str = "capture_service::mounted_source::signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs";
@@ -59,17 +58,17 @@ fn run_mounted_child(child_env: &str) -> bool {
             .env(child_env, &marker)
             .spawn()
             .unwrap();
-        let started = Instant::now();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 assert!(status.success());
                 break;
             }
-            if started.elapsed() >= Duration::from_secs(60) {
+            if Instant::now() >= deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
                 assert!(
-                    started.elapsed() < Duration::from_secs(60),
+                    Instant::now() < deadline,
                     "Owned signed mounted-reader timed out"
                 );
             }

@@ -72,7 +72,6 @@ fn test_wayland_handshake_fixed() {
         let mut server_state =
             WaylandServer::new(&display.handle(), tx).expect("WaylandServer::new");
 
-        // Serve for as long as the test may wait on the client below.
         let serve_until = tilo_test_env::hang_deadline();
         while Instant::now() < serve_until {
             // Must dispatch clients manually if not using a source.
@@ -94,7 +93,7 @@ fn test_wayland_handshake_fixed() {
     // failure surfaced as "server received no events" with "exec: alacritty:
     // not found" buried in the app log. Cargo always builds this one, and
     // the handshake is what is under test, not which client performs it.
-    let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
+    let client = tilo_test_env::package_binary!("click_test_client");
     let container = Container::new(
         client
             .parent()

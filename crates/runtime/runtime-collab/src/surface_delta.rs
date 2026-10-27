@@ -20,6 +20,7 @@
 //! nothing that reads a surface changes.
 
 use std::collections::{HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use tilo_actions::ResourceSemanticIdentity;
 
@@ -62,7 +63,6 @@ impl ExportedAction {
         }
     }
 
-    /// The fields of this action's resource.
     #[must_use]
     pub fn resource_fields(&self) -> ResourceFields {
         ResourceFields {
@@ -237,7 +237,7 @@ impl SurfaceTable {
     #[must_use]
     pub fn actions(&self) -> Vec<ExportedAction> {
         let mut rows: Vec<&(u64, SurfaceResource)> = self.resources.values().collect();
-        rows.sort_by_key(|(seq, _)| *seq);
+        rows.compact_sort_by_key(|(seq, _)| *seq);
         let mut actions = Vec::new();
         for (_, resource) in rows {
             let Some(members) = self.templates.get(&resource.template) else {
@@ -467,7 +467,7 @@ mod tests {
         turn.apply(&first).unwrap();
         turn.apply(&second).unwrap();
         let sort = |mut rows: Vec<(String, String, String)>| {
-            rows.sort();
+            rows.compact_sort();
             rows
         };
         let mut folded = SurfaceTable::default();
@@ -475,7 +475,6 @@ mod tests {
         folded.apply(&first.clone().then(second.clone())).unwrap();
         assert_eq!(sort(labels(&folded)), sort(labels(&turn)));
 
-        // Folding onto a reset keeps it a reset, and a later reset wins.
         let mut from_reset = SurfaceTable::default();
         from_reset
             .apply(&base.clone().then(first.clone()).then(second))

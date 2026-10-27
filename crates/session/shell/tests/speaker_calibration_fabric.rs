@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use shell::shell::device_fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-    FabricCapabilities, FabricStamp, PersonalFabricAction,
+    FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
 };
 use shell::shell::personal_continuity::DeviceId;
 use shell::shell::speaker_calibration::{
@@ -109,6 +109,7 @@ impl Device {
                 online: true,
                 last_seen_unix_ms: self.counter,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: FabricStamp {
                     counter: self.counter,
                     device: owner,

@@ -8,18 +8,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::{Dimension, NodeId, TaffyTree};
-use ui::Shortcut;
 use ui::TextRole;
 use ui::framework::TextControl;
 use ui::theme::Theme;
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, ButtonRole, CodeEditor, Column, Dropdown, Element, EventCtx, Language, ResizableSplit,
-    Row, Text, Widget,
+    CodeEditor, Column, Dropdown, Element, EventCtx, Language, ResizableSplit, Row, Text, Widget,
 };
 use winit::event::WindowEvent;
 
+use crate::i18n::t;
 use crate::link::{Intent, Link};
 use crate::model::QueryResult;
 use crate::record::Workspace as Record;
@@ -43,7 +42,7 @@ impl EditorPane {
         let mut editor = CodeEditor::local()
             .with_language(Language::Sql)
             .with_tab_width(2)
-            .with_placeholder("Write a SQL query")
+            .with_placeholder(&t("db-sql-placeholder"))
             .with_id("sql-editor");
         // The client opens ready to type a query.
         editor.set_focused(true);
@@ -107,51 +106,6 @@ impl ui::widget::Decorator for EditorPane {
     }
 }
 
-/// Run, which waits for a connection that is not busy.
-struct RunButton {
-    link: Link,
-    button: Button,
-}
-
-impl RunButton {
-    fn new(link: &Link) -> Self {
-        let run_link = link.clone();
-        let button = Button::new("db.query.run", "Run")
-            .role(ButtonRole::Primary)
-            .shortcut_hint(Shortcut::command("Enter"))
-            .on_effect(move || {
-                let sql = run_link.sql();
-                run_link.ask(Intent::Run(sql));
-            });
-        Self {
-            link: link.clone(),
-            button,
-        }
-    }
-}
-
-impl ui::widget::Decorator for RunButton {
-    type Inner = Button;
-
-    fn inner(&self) -> &Button {
-        &self.button
-    }
-
-    fn inner_mut(&mut self) -> &mut Button {
-        &mut self.button
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let enabled = self.link.read(|model| model.connected && !model.busy);
-        self.button.set_enabled(enabled);
-        Widget::sync(&mut self.button, state, path);
-    }
-
-    fn name(&self) -> &'static str {
-        "RunButton"
-    }
-}
-
 /// The starter queries: choosing one loads it into the editor, and the
 /// dropdown goes back to its label.
 struct StarterQueries {
@@ -172,8 +126,8 @@ impl StarterQueries {
         let state = ui::LocalState::new(String::new());
         let menu = Dropdown::from_state(names.clone(), &state)
             .with_id("db.query.snippets")
-            .with_accessible_name("Starter queries")
-            .with_placeholder("Starter queries")
+            .with_accessible_name(&t("db-starter-queries"))
+            .with_placeholder(&t("db-starter-queries"))
             .on_change(move |name| {
                 if let Some(index) = names.iter().position(|candidate| candidate == name) {
                     pick_link.ask(Intent::LoadSnippet(index));
@@ -222,18 +176,17 @@ impl ui::widget::Decorator for StarterQueries {
     }
 }
 
-/// Run and the starter queries.
+/// The starter queries. Run is the window bar's.
 fn toolbar(link: &Link) -> Row {
     Row::new()
         .no_wrap()
-        .push(Box::new(RunButton::new(link)))
         .push(Box::new(StarterQueries::new(link)))
 }
 
 /// What the strip above the result says.
 fn strip_text(link: &Link) -> String {
     link.read(|model| match &model.status {
-        RunStatus::Idle => "Ready".to_owned(),
+        RunStatus::Idle => t("db-ready"),
         RunStatus::Busy(message) | RunStatus::Ok(message) => message.clone(),
         RunStatus::Error(_) => model
             .query
@@ -253,17 +206,30 @@ fn results_content(link: &Link, result: Option<Arc<QueryResult>>) -> Element {
         .as_ref()
         .is_some_and(|result| !result.columns.is_empty());
     let body: Element = if has_columns {
-        let mut table = ResultsTable::new("db.query.results");
-        table.bind(result);
-        Box::new(table)
+        let mut table = ResultsTable::new("db.query.results").reporting_to(link);
+        table.bind(result.clone());
+        // A cut result says so, and says what to do about it, above the grid
+        // rather than through a "+" nobody can read.
+        let cut = result.as_ref().and_then(|result| result.cut_note());
+        match cut {
+            Some(note) => Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .push(Box::new(CaptionLine::under_divider(
+                        Text::new(&note).with_role(TextRole::Body).dimmed(),
+                    )))
+                    .push(Box::new(table)),
+            ),
+            None => Box::new(table),
+        }
     } else {
         let message = match &result {
-            Some(result) if result.is_select => "The query returned no columns.",
-            Some(_) => "The statement ran.",
-            None => "",
+            Some(result) if result.is_select => t("db-query-no-columns"),
+            Some(_) => t("db-statement-ran"),
+            None => String::new(),
         };
         Box::new(CaptionLine::under_divider(
-            Text::new(message).with_role(TextRole::Body).dimmed(),
+            Text::new(&message).with_role(TextRole::Body).dimmed(),
         ))
     };
     Box::new(

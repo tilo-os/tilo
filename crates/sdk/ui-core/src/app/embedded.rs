@@ -53,7 +53,6 @@ pub struct EmbeddedApp {
     /// Focus state represented by `painted`. A hidden app can lose and regain
     /// focus without changing the frame its host last showed.
     painted_focus: bool,
-    /// The control that had focus when focus last left the app.
     restore_focus: Option<NodeId>,
     /// Shift was held as focus last moved, so focus entering the app lands
     /// on its last control.
@@ -112,9 +111,6 @@ static NEXT_SOURCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 impl EmbeddedApp {
     /// Show `app` in a region of a host's scene. `wake` is told when the
     /// app's background work wants it to run again.
-    ///
-    /// # Errors
-    /// The app's wake scope is already bound to another host.
     pub fn new(
         mut app: App,
         wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
@@ -310,9 +306,12 @@ impl crate::widget::SearchableWindow for EmbeddedApp {
         let changed = visit(self.app.root_widget.as_mut());
         if changed {
             // What the search found shows on the app's next frame: matches
-            // painted, a match scrolled into view, a list narrowed.
+            // painted, a match scrolled into view, a list narrowed. A
+            // replacement is an edit the app's widgets write when they
+            // settle, so that frame syncs.
             self.app.mark_semantic_tree_stale();
             self.app.layout.layout_dirty = true;
+            self.app.needs_sync = true;
             self.wants_frame.set(true);
         }
         changed
@@ -491,6 +490,7 @@ impl Widget for EmbeddedApp {
                 placement,
                 rects,
                 copies,
+                earlier: Vec::new(),
             }
         });
         let key = crate::scene_parts::PartKey::new("ui.embedded-app", ());
@@ -567,7 +567,6 @@ impl Widget for EmbeddedApp {
         Some(self)
     }
 
-    /// The id of the app shown.
     fn test_id(&self) -> Option<&str> {
         self.app
             .root_widget
@@ -667,6 +666,17 @@ impl Widget for EmbeddedApp {
             .and_then(|node| {
                 self.app
                     .inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        self.app
+            .focused_node
+            .and_then(|node| {
+                self.app
+                    .inspect_node(node, |widget| widget.ime_refuses_ordinary_commits())
                     .ok()
             })
             .unwrap_or(false)
@@ -1016,7 +1026,6 @@ mod theme_repaint_tests {
         }
         let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
         let button = tile.app.root_widget.get_rect();
-        // The pointer arrives over the button and its hover is painted.
         let at = button.center();
         let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
         tile.app.surface_input(&tile.region, moved, false);
@@ -1027,11 +1036,12 @@ mod theme_repaint_tests {
             "the button's tooltip is pending over {button:?}"
         );
         // It rests: the tooltip shows, and only it changes.
-        std::thread::sleep(
-            crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
-        );
+        let rested = crate::time::now()
+            + crate::widget::tooltip::HOVER_DWELL
+            + crate::time::Duration::from_millis(50);
         tile.wants_frame.set(true);
-        let shown = paint_tracked(&mut tile, &theme);
+        let shown =
+            crate::time::testing::with_monotonic_time(rested, || paint_tracked(&mut tile, &theme));
         assert!(
             tile.app.input.tooltip_host.visible().is_some(),
             "the tooltip shows"
@@ -1045,6 +1055,48 @@ mod theme_repaint_tests {
             repainted < region.area(),
             "{damage:?} repaints the tooltip ({chip:?}), not the app's {region:?}"
         );
+    }
+
+    /// A tooltip is about where the pointer rests in a window the person
+    /// is using: it goes when the pointer leaves, and when the window loses
+    /// focus.
+    #[test]
+    fn a_tooltip_goes_when_the_pointer_leaves_or_the_window_loses_focus() {
+        let _settled = crate::motion::testing::settled();
+        for ending in [
+            WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+            WindowEvent::Focused(false),
+        ] {
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let theme = Theme::light();
+            layout(&mut tile, &theme);
+            let _ = paint_tracked(&mut tile, &theme);
+            let at = tile.app.root_widget.get_rect().center();
+            let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
+            tile.app.surface_input(&tile.region, moved, false);
+            let rested = crate::time::now()
+                + crate::widget::tooltip::HOVER_DWELL
+                + crate::time::Duration::from_millis(50);
+            tile.wants_frame.set(true);
+            crate::time::testing::with_monotonic_time(rested, || {
+                let _ = paint_tracked(&mut tile, &theme);
+                assert!(
+                    tile.app.input.tooltip_host.visible().is_some(),
+                    "the tooltip shows"
+                );
+                tile.app.surface_input(&tile.region, ending.clone(), false);
+            });
+            assert!(
+                tile.app.input.tooltip_host.visible().is_none(),
+                "{ending:?} takes the tooltip away"
+            );
+        }
     }
 
     #[test]
@@ -1244,14 +1296,13 @@ mod saving_record_wake_tests {
         panic!("the tile must come to rest");
     }
 
-    fn due(tile: &EmbeddedApp, now: crate::time::Instant) -> bool {
-        tile.next_wake_deadline()
-            .is_some_and(|deadline| deadline <= now)
-    }
-
     #[test]
-    fn a_record_saving_at_the_last_frame_is_resampled_by_the_pump_not_a_paint() {
-        let host = ProbeHost::new();
+    fn a_record_saving_at_the_last_frame_is_resampled_when_its_store_wakes_the_pump() {
+        // The frame's sync offers the edit to the record's writer, which
+        // would land it on its own after its debounce: on a loaded machine
+        // that falls inside the pumps below that check a save still under
+        // way. The store writes only when the test flushes it.
+        let host = ProbeHost::holding_writes();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare_with_permissions(
@@ -1282,37 +1333,29 @@ mod saving_record_wake_tests {
             .unwrap();
         sample(&mut tile);
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
-        assert!(tile.next_wake_deadline().is_some());
-
-        // Still being written when the deadline comes due: the pump samples
-        // it again and the deadline moves on. Nothing changed on screen, so
-        // no frame is asked for.
-        bound(&mut tile).age_record_save_sample();
-        assert!(due(&tile, crate::time::now()));
-        assert!(
-            !pump(&mut tile),
-            "a resample that changed nothing paints nothing"
+        assert_eq!(
+            tile.next_wake_deadline(),
+            None,
+            "the record's store wakes the tile once the write lands: no deadline polls for it"
         );
+
+        // Nothing has landed and nothing woke the tile: the pump runs nothing
+        // and asks for no frame, however often the host pumps.
+        for _ in 0..100 {
+            assert!(!pump(&mut tile), "a save still under way paints nothing");
+        }
         assert!(!tile.needs_redraw());
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
-        assert!(
-            !due(&tile, crate::time::now()),
-            "the resample re-arms the deadline from itself"
-        );
 
-        // The writer finishes off the event loop and wakes nobody: the stale
-        // deadline is all that is left of the save.
+        // The writer finishes off the event loop and its store wakes the tile.
         binding.records.try_flush_record(&id).unwrap();
         binding.records.await_submitted(&id).unwrap();
         assert_eq!(
             binding.records.save_status(&id).unwrap(),
             RecordSaveStatus::Saved
         );
-        bound(&mut tile).age_record_save_sample();
-        let now = crate::time::now();
-        assert!(due(&tile, now));
 
-        // The pump, with no draw, finds it saved: the deadline is gone and one
+        // The pump, with no draw, takes up the wake and finds it saved: one
         // frame shows the change.
         assert!(pump(&mut tile), "the finished save is shown");
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saved));
@@ -1338,3 +1381,7 @@ mod copy_tests;
 #[cfg(test)]
 #[path = "embedded_wake_tests.rs"]
 mod wake_tests;
+
+#[cfg(test)]
+#[path = "embedded_search_tests.rs"]
+mod search_tests;

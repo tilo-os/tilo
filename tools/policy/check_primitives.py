@@ -16,6 +16,13 @@ In production Rust under `crates/session/` and `apps/` this refuses:
 - raw-colour: a colour literal (`Color::from_rgb8`, `Color::from_rgba8`,
   `Color::new([...])`, `Color::WHITE`/`BLACK`) instead of a theme token.
 
+Text an agent's model reads is not interface: the agent's tool schemas,
+tool descriptions and operation summaries (`MODEL_TEXT`) are prompts, in the
+notation the model is prompted with (`id — label`, `| variant`), and no
+person reads them on a surface. The two string-literal rules (glyph-join,
+glyph-icon) skip them, as they skip logs and panics; a control painted or a
+colour picked there is still counted.
+
 Code that still does any of this is listed in `primitives_baseline.txt`, one
 line per file and rule with how many it may still have. A count only
 shrinks: more than listed fails, fewer fails until the line is lowered, so
@@ -43,10 +50,11 @@ GLYPH_JOIN = re.compile(r"\S\s+[·•|—–›»]\s+\S|\S\s/\s\S|^\s*[·•]\s|
 # triangles.
 GLYPH_ICON = re.compile("[←→↑↓↖↗↘↙↔↕⇐⇒⇑⇓✓✔✗✘✕✖●○◉◎★☆▶◀▲▼▸◂▴▾►◄⬤⏵⏴⏶⏷]")
 # Literals no person reads in the interface: logs, panics, errors, assertion
-# messages and lint reasons.
+# messages and lint reasons. `format_args!` goes straight to a writer (a log
+# line written in one write), never into a string a surface shows.
 NOT_UI = re.compile(
     r"(?:\b(?:info|warn|error|debug|trace|e?println|e?print|panic|unreachable|todo|"
-    r"assert\w*|debug_assert\w*|bail|ensure|anyhow|write|writeln|format_err)!"
+    r"assert\w*|debug_assert\w*|bail|ensure|anyhow|write|writeln|format_err|format_args)!"
     r"|\.(?:expect|context|with_context|map_err)\b|\breason\s*=)[^;{}]*$"
 )
 RAW_COLOUR = re.compile(
@@ -54,11 +62,34 @@ RAW_COLOUR = re.compile(
     r"|\bColor::(?:WHITE|BLACK)\b"
 )
 ROUNDED_FILL = re.compile(r"RoundedRect::(?:from_rect|new)")
+# A fill painted from a media colour is a caption or subtitle scrim drawn over a
+# picture, not a control: there is nothing in the design system to build it from,
+# and the text beside it is media, not a label. Left out of the hand-rolled rule
+# deliberately, on the colour's provenance rather than the file's identity.
+MEDIA_FILL = re.compile(r"\bmedia\b")
 TEXT_RUN = re.compile(r"\.draw_(?:text|style)\s*\(")
 # How close a rounded fill and a text run must be to count as one control.
 NEAR_LINES = 12
 
 RULES = ("hand-rolled", "glyph-join", "glyph-icon", "raw-colour")
+
+# Sources whose string literals are written for an agent's model, not shown to
+# a person: the agent's tools (their schemas, descriptions and the operation
+# summaries it is handed). A path ending in "/" names a directory.
+MODEL_TEXT = (
+    "apps/agent/src/tools.rs",
+    "apps/agent/src/tools/",
+    # A tool catalogue: the descriptions an agent's model is handed, not copy a
+    # person reads on a surface.
+    "apps/web-search/src/actions.rs",
+)
+# The rules about string literals a person reads.
+TEXT_RULES = ("glyph-join", "glyph-icon")
+
+
+def is_model_text(relative: str) -> bool:
+    return any(relative == entry or (entry.endswith("/") and relative.startswith(entry))
+               for entry in MODEL_TEXT)
 
 
 def sources(root: Path) -> list[Path]:
@@ -108,8 +139,13 @@ def count_file(text: str) -> Counter:
     fills = [i for i, line in enumerate(lines) if ROUNDED_FILL.search(line)]
     texts = [i for i, line in enumerate(lines) if TEXT_RUN.search(line)]
     for fill in fills:
-        if any(abs(fill - t) <= NEAR_LINES for t in texts):
-            counts["hand-rolled"] += 1
+        if not any(abs(fill - t) <= NEAR_LINES for t in texts):
+            continue
+        # The fill line and the twelve lines above it: one of them names the
+        # media colour this scrim is painted from.
+        if any(MEDIA_FILL.search(lines[n]) for n in range(max(0, fill - NEAR_LINES), fill + 1)):
+            continue
+        counts["hand-rolled"] += 1
     return counts
 
 
@@ -119,6 +155,8 @@ def scan(root: Path) -> dict[tuple[str, str], int]:
         counts = count_file(path.read_text(errors="replace"))
         relative = path.relative_to(root).as_posix()
         for rule, count in counts.items():
+            if rule in TEXT_RULES and is_model_text(relative):
+                continue
             if count:
                 found[(relative, rule)] = count
     return found
@@ -142,6 +180,8 @@ def load_baseline(path: Path) -> dict[tuple[str, str], int]:
 def check(root: Path, baseline_path: Path) -> list[str]:
     found = scan(root)
     allowed = load_baseline(baseline_path)
+    shown = (baseline_path.relative_to(root).as_posix()
+             if baseline_path.is_relative_to(root) else baseline_path.name)
     errors = []
     for key in sorted(set(found) | set(allowed)):
         file, rule = key
@@ -150,7 +190,7 @@ def check(root: Path, baseline_path: Path) -> list[str]:
             errors.append(f"{file}: {have} {rule} (allowed {may}); build it from the "
                           "design system's primitives (docs/design-language.md, Primitives)")
         elif have < may:
-            errors.append(f"{baseline_path.name}: {rule} {may} {file} is now {have}; "
+            errors.append(f"{shown}: {rule} {may} {file} is now {have}; "
                           "lower the count (or delete the line at 0)")
     return errors
 
@@ -171,7 +211,8 @@ def main(argv: list[str]) -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("primitives OK (controls, facts, icons and colours come from the design system)")
+    print("primitives OK (controls, facts, icons and colours come from the design system)",
+          file=sys.stderr)
     return 0
 
 

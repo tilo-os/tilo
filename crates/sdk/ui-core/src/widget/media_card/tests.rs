@@ -75,6 +75,55 @@ fn text_blocks_line_up_across_a_row() {
 }
 
 #[test]
+fn a_long_grid_measures_only_the_titles_near_the_viewport() {
+    let cards = (0..120)
+        .map(|i| {
+            MediaCard::new(format!("v{i}"), MediaSource::Placeholder)
+                .aspect(MediaAspect::Wide)
+                .title(format!("Video {i}"))
+                .meta("A channel")
+        })
+        .collect();
+    let mut harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            crate::widget::Scrollable::new_vertical().with_child(Box::new(MediaGrid::new(cards))),
+        ),
+        (900, 600),
+        Theme::dark(),
+    );
+    let heights = |harness: &FrameHarness| -> Vec<f64> {
+        let root = harness.inspection().root;
+        root.children[0]
+            .children
+            .iter()
+            .map(|card| card.rect[3])
+            .collect()
+    };
+    let first = heights(&harness);
+    let (shown, far) = (first[0], first[first.len() - 1]);
+    assert!(
+        far > shown + 1.0,
+        "a card far below the viewport is as tall as its text can be, unmeasured: {shown} {far}"
+    );
+    for _ in 0..4 {
+        harness.with_widget_mut(|scroll: &mut crate::widget::Scrollable| {
+            scroll.set_offset_y(scroll.max_offset_y());
+        });
+        harness.relayout();
+    }
+    let scrolled = heights(&harness);
+    assert!(
+        (scrolled[scrolled.len() - 1] - shown).abs() < 0.5,
+        "scrolled to, its one-line title is measured: {shown} {scrolled:?}"
+    );
+    assert!(
+        (scrolled[0] - shown).abs() < 0.5,
+        "a measured card keeps its height"
+    );
+}
+
+#[test]
 fn columns_come_from_the_width_and_the_text_scale() {
     let theme = Theme::dark();
     let regular = MediaSize::Regular.extent(&theme);
@@ -227,7 +276,7 @@ fn overlay_badges_paint_legible_ink_in_every_theme() {
                         .tokens
                         .colors
                         .intent
-                        .neutral_fill
+                        .value_fill
                         .premultiply()
                         .to_rgba8()
                         .to_u32()
@@ -357,5 +406,68 @@ fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
             1,
             "the real decoded creator image is painted by AvatarFace"
         );
+    }
+}
+
+#[test]
+fn a_shelf_of_grids_lays_out_at_every_width() {
+    use crate::widget::{Column, Scrollable, Section};
+    let shelf = || -> Box<dyn crate::widget::Widget> {
+        let artists = MediaGrid::new(
+            ["Miles Davis", "Nina Simone", "Thelonious Monk"]
+                .into_iter()
+                .map(|name| {
+                    MediaCard::new(name, MediaSource::Placeholder)
+                        .aspect(MediaAspect::Circle)
+                        .title(name)
+                        .meta("12 albums")
+                })
+                .collect(),
+        )
+        .with_size(MediaSize::Small);
+        let mixed = MediaGrid::new(vec![
+            MediaCard::new("podcast", MediaSource::Kind(Icon::Mic))
+                .title("The Tilo Podcast")
+                .meta("Tilo"),
+            MediaCard::new("photo", MediaSource::Placeholder).seed("Lisbon"),
+        ])
+        .with_size(MediaSize::Small);
+        let column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(24.0)
+            .push(Box::new(Section::titled(
+                "Artists",
+                vec![Box::new(artists)],
+            )))
+            .push(Box::new(Section::titled("Picked", vec![Box::new(mixed)])))
+            .push(Box::new(Section::titled(
+                "Loading",
+                vec![Box::new(MediaGrid::arriving(
+                    3,
+                    MediaAspect::Wide,
+                    &crate::arriving::Source::host("Lounge"),
+                    // Asked a while ago: the skeleton shows.
+                    crate::time::now() - crate::time::Duration::from_secs(1),
+                ))],
+            )));
+        let page = Column::new()
+            .with_intrinsic_height()
+            .with_gap(32.0)
+            .push(Box::new(column));
+        Box::new(Scrollable::new_vertical().with_child(Box::new(page)))
+    };
+    for (theme, viewport) in [
+        (Theme::dark(), (1280, 800)),
+        (Theme::light(), (1280, 800)),
+        (Theme::dark(), (420, 900)),
+        (Theme::dark().with_text_scale(2.0), (1280, 900)),
+    ] {
+        let mut harness =
+            FrameHarness::new_with_theme(crate::State::new(), shelf(), viewport, theme);
+        let skipped = harness.take_skip_report();
+        assert!(skipped.is_none(), "{viewport:?}: {skipped:?}");
+        let root = harness.inspection().root;
+        assert!(rect(&root).area() > 0.0, "{viewport:?}: nothing laid out");
     }
 }

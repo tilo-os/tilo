@@ -7,7 +7,7 @@ use std::{cell::RefCell, rc::Rc};
 use tilo_desktop_model::{AppKind, DesktopTree, GroupId, StripId, TabId, TileContent, WorkspaceId};
 
 use tilo_app::feedback::{Composer, DurableStore, Error, Outbox, StorageKey};
-pub use tilo_app::feedback::{Destination, FeedbackHost, Subject};
+pub use tilo_app::feedback::{Control, Destination, FeedbackHost, Subject};
 use tilo_app::feedback_composer::{self, FeedbackServices};
 use ui::{application::AppComponent, launch::LaunchError};
 
@@ -61,12 +61,17 @@ impl PrivateFeedback {
         feedback_composer::prepare(Some(self.services.clone()), device, author, instance)
     }
 
+    /// The services a composer's preparation borrows, for a host that has
+    /// the composer's code from elsewhere than [`Self::prepare`] (the browser
+    /// desktop fetches it the first time Feedback opens).
+    #[must_use]
+    pub fn services(&self) -> FeedbackServices {
+        self.services.clone()
+    }
+
     /// Name the window the next report is about. The desktop chooses it from
     /// where the person asked for Feedback; nothing about it is read until
     /// the person includes context in a review.
-    ///
-    /// # Errors
-    /// Refuses while the controller is busy in an effect.
     pub fn about(&self, subject: Option<Subject>) -> Result<(), Error> {
         self.services.about(subject)
     }
@@ -137,6 +142,27 @@ pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Foc
     }
 }
 
+/// The app the window `tab` shows, as a report names it; `None` for a tab
+/// that is not in `tree` or shows no app.
+pub fn tab_subject(
+    tree: &DesktopTree,
+    tab: TabId,
+    name: impl Fn(&str) -> Option<String>,
+) -> Option<Subject> {
+    let tile = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .find(|shown| shown.id == tab)
+                    .map(|shown| &shown.tile)
+            })
+        })
+    })?;
+    subject(tile, name)
+}
+
 /// Whether `tile` is the feedback composer, under either host's registration.
 pub fn is_composer(tile: &TileContent) -> bool {
     match tile {
@@ -173,7 +199,11 @@ fn subject(tile: &TileContent, name: impl Fn(&str) -> Option<String>) -> Option<
         }
         _ => name(&app).unwrap_or_default(),
     };
-    Some(Subject { app, name })
+    Some(Subject {
+        app,
+        name,
+        control: None,
+    })
 }
 
 #[cfg(test)]
@@ -192,6 +222,7 @@ mod focus_tests {
                     id,
                     title: "Bank statement".into(),
                     tile,
+                    app_title: None,
                 }],
                 active_tab: id,
                 width: WindowWidth::Fraction(500),
@@ -227,6 +258,7 @@ mod focus_tests {
             Focused::App(Subject {
                 app: "org.mozilla.firefox".into(),
                 name: String::new(),
+                control: None,
             }),
             "a label can be a window title"
         );
@@ -235,6 +267,7 @@ mod focus_tests {
             Focused::App(Subject {
                 app: "org.mozilla.firefox".into(),
                 name: "Name of org.mozilla.firefox".into(),
+                control: None,
             })
         );
         desktop.set_active_group(StripId(2), 11);

@@ -6,7 +6,6 @@ operator-facing development and validation flows.
 
 | Directory | Purpose |
 |---|---|
-| `demo/` | The recorded multi-session demo, its staging helpers, and verification |
 | `headless-examples/` | Focused compositor and collaboration proof drivers |
 | `perf/` | Performance measurement, PGO, BOLT, and boot timing |
 | `tests/` | Unit tests for script implementations |

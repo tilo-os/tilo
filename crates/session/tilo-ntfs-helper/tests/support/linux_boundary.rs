@@ -31,7 +31,7 @@ fn authorized() -> Result<(), Box<dyn std::error::Error>> {
 fn production_claim_busy_mounted_alias() {
     authorized().unwrap();
     let id = std::env::var("TILO_NTFS_NATIVE_INVENTORY_ID").unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_tilo-ntfs-probe"))
+    let out = Command::new(tilo_test_env::package_binary!("tilo-ntfs-probe"))
         .args(["inspect-selected", "--inventory-id", &id, "--root-mft", "5"])
         .output()
         .unwrap();
@@ -124,8 +124,11 @@ fn production_fd_readonly_and_reader_sandbox() {
 fn native_coordinator(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
     authorized()?;
     let script = std::env::var("TILO_NTFS_NATIVE_COORDINATOR_SCRIPT")?;
-    let probe = std::env::var("TILO_NTFS_NATIVE_PROBE")
-        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_tilo-ntfs-probe").to_owned());
+    let probe = std::env::var("TILO_NTFS_NATIVE_PROBE").unwrap_or_else(|_| {
+        tilo_test_env::package_binary!("tilo-ntfs-probe")
+            .to_string_lossy()
+            .into_owned()
+    });
     let output = Command::new("python3")
         .args([&script, "--probe", &probe, "--mode", mode])
         .output()?;
@@ -193,8 +196,11 @@ fn production_retained_read_session() {
     let script = std::env::var("TILO_NTFS_SESSION_COORDINATOR_SCRIPT").unwrap();
     let mode = std::env::var("TILO_NTFS_SESSION_TEST_MODE").unwrap();
     let client = std::env::var("TILO_NTFS_SESSION_CLIENT").unwrap();
-    let probe = std::env::var("TILO_NTFS_NATIVE_PROBE")
-        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_tilo-ntfs-probe").to_owned());
+    let probe = std::env::var("TILO_NTFS_NATIVE_PROBE").unwrap_or_else(|_| {
+        tilo_test_env::package_binary!("tilo-ntfs-probe")
+            .to_string_lossy()
+            .into_owned()
+    });
     let output = Command::new("python3")
         .args([
             &script, "--probe", &probe, "--client", &client, "--mode", &mode,

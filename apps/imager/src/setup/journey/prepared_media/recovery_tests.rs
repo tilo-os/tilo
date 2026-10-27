@@ -41,7 +41,7 @@ fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
             )
             .unwrap();
         recovery.start(false).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while recovery.busy() {
             recovery.poll();
             assert!(std::time::Instant::now() < deadline);

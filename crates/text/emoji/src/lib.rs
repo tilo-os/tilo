@@ -220,7 +220,6 @@ impl Subgroup {
         self.id
     }
 
-    /// Index of the owning group.
     #[must_use]
     pub const fn group(&self) -> usize {
         self.group
@@ -282,7 +281,6 @@ static TRANSLATED_TEXT: [OnceLock<String>; TRANSLATIONS.len()] =
     [const { OnceLock::new() }; TRANSLATIONS.len()];
 
 impl Catalogue {
-    /// The English catalogue.
     #[must_use]
     pub fn english() -> &'static Self {
         ENGLISH_CATALOGUE.get_or_init(|| data::build("en", STRUCTURE, ENGLISH, None))

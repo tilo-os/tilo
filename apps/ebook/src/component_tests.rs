@@ -104,7 +104,8 @@ impl Fixture {
         definition.instantiate(context, target, RestoreInput::None)
     }
 
-    /// A mount whose host lends `host` its inputs, settled until `book` resolves.
+    /// A mount whose host lends `host` its inputs, settled until `book`
+    /// resolves (none to wait for when `book` is empty).
     fn driver_with(
         &self,
         definition: &'static ApplicationDefinition,
@@ -127,7 +128,9 @@ impl Fixture {
         ) else {
             panic!("frame harness");
         };
-        settle(&mut driver, book);
+        if !book.is_empty() {
+            settle(&mut driver, book);
+        }
         (driver, checkout)
     }
 }
@@ -137,14 +140,15 @@ fn bundled_book() -> String {
 }
 
 /// Frames until the book's resource resolves (a handed book is parsed off
-/// the UI thread), if the library holds it.
+/// the UI thread).
 fn settle(driver: &mut FrameHarness, book: &str) {
-    driver.wait_until(ui::time::Duration::from_secs(1), |driver| {
+    let resolved = driver.wait_until(tilo_test_env::hang_bound(), |driver| {
         driver
             .bound_resources(Some(book))
             .ok()
             .is_some_and(|resources| !resources.is_empty())
     });
+    assert!(resolved, "{book} resolves");
 }
 
 fn invoke(
@@ -166,7 +170,6 @@ fn reading(book: &str) -> String {
     format!("ebook.selection:{id}")
 }
 
-/// The shelf rows of the library `doc` holds.
 fn shelf(doc: &ui::tilo_resource::Doc) -> Vec<crate::model::LibraryEntry> {
     crate::resource::read_doc(doc)
         .entries
@@ -204,7 +207,9 @@ fn child_labels(driver: &FrameHarness, book: &str) -> Vec<(String, String)> {
 #[test]
 fn a_native_new_library_starts_empty_on_the_shelf() {
     let fixture = Fixture::new("books-native-new");
-    let (driver, checkout) = fixture.driver(crate::definition(), 1, LaunchTarget::New);
+    // Nothing is handed to a native library, so there is no book to wait for.
+    let (driver, checkout) =
+        fixture.driver_with(crate::definition(), 1, LaunchTarget::New, "", |_| {});
     let shelf = fixture.records.read(&checkout.id, shelf).unwrap();
     assert!(shelf.is_empty(), "apps start empty: {shelf:?}");
     let book = driver.bound_resources(Some(&bundled_book())).unwrap();
@@ -564,7 +569,7 @@ fn a_file_books_does_not_open_is_refused_and_one_it_cannot_read_shelves_nothing(
             host.provide_content(tilo_content::ContentStore::memory());
             host.provide_open_file(file);
         });
-    let told = driver.wait_until(ui::time::Duration::from_secs(10), |driver| {
+    let told = driver.wait_until(tilo_test_env::hang_bound(), |driver| {
         driver.a11y_nodes().iter().any(|(_, node)| {
             node.label()
                 .is_some_and(|label| label.starts_with("Couldn’t open broken.epub"))

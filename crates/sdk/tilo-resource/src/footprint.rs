@@ -29,7 +29,6 @@ use crate::model::{Doc, Model};
 use crate::path::Segment;
 use crate::shape::Shape;
 
-/// The record unit, as footprints and [`units_of`] name it.
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
 /// The document key of a record's unit index: the storage patterns of its
@@ -121,12 +120,15 @@ pub(crate) fn check_edits(
         let mut path = edit.path().to_vec();
         match edit.op() {
             EditOp::InsertItem { id: Some(id), .. }
+            | EditOp::UpsertItem { id: Some(id), .. }
             | EditOp::RemoveItem { id }
             | EditOp::MoveTo { id, .. } => path.push(Segment::Item(id.clone())),
             _ => {}
         }
         let unit = shape.unit_of(&path);
-        if !writes.allows(&unit) {
+        // What a change queues in an outbox is judged as reaching outside
+        // wherever it is written, so no footprint needs to declare it.
+        if !writes.allows(&unit) && !is_outbox(shape, &unit) {
             return Err(Refusal::new(format!(
                 "the action wrote `{}`, outside the units it declares; add \
                  `#[action(writes = field)]`",
@@ -135,6 +137,17 @@ pub(crate) fn check_edits(
         }
     }
     Ok(())
+}
+
+/// Whether `unit` of a record stored as `shape` is one of its outboxes.
+fn is_outbox(shape: Shape, unit: &[Segment]) -> bool {
+    let [Segment::Field(key)] = unit else {
+        return false;
+    };
+    shape
+        .fields()
+        .iter()
+        .any(|field| field.key == key && tilo_actions::surface::is_outbox_type(field.ty))
 }
 
 /// The footprint a verb declares, as the surface lists it: `record`, its
@@ -201,9 +214,6 @@ pub fn patterns(shape: Shape) -> Vec<String> {
 }
 
 /// Keep the unit index of a record of shape `shape` in `doc`, written once.
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn index(doc: &mut Doc, shape: Shape) -> Result<(), automerge::AutomergeError> {
     if !has_units(shape) || doc.get(&ROOT, UNIT_INDEX)?.is_some() {
         return Ok(());

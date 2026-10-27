@@ -42,7 +42,8 @@ Before applying or forwarding an inbound operation, a peer verifies:
 
 1. the referenced authorization and its issuing authority;
 2. the envelope signature and that its author matches the authorization subject;
-3. the role/operation/artifact permission table and applicable clearance;
+3. the author's grants over the published tree for what the operation claims
+   to change, and applicable clearance;
 4. validity time and monotonically increasing sequence number.
 
 Rejected operations are not applied or forwarded. They remain observable through

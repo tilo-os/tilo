@@ -19,9 +19,7 @@ use crate::shell::hdr_surface::{
 
 /// Layer entries the shader reads; one layer on two displays is two entries.
 const GPU_LAYER_ENTRIES: usize = 4;
-/// Bytes of one shader `Layer`.
 const LAYER_BYTES: usize = 112;
-/// Bytes of the shader's `Params`.
 const PARAMS_BYTES: usize = 16 + GPU_LAYER_ENTRIES * LAYER_BYTES;
 /// Byte offset of `Params.orientation`, after `sdr_white_nits` and `layer_count`.
 const ORIENTATION_OFFSET: u64 = 8;

@@ -392,7 +392,6 @@ mod tests {
         let matte = Matte::new(width, height, values).unwrap();
         let refined = refine_edge(&picture, &matte, 6.0).unwrap();
         assert!(refined.at(18, 4) > 0.95, "inside: {}", refined.at(18, 4));
-        // Out in the background the guess's tail is mostly gone.
         assert!(
             refined.at(21, 4) < 0.4,
             "just outside: {}",
@@ -428,7 +427,6 @@ mod tests {
             pixel[0] > 180 && pixel[1] < 60 && pixel[2] < 60,
             "{pixel:?}"
         );
-        // Whole and empty pixels are left alone.
         assert_eq!(
             &clean[(4 * width + 5) * 4..(4 * width + 5) * 4 + 4],
             &[200, 20, 20, 255]

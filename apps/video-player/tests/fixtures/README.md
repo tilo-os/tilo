@@ -18,3 +18,19 @@ gst-launch-1.0 -e -q mp4mux name=mux ! filesink location=h264-aac.mp4 \
 ```
 
 Playback tests need H.264 and AAC decoders, but do not require these encoders.
+
+# Demo clip
+
+`vp9-aac.mp4` is the clip a capture plays when its launch names no file. It is
+a generated four-second 640×360 video, 25 fps, of a white ball that crosses
+left to right and is centred at 0:02, where a capture parks it. It has a quiet
+440 Hz AAC-LC tone track (48 kHz mono) and contains no third-party media. It is
+VP9 Profile 0, 8-bit 4:2:0, which every VP9 decoder plays; `tests/demo_clip.rs`
+holds the pin to that.
+
+Generated with FFmpeg 8.1.3 and libvpx; the output is bit-exact, so the recipe
+reproduces the pinned SHA-256:
+
+```sh
+apps/video-player/tests/fixtures/encode-vp9-aac.sh vp9-aac.mp4
+```

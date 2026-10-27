@@ -12,9 +12,10 @@ use std::{io::Write as _, sync::Arc};
 use capnp::Error;
 
 use crate::app_host_capnp::{
-    FlatpakAction as WireFlatpakAction, Pinning as WirePinning, RemoteAction as WireRemoteAction,
-    app_host,
+    CatalogueRefusal as WireCatalogueRefusal, FlatpakAction as WireFlatpakAction,
+    Pinning as WirePinning, RemoteAction as WireRemoteAction, app_host,
 };
+use crate::client::Refusal;
 use crate::install::{InstallExpectation, install_verified_tapp};
 use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_package::id::PackageId;
@@ -24,20 +25,27 @@ use tilo_app_package::id::PackageId;
 /// after this daemon's own, and at every start of the daemon (a new image or a
 /// swapped userspace changes the system store without any install running): the store's size cap, payload trees and staging
 /// nothing names, and the runtime builds nothing installed runs on any
-/// more. A tree a launch holds or a running app has mounted stays. Never
-/// fails the change it follows.
-pub fn collect_after_change(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
+/// more. A tree a launch holds or a running app has mounted stays, and so do
+/// the apps `keep` names: what the change just installed, which the person
+/// is about to open. Never fails the change it follows.
+pub fn collect_after_change(
+    store: &PackageStore,
+    catalog: &Catalog,
+    max_store_bytes: u64,
+    keep: &[&str],
+) {
     let runtimes = match runtime_bundle::gc::BundleRoot::from_env() {
         Ok(runtimes) => runtimes,
         Err(error) => {
             tracing::warn!(%error, "no runtime bundle root; applying the size cap only");
-            if let Err(error) = store.sweep(max_store_bytes) {
+            if let Err(error) = store.sweep_keeping(max_store_bytes, keep) {
                 tracing::warn!(%error, "post-change sweep failed");
             }
             return;
         }
     };
-    let request = ::install::gc::Request::after_change(max_store_bytes);
+    let request = ::install::gc::Request::after_change(max_store_bytes)
+        .keeping(keep.iter().map(|id| (*id).to_owned()));
     match ::install::gc::collect(store, catalog, &runtimes, request) {
         Ok(report) => tracing::debug!(
             freed_bytes = report.freed_bytes(),
@@ -72,8 +80,6 @@ impl AppHostServer {
         }
     }
 }
-
-// -------- helpers ----------------------------------------------------
 
 fn wire_pinning(p: Pinning) -> WirePinning {
     match p {
@@ -185,7 +191,7 @@ fn path_or_default(
     )
 }
 
-/// Names the `tilo-launcher` binary instead of `/usr/bin/tilo-launcher`.
+/// Names the `tilo-launcher` binary instead of `/usr/libexec/tilo/tilo-launcher`.
 const LAUNCHER_BIN_ENV: &str = "TILO_LAUNCHER_BIN";
 /// Names the `app` binary instead of `/usr/bin/app`.
 const APP_BIN_ENV: &str = "TILO_APP_BIN";
@@ -195,7 +201,7 @@ const APP_BIN_ENV: &str = "TILO_APP_BIN";
 fn launcher_bin() -> std::path::PathBuf {
     path_or_default(
         package_store::dev_env::dev_override(LAUNCHER_BIN_ENV),
-        "/usr/bin/tilo-launcher",
+        "/usr/libexec/tilo/tilo-launcher",
     )
 }
 
@@ -352,11 +358,53 @@ fn require_flatpak_selector(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// A catalogue read that gave no rows: refused for a reason the Store
+/// explains (carried typed on the wire), or failed.
+#[derive(Debug)]
+enum ReadError {
+    Refused(Refusal, String),
+    Failed(Error),
+}
+
+impl From<Error> for ReadError {
+    fn from(error: Error) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refusal, detail) => write!(f, "{refusal:?}: {detail}"),
+            Self::Failed(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Write a catalogue read's outcome into its results: the rows, or the
+/// refusal with its detail; anything else is raised.
+fn set_catalogue(
+    read: Result<String, ReadError>,
+    set: impl FnOnce(&str, WireCatalogueRefusal, &str),
+) -> Result<(), Error> {
+    match read {
+        Ok(rows) => {
+            set(&rows, WireCatalogueRefusal::None, "");
+            Ok(())
+        }
+        Err(ReadError::Refused(refusal, detail)) => {
+            set("", refusal.to_wire(), &detail);
+            Ok(())
+        }
+        Err(ReadError::Failed(error)) => Err(error),
+    }
+}
+
 fn flatpak_catalogue_from(
     binary: &std::path::Path,
     remote: &str,
     user_managed: bool,
-) -> Result<String, Error> {
+) -> Result<String, ReadError> {
     flatpak_catalogue_with_timeout(
         binary,
         remote,
@@ -370,7 +418,7 @@ fn flatpak_catalogue_with_timeout(
     remote: &str,
     user_managed: bool,
     timeout: std::time::Duration,
-) -> Result<String, Error> {
+) -> Result<String, ReadError> {
     require_flatpak_selector(remote)?;
     let started = std::time::Instant::now();
     let cached = flatpak_catalogue_read(binary, remote, user_managed, true, timeout)?;
@@ -382,17 +430,29 @@ fn flatpak_catalogue_with_timeout(
             // change remote settings here. Both reads share the same bounded deadline.
             let remaining = timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {
-                return Err(Error::failed("Flatpak repository query timed out".into()));
+                return Err(ReadError::Refused(
+                    Refusal::TimedOut,
+                    "Flatpak repository query timed out".into(),
+                ));
             }
             flatpak_catalogue_read(binary, remote, user_managed, false, remaining)?
         } else {
             cached
         };
     if !output.status.success() {
-        return Err(Error::failed(format!(
-            "Flatpak repository query failed: {}",
-            safe_host_diagnostic(&output.stderr)
-        )));
+        let diagnostic = safe_host_diagnostic(&output.stderr);
+        // Flatpak names a device-provided OCI repository without a summary
+        // only in its diagnostic; this is the one place that reads it, and
+        // the Store gets the refusal, not the text.
+        if !user_managed && diagnostic.contains("GenerateOciSummary") {
+            return Err(ReadError::Refused(
+                Refusal::DeviceRepositoryStale,
+                format!("Flatpak repository query failed: {diagnostic}"),
+            ));
+        }
+        return Err(ReadError::Failed(Error::failed(format!(
+            "Flatpak repository query failed: {diagnostic}"
+        ))));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -403,7 +463,7 @@ fn flatpak_catalogue_read(
     user_managed: bool,
     cached: bool,
     timeout: std::time::Duration,
-) -> Result<bounded_command::Output, Error> {
+) -> Result<bounded_command::Output, ReadError> {
     let mut command = std::process::Command::new(binary);
     // Classify only Flatpak's explicit cache absence, independently of the user's
     // locale. No diagnostic text is used as catalogue or authority data.
@@ -420,7 +480,15 @@ fn flatpak_catalogue_read(
         "--",
         remote,
     ]);
-    bounded_command::run_prepared(command, None, 4 * 1024 * 1024, timeout).map_err(failed)
+    bounded_command::run_prepared(command, None, 4 * 1024 * 1024, timeout).map_err(|error| {
+        match error {
+            bounded_command::Error::Timeout(_) => ReadError::Refused(
+                Refusal::TimedOut,
+                format!("Flatpak repository query: {error}"),
+            ),
+            other => ReadError::Failed(failed(other)),
+        }
+    })
 }
 
 fn flatpak_remote_enabled_from(
@@ -446,6 +514,22 @@ fn flatpak_app_from(binary: &std::path::Path, verb: &str, app_id: &str) -> Resul
     let mut command = std::process::Command::new(binary);
     command.args([verb, "--user", "--noninteractive", "--", app_id]);
     run_host_command(command)
+}
+
+/// Uninstall the account's `app_id`, keeping its data (`~/.var/app/<id>`), as
+/// Flatpak does, then the runtimes no app of the account uses any more:
+/// nothing else removes them from the person's installation, so each removed
+/// app would leave its runtime behind for good. Flatpak decides what is
+/// unused and keeps every runtime an installed app needs. The app is removed
+/// whether or not that cleanup succeeds.
+fn flatpak_remove_from(binary: &std::path::Path, app_id: &str) -> Result<String, Error> {
+    let status = flatpak_app_from(binary, "uninstall", app_id)?;
+    let mut unused = std::process::Command::new(binary);
+    unused.args(["uninstall", "--user", "--unused", "--noninteractive"]);
+    if let Err(error) = run_host_command(unused) {
+        tracing::warn!(app = %app_id, %error, "could not remove runtimes no app uses");
+    }
+    Ok(status)
 }
 
 /// Add the account source `name` at `url`, unless one of that name exists.
@@ -593,20 +677,43 @@ fn repositories_json_from(app: &std::path::Path) -> Result<String, Error> {
 
 const MAX_REGISTRY_CATALOGUE_BYTES: usize = 4 * 1024 * 1024;
 
-fn registry_catalogue(registry: &str) -> Result<String, Error> {
+fn registry_catalogue(registry: &str) -> Result<String, ReadError> {
+    system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries();
     registry_catalogue_from(&configured, registry, app_cli::client::fetch_entries)
 }
 
 /// The catalogue last accepted from `registry`, without the network, under
 /// the same configuration and size rules as a fresh one.
-fn last_verified_catalogue(registry: &str) -> Result<String, Error> {
+fn last_verified_catalogue(registry: &str) -> Result<String, ReadError> {
+    system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries();
     registry_catalogue_from(
         &configured,
         registry,
         app_cli::client::last_verified_entries,
     )
+}
+
+/// Refuse to read any repository while the system's interface declaration
+/// at `path` cannot be read ([`Refusal::SystemUpdateNeeded`]).
+///
+/// Which builds of an app run here is decided against that declaration.
+/// Unreadable, it is written for another version of the system than this
+/// app host (a component swapped over an older image), so the Store must
+/// say that the system needs an update, not list apps judged against
+/// nothing or show the repository as unavailable.
+fn system_declaration_readable(path: &std::path::Path) -> Result<(), ReadError> {
+    match package_store::interfaces::read_interfaces(path) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            tracing::error!(%error, "the system's interface declaration cannot be read; repositories are refused until the system is updated");
+            Err(ReadError::Refused(
+                Refusal::SystemUpdateNeeded,
+                error.to_string(),
+            ))
+        }
+    }
 }
 
 fn registry_catalogue_from(
@@ -616,21 +723,27 @@ fn registry_catalogue_from(
         &app_cli::config::RegistryConfig,
     )
         -> Result<Vec<app_cli::client::VerifiedEntry>, app_cli::client::RegistryError>,
-) -> Result<String, Error> {
+) -> Result<String, ReadError> {
     if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
-        return Err(Error::failed("invalid repository name".into()));
+        return Err(Error::failed("invalid repository name".into()).into());
     }
     let registry = configured
         .registries
         .iter()
         .find(|registry| registry.name == name && registry.enabled)
         .ok_or_else(|| Error::failed("repository is not configured and enabled".into()))?;
-    let entries = fetch(registry).map_err(failed)?;
+    let entries = fetch(registry).map_err(|error| match error {
+        app_cli::client::RegistryError::Expired { .. } => {
+            ReadError::Refused(Refusal::Expired, error.to_string())
+        }
+        other => ReadError::Failed(failed(other)),
+    })?;
     let json = serde_json::to_string(&entries).map_err(failed)?;
     if json.len() > MAX_REGISTRY_CATALOGUE_BYTES {
         return Err(Error::failed(
             "verified repository catalogue exceeds the response limit".into(),
-        ));
+        )
+        .into());
     }
     Ok(json)
 }
@@ -716,8 +829,6 @@ fn run_host_command(command: std::process::Command) -> Result<String, Error> {
         )))
     }
 }
-
-// -------- Server impl -----------------------------------------------
 
 // capnp-rpc capability methods are driven from a single-threaded
 // `LocalSet`: `capnp::capability::Rc` (captured as `self`) is a
@@ -909,7 +1020,7 @@ impl app_host::Server for AppHostServer {
             blocking(move || {
                 let package = find_user(&catalog, id)?;
                 store.remove(&package.id, false).map_err(failed)?;
-                collect_after_change(&store, &catalog, max_bytes);
+                collect_after_change(&store, &catalog, max_bytes, &[]);
                 Ok(())
             })
             .await
@@ -1024,7 +1135,7 @@ impl app_host::Server for AppHostServer {
                     install_verified_tapp(&store, &tapp_bytes, pinning, &expected, None)
                         .map_err(failed)?;
                 // Best-effort: the package is already committed.
-                collect_after_change(&store, &catalog, max_bytes);
+                collect_after_change(&store, &catalog, max_bytes, &[installed.id.as_str()]);
                 installed
                     .package_id()
                     .ok_or_else(|| Error::failed("installed package has no package id".into()))
@@ -1145,7 +1256,7 @@ impl app_host::Server for AppHostServer {
                         run_host_command(command)
                     }
                     WireFlatpakAction::Update => flatpak_app_from(flatpak, "update", &app_id),
-                    WireFlatpakAction::Remove => flatpak_app_from(flatpak, "uninstall", &app_id),
+                    WireFlatpakAction::Remove => flatpak_remove_from(flatpak, &app_id),
                 }
             })
             .await
@@ -1326,11 +1437,15 @@ impl app_host::Server for AppHostServer {
                 .map_err(failed)?
                 .to_string()
                 .map_err(failed)?;
-            let json = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
+            let read = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
                 .await
-                .map_err(failed)??;
-            results.get().set_entries(&json);
-            Ok(())
+                .map_err(failed)?;
+            set_catalogue(read, |rows, refusal, detail| {
+                let mut out = results.get();
+                out.set_entries(rows);
+                out.set_refusal(refusal);
+                out.set_detail(detail);
+            })
         }
     }
 
@@ -1351,11 +1466,15 @@ impl app_host::Server for AppHostServer {
                 .map_err(failed)?
                 .to_string()
                 .map_err(failed)?;
-            let json = tokio::task::spawn_blocking(move || last_verified_catalogue(&registry))
+            let read = tokio::task::spawn_blocking(move || last_verified_catalogue(&registry))
                 .await
-                .map_err(failed)??;
-            results.get().set_entries(&json);
-            Ok(())
+                .map_err(failed)?;
+            set_catalogue(read, |rows, refusal, detail| {
+                let mut out = results.get();
+                out.set_entries(rows);
+                out.set_refusal(refusal);
+                out.set_detail(detail);
+            })
         }
     }
     #[allow(
@@ -1383,9 +1502,13 @@ impl app_host::Server for AppHostServer {
                 )
             })
             .await
-            .map_err(failed)??;
-            results.get().set_rows(&rows);
-            Ok(())
+            .map_err(failed)?;
+            set_catalogue(rows, |rows, refusal, detail| {
+                let mut out = results.get();
+                out.set_rows(rows);
+                out.set_refusal(refusal);
+                out.set_detail(detail);
+            })
         }
     }
 
@@ -1450,6 +1573,33 @@ mod command_tests {
         }
     }
 
+    /// When a swap does leave the app host with a declaration it cannot read
+    /// (the laptop on 2026-10-22: a one-version-per-interface file over an
+    /// app host reading lists), reading a repository fails with the reason
+    /// the Store shows, never an empty or silently unjudged catalogue.
+    #[test]
+    fn an_unreadable_system_declaration_refuses_the_repository_saying_the_system_needs_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("system-interfaces.toml");
+        std::fs::write(&path, "[interfaces]\nsystem = [1]\nshell-ui = [1]\n").unwrap();
+        let refused = super::system_declaration_readable(&path).unwrap_err();
+        assert!(
+            matches!(&refused, super::ReadError::Refused(crate::client::Refusal::SystemUpdateNeeded, detail) if detail.contains("system-interfaces.toml")),
+            "{refused}"
+        );
+
+        std::fs::write(
+            &path,
+            "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n\n[runtime]\nservices = [\"app-host\"]\n",
+        )
+        .unwrap();
+        assert!(super::system_declaration_readable(&path).is_ok());
+        // A host without a declaration (a development machine) judges
+        // nothing and reads repositories as before.
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::system_declaration_readable(&path).is_ok());
+    }
+
     #[test]
     fn registry_catalogue_restricts_fetch_to_enabled_host_configuration() {
         let mut configured = catalogue_configuration();
@@ -1473,6 +1623,31 @@ mod command_tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn an_expired_catalogue_reaches_the_store_as_expired() {
+        let configured = catalogue_configuration();
+        let error = super::registry_catalogue_from(&configured, "Configured source", |_| {
+            Err(app_cli::client::RegistryError::Expired {
+                expired_at_unix: 1_792_587_897,
+            })
+        })
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                super::ReadError::Refused(crate::client::Refusal::Expired, _)
+            ),
+            "{error}"
+        );
+        let other = super::registry_catalogue_from(&configured, "Configured source", |_| {
+            Err(app_cli::client::RegistryError::Http(
+                "connection refused".into(),
+            ))
+        })
+        .unwrap_err();
+        assert!(matches!(other, super::ReadError::Failed(_)), "{other}");
     }
 
     #[test]
@@ -1535,6 +1710,41 @@ exit 1
                 .to_string()
                 .contains("No account source with that name")
         );
+    }
+
+    /// Removing an app keeps its data, as Flatpak does, and then removes the
+    /// runtimes no app of the account uses any more, which nothing else
+    /// removes from the person's installation. A failed cleanup does not
+    /// make the removal fail.
+    #[test]
+    fn removing_an_app_keeps_its_data_and_removes_runtimes_nothing_uses() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        let log = dir.path().join("calls");
+        for unused_exit in [0, 1] {
+            std::fs::write(
+                &binary,
+                format!(
+                    "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in *--unused*) exit {unused_exit};; esac\n",
+                    log.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let _ = std::fs::remove_file(&log);
+            super::flatpak_remove_from(&binary, "org.example.App").expect("removed");
+            let calls = std::fs::read_to_string(&log).unwrap();
+            assert_eq!(
+                calls.lines().collect::<Vec<_>>(),
+                [
+                    "uninstall --user --noninteractive -- org.example.App",
+                    "uninstall --user --unused --noninteractive",
+                ],
+                "no --delete-data: the app's data stays"
+            );
+        }
+        assert!(super::flatpak_remove_from(&binary, "--system").is_err());
     }
 
     #[test]
@@ -1620,7 +1830,6 @@ exit 1
             assert!(super::require_offer_identity(&replacement, &expected).is_err());
         }
 
-        // Phase `a_first_open_takes_a_version_on_a_runtime_this_device_has`.
         let missing = format!("tilo-runtime/2026.07+native.{}", "f".repeat(32));
         let mut newest = offer_template(&expected);
         newest.version = "1.2.4".into();
@@ -1674,7 +1883,7 @@ exit 1
         std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
         std::fs::set_permissions(&binary, permissions).unwrap();
         for (user, scope) in [(true, "--user"), (false, "--system")] {
-            let result = super::flatpak_catalogue_from(&binary, "tools", user).unwrap();
+            let result = catalogue_within_hang_bound(&binary, user).unwrap();
             assert_eq!(
                 result.trim(),
                 format!(
@@ -1704,7 +1913,7 @@ exit 1
         )
         .unwrap();
         assert!(
-            super::flatpak_catalogue_from(&binary, "tools", true)
+            catalogue_within_hang_bound(&binary, true)
                 .unwrap_err()
                 .to_string()
                 .contains("repository is unavailable")
@@ -1731,12 +1940,9 @@ printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
         let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
         std::fs::set_permissions(&binary, permissions).unwrap();
-        let first = super::flatpak_catalogue_from(&binary, "tools", true).unwrap();
+        let first = catalogue_within_hang_bound(&binary, true).unwrap();
         assert!(first.starts_with("org.example.Editor\tEditor"));
-        assert_eq!(
-            super::flatpak_catalogue_from(&binary, "tools", true).unwrap(),
-            first
-        );
+        assert_eq!(catalogue_within_hang_bound(&binary, true).unwrap(), first);
         let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
         let calls: Vec<_> = calls.lines().collect();
         assert_eq!(calls.len(), 3);
@@ -1745,6 +1951,20 @@ printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
         assert!(calls[1].contains("--user --app --arch"));
         assert!(calls[2].contains("--cached --user"));
         assert!(calls.iter().all(|call| call.ends_with("-- tools")));
+    }
+
+    /// The catalogue read with only the hang bound as its deadline: the
+    /// fixtures answer at once, however slowly a loaded machine runs them.
+    fn catalogue_within_hang_bound(
+        binary: &std::path::Path,
+        user_managed: bool,
+    ) -> Result<String, super::ReadError> {
+        super::flatpak_catalogue_with_timeout(
+            binary,
+            "tools",
+            user_managed,
+            tilo_test_env::hang_bound(),
+        )
     }
 
     fn catalogue_fixture(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
@@ -1770,7 +1990,7 @@ echo "{diagnostic}" >&2
 exit 1"#
             );
             let binary = catalogue_fixture(dir.path(), &script);
-            let error = super::flatpak_catalogue_from(&binary, "tools", false).unwrap_err();
+            let error = catalogue_within_hang_bound(&binary, false).unwrap_err();
             assert!(error.to_string().contains(diagnostic));
             let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
             assert_eq!(calls.lines().count(), 1);
@@ -1792,7 +2012,7 @@ exit 1
 "#,
         );
         assert!(
-            super::flatpak_catalogue_from(&binary, "tools", true)
+            catalogue_within_hang_bound(&binary, true)
                 .unwrap_err()
                 .to_string()
                 .contains("GPG verification failed")
@@ -1807,22 +2027,36 @@ exit 1
             r#"
 case "$*" in
   *--cached*) echo "No cached summary for remote 'tools'" >&2; exit 1;;
-  *) sleep 10; touch "$(dirname "$0")/late-write";;
+  *) echo $$ > "$(dirname "$0")/fetch.pid"; exec sleep infinity;;
 esac
 "#,
         );
-        let started = std::time::Instant::now();
-        assert!(
-            super::flatpak_catalogue_with_timeout(
-                &binary,
+        // The fetch never ends on its own: only the deadline's kill ends the call.
+        let (done, fetched) = std::sync::mpsc::channel();
+        let fetch = binary;
+        std::thread::spawn(move || {
+            let fetched = super::flatpak_catalogue_with_timeout(
+                &fetch,
                 "tools",
                 true,
-                std::time::Duration::from_millis(100)
-            )
-            .is_err()
-        );
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
-        assert!(!dir.path().join("late-write").exists());
+                std::time::Duration::from_millis(100),
+            );
+            let _ = done.send(fetched.is_err());
+        });
+        assert!(tilo_test_env::recv(
+            "the timed-out catalogue fetch",
+            &fetched
+        ));
+        // A loaded machine can reach the deadline before the fetch starts, or
+        // between the shell creating the pid file and writing it: an empty
+        // file names no process, and `/proc/` itself never goes away.
+        if let Ok(pid) = std::fs::read_to_string(dir.path().join("fetch.pid"))
+            && let Ok(pid) = pid.trim().parse::<u32>()
+        {
+            tilo_test_env::wait_until("the killed fetch to be gone", || {
+                !std::path::Path::new("/proc").join(pid.to_string()).exists()
+            });
+        }
     }
 
     #[test]
@@ -1969,7 +2203,7 @@ mod dev_override_tests {
 
     #[test]
     fn a_release_build_keeps_the_image_launcher() {
-        let default = "/usr/bin/tilo-launcher";
+        let default = "/usr/libexec/tilo/tilo-launcher";
         let gated = dev_override_from(false, LAUNCHER_BIN_ENV, Some("/tmp/attacker".into()));
         assert_eq!(path_or_default(gated, default), PathBuf::from(default));
         let honoured = dev_override_from(true, LAUNCHER_BIN_ENV, Some("/dev/overlay".into()));

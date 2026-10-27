@@ -74,7 +74,6 @@ fn main() {
         installed,
     };
 
-    // Build the real widget with this catalog.
     let mut app = StoreApp::new();
     app.set_items(vec![item.clone()]);
 

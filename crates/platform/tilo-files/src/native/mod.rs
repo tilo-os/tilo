@@ -16,9 +16,22 @@ mod change_watch;
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-pub use change_watch::{ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes};
+pub use change_watch::{
+    ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes, watch_presence,
+};
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+mod watched;
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub use watched::Watched;
 pub mod bounded;
 pub mod checked;
+pub mod held;
 pub mod identity;
 pub mod lock;
 pub mod mapped;
@@ -34,6 +47,53 @@ pub mod retained_home;
 /// unsupported targets fail.
 pub fn is_regular_file(path: &std::path::Path) -> std::io::Result<bool> {
     std::fs::symlink_metadata(path).map(|metadata| metadata.is_file())
+}
+
+/// The bytes the file `metadata` describes takes on its disk, as `du`
+/// counts them: its allocated blocks where the platform reports them (Linux,
+/// macOS), so a sparse file counts what it holds rather than the length it
+/// claims; its length elsewhere.
+#[must_use]
+pub fn on_disk(metadata: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // `st_blocks` counts 512-byte units whatever the filesystem's block size.
+        metadata.blocks().saturating_mul(512)
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.len()
+    }
+}
+
+/// The file `metadata` describes, by device and inode, when it has more than
+/// one name (a hard link), so a walk counts it once; `None` for a file with
+/// one name, and where the platform has no inodes.
+#[must_use]
+pub fn linked_identity(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        (metadata.nlink() > 1).then(|| (metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+/// The names of the entries directly in the native directory `dir`, in no
+/// particular order.
+///
+/// # Errors
+/// Preserves the native filesystem's error, including a missing directory
+/// or denied access; an entry that cannot be read is an error too.
+pub fn entry_names(dir: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>> {
+    std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect()
 }
 
 /// Create the parents of a native path shared with another program.
@@ -65,12 +125,20 @@ pub fn watch_entries(dir: &std::path::Path) -> Result<crate::Watch, crate::FsErr
     crate::disk_watch::watch_entries(dir)
 }
 
+/// The extended attribute a FUSE filesystem answers on its directories when
+/// it tells this kernel of every change it did not receive through it (a
+/// peer's edit, say), so that inotify sees those too: Tilo's collaborative
+/// filesystem does. Its daemon also sets it, with a value only it knows, to
+/// raise the inotify event on a directory whose entries changed.
+pub const CHANGE_SIGNAL_XATTR: &str = "user.tilo.change-signal";
+
 /// Whether a watch on the native directory `dir` ([`watch_entries`]) sees
-/// every change to its entries. Not on a FUSE or network mount (a projected
-/// collaborative filesystem, virtiofs, NFS, SMB, 9P, Ceph, AFS), whose
-/// entries can change without passing through this kernel, and not where
-/// the filesystem's type cannot be told: there a watch reports local edits
-/// only, and whoever lists `dir` must still read it again for the rest.
+/// every change to its entries. Not on a FUSE or network mount (virtiofs,
+/// NFS, SMB, 9P, Ceph, AFS), whose entries can change without passing
+/// through this kernel, unless it is a FUSE mount answering
+/// [`CHANGE_SIGNAL_XATTR`]; and not where the filesystem's type cannot be
+/// told: there a watch reports local edits only, and whoever lists `dir`
+/// must still read it again for the rest.
 #[cfg(all(
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))
@@ -125,5 +193,38 @@ mod tests {
         assert_eq!(actual.kind(), expected.kind());
         assert_eq!(actual.raw_os_error(), expected.raw_os_error());
         assert_eq!(std::fs::read(file).expect("original file remains"), b"held");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_file_counts_its_blocks_and_a_hard_link_names_the_same_file() {
+        let root = tempfile::tempdir().expect("temporary native directory");
+        let sparse = root.path().join("disk.img");
+        std::fs::File::create(&sparse)
+            .and_then(|file| file.set_len(1_073_741_824))
+            .expect("sparse file");
+        let sparse = std::fs::metadata(&sparse).expect("sparse metadata");
+        assert!(
+            super::on_disk(&sparse) < 1_048_576,
+            "an empty 1 GiB file holds no GiB of blocks"
+        );
+        assert_eq!(super::linked_identity(&sparse), None, "one name");
+
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        // Bytes no filesystem compresses away.
+        let bytes: Vec<u8> = (0..8192_u32)
+            .map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes()[3])
+            .collect();
+        std::fs::write(&first, bytes).expect("native file");
+        std::fs::hard_link(&first, &second).expect("hard link");
+        let first = std::fs::metadata(&first).expect("first name");
+        let second = std::fs::metadata(&second).expect("second name");
+        assert!(super::on_disk(&first) > 0, "written bytes take blocks");
+        assert!(super::linked_identity(&first).is_some());
+        assert_eq!(
+            super::linked_identity(&first),
+            super::linked_identity(&second)
+        );
     }
 }

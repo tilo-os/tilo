@@ -913,8 +913,6 @@ mod tests {
             assert_eq!(key.architecture, "x86_64");
         }
 
-        // Phase `preference_round_trip_contains_only_the_advisory_key`.
-        // Catches persisting worker authority or leaving a partially written restart record.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("setup").join("internal-download.json");
@@ -936,8 +934,6 @@ mod tests {
             );
         }
 
-        // Phase `invalid_preference_is_ignored_and_write_failure_is_reported`.
-        // Catches malformed local state becoming authority or silently accepting a failed write.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("selection.json");
@@ -955,8 +951,6 @@ mod tests {
             );
         }
 
-        // Phase `changed_ambiguous_or_unsupported_selection_never_starts_the_worker`.
-        // Catches catalog drift, ambiguity, or capability fixtures issuing a worker command.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let mut changed = bytes.clone();
@@ -1189,15 +1183,12 @@ mod tests {
         }
     }
 
-    /// Pause, cancel, discard and drop.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn internal_download_pause_cancel_and_drop_manage_tokens_and_leases() {
-        // Phase `pause_close_and_reconstruct_resume_with_a_new_token`.
-        // Catches retaining a token/handle across restart or starting network work implicitly.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
@@ -1268,8 +1259,6 @@ mod tests {
             wait_for(&mut resumed, Phase::Ready);
         }
 
-        // Phase `accepted_cancel_stays_pending_until_cancelled_then_discard_uses_new_token`.
-        // Catches a queued Ready/progress snapshot defeating cancel or discard reusing its token.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
@@ -1495,8 +1484,6 @@ mod tests {
             );
         }
 
-        // Phase `paused_presentation_retains_known_bytes_components_residue_uncertainty_and_error`.
-        // Catches neutral pause copy dropping facts the worker did establish.
         {
             let presentation = presentation_from_facts(
                 Phase::Paused,

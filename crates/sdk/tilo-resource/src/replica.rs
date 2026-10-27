@@ -172,9 +172,6 @@ impl<R: Resource> Replica<R> {
     }
 
     /// The tree the resource publishes now: what the door resolves against.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold the resource.
     pub fn published(&self) -> Result<tilo_actions::Resource, ModelError> {
         Ok(resource::publish::<R>(
             R::KIND,
@@ -208,9 +205,6 @@ impl<R: Resource> Replica<R> {
     /// Apply one typed action value, the path a custom surface takes once
     /// its person confirmed what it does: the generic
     /// [`APPLY`](crate::APPLY) action, through the door.
-    ///
-    /// # Errors
-    /// Returns the door's refusal or the action's own.
     pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, DoorError> {
         let invoke = Invoke::apply(action)
             .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
@@ -293,9 +287,6 @@ impl<R: Resource> Replica<R> {
     }
 
     /// Replay an envelope authored on another replica.
-    ///
-    /// # Errors
-    /// Returns a decode or apply error.
     pub fn replay(&mut self, envelope: &ActionEnvelope) -> Result<(), ActionError> {
         tilo_actions::replay(&mut self.doc, envelope, &self.registry)?;
         self.log.push(envelope.clone());
@@ -303,9 +294,6 @@ impl<R: Resource> Replica<R> {
     }
 
     /// The current state.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold the resource.
     pub fn state(&self) -> Result<R::State, ModelError> {
         R::read(&self.doc)
     }
@@ -314,9 +302,6 @@ impl<R: Resource> Replica<R> {
     /// only what each change touched ([`Resource::refresh`]) and reading
     /// what is demanded ([`Resource::load`]). A test comparing it with
     /// [`Self::state`] proves the resource's incremental reads exact.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold the resource.
     pub fn live(&mut self) -> Result<&R::State, ModelError> {
         if let Some(reader) = &mut self.reader {
             reader.sync(&self.doc)?;
@@ -330,9 +315,6 @@ impl<R: Resource> Replica<R> {
     }
 
     /// Ask the view state of [`Self::live`] for the parts `demand` names.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold the resource.
     pub fn demand(&mut self, demand: Demand) -> Result<&R::State, ModelError>
     where
         R::State: Clone,
@@ -355,9 +337,6 @@ impl<R: Resource> Replica<R> {
     }
 
     /// Exchange every change with `other`, as sync does.
-    ///
-    /// # Errors
-    /// Returns a document error.
     pub fn sync_with(&mut self, other: &mut Self) -> Result<(), ModelError> {
         self.doc.merge_incoming(&mut other.doc)?;
         other.doc.merge_incoming(&mut self.doc)?;
@@ -388,10 +367,6 @@ impl<R: Resource> Replica<R> {
         history::versions(&mut self.doc)
     }
 
-    /// The state as of `heads`.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when that version does not hold the resource.
     pub fn state_at(&mut self, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
         history::read_at::<R>(&mut self.doc, heads)
     }

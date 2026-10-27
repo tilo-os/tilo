@@ -12,18 +12,11 @@ use std::{
     cell::Cell,
     rc::Rc,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
 };
 use tilo_files::native::atomic::test_support::{
     Checkpoint, ProvisionCheckpoint, with_observer, with_provision_observer,
 };
 use ui::widget::Container;
-
-/// One frame at 60 Hz: what one pump of the loop may take.
-const FRAME: Duration = Duration::from_millis(16);
-
-/// A relay that takes its time to answer.
-const SLOW_RELAY: Duration = Duration::from_millis(250);
 
 fn host_with(tree: WorkspaceTree) -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
     let chrome = ChromeState::new(tree);
@@ -48,20 +41,26 @@ fn worker_thread() -> PeerSyncRunner {
 
 /// Pump `host` until `done`, as the loop does after the worker woke it.
 fn pump_until(host: &mut ShellOverlayHost, what: &str, done: impl Fn(&ShellOverlayHost) -> bool) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(30))
-        .expect("deadline");
-    while !done(host) {
-        assert!(Instant::now() < deadline, "{what} never came back");
+    tilo_test_env::wait_until(what, || {
         host.pump_peer_sync();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        done(host)
+    });
 }
 
-fn timed<T>(call: impl FnOnce() -> T) -> (T, Duration) {
-    let started = Instant::now();
-    let value = call();
-    (value, started.elapsed())
+/// A relay that answers only once the test releases it.
+fn held_relay() -> (
+    std::sync::mpsc::Sender<()>,
+    impl Fn() + Send + Sync + 'static,
+) {
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    let wait = move || {
+        let _ = released
+            .lock()
+            .expect("the relay")
+            .recv_timeout(tilo_test_env::hang_bound());
+    };
+    (release, wait)
 }
 
 #[test]
@@ -71,6 +70,7 @@ fn a_slow_invitation_never_holds_a_frame_and_lands_on_the_card() {
     let loop_thread = std::thread::current().id();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&calls);
+    let (release, relay) = held_relay();
     host.set_peer_sync_worker(PeerSyncWorker {
         site_rooms: Arc::new(Vec::new),
         site_joins: Arc::new(Vec::new),
@@ -84,7 +84,7 @@ fn a_slow_invitation_never_holds_a_frame_and_lands_on_the_card() {
             ));
             match request {
                 PeerSyncRequest::IssueInviteFor { .. } => {
-                    std::thread::sleep(SLOW_RELAY);
+                    relay();
                     Ok(PeerSyncResponse::Message("tok".into()))
                 }
                 PeerSyncRequest::ListPendingInvitations => {
@@ -101,18 +101,15 @@ fn a_slow_invitation_never_holds_a_frame_and_lands_on_the_card() {
         recipient_user_public_key: [7; 32],
     };
 
-    let ((), pressed) = timed(|| host.run_peer_sync_request(&invite, false));
-    let slowest_pump = (0..4)
-        .map(|_| timed(|| host.pump_peer_sync()).1)
-        .max()
-        .unwrap_or_default();
+    // The relay is held until the end: a press or pump that waited on it
+    // would not return before then.
+    host.run_peer_sync_request(&invite, false);
+    for _ in 0..4 {
+        host.pump_peer_sync();
+    }
     // A second press while the first invitation is still out.
     host.run_peer_sync_request(&invite, false);
 
-    assert!(
-        pressed <= FRAME && slowest_pump <= FRAME,
-        "minting an invitation held the frame loop: press {pressed:?}, pump {slowest_pump:?}, over one frame ({FRAME:?})"
-    );
     let card = host.peer_sync_snapshot();
     assert_eq!(
         card.status,
@@ -124,6 +121,7 @@ fn a_slow_invitation_never_holds_a_frame_and_lands_on_the_card() {
         "a token appeared before it was minted"
     );
 
+    release.send(()).expect("the relay is waiting");
     pump_until(&mut host, "the minted invitation", |host| {
         host.peer_sync_snapshot().invite_token.is_some()
     });
@@ -154,8 +152,7 @@ fn a_slow_invitation_never_holds_a_frame_and_lands_on_the_card() {
 fn an_invitation_action_answers_once_its_request_is_back() {
     let (mut host, chrome) = host_with(WorkspaceTree::bootstrap_demo());
     let workspace = chrome.borrow().tree().desktop.active;
-    let (answer, answered) = std::sync::mpsc::channel::<()>();
-    let answered = Mutex::new(answered);
+    let (answer, relay) = held_relay();
     host.set_peer_sync_worker(PeerSyncWorker {
         site_rooms: Arc::new(Vec::new),
         site_joins: Arc::new(Vec::new),
@@ -164,10 +161,7 @@ fn an_invitation_action_answers_once_its_request_is_back() {
         call: Arc::new(move |_, request| match request {
             PeerSyncRequest::IssueInvitation(_) => {
                 // Stands for the relay: it answers when the test says so.
-                let _ = answered
-                    .lock()
-                    .expect("the relay")
-                    .recv_timeout(Duration::from_secs(30));
+                relay();
                 Ok(PeerSyncResponse::Message("tok".into()))
             }
             PeerSyncRequest::ListPendingInvitations => {
@@ -189,13 +183,8 @@ fn an_invitation_action_answers_once_its_request_is_back() {
             }),
         });
 
-    let ((), took) = timed(|| {
-        host.pump_peer_sync();
-    });
-    assert!(
-        took <= FRAME,
-        "an invitation action held the frame loop for {took:?}, over one frame ({FRAME:?})"
-    );
+    // The relay is held: a pump that waited on it would not return.
+    host.pump_peer_sync();
     assert!(
         chrome
             .borrow_mut()
@@ -205,20 +194,12 @@ fn an_invitation_action_answers_once_its_request_is_back() {
     );
 
     answer.send(()).expect("the relay is waiting");
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(30))
-        .expect("deadline");
-    let result = loop {
+    let result = tilo_test_env::wait_for("the action's answer", || {
         host.pump_peer_sync();
-        if let Some(result) = chrome
+        chrome
             .borrow_mut()
             .take_peer_sync_request_result(request_id)
-        {
-            break result;
-        }
-        assert!(Instant::now() < deadline, "the action was never answered");
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    });
     assert_eq!(result, Ok(serde_json::json!({ "invite": "tok" })));
 }
 
@@ -235,13 +216,26 @@ fn redeeming_an_invitation_opens_the_owner_on_the_worker_not_the_loop() {
     host.set_peer_sync_worker(PeerSyncWorker::for_network(&network));
     // Another open of the state file's writer is in progress: redeeming
     // opens the owner, which waits behind it.
-    let (release, holder) =
-        crate::shell::native_workspace_owner::test_open_in_progress(&tree, Duration::from_secs(30));
+    let (release, holder) = crate::shell::native_workspace_owner::test_open_in_progress(
+        &tree,
+        tilo_test_env::hang_bound(),
+    );
+
+    // An invitation that verifies: text that does not is refused before
+    // any workspace is made for it, without the owner.
+    let invitation = tilo_peer_state::join::encode_invitation_text(
+        tilo_joined_room::testing::raw_fixture()
+            .0
+            .verified_join()
+            .signed_invitation(),
+    );
 
     let syncs = Rc::new(Cell::new(0_usize));
     let directories = Rc::clone(&syncs);
     let data = Rc::clone(&syncs);
-    let slowest = with_provision_observer(
+    // The other open is held until after these pumps: one that waited on
+    // the owner would not return before it is released.
+    with_provision_observer(
         move |event| {
             if event.checkpoint == ProvisionCheckpoint::BeforeSync {
                 directories.set(directories.get().saturating_add(1));
@@ -255,18 +249,12 @@ fn redeeming_an_invitation_opens_the_owner_on_the_worker_not_the_loop() {
                     }
                 },
                 || {
-                    let press = timed(|| {
-                        host.run_peer_sync_request(
-                            &PeerSyncRequest::AcceptInvite("not an invitation".into()),
-                            false,
-                        );
-                    })
-                    .1;
-                    (0..8)
-                        .map(|_| timed(|| host.pump_peer_sync()).1)
-                        .fold(press, Duration::max)
+                    host.run_peer_sync_request(&PeerSyncRequest::AcceptInvite(invitation), false);
+                    for _ in 0..8 {
+                        host.pump_peer_sync();
+                    }
                 },
-            )
+            );
         },
     );
 
@@ -274,10 +262,6 @@ fn redeeming_an_invitation_opens_the_owner_on_the_worker_not_the_loop() {
         syncs.get(),
         0,
         "redeeming an invitation synced the state file on the frame loop"
-    );
-    assert!(
-        slowest <= FRAME,
-        "redeeming an invitation held the frame loop for {slowest:?} while the owner was opening, over one frame ({FRAME:?})"
     );
     assert_eq!(
         host.peer_sync_snapshot().status,

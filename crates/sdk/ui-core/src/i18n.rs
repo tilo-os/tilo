@@ -241,9 +241,24 @@ fn manager_id() -> Option<u64> {
     MANAGER.with(|manager| manager.borrow().as_ref().map(|manager| manager.id))
 }
 
+/// The markers a pseudo-localised string is wrapped in. They are what makes
+/// the copy findable in a frame at a glance, so exactly one pair may surround
+/// any string.
+const PSEUDO_OPEN: char = '⟦';
+const PSEUDO_CLOSE: char = '⟧';
+
 fn pseudo_expand(value: &str) -> String {
+    // Copy reaches the screen localised more than once in places: a section
+    // header composed from two already-localised fragments, a title set from a
+    // string that was translated on its way in. Expanding that again renders
+    // `⟦⟦Wíí-Fíí⟧⟧`, and the review then counts a doubling that is an artefact
+    // of the transform rather than a string that is too long. Expansion is
+    // therefore idempotent: one pair of markers, wherever the copy came from.
+    if value.starts_with(PSEUDO_OPEN) && value.ends_with(PSEUDO_CLOSE) && value.len() > 2 {
+        return value.to_owned();
+    }
     let mut expanded = String::with_capacity(value.len().saturating_mul(2).saturating_add(4));
-    expanded.push('⟦');
+    expanded.push(PSEUDO_OPEN);
     for ch in value.chars() {
         let replacement = match ch {
             'a' => "áa",
@@ -265,7 +280,7 @@ fn pseudo_expand(value: &str) -> String {
         };
         expanded.push_str(replacement);
     }
-    expanded.push('⟧');
+    expanded.push(PSEUDO_CLOSE);
     expanded
 }
 
@@ -275,6 +290,20 @@ fn pseudo_expand(value: &str) -> String {
 fn apply_pseudo_locale(value: String, args: Option<&FluentArgs>, pseudo_language: bool) -> String {
     let mode = PSEUDO_LOCALE.with(Cell::get);
     if mode == PseudoLocale::Off && !pseudo_language {
+        return value;
+    }
+    // Nothing says nothing: a bound text with no words yet — a save status
+    // that has nothing to report — must not become a pair of markers, which
+    // is how a review finds copy that is too long rather than copy that is
+    // absent.
+    if value.is_empty() {
+        return value;
+    }
+    // Copy composed from copy already localised — a date heading, "⟦Tue⟧,
+    // ⟦Jun⟧ 30", a section header of two translated fragments — carries its
+    // marks inside it. Wrapping it again draws a doubled pair, which a
+    // review reads as a defect in the string rather than in the transform.
+    if value.contains(PSEUDO_OPEN) || value.contains(PSEUDO_CLOSE) {
         return value;
     }
     let data: Vec<&str> = args
@@ -316,9 +345,52 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
-/// The host's preferred locale; see [`crate::host::HostEnvironment::locale`].
+/// The language the person chose for the interface
+/// (`settings_store::appearance::LANGUAGE`, which Settings › Region &
+/// Language writes), or else the host's preferred locale
+/// ([`crate::host::HostEnvironment::locale`]).
 fn preferred_locale() -> Option<LanguageIdentifier> {
-    parse_locale(crate::host::environment().locale.as_deref()?).ok()
+    configured_language()
+        .or_else(|| parse_locale(crate::host::environment().locale.as_deref()?).ok())
+}
+
+/// The interface language in the person's settings, if they chose one.
+fn configured_language() -> Option<LanguageIdentifier> {
+    language_in(&settings_store::load())
+}
+
+/// The interface language a settings document names, if it names one that
+/// parses.
+fn language_in(
+    document: &serde_json::Map<String, serde_json::Value>,
+) -> Option<LanguageIdentifier> {
+    settings_store::appearance::LANGUAGE
+        .from_document(document)
+        .and_then(|language| parse_locale(&language).ok())
+}
+
+/// Select the language the person chose on this thread, when it is not the
+/// one selected: a choice made in Settings while the app runs relabels it
+/// (the [`I18nManager::revision`] moves). With no choice, the host's
+/// locale; with neither, the source locale.
+pub fn follow_configured_language() {
+    match preferred_locale() {
+        Some(locale) => {
+            // A language chosen just after its pack was installed has no
+            // catalogue loaded yet: read the packs again.
+            let loaded = MANAGER.with(|manager| {
+                manager
+                    .borrow()
+                    .as_ref()
+                    .is_none_or(|manager| manager.bundles.contains_key(&locale))
+            });
+            if !loaded {
+                refresh_language_packs();
+            }
+            I18nManager::set_locale(&locale.to_string());
+        }
+        None => I18nManager::set_locale_or_source("C"),
+    }
 }
 
 fn make_bundle(
@@ -441,11 +513,6 @@ impl I18nManager {
     /// Atomically install every bundled Fluent catalog and select an explicit
     /// active locale. Lookup falls back from the active language to
     /// `source_locale`, then to the key itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns a locale/resource/duplicate error without replacing the live
-    /// catalog.
     pub fn install(
         source_locale: &str,
         active_locale: &str,
@@ -825,7 +892,7 @@ pub struct EmbeddedCatalog {
 /// message resolves to. Each other language is a shared language pack,
 /// installed for the languages the person uses and the same bytes for
 /// everyone: `<root>/<locale>/<id>.ftl` for every catalogue that has that
-/// language, one directory per locale. The roots are [`LANGUAGE_PACK_ROOTS`],
+/// language, one directory per locale. The roots are [`language_pack_roots`],
 /// which the sandbox lets every app read, and, for a build run from its
 /// source tree (a developer's, a test's, a screenshot's), the crate's own
 /// `locales/` directory.
@@ -840,30 +907,132 @@ pub struct LanguagePack {
     pub source_dir: &'static str,
 }
 
+/// Where a sandboxed app sees the person's language packs: the launcher
+/// binds them here, read-only.
+pub const SANDBOX_LANGUAGE_PACKS: &str = "/var/lib/tilo/language-packs";
+
+/// Where the OS image's language packs are: the language it was installed
+/// in.
+pub const IMAGE_LANGUAGE_PACKS: &str = "/usr/share/tilo/language-packs";
+
 /// Where installed language packs are, in the order they are read: the ones
-/// the person's languages fetched, then the ones the OS image carries.
-pub const LANGUAGE_PACK_ROOTS: &[&str] = &[
-    "/var/lib/tilo/language-packs",
-    "/usr/share/tilo/language-packs",
-];
+/// the person installed ([`tilo_paths::language_packs_dir`], or where a
+/// sandbox sees them, [`SANDBOX_LANGUAGE_PACKS`]), then the image's.
+#[must_use]
+pub fn language_pack_roots() -> Vec<std::path::PathBuf> {
+    tilo_paths::language_packs_dir()
+        .into_iter()
+        .chain([SANDBOX_LANGUAGE_PACKS, IMAGE_LANGUAGE_PACKS].map(std::path::PathBuf::from))
+        .collect()
+}
+
+/// Moves when a language pack is installed while the process runs: every
+/// catalogue reads its languages again the next time it is used.
+static PACKS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Read the installed language packs again: one installed since the
+/// catalogues loaded (the language a person just chose) is read the next
+/// time each catalogue is used.
+pub fn refresh_language_packs() {
+    PACKS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `locale` as a `'static` tag: every locale a pack names is kept once.
+fn interned(locale: &str) -> &'static str {
+    static LOCALES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut locales = LOCALES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(known) = locales.iter().find(|known| **known == locale) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(locale.to_owned().into_boxed_str());
+    locales.push(leaked);
+    leaked
+}
 
 impl LanguagePack {
+    /// Where `locale`'s catalogue would be, in the order they are read.
+    fn candidates(&self, locale: &str) -> impl Iterator<Item = std::path::PathBuf> {
+        let file = format!("{}.ftl", self.id);
+        language_pack_roots()
+            .into_iter()
+            .map(move |root| root.join(locale).join(&file))
+            .chain(std::iter::once(
+                std::path::Path::new(self.source_dir).join(format!("{locale}.ftl")),
+            ))
+    }
+
     /// The Fluent source of `locale`'s catalogue, from the first root that
     /// has it.
     #[must_use]
     pub fn read(&self, locale: &str) -> Option<String> {
+        self.candidates(locale).find_map(|path| {
+            let bytes =
+                tilo_files::native::bounded::read(&path, MAX_LANGUAGE_PACK_BYTES).ok()??;
+            String::from_utf8(bytes).ok()
+        })
+    }
+
+    /// Whether `locale`'s catalogue is installed: in a pack, or beside the
+    /// crate where it was built.
+    #[must_use]
+    pub fn has(&self, locale: &str) -> bool {
+        self.candidates(locale).any(|path| path.is_file())
+    }
+
+    /// Every locale this catalogue has installed: the ones it was built
+    /// with and every pack installed since that carries it (a language the
+    /// registry offers later reads as any other).
+    #[must_use]
+    pub fn installed_locales(&self) -> Vec<&'static str> {
         let file = format!("{}.ftl", self.id);
-        LANGUAGE_PACK_ROOTS
+        let mut locales: Vec<&'static str> = self
+            .locales
             .iter()
-            .map(|root| std::path::Path::new(root).join(locale).join(&file))
-            .chain(std::iter::once(
-                std::path::Path::new(self.source_dir).join(format!("{locale}.ftl")),
-            ))
-            .find_map(|path| {
-                let bytes =
-                    tilo_files::native::bounded::read(&path, MAX_LANGUAGE_PACK_BYTES).ok()??;
-                String::from_utf8(bytes).ok()
-            })
+            .copied()
+            .filter(|locale| self.has(locale))
+            .collect();
+        for root in language_pack_roots() {
+            let Ok(names) = tilo_files::native::entry_names(&root) else {
+                continue;
+            };
+            for name in names {
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                if parse_locale(name).is_ok()
+                    && !locales.contains(&name)
+                    && root.join(name).join(&file).is_file()
+                {
+                    locales.push(interned(name));
+                }
+            }
+        }
+        locales
+    }
+}
+
+/// The language `tag` names, lower case: `de` of `de-DE`. One language
+/// pack serves a language, whatever region a tag adds.
+#[must_use]
+pub fn language_of(tag: &str) -> String {
+    tag.split(['-', '_'])
+        .next()
+        .unwrap_or(tag)
+        .to_ascii_lowercase()
+}
+
+/// `tag`'s language in its own words, as a language picker offers it: a
+/// person looking for their language reads it in that language, once,
+/// whatever region the tag adds. A language this build has no name for
+/// reads as the tag.
+#[must_use]
+pub fn language_name(tag: &str) -> String {
+    match language_of(tag).as_str() {
+        "en" => "English".to_owned(),
+        "de" => "Deutsch".to_owned(),
+        _ => tag.to_owned(),
     }
 }
 
@@ -874,7 +1043,7 @@ thread_local! {
     /// The embedded catalogues this thread has loaded, by the address of
     /// their sources, with the manager they were loaded into. A manager
     /// installed since then starts without them, so they load again.
-    static EMBEDDED_LOADED: std::cell::RefCell<Vec<(usize, u64)>> =
+    static EMBEDDED_LOADED: std::cell::RefCell<Vec<(usize, u64, u64)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -916,16 +1085,40 @@ impl EmbeddedCatalog {
             .map(|(locale, source)| (*locale, std::borrow::Cow::Borrowed(*source)))
             .collect();
         if let Some(pack) = &self.pack {
-            for locale in pack.locales {
-                if sources.iter().any(|(held, _)| held == locale) {
+            for locale in pack.installed_locales() {
+                if sources.iter().any(|(held, _)| *held == locale) {
                     continue;
                 }
                 if let Some(source) = pack.read(locale) {
-                    sources.push((*locale, std::borrow::Cow::Owned(source)));
+                    sources.push((locale, std::borrow::Cow::Owned(source)));
                 }
             }
         }
         sources
+    }
+
+    /// The languages this catalogue can show, each once: the embedded ones
+    /// and those with an installed pack, in the order the catalogue names
+    /// them. A language installed under two tags (`de` and `de-DE`) is named
+    /// by the one without a region, the pack's.
+    #[must_use]
+    pub fn languages(&self) -> Vec<&'static str> {
+        let mut languages: Vec<&'static str> =
+            self.catalogs.iter().map(|(locale, _)| *locale).collect();
+        if let Some(pack) = &self.pack {
+            for locale in pack.installed_locales() {
+                let language = language_of(locale);
+                match languages
+                    .iter_mut()
+                    .find(|known| language_of(known) == language)
+                {
+                    Some(known) if locale.len() < known.len() => *known = locale,
+                    Some(_) => {}
+                    None => languages.push(locale),
+                }
+            }
+        }
+        languages
     }
 
     /// The Fluent source of the source locale's catalogue.
@@ -952,7 +1145,7 @@ impl EmbeddedCatalog {
         self
     }
 
-    /// Select `locale` whenever this catalogue loads on a thread, even over a
+    /// Select `locale` when this catalogue first loads into a thread's manager, even over a
     /// host's choice. For test builds that assert source copy on any
     /// developer or CI machine.
     #[must_use]
@@ -969,11 +1162,16 @@ impl EmbeddedCatalog {
     pub fn ensure(&self) {
         let manager = manager_id();
         let key = self.catalogs.as_ptr().addr();
-        let loaded = EMBEDDED_LOADED.with(|loaded| {
-            loaded
-                .borrow()
+        let packs = PACKS_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+        let (loaded, in_this_manager) = EMBEDDED_LOADED.with(|loaded| {
+            let loaded = loaded.borrow();
+            let entry = loaded
                 .iter()
-                .any(|&(loaded, id)| loaded == key && Some(id) == manager)
+                .find(|&&(loaded, id, _)| loaded == key && Some(id) == manager);
+            (
+                entry.is_some_and(|&(_, _, generation)| generation == packs),
+                entry.is_some(),
+            )
         });
         if loaded {
             return;
@@ -986,14 +1184,18 @@ impl EmbeddedCatalog {
         } else {
             self.install_fresh(&sources);
         }
-        if let Some(locale) = self.pinned_locale {
+        // Only a first load pins: reading the packs again (any thread may ask
+        // for that) must not undo a locale chosen since.
+        if let Some(locale) = self.pinned_locale
+            && !in_this_manager
+        {
             I18nManager::set_locale(locale);
         }
         if let Some(id) = manager_id() {
             EMBEDDED_LOADED.with(|loaded| {
                 let mut loaded = loaded.borrow_mut();
-                loaded.retain(|&(loaded, _)| loaded != key);
-                loaded.push((key, id));
+                loaded.retain(|&(loaded, _, _)| loaded != key);
+                loaded.push((key, id, packs));
             });
         }
     }
@@ -1124,6 +1326,33 @@ mod tests {
 
     /// A catalogue embeds only its source; its other languages come from the
     /// language packs, here the crate's own `locales/` directory.
+    /// The language the person picks in Settings is the one the interface
+    /// shows; a document naming none, or a tag that does not parse, leaves
+    /// the choice to the host.
+    #[test]
+    fn the_interface_language_is_the_one_the_settings_name() {
+        let document = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+        assert_eq!(
+            language_in(&document(
+                serde_json::json!({"appearance": {"language": "de-DE"}})
+            ))
+            .map(|locale| locale.to_string()),
+            Some("de-DE".to_owned())
+        );
+        assert_eq!(
+            language_in(&document(
+                serde_json::json!({"appearance": {"mode": "dark"}})
+            )),
+            None
+        );
+        assert_eq!(
+            language_in(&document(
+                serde_json::json!({"appearance": {"language": "C"}})
+            )),
+            None
+        );
+    }
+
     #[test]
     fn a_catalogue_reads_its_other_languages_from_the_language_packs() {
         static PACKED: EmbeddedCatalog =
@@ -1150,6 +1379,8 @@ mod tests {
             source_dir: "/nonexistent",
         };
         assert_eq!(missing.read("xx-XX"), None);
+        assert!(!missing.has("xx-XX"));
+        assert_eq!(PACKED.languages(), ["en-US", "de-DE"]);
     }
 
     /// Lookup uses thread-local state; worker threads are reused across tests.
@@ -1217,7 +1448,6 @@ mod tests {
     #[test]
     fn lookup_falls_back_through_language_catalogues_then_source() {
         let _restore = RestoreLookupState::capture();
-        // The shared toolkit history is readable without app catalogs.
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
         TOOLKIT_SOURCE.with(|source| assert!(source.is_ok(), "bundled toolkit catalog must parse"));
         assert_eq!(
@@ -1355,7 +1585,6 @@ mod tests {
         assert_eq!(I18nManager::revision(), revision);
         assert_eq!(I18nManager::lookup("greeting", None), "Hello");
 
-        // A translation that fails to format falls back to one that does.
         install_plain(
             "en-US",
             "de",
@@ -1380,9 +1609,50 @@ mod tests {
         // Russian puts 21 in the `one` category; the English copy follows.
         I18nManager::set_locale("ru-RU");
         assert_eq!(items(), "21 item");
-        // A language without CLDR rules formats with English ones.
         I18nManager::set_locale("xx-ZZ");
         assert_eq!(items(), "21 items");
+    }
+
+    #[test]
+    fn pseudo_locale_expansion_is_idempotent() {
+        // Copy that is localised twice must still carry one pair of markers:
+        // the doubling a reviewer sees is the string, not the transform
+        // (`T3` in the UX audit).
+        let once = pseudo_expand("Wi-Fi");
+        assert_eq!(pseudo_expand(&once), once);
+        assert_eq!(once.matches(PSEUDO_OPEN).count(), 1);
+        assert_eq!(once.matches(PSEUDO_CLOSE).count(), 1);
+        // A string that merely starts and ends with the markers is left alone
+        // rather than wrapped a second time.
+        assert_eq!(pseudo_expand("⟦⟧"), "⟦⟧");
+    }
+
+    /// Copy made of copy already localised keeps the one pair of marks it
+    /// has: a date heading reads `⟦Tue⟧, ⟦Jun⟧ 30`, never `⟦⟦Tue⟧, ⟦Jun⟧ 30⟧`.
+    #[test]
+    fn a_message_of_localised_fragments_is_not_marked_twice() {
+        let _restore = RestoreLookupState::capture();
+        install_plain("en-US", "en-US", &[("en-US", EN)]);
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        let weekday = I18nManager::lookup("greeting", None);
+        let composed =
+            I18nManager::format("share", &[("person", ArgValue::from(weekday.as_str()))]);
+        assert_eq!(
+            composed.matches(PSEUDO_OPEN).count(),
+            1,
+            "one pair of markers: {composed}"
+        );
+    }
+
+    /// Nothing says nothing: an empty message is not two markers, which a
+    /// review would read as copy that is too long.
+    #[test]
+    fn an_empty_message_stays_empty_under_the_pseudo_locale() {
+        let _restore = RestoreLookupState::capture();
+        install_plain("en-US", "en-US", &[("en-US", EN)]);
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        assert_eq!(I18nManager::lookup("", None), "");
+        assert_eq!(I18nManager::format("", &[]), "");
     }
 
     #[test]
@@ -1449,7 +1719,6 @@ mod tests {
             );
         }
 
-        // It joins a host manager without replacing its locale.
         {
             let _restore = RestoreLookupState::capture();
             I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
@@ -1465,7 +1734,6 @@ mod tests {
             assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
         }
 
-        // A pinned catalog overrides the host locale.
         {
             let _restore = RestoreLookupState::capture();
             I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
@@ -1491,7 +1759,6 @@ mod tests {
             assert_eq!(manager_id(), None);
         }
 
-        // A German host gets German copy, with the count choosing the form.
         {
             let _restore = RestoreLookupState::capture();
             install_plain("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]);

@@ -4,19 +4,25 @@ use std::cell::RefCell;
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use collab_types::DocumentMutation;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_content::ContentStore;
 use ui::application::{
     ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
+use ui::collaboration::record_content::{ContentLane, RecordContent};
 use ui::headless::FrameHarness;
 use ui::permissions::{PermissionContext, UserId};
 use ui::portable_storage::{PortableStorage, StorageKey};
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
-use super::proto::{FRAMING, Mode, PROTOCOL_VERSION, ProbeReport, Reply, Request, WireDoorError};
+use super::proto::{
+    CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
+    Reply, Request, WireDoorError,
+};
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
 use crate::room_actions::ViewReadPolicy;
 
@@ -28,10 +34,19 @@ pub(super) fn serve(mode: Mode) -> i32 {
     // stdin.
     let socket = UnixStream::from(unsafe { OwnedFd::from_raw_fd(0) });
     let mut worker = Worker::new(mode);
+    // The app's code finds the worker's content store wherever it runs, in
+    // or out of its view's own scope: every request is served inside this
+    // one.
+    let scope = ui::WakeScope::new();
+    ui::tilo_resource::content::register(&scope.handle(), worker.content.store.clone());
+    let _entered = scope.enter();
     // The app's view lays out text once the filesystem is gone.
     if !ui::text_render::hold_catalog_fonts_in_memory() {
         tracing::warn!("app worker: no font catalog; views will lay out no text");
     }
+    // The confinement denies the GPU driver its IOKit and Mach services, so
+    // no adapter starts here: an app's pictures are drawn on the CPU.
+    ui::offscreen::disable_gpu();
     if let Err(reason) = super::confine::confine() {
         let _ = FRAMING.write_value(&mut &socket, &Reply::Unconfined(reason));
         return 1;
@@ -69,6 +84,60 @@ struct Worker {
     /// Loaded before the confinement, for the one component a reader mounts.
     text: Option<ui::TextRenderer>,
     read: Option<ReadSession>,
+    /// What the held record's view is lent as its content store.
+    content: WorkerContent,
+}
+
+/// The content store a held record's view reads and writes in the worker:
+/// kept in memory, with what the app stores and what it asked for and
+/// lacks held for the supervisor to take.
+struct WorkerContent {
+    /// What the supervisor put and the app stored.
+    local: ContentStore,
+    lane: Arc<ContentLane>,
+    /// `local` joined to `lane`: the store the view is lent.
+    store: ContentStore,
+}
+
+impl WorkerContent {
+    fn new() -> Self {
+        let local = ContentStore::memory();
+        let lane = Arc::new(ContentLane::default());
+        let store = RecordContent::store(local.clone(), Arc::clone(&lane));
+        Self { local, lane, store }
+    }
+
+    fn put(&self, bytes: &[u8]) -> Reply {
+        match self.local.put(bytes) {
+            Ok(hash) => Reply::Stored(hash),
+            Err(error) => Reply::Failed(error.to_string()),
+        }
+    }
+
+    /// What the app stored since the last take, up to a batch, and what it
+    /// asked for and lacks.
+    fn take(&self) -> Reply {
+        let requests = self.lane.take_requests();
+        let mut offered = Vec::new();
+        let mut size = 0usize;
+        for (hash, bytes) in requests.offers {
+            if bytes.len() > MAX_CONTENT_ITEM_BYTES {
+                tracing::warn!(%hash, "app worker: stored content is too large to hand over");
+            } else if offered.is_empty() || size.saturating_add(bytes.len()) <= CONTENT_BATCH_BYTES
+            {
+                size = size.saturating_add(bytes.len());
+                offered.push(bytes);
+            } else {
+                self.lane.retry_offer(hash, bytes);
+            }
+        }
+        let wanted = requests
+            .wants
+            .into_iter()
+            .filter(|hash| !self.local.has(hash))
+            .collect();
+        Reply::Content { offered, wanted }
+    }
 }
 
 impl Worker {
@@ -80,12 +149,26 @@ impl Worker {
             views: None,
             text: (mode == Mode::Read).then(resident_text_renderer),
             read: None,
+            content: WorkerContent::new(),
         }
     }
 
     fn handle(&mut self, request: Request) -> Reply {
         match request {
             Request::Probe { path } => Reply::Probe(probe(&path)),
+            Request::PutContent(bytes) => self.content.put(&bytes),
+            Request::Shrink {
+                bytes,
+                max_side,
+                max_bytes,
+            } => {
+                if self.mode == Mode::Picture {
+                    super::picture::shrink(&bytes, max_side, max_bytes)
+                } else {
+                    Reply::Failed("this worker shrinks no pictures".into())
+                }
+            }
+            Request::TakeContent => self.content.take(),
             Request::Open {
                 app_id,
                 room,
@@ -98,6 +181,7 @@ impl Worker {
             },
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
             Request::Views { wanted, policy } => self.views(&wanted, &policy),
+            Request::Title { app_id, doc } => self.title(&app_id, &doc),
             Request::ReadPrepare {
                 app_id,
                 room,
@@ -242,7 +326,15 @@ impl Worker {
                 None => return Reply::Failed("invalid record id".into()),
             },
         };
-        match Replica::open(&self.catalogue, app_id, room, participant, actor, seed) {
+        match Replica::open_lending(
+            &self.catalogue,
+            app_id,
+            room,
+            participant,
+            actor,
+            seed,
+            Some(self.content.store.clone()),
+        ) {
             Ok(replica) => {
                 let record = replica.record_id().as_str().to_owned();
                 self.replica = Some(replica);
@@ -262,6 +354,17 @@ impl Worker {
         }
         self.views = Some((app_id, doc));
         Reply::Done
+    }
+
+    fn title(&self, app_id: &str, bytes: &[u8]) -> Reply {
+        if self.mode != Mode::Views {
+            return Reply::Failed("this worker reads no titles".into());
+        }
+        let mut doc = automerge::AutoCommit::new();
+        if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes) {
+            return Reply::Failed(error.to_string());
+        }
+        Reply::Title(self.catalogue.resource_title(app_id, &doc))
     }
 
     fn views(&self, wanted: &str, policy: &str) -> Reply {

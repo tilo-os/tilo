@@ -11,6 +11,7 @@
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
@@ -189,7 +190,7 @@ fn typed(
         move |args| encode(&build(args)),
     )
     .with_contract(contract)
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
 }
 
 /// The published History resource. Only `history.open` is offered to a person
@@ -292,7 +293,6 @@ pub(crate) fn resource() -> Resource {
         ],
         ActionContract {
             risk: RiskLevel::Low,
-            reversible: true,
             ..json_contract(ActionKind::Undoable, RetryPolicy::AtMostOnce)
         },
         |args| Command::Restore {
@@ -381,7 +381,7 @@ fn parse_entry(value: &str) -> Result<HistoryEntryId, DoorError> {
 
 fn hex_heads(heads: &[ChangeHash]) -> Vec<String> {
     let mut heads: Vec<String> = heads.iter().map(ToString::to_string).collect();
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 

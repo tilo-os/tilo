@@ -10,18 +10,17 @@ use ui::framework::{
     SurfaceCx, ViewCx,
 };
 use ui::icons::Icon;
-use ui::search::SearchRequest;
 use ui::secrets::SecretStore;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::tokens::SpacingStep;
-use ui::widget::{ButtonRole, Element, NavShell, Spacer};
+use ui::widget::{ButtonRole, Element, EmptyState, NavShell, Spacer, Stack, When};
 
 use crate::app::{AuthenticatorApp, Notice};
 pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
-#[resource(kind = "totp.vault", label = "Accounts", search = Totp::search)]
+#[resource(kind = "totp.vault", label = "Authenticator", search = Totp::search)]
 impl Totp {
     /// Move an account one place up.
     #[action]
@@ -50,7 +49,8 @@ impl Totp {
     }
 
     /// Delete an account and forget its secret on every device.
-    #[action(destructive)]
+    // Undo brings the account back but not its secret, so people confirm it.
+    #[action(destructive, irreversible)]
     pub fn delete(&mut self, account: &Id) -> Result<(), Refusal> {
         self.accounts
             .remove(account)
@@ -123,7 +123,7 @@ pub(crate) fn safe_identity_field<'a>(value: &'a str, secret: &str) -> &'a str {
 /// What the Authenticator does with what only this device holds: the add
 /// form, an account's codes and its secret.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "totp.effect", device_only)]
+#[effect(operation = "totp.effect")]
 pub enum TotpEffect {
     /// Add account.
     ///
@@ -138,7 +138,7 @@ pub enum TotpEffect {
         account: String,
     },
     /// Copy current code.
-    #[effect(privileged, kind = "read")]
+    #[effect(attended, privileged, kind = "read")]
     CopyCode {
         #[param("Id of the account")]
         account: String,
@@ -175,8 +175,9 @@ pub const SCENARIOS: &[&str] = &[
     "expiring",
 ];
 
-/// Framework app: the navigation shell, whose header row carries the search
-/// and add buttons, around the authenticator surface over [`Totp`].
+/// Framework app: the navigation shell around the authenticator surface over
+/// [`Totp`]. In a window the desktop's bar hosts, its header is the bar's
+/// location and Add account; the bar's search is the vault's search.
 pub struct TotpShell;
 
 impl ResourceApp for TotpShell {
@@ -207,13 +208,21 @@ impl ResourceApp for TotpShell {
                 .with_count_signal(count.clone())
                 .with_notice_signal(notice.clone()),
         );
-        let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
-            if *has_accounts {
-                Box::new(cx.search_button(SearchRequest::this_app()))
-            } else {
-                Box::new(Spacer::token(SpacingStep::S0))
-            }
-        });
+        // With no accounts the list is empty and the empty state over it
+        // asks for the first one; the surface stays mounted under it, since
+        // it hosts the add sheet.
+        let empty = EmptyState::new("No accounts yet")
+            .with_icon(Icon::Shield)
+            .with_message("Scan a QR code or paste a setup link to see its one-time codes here.")
+            .with_action("Add account")
+            .with_action_id("totp-empty-add");
+        let empty = match cx.actions().effect(&TotpEffect::AddAccount) {
+            Some(binding) => empty.on_action(binding),
+            None => empty,
+        };
+        let content: Element = Box::new(Stack::new().push(content).push(Box::new(
+            When::from_state(&has_accounts, |has| !*has, Box::new(empty)),
+        )));
         let add = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
             if *has_accounts {
                 // The vault's own "Add account" effect, the one the palette
@@ -232,7 +241,7 @@ impl ResourceApp for TotpShell {
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::List)
                 .content(content)
-                .content_header("Accounts", vec![search, add]),
+                .content_header("Accounts", vec![add]),
             count,
             notice,
         })
@@ -431,7 +440,6 @@ mod tests {
 
     /// The app on a fresh profile whose secrets live in `backend`.
     fn open(backend: Arc<dyn SecretBackend>) -> (TestApp<TotpShell>, ui::host::HostScope) {
-        // A clipboard that carries secrets, as a desktop's does.
         let (recording, _) = ui::host::HostServices::recording();
         let services = ui::host::HostServices {
             secrets: Arc::new(Store(backend)),
@@ -516,6 +524,19 @@ mod tests {
             .any(|window| window == secret.as_bytes())
     }
 
+    /// A person meets the app by one name: the window it opens, its
+    /// manifest and its catalogue entry all say Authenticator.
+    #[test]
+    fn the_app_goes_by_one_name() {
+        use ui::tilo_resource::Resource as _;
+        assert_eq!(Totp::LABEL, "Authenticator");
+        let manifest = include_str!("../tilo-app.toml");
+        assert!(
+            manifest.contains("name     = \"Authenticator\""),
+            "the manifest names it Authenticator"
+        );
+    }
+
     #[test]
     fn every_launch_withholds_the_codes_window_from_captures() {
         const { assert!(<TotpShell as ResourceApp>::BEHAVIOUR.capture_protected) };
@@ -544,8 +565,6 @@ mod tests {
             .expect("the secret is this device's item secret for the account");
         assert_eq!(stored.expose(), SECRET.as_bytes());
 
-        // The published account carries its document actions and, from this
-        // device, its codes.
         let row = published(&mut app, &account_resource_id(account.id));
         assert_eq!(row.kind, "totp.vault.accounts");
         let ids: Vec<&str> = row
@@ -579,7 +598,6 @@ mod tests {
             "no published action names the secret"
         );
 
-        // Copying through the door puts the live code on the clipboard.
         let code = crate::totp::current_code(&Account {
             secret: SECRET.into(),
             ..account.clone()
@@ -680,6 +698,8 @@ mod tests {
             "the same verb invoked directly"
         );
 
+        // Undo brings the account back but not the secret every device
+        // forgot: deleting asks first, however it is reached.
         let delete = Totp::DELETE.with(Totp::item(first));
         assert!(
             matches!(
@@ -799,6 +819,51 @@ mod tests {
             .collect()
     }
 
+    /// The empty vault's drawn "Add account" is in the tree, where it is
+    /// drawn, and opens the add sheet as a click on it does.
+    #[test]
+    fn the_empty_vaults_add_account_is_described_and_opens_the_sheet() {
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.action_target.as_deref() == Some("totp-empty-add") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        fn walk(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
+            node.semantics
+                .as_ref()
+                .and_then(find)
+                .or_else(|| node.children.iter().find_map(walk))
+        }
+        let (mut app, _host) = open(ui::secrets::memory_backend());
+        settle(&mut app);
+        let add = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                format!("{:?}", node.role()) == "Button" && node.label() == Some("Add account")
+            })
+            .map(|(id, _)| id)
+            .expect("the empty state's action is in the tree");
+        let snapshot = app.harness().inspection();
+        let bounds = walk(&snapshot.root)
+            .and_then(|node| node.bounds)
+            .expect("it reports where it is drawn")
+            .to_rect();
+        assert!(bounds.area() > 0.0 && bounds.width() < 600.0, "{bounds:?}");
+        app.harness()
+            .perform_a11y_action(add, &ui::a11y::Action::Activate)
+            .unwrap();
+        settle(&mut app);
+        assert!(
+            names(&mut app)
+                .iter()
+                .any(|(role, name)| role == "Dialog" && name == "Add account"),
+            "it opens the add sheet"
+        );
+    }
+
     #[test]
     fn the_header_opens_the_sheet_and_enter_copies_the_selected_code() {
         let (mut app, _host) = open(ui::secrets::memory_backend());
@@ -818,7 +883,6 @@ mod tests {
             "the header carries the add button"
         );
 
-        // The header's add button opens the sheet.
         app.harness()
             .click_named("add-account")
             .expect("the header shows the add button");
@@ -831,7 +895,6 @@ mod tests {
             "pressing it opens the sheet: {opened:?}"
         );
 
-        // A click puts the caret in a field, Tab moves it on.
         type_into(&mut app, "totp-issuer", "Acme");
         app.harness().tab(false);
         let after_tab = app.harness().a11y_focus();
@@ -849,7 +912,6 @@ mod tests {
             "the click and Tab each put the caret in a field: {typed:?}; after Tab {after_tab:?}; order {focus_order:?}"
         );
 
-        // Escape closes the sheet and Enter copies the selected code.
         app.harness().key("Escape");
         settle(&mut app);
         assert!(
@@ -861,15 +923,54 @@ mod tests {
         assert_eq!(app.state().list().len(), 1, "nothing was added");
         app.harness().key("Enter");
         app.harness().relayout();
-        let copied: Vec<_> = app
-            .harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter_map(|(_, node)| node.value().map(str::to_owned))
+        assert_eq!(
+            ui::window_toolbar::notice()
+                .map(|notice| notice.text)
+                .as_deref(),
+            Some("Copied GitHub code"),
+            "Enter copies the selected account and says so in the window's bar"
+        );
+    }
+
+    #[test]
+    fn the_window_bar_names_the_accounts_and_adds_one_and_the_app_draws_no_header() {
+        let (mut app, _host) = open(ui::secrets::memory_backend());
+        add_github(&mut app);
+        app.harness().present_in_window_bar();
+        settle(&mut app);
+
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Accounts")
+        );
+        let actions: Vec<&str> = bar
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
             .collect();
+        assert_eq!(
+            actions,
+            ["Add account"],
+            "the bar's search is the only search"
+        );
+        let listed = names(&mut app);
         assert!(
-            copied.iter().any(|value| value == "Copied GitHub code"),
-            "Enter copies the selected account and says so: {copied:?}"
+            !listed
+                .iter()
+                .any(|(role, name)| role == "Button" && name == "Add account"),
+            "the window draws no header of its own: {listed:?}"
+        );
+
+        let add = bar.actions[0].id.clone();
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: add });
+        settle(&mut app);
+        assert!(
+            names(&mut app)
+                .iter()
+                .any(|(role, name)| role == "Dialog" && name == "Add account"),
+            "the bar's Add account opens the sheet"
         );
     }
 
@@ -909,7 +1010,6 @@ mod tests {
                 _ => assert!(shows("Copy code for GitHub"), "{scenario}: {frame}"),
             }
         }
-        // A live window starts on this device's own, empty, vault.
         let mut live = TestApp::<TotpShell>::new().unwrap();
         assert!(live.state().list().is_empty());
         let frame = live.harness().inspection_json().unwrap();
@@ -1006,5 +1106,28 @@ mod tests {
             sentences,
             ["Added an account", "GitHub now shows 8-digit codes"]
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::TotpShell::scenarios() {
+            let mut app = TestApp::<super::TotpShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

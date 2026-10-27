@@ -65,10 +65,8 @@ fn windows_catalog_architecture(native_machine: u16) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// Host architecture detection and mapping.
     #[test]
     fn host_architecture_selects_only_matching_catalog_entries() {
-        // Phase `windows_native_machine_selects_the_matching_catalog_architecture`.
         {
             assert_eq!(windows_catalog_architecture(0xaa64), Some("aarch64"));
             assert_eq!(windows_catalog_architecture(0x8664), Some("x86_64"));
@@ -83,7 +81,6 @@ mod tests {
             }
         }
 
-        // Phase `live_host_architecture_is_detectable`.
         {
             assert!(architecture().is_ok());
         }

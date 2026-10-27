@@ -2,14 +2,14 @@
 //!
 //! A hex editor is fundamentally a dense, fixed-pitch grid with a cursor
 //! synced across two parallel columns; that is a canvas, not a composition of
-//! stock form widgets, so the view paints the grid itself ([`paint`]) and
+//! stock form widgets, so the view paints the grid itself (`paint`) and
 //! reads every colour and metric from the `Theme`. Everything around the
 //! grid is the toolkit's:
 //!
-//!   * header    — the file name and an edit-mode strip, on the content with
-//!     one hairline under them
-//!   * find      — the framework [`FindBar`](ui::widget::FindBar), a band
-//!     under the header; the view is its `Findable`
+//!   * window bar — the file name as the window's location, Overwrite and
+//!     Insert as its views, the inspector's toggle as its action
+//!     (`window_bar`); the window's search finds and replaces in the bytes
+//!     (`find`) and its History control opens the record's History
 //!   * body      — offset gutter | hex byte columns | ASCII column
 //!   * inspector — a [`SidebarDrawer`] at the trailing edge: docked beside
 //!     the content when there is room, a floating drawer when there is not,
@@ -25,9 +25,11 @@
 //! [`HexEffect`]s it answers. The path a save writes back to stays on this
 //! device, in the view.
 
+mod clipboard;
 mod find;
 mod layout;
 mod paint;
+mod window_bar;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -36,7 +38,9 @@ use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
+use ui::widget::toast::{ToastKind, Transient};
 use ui::widget::{AppModel, ModelPath};
+use ui::window_toolbar::ToolbarNotice;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -55,9 +59,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    ControlSize, EmptyState, FindBar, FindMatch, Popover, PopoverPrompt, PopoverSide,
-    SegmentedStyle, SidebarDrawer, ToggleGroup,
+    ControlSize, EmptyState, FindMatch, Popover, PopoverPrompt, PopoverSide, SegmentedStyle,
+    SidebarDrawer, ToggleGroup,
 };
+use ui::window_toolbar::SearchOpening;
 
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, ResourceSurface,
@@ -66,13 +71,10 @@ use ui::framework::{
 use ui::tilo_resource::ActionDecl;
 
 use crate::actions::{HexEffect, HexPanel};
-use crate::model::{BufferEdit, Column, EditMode, Endian, HexModel};
+use crate::model::{BufferEdit, Column, Endian, HexModel};
 use crate::resource::HexEditor;
-use layout::{CellMetrics, ENDIAN_LABELS, Geo, MODE_LABELS};
+use layout::{CellMetrics, ENDIAN_LABELS, Geo};
 use ui::widget::toggle_group::Segment;
-
-/// How long a failure toast stays up.
-const FLASH_MS: u128 = 3500;
 
 /// What a cancelled chooser answers.
 const CANCELLED: &str = "cancelled";
@@ -98,11 +100,17 @@ enum FileIo {
     SaveContents(SaveChannel),
 }
 
-/// The no-file zero-state: one sentence and the one action.
+/// What a buffer started from nothing is called until it is saved.
+const NEW_FILE_NAME: &str = "Untitled.bin";
+
+/// The no-file zero-state: what the editor is for, opening a file, and
+/// (beside it, [`HexView::new_empty_file`]) starting an empty one.
 fn empty_state() -> EmptyState {
     EmptyState::new("No file open")
         .with_icon(Icon::File)
-        .with_message("Open a file to inspect and edit its bytes.")
+        .with_message(
+            "Inspect and edit any file byte by byte, or start an empty one and type bytes in.",
+        )
         .with_action("Open file")
         .with_action_id("hex.open")
 }
@@ -117,32 +125,31 @@ fn strip(id: &str, labels: &[&str], pick: &Rc<Cell<Option<usize>>>) -> ToggleGro
         .on_change(move |index| pick.set(Some(index)))
 }
 
-// The three bools below are independent view flags (redraw-pending,
-// buffer-present, find band shown), not a combinatorial option set, so
-// folding them into an enum would only add indirection.
+// The bools below are independent view flags (redraw-pending,
+// buffer-present, focus), not a combinatorial option set, so folding them
+// into an enum would only add indirection.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "unrelated view flags (dirty/has_file/find_open/toggle_hovered), not a combinatorial option set"
+    reason = "unrelated view flags (dirty/has_file/focused/expect_open), not a combinatorial option set"
 )]
 pub struct HexView {
     /// The view's copy of the buffer and its editor state.
     model: HexModel,
-    /// File name shown in the header.
+    /// The file's name, the window's location.
     file_name: String,
     rect: Rect,
     dirty: bool,
 
     // --- find (per-peer; not in the shared doc) ---
-    /// The framework's find bar, hosted under the header while open.
-    find_bar: FindBar,
-    find_open: bool,
-    /// Every match of the bar's query, as byte ranges, in order.
+    /// The query the window's search last ran.
+    query: find::FindQuery,
+    /// Every match of the search's query, as byte ranges, in order.
     matches: Vec<FindMatch>,
-    /// The match the bar is on.
     match_idx: Option<usize>,
+    /// Moves whenever the bytes change, so an open search finds again.
+    revision: u64,
 
     // --- go to ---
-    /// The go-to-offset prompt, in a popover at the status bar's offset.
     goto: Popover<PopoverPrompt>,
     /// The offset readout in the status bar, which opens the prompt.
     offset_readout: Rect,
@@ -150,11 +157,6 @@ pub struct HexView {
     // --- chrome ---
     /// The inspector: docked when wide, a floating drawer when narrow.
     drawer: SidebarDrawer,
-    /// The window's History control, which the header row holds.
-    history: ui::widget::HistoryOpener,
-    /// The edit-mode strip in the header, and the pick the person made.
-    mode_group: ToggleGroup,
-    mode_pick: Rc<Cell<Option<usize>>>,
     /// The endianness strip in the inspector, and the pick.
     endian_group: ToggleGroup,
     endian_pick: Rc<Cell<Option<usize>>>,
@@ -164,7 +166,6 @@ pub struct HexView {
     inspector_scroll: f64,
     /// The grid's scroll bar.
     scrollbar: ui::widget::scrollbar::Scrollbar,
-    toggle_hovered: bool,
     /// A capture asks for the inspector open once the window size is known.
     reveal_inspector: bool,
     /// Where everything is; refreshed by [`HexView::relayout`].
@@ -188,6 +189,8 @@ pub struct HexView {
     /// False until the resource holds a file — drives the composed empty
     /// state (no fabricated buffer in the live app).
     has_file: bool,
+    /// Where the empty state's "New empty file" button sits, once painted.
+    new_file: Rect,
     /// The bytes as last opened or saved, which the changed-byte marks
     /// compare against.
     saved: Vec<u8>,
@@ -202,13 +205,13 @@ pub struct HexView {
     /// A chooser in flight, drained once per frame in `sync`, and the open
     /// or save effect it answers.
     io: Option<(FileIo, EffectReply)>,
-    /// A failed open or save: its title, the reason and its birth time. Shown
-    /// as a toast until it expires.
-    problem: Option<(String, String, Instant)>,
+    /// A failed open or save: its title and the reason, shown as the bar's
+    /// notice for a notice's lifetime.
+    /// What the window's bar says for a while: a result or a failure.
+    said: Transient<(String, ToastKind)>,
 
     /// "Opened": a change worth noticing once, floating at the
     /// content's bottom-trailing corner and fading by itself.
-    status_bubble: ui::StatusBubble,
     /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
     /// Where edits and effects go, once the framework attached the view.
@@ -219,17 +222,16 @@ pub struct HexView {
 
 impl HexView {
     pub fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
-        let mode_pick = Rc::new(Cell::new(None));
         let endian_pick = Rc::new(Cell::new(None));
         Self {
             model: HexModel::new(bytes),
             file_name: file_name.into(),
             rect: Rect::ZERO,
             dirty: true,
-            find_bar: find::new_find_bar(),
-            find_open: false,
+            query: find::FindQuery::default(),
             matches: Vec::new(),
             match_idx: None,
+            revision: 0,
             goto: Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
                 .with_field_chars(16)
                 .with_field(|input| {
@@ -242,15 +244,11 @@ impl HexView {
             drawer: SidebarDrawer::new()
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
-            history: ui::widget::HistoryOpener::new(),
-            mode_group: strip("hex.mode", &MODE_LABELS, &mode_pick),
-            mode_pick,
             endian_group: strip("hex.endian", &ENDIAN_LABELS, &endian_pick).fill(),
             endian_pick,
             empty: empty_state(),
             inspector_scroll: 0.0,
             scrollbar: ui::widget::scrollbar::Scrollbar::vertical(),
-            toggle_hovered: false,
             reveal_inspector: false,
             geo: Geo::default(),
             cell: CellMetrics::FALLBACK,
@@ -258,13 +256,13 @@ impl HexView {
             visible_rows: 1,
             last_mouse: Point::ZERO,
             has_file: true,
+            new_file: Rect::ZERO,
             saved: Vec::new(),
             opened: 0,
             expect_open: false,
             path: None,
             io: None,
-            problem: None,
-            status_bubble: ui::StatusBubble::new(),
+            said: Transient::new(),
             focused: false,
             dispatch: None,
             live: None,
@@ -329,7 +327,7 @@ impl HexView {
         let edits = self.model.take_edits();
         self.dirty = true;
         if !edits.is_empty() {
-            self.refind();
+            self.content_changed();
         }
         let Some(dispatch) = &self.dispatch else {
             return;
@@ -368,21 +366,18 @@ impl HexView {
         }
     }
 
-    /// A change worth noticing once ("Opened"): the bubble.
+    /// A change worth noticing once ("Opened"): the bar's notice.
     fn notice(&mut self, message: &str) {
-        let now = ui::time::now();
-        self.status_bubble.show(message, now);
-        self.status_bubble.poke(now);
+        self.said.show((message.to_owned(), ToastKind::Success));
         self.dirty = true;
     }
 
-    /// A failed open or save: a toast with the reason.
+    /// A failed open or save: the bar's notice, with the reason.
     fn problem(&mut self, title: &str, reason: impl Into<String>) {
-        self.problem = Some((title.to_owned(), reason.into(), ui::time::now()));
+        self.said
+            .show((format!("{title}: {}", reason.into()), ToastKind::Error));
         self.dirty = true;
     }
-
-    // --- file open / save (through the host portal) --------------------
 
     /// Start the host file chooser to open a file, answering `reply` when
     /// it closes.
@@ -461,6 +456,17 @@ impl HexView {
                 Err(e)
             }
         }
+    }
+
+    /// Start an empty buffer to type bytes into, without any file: a way in
+    /// where no file chooser can answer, and for writing bytes from scratch.
+    /// Saving it asks where.
+    fn new_empty_file(&mut self) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.submit(HexEditor::loading(NEW_FILE_NAME, Vec::new()));
+            self.expect_open = true;
+        }
+        self.path = None;
     }
 
     /// Submit `bytes`, read from the file `name`, as the resource's buffer.
@@ -554,11 +560,10 @@ impl HexView {
         }
     }
 
-    /// True while a chooser is open or a failure toast is counting down —
-    /// the app keeps pumping frames so the pick drains and the toast
-    /// expires.
+    /// True while a chooser is open: the app keeps pumping frames so the
+    /// pick drains.
     fn is_busy(&self) -> bool {
-        self.io.is_some() || self.problem.is_some()
+        self.io.is_some()
     }
 
     /// Parse a go-to offset: `0x1F` hex, bare hex digits that include a
@@ -608,20 +613,8 @@ impl HexView {
         Rect::new(status.x0 + inset, status.y0, status.x0 + inset, status.y1)
     }
 
-    /// Apply what the header and inspector strips picked since the last
-    /// event.
+    /// Apply what the inspector's strip picked since the last event.
     fn apply_strip_picks(&mut self) {
-        if let Some(index) = self.mode_pick.take() {
-            let want = if index == 0 {
-                EditMode::Overwrite
-            } else {
-                EditMode::Insert
-            };
-            if self.model.mode() != want {
-                self.model.toggle_mode();
-            }
-            self.dirty = true;
-        }
         if let Some(index) = self.endian_pick.take() {
             let want = if index == 0 {
                 Endian::Little
@@ -635,17 +628,16 @@ impl HexView {
         }
     }
 
-    /// Hand a pointer event to the two strips; true when one took it.
+    /// Hand a pointer event to the inspector's strip; true when it took it.
     fn route_to_strips(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
-        self.mode_group.handle_event(event, ctx);
         if self.geo.inspector_visible {
             self.endian_group.handle_event(event, ctx);
         }
         let took = *ctx.handled;
         self.apply_strip_picks();
-        // The strips repaint themselves under the pointer; the view paints
-        // them, so it has to know when they changed.
-        if Widget::needs_redraw(&self.mode_group) || Widget::needs_redraw(&self.endian_group) {
+        // The strip repaints itself under the pointer; the view paints it,
+        // so it has to know when it changed.
+        if Widget::needs_redraw(&self.endian_group) {
             self.dirty = true;
         }
         took
@@ -690,7 +682,6 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// Whether `point` is over the inspector drawer.
     fn over_inspector(&self, point: Point) -> bool {
         self.geo.inspector_visible && self.geo.inspector.contains(point)
     }
@@ -709,8 +700,8 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// The pointer moved or a button changed: the strips, the inspector
-    /// toggle and the drawer's scrim. True when the event was consumed.
+    /// The pointer moved or a button changed: the inspector's strip, the
+    /// scroll bar and the drawer's scrim. True when the event was consumed.
     fn handle_chrome_pointer(
         &mut self,
         event: &WindowEvent,
@@ -719,11 +710,6 @@ impl HexView {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = ctx.logical(position);
-                let hovered = self.geo.toggle.contains(self.last_mouse);
-                if hovered != self.toggle_hovered {
-                    self.toggle_hovered = hovered;
-                    self.dirty = true;
-                }
                 self.follow_scrollbar();
             }
             WindowEvent::MouseInput {
@@ -741,10 +727,6 @@ impl HexView {
                 ..
             } => {
                 let p = self.last_mouse;
-                if self.geo.toggle.contains(p) {
-                    self.toggle_inspector();
-                    return true;
-                }
                 if self.drawer.press_dismisses(p) {
                     self.relayout_now();
                     self.dirty = true;
@@ -774,24 +756,6 @@ impl HexView {
         false
     }
 
-    /// An open find bar owns the keyboard while it has focus, and the
-    /// pointer inside its band. True when it took the event.
-    fn route_find(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
-        let in_band = self.geo.find.contains(self.last_mouse);
-        if matches!(event, WindowEvent::MouseInput { .. }) && in_band {
-            Widget::set_focus(&mut self.find_bar, true);
-        }
-        let took = self.find_bar.route(event, ctx);
-        self.drive_find();
-        self.dirty = true;
-        let typing = Widget::is_focused(&self.find_bar)
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            );
-        took || typing || (in_band && matches!(event, WindowEvent::MouseInput { .. }))
-    }
-
     /// Events while the go-to popover is open: it captures input.
     fn handle_goto_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         Widget::handle_event(&mut self.goto, event, ctx);
@@ -809,6 +773,20 @@ impl HexView {
             self.invoke(&HexEffect::OpenFile { path: None });
             *ctx.handled = true;
         }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = ctx.logical(position);
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && !*ctx.handled
+            && self.new_file.contains(self.last_mouse)
+        {
+            self.new_empty_file();
+            *ctx.handled = true;
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
         {
@@ -821,24 +799,26 @@ impl HexView {
 impl Widget for HexView {
     ui::provides!(
         dyn ui::widget::Findable,
-        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls
     );
 
-    /// The editor's views — the find bar, the go-to form — opened by the
-    /// palette, an agent or a script.
     fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
         // Drain a closed file chooser first, so a freshly opened buffer is
         // submitted before this frame lays out.
         self.drain_chooser();
 
-        // Expire a failure toast so an idle window settles back to no message.
-        if let Some((_, _, born)) = &self.problem
-            && born.elapsed().as_millis() > FLASH_MS
-        {
-            self.problem = None;
-            self.dirty = true;
-        }
+        // A result or a failure says so in the window's bar while it lasts.
+        self.said.expire();
+        self.said
+            .publish(|(text, kind)| ToolbarNotice::new(text.clone(), *kind));
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+        self.run_window_toolbar();
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.said.deadline()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -847,13 +827,8 @@ impl Widget for HexView {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while a portal pick is in flight (so it drains
-        // once the host dialog closes), while a failure toast is counting
-        // down, while the bubble is lingering / fading so it hides itself
-        // without needing a stray pointer event, and while the inspector
-        // slides.
-        self.is_busy()
-            || self.status_bubble.needs_frame(ui::time::now())
-            || (self.has_file && self.drawer.is_animating())
+        // once the host dialog closes) and while the inspector slides.
+        self.is_busy() || (self.has_file && self.drawer.is_animating())
     }
 
     fn build_layout(
@@ -882,6 +857,8 @@ impl Widget for HexView {
         // The framework painted the window ground; the geometry is resolved
         // with the renderer that paints it, then the frame follows it.
         self.layout_theme = theme.clone();
+        // A key (Insert, Ctrl+I) changes what the bar shows without a sync.
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.relayout(text_renderer, theme, true);
         if self.goto.is_open() {
             let anchor = self.goto_anchor();
@@ -894,17 +871,6 @@ impl Widget for HexView {
         let ctrl = ctx.modifiers.state().control_key();
         let shift = ctx.modifiers.state().shift_key();
 
-        let hovered = self.history.is_hovered();
-        if self
-            .history
-            .handle_event(event, self.geo.history, ctx.scale_factor)
-        {
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
-        self.dirty |= hovered != self.history.is_hovered();
-
         if !self.has_file {
             self.handle_empty_event(event, ctx);
             return;
@@ -914,10 +880,6 @@ impl Widget for HexView {
             return;
         }
         if self.handle_chrome_pointer(event, ctx) {
-            *ctx.handled = true;
-            return;
-        }
-        if self.find_open && self.route_find(event, ctx) {
             *ctx.handled = true;
             return;
         }
@@ -984,9 +946,6 @@ impl Widget for HexView {
         if self.goto.is_open() {
             return Widget::ime_cursor_rect(self.goto.content());
         }
-        if self.find_open && Widget::is_focused(&self.find_bar) {
-            return self.find_bar.ime_cursor_rect();
-        }
         None
     }
 
@@ -994,18 +953,12 @@ impl Widget for HexView {
         if self.goto.is_open() {
             return Widget::ime_content(self.goto.content());
         }
-        if self.find_open && Widget::is_focused(&self.find_bar) {
-            return self.find_bar.ime_content();
-        }
         None
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.goto.is_open() {
             return Widget::cursor_shape(self.goto.content(), point);
-        }
-        if self.find_open && self.geo.find.contains(point) {
-            return self.find_bar.cursor_shape(point);
         }
         None
     }
@@ -1033,26 +986,11 @@ impl Widget for HexView {
         if self.has_file {
             children.push(
                 AccessNode::new(Role::StaticText).with_name(
-                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+G go to offset, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
+                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+C copy, Ctrl+X cut, Ctrl+V paste, Ctrl+A select all, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
                 ).with_hashed_key("hex.keyboard-help"),
             );
-            children.push(
-                AccessNode::new(Role::Button)
-                    .with_name(if self.drawer.is_open() {
-                        "Hide inspector"
-                    } else {
-                        "Show inspector"
-                    })
-                    .with_state(AccessState::new().focusable(true))
-                    .with_bounds(self.geo.toggle)
-                    .with_action_target("hex.inspector"),
-            );
-            children.extend(self.mode_group.accessibility());
             if self.geo.inspector_visible {
                 children.extend(self.endian_group.accessibility());
-            }
-            if self.find_open {
-                children.extend(self.find_bar.accessibility());
             }
             if self.goto.is_open() {
                 children.extend(self.goto.content().accessibility());
@@ -1066,8 +1004,15 @@ impl Widget for HexView {
                     .with_bounds(self.empty.action_rect())
                     .with_action_target("hex.open"),
             );
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("New empty file")
+                    .with_description("Start an empty buffer to type bytes into")
+                    .with_state(AccessState::default().focusable(true))
+                    .with_bounds(self.new_file)
+                    .with_action_target("hex.new"),
+            );
         }
-        children.extend(self.history.accessibility(self.geo.history));
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Hex editor")
@@ -1097,12 +1042,10 @@ impl Widget for HexView {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if self.history.perform_semantic_action(target, action) {
-            return true;
-        }
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "hex.open" => self.invoke(&HexEffect::OpenFile { path: None }),
+                "hex.new" if !self.has_file => self.new_empty_file(),
                 "hex.inspector" if self.has_file => self.toggle_inspector(),
                 _ => return false,
             }
@@ -1118,7 +1061,6 @@ impl Widget for HexView {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        Widget::mark_drawn(&mut self.mode_group);
         Widget::mark_drawn(&mut self.endian_group);
     }
 }
@@ -1139,14 +1081,13 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
             self.opened = state.opened;
             self.saved = state.bytes.to_vec();
             self.model.load(self.saved.clone());
-            self.find_open = false;
             self.matches.clear();
             self.match_idx = None;
             self.inspector_scroll = 0.0;
         } else {
             self.model.show_bytes(&state.bytes.to_vec(), &self.saved);
-            self.refind();
         }
+        self.content_changed();
         self.has_file = state.has_file();
         self.file_name = name;
         self.dirty = true;
@@ -1241,8 +1182,6 @@ impl HexView {
         // Click position is tracked via CursorMoved; recompute on press from
         // the last known position.
         if let Some((off, col)) = self.hit_test(self.last_mouse) {
-            // The grid takes the keyboard back from the find bar.
-            Widget::set_focus(&mut self.find_bar, false);
             self.model.set_column(col);
             self.model.move_to(off, shift);
             self.moved();
@@ -1283,22 +1222,28 @@ impl HexView {
         }
     }
 
-    /// The only meaningful key action while no file is open. Part of
-    /// [`Self::handle_key_event`].
-    fn handle_empty_state_key(&self, key: &Key, ctrl: bool, handled: &mut bool) {
-        if ctrl
-            && let Key::Character(c) = key
-            && c.eq_ignore_ascii_case("o")
-        {
+    /// The key actions while no file is open: open one (Ctrl+O) or start
+    /// an empty one (Ctrl+N). Part of [`Self::handle_key_event`].
+    fn handle_empty_state_key(&mut self, key: &Key, ctrl: bool, handled: &mut bool) {
+        let Key::Character(c) = key else {
+            return;
+        };
+        if !ctrl {
+            return;
+        }
+        if c.eq_ignore_ascii_case("o") {
             self.invoke(&HexEffect::OpenFile { path: None });
+            *handled = true;
+        } else if c.eq_ignore_ascii_case("n") {
+            self.new_empty_file();
             *handled = true;
         }
     }
 
-    /// Open the find bar or the go-to form.
+    /// Open the window's search or the go-to form.
     fn open_panel(&mut self, panel: HexPanel) {
         match panel {
-            HexPanel::Search => self.open_find(),
+            HexPanel::Search => Self::open_find(SearchOpening::Find),
             HexPanel::GotoOffset => self.open_goto(),
         }
     }
@@ -1314,9 +1259,19 @@ impl HexView {
             return false;
         }
         match c.as_str() {
+            "c" | "C" => {
+                self.copy_selection();
+            }
+            "x" | "X" => {
+                self.cut_selection();
+            }
+            "v" | "V" => {
+                self.paste_clipboard();
+            }
             "o" | "O" => self.invoke(&HexEffect::OpenFile { path: None }),
             "s" | "S" => self.invoke(&HexEffect::Save),
             "f" | "F" => self.open_panel(HexPanel::Search),
+            "h" | "H" => Self::open_find(SearchOpening::Replace),
             "g" | "G" => self.open_panel(HexPanel::GotoOffset),
             "i" | "I" => self.toggle_inspector(),
             "a" | "A" => {
@@ -1368,8 +1323,6 @@ impl HexView {
                 if self.drawer.is_overlay() && self.drawer.is_open() {
                     self.drawer.close();
                     self.relayout_now();
-                } else if self.find_open {
-                    self.close_find();
                 } else {
                     self.model.clear_selection();
                 }
@@ -1427,8 +1380,12 @@ impl HexView {
         self.stage_sample();
         match scenario {
             Some("find") => {
-                self.find_bar.set_query("e");
-                self.open_find();
+                let hex = ui::widget::FindOptions {
+                    mode: ui::widget::FindMode::Hex,
+                    ..ui::widget::FindOptions::default()
+                };
+                ui::widget::Findable::find(self, "49 48 44 52", hex);
+                ui::widget::Findable::reveal(self, 0);
             }
             Some("goto") => self.open_goto(),
             Some("edited") => {
@@ -1457,24 +1414,11 @@ fn byte_edit(edit: &BufferEdit) -> Option<ui::tilo_resource::Edit<HexEditor>> {
     HexEditor::paths().bytes.perform(edit).ok()
 }
 
-/// The view's header row is the window's: it holds the History control the
-/// host offers, so the window draws no History bar above the editor.
-impl ui::widget::WindowHeader for HexView {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.history.control() != control {
-            self.history.set_control(control);
-            self.dirty = true;
-        }
-    }
-}
-
 impl ui::widget::controls::ActionControls for HexView {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.history.take().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
 }
 
@@ -1552,6 +1496,53 @@ mod tests {
         assert_eq!(view.model.bytes(), &[0x12, 0x34]);
     }
 
+    /// A view on `bytes`, with the grid in the hex column (`ascii` false) or
+    /// the ASCII one.
+    fn editing(bytes: &[u8], ascii: bool) -> HexView {
+        let mut view = HexView::empty();
+        view.present(&Rc::new(HexEditor {
+            name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+            bytes: crate::buffer::ByteBuffer::of(bytes),
+            opened: 1,
+        }));
+        if ascii {
+            view.model.toggle_column();
+        }
+        view
+    }
+
+    /// A clipboard this test has to itself: the process clipboard is shared
+    /// with every test running beside it.
+    fn own_clipboard() -> ui::host::HostScope {
+        let (services, _recorder) = ui::host::HostServices::recording();
+        ui::host::enter(&services)
+    }
+
+    /// Copy takes the selection in the focus mode, and paste reads it back in
+    /// the same mode.
+    #[test]
+    fn copy_carries_the_selection_in_the_focus_mode() {
+        let _clipboard = own_clipboard();
+        let mut view = editing(b"PNGDATA", false);
+        view.model.move_to(0, false);
+        view.model.move_to(3, true);
+        assert!(view.copy_selection());
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("50 4e 47 44"));
+        view.model.toggle_column();
+        assert!(view.copy_selection(), "the same bytes as text");
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("PNGD"));
+    }
+
+    /// Nothing selected copies nothing and says why.
+    #[test]
+    fn copying_with_nothing_selected_refuses_and_leaves_the_clipboard_alone() {
+        let _clipboard = own_clipboard();
+        ui::clipboard_copy("untouched");
+        let mut view = editing(b"PNGDATA", false);
+        assert!(!view.copy_selection());
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("untouched"));
+    }
+
     /// Find runs through the framework's `Findable` contract: hex and text
     /// modes, the bar's case and word rules, a bounded index.
     #[test]
@@ -1572,7 +1563,6 @@ mod tests {
         // A text query that is not in the buffer finds nothing.
         assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
 
-        // Case and whole-word rules apply to text.
         let mut view = HexView::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
         let any = FindOptions::default();
         assert_eq!(Findable::find(&mut view, "ihdr", any).len(), 3);
@@ -1587,7 +1577,6 @@ mod tests {
         };
         assert_eq!(Findable::find(&mut view, "ihdr", word).len(), 2);
 
-        // A large search retains a bounded result index.
         let mut view = HexView::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
         let found = Findable::find(&mut view, "00", hex);
         assert_eq!(found.len(), search::MAX_RETAINED_MATCHES);
@@ -1671,7 +1660,10 @@ mod tests {
                 (g.status.y1 - view.rect.y1).abs() < 1e-6,
                 "status foots the window"
             );
-            assert!(g.grid.y0 > g.header.y1, "the grid sits under the header");
+            assert!(
+                g.column_head.y0 > view.rect.y0 && g.column_head.y0 < view.rect.y0 + g.row_h,
+                "the column labels stand at the top: the view draws no header row: {g:?}"
+            );
             let bpr = view.model.bytes_per_row();
             assert!(
                 bpr >= 8 && bpr.is_multiple_of(4),
@@ -1783,11 +1775,11 @@ mod tests {
         down
     }
 
-    /// The pointer drives every control: the grid moves the cursor, the
-    /// header's strip switches the edit mode, the inspector's strip the
-    /// endianness, and the toggle hides and shows the inspector.
+    /// The pointer drives the view's own controls: the grid moves the
+    /// cursor, the inspector's strip switches the endianness, the scroll bar
+    /// scrolls.
     #[test]
-    fn pointer_drives_the_grid_the_strips_and_the_inspector_toggle() {
+    fn pointer_drives_the_grid_the_endian_strip_and_the_scroll_bar() {
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
         let mut view = staged(None);
@@ -1795,7 +1787,6 @@ mod tests {
         paint_frame(&mut view, &mut tr, &theme);
         assert_eq!(view.model.endian(), Endian::Big);
 
-        // A click on a hex cell puts the cursor there, in the hex column.
         let g = view.geo.clone();
         let cell = Rect::new(
             g.hex_x(3),
@@ -1807,27 +1798,10 @@ mod tests {
         assert_eq!(view.model.cursor(), view.model.bytes_per_row() + 3);
         assert_eq!(view.model.column(), Column::Hex);
 
-        // The strips: the second segment of each.
-        let half = |strip: Rect| Rect::new(strip.center().x, strip.y0, strip.x1, strip.y1);
-        assert!(click(&mut view, half(g.mode)));
-        assert_eq!(view.model.mode(), EditMode::Insert);
         let left = |strip: Rect| Rect::new(strip.x0, strip.y0, strip.center().x, strip.y1);
         assert!(click(&mut view, left(g.endian)));
         assert_eq!(view.model.endian(), Endian::Little);
         paint_frame(&mut view, &mut tr, &theme);
-
-        // The toggle hides the docked inspector and the grid takes the room.
-        let before = view.geo.content.width();
-        assert!(click(&mut view, g.toggle));
-        view.drawer.snap(false);
-        paint_frame(&mut view, &mut tr, &theme);
-        assert!(!view.geo.inspector_visible);
-        assert!(view.geo.content.width() > before, "the content widens");
-        let toggle = view.geo.toggle;
-        assert!(click(&mut view, toggle));
-        view.drawer.snap(true);
-        paint_frame(&mut view, &mut tr, &theme);
-        assert!(view.geo.inspector_visible, "the toggle brings it back");
 
         // The sample overflows the grid, so a bar shows its position and a
         // dragged thumb scrolls it.
@@ -1867,7 +1841,7 @@ mod tests {
     #[test]
     fn scenarios_stage_their_state_and_paint_everywhere() {
         let mut tr = TextRenderer::new();
-        for (name, find, goto) in [
+        for (name, found, goto) in [
             (None, false, false),
             (Some("find"), true, false),
             (Some("goto"), false, true),
@@ -1881,7 +1855,7 @@ mod tests {
                     let mut view = staged(name);
                     view.rect = Rect::new(0.0, 0.0, w, h);
                     assert_eq!(view.has_file(), name != Some("empty"));
-                    assert_eq!(view.find_open, find, "{name:?}");
+                    assert_eq!(!view.matches.is_empty(), found, "{name:?}");
                     assert_eq!(view.goto.is_open(), goto, "{name:?}");
                     paint_frame(&mut view, &mut tr, &theme);
                     paint_frame(&mut view, &mut tr, &theme);

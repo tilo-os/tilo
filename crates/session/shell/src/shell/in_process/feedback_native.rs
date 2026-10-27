@@ -103,6 +103,7 @@ impl Connection {
                     query: FeedbackQuery {
                         destination: self.destination.clone(),
                         submission: submission.as_ref().map(serde_json::to_value).transpose()?,
+                        review: None,
                     },
                 },
             )

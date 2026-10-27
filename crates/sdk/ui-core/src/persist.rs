@@ -33,14 +33,11 @@
 //! [`crate::record::RecordOwners`] instead, which persists through any
 //! [`durable_store::DurableStore`].
 
-// `app_state::StoreError` (144+ bytes) is what makes every `Result<_,
-// StoreError>` in this module large. Shrinking it means editing the
-// `app_state` crate; boxing it here instead means changing the return
-// type of these `pub fn`s, a public-API change that ripples to every
-// crate that calls into `tilo_ui::persist` (`shell` included). Neither is a
-// same-crate lint fix, so the size is accepted rather than exempted
-// function-by-function.
-#![allow(clippy::result_large_err)]
+#![allow(
+    clippy::result_large_err,
+    reason = "app_state::StoreError makes every Result here large; boxing it would change \
+              the public return types every caller of tilo_ui::persist uses"
+)]
 
 use crate::time::Duration;
 use std::path::Path;
@@ -479,7 +476,7 @@ mod tests {
             &crate::record::RecordId::minted(),
         )
         .unwrap();
-        let carried = transfer::install(&store, PACKAGE, ELSEWHERE, &mut arrived).unwrap();
+        let (carried, _) = transfer::install(&store, PACKAGE, ELSEWHERE, &mut arrived).unwrap();
         let there = crate::application::NativeProfile::open(temp.path(), Some(ELSEWHERE)).unwrap();
         let view = crate::application_view::SavedInstanceView {
             version: 2,
@@ -492,8 +489,8 @@ mod tests {
             view: crate::view::View::default(),
             application: None,
         };
-        there.adopt_view(&view, INSTANCE, &carried).unwrap();
-        transfer::retire(&store, PACKAGE, HOME, &origin, &Retirement::Moved(None)).unwrap();
+        let _ = there.adopt_view(&view, INSTANCE, &carried).unwrap();
+        let _ = transfer::retire(&store, PACKAGE, HOME, &origin, &Retirement::Moved(None)).unwrap();
 
         env.set("TILO_WORKSPACE_ID", ELSEWHERE)
             .set("TILO_CONTINUITY_INSTANCE", INSTANCE.to_string());

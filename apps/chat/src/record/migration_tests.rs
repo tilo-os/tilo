@@ -30,6 +30,7 @@ fn submission() -> ui::feedback::Submission {
             text: "The sidebar flickers".into(),
             context: Vec::new(),
             screenshot: None,
+            ..Default::default()
         },
     }
 }
@@ -227,4 +228,229 @@ fn a_message_part_of_version_one_opens_with_every_message_value() {
             why: "no such page".into(),
         })
     );
+}
+
+#[test]
+fn a_chat_kept_flat_before_the_model_opens_with_its_channels_and_categories() {
+    use crate::model::ChannelKind;
+    for version in [5, 1] {
+        let mut doc = crate::testing::chat_kept_flat(version);
+        assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+        let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+        assert_eq!(
+            chat.categories
+                .iter()
+                .map(|(id, category)| (id.to_string(), category.name.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("cat_home_text".to_owned(), "Channels".to_owned()),
+                ("cat_home_voice".to_owned(), "Voice".to_owned()),
+            ],
+            "version {version}"
+        );
+        let mut channels: Vec<_> = chat
+            .channels
+            .iter()
+            .map(|(id, channel)| {
+                (
+                    id.to_string(),
+                    channel.name.clone(),
+                    channel.category.as_ref().map(ToString::to_string),
+                    channel.kind,
+                )
+            })
+            .collect();
+        channels.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            channels,
+            [
+                (
+                    "c_general".to_owned(),
+                    "general".to_owned(),
+                    Some("cat_home_text".to_owned()),
+                    ChannelKind::Text
+                ),
+                (
+                    "c_lounge".to_owned(),
+                    "Lounge".to_owned(),
+                    Some("cat_home_voice".to_owned()),
+                    ChannelKind::Voice
+                ),
+            ],
+            "version {version}"
+        );
+        let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
+            .unwrap()
+            .unwrap();
+        let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
+            .unwrap()
+            .unwrap();
+        assert!(
+            ui::automerge::ReadDoc::get(&doc, &text, "name")
+                .unwrap()
+                .is_some(),
+            "the flat fields stay"
+        );
+    }
+}
+
+#[test]
+fn a_name_the_item_holds_is_kept_over_its_flat_one() {
+    let mut doc = crate::testing::chat_kept_flat(5);
+    let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
+        .unwrap()
+        .unwrap();
+    let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
+        .unwrap()
+        .unwrap();
+    let (_, held) = ui::automerge::ReadDoc::get(&doc, &text, "v")
+        .unwrap()
+        .unwrap();
+    ui::tilo_resource::write_key(&mut doc, &held, "name", &"Text".to_owned()).unwrap();
+    doc.commit();
+    assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+    let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+    assert_eq!(
+        chat.categories
+            .get(&ui::tilo_resource::Id::from_raw("cat_home_text"))
+            .map(|category| category.name.as_str()),
+        Some("Text")
+    );
+}
+
+/// Everything stored under `key` of the document's root, as JSON.
+fn stored(doc: &ui::tilo_resource::Doc, key: &str) -> Option<ui::serde_json::Value> {
+    use ui::automerge::{ObjType, ReadDoc as _, Value};
+    fn json_of(
+        doc: &ui::tilo_resource::Doc,
+        value: Value<'_>,
+        id: &ui::automerge::ObjId,
+    ) -> ui::serde_json::Value {
+        match value {
+            Value::Object(ObjType::Text) => json!({ "$text": doc.text(id).unwrap() }),
+            Value::Object(ObjType::List) => (0..doc.length(id))
+                .map(|index| {
+                    let (item, item_id) = doc.get(id, index).unwrap().unwrap();
+                    json_of(doc, item, &item_id)
+                })
+                .collect(),
+            Value::Object(_) => doc
+                .keys(id)
+                .map(|key| {
+                    let (item, item_id) = doc.get(id, key.as_str()).unwrap().unwrap();
+                    (key.clone(), json_of(doc, item, &item_id))
+                })
+                .collect::<ui::serde_json::Map<_, _>>()
+                .into(),
+            Value::Scalar(scalar) => json!(format!("{scalar:?}")),
+        }
+    }
+    let (found, id) = doc.get(ROOT, key).unwrap()?;
+    Some(json_of(doc, found, &id))
+}
+
+#[test]
+fn a_chat_of_version_one_or_two_keeps_every_message_draft_and_read_count() {
+    use ui::tilo_resource::Resource as _;
+    let body = vec![tilo_document::ClipBlock {
+        kind: "paragraph".into(),
+        text: "hi @Bo".into(),
+        marks: Vec::new(),
+        level: None,
+        ordered: None,
+        align: None,
+        attrs: std::collections::BTreeMap::new(),
+    }];
+    let mut record = version_one_message(&body);
+    record["messages"]["m2"] = json!({
+        "k": "b",
+        "v": { "channel": "c_general", "author": "bo", "ts": 20, "text": "hello" },
+    });
+    record["drafts"] = json!({ "c_general": { "$text": "half a thought" } });
+    record["read"] = json!({ "ada": { "c_general": 2 }, "bo": { "c_general": 1 } });
+    let kept_flat = json!({
+        "messages": {
+            "c_general": [
+                { "id": "m1", "author": "ada", "ts": 10, "text": { "$text": "first" } },
+                { "id": "m2", "author": "bo", "ts": 20, "text": { "$text": "second" } },
+            ],
+        },
+    });
+    for (version, shape) in [(2, &record), (1, &record), (1, &kept_flat)] {
+        let mut replica = Replica::<Chat>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(doc, &ROOT, shape).unwrap();
+        at_version(doc, version);
+        doc.commit();
+        let mut old = doc.fork();
+        let messages = stored(&old, "messages");
+        let drafts = stored(&old, "drafts");
+        assert!(evolution::migrate::<Chat>(&mut old).unwrap());
+        assert_eq!(evolution::stored_version(&old), Chat::VERSION);
+        assert!(evolution::read_checked::<Chat>(&old).is_ok());
+        assert!(messages.is_some());
+        assert_eq!(stored(&old, "messages"), messages, "version {version}");
+        assert_eq!(stored(&old, "drafts"), drafts, "version {version}");
+        if shape.get("read").is_some() {
+            assert_eq!(
+                stored(&old, "read_counts"),
+                Some(json!({
+                    "ada": { "c_general": "Int(2)" },
+                    "bo": { "c_general": "Int(1)" },
+                }))
+            );
+        }
+    }
+}
+
+/// Each kept message: its id, author, time and text.
+fn kept(doc: &ui::tilo_resource::Doc) -> Vec<(String, String, i64, String)> {
+    crate::record::kept_messages(doc)
+        .iter()
+        .map(|(id, message)| {
+            (
+                id.to_string(),
+                message.author.0.clone(),
+                message.ts,
+                message.text.clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_messages_a_chat_kept_read_under_their_own_ids_authors_and_times() {
+    let expected = [
+        ("m1".to_owned(), "ada".to_owned(), 10, "first".to_owned()),
+        (
+            "m3".to_owned(),
+            "ada".to_owned(),
+            15,
+            "elsewhere".to_owned(),
+        ),
+        (
+            "m2".to_owned(),
+            crate::testing::BO.to_owned(),
+            20,
+            "second".to_owned(),
+        ),
+    ];
+    for (version, flat) in [(2, false), (1, false), (1, true)] {
+        let mut doc = crate::testing::chat_with_kept_messages(version, flat);
+        assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+        assert_eq!(kept(&doc), expected, "version {version}, flat {flat}");
+        assert!(evolution::migrate::<Chat>(&mut doc).is_ok());
+        assert_eq!(kept(&doc), expected, "opened again");
+    }
+}
+
+#[test]
+fn two_devices_upgrading_the_same_chat_merge_into_one_copy_of_each_kept_message() {
+    let mut first = crate::testing::chat_with_kept_messages(2, false);
+    let mut second = first.fork();
+    assert!(evolution::migrate::<Chat>(&mut first).unwrap());
+    assert!(evolution::migrate::<Chat>(&mut second).unwrap());
+    tilo_automerge::ApplyIncoming::merge_incoming(&mut first, &mut second).unwrap();
+    let ids: Vec<String> = kept(&first).into_iter().map(|(id, ..)| id).collect();
+    assert_eq!(ids, ["m1", "m3", "m2"]);
 }

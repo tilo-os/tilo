@@ -25,6 +25,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
                 pending: Default::default(),
                 outbound_failure: None,
                 answers_snapshots: false,
+                opening: false,
             });
     }
     fixture.app.publish_action_surface();

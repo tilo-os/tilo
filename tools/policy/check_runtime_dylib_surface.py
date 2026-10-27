@@ -53,6 +53,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = "runtime-dylib"
+# The runtime's manifest: the file each finding about its graph names.
+MANIFEST = "crates/runtime/runtime-dylib/Cargo.toml"
 TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 # Crates the toolkit itself needs: if the resolved runtime lacks them, the
 # check is not looking at the runtime and must fail rather than pass.
@@ -74,8 +76,8 @@ DENIED = {
     "shell": "the compositor",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
-    "local-model-service": "the on-device model service the model gateway runs (apps use "
-                           "tilo-model-gateway without its default service feature)",
+    "tilo-model-gateway": "the model service implementation (apps use tilo-model-client)",
+    "local-model-service": "the on-device model service the model gateway runs",
     "rten": "the subject model's runtime, which runs in the model gateway daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime
@@ -94,6 +96,8 @@ ENGINES = {
     "tilo-segment": "matte refinement under tilo-subject, in libtilo_paint_engine.so",
     "tilo-youtube-engine": "the YouTube client's engine library (libtilo_youtube_engine.so)",
     "rustypipe": "the YouTube client, which Music and Tube load from libtilo_youtube_engine.so",
+    "tilo-innertube": "the queries Music and Tube make of the YouTube client, in "
+                      "libtilo_youtube_engine.so",
     "rquickjs": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
@@ -151,9 +155,21 @@ ENGINES = {
     "tilo-pc-keyboard-geometry": "the PC keyboard outlines, which Settings loads from "
                                  "libtilo_settings_engine.so",
     "tilo-zone-globe": "the time-zone globe, which Settings loads from libtilo_settings_engine.so",
+    "settings-core": "Settings' core, which Settings loads from libtilo_settings_engine.so",
+    "settings-rare": "the Settings panes people rarely open, which Settings loads from "
+                     "libtilo_settings_engine.so",
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
-    "emoji": "the emoji catalogue, which Chat and the on-screen keyboard load from "
+    "emoji": "the emoji catalogue, which Chat, Notes and the on-screen keyboard load from "
              "libtilo_emoji_engine.so",
+    "browser-parts": "the parts of Browser people rarely use, which Browser loads from "
+                     "libtilo_browser_import_engine.so",
+    "tilo-archive-engine": "the archive codecs' engine library (libtilo_archive_engine.so)",
+    "tilo-archive": "the archive reader and writer, which Files loads from "
+                    "libtilo_archive_engine.so",
+    "sevenz-rust2": "the 7z reader, in libtilo_archive_engine.so",
+    "lzma-rust2": "the xz and LZMA decoder, in libtilo_archive_engine.so",
+    "bzip2": "the bzip2 codec, in libtilo_archive_engine.so",
+    "libbz2-rs-sys": "the bzip2 codec's pure-Rust core, in libtilo_archive_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",
@@ -410,11 +426,11 @@ def main() -> int:
         for target in TARGETS:
             found = violations(resolve(apps, features, target), apps, target, links)
             for message in found:
-                print(message, file=sys.stderr)
+                print(f"{MANIFEST}: {message}")
             failed = failed or bool(found)
             if not found:
                 print(f"{RUNTIME} ({target}): no OS internals, moved engines or app-linked C libraries, "
-                      "every crate used by an app")
+                      "every crate used by an app", file=sys.stderr)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1

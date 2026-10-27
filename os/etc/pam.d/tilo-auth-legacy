@@ -1,0 +1,7 @@
+#%PAM-1.0
+# The old password database alone, for tilo-authd: the first time someone's
+# old password is accepted here, tilo-authd moves them onto their user key and
+# locks the shadow entry. tilo-authd runs it as root through
+# tilo-unlock-helper; no sign-in surface uses this service.
+auth       required     pam_unix.so
+account    required     pam_unix.so

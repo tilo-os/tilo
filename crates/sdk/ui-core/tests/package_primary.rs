@@ -1,4 +1,3 @@
-//! Package-primary custody preserves the native Chat document and wire address.
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use tilo_ui::portable_storage::{PortableStorage, StorageKey};
 use tilo_ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};

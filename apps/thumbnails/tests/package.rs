@@ -45,7 +45,7 @@ fn packaged() -> Unpacked {
     let staging = dir.path().join("staging");
     std::fs::create_dir_all(staging.join("bin")).unwrap();
     std::fs::copy(
-        env!("CARGO_BIN_EXE_thumbnail-batch"),
+        tilo_test_env::package_binary!("thumbnail-batch"),
         staging.join("bin").join(ENTRYPOINT),
     )
     .unwrap();

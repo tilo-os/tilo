@@ -1,6 +1,11 @@
 //! A short-lived target-owner importer, endorsed on the existing owner channel.
 use super::super::CONTEXT_DOMAIN;
-use super::*;
+use super::{
+    AdmittedRootHelper, Arc, AsRawFd, AtomicBool, BOOTSTRAP_TIME, Child, Command, Digest, Duration,
+    HELPER, Instant, IoFence, MetadataExt, PKEXEC, Path, PreparedRetainedHome, PrivateDirectory,
+    ProofCustody, ProtectedProgram, REQUEST_BOUND, Read, SHELL, Stdio, UnixStream, Write, alive,
+    fd_transport, handoff, io, process_binding, refused, request_rendezvous, supervise,
+};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 
@@ -34,12 +39,11 @@ fn retain_importer_until_exit(child: Child, root: Arc<AdmittedRootHelper>) {
     if std::thread::Builder::new()
         .name("tilo-installed-copy-importer".into())
         .spawn(move || {
-            let owned = match worker_custody.lock() {
-                Ok(mut held) => held.take(),
-                Err(_) => {
-                    std::mem::forget(worker_custody.clone());
-                    return;
-                }
+            let owned = if let Ok(mut held) = worker_custody.lock() {
+                held.take()
+            } else {
+                std::mem::forget(worker_custody);
+                return;
             };
             let Some((mut child, root)) = owned else {
                 return;
@@ -47,7 +51,7 @@ fn retain_importer_until_exit(child: Child, root: Arc<AdmittedRootHelper>) {
             loop {
                 match child.wait() {
                     Ok(_) => break,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => {
                         std::mem::forget((child, root));
                         return;
@@ -171,10 +175,14 @@ impl AdmittedRootHelper {
 
 /// Actual signed Imager selection and native personal session supplied by the
 /// existing Shell preparation. Nothing starts on ordinary Files launch.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered privileged bootstrap: each step checks the custody the step before established, and a failure supervises the child it started"
+)]
 pub(crate) fn establish_original_copy(
-    prepared: Arc<PreparedRetainedHome>,
+    prepared: &Arc<PreparedRetainedHome>,
     installed_operation: &str,
-    cancel: Arc<AtomicBool>,
+    cancel: &Arc<AtomicBool>,
 ) -> io::Result<OriginalCopyBootstrapCustody> {
     let operation = uuid::Uuid::parse_str(installed_operation).map_err(io::Error::other)?;
     if operation.is_nil()
@@ -184,7 +192,7 @@ pub(crate) fn establish_original_copy(
         return Err(refused());
     }
     prepared.check(&prepared.command)?;
-    let context = copy_context(&prepared, installed_operation)?;
+    let context = copy_context(prepared, installed_operation)?;
     let shell = ProtectedProgram::open(Path::new(SHELL))?;
     shell.check_current_image()?;
     let helper = ProtectedProgram::open(Path::new(HELPER))?;
@@ -212,16 +220,18 @@ pub(crate) fn establish_original_copy(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    let deadline = Instant::now() + BOOTSTRAP_TIME;
+    let deadline = Instant::now()
+        .checked_add(BOOTSTRAP_TIME)
+        .unwrap_or_else(Instant::now);
     let result = (|| {
         listener.socket().set_nonblocking(true)?;
         let mut bootstrap = loop {
-            alive(&mut child, &cancel, deadline)?;
+            alive(&mut child, cancel, deadline)?;
             listener.validate()?;
             match listener.socket().accept() {
                 Ok((stream, _)) => break stream,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(20))
+                    std::thread::sleep(Duration::from_millis(20));
                 }
                 Err(error) => return Err(error),
             }
@@ -230,7 +240,7 @@ pub(crate) fn establish_original_copy(
         bootstrap.set_write_timeout(Some(Duration::from_secs(10)))?;
         let _fence = IoFence::new(bootstrap.try_clone()?, cancel.clone(), deadline)?;
         process_binding::complete(&mut bootstrap)?;
-        alive(&mut child, &cancel, deadline)?;
+        alive(&mut child, cancel, deadline)?;
         process_binding::arm(&bootstrap)?;
         let nonce = nonce();
         bootstrap.write_all(&process_binding::MAGIC)?;
@@ -243,20 +253,20 @@ pub(crate) fn establish_original_copy(
         pkexec.check()?;
         bootstrap.write_all(&[1])?;
         let mut binding = prepared.binding(installed_operation, peer.pid())?;
-        binding.resource_record = resource.clone();
+        binding.resource_record.clone_from(&resource);
         binding.context_sha256 = hex::encode(sha2::Sha256::digest(&context));
         binding.validate()?;
         let (proof_stream, proof_root) = UnixStream::pair()?;
         let proof_shutdown = proof_stream.try_clone()?;
         let proof_prepared = prepared.clone();
-        let proof_binding = binding.clone();
+        let proof_binding = binding;
         let proof_session = prepared.session.clone();
         let proof_worker = std::thread::Builder::new()
             .name("tilo-original-copy-person-proof".into())
             .spawn(move || {
                 proof_session.serve_retained_launch_proof_checked(
                     proof_stream,
-                    proof_binding,
+                    &proof_binding,
                     move || proof_prepared.check(&proof_prepared.command),
                 )
             })?;
@@ -265,9 +275,9 @@ pub(crate) fn establish_original_copy(
             worker: Some(proof_worker),
             tracking: None,
         };
-        handoff(&mut bootstrap, 71, &proof_root, &peer, &cancel, deadline)?;
+        handoff(&mut bootstrap, 71, &proof_root, &peer, cancel, deadline)?;
         let (mut owner_channel, root_owner) = UnixStream::pair()?;
-        handoff(&mut bootstrap, 72, &root_owner, &peer, &cancel, deadline)?;
+        handoff(&mut bootstrap, 72, &root_owner, &peer, cancel, deadline)?;
         wire_frame::Framing::little_endian(64 * 1024)
             .reject_empty()
             .write(&mut bootstrap, &context)
@@ -284,7 +294,7 @@ pub(crate) fn establish_original_copy(
         let importer = root.spawn_installed_copy_importer(&mut owner_channel, deadline)?;
         root.check()?;
         prepared.check(&prepared.command)?;
-        alive(&mut child, &cancel, deadline)?;
+        alive(&mut child, cancel, deadline)?;
         Ok((root, importer, proof, owner_channel, bootstrap))
     })();
     drop(publication);
@@ -374,7 +384,9 @@ impl OriginalCopyBootstrapCustody {
     ) -> io::Result<()> {
         let (_, _, root, _, _, owner, _) = self.held.as_mut().ok_or_else(refused)?;
         root.check()?;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .unwrap_or_else(Instant::now);
         let _fence = IoFence::new(owner.try_clone()?, root.cancel.clone(), deadline)?;
         wire_frame::Framing::big_endian(16 * 1024)
             .reject_empty()
@@ -416,7 +428,9 @@ impl OriginalCopyBootstrapCustody {
         if count == 0 {
             return Ok(None);
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .unwrap_or_else(Instant::now);
         let _fence = IoFence::new(owner.try_clone()?, root.cancel.clone(), deadline)?;
         let bytes = wire_frame::Framing::big_endian(16 * 1024)
             .reject_empty()
@@ -427,7 +441,7 @@ impl OriginalCopyBootstrapCustody {
         root.check()?;
         Ok(Some(event))
     }
-    /// Called only after the genuine matching CleanupFinished owner receipt.
+    /// Called only after the genuine matching `CleanupFinished` owner receipt.
     /// Both owned children and the fresh certified responder must actually end.
     pub(crate) fn try_observe_cleanup(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
         let (root_child, _, _, importer, proof, _, _) = self.held.as_mut().ok_or_else(refused)?;
@@ -465,12 +479,11 @@ impl Drop for OriginalCopyBootstrapCustody {
         if std::thread::Builder::new()
             .name("tilo-original-copy-bootstrap".into())
             .spawn(move || {
-                let held = match worker_custody.lock() {
-                    Ok(mut held) => held.take(),
-                    Err(_) => {
-                        std::mem::forget(worker_custody.clone());
-                        return;
-                    }
+                let held = if let Ok(mut held) = worker_custody.lock() {
+                    held.take()
+                } else {
+                    std::mem::forget(worker_custody);
+                    return;
                 };
                 let Some((mut child, scratch, root, importer, proof, owner, bootstrap)) = held
                 else {
@@ -482,7 +495,7 @@ impl Drop for OriginalCopyBootstrapCustody {
                 loop {
                     match child.wait() {
                         Ok(_) => break,
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                         Err(_) => {
                             std::mem::forget((child, scratch, root, importer, owner, bootstrap));
                             return;

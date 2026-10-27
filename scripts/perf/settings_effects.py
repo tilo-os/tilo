@@ -1,10 +1,12 @@
 """Exact default Settings search workload; state evidence is not display proof.
 
 Contract: settled normal Network pane, wide visible sidebar, empty initial
-search. Warmup may focus by clicking the actual field or hover it. All edits
-alternate 'z'/Backspace. Results below are a fixed fixture contract sourced from
+search. The search is the window bar's (the runner's row outside a session):
+its evidence is the snapshot's `window_search`, and what it narrowed the
+sidebar to is `search_query`. Warmup opens it with Find, or clicks or hovers
+its control. All edits alternate 'z'/Backspace. Results below are a fixed fixture contract sourced from
 crates/system/settings-store/src/index.rs and its Fluent catalogues, through
-apps/settings/src/sidebar.rs and NavList's word-start search.
+apps/settings-core/src/sidebar.rs and NavList's word-start search.
 Changing the catalogue requires explicitly reviewing this contract.
 """
 import json
@@ -17,8 +19,25 @@ ALL_CATEGORIES = ('network','bluetooth','devices_sync','appearance','accessibili
     'external_accounts','agent_models','permissions','storage','updates','about')
 Z_CATEGORIES = ('devices_sync','appearance','accessibility','notifications','default-apps',
     'region_formats','time_date','displays','pointing','power')
-_STABLE = ('app','search_id','ready','search_rect','root_rect','selected_category','narrow',
+_STABLE = ('app','ready','search_rect','root_rect','selected_category','narrow',
            'sidebar_open','document_root','document_actor','document_witness_kind','effective_document_heads')
+_SEARCH = ('open','focused','text','caret_byte','rect')
+
+
+def _view(state):
+    """The app's evidence with the window search's beside it, by role."""
+    if not isinstance(state,dict):raise ValueError('Invalid or unready Settings state')
+    search=state.get('window_search')
+    if not isinstance(search,dict) or any(k not in search for k in _SEARCH) or 'search_query' not in state:
+        raise ValueError('Missing window search evidence')
+    if type(search['focused']) is not bool or type(search['open']) is not bool:
+        raise ValueError('Missing Settings search focus')
+    view=dict(state)
+    view.update(local_search_text=search['text'],synchronized_search_query=state['search_query'],
+                search_focused=search['focused'],search_caret_byte=search['caret_byte'],
+                search_widget_text=search['text'] if search['focused'] else None,
+                search_rect=search['rect'],search_open=search['open'])
+    return view
 
 
 def _rows(lines,prefix):
@@ -38,7 +57,7 @@ def _number(value):
 
 def _state(state):
     if (not isinstance(state,dict) or any(k not in state for k in _STABLE)
-        or state['app']!='so.tilo.settings' or state['search_id']!='settings.search'
+        or state['app']!='so.tilo.settings'
         or state['ready'] is not True or state['selected_category']!='network'
         or state['narrow'] is not False or state['sidebar_open'] is not True
         or state['document_witness_kind']!='effective_heads_on_disposable_clone'
@@ -57,19 +76,21 @@ def _state(state):
         if (not isinstance(rect,list) or len(rect)!=4 or not all(_number(v) for v in rect)
                 or rect[2]<=rect[0] or rect[3]<=rect[1]):raise ValueError('Invalid Settings bounds')
     root,search=state['root_rect'],state['search_rect']
-    if not (root[0]<=search[0]<search[2]<=root[2] and root[1]<=search[1]<search[3]<=root[3]):
-        raise ValueError('Search field outside root')
+    # The bar stands above the app, across the same window.
+    if not (root[0]<=search[0]<search[2]<=root[2]):
+        raise ValueError('Search control outside the window')
     local,query=state.get('local_search_text'),state.get('synchronized_search_query')
     if local not in ('','z') or query not in ('','z'):raise ValueError('Unexpected Settings search text')
     focused=state.get('search_focused')
     if type(focused) is not bool:raise ValueError('Missing Settings search focus')
     for key in ('search_widget_text','search_caret_byte'):
         if key not in state:raise ValueError('Missing Settings widget state')
+    if focused and not state['search_open']:raise ValueError('Focused search must be open')
     if focused:
         if (state['search_widget_text']!=local or type(state['search_caret_byte']) is not int
             or state['search_caret_byte']!=len(local)):raise ValueError('Wrong Settings text/caret')
     elif state['search_widget_text'] is not None or state['search_caret_byte'] is not None:
-        raise ValueError('Unfocused Settings observer must not invent text/caret')
+        raise ValueError('Unfocused Settings observer must not invent caret')
     expected=list(ALL_CATEGORIES if query=='' else Z_CATEGORIES)
     if (state.get('rendered_category_ids')!=expected
         or type(state.get('rendered_result_count')) is not int
@@ -94,7 +115,8 @@ def _effects(scenario,lines):
     previous=None
     for identity,effect in enumerate(effects):
         if type(effect.get('id')) is not int or effect['id']!=identity:raise ValueError('Reordered Settings effects')
-        before,after=effect.get('before'),effect.get('after')
+        before,after=_view(effect.get('before')),_view(effect.get('after'))
+        effect['before'],effect['after']=before,after
         _state(before);_state(after)
         if (not _same(before,after) or before['original_pending_ops']!=after['original_pending_ops']
             or before['synchronized_search_query']!=after['synchronized_search_query']):
@@ -122,6 +144,9 @@ def validate_settings_typing(scenario,lines):
     scale=windows[0]['scale_factor'];edits=0
     for index,(step,effect) in enumerate(zip(scenario['steps'],effects)):
         before,after=effect['before'],effect['after']
+        if (index<warmup and edits==0 and step=={'kind':'find'}
+                and after['search_focused'] and after['local_search_text']==before['local_search_text']):
+            continue
         if step=={'kind':'character','value':'z'} and before['local_search_text']=='':
             target='z'
         elif step=={'kind':'key','key':'backspace'} and before['local_search_text']=='z':
@@ -150,7 +175,7 @@ def validate_settings_frame_states(scenario,lines):
         if (type(identity) is not int or identity<=previous_frame or not isinstance(inputs,list) or not inputs
             or any(type(i) is not int for i in inputs) or inputs!=list(range(next_input,next_input+len(inputs)))
             or next_input+len(inputs)>len(effects)):raise ValueError('Invalid Settings frame/input mapping')
-        state=frame.get('state');_state(state);after=effects[inputs[-1]]['after']
+        state=_view(frame.get('state'));_state(state);after=effects[inputs[-1]]['after']
         if (not _same(state,after) or state['local_search_text']!=after['local_search_text']
             or state['synchronized_search_query']!=after['local_search_text']
             or state['search_focused']!=after['search_focused']

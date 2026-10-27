@@ -4,7 +4,7 @@ name = "tilo-app"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The Tilo application SDK: one app source for Linux, macOS and the web."
@@ -66,10 +66,13 @@ tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-history = { version = "0.1.0", path = "../tilo-history" }
 # Portable feedback review, capture and durable delivery contracts.
 tilo-feedback = { version = "0.1.0", path = "../../collab/feedback" }
+# The workspace's own emoji, which every window opens and offers its views.
+tilo-workspace-emoji = { version = "0.1.0", path = "../../platform/tilo-workspace-emoji" }
 # The default search provider over a resource's entries.
 tilo-search = { version = "0.1.0", path = "../search" }
 # Merging a collaborator's change in tests, the way sync does.
 tilo-automerge.workspace = true
+automerge.workspace = true
 # Files for apps: the portable replacement for `std::fs`, re-exported as `ui::files`.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The history verbs' typed payload.
@@ -96,6 +99,11 @@ tilo-content = { version = "0.1.0", path = "../../system/content" }
 # The native process host lends the window the device content store.
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
+
+[dev-dependencies]
+# The integration tests use the test tools behind `test-support`.
+tilo-app = { path = ".", features = ["test-support"] }
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 
 [lints]
 workspace = true

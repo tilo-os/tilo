@@ -59,10 +59,6 @@ pub fn load() -> Option<Cached> {
 /// Keep `items` for the next window. Rows a capture or a handed file added
 /// (an opened `.flatpakref`, a reviewed local package) are the caller's to
 /// leave out.
-///
-/// # Errors
-///
-/// Returns why the catalogue could not be written.
 pub fn save(items: &[StoreItem], locale: &str) -> Result<(), String> {
     let path = path().ok_or_else(|| "no cache directory".to_owned())?;
     let stored = Stored {

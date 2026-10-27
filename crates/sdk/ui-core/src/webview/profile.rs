@@ -24,6 +24,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
+use tilo_sort::CompactSort as _;
 
 /// Frames between periodic stderr summaries.
 const SUMMARY_EVERY: u64 = 120;
@@ -275,7 +276,7 @@ impl Ring {
             return;
         }
         let mut sorted: Vec<f64> = self.buf.get(..self.len).unwrap_or(&[]).to_vec();
-        sorted.sort_by(f64::total_cmp);
+        sorted.compact_sort_by(f64::total_cmp);
         #[allow(
             clippy::cast_precision_loss,
             clippy::cast_possible_truncation,
@@ -320,7 +321,7 @@ mod tests {
                 r.push(f64::from(i));
             }
             let mut sorted: Vec<f64> = r.buf[..r.len].to_vec();
-            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            sorted.compact_sort_by(|a, b| a.partial_cmp(b).unwrap());
             // p50 of 0..100 sits mid-range, p95 near the top.
             let pct = |p: f64| {
                 let len = u32::try_from(sorted.len()).unwrap_or(u32::MAX);

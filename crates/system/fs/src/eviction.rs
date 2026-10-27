@@ -448,10 +448,6 @@ pub struct EvictionCatalog {
 
 impl EvictionCatalog {
     /// Build a catalog containing only non-empty immutable payloads.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when two payloads name the same record version.
     pub fn new(payloads: impl IntoIterator<Item = VersionPayload>) -> Result<Self, PlanError> {
         Self::with_empty_versions(payloads, [])
     }
@@ -460,11 +456,6 @@ impl EvictionCatalog {
     /// manifest because their exact content is empty. Empty versions protect
     /// no blobs, but naming them prevents fail-closed planning from confusing
     /// an intentional empty payload with a missing history entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a version is named more than once across the
-    /// payload and empty-version sets.
     pub fn with_empty_versions(
         payloads: impl IntoIterator<Item = VersionPayload>,
         empty_versions: impl IntoIterator<Item = (FileRecordId, FileVersionId)>,
@@ -616,11 +607,6 @@ pub enum BackendGcAuthorizationError {
 
 impl EvictionQueue {
     /// Open and fully validate a durable eviction queue.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for I/O, malformed or unsupported state, duplicate or
-    /// non-canonical requests, or a queue above its hard bound.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, EvictionQueueError> {
         let path = path.into();
         if !path.exists() {
@@ -659,11 +645,6 @@ impl EvictionQueue {
 
     /// Durably enqueue only the blobs approved by an exact dry-run plan.
     /// Repeating an identical request is idempotent across process restarts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the queue is full with no completed request to
-    /// prune, or if durable persistence fails.
     pub fn enqueue(
         &mut self,
         plan: &EvictionPlan,
@@ -809,11 +790,6 @@ impl EvictionQueue {
 
     /// Record one all-or-nothing backend observation. Partial samples never
     /// change durable state, and completed requests remain completed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request is unknown, the observation is not an
-    /// exact sample of every requested hash, or persistence fails.
     pub(crate) fn record_observation(
         &mut self,
         id: EvictionRequestId,
@@ -1008,11 +984,6 @@ pub enum PlanError {
 }
 
 /// Plan a non-destructive eviction after all availability and reference checks.
-///
-/// # Errors
-///
-/// Returns an error when policy denies eviction or the exact payload/reference
-/// catalog is incomplete or inconsistent.
 pub fn plan_safe_eviction(
     registry: &AvailabilityRegistry,
     catalog: &EvictionCatalog,
@@ -1033,11 +1004,6 @@ pub fn plan_safe_eviction(
 /// Plan an explicitly destructive removal. This bypasses replica/pin checks
 /// only for the target current version; it never bypasses shared/history
 /// reference protection or exact-version validation.
-///
-/// # Errors
-///
-/// Returns an error when the target or any protected version lacks an exact
-/// payload description, reference accounting conflicts, or ancestry is invalid.
 pub fn plan_destructive_eviction(
     registry: &AvailabilityRegistry,
     catalog: &EvictionCatalog,
@@ -1470,7 +1436,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn eviction_plans_protect_shared_and_retained_blobs_and_fail_closed() {
-        // Phase `empty_current_version_has_a_complete_zero_blob_plan`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1494,7 +1459,6 @@ mod tests {
             assert!(plan.already_absent.is_empty());
             assert_eq!(plan.reclaimable_bytes, 0);
         }
-        // Phase `an_empty_protected_version_protects_no_unrelated_blobs`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1527,7 +1491,6 @@ mod tests {
             assert_eq!(plan.reclaimable.len(), 1);
             assert!(plan.shared_and_protected.is_empty());
         }
-        // Phase `shared_chunks_and_manifests_are_never_reclaimed`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1579,7 +1542,6 @@ mod tests {
             assert_eq!(plan.protected_shared_bytes, 14);
             assert_eq!(plan.shared_and_protected.len(), 2);
         }
-        // Phase `missing_protected_version_fails_closed`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1617,7 +1579,6 @@ mod tests {
                 })
             );
         }
-        // Phase `captured_policy_roots_fail_closed_for_missing_or_cyclic_ancestry`.
         {
             let child_id = FileRecordId::new();
             let missing = FileRecordId::new();
@@ -1628,7 +1589,6 @@ mod tests {
             child.parent = Some(child_id);
             assert!(pinned_in_snapshot(&[child], child_id));
         }
-        // Phase `batch_safe_plans_match_single_plans_for_shared_and_partial_payloads`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1684,7 +1644,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn dry_runs_and_the_destructive_api_account_every_refusal_and_size() {
-        // Phase `every_availability_refusal_is_preserved_in_dry_run`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1707,7 +1666,6 @@ mod tests {
                 Err(PlanError::Denied(EvictionBlocker::Pinned))
             );
         }
-        // Phase `destructive_api_is_separate_but_still_protects_retained_history`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1744,7 +1702,6 @@ mod tests {
             );
             assert_eq!(plan.reclaimable_bytes, 24);
         }
-        // Phase `dry_run_accounts_absent_and_duplicate_chunks_once`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1772,7 +1729,6 @@ mod tests {
             assert_eq!(plan.reclaimable.len(), 2);
             assert_eq!(plan.already_absent, vec![hash(2)]);
         }
-        // Phase `unknown_partial_size_is_present_but_reported_as_unaccounted`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry =
@@ -1809,7 +1765,6 @@ mod tests {
             assert_eq!(plan.reclaimable_bytes, 4);
             assert_eq!(plan.unaccounted_reclaimable_blobs, 1);
         }
-        // Phase `partial_and_unknown_sizes_never_look_complete`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("evictions.json");
@@ -1880,7 +1835,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn eviction_queue_is_durable_bounded_and_hands_off_only_fresh_exact_plans() {
-        // Phase `queue_survives_restart_and_enqueue_is_idempotent`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("cache/evictions.json");
@@ -1904,7 +1858,6 @@ mod tests {
             assert_eq!(request.requested_hashes, vec![hash(7), hash(8)]);
             assert_eq!(request.state, EvictionRequestState::AwaitingBackendGc);
         }
-        // Phase `rehydrated_payload_can_rearm_its_completed_exact_eviction_request`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("evictions.json");
@@ -1931,7 +1884,6 @@ mod tests {
                 EvictionRequestState::AwaitingBackendGc
             );
         }
-        // Phase `queue_is_bounded_and_only_prunes_a_completed_request`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("evictions.json");
@@ -1964,7 +1916,6 @@ mod tests {
             assert_eq!(queue.requests.len(), MAX_EVICTION_REQUESTS);
             assert!(!queue.requests.contains_key(&oldest));
         }
-        // Phase `backend_handoff_requires_a_fresh_exact_plan`.
         {
             let temp = TempDir::new().unwrap();
             let record_id = FileRecordId::new();
@@ -1999,7 +1950,6 @@ mod tests {
                 Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
             ));
         }
-        // Phase `backend_authorization_replans_and_refuses_a_new_shared_root`.
         {
             let temp = TempDir::new().unwrap();
             let now = 1_000;
@@ -2059,7 +2009,6 @@ mod tests {
                 )) if found == id
             ));
         }
-        // Phase `completion_requires_one_exact_all_absent_sample_and_is_durable`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("evictions.json");

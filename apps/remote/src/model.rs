@@ -3,7 +3,7 @@
 //! A workspace is a flat list of saved [`Connection`]s plus a small
 //! amount of view state (which connection is selected, which screen the
 //! user is looking at). The connections are the durable, collaborative
-//! part — they live in the Automerge document (see [`crate::doc`]) so a
+//! part — they live in the Automerge document (see `crate::doc`) so a
 //! machine list edited on one device converges everywhere it's shared.
 //!
 //! View state (current screen, selection, draft form contents) is
@@ -443,7 +443,7 @@ impl ConnectionDraft {
 
 /// In-memory connection store with the runtime operations the UI needs.
 /// Pure logic — no IO, no rendering, no CRDT. The CRDT bridge lives in
-/// [`crate::doc`].
+/// `crate::doc`.
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub connections: Vec<Connection>,

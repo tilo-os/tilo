@@ -52,7 +52,9 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
     if action == ActionKind::AddBot {
         return add_bot(item);
     }
-    let effect = StoreEffect::package(action, item);
+    let Some(effect) = StoreEffect::package(action, item) else {
+        return Some(uninstall(item));
+    };
     if let Some((code, reason)) = item.unavailable_action(action) {
         let spec = effect.bound().unavailable(code, reason);
         ActionBinding::static_json(&DOOR, &spec, effect.arguments()).ok()
@@ -60,6 +62,19 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
         self::effect(&effect)
     }
 }
+
+/// A control asking the system's one Uninstall to remove `item`: the same
+/// action Files and search offer, which asks the person first ("Uninstall
+/// `<name>`?", with "Remove its data" for a Flatpak).
+pub fn uninstall(item: &StoreItem) -> ActionBinding<()> {
+    ui::search::open_search_binding(&ui::search::SearchRequest::offering(
+        UNINSTALL_ACTION,
+        [("app", item.id.clone())],
+    ))
+}
+
+/// The system's Uninstall action.
+const UNINSTALL_ACTION: &str = "app.uninstall";
 
 /// A control preparing the workspace's Add a bot for `item`, a directory
 /// bot: the system search opens on it with the bot filled in, and the person

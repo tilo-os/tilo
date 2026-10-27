@@ -159,42 +159,6 @@ fn native_snapshot_observes_real_wheel_input_with_explicit_units() {
 }
 
 #[test]
-fn bottom_panel_availability_tracks_its_real_host_mode() {
-    let mut capture =
-        ui::framework::testing::TestApp::<crate::CodeEditorShell>::capture(Some("selection"))
-            .unwrap();
-    crate::test_support::editor(&mut capture, |app| {
-        assert!(!app.panel_toggle.is_enabled());
-        assert!(
-            ui::widget::controls::ActionControls::control_action_bindings(&app.panel_toggle)
-                .is_empty(),
-            "the captured toggle cannot advertise an effect without an executor"
-        );
-    });
-
-    let (_directory, mut live, _manifest) = loaded_fixture();
-    let before = crate::test_support::editor(&mut live, |app| {
-        assert!(app.panel_toggle.is_enabled());
-        let bindings =
-            ui::widget::controls::ActionControls::control_action_bindings(&app.panel_toggle);
-        assert!(bindings.iter().any(|binding| matches!(
-            &binding.kind,
-            ui::widget::ControlBindingKind::Action(address)
-                if address.resource.as_str() == <crate::project::Project as ui::tilo_resource::Resource>::KIND
-                    && address.action == "toggle-bottom-panel"
-        )));
-        app.panel_visible
-    });
-    live.harness().click_named(BottomPanelToggle::ID).unwrap();
-    live.settle();
-    assert_eq!(
-        crate::test_support::editor(&mut live, |app| app.panel_visible),
-        !before,
-        "the live retained toggle invokes its real canonical effect"
-    );
-}
-
-#[test]
 fn native_text_continuation_restores_shared_resource_selection_and_view_after_offline_edits() {
     use ui::widget::Continuable;
     let (directory, mut source, _manifest) = loaded_fixture();
@@ -506,9 +470,19 @@ fn stage_continuation_view(app: &mut CodeApp, doc: &mut ui::widget::Edits<'_>) {
     app.editor
         .force_geometry(Rect::new(200.0, 40.0, 800.0, 560.0), 8.0);
     app.editor.set_selection_lc((20, 3), (22, 5));
+    // Fingers scroll the view 9.75 lines down and rest there: a notch
+    // would glide the lines on past where it put them.
+    let line_h = app.editor.pixel_for_test(1, 0).y - app.editor.pixel_for_test(0, 0).y;
     for event in [
         ui::synthetic_input::cursor_moved(300.0, 100.0),
-        ui::synthetic_input::mouse_wheel(0.0, -3.25),
+        winit::event::WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+                0.0,
+                -9.75 * line_h,
+            )),
+            phase: winit::event::TouchPhase::Moved,
+        },
     ] {
         app.editor.handle_event(
             &event,

@@ -26,6 +26,7 @@ mod tests {
             "totp-add-title-provision",
             "totp-add-scan-title",
             "totp-add-scan-description",
+            "totp-scan-unreadable",
             "totp-add-link-title",
             "totp-add-link-description",
             "totp-add-link-label",

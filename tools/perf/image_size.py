@@ -3,7 +3,7 @@
 
 The OS image is what every install downloads and every update pulls changed
 layers of. "Small footprint" is marketed, so its size is a KPI (#4003) with a budget in
-tools/perf/kpi-budgets.toml, recorded nightly by Perf / scheduled (footprint
+tools/perf/kpi-budgets.toml, recorded by t's performance run (footprint
 group). This script measures one image without a container engine: it
 streams every layer from the registry (or reads an OCI layout), checks each
 blob against its digest, and replays the layers with their whiteouts.
@@ -35,12 +35,12 @@ the packages nothing requires (`rpm -q --whatrequires`, transitively).
 
     python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci@sha256:... \\
         --json report.json --markdown report.md
-    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci --arch x86_64 \\
+    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:x86_64-ci --arch x86_64 \\
         --records image.jsonl --runner none
     python3 tools/perf/image_size.py --oci-layout DIR --why python3-botocore
 
 `--dev-base` measures the production-layout base (`tilo-ci`) a dev image
-names in its `org.opencontainers.image.base.digest` label: tilo-vm:main-ci
+names in its `org.opencontainers.image.base.digest` label: tilo-vm:<arch>-ci
 moves forward with main, so the nightly measures main's newest image. The
 records carry the image's own source revision as their commit.
 
@@ -58,7 +58,7 @@ that has one, named by TEMPLATE in the image's repository. The nightly records
 that update as `footprint.image.update_bytes.<arch>` (what a device on main's
 previous build downloads), under a ceiling in tools/perf/kpi-budgets.toml:
 
-    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci --arch x86_64 \\
+    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:x86_64-ci --arch x86_64 \\
         --update-from-previous 'main-{sha7}-{arch}' --records image.jsonl --runner none
 
 zstd layers need Python 3.14's `compression.zstd` or the `zstd` command. A
@@ -113,8 +113,6 @@ TOP = 30
 # dev builds main only when OS inputs change, a few times a day.
 PREVIOUS_DEPTH = 400
 
-
-# ---------------------------------------------------------------- sources
 
 
 class NotFound(ValueError):
@@ -331,8 +329,6 @@ def layout_image(root: Path, arch: str | None) -> Image:
     config = layout.blob_json(document["config"]["digest"])
     return Image(f"oci:{root}@{digest}", digest, document, config, layout.blob)
 
-
-# ---------------------------------------------------------------- reading
 
 
 class Verified(io.RawIOBase):
@@ -551,8 +547,6 @@ def replay(image: Image, progress: Callable[[str], None] | None = None) -> tuple
     return result, root
 
 
-# ---------------------------------------------------------------- packages
-
 RPM_TAGS = {1000: "name", 1001: "version", 1002: "release", 1009: "size", 5009: "longsize",
             1047: "provides", 1049: "requires", 5046: "recommends", 5052: "supplements",
             1116: "dirindexes", 1117: "basenames", 1118: "dirnames"}
@@ -676,8 +670,6 @@ def why(name: str, everything: list[Package], depth: int = 8) -> list[str]:
     walk(name, 0)
     return lines
 
-
-# ---------------------------------------------------------------- report
 
 
 def directory_totals(files: dict[str, Entry], depth: int) -> dict[str, int]:

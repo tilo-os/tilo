@@ -184,13 +184,45 @@ impl RoomRecords {
         &self.signing_key
     }
 
-    /// Every retained document body of `workspace_id`, checkpoints before
-    /// the deltas retained after them, including every host commit queued
-    /// before the call.
+    /// [`Self::retained`] once every write the workspace's persistence
+    /// owner took before the call is durable: members' writes as well as
+    /// host commits, so a write the room's governor was handed is in it.
     ///
     /// # Errors
     ///
-    /// Returns why the workspace is not hosted here or could not be read.
+    /// As [`Self::retained`], or the owner did not settle.
+    pub(crate) async fn retained_settled(
+        &self,
+        workspace_id: u64,
+    ) -> Result<Vec<RetainedBody>, String> {
+        let hosted = self.workspaces.lock().await;
+        let workspace = hosted.get(&workspace_id).cloned();
+        drop(hosted);
+        let workspace = workspace.ok_or("the workspace is not hosted here")?;
+        let owner = crate::persistence::handle(&workspace).await;
+        drop(workspace);
+        let done = owner
+            .submit_prepared_wait(
+                1,
+                async { Ok(()) },
+                // A fence: it retains nothing.
+                |state, ()| {
+                    state.retaining_only();
+                    Ok(())
+                },
+                |result| async { result },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        crate::persistence::receipt(done)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.retained(workspace_id).await
+    }
+
+    /// Every retained document body of `workspace_id`, checkpoints before
+    /// the deltas retained after them, including every host commit queued
+    /// before the call.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"
@@ -230,6 +262,40 @@ impl RoomRecords {
                 _ => None,
             })
             .collect())
+    }
+
+    /// Wait until every host commit queued for `workspace_id` so far is
+    /// durable.
+    pub(crate) async fn settled(&self, workspace_id: u64) {
+        self.inflight.settle(workspace_id).await;
+    }
+
+    /// Publish `body` on `workspace_id`'s presence as this host's own, to
+    /// every device subscribed to it: how the host asks the room's members
+    /// for content, as any member asks. The number of devices it reached.
+    pub(crate) async fn host_presence(
+        &self,
+        workspace_id: u64,
+        body: Vec<u8>,
+    ) -> Result<usize, String> {
+        let payload = crate::AttributedPresence {
+            author: self.device,
+            body,
+        }
+        .encode()
+        .map_err(|error| error.to_string())?;
+        let envelope = Envelope::Presence {
+            workspace_id,
+            payload,
+        };
+        let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
+        let ws = ws.ok_or("the workspace is not hosted here")?;
+        let mut runtime = ws.lock().await;
+        let delivered =
+            runtime.fanout_presence(&self.device, crate::auth::PeerRole::Device, &envelope, None);
+        drop(runtime);
+        drop(ws);
+        Ok(delivered)
     }
 
     /// Bounded existing ciphertext for one channel, without changing retention.
@@ -272,22 +338,12 @@ impl RoomRecords {
     /// Admit `commit` to `workspace_id` as this host's own change: ordered,
     /// retained, fanned out to every subscriber and queued for offline
     /// members. Returns its host order.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted here or the change could not
-    /// be persisted.
     pub async fn commit(&self, workspace_id: u64, commit: HostCommit) -> Result<u64, String> {
         self.enqueue(workspace_id, commit).await?.durable().await
     }
 
     /// [`Self::commit`] without waiting for durability: the commit holds its
     /// place in the workspace's order once this returns.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted here or the change could not
-    /// be queued.
     pub(crate) async fn enqueue(
         &self,
         workspace_id: u64,
@@ -307,11 +363,6 @@ impl RoomRecords {
     }
 
     /// [`Self::enqueue`] for a commit whose place `reservation` holds.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted here or the change could not
-    /// be queued.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"

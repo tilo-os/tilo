@@ -274,7 +274,7 @@ fn post(
                     ],
                     EditOp::InsertItem {
                         id: Some(Id::from_raw(format!("peer-{sample:06}"))),
-                        at: sized.n.saturating_add(sample),
+                        at: tilo_resource::At::End,
                         value: tilo_resource::Model::to_json(&message),
                     },
                 ),

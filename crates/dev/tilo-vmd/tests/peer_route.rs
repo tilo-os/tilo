@@ -51,7 +51,7 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
              exec {daemon} rpc --apply record --manifest /nonexistent --base /nonexistent --root {root}\n",
             log = log.display(),
             deny = deny.display(),
-            daemon = env!("CARGO_BIN_EXE_tilo-vmd"),
+            daemon = tilo_test_env::package_binary!("tilo-vmd").display(),
             root = root.display(),
         ),
     );

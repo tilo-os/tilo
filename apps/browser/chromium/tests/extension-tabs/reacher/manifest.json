@@ -1,0 +1,5 @@
+{"manifest_version": 3, "name": "Reacher", "version": "1.0",
+ "action": {"default_title": "Reach"},
+ "permissions": ["scripting"],
+ "background": {"service_worker": "worker.js"},
+ "content_scripts": [{"matches": ["<all_urls>"], "js": ["content.js"]}]}

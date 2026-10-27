@@ -1,12 +1,18 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
 mod own_device;
 pub mod person_chat;
+mod room_nodes;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
-pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
+pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
+pub use task_execution::{
+    NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
+    TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion,
+    TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
+};
 
 use std::sync::Arc;
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
+use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 
 /// Current native seat identity, installed only by the authenticated host.
 /// This Rust capability is never exposed through a wire request.
@@ -125,19 +131,18 @@ pub trait WorkspaceAuthority: Send + Sync {
     /// who an app's history names for the changes an agent's own key
     /// signed. Presentation only; nothing is admitted by it. The default
     /// knows none, so every such change stays an unknown participant.
-    fn history_agents(&self, _room: &str) -> Vec<ui::history_source::RosterAgent> {
+    fn history_agents(&self, _room: &str) -> Vec<collab_types::history::RosterAgent> {
         Vec::new()
     }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";
 
-/// The workspace of exactly `room` in `tree`.
 #[must_use]
 pub fn room_in<'a>(tree: &'a DesktopTree, room: &str) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == room)
+        .find(|workspace| workspace.room().to_string() == room)
 }
 
 impl dyn WorkspaceAuthority {
@@ -194,19 +199,6 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String>;
-    /// Records one task status update in the legacy projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the projection cannot record the update.
-    fn record_task_update(
-        &self,
-        room: &str,
-        task: &str,
-        actor: &str,
-        status: Option<WorkspaceTaskStatus>,
-        summary: String,
-    ) -> Result<(), String>;
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
@@ -238,28 +230,17 @@ pub trait WorkspaceMemberships: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
 
     /// Whether `room` is held here but governed by the node that stewards
-    /// it, where the one membership change this device asks is the
-    /// authorship an app opening there needs, committed by that host.
+    /// it, where this device asks that host to commit the room's own
+    /// membership changes, decided by the room's governance as they are
+    /// where this device governs the room itself.
     fn grants_authorship_at_host(&self, _room: &str) -> bool {
         false
     }
 
     /// Confirm that the canonical owner's durable store is still usable.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic while owner continuity is unavailable or fenced.
     fn health(&self) -> Result<(), String> {
         Err("workspace membership owner continuity is unavailable".into())
     }
-
-    /// Read canonical coordination state directly from the admitted owner.
-    /// # Errors
-    /// Refuses unavailable or fenced owner state; never substitutes presentation data.
-    fn task_snapshot(
-        &self,
-        room: &str,
-    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>;
 
     fn execute(
         &self,
@@ -277,6 +258,10 @@ pub enum LaunchPlace {
     /// Beside the view of `app_id` the actor works in, on whichever strip
     /// holds it, which need not be the one the person is looking at.
     Beside { app_id: String },
+    /// Beside where the person is looking, without taking their focus: the
+    /// first view of an agent or a Shortcut, which has none of its own yet
+    /// to open beside. Only the person's own invocation moves the view.
+    Aside,
 }
 
 #[derive(Clone)]
@@ -291,6 +276,11 @@ pub struct LaunchableApplication {
     /// yet. Invoking one launches it, and its published action admits the
     /// invocation.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
+    /// The host capabilities its signed manifest declares (`[capabilities]`)
+    /// that the host decides grants on, such as
+    /// `settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`; a producer
+    /// that decides none leaves it empty.
+    pub capabilities: Vec<String>,
 }
 /// The application a launcher-authenticated connection belongs to, and the
 /// workspace it was launched into. Launch content is only ever read through
@@ -411,9 +401,6 @@ impl LaunchReadiness {
     }
 
     /// Wait for an adopted window or a terminal startup failure.
-    ///
-    /// # Errors
-    /// Returns the launcher failure, or that its observer disappeared.
     pub async fn wait(self) -> Result<(), String> {
         self.wait_with_adoption()
             .await
@@ -519,7 +506,7 @@ impl ObservedApplicationLaunch {
     pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {
         self.app == app
             && self.package_root.as_deref() == root
-            && self.room == workspace.room.to_string()
+            && self.room == workspace.room().to_string()
     }
 
     /// Recheck the actual original caller, pending invocation and policy clock.
@@ -585,6 +572,24 @@ pub trait LauncherServices: Send + Sync {
     /// neither challenge bytes nor credentials, document or application output.
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
+    /// The same installed entries as `applications`, narrowed to an exact ID.
+    /// Hosts may avoid constructing unrelated entries. This is discovery only;
+    /// the broker still decides which rows the caller may see or invoke.
+    fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
+        self.applications()
+            .into_iter()
+            .filter(|app| app.package_id == app_id)
+            .collect()
+    }
+    /// Whether the person's own input is behind what app `app_id` asks for
+    /// now: a press of theirs (never an agent's) reached one of its windows
+    /// within the activation window, and has not proved another open
+    /// already. Answering uses it up. A host without that record answers
+    /// `false`: an app then opens nothing on its own, only what an
+    /// invocation someone else asked of it calls for.
+    fn person_initiated(&self, _app_id: &str) -> bool {
+        false
+    }
     /// Launches `app` into `workspace`, its view of `record` (else the
     /// record it opens by default) opening at `place`.
     ///
@@ -640,10 +645,6 @@ pub trait LauncherServices: Send + Sync {
     ///
     /// Answers what it started: a ticket the started instance presents when
     /// it connects, where the host keeps one.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the launch fails or content staging is unsupported.
     fn launch_content(
         &self,
         app: &str,
@@ -824,10 +825,6 @@ pub trait ShortcutLibraryServices: Send + Sync {
     /// Returns why the workspace cannot take the change.
     fn store(&self, request: &ShortcutLibraryRequest<'_>) -> Result<(), String>;
     /// The runtime shortcut runs execute on.
-    ///
-    /// # Errors
-    ///
-    /// Returns why no runtime is available.
     fn runtime(&self) -> Result<tokio::runtime::Handle, String>;
     /// What the desktop calls its fixed shortcut `fixed`, in the person's
     /// language: named when a keyboard trigger would take its chord.
@@ -875,87 +872,89 @@ pub trait KeyboardShortcutServices: Send + Sync {
     ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>>;
 }
 
-/// One pairing step the broker admitted: action `address` (on
-/// [`tilo_actions::remote::device_pairing::RESOURCE`]) for `actor` in
-/// `room`, with `argument` in its slot form.
-pub struct DevicePairingRequest<'a> {
+/// One step the broker admitted for the host to run: action `address`
+/// for `actor` in `room`, with `argument` in its slot form.
+pub struct HostStepRequest<'a> {
     pub room: &'a str,
     pub actor: &'a crate::collab_broker_capnp::BrokerActor,
     pub address: &'a tilo_actions::ActionAddress,
     pub argument: Option<&'a str>,
 }
 
-/// How a pairing step ended.
-pub type DevicePairingOutcome =
-    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
+/// How a host step ended.
+pub type HostStepOutcome = Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 
-/// Pairing a nearby device with the person's identity, run by the host:
-/// LAN discovery, and the approval an administrator authenticates through
-/// the host's polkit helper. The broker answers it under
-/// [`tilo_actions::remote::device_pairing::PROVIDER`], only to a caller on
-/// this machine confined to a room, and checks each step against the
-/// caller's policy under [`Self::app_id`] before the host decides whether
-/// the actor may pair at all.
-pub trait DevicePairingServices: Send + Sync {
-    /// The application whose controls pair devices. It reaches the steps as
+/// Steps the host itself runs for the person at this device: pairing a
+/// nearby device (LAN discovery, an administrator's approval through the
+/// host's polkit helper), administering the person's identities and the
+/// devices trusted under them (the root secret stays on the host), and
+/// changing the person's settings whether or not the app that shows them
+/// is open. The broker answers each service under its [`Self::provider`],
+/// only to a caller on this machine confined to a room, and checks each
+/// invocation against the caller's policy under [`Self::app_id`] before the
+/// host decides whether the actor may take it at all.
+pub trait HostStepServices: Send + Sync {
+    fn provider(&self) -> &'static str;
+    /// The application whose controls reach the steps. It reaches them as
     /// the person using it, as it does its own actions.
     fn app_id(&self) -> &str;
     /// Every step, described.
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// The step at `address` as one invocation with `argument` (its slot
+    /// form) is: by default as described, or, for a setting, as risky as
+    /// the value it carries makes it.
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        let _ = argument;
+        self.descriptors()
+            .into_iter()
+            .find(|descriptor| &descriptor.address == address)
+    }
     /// Start one admitted step. Its outcome arrives on the returned answer:
-    /// at once, or once the LAN window or the administrator's
-    /// authentication ends, completed from another thread.
+    /// at once, or once the step ends (a LAN window, an administrator's
+    /// authentication, a step that reaches another device), completed from
+    /// another thread.
     ///
     /// # Errors
     ///
-    /// Why the step may not start: the actor does not administer the
-    /// room's identity, the arguments are malformed, or another step runs.
+    /// Why the step may not start: the actor may not take it, the arguments
+    /// are malformed, or another step runs.
     fn start(
         &self,
-        request: &DevicePairingRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<DevicePairingOutcome>, String>;
-}
-
-/// One identity-administration step the broker admitted: action `address`
-/// (on [`tilo_actions::remote::identity_admin::RESOURCE`]) for `actor` in
-/// `room`, with `argument` in its slot form.
-pub struct IdentityAdminRequest<'a> {
-    pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
-    pub address: &'a tilo_actions::ActionAddress,
-    pub argument: Option<&'a str>,
-}
-
-/// How an identity-administration step ended.
-pub type IdentityAdminOutcome = DevicePairingOutcome;
-
-/// The person's identities and the devices trusted under them, administered
-/// by the host that keeps the identity store: listing, activating, removing
-/// and protecting an identity, listing and revoking its devices, and
-/// removing a home server. The root secret stays on the host, which signs
-/// every revocation. The broker answers it under
-/// [`tilo_actions::remote::identity_admin::PROVIDER`], only to a caller on
-/// this machine confined to a room, and checks each step against the
-/// caller's policy under [`Self::app_id`] before the host decides whether
-/// the actor may administer the identity at all.
-pub trait IdentityAdminServices: Send + Sync {
-    /// The application whose controls administer identities. It reaches
-    /// the steps as the person using it, as it does its own actions.
-    fn app_id(&self) -> &str;
-    /// Every step, described.
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
-    /// Start one admitted step. Its outcome arrives on the returned answer:
-    /// at once, or once a step that reaches another device ends.
+        request: &HostStepRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String>;
+    /// Follow one admitted step whose contract is
+    /// [`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live): how to
+    /// read its result as it is now, and when that may have changed. The
+    /// broker reads it once at the start and again after each change, as
+    /// long as the caller follows it and may still read it.
     ///
     /// # Errors
     ///
-    /// Why the step may not start: the actor does not administer the
-    /// room's identity, or the arguments are malformed.
-    fn start(
-        &self,
-        request: &IdentityAdminRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<IdentityAdminOutcome>, String>;
+    /// Why it cannot be followed: the arguments are malformed, or the
+    /// step has no live result.
+    fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
+        let _ = request;
+        Err("this step has no live result".into())
+    }
 }
+
+/// A live result a host step serves ([`HostStepServices::watch`]).
+pub struct LiveView {
+    /// The whole result as it is now. A host that reads it on a thread of
+    /// its own answers when it has; one that has it at hand answers at once
+    /// ([`Pending::ready`](tilo_actions::remote::Pending::ready)).
+    pub read: Box<dyn FnMut() -> tilo_actions::remote::Pending<LiveRead> + Send>,
+    /// Moves whenever the result may have changed. Moving without a
+    /// change costs one read whose item the caller already holds.
+    pub changes: tokio::sync::watch::Receiver<u64>,
+}
+
+/// One read of a [`LiveView`]: the result now, or why it failed for good.
+pub type LiveRead = Result<serde_json::Value, Box<tilo_actions::ActionFailure>>;
 
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.
@@ -979,11 +978,7 @@ pub trait ContinuationServices: Send + Sync {
     fn clear(&self, room: RoomId, app: &str, instance: u64) -> Result<(), String>;
     /// One application instance answering a handoff request, or reporting
     /// that the document it shows arrived retired. `message` is an encoded
-    /// `ui::collaboration::handoff::HandoffReport`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host does not take handoff reports.
+    /// `collab_types::handoff::HandoffReport`.
     fn handoff(
         &self,
         room: RoomId,
@@ -1010,6 +1005,44 @@ pub trait SearchIndexServices: Send + Sync {
     ///
     /// Returns a message when the delta is malformed or cannot be kept.
     fn publish(&self, room: RoomId, app: &str, record: &str, delta: &[u8]) -> Result<(), String>;
+}
+
+/// The scope component content puts are kept under in a room's content
+/// store: neutral, no application's. The store reads by room, so every app
+/// of the room reads what was put there once an action hands it the
+/// reference.
+pub const CONTENT_PUT_SCOPE: &str = "tilo.content";
+
+/// The device content store, as the content put door writes to it
+/// (`tilo_actions::remote::ContentPuts`). Actions carry intent and
+/// references; bytes travel by session transport into the content store.
+pub trait ContentStoreServices: Send + Sync {
+    /// The most bytes one piece of content may have.
+    fn max_bytes(&self) -> u64;
+    /// Open an upload kept for `room` under [`CONTENT_PUT_SCOPE`].
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store cannot take an upload.
+    fn begin(&self, room: &str) -> Result<Box<dyn ContentSink>, String>;
+}
+
+/// One upload into the content store. Dropped unfinished, it stores
+/// nothing.
+pub trait ContentSink: Send {
+    /// Hand the store the next bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store refused them; the upload is over then.
+    fn append(&mut self, bytes: &[u8]) -> Result<(), String>;
+    /// Store what was appended, recording the room's reference to it, and
+    /// answer its hash (lowercase BLAKE3 hex) and length.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store did not keep it.
+    fn finish(self: Box<Self>) -> Result<(String, u64), String>;
 }
 
 /// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
@@ -1085,10 +1118,6 @@ pub trait RealtimeServices: Send + Sync {
     ) -> Result<Vec<u8>, String>;
 
     /// Subscribes to realtime continuity events for this context.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host refuses the subscription.
     fn subscribe(
         &self,
         context: &RealtimeRequestContext,
@@ -1101,7 +1130,54 @@ pub trait RealtimeServices: Send + Sync {
 pub trait SpeakerServices: Send + Sync {
     /// Runs one validated speaker-group command.
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply;
+
+    /// Resolves once what a [`runtime_collab::SpeakerCommand::Snapshot`]
+    /// would show may have changed since `after` (0 at first, then the value
+    /// the previous wait returned), with the value to wait from next. It
+    /// names nothing: Settings asks for a snapshot, which the host checks as
+    /// it checks every command. `None` when the host cannot say when its
+    /// speaker groups change; the broker then answers unimplemented.
+    fn changed(&self, after: u64) -> Option<SpeakerChange> {
+        let _ = after;
+        None
+    }
 }
+
+/// A wait for the speaker groups' next change, as [`SpeakerServices::changed`]
+/// returns it.
+pub type SpeakerChange = NearbyTransferChange;
+
+/// The host's drives, as the tools service lists them to Files. The broker
+/// admits only the certified Files route to wait on them; the list itself
+/// is asked of the tools service, which answers as it always does.
+pub trait DriveServices: Send + Sync {
+    /// Resolves once the drive list may have changed since `after` (0 at
+    /// first, then the value the previous wait returned), with the value to
+    /// wait from next. It names nothing: Files asks for the list again.
+    /// `None` when the host cannot say when its drives change; the broker
+    /// then answers unimplemented.
+    fn changed(&self, after: u64) -> Option<DriveChange>;
+}
+
+/// A wait for the drive list's next change, as [`DriveServices::changed`]
+/// returns it.
+pub type DriveChange = NearbyTransferChange;
+
+/// The person's apps, as the tools service lists them to Files. The broker
+/// admits only the certified Files route to wait on them; the list itself is
+/// asked of the tools service, which answers as it always does.
+pub trait ApplicationServices: Send + Sync {
+    /// Resolves once the app list may have changed since `after` (0 at first,
+    /// then the value the previous wait returned), with the value to wait
+    /// from next. It names nothing: Files asks for the list again. `None`
+    /// when the host cannot say when its apps change; the broker then
+    /// answers unimplemented.
+    fn changed(&self, after: u64) -> Option<ApplicationChange>;
+}
+
+/// A wait for the app list's next change, as
+/// [`ApplicationServices::changed`] returns it.
+pub type ApplicationChange = NearbyTransferChange;
 /// The host's Wi-Fi credential continuity across the person's devices: the
 /// broker admits only the certified Settings route, bounds and validates the
 /// command, and hands it here. A host without Wi-Fi radios installs none.
@@ -1178,11 +1254,6 @@ impl NearbyTransferRequestContext {
 /// nearby radios installs none.
 pub trait NearbyTransferServices: Send + Sync {
     /// Runs one validated Nearby Send command for `context`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host refuses the command outright, such as
-    /// when the person has turned file transfer off.
     fn command(
         &self,
         context: &NearbyTransferRequestContext,
@@ -1309,6 +1380,10 @@ pub struct FileClipboardContext {
     pub(crate) workspace: String,
     pub(crate) owner: String,
     pub(crate) history_compensation: bool,
+    /// The agent behind this command, when the broker's custody of its
+    /// original invocation names an agent acting for the person whose
+    /// session Files runs in (`agent:<id>`). Presentation only.
+    pub(crate) attributed_agent: Option<String>,
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
@@ -1333,6 +1408,14 @@ impl FileClipboardContext {
     }
     pub fn owner(&self) -> &str {
         &self.owner
+    }
+    /// The agent (`agent:<id>`) whose invocation this command continues,
+    /// acting for the person whose session Files runs in, as the broker's
+    /// custody of that invocation names it; `None` for anyone else. What the
+    /// transfer writes is recorded as that agent's, for its person. It grants
+    /// nothing.
+    pub fn attributed_agent(&self) -> Option<&str> {
+        self.attributed_agent.as_deref()
     }
     /// Whether the broker admitted this command through a declared document Undo.
     /// This is minted from original invocation custody, never caller parameters.
@@ -1486,6 +1569,20 @@ pub trait FileClipboardServices: Send + Sync {
         command: runtime_collab::file_clipboard::Command,
     ) -> Result<runtime_collab::file_clipboard::Reply, String>;
     fn disconnect(&self, peer: u64);
+
+    /// Name `agent`, an `agent:<id>` principal the broker took from its own
+    /// custody of a live Files invocation and that acts for the person whose
+    /// session Files runs in, as the cause of this device's next writes to
+    /// `paths` (absolute paths under the workspace mount; a folder covers
+    /// what is under it). Presentation only: it grants nothing.
+    ///
+    /// # Errors
+    /// Refuses when the host records no write attribution, or the filesystem
+    /// refused it.
+    fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
+        let _ = (agent, paths);
+        Err("write attribution is unavailable".into())
+    }
 }
 /// Where grants a person gives an application for another app's action are
 /// recorded. The broker decides whether to ask and builds the grant; the
@@ -1543,7 +1640,9 @@ pub struct HostServices {
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
-    pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
+    /// The Tasks app's tracker, whose issues assigned to an agent are its
+    /// runs. Without it agents run no tasks.
+    pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
     pub person_chat: Option<person_chat::PersonChatService>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
@@ -1554,19 +1653,28 @@ pub struct HostServices {
     /// The device's keyboard shortcuts on the action door. Without it
     /// they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
-    /// Pairing a nearby device, run by the host. Without it no door offers
-    /// it.
-    pub device_pairing: Option<Arc<dyn DevicePairingServices>>,
-    /// The person's identities and their devices, administered by the
-    /// host. Without it no door offers them.
-    pub identity_admin: Option<Arc<dyn IdentityAdminServices>>,
+    /// The steps the host runs itself, each service under its own
+    /// provider. No door offers a step whose service is not installed.
+    pub host_steps: Vec<Arc<dyn HostStepServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     /// The session's persistent search index of applications' content.
     /// Without it apps' content is findable only while they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
+    /// The device content store content puts go to. Without it the content
+    /// put door is not offered.
+    pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,
+    /// The drives the tools service lists to Files, which tell the certified
+    /// Files route when they change (`drivesChanged`). Without it Files is
+    /// never told, and lists no drives.
+    pub drives: Option<Arc<dyn DriveServices>>,
+    /// The person's apps the tools service lists to Files, which tell the
+    /// certified Files route when they change (`applicationsChanged`).
+    /// Without it Files is never told, and its Applications place asks on a
+    /// timer while it is open.
+    pub applications: Option<Arc<dyn ApplicationServices>>,
     /// The session's settings, of which each app reaches its own entries
     /// and the shared sections (`settings_store::app_scope`). Without it
     /// apps have no settings beyond their own process.
@@ -1604,4 +1712,9 @@ pub struct HostServices {
     /// Carries an application's action to another of the person's own
     /// devices. Without it no app reaches another device's actions.
     pub own_device: Option<Arc<dyn OwnDeviceActions>>,
+    /// Asks the room a node of its tree is in to share it, end a share of
+    /// it, or say what the person may do there. Without it no app's share
+    /// reaches a room, and the broker refuses it rather than let a share
+    /// promise access no grant backs.
+    pub room_nodes: Option<Arc<dyn RoomNodeActions>>,
 }

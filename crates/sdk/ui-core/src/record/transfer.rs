@@ -23,13 +23,19 @@
 //! write needs the key's exclusive lease, so it fails with
 //! [`TransferError::Busy`] while an app process still has the record open;
 //! a caller waits for that process to go rather than racing its writer.
+//!
+//! A write returns a [`Landing`] rather than waiting for the disk: the
+//! shell's frame loop drives transfers, and it never waits for a commit. The
+//! next process to open the record reads it from disk, so whatever hands
+//! the record over to one asks [`Landing::durability`] until the write has
+//! landed, while the store's own thread does the waiting.
 
 use std::rc::Rc;
 
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ChangeHash, ObjType, ReadDoc, ScalarValue, Value};
 pub use durable_store::DurableStore;
-use durable_store::{StorageKey, WriteOp};
+use durable_store::{Durability, Revision, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 
 use super::{
@@ -45,18 +51,7 @@ pub const APP_DOCUMENT_KIND: &str = "tilo.app-document";
 pub(super) const RETIRED: &str = "retired";
 
 /// Where a moved record went and who moved it, as its retirement records.
-/// Anyone who can read the old record learns only these ids; whether they
-/// can see the destination is for their own desktop to say.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Successor {
-    /// The room the record now lives in.
-    pub room: String,
-    /// Its id there.
-    pub record: String,
-    /// The person who moved it.
-    pub by: String,
-}
+pub use collab_types::handoff::Successor;
 
 /// Why a record is retired, as stamped into its last change.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +85,19 @@ pub enum TransferError {
     NotTransferable(&'static str),
     #[error("automerge: {0}")]
     Automerge(String),
+}
+
+impl TransferError {
+    /// Whether this is only a not-yet: on a thread that must not wait on the
+    /// disk ([`durable_store::waiting`]) the store's own thread is still
+    /// opening or reading the document, and asking again later goes on.
+    #[must_use]
+    pub fn is_opening(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(app_state::StoreError::Opening(_)) | Self::Open(RecordOpenError::Opening)
+        )
+    }
 }
 
 impl From<durable_store::StoreError> for TransferError {
@@ -167,7 +175,6 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
 /// What a transfer takes out of the source room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// One of the app's records.
     Record(RecordCheckout),
     /// The document an app keeps for itself in a room through
     /// [`crate::persist`]. It has no record identity of its own there, and
@@ -187,9 +194,6 @@ impl Origin {
     }
 
     /// Refuse anything but this origin's live document in `room`.
-    ///
-    /// # Errors
-    /// A document that is not this origin's live document there.
     pub fn validate(&self, doc: &AutoCommit, room: &str) -> Result<(), TransferError> {
         match self {
             Self::Record(checkout) => Ok(validate_identity(doc, checkout, room)?),
@@ -222,15 +226,24 @@ fn key(package: &str, room: &str, id: &RecordId) -> Result<StorageKey, TransferE
 }
 
 fn decode(store: &Rc<dyn DurableStore>, key: &StorageKey) -> Result<AutoCommit, TransferError> {
-    let stored = store
-        .read(key)?
-        .filter(|stored| !stored.bytes.is_empty())
-        .ok_or(RecordOpenError::MissingRecord)?;
+    decode_stored(store, key)?.ok_or_else(|| RecordOpenError::MissingRecord.into())
+}
+
+/// `key`'s document, `None` when nothing is stored there. One read: a store
+/// that prepares reads for a thread that must not wait hands each one over
+/// once.
+fn decode_stored(
+    store: &Rc<dyn DurableStore>,
+    key: &StorageKey,
+) -> Result<Option<AutoCommit>, TransferError> {
+    let Some(stored) = store.read(key)?.filter(|stored| !stored.bytes.is_empty()) else {
+        return Ok(None);
+    };
     let label = store
         .local_path(key)
         .unwrap_or_else(|| std::path::PathBuf::from(key.to_string()));
     let (doc, _) = app_state::decode_canonical(&stored.bytes, false, &label)?;
-    Ok(doc)
+    Ok(Some(doc))
 }
 
 /// Read `origin` as `package` last made it durable in `room`, without
@@ -280,20 +293,23 @@ pub fn adopt_fetched(
     room: &str,
     id: &RecordId,
     bytes: &[u8],
-) -> Result<RecordCheckout, TransferError> {
+) -> Result<(RecordCheckout, Option<Landing>), TransferError> {
     let label = std::path::PathBuf::from(format!("fetched {id}"));
     let (mut doc, _) = app_state::decode_canonical(bytes, false, &label)?;
     let checkout = identity(&doc)
         .filter(|found| &found.id == id)
         .ok_or(RecordOpenError::IdentityMismatch)?;
     validate_identity(&doc, &checkout, room)?;
-    match install(store, package, room, &mut doc) {
-        Err(TransferError::Open(RecordOpenError::AlreadyExists)) => {
-            catch_up(store, package, room, &checkout, &doc)?;
-            Ok(checkout)
-        }
-        other => other,
-    }
+    // One writer and one read for both cases: a thread that must not wait
+    // is answered Opening until the store's thread has leased the key, and
+    // a second lease of it would start that over.
+    let key = key(package, room, &checkout.id)?;
+    let _writer = writer(store, &key)?;
+    let landing = match decode_stored(store, &key)? {
+        None => Some(persist(store, &key, &mut doc)?),
+        Some(held) => merge_into(store, &key, held, &checkout, room, &doc)?.1,
+    };
+    Ok((checkout, landing))
 }
 
 /// Identity keys a record's meta map may hold; anything else could claim
@@ -397,10 +413,6 @@ pub fn read_until(
 /// its whole history, one more change giving it `target`'s id and
 /// `to_room`'s scope, and a record's origin id kept as provenance. `source`
 /// is not changed.
-///
-/// # Errors
-/// A source that is not `origin`'s live document, or a transfer into the
-/// room it is already in.
 pub fn rehome(
     source: &AutoCommit,
     origin: &Origin,
@@ -497,18 +509,67 @@ pub fn writer_released(
     }
 }
 
+/// A transfer's write, accepted by the store and on its way to disk.
+///
+/// Another process reads the record next (the instance that opens it, an
+/// app restarted around a merge), so the hand-off to it waits until the
+/// write is [`Durability::Durable`]. Asking never blocks: on a thread that
+/// may wait the write had landed before it was returned, and on one that
+/// must not ([`durable_store::waiting`]) the store's thread commits it while
+/// the document stays leased to it. Nobody else writes the record before
+/// it lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use = "hand the record over only once its write has landed"]
+pub struct Landing {
+    key: StorageKey,
+    revision: Revision,
+}
+
+impl Landing {
+    pub(crate) fn new(key: StorageKey, revision: Revision) -> Self {
+        Self { key, revision }
+    }
+
+    /// Whether the write has reached the disk, in `store`, the store that
+    /// accepted it. Never blocks.
+    pub fn durability(&self, store: &dyn DurableStore) -> Durability {
+        store.durability(&self.key, self.revision)
+    }
+
+    /// How all of `landings` in `store` stand: failed if any failed,
+    /// pending while any is, durable once every one is.
+    pub fn all(store: &dyn DurableStore, landings: &[Self]) -> Durability {
+        let mut all = Durability::Durable;
+        for landing in landings {
+            match landing.durability(store) {
+                Durability::Durable => {}
+                Durability::Pending => all = Durability::Pending,
+                failed @ Durability::Failed(_) => return failed,
+            }
+        }
+        all
+    }
+}
+
+/// Start `key` committing as `doc`, without waiting for it where this
+/// thread must not.
 fn persist(
     store: &Rc<dyn DurableStore>,
     key: &StorageKey,
     doc: &mut AutoCommit,
-) -> Result<(), TransferError> {
-    store.write(key, WriteOp::Replace(doc.save()), None)?;
-    store.flush(Some(key))?;
-    Ok(())
+) -> Result<Landing, TransferError> {
+    let revision = store.write(key, WriteOp::Replace(doc.save()), None)?;
+    match store.flush_where_allowed(key) {
+        Ok(()) | Err(durable_store::StoreError::Pending(_)) => {
+            Ok(Landing::new(key.clone(), revision))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Make `doc` (from [`rehome`]) a record of `package` in `room`. Refuses to
-/// overwrite anything already stored under its id.
+/// overwrite anything already stored under its id. Open it elsewhere once
+/// the [`Landing`] has landed.
 ///
 /// # Errors
 /// A document not scoped to `room`, an occupied id, or storage failure.
@@ -517,24 +578,20 @@ pub fn install(
     package: &str,
     room: &str,
     doc: &mut AutoCommit,
-) -> Result<RecordCheckout, TransferError> {
+) -> Result<(RecordCheckout, Landing), TransferError> {
     let checkout = identity(doc).ok_or(RecordOpenError::IdentityMismatch)?;
     install_as(store, package, room, checkout, doc)
 }
 
 /// [`install`] a document that arrived for `checkout`, including the room's
 /// package-primary record, whose identity the document does not carry.
-///
-/// # Errors
-/// A document that is not `checkout` in `room`, an occupied id, or storage
-/// failure.
 pub fn install_as(
     store: &Rc<dyn DurableStore>,
     package: &str,
     room: &str,
     checkout: RecordCheckout,
     doc: &mut AutoCommit,
-) -> Result<RecordCheckout, TransferError> {
+) -> Result<(RecordCheckout, Landing), TransferError> {
     validate_identity(doc, &checkout, room)?;
     let key = key(package, room, &checkout.id)?;
     let _writer = writer(store, &key)?;
@@ -544,8 +601,8 @@ pub fn install_as(
     {
         return Err(RecordOpenError::AlreadyExists.into());
     }
-    persist(store, &key, doc)?;
-    Ok(checkout)
+    let landing = persist(store, &key, doc)?;
+    Ok((checkout, landing))
 }
 
 /// Put `doc` in place as the room's own document of `package` in `room`
@@ -562,7 +619,7 @@ pub fn install_room_document(
     package: &str,
     room: &str,
     doc: &mut AutoCommit,
-) -> Result<(), TransferError> {
+) -> Result<Landing, TransferError> {
     app_state::validate_record_namespace(package, room)?;
     let key = StorageKey::room_index(package, room);
     let _writer = writer(store, &key)?;
@@ -578,7 +635,8 @@ pub fn install_room_document(
 /// Merge every change `source` holds that `target` in `room` lacks — the
 /// edits its old writer made after the transfer read it. Deterministic:
 /// it is a CRDT merge, so the order it runs in cannot change the result.
-/// Returns how many changes arrived.
+/// Returns how many changes arrived, and the write bringing them when any
+/// did.
 ///
 /// # Errors
 /// [`TransferError::Busy`] while the destination record is open in an app,
@@ -589,24 +647,38 @@ pub fn catch_up(
     room: &str,
     target: &RecordCheckout,
     source: &AutoCommit,
-) -> Result<usize, TransferError> {
+) -> Result<(usize, Option<Landing>), TransferError> {
     let key = key(package, room, &target.id)?;
     let _writer = writer(store, &key)?;
-    let mut doc = decode(store, &key)?;
+    let doc = decode(store, &key)?;
+    merge_into(store, &key, doc, target, room, source)
+}
+
+/// Merge into `doc`, held under `key`'s writer, what `source` adds, and
+/// start that committing.
+fn merge_into(
+    store: &Rc<dyn DurableStore>,
+    key: &StorageKey,
+    mut doc: AutoCommit,
+    target: &RecordCheckout,
+    room: &str,
+    source: &AutoCommit,
+) -> Result<(usize, Option<Landing>), TransferError> {
     validate_identity(&doc, target, room)?;
     let arriving = doc.clone().get_changes_added(&mut source.clone()).len();
     if arriving == 0 {
-        return Ok(0);
+        return Ok((0, None));
     }
     doc.merge_incoming(&mut source.clone())
         .map_err(|error| TransferError::Automerge(error.to_string()))?;
     validate_identity(&doc, target, room)?;
-    persist(store, &key, &mut doc)?;
-    Ok(arriving)
+    let landing = persist(store, key, &mut doc)?;
+    Ok((arriving, Some(landing)))
 }
 
 /// Stamp `origin` in `room` as retired: one last change in its own history,
-/// after which it is never opened as a live document again.
+/// after which it is never opened as a live document again. No write, and
+/// no [`Landing`], for one already retired.
 ///
 /// # Errors
 /// [`TransferError::Busy`] while an app still holds the document, a missing
@@ -617,16 +689,16 @@ pub fn retire(
     room: &str,
     origin: &Origin,
     why: &Retirement,
-) -> Result<(), TransferError> {
+) -> Result<Option<Landing>, TransferError> {
     let key = origin.key(package, room)?;
     let _writer = writer(store, &key)?;
     let mut doc = decode(store, &key)?;
     if is_retired(&doc) {
-        return Ok(());
+        return Ok(None);
     }
     origin.validate(&doc, room)?;
     stamp_retired(&mut doc, why)?;
-    persist(store, &key, &mut doc)
+    persist(store, &key, &mut doc).map(Some)
 }
 
 /// The origin ids a transferred record came from, oldest first.
@@ -732,7 +804,7 @@ mod tests {
         let known = snapshot.clone().get_heads();
         let target = RecordId::minted();
         let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
-        let installed = install(&store, PACKAGE, TO, &mut arrived).unwrap();
+        let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
         assert_eq!(installed.id, target);
         assert_eq!(provenance(&arrived), std::slice::from_ref(&checkout.id));
         assert!(
@@ -755,9 +827,16 @@ mod tests {
 
         let last = read(&store, PACKAGE, FROM, &origin).unwrap();
         assert_eq!(changes_since(&last, &known), 1);
-        assert_eq!(catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(), 1);
-        assert_eq!(catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(), 0);
-        retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
+        assert_eq!(
+            catch_up(&store, PACKAGE, TO, &installed, &last).unwrap().0,
+            1
+        );
+        assert_eq!(
+            catch_up(&store, PACKAGE, TO, &installed, &last).unwrap(),
+            (0, None),
+            "nothing more to write"
+        );
+        let _ = retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
 
         let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
         assert_eq!(
@@ -904,10 +983,12 @@ mod tests {
             "a record of one room is never kept as another room's"
         );
         assert!(adopt_fetched(&here, PACKAGE, FROM, &checkout.id, b"not a document").is_err());
-        let kept = adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap();
+        let (kept, _) = adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap();
         assert_eq!(kept, checkout);
         assert_eq!(
-            adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap(),
+            adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes)
+                .unwrap()
+                .0,
             checkout,
             "holding it already merges rather than refuses"
         );
@@ -930,6 +1011,50 @@ mod tests {
         );
     }
 
+    /// On the frame loop a transfer neither reads the disk nor waits for a
+    /// commit: it is told to come back while the store's own thread opens
+    /// the document, and then only starts its write. Until the write lands
+    /// the document stays the store's, so no other process takes it or
+    /// reads it half-written, and the landing says when the next one may.
+    #[test]
+    fn a_transfer_on_the_frame_loop_starts_its_write_and_reports_when_it_lands() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        let (checkout, writer) = seeded(temp.path());
+        drop(writer);
+        let origin = Origin::Record(checkout.clone());
+        let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
+        let mut arrived = rehome(&snapshot, &origin, FROM, TO, &RecordId::minted()).unwrap();
+        let (installed, landing) = {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            tilo_test_env::wait_for("the store's thread to open the record", || {
+                match install(&store, PACKAGE, TO, &mut arrived) {
+                    Ok(installed) => Some(installed),
+                    Err(error) if error.is_opening() => None,
+                    Err(error) => panic!("installing on the frame loop: {error}"),
+                }
+            })
+        };
+        let key = key(PACKAGE, TO, &installed.id).unwrap();
+        let other_process = app_state::FsStore::new(temp.path());
+        if other_process.lease(&key).is_ok() {
+            assert_eq!(
+                landing.durability(store.as_ref()),
+                Durability::Durable,
+                "the document is free only once the write is on the disk"
+            );
+        }
+        store.flush(Some(&key)).unwrap();
+        assert_eq!(landing.durability(store.as_ref()), Durability::Durable);
+        assert_eq!(
+            Landing::all(store.as_ref(), std::slice::from_ref(&landing)),
+            Durability::Durable
+        );
+        let other_process: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(temp.path()));
+        let there = read(&other_process, PACKAGE, TO, &Origin::Record(installed)).unwrap();
+        assert_eq!(body(&there).as_deref(), Some("first draft"));
+    }
+
     #[test]
     fn a_transfer_never_overwrites_or_crosses_into_its_own_room() {
         let temp = tempfile::tempdir().unwrap();
@@ -948,7 +1073,7 @@ mod tests {
         );
         let target = RecordId::minted();
         let mut first = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
-        install(&store, PACKAGE, TO, &mut first).unwrap();
+        let _ = install(&store, PACKAGE, TO, &mut first).unwrap();
         let mut again = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
         assert!(matches!(
             install(&store, PACKAGE, TO, &mut again),
@@ -975,7 +1100,7 @@ mod tests {
         let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
         let target = RecordId::minted();
         let mut arrived = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
-        let installed = install(&store, PACKAGE, TO, &mut arrived).unwrap();
+        let (installed, _) = install(&store, PACKAGE, TO, &mut arrived).unwrap();
         assert_eq!(installed.kind.as_str(), "tilo.app-document");
         let destination = read(&store, PACKAGE, TO, &Origin::Record(installed)).unwrap();
         assert_eq!(
@@ -992,7 +1117,7 @@ mod tests {
             "not while the app still writes it"
         );
         drop(app);
-        retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
+        let _ = retire(&store, PACKAGE, FROM, &origin, &moved()).unwrap();
         assert!(matches!(
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))

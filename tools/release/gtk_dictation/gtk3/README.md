@@ -85,8 +85,8 @@ property. It adds no input method or private Undo implementation.
 1. First compile the modified toolkit and subject, with fatal GLib warnings.
    Verify native library loading, properties, bindings, and no class-registration
    conflict in every intended application closure.
-2. Reuse the strict `fixtures/gtk3_dictation_20261010/single-line-r7` paced recorded
-   journey, replacing only the stock subject/runtime. Keep selection replacement,
+2. Reuse the strict single-line-r7 paced recorded journey from the 2026-10-10
+   GTK3 run ([historical fixtures](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/gtk3_dictation_20261010)), replacing only the stock subject/runtime. Keep selection replacement,
    one Undo/Redo, cancel/restart, focus retirement and protected-field assertions.
    The old r7 Undo failure stays failed; later steps there were not run.
 3. Add ordinary typing before dictation, repeated commits, reversed Unicode

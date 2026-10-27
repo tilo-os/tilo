@@ -13,10 +13,10 @@ use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
 use ui::widget::{
     Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, Chip, ChipLead, ChipStyle, Column,
-    Container, ControlSize, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow,
-    MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource, OwnedBadge, Row, Scrollable,
-    Section, SectionHeader, Skeleton, SkeletonShape, Spacer, Text, TextInput, Toggle, Tone,
-    card_column_width, card_columns,
+    Container, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow, MediaAspect,
+    MediaCard, MediaGrid, MediaSize, MediaSource, OwnedBadge, Row, Scrollable, Section,
+    SectionHeader, SkeletonShape, Spacer, Text, TextInput, Toggle, Tone, card_column_width,
+    card_columns,
 };
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
@@ -42,6 +42,41 @@ pub struct Ui<'a> {
     pub imgs: Imgs<'a>,
     /// Width of the shell's content column, which sizes the media grids.
     pub content_width: f64,
+    /// When the videos a screen waits for were first waited for.
+    pub waiting: &'a Waiting,
+}
+
+/// When the videos the screens wait for were first waited for, kept across
+/// the rebuilds of the screens meanwhile: their placeholders step on from
+/// then, not from each rebuild.
+#[derive(Debug, Default)]
+pub struct Waiting {
+    since: std::cell::Cell<Option<ui::time::Instant>>,
+    shown: std::cell::Cell<bool>,
+}
+
+impl Waiting {
+    /// A build of the screen starts.
+    pub fn begin_build(&self) {
+        self.shown.set(false);
+    }
+
+    /// The build finished: when it waited for nothing, the wait is over.
+    pub fn end_build(&self) {
+        if !self.shown.get() {
+            self.since.set(None);
+        }
+    }
+
+    /// The build shows a placeholder: since when it has.
+    fn since(&self) -> ui::time::Instant {
+        self.shown.set(true);
+        self.since.get().unwrap_or_else(|| {
+            let now = ui::time::now();
+            self.since.set(Some(now));
+            now
+        })
+    }
 }
 
 impl Ui<'_> {
@@ -126,6 +161,17 @@ fn views_and_age(views: u64, published: &str) -> String {
     }
 }
 
+/// What a video row says about its audience: "1.2K watching" for a live
+/// stream, else its views and age. Listings name no viewer count for a live
+/// stream (it arrives as 0), so then it says nothing rather than "0 watching".
+fn reach(video: &Video) -> String {
+    match (video.live, video.views) {
+        (true, 0) => String::new(),
+        (true, views) => t_args("tube-watching", &[arg("shown", human_count(views))]),
+        (false, views) => views_and_age(views, &video.published),
+    }
+}
+
 /// "12K subscribers", or `None` when the count is unknown.
 fn subscribers(count: u64) -> Option<String> {
     (count > 0).then(|| {
@@ -138,6 +184,18 @@ fn subscribers(count: u64) -> Option<String> {
 
 /// One video as a media card: thumbnail, title, creator, reach and age.
 fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
+    video_card_for(ui, v, false)
+}
+
+/// [`video_card`], with the second line saying where the video was left
+/// instead of its reach: on the history page the question is "how much of
+/// this have I seen", not "how many people have seen it". A card shows two
+/// lines, so this is a choice rather than an addition.
+fn history_card(ui: Ui<'_>, v: &Video) -> MediaCard {
+    video_card_for(ui, v, true)
+}
+
+fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
     let dearrow = ui.model.settings.dearrow_titles_on();
     let mut card = MediaCard::new(
         format!("video_card_{}", v.id),
@@ -160,13 +218,26 @@ fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     {
         card = card.meta_mark(Icon::CircleCheck);
     }
-    let reach = if v.live {
-        t_args("tube-watching", &[arg("shown", human_count(v.views))])
-    } else {
-        views_and_age(v.views, &v.published)
-    };
-    if !reach.is_empty() {
-        card = card.meta(reach);
+    // Where the person left this video, when the page is the history: a
+    // video left half way says so, so half-watched is never mistaken for
+    // watched.
+    let resume = resume_line
+        .then(|| ui.model.resume_at_ms(&v.id))
+        .flatten()
+        .map(|position| {
+            t_args(
+                "tube-resume-at",
+                &[arg("time", clock(position as f64 / 1000.0))],
+            )
+        });
+    match resume {
+        Some(resume) => card = card.meta(&resume),
+        None => {
+            let reach = reach(v);
+            if !reach.is_empty() {
+                card = card.meta(reach);
+            }
+        }
     }
     card = if v.live {
         card.badge(OwnedBadge::Live)
@@ -201,12 +272,19 @@ fn video_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> El
     Box::new(MediaGrid::new(cards))
 }
 
-/// The loading state of a video grid: two rows of card-shaped placeholders
-/// in the grid's own columns, each as tall as a card with its two title
-/// lines and meta, so the arriving cards replace them without moving
-/// anything.
+/// The videos on their way: two rows of the framework's placeholders in the
+/// grid's own columns, each as tall as a card with its two title lines and
+/// meta, so the arriving cards replace them without moving anything.
 fn skeleton_grid(ui: Ui<'_>) -> Column {
     let theme = ui.theme;
+    let since = ui.waiting.since();
+    let placeholder = |shape| {
+        ui::widget::ArrivingView::placeholder_since(
+            ui::arriving::Source::host("YouTube"),
+            since,
+            shape,
+        )
+    };
     let (columns, column) = grid_columns(ui);
     let mut grid = stack().with_rhythm(ui::tokens::Rhythm::Group);
     for _ in 0..2 {
@@ -222,10 +300,8 @@ fn skeleton_grid(ui: Ui<'_>) -> Column {
                     .with_child(Box::new(
                         stack()
                             .with_gap(theme.tokens.spacing.s0)
-                            .push(Box::new(Skeleton::new(SkeletonShape::Media(
-                                MediaAspect::Wide,
-                            ))))
-                            .push(Box::new(Skeleton::new(SkeletonShape::Text { lines: 2 }))),
+                            .push(placeholder(SkeletonShape::Media(MediaAspect::Wide)))
+                            .push(placeholder(SkeletonShape::Text { lines: 2 })),
                     )),
             ));
         }
@@ -239,12 +315,11 @@ fn search_action() -> ui::tilo_actions::ActionBinding<()> {
 }
 
 // ---------------------------------------------------------------------------
-// header row
+// location
 // ---------------------------------------------------------------------------
 
-/// The content column's title for `route`, for the window's header row.
-/// Pages that title themselves (a video, a creator, a playlist) leave it
-/// empty.
+/// The window bar's location for `route`. Pages that title themselves (a
+/// video, a creator, a playlist) leave it empty.
 pub fn title(route: &Route) -> String {
     match route {
         Route::Home => t("tube-nav-home"),
@@ -258,36 +333,6 @@ pub fn title(route: &Route) -> String {
     }
 }
 
-/// The content column's header actions: the connection status while the
-/// catalogue is still on its way, the page's own action, and the search
-/// launcher.
-pub fn header_actions(ui: Ui<'_>) -> Vec<Element> {
-    let mut actions: Vec<Element> = Vec::new();
-    if let Some(status) = connection_badge(ui.model) {
-        actions.push(Box::new(status));
-    }
-    if matches!(ui.model.route, Route::History) && !ui.model.history.is_empty() {
-        actions.push(Box::new(
-            Button::new("clear_history", &t("tube-clear-history"))
-                .role(ButtonRole::Destructive)
-                .control_size(ControlSize::Small)
-                .on_click(ui.push(Action::Effect(TubeEffect::ClearHistory))),
-        ));
-    }
-    actions.push(Box::new(ui::search::search_button(
-        SearchRequest::this_app(),
-    )));
-    actions
-}
-
-/// "Connecting" while the catalogue is on its way. Being offline is not
-/// repeated here: a page with nothing to show says so itself, and a request
-/// that fails says so in its toast.
-fn connection_badge(model: &TubeModel) -> Option<Badge> {
-    (!model.data_source.live && model.data_source.label.contains("connect"))
-        .then(|| Badge::text(t("tube-connecting")).style(ChipStyle::Tinted(Tone::Info)))
-}
-
 // ---------------------------------------------------------------------------
 // browse screens
 // ---------------------------------------------------------------------------
@@ -299,7 +344,9 @@ pub fn home(ui: Ui<'_>) -> Scrollable {
     } else if model.feed_loading {
         Box::new(skeleton_grid(ui))
     } else if let Some(error) = &model.feed_error {
-        Box::new(EmptyState::error(t("tube-home-error"), error).with_icon(Icon::WifiOff))
+        Box::new(EmptyState::error(t("tube-home-error"), error).with_icon(Icon::TriangleAlert))
+    } else if let Some(why) = &model.sources_unreached {
+        Box::new(sources_unreached_state(why))
     } else if model.data_source.label.contains("offline") {
         Box::new(
             EmptyState::new(t("tube-offline-title"))
@@ -316,6 +363,20 @@ pub fn home(ui: Ui<'_>) -> Scrollable {
         )
     };
     page(vec![body])
+}
+
+/// Home when the device is online but no source answered: the cause in the
+/// person's words, and what a source answered behind "Details".
+fn sources_unreached_state(why: &crate::api::Unreached) -> EmptyState {
+    use crate::api::Unreached;
+    let state = EmptyState::new(t("tube-unreached-title")).with_icon(Icon::TriangleAlert);
+    match why {
+        Unreached::Offline => state.with_message(t("tube-offline-message")),
+        Unreached::NoRelay => state.with_message(t("tube-sources-no-relay")),
+        Unreached::Failed(reason) => state
+            .with_message(t("tube-sources-failed"))
+            .with_details(reason),
+    }
 }
 
 pub fn trending(ui: Ui<'_>) -> Scrollable {
@@ -409,7 +470,9 @@ pub fn history(ui: Ui<'_>) -> Scrollable {
                 .with_message(t("tube-history-empty-message")),
         ));
     } else {
-        children.push(video_grid(ui, videos));
+        children.push(Box::new(MediaGrid::new(
+            videos.into_iter().map(|v| history_card(ui, v)).collect(),
+        )));
     }
     page(children)
 }
@@ -644,11 +707,19 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
             Container::new()
                 .with_no_padding()
                 .with_size(player_w as f32, player_h)
-                .with_child(Box::new(PlayerHost::new(player, player_h).with_poster(
-                    ui.imgs.store_handle(),
-                    ui.model.display_thumbnail_url(v),
-                    v.display_title(model.settings.dearrow_titles_on()),
-                ))),
+                .with_child(Box::new(
+                    PlayerHost::new(player, player_h)
+                        .with_poster(
+                            ui.imgs.store_handle(),
+                            ui.model.display_thumbnail_url(v),
+                            v.display_title(model.settings.dearrow_titles_on()),
+                        )
+                        .with_captions(if model.captions_of == v.id {
+                            model.captions.clone()
+                        } else {
+                            Vec::new()
+                        }),
+                )),
         ));
 
     let details = watch_details(ui, v);
@@ -689,11 +760,37 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
 
     // The player sits under the header row, whose Back returns to the page
     // this one was opened from; the details below it stand in the gutter.
-    let content = stack()
-        .with_gap(theme.tokens.spacing.s0)
+    let mut content = stack().with_gap(theme.tokens.spacing.s0);
+    if v.plays_only_in_app() {
+        // Said where the picture would play, not left as a still poster.
+        content = content.push(Box::new(Banner::info(t("tube-live-in-app"))));
+    }
+    if let Some(unplayable) = model.unplayable(&v.id) {
+        content = content.push(Box::new(unplayable_banner(ui, unplayable)));
+    }
+    let content = content
         .push(Box::new(stage))
         .push(Box::new(Column::new().with_intrinsic_height().push(lower)));
     Scrollable::new_vertical().with_child(Box::new(content))
+}
+
+/// Why the open video is not playing, in plain words, with `YouTube`'s own
+/// reason when it gave one, and a way to ask again.
+fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banner {
+    let message = match &unplayable.said {
+        Some(said) => t_args(
+            "tube-unplayable-youtube-said",
+            &[arg("reason", said.clone())],
+        ),
+        None => t("tube-unplayable-no-source"),
+    };
+    Banner::warning(t("tube-unplayable"))
+        .with_id("tube-unplayable")
+        .with_message(message)
+        .with_action(
+            Button::new("retry_playback", &t("tube-try-again"))
+                .on_click(ui.push(Action::RetryPlayback)),
+        )
 }
 
 /// Hand the shared player this video's `SponsorBlock` segments, the quality
@@ -731,10 +828,71 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     player.set_setting(PlayerSetting::choice(
         "resolution",
         Icon::Monitor,
-        t("tube-resolution"),
+        // What the stream actually is, when that is not what was asked for:
+        // a choice that silently serves something else is the defect.
+        &if model.stream_quality.trim().is_empty() {
+            t("tube-quality")
+        } else {
+            t_args(
+                "tube-quality-now",
+                &[arg("quality", model.stream_quality.clone())],
+            )
+        },
         1,
         qualities,
         selected,
+    ));
+
+    let speeds: Vec<String> = crate::app::PLAYBACK_SPEEDS
+        .iter()
+        .map(|speed| t_args("tube-speed-value", &[arg("rate", speed.to_string())]))
+        .collect();
+    let speed = crate::app::PLAYBACK_SPEEDS
+        .iter()
+        .position(|speed| (speed - model.settings.playback_speed).abs() < 0.01)
+        .unwrap_or(3);
+    player.set_setting(PlayerSetting::choice(
+        SPEED_SETTING,
+        Icon::Gauge,
+        t("tube-playback-speed"),
+        2,
+        speeds,
+        speed,
+    ));
+    // Captions: what this video offers, plus Off. The label says what the
+    // choice is doing: off, on, or why it cannot be on.
+    let mut captions: Vec<String> = vec![t("tube-captions-off")];
+    captions.extend(model.caption_tracks.iter().map(|track| {
+        if track.automatic {
+            t_args(
+                "tube-captions-automatic",
+                &[arg("track", track.label.clone())],
+            )
+        } else {
+            track.label.clone()
+        }
+    }));
+    let chosen = model
+        .settings
+        .caption_language
+        .as_deref()
+        .and_then(|language| {
+            model
+                .caption_tracks
+                .iter()
+                .position(|track| track.language == language)
+        })
+        .map_or(0, |index| index.saturating_add(1));
+    player.set_setting(PlayerSetting::choice(
+        CAPTIONS_SETTING,
+        Icon::MessageSquare,
+        match &model.captions_notice {
+            Some(notice) => t_args("tube-captions-named", &[arg("why", notice.clone())]),
+            None => t("tube-captions"),
+        },
+        3,
+        captions,
+        chosen,
     ));
 
     let manual = v
@@ -757,6 +915,12 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
 
 /// The player command that skips the segment under the playhead.
 pub const SKIP_SETTING: &str = "skip-segment";
+
+/// The player's playback-speed menu.
+pub const SPEED_SETTING: &str = "playback-speed";
+
+/// The player's caption-track menu.
+pub const CAPTIONS_SETTING: &str = "captions";
 
 /// A `SponsorBlock` category's colour on the timeline and in Settings: one
 /// series of the theme's presence palette per category, so every category
@@ -786,7 +950,10 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
     if !v.published.trim().is_empty() {
         fact(v.published.clone());
     }
+    // Dislikes stand beside the like count on the Like button: with no like
+    // count to read them against, neither shows.
     if model.settings.return_dislike_enabled
+        && v.likes > 0
         && let Some(dislikes) = model.dislikes_of(&v.id)
     {
         facts = facts.push(Box::new(
@@ -1069,11 +1236,7 @@ fn up_next_row(ui: Ui<'_>, v: &Video) -> Container {
         .with_gap(rhythm.tight)
         .push(Box::new(text(v.display_title(dearrow), TextRole::Label)))
         .push(Box::new(text(&v.channel_name, TextRole::Caption).dimmed()));
-    let reach = if v.live {
-        t_args("tube-watching", &[arg("shown", human_count(v.views))])
-    } else {
-        views_and_age(v.views, &v.published)
-    };
+    let reach = reach(v);
     if !reach.is_empty() {
         about = about.push(Box::new(text(&reach, TextRole::Caption).dimmed()));
     }
@@ -1598,4 +1761,21 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
     page(vec![Box::new(Section::new(children).with_header(
         SectionHeader::heading(format!("Search: {query}")),
     ))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reach;
+
+    #[test]
+    fn a_live_stream_without_a_viewer_count_says_nothing_about_its_audience() {
+        let mut live = crate::sample::model()
+            .videos
+            .into_iter()
+            .find(|video| video.live)
+            .expect("the sample has a live stream");
+        assert!(reach(&live).contains("watching"));
+        live.views = 0;
+        assert_eq!(reach(&live), "");
+    }
 }

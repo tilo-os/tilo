@@ -25,6 +25,8 @@ clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
 hex.workspace = true
+# The shared web room's owner root and one-time admission tokens.
+getrandom.workspace = true
 libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }
@@ -59,6 +61,12 @@ zip.workspace = true
 # Reuse the validator generation/features already locked in workspace-hack.
 wasmparser = { version = "=0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 workspace-hack = { version = "0.1" }
+# `tilo-app push`: a device of the developer's dials the room's host and
+# invokes the room's governance.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-automation = { path = "../../collab/automation" }
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 serde_yaml = "0.9"

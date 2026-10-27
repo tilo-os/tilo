@@ -197,7 +197,6 @@ impl Publication {
     }
 }
 
-/// The relay's word for `role`.
 const fn role_word(role: RoomRole) -> &'static str {
     match role {
         RoomRole::Viewer => "viewer",
@@ -245,10 +244,6 @@ impl ShellNetwork {
     /// order the sheet shows them; with `typed`, a site the person typed is
     /// asked too. A site out of reach is left out quietly, as long as any
     /// answered. Blocks on the sites: call it off the frame loop.
-    ///
-    /// # Errors
-    ///
-    /// When `typed` is not a site, or no site answered.
     pub(crate) fn directory(&self, typed: Option<&str>) -> Result<Vec<DirectoryListing>, String> {
         let runtime = self.runtime_handle()?;
         let mut sites = Vec::new();
@@ -343,11 +338,6 @@ impl ShellNetwork {
 
     /// Report the public workspace `room`, held through its door, to the
     /// people who run it.
-    ///
-    /// # Errors
-    ///
-    /// When `room` was not joined from a directory, or the report was not
-    /// taken.
     pub(crate) fn report_workspace(&self, room: RoomId, reason: &str) -> Result<(), String> {
         let door = self
             .site_of_room(room)
@@ -363,10 +353,6 @@ impl ShellNetwork {
     /// Whether `room` is public, and with what: as its host answers when
     /// a host of this person governs it; a workspace only this computer
     /// governs is private until making it public moves it to their host.
-    ///
-    /// # Errors
-    ///
-    /// When someone else runs the workspace, or its host did not answer.
     pub(crate) fn publication(&self, room: RoomId) -> Result<Publication, String> {
         match self.administered_room(room) {
             Some(held) => publication_of(
@@ -383,11 +369,6 @@ impl ShellNetwork {
     /// moved onto the person's home relay first, in the same slot, and is
     /// listed there (`moved`). Blocks on the host and the move: call it off
     /// the frame loop.
-    ///
-    /// # Errors
-    ///
-    /// When someone else runs it, the person has no host to move it to, the
-    /// move failed, or the host refused.
     pub(crate) fn publish(
         &self,
         room: RoomId,
@@ -440,7 +421,7 @@ impl ShellNetwork {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room() == room)
             .map(|workspace| (workspace.id, workspace.name.clone()))
             .ok_or("that workspace is not on this computer")?;
         let moved = self
@@ -449,13 +430,11 @@ impl ShellNetwork {
         // The enrollment's own exchange decides when it is done or failed;
         // the room is administered here once it is installed.
         if let Some(id) = moved.enrollment {
-            loop {
-                match self.poll_enrollment(id)? {
-                    crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending {
-                        ..
-                    } => std::thread::sleep(MOVE_POLL),
-                    _ => break,
-                }
+            while let crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending {
+                ..
+            } = self.poll_enrollment(id)?
+            {
+                std::thread::sleep(MOVE_POLL);
             }
         }
         tracing::info!(from = %room, to = %moved.room, "a workspace moved to its person's host to be made public");

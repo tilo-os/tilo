@@ -7,12 +7,16 @@
 //! `presence.follow` action make; someone invited or not connected opens the
 //! people panel on them instead.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_desktop::collaborators::{RosterRow, collaborator_roster_rows};
 use ui::search::{FieldWeight, ListIndex};
+use ui::widget::command_palette::RowFace;
 
-use crate::shell::chrome_state::{Chrome, PresenceRequest};
+use super::happening_now;
+use crate::shell::chrome_state::{Chrome, ChromeState, PresenceRequest, SearchScope};
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
@@ -23,6 +27,8 @@ pub struct PeopleProvider {
     kinds: Vec<ResourceKind>,
     /// The people's names, indexed while they stay the same.
     ranker: ListIndex,
+    /// The faces of the launcher rows last listed, by row id.
+    faces: RefCell<HashMap<String, Vec<RowFace>>>,
 }
 
 impl Default for PeopleProvider {
@@ -30,6 +36,7 @@ impl Default for PeopleProvider {
         Self {
             kinds: vec![ResourceKind::Custom(t("search-kind-people"))],
             ranker: ListIndex::default(),
+            faces: RefCell::default(),
         }
     }
 }
@@ -37,6 +44,19 @@ impl Default for PeopleProvider {
 impl PeopleProvider {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Happening now in `scope`, remembering each row's faces.
+    fn happening(&self, state: &ChromeState, scope: SearchScope) -> Vec<SearchResult> {
+        let rows = happening_now::rows(state, scope, &state.live_calls);
+        let mut faces = self.faces.borrow_mut();
+        faces.clear();
+        rows.into_iter()
+            .map(|(row, worn)| {
+                faces.insert(row.id.clone(), worn);
+                row
+            })
+            .collect()
     }
 }
 
@@ -98,8 +118,28 @@ impl SearchProvider for PeopleProvider {
         &self.kinds
     }
 
-    fn available_in_active_app_scope(&self) -> bool {
-        true
+    fn launcher_section(&self) -> Option<crate::shell::search::launcher::LauncherSection> {
+        Some(crate::shell::search::launcher::LauncherSection::HappeningNow)
+    }
+
+    fn launcher_rows(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        self.happening(ctx.chrome, ctx.effective_scope())
+    }
+
+    fn row_outcome(&self, result: &SearchResult) -> Option<String> {
+        happening_now::outcome(&result.id)
+    }
+
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        happening_now::icon(&result.id)
+    }
+
+    fn row_faces(&self, result: &SearchResult) -> Vec<RowFace> {
+        self.faces
+            .borrow()
+            .get(&result.id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
@@ -114,6 +154,19 @@ impl SearchProvider for PeopleProvider {
         for person in &tree.desktop.collaborators {
             (&person.id, &person.name, person.active_tab).hash(&mut hasher);
         }
+        // Happening now reads every workspace's presence and the calls here.
+        for workspace in &tree.desktop.workspaces {
+            (workspace.id.0, &workspace.name).hash(&mut hasher);
+            for person in &workspace.collaborators {
+                (&person.id, person.active_tab, person.invited).hash(&mut hasher);
+            }
+        }
+        for call in &ctx.chrome.live_calls {
+            (call.workspace.0, &call.channel.channel, &call.name).hash(&mut hasher);
+            for person in &call.people {
+                person.id.hash(&mut hasher);
+            }
+        }
         drop(tree);
         format!("people:{:016x}", hasher.finish())
     }
@@ -121,12 +174,18 @@ impl SearchProvider for PeopleProvider {
     /// A person is addressed by their participant id, found or not by a
     /// search.
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        if happening_now::is_row_id(id) {
+            return self
+                .happening(ctx.chrome, SearchScope::All)
+                .into_iter()
+                .find(|row| row.id == id);
+        }
         let kind = self.kinds.first()?;
         let me = crate::shell::state::local_user_id();
         let tree = ctx.chrome.tree();
         let row = collaborator_roster_rows(&tree.desktop, &me)
             .into_iter()
-            .find(|row| row.id == id && row.id != me)?;
+            .find(|row| row.id == id && row.id != me && !row.own_device)?;
         drop(tree);
         Some(result(row, kind.clone()))
     }
@@ -145,7 +204,7 @@ impl SearchProvider for PeopleProvider {
             let tree = ctx.chrome.tree();
             collaborator_roster_rows(&tree.desktop, &me)
                 .into_iter()
-                .filter(|row| row.id != me)
+                .filter(|row| row.id != me && !row.own_device)
                 .collect()
         };
         let fields: Vec<Vec<(String, FieldWeight)>> = people

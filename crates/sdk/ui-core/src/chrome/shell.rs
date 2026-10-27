@@ -281,7 +281,6 @@ pub fn paint_row_selection(
 /// square, so the run has no notch between its rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RowJoin {
-    /// The row above is lifted too.
     pub above: bool,
     /// The row below is lifted too.
     pub below: bool,
@@ -345,10 +344,67 @@ pub fn selection_floor_ramp(theme: &Theme, state: SelectionState, ground: Color)
     theme.tokens.colors.lift_on(ground, t)
 }
 
+/// An alignment guide: the line a dragged object lines up with while it
+/// is near enough to snap (a display on the arrangement canvas, a shape on
+/// a slide), from `from` to `to`. The accent as a mark on a surface, one
+/// chrome rule wide; drawn only while the drag is snapped to that line.
+pub fn paint_alignment_guide(
+    scene: &mut Scene,
+    transform: Affine,
+    from: Point,
+    to: Point,
+    theme: &Theme,
+) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+        transform,
+        theme.tokens.colors.intent.accent_ink,
+        None,
+        &vello::kurbo::Line::new(from, to),
+    );
+}
+
 /// OKLCH lightness distance between two colours.
 pub fn lightness_step(a: Color, b: Color) -> f32 {
     use crate::color::Oklch;
     (Oklch::from_color(a).l - Oklch::from_color(b).l).abs()
+}
+
+/// What a display's edge says ([`paint_display_edge`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayEdge {
+    /// A call rings on another display.
+    Ringing,
+    /// A visual alert, along every display.
+    Alert,
+}
+
+/// Paint `edge` along the inside of `display`'s rectangle.
+pub fn paint_display_edge(
+    scene: &mut Scene,
+    transform: Affine,
+    display: Rect,
+    edge: DisplayEdge,
+    theme: &Theme,
+) {
+    let metrics = &theme.tokens.metrics;
+    let (width, colour) = match edge {
+        DisplayEdge::Ringing => (
+            f64::from(metrics.call_edge_px),
+            theme.tokens.colors.border_focus,
+        ),
+        DisplayEdge::Alert => (
+            f64::from(metrics.alert_edge_px),
+            theme.tokens.colors.intent.accent,
+        ),
+    };
+    scene.stroke(
+        &vello::kurbo::Stroke::new(width),
+        transform,
+        colour,
+        None,
+        &display.inset(-width / 2.0),
+    );
 }
 
 /// The desktop's own ground: what shell chrome drawn over the whole desktop
@@ -404,6 +460,42 @@ pub fn panel_ground(theme: &Theme) -> Color {
     last
 }
 
+/// A Panel's derived edge: [`panel_border`], stroked half a pixel inside
+/// its outline so the 1 px edge is crisp and stays the panel's own
+/// outermost pixel row.
+pub fn paint_panel_edge(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    theme: &Theme,
+) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        panel_border(theme),
+        None,
+        &crate::surface::edge_outline(rect, radius),
+    );
+}
+
+/// A derived hairline round `shape` on `ground`: a whole-row target that
+/// should read as one without a body of its own.
+pub fn paint_hairline_outline(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &RoundedRect,
+    ground: Color,
+) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        Colors::hairline_on(ground, HAIRLINE_ALPHA),
+        None,
+        shape,
+    );
+}
+
 /// The edge of a floating [`ChromeRole::Panel`], stroked on its outermost
 /// pixel row: the design language's inner hairline (white at 7 % on a dark
 /// material, black at 8 % on a light one,
@@ -417,10 +509,6 @@ pub fn panel_border(theme: &Theme) -> Color {
         theme.tokens.elevation.floating_edge
     }
 }
-
-/// The panel edge outside high contrast: about a sixth, so the edge reads as
-/// the panel's own and not a line around it.
-pub const PANEL_BORDER_QUIET_ALPHA: u8 = 40;
 
 /// Lay down a floating panel's elevation, clipped to the ring *outside*
 /// its own silhouette. The shadow is [`crate::surface::shadow`], a blur of
@@ -467,17 +555,32 @@ pub fn panel_shadow(
     scene.pop_layer();
 }
 
+/// A painted floating Panel: its outline, for callers that clip their
+/// content to it, and the theme to draw that content with.
+#[must_use = "draw the panel's contents with `theme`, not the window's"]
+pub struct PaintedPanel {
+    /// The body's outline at the Panel radius.
+    pub body: RoundedRect,
+    /// The window theme as seen from the [`panel_ground`]
+    /// ([`Theme::on_ground`]): text tiers measured against the panel, and
+    /// fields and secondary buttons stepped off it as they step off a
+    /// window. In dark the overlay rung sits right under `raised`, so a
+    /// control drawn with the window's theme all but vanishes into the
+    /// panel.
+    pub theme: Theme,
+}
+
 /// Paint a floating [`ChromeRole::Panel`] body: its shadow at
 /// `shadow_intensity`, the [`panel_ground`] fill and the 1 px
 /// [`panel_border`], all at the Panel radius. Returns the body's outline
-/// for callers that clip their content to it.
+/// and the theme the panel's contents are drawn with.
 pub fn paint_panel(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
     theme: &Theme,
     shadow_intensity: f32,
-) -> RoundedRect {
+) -> PaintedPanel {
     let radius = ChromeRole::Panel.radius(theme, rect.height());
     panel_shadow(scene, transform, rect, radius, theme, shadow_intensity);
     let body = RoundedRect::from_rect(rect, radius);
@@ -489,7 +592,19 @@ pub fn paint_panel(
         None,
         &body,
     );
-    body
+    PaintedPanel {
+        body,
+        theme: on_panel(theme),
+    }
+}
+
+/// The theme a floating Panel's contents are drawn with: `theme` as seen
+/// from the [`panel_ground`] ([`Theme::on_ground`]). [`paint_panel`]
+/// returns it; a surface that paints its panel in one pass and its
+/// contents in another derives it here.
+#[must_use]
+pub fn on_panel(theme: &Theme) -> Theme {
+    theme.on_ground(panel_ground(theme))
 }
 
 /// A separator or edge drawn on a chrome surface. Derived against the
@@ -626,6 +741,41 @@ mod tests {
         ]
     }
 
+    /// A secondary button or field on a floating panel has the same
+    /// visible step off the panel in dark as in light: the panel hands its
+    /// contents a theme whose ground is the panel, so `raised` steps off
+    /// the panel instead of the window (the dark overlay rung sits right
+    /// under the raised one).
+    #[test]
+    fn a_panels_contents_stand_on_the_panel() {
+        use crate::color::Oklch;
+        let l = |c: Color| Oklch::from_color(c).l;
+        for (name, theme) in themes() {
+            let colors = &theme.tokens.colors;
+            let window_step = (l(colors.surfaces.raised) - l(colors.surfaces.content)).abs();
+            let mut scene = Scene::new();
+            let painted = paint_panel(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 320.0, 200.0),
+                &theme,
+                1.0,
+            );
+            let ground = panel_ground(&theme);
+            let on = &painted.theme.tokens.colors;
+            assert_eq!(
+                on.surfaces.content, ground,
+                "{name}: contents stand on the panel"
+            );
+            let panel_step = (l(on.surfaces.raised) - l(ground)).abs();
+            assert!(
+                panel_step + 1e-4 >= window_step / 2.0,
+                "{name}: a secondary face stands {panel_step:.3} off the panel, \
+                 {window_step:.3} off the window"
+            );
+        }
+    }
+
     #[test]
     fn selection_tiers_register_progressively_without_the_accent() {
         // Case `selection_tier_on_registers_on_every_ground_it_is_asked_about`:
@@ -685,7 +835,6 @@ mod tests {
             }
         }
 
-        // Case `selection_tiers_move_progressively_away_from_the_ground`.
         {
             for (name, theme) in themes() {
                 let ground = relative_luminance(theme.tokens.colors.surfaces.base);
@@ -719,7 +868,6 @@ mod tests {
             }
         }
 
-        // Case `selection_never_uses_the_accent`.
         {
             for (name, theme) in themes() {
                 let accent = theme.tokens.colors.intent.accent;
@@ -738,7 +886,6 @@ mod tests {
             }
         }
 
-        // Case `hovering_an_active_control_changes_nothing`.
         {
             for (name, theme) in themes() {
                 let a = selection_tier(&theme, SelectionState::active(true));
@@ -758,7 +905,6 @@ mod tests {
 
     #[test]
     fn chrome_radii_and_surfaces_follow_the_theme() {
-        // Case `a_selector_is_a_capsule_at_every_height`.
         {
             let theme = Theme::dark();
             for h in [12.0_f64, 28.0, 44.0, 120.0] {
@@ -802,7 +948,6 @@ mod tests {
             }
         }
 
-        // Case `bar_and_panel_share_one_material`.
         {
             for (name, theme) in themes() {
                 let bar = ChromeRole::Bar.surface(&theme);
@@ -860,7 +1005,6 @@ mod tests {
             }
         }
 
-        // Case `chrome_surfaces_differ_between_light_and_dark`.
         {
             let dark = ChromeRole::Panel.surface(&Theme::dark());
             let light = ChromeRole::Panel.surface(&Theme::light());
@@ -955,7 +1099,6 @@ mod tests {
             }
         }
 
-        // Case `a_scrim_does_not_erase_the_brightest_ground`.
         {
             for (name, theme) in themes() {
                 let page = scrim_maps(252, 0.45, &theme);
@@ -1540,7 +1683,6 @@ mod rail_tests {
 
     #[test]
     fn rail_segments_are_ordered_weighted_and_hittable() {
-        // Case `a_single_group_draws_its_one_segment_like_the_ribbon`.
         {
             assert!(!rail(0, 0, vec![]).is_meaningful());
             assert!(rail(1, 0, vec![0]).is_meaningful());
@@ -1554,7 +1696,6 @@ mod rail_tests {
             assert!(rail(0, 0, vec![]).hit(Point::new(800.0, 897.0)).is_none());
         }
 
-        // Case `segments_run_in_order_with_the_focused_one_longest`.
         {
             let r = rail(4, 2, vec![1, 2]);
             let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
@@ -1620,7 +1761,6 @@ mod rail_tests {
             }
         }
 
-        // Case `hit_targets_tile_and_clear_the_minimum_size`.
         {
             let r = rail(5, 0, vec![0, 1]);
             for i in 0..5 {
@@ -1689,7 +1829,6 @@ mod ribbon_tests {
 
     #[test]
     fn ribbon_segments_are_ordered_centred_and_prominent_when_focused() {
-        // Case `segments_are_ordered_and_disjoint`.
         {
             let r = ribbon(4, 2);
             let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
@@ -1703,7 +1842,6 @@ mod ribbon_tests {
             }
         }
 
-        // Case `the_focused_segment_is_longer`.
         {
             let r = ribbon(3, 1);
             let focused = r.segment_rect(1).unwrap().height();
@@ -1715,7 +1853,6 @@ mod ribbon_tests {
             }
         }
 
-        // Case `the_ribbon_stays_centred_whichever_strip_has_focus`.
         {
             let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
             for focused in 0..4 {
@@ -1791,7 +1928,6 @@ mod ribbon_tests {
 
     #[test]
     fn ribbon_pointer_targets_are_disjoint_and_minimum_sized() {
-        // Case `every_segment_is_clickable_at_the_minimum_target`.
         {
             let r = ribbon(3, 0);
             for i in 0..3 {
@@ -1810,7 +1946,6 @@ mod ribbon_tests {
             }
         }
 
-        // Case `pointer_targets_do_not_overlap`.
         {
             let r = ribbon(4, 2);
             let hits: Vec<Rect> = (0..4).map(|i| r.hit_rect(i).unwrap()).collect();
@@ -1825,13 +1960,11 @@ mod ribbon_tests {
             }
         }
 
-        // Case `a_click_away_from_the_ribbon_hits_nothing`.
         {
             let r = ribbon(3, 1);
             assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
         }
 
-        // Case `segments_and_targets_sit_flush_on_the_right_edge`.
         {
             let r = ribbon(3, 1);
             for i in 0..3 {

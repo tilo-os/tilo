@@ -1,0 +1,37 @@
+[package]
+name = "tasks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "Issue tracker of a workspace: nested issues on a list and a board, handed to agents"
+
+[lib]
+name = "tasks"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tasks"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tilo-agent-models = { path = "../../crates/platform/tilo-agent-models" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { version = "0.1.0", path = "../../crates/dev/test-env" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

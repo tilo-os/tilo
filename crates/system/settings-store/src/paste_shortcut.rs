@@ -95,6 +95,25 @@ pub fn resolve(app_id: &str, overrides: &BTreeMap<String, String>) -> PasteShort
         .unwrap_or_else(|| default_for(app_id))
 }
 
+/// The chord that pastes in a window whose app goes by `ids` (what its
+/// window announces, then the id the app is installed under): the
+/// person's override for the first id that has one, else [`default_for`]
+/// the first id.
+#[must_use]
+pub fn resolve_ids(ids: &[&str], overrides: &BTreeMap<String, String>) -> PasteShortcut {
+    ids.iter()
+        .find_map(|app_id| {
+            overrides
+                .iter()
+                .find(|(id, _)| id.eq_ignore_ascii_case(app_id))
+                .and_then(|(_, shortcut)| PasteShortcut::parse(shortcut))
+        })
+        .unwrap_or_else(|| {
+            ids.first()
+                .map_or(PasteShortcut::CtrlV, |id| default_for(id))
+        })
+}
+
 /// The valid overrides in an `input` section; malformed entries are skipped.
 #[must_use]
 pub fn overrides_from_section(section: &Map<String, Value>) -> BTreeMap<String, String> {
@@ -115,10 +134,6 @@ pub fn overrides_from_section(section: &Map<String, Value>) -> BTreeMap<String, 
 
 /// Serde `deserialize_with` for a stored override map: keeps the valid
 /// entries and drops the rest, so one bad entry never loses the section.
-///
-/// # Errors
-///
-/// Only when the input is not JSON at all.
 pub fn lenient_overrides<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -176,5 +191,26 @@ mod tests {
             PasteShortcut::CtrlV
         );
         assert_eq!(resolve("kitty", &overrides), PasteShortcut::CtrlShiftV);
+    }
+
+    #[test]
+    fn an_app_chosen_by_its_installed_id_pastes_as_set_whatever_its_window_says() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("org.example.MyTerm".to_owned(), "ctrl_shift_v".to_owned());
+        // The window announces its WM class; the app is installed as the
+        // desktop-file id the app chooser answered with.
+        assert_eq!(
+            resolve_ids(&["myterm-window", "org.example.MyTerm"], &overrides),
+            PasteShortcut::CtrlShiftV
+        );
+        assert_eq!(
+            resolve_ids(&["org.example.Notes"], &overrides),
+            PasteShortcut::CtrlV
+        );
+        assert_eq!(
+            resolve_ids(&["kitty"], &overrides),
+            PasteShortcut::CtrlShiftV
+        );
+        assert_eq!(resolve_ids(&[], &overrides), PasteShortcut::CtrlV);
     }
 }

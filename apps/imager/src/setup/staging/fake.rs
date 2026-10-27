@@ -62,6 +62,10 @@ impl FakePlatform {
     }
 
     /// After a mutation took effect: maybe crash.
+    #[allow(
+        clippy::panic,
+        reason = "the fake's injected crash is the behaviour under test"
+    )]
     fn after(&mut self) {
         self.mutations += 1;
         if self.faults.crash_after == Some(self.mutations) {
@@ -531,7 +535,6 @@ mod tests {
         let root_part = p.partition(&root_guid).unwrap();
         assert_eq!(root_part.type_guid, super::super::STAGING_ROOT_TYPE);
         assert_eq!(p.partition_bytes(&root_guid, w.root.len()), w.root);
-        // ESP equals the image outside the placeholders.
         let mut on_disk = p.partition_bytes(&esp_guid, w.esp.len());
         let mut read = |at: u64, buf: &mut [u8]| {
             buf.copy_from_slice(&w.esp[at as usize..at as usize + buf.len()]);
@@ -604,6 +607,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         world.request.prepared_setup = Some(super::super::prepared_setup::PreparedArtifact {
             browser: None,
+            tpm_handoff: None,
             source_path: path.to_str().unwrap().into(),
             expectation: crate::model::PreparedSetupExpectation {
                 schema: 1,
@@ -857,7 +861,6 @@ mod tests {
     /// Linux, 4Kn and Windows stages and requirements.
     #[test]
     fn full_stages_write_exact_sectors_and_follow_bundle_minimums() {
-        // Phase `full_linux_stage`.
         {
             let mut p = linux_platform();
             let w = world(&p);
@@ -900,7 +903,6 @@ mod tests {
             assert_eq!(p.vars, before.vars);
         }
 
-        // Phase `full_windows_stage_shrinks_and_records_read_back_guids`.
         {
             let mut p = windows_platform();
             let w = world(&p);
@@ -918,7 +920,6 @@ mod tests {
             );
         }
 
-        // Phase `requirements_follow_bundle_minimums`.
         {
             let p = linux_platform();
             let w = world(&p);
@@ -1051,7 +1052,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn stale_or_tampered_inputs_are_refused_before_any_mutation() {
-        // Phase `digest_mismatch_is_refused_before_any_mutation`.
         {
             let mut p = linux_platform();
             let w = world(&p);
@@ -1070,7 +1070,6 @@ mod tests {
             assert_eq!(p.mutations, 0);
         }
 
-        // Phase `a_changed_host_is_plan_stale_before_any_mutation`.
         {
             let mut p = linux_platform();
             let w = world(&p);
@@ -1094,7 +1093,6 @@ mod tests {
             assert_eq!(p.mutations, 0);
         }
 
-        // Phase `tampered_request_or_manifest_is_refused`.
         {
             let mut p = linux_platform();
             let mut w = world(&p);
@@ -1126,7 +1124,6 @@ mod tests {
             assert_eq!(p.mutations, 0);
         }
 
-        // Phase `foreign_boot_next_is_refused_before_any_mutation`.
         {
             let mut p = linux_platform();
             p.vars.insert("BootNext".into(), vec![0, 0]);
@@ -1158,7 +1155,6 @@ mod tests {
             }
         }
 
-        // Phase `staging_esp_without_placeholders_is_refused_before_mutation`.
         {
             let mut p = linux_platform();
             let mut w = world(&p);
@@ -1181,7 +1177,6 @@ mod tests {
     /// Boot-next races, pending operations and arming.
     #[test]
     fn pending_stages_block_and_arming_reverifies_ownership() {
-        // Phase `boot_next_taken_mid_operation_is_refused_at_arming`.
         {
             let mut p = linux_platform();
             let w = world(&p);
@@ -1205,7 +1200,6 @@ mod tests {
             assert_eq!(p.vars["BootNext"], vec![0, 0], "never overwritten");
         }
 
-        // Phase `pending_operation_on_the_same_disk_blocks_a_new_stage`.
         {
             let mut p = linux_platform();
             let w = world(&p);
@@ -1238,7 +1232,6 @@ mod tests {
             helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap();
         }
 
-        // Phase `arm_rearms_a_consumed_boot_next_and_reverifies_bytes`.
         {
             let mut p = linux_platform();
             let w = world(&p);
@@ -1301,7 +1294,6 @@ mod tests {
     /// Removal, crash-safe removal and ownership checks.
     #[test]
     fn remove_restores_owned_state_and_never_touches_changed_objects() {
-        // Phase `remove_restores_firmware_partitions_and_the_shrink`.
         {
             let mut p = windows_platform();
             let original = p.clone();
@@ -1316,7 +1308,6 @@ mod tests {
             assert!(
                 super::super::record::pending_in(w.store.public_dir.as_ref().unwrap()).is_empty()
             );
-            // Idempotent.
             run(&mut p, &w, Action::Remove).unwrap();
             // A removed operation cannot be staged again under the same ID.
             assert_eq!(
@@ -1325,7 +1316,6 @@ mod tests {
             );
         }
 
-        // Phase `remove_refuses_an_owned_entry_modified_by_someone_else`.
         {
             let mut p = linux_platform();
             let w = world(&p);
@@ -1342,7 +1332,6 @@ mod tests {
             );
         }
 
-        // Phase `remove_never_deletes_a_partition_that_changed_identity`.
         {
             let mut p = linux_platform();
             let w = world(&p);

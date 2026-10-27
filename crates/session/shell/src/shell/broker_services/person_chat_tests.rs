@@ -285,7 +285,7 @@ fn enroll_contact(
         owner
             .direct_contacts(
                 room,
-                &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+                &tilo_peer_state::caller_authority::CallerAuthority::Person {
                     caller: governor.governor().clone(),
                 },
                 now

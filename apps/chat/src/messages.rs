@@ -19,14 +19,14 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
-use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, Refusal};
+use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, Refusal, Segment};
 
 use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
 use crate::record::{
     AttachmentUpdate, Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting,
-    ProviderStream, Reacted, Revision, SharedReference, Step, Transition, Work, WorkUpdate,
-    reply_id,
+    ProviderStream, Revision, ShareAccess, SharedReference, Step, Transition, WindowShare, Work,
+    WorkUpdate, reply_id,
 };
 
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
@@ -48,6 +48,9 @@ fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
         ))
     }
 }
+
+/// The longest name a delivered message is shown under.
+const MAX_SHOWN_NAME_BYTES: usize = 128;
 
 fn seconds(cx: &ActionCx) -> i64 {
     cx.now_ms().div_euclid(1000)
@@ -130,6 +133,7 @@ impl ChatPart {
                 source_provider: posting.source_provider.map(Atom),
                 attachment: posting.attachment,
                 appearance: posting.appearance.map(Into::into),
+                share: posting.share,
                 ..Message::default()
             },
         );
@@ -273,7 +277,7 @@ impl ChatPart {
     ///
     /// Post the address of something, with words about it; whoever opens it
     /// still needs their own access to it.
-    #[action(incoming_message)]
+    #[action(incoming_message, audience = "agents")]
     pub fn share_resource(
         &mut self,
         cx: &mut ActionCx,
@@ -306,6 +310,183 @@ impl ChatPart {
                 reference: Some(reference),
                 source_provider,
                 mentions: mentions.unwrap_or_default(),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Share a window live.
+    ///
+    /// Post a window's resource so everyone in the channel sees it as it is
+    /// now, drawn by its own app from their own copy of its record, and opens
+    /// it with `access`: `view` (the default) or `edit`. Its sharer stops
+    /// sharing it with `stop-sharing`.
+    #[action(incoming_message)]
+    pub fn share_window(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The channel")] channel: Id,
+        #[param("The window's resource: its kind, id and label")] reference: SharedReference,
+        #[param("The record it lives in", example = "record:so.tilo.notes:plan")]
+        source_provider: String,
+        #[param("What the people who open it may do: view or edit")] access: Option<ShareAccess>,
+        #[param("Words accompanying it")] text: Option<String>,
+        #[param("Filled in where it is posted; leave it out")] mentions: Option<
+            Vec<crate::mention::Mention>,
+        >,
+    ) -> Result<(), Refusal> {
+        let reference = reference.resolved();
+        if !crate::record::valid_reference(&reference) || reference.span.is_some() {
+            return Err(Refusal::new(
+                "a window is shared as a whole Tilo resource address",
+            ));
+        }
+        if !crate::record::valid_source_provider(&source_provider) {
+            return Err(Refusal::new("an existing record provider is required"));
+        }
+        let id = cx.id();
+        let by = author(cx)?;
+        let ts = seconds(cx);
+        self.append(
+            id,
+            &channel,
+            by,
+            ts,
+            Posting {
+                text: text.unwrap_or_default().trim().to_owned(),
+                reference: Some(reference),
+                source_provider: Some(source_provider),
+                share: Some(WindowShare {
+                    access: access.unwrap_or_default(),
+                    open: true,
+                    ended: false,
+                }),
+                mentions: mentions.unwrap_or_default(),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Stop sharing.
+    ///
+    /// End a window you shared: the message keeps saying what was shared,
+    /// and no one sees or opens it from there any more.
+    #[action(item = messages)]
+    pub fn stop_sharing(&mut self, cx: &mut ActionCx, message: &Id) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
+        let share = row
+            .share
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message shares no window"))?;
+        share.ended = true;
+        share.open = false;
+        Ok(())
+    }
+
+    /// Change what a shared window lets people do.
+    ///
+    /// Switch a window you share live between `view` and `edit`, in place:
+    /// the room grants what the new access gives from then on, and takes
+    /// back what the old one gave.
+    #[action(item = messages)]
+    pub fn set_share_access(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("What the people who open it may do now: view or edit")] access: ShareAccess,
+    ) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
+        let share = row
+            .share
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message shares no window"))?;
+        if share.ended {
+            return Err(Refusal::new("the window is no longer shared"));
+        }
+        share.access = access;
+        Ok(())
+    }
+
+    /// Say whether a shared window is open.
+    ///
+    /// Its sharer's Chat says so when they close the window or open it
+    /// again, so the embed shows whether it is live.
+    #[action(item = messages, audience = "agents")]
+    pub fn share_open(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        open: bool,
+    ) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
+        let share = row
+            .share
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message shares no window"))?;
+        // An ended share stays ended: reopening the window shares nothing.
+        share.open = open && !share.ended;
+        Ok(())
+    }
+
+    /// Deliver message.
+    ///
+    /// Adds a message someone outside the room wrote (a seeded
+    /// conversation, an import, an integration relaying a line), shown to
+    /// every reader under their name; it stays yours, as a bridge's post
+    /// does. Given when it was written, delivering it again changes nothing.
+    #[action(incoming_message, audience = "agents")]
+    pub fn deliver_message(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The channel")] channel: Id,
+        #[param("Who wrote it: the name every reader sees")] author: String,
+        #[param("The message")] body: String,
+        #[param("When it was written, in Unix seconds; now when absent")] ts: Option<i64>,
+    ) -> Result<(), Refusal> {
+        let shown = author.trim().to_owned();
+        if shown.is_empty() || shown.len() > MAX_SHOWN_NAME_BYTES {
+            return Err(Refusal::new(
+                "a delivered message names its author, in a short name",
+            ));
+        }
+        if body.trim().is_empty() {
+            return Err(Refusal::new("a message says something"));
+        }
+        let id = match ts {
+            Some(ts) => crate::transcript::delivered_id(&channel, &shown, ts, &body),
+            None => cx.id(),
+        };
+        if self.messages.contains(&id) {
+            return Ok(());
+        }
+        let by = self::author(cx)?;
+        let now = seconds(cx);
+        self.append(
+            id,
+            &channel,
+            by,
+            ts.map_or(now, |ts| ts.clamp(0, now)),
+            Posting {
+                text: body,
+                appearance: Some(tilo_actions::Appearance {
+                    name: shown,
+                    avatar: None,
+                    persona: None,
+                }),
                 ..Posting::default()
             },
         )
@@ -393,50 +574,12 @@ impl ChatPart {
         Ok(())
     }
 
-    /// React.
-    ///
-    /// Your reaction with an emoji.
-    #[action(item = messages)]
-    pub fn react(&mut self, cx: &mut ActionCx, message: &Id, emoji: String) -> Result<(), Refusal> {
-        let me = author(cx)?;
-        let emoji = emoji.trim().to_owned();
-        if emoji.is_empty() || emoji.len() > 64 {
-            return Err(Refusal::new("a reaction is one emoji"));
-        }
-        let row = self
-            .messages
-            .get_mut(message)
-            .ok_or_else(|| Refusal::new("there is no such message"))?;
-        row.reactions.insert(Reacted { emoji, user: me });
-        Ok(())
-    }
-
-    /// Take back a reaction.
-    #[action(item = messages)]
-    pub fn unreact(
-        &mut self,
-        cx: &mut ActionCx,
-        message: &Id,
-        emoji: String,
-    ) -> Result<(), Refusal> {
-        let me = author(cx)?;
-        let row = self
-            .messages
-            .get_mut(message)
-            .ok_or_else(|| Refusal::new("there is no such message"))?;
-        row.reactions.remove(&Reacted {
-            emoji: emoji.trim().to_owned(),
-            user: me,
-        });
-        Ok(())
-    }
-
     /// Record agent work.
     ///
     /// An agent's account of what it is doing with the message that
     /// summoned it, kept on its reply to that message: the reply is made
     /// the first time, and `say` gives it its words once, while it has none.
-    #[action(item = messages)]
+    #[action(item = messages, audience = "agents")]
     pub fn record_work(
         &mut self,
         cx: &mut ActionCx,
@@ -513,7 +656,7 @@ impl ChatPart {
     ///
     /// The invoker owns the reply; another author cannot append to it.
     /// Retrying requires a fresh reply and run, keeping partial answers intact.
-    #[action]
+    #[action(audience = "agents")]
     pub fn stream_output(
         &mut self,
         cx: &mut ActionCx,
@@ -620,7 +763,7 @@ impl Chained for ChatPart {
     }
 
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        use chat_part::{EditMessage, Post, RecordWork, StreamOutput};
+        use chat_part::{DeliverMessage, EditMessage, Post, RecordWork, StreamOutput};
         let holding = |message: &Id| {
             parts
                 .iter()
@@ -644,9 +787,19 @@ impl Chained for ChatPart {
                         ..
                     },
             }) => holding(parent),
+            // A delivery made before is where it was put; it changes nothing.
+            ChatPartAction::DeliverMessage(DeliverMessage {
+                channel,
+                author,
+                body,
+                ts: Some(ts),
+            }) => holding(&crate::transcript::delivered_id(channel, author, *ts, body))
+                .or_else(|_| new()),
             ChatPartAction::Post(_)
+            | ChatPartAction::DeliverMessage(_)
             | ChatPartAction::PostFile(_)
-            | ChatPartAction::ShareResource(_) => new(),
+            | ChatPartAction::ShareResource(_)
+            | ChatPartAction::ShareWindow(_) => new(),
             // A reply being streamed stays where it started.
             ChatPartAction::StreamOutput(StreamOutput { reply, .. }) => {
                 holding(&Id::from_raw(reply.clone())).or_else(|_| new())
@@ -683,14 +836,35 @@ impl Chained for ChatPart {
                     .unwrap_or_else(|| share.reference.label.clone());
                 share.mentions = Some(chat.mentions(&text, &[]));
             }
+            ChatPartAction::ShareWindow(share) => {
+                takes_posts(chat, &share.channel)?;
+                share.mentions =
+                    Some(chat.mentions(share.text.as_deref().unwrap_or_default(), &[]));
+            }
             ChatPartAction::EditMessage(edit) => {
                 let body = edit.body.clone().unwrap_or_default();
                 edit.mentions = Some(chat.mentions(&edit.text, &body));
             }
             ChatPartAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
+            ChatPartAction::DeliverMessage(delivery) => takes_posts(chat, &delivery.channel)?,
             _ => {}
         }
         Ok(())
+    }
+
+    /// The channel a post goes to, as everyone in the room sees it named
+    /// (`#general`). A direct conversation is never named.
+    fn place(action: &Self::Action, chat: &Chat) -> Option<String> {
+        let channel = match &action.operation {
+            ChatPartAction::Post(post) => &post.message.channel,
+            ChatPartAction::PostFile(post) => &post.channel,
+            ChatPartAction::ShareResource(share) => &share.channel,
+            ChatPartAction::ShareWindow(share) => &share.channel,
+            _ => return None,
+        };
+        let channel = chat.channels.get(channel)?;
+        let name = channel.name.trim().trim_start_matches('#');
+        (channel.conversation_with.is_none() && !name.is_empty()).then(|| format!("#{name}"))
     }
 }
 
@@ -701,18 +875,33 @@ impl ChatPart {
             ChatPartAction::DeleteMessage(chat_part::DeleteMessage { message })
             | ChatPartAction::RemoveMessage(chat_part::RemoveMessage { message })
             | ChatPartAction::Pin(chat_part::Pin { message, .. })
-            | ChatPartAction::React(chat_part::React { message, .. })
-            | ChatPartAction::Unreact(chat_part::Unreact { message, .. }) => Some(message.clone()),
+            | ChatPartAction::StopSharing(chat_part::StopSharing { message })
+            | ChatPartAction::SetShareAccess(chat_part::SetShareAccess { message, .. })
+            | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. }) => {
+                Some(message.clone())
+            }
+            // A field edit of one message (a reaction) names it in its path.
+            ChatPartAction::FieldEdit(edit) => match edit.path() {
+                [Segment::Field(field), Segment::Item(message), ..] if field == "messages" => {
+                    Some(message.clone())
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
 }
 
 /// The parts of the chat's messages a device holds, read as one timeline:
-/// every message oldest first, whichever part holds it.
+/// every message oldest first, whichever part holds it, after the messages
+/// the chat record kept from before its messages moved to parts.
 #[derive(Clone, Debug, Default)]
 pub struct Messages {
     parts: Vec<(u64, Rc<ChatPart>)>,
+    /// The messages the chat record kept in itself
+    /// ([`crate::record::kept_messages`]): the oldest of the timeline, in
+    /// no part, so no verb changes them and none of them is unread.
+    kept: Rc<tilo_resource::Collection<Message>>,
 }
 
 impl Messages {
@@ -720,7 +909,17 @@ impl Messages {
     #[must_use]
     pub fn new(mut parts: Vec<(u64, Rc<ChatPart>)>) -> Self {
         parts.sort_by_key(|(index, _)| *index);
-        Self { parts }
+        Self {
+            parts,
+            kept: Rc::default(),
+        }
+    }
+
+    /// These parts after the messages the chat record kept, `kept`.
+    #[must_use]
+    pub fn with_kept(mut self, kept: Rc<tilo_resource::Collection<Message>>) -> Self {
+        self.kept = kept;
+        self
     }
 
     /// One part, numbered 0: for a reader of a single part's document.
@@ -741,9 +940,13 @@ impl Messages {
         self.parts.last().map(|(index, _)| *index)
     }
 
-    /// Every message held, oldest first.
+    /// Every message held, oldest first: the kept ones a part does not
+    /// hold too, then the parts'.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &Message)> + '_ {
-        self.parts.iter().flat_map(|(_, part)| part.messages.iter())
+        self.kept
+            .iter()
+            .filter(|(id, _)| self.part_of(id).is_none())
+            .chain(self.parts.iter().flat_map(|(_, part)| part.messages.iter()))
     }
 
     /// Every message held, oldest first, with the part holding it.
@@ -756,7 +959,7 @@ impl Messages {
     /// How many messages are held.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.parts.iter().map(|(_, part)| part.messages.len()).sum()
+        self.iter().count()
     }
 
     /// Whether no message is held.
@@ -772,6 +975,7 @@ impl Messages {
             .iter()
             .rev()
             .find_map(|(_, part)| part.messages.get(id))
+            .or_else(|| self.kept.get(id))
     }
 
     /// Whether a held part has the message `id`.

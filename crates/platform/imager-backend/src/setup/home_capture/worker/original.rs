@@ -23,6 +23,10 @@ pub struct OriginalReadClaim {
     export_operation: String,
     sealed_reservation: u64,
     omissions: Vec<crate::setup::migration_review::OriginalOmission>,
+    /// Reviewed nested Home exclusions from the protected plan. Shape is checked
+    /// here and every path is revalidated under the held source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exclusions: Vec<crate::setup::migration_store::NativePath>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     flatpak: Option<crate::setup::flatpak_transfer::offline_original::OriginalFlatpakClaim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +57,8 @@ struct OriginalReadClaimWire {
     sealed_reservation: u64,
     omissions: Vec<crate::setup::migration_review::OriginalOmission>,
     #[serde(default)]
+    exclusions: Vec<crate::setup::migration_store::NativePath>,
+    #[serde(default)]
     flatpak: Option<crate::setup::flatpak_transfer::offline_original::OriginalFlatpakClaim>,
     #[serde(default)]
     applications_operation: Option<String>,
@@ -76,6 +82,7 @@ impl TryFrom<OriginalReadClaimWire> for OriginalReadClaim {
             export_operation: wire.export_operation,
             sealed_reservation: wire.sealed_reservation,
             omissions: wire.omissions,
+            exclusions: wire.exclusions,
             flatpak: wire.flatpak,
             applications_operation: wire.applications_operation,
             mounted: wire.mounted,
@@ -156,6 +163,7 @@ impl OriginalReadClaim {
         setup_binding: &str,
         identity_public_key: [u8; 32],
         omissions: &[crate::setup::migration_review::OriginalOmission],
+        exclusions: &[crate::setup::migration_store::NativePath],
         flatpak: Option<&crate::setup::flatpak_transfer::offline_original::OriginalFlatpakClaim>,
         mounted: Option<&OriginalMountedClaim>,
     ) -> io::Result<Self> {
@@ -203,6 +211,7 @@ impl OriginalReadClaim {
             export_operation: plan.source().operation_id.clone(),
             sealed_reservation: plan.sealed_reservation(),
             omissions: omissions.to_vec(),
+            exclusions: exclusions.to_vec(),
             flatpak: flatpak.cloned(),
             applications_operation: flatpak.map(|_| {
                 Self::derive_applications_operation(
@@ -226,6 +235,7 @@ impl OriginalReadClaim {
         setup_binding: &str,
         identity_public_key: [u8; 32],
         omissions: &[crate::setup::migration_review::OriginalOmission],
+        exclusions: &[crate::setup::migration_store::NativePath],
         flatpak: Option<&crate::setup::flatpak_transfer::offline_original::OriginalFlatpakClaim>,
         mounted: Option<&OriginalMountedClaim>,
     ) -> io::Result<Self> {
@@ -273,6 +283,7 @@ impl OriginalReadClaim {
             export_operation: plan.source().operation_id.clone(),
             sealed_reservation: plan.reservation(),
             omissions: omissions.to_vec(),
+            exclusions: exclusions.to_vec(),
             flatpak: flatpak.cloned(),
             applications_operation: flatpak.map(|_| {
                 Self::derive_applications_operation(
@@ -314,6 +325,7 @@ impl OriginalReadClaim {
         super::super::operation(&self.operation)?;
         self.caller.validate(self.source.2)?;
         crate::setup::migration_review::OriginalOmission::validate_shapes(&self.omissions)?;
+        self.exclusion_paths()?;
         if let Some(mounted) = &self.mounted {
             if mounted.table_sha256 == [0; 32] || mounted.witness.operation() != operation {
                 return Err(failure("Original mounted claim shape differs"));
@@ -376,7 +388,16 @@ impl OriginalReadClaim {
             source,
             self.caller.uid(),
         )?;
+        crate::setup::source_tree::validate_exclusions_under(source, &self.exclusion_paths()?)?;
         Ok(())
+    }
+    /// The reviewed nested Home exclusions, shape-checked. Never a path grant:
+    /// they only remove data the person excluded.
+    ///
+    /// # Errors
+    /// Refuses unrepresentable bytes and non-relative components.
+    pub fn exclusion_paths(&self) -> io::Result<Vec<std::path::PathBuf>> {
+        crate::setup::source_tree::exclusion_paths(&self.exclusions)
     }
     #[cfg(feature = "capture-worker")]
     pub fn omissions(&self) -> &[crate::setup::migration_review::OriginalOmission] {
@@ -1097,5 +1118,32 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+    #[test]
+    fn original_claim_accepts_only_normalized_home_exclusions() {
+        use crate::setup::migration_store::NativePath;
+        let request = serde_json::to_value(original_review()).unwrap();
+        let mut wire = request["command"]["authority"].clone();
+        wire["exclusions"] =
+            serde_json::json!([NativePath::encode(std::path::Path::new("../escape"))]);
+        assert!(
+            serde_json::from_value::<OriginalReadClaim>(wire.clone()).is_err(),
+            "an exclusion cannot escape the reviewed home"
+        );
+        wire["exclusions"] =
+            serde_json::json!([NativePath::encode(std::path::Path::new("/absolute"))]);
+        assert!(serde_json::from_value::<OriginalReadClaim>(wire.clone()).is_err());
+        wire["exclusions"] = serde_json::json!([NativePath::encode(std::path::Path::new(
+            "Documents/Private"
+        ))]);
+        let claim: OriginalReadClaim = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            claim.exclusion_paths().unwrap(),
+            vec![std::path::PathBuf::from("Documents/Private")]
+        );
+        let plain: OriginalReadClaim =
+            serde_json::from_value(request["command"]["authority"].clone()).unwrap();
+        assert!(plain.exclusion_paths().unwrap().is_empty());
+        assert!(claim.binding_sha256().is_ok());
     }
 }

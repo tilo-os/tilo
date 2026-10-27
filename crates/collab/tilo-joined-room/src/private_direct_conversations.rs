@@ -2,7 +2,7 @@
 use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, time::SystemTime};
-use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
+use tilo_peer_state::caller_authority::CallerAuthority;
 
 const MAX_CONVERSATIONS: usize = 1024;
 const MAX_MESSAGES: usize = 4096;
@@ -13,7 +13,12 @@ const MAX_PAGE: usize = 100;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectContact {
     pub public_key: String,
+    /// The name the room keeps for the person; never one of their devices'
+    /// labels.
     pub display_name: Option<String>,
+    /// Whether a conversation between the caller and this person holds
+    /// messages.
+    pub conversation: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -226,7 +231,7 @@ impl PrivateDirectConversationStore {
 
 fn caller<'a>(
     view: &NativeCommittedView,
-    authority: &'a WorkspaceTaskAuthority,
+    authority: &'a CallerAuthority,
     now: SystemTime,
 ) -> Result<&'a tilo_user_identity::DeviceCert, String> {
     let trusted = view.device() == view.governor()
@@ -238,7 +243,7 @@ fn caller<'a>(
     }
     view.peer()
         .permissions(view.device().device_public_key, now)?;
-    let WorkspaceTaskAuthority::Person { caller } = authority else {
+    let CallerAuthority::Person { caller } = authority else {
         return Err("private conversations require authenticated person transport".into());
     };
     if !view.peer().certificates().iter().any(|cert| cert == caller) {
@@ -258,6 +263,9 @@ fn contacts(
     own: [u8; 32],
     now: SystemTime,
 ) -> Result<Vec<DirectContact>, String> {
+    let certificates = view.peer().certificates();
+    let own_key = key(own);
+    let pairs = &view.record.private_direct_conversations.pairs;
     Ok(view
         .peer()
         .governance()
@@ -271,9 +279,26 @@ fn contacts(
                     .is_ok_and(|p| !p.foreign && p.delegate.is_none())
             })
         })
-        .map(|m| DirectContact {
-            public_key: key(m.user_public_key),
-            display_name: m.display_name,
+        .map(|m| {
+            let person = key(m.user_public_key);
+            // A device's label ("Browser", "Primary device") never names
+            // its person, even where the room recorded it as their name.
+            let display_name = m.display_name.filter(|name| {
+                !certificates.iter().any(|cert| {
+                    cert.user_public_key == m.user_public_key
+                        && cert.device_label.trim() == name.trim()
+                })
+            });
+            let conversation = pairs.values().any(|pair| {
+                !pair.messages.is_empty()
+                    && pair.people.contains(&person)
+                    && pair.people.contains(&own_key)
+            });
+            DirectContact {
+                public_key: person,
+                display_name,
+                conversation,
+            }
         })
         .collect())
 }
@@ -281,7 +306,7 @@ fn authorized_pair(
     view: &NativeCommittedView,
     room: RoomId,
     peer: &str,
-    authority: &WorkspaceTaskAuthority,
+    authority: &CallerAuthority,
     now: SystemTime,
 ) -> Result<(String, [String; 2]), String> {
     validate_key(peer)?;
@@ -327,7 +352,7 @@ impl NativeWorkspaceOwner {
         &self,
         room: RoomId,
         peer: &str,
-        authority: &WorkspaceTaskAuthority,
+        authority: &CallerAuthority,
         now: SystemTime,
     ) -> Result<tokio::sync::watch::Receiver<u64>, String> {
         let _turn = self.0.mutation.lock();
@@ -357,7 +382,7 @@ impl NativeWorkspaceOwner {
     pub fn direct_contacts(
         &self,
         room: RoomId,
-        authority: &WorkspaceTaskAuthority,
+        authority: &CallerAuthority,
         now: SystemTime,
     ) -> Result<Vec<DirectContact>, String> {
         self.with_current(room, |view| {
@@ -374,7 +399,7 @@ impl NativeWorkspaceOwner {
         &self,
         room: RoomId,
         peer_public_key: &str,
-        authority: &WorkspaceTaskAuthority,
+        authority: &CallerAuthority,
         now: SystemTime,
     ) -> Result<DirectConversation, String> {
         let _turn = self.0.mutation.lock();
@@ -417,7 +442,7 @@ impl NativeWorkspaceOwner {
         &self,
         room: RoomId,
         peer_public_key: &str,
-        authority: &WorkspaceTaskAuthority,
+        authority: &CallerAuthority,
         page: DirectConversationPage,
         now: SystemTime,
     ) -> Result<DirectConversation, String> {
@@ -436,7 +461,7 @@ impl NativeWorkspaceOwner {
         &self,
         room: RoomId,
         peer_public_key: &str,
-        authority: &WorkspaceTaskAuthority,
+        authority: &CallerAuthority,
         request: DirectMessageSend,
         now: SystemTime,
     ) -> Result<DirectMessageReceipt, String> {
@@ -553,8 +578,8 @@ mod tests {
                 now: SystemTime::now(),
             }
         }
-        fn person(&self) -> WorkspaceTaskAuthority {
-            WorkspaceTaskAuthority::Person {
+        fn person(&self) -> CallerAuthority {
+            CallerAuthority::Person {
                 caller: self.governor.clone(),
             }
         }
@@ -598,7 +623,7 @@ mod tests {
             let ns = crate::testing::ns(self.now).unwrap();
             let hint = self
                 .owner
-                .with_current(self.room, |v| Ok(v.record.transport_hint.clone()))
+                .with_current(self.room, |v| Ok(v.transport_hint()?.clone()))
                 .unwrap();
             let signed = join::issue_invitation(
                 join::InviteGrant {
@@ -723,7 +748,7 @@ mod tests {
             .subscribe_direct_conversation(
                 fixture.room,
                 &key(fixture.governor.user_public_key),
-                &WorkspaceTaskAuthority::Person { caller: peer },
+                &CallerAuthority::Person { caller: peer },
                 fixture.now,
             )
             .unwrap();
@@ -734,7 +759,7 @@ mod tests {
                 .subscribe_direct_conversation(
                     fixture.room,
                     &public_key,
-                    &WorkspaceTaskAuthority::Person { caller: other },
+                    &CallerAuthority::Person { caller: other },
                     fixture.now
                 )
                 .is_err()
@@ -745,7 +770,7 @@ mod tests {
     fn certified_pair_is_symmetric_durable_private_and_idempotent() {
         let fixture = Fixture::new();
         let peer = fixture.member(71, MemberRole::Editor);
-        let authority = WorkspaceTaskAuthority::Person {
+        let authority = CallerAuthority::Person {
             caller: peer.clone(),
         };
         let public_before = fixture
@@ -843,7 +868,7 @@ mod tests {
         let receipt = fixture
             .send(&peer, uuid::Uuid::new_v4(), "pair secret")
             .unwrap();
-        let unrelated = WorkspaceTaskAuthority::Person { caller: stranger };
+        let unrelated = CallerAuthority::Person { caller: stranger };
         assert!(
             fixture
                 .owner
@@ -869,10 +894,10 @@ mod tests {
                 .is_err()
         );
         for authority in [
-            WorkspaceTaskAuthority::Host {
+            CallerAuthority::Host {
                 attestor: fixture.governor.clone(),
             },
-            WorkspaceTaskAuthority::Agent {
+            CallerAuthority::Agent {
                 attestor: fixture.governor.clone(),
                 agent_id: "scribe".into(),
             },
@@ -942,7 +967,7 @@ mod tests {
             (93, MemberRole::Moderator),
         ] {
             let cert = fixture.member(seed, role);
-            let person = WorkspaceTaskAuthority::Person {
+            let person = CallerAuthority::Person {
                 caller: cert.clone(),
             };
             let opened = fixture
@@ -974,7 +999,7 @@ mod tests {
 
     fn assert_person_doors_refused(
         fixture: &Fixture,
-        authority: &WorkspaceTaskAuthority,
+        authority: &CallerAuthority,
         peer: &str,
         saved_invocation: uuid::Uuid,
         reason: &str,
@@ -1040,7 +1065,7 @@ mod tests {
     fn foreign_current_person_is_denied_at_owner_even_for_retained_pair_and_retries() {
         let mut fixture = Fixture::new();
         let local = fixture.member(77, MemberRole::Editor);
-        let local_authority = WorkspaceTaskAuthority::Person { caller: local };
+        let local_authority = CallerAuthority::Person { caller: local };
         let peer = key(fixture.governor.user_public_key);
         let invocation = uuid::Uuid::new_v4();
         fixture
@@ -1074,7 +1099,7 @@ mod tests {
         fixture.owner = crate::open_file(&fixture.path).unwrap();
         assert_person_doors_refused(
             &fixture,
-            &WorkspaceTaskAuthority::Person { caller: foreign },
+            &CallerAuthority::Person { caller: foreign },
             &peer,
             invocation,
             "foreign devices",
@@ -1170,7 +1195,7 @@ mod tests {
         });
         assert_person_doors_refused(
             &fixture,
-            &WorkspaceTaskAuthority::Person { caller: delegated },
+            &CallerAuthority::Person { caller: delegated },
             &key(local.user_public_key),
             invocation,
             "delegated agents",
@@ -1231,7 +1256,7 @@ mod tests {
                 .owner
                 .direct_contacts(
                     fixture.room,
-                    &WorkspaceTaskAuthority::Person { caller: peer },
+                    &CallerAuthority::Person { caller: peer },
                     fixture.now
                 )
                 .is_err()
@@ -1252,7 +1277,7 @@ mod tests {
             .unwrap();
         let mut changed = peer.clone();
         changed.device_label = "not current evidence".into();
-        let forged = WorkspaceTaskAuthority::Person { caller: changed };
+        let forged = CallerAuthority::Person { caller: changed };
         assert!(
             fixture
                 .owner
@@ -1289,6 +1314,7 @@ mod tests {
                         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(publisher.clone()),
                         revocations: vec![entry],
+                        successions: Vec::new(),
                     },
                     fixture.now,
                 )
@@ -1336,7 +1362,7 @@ mod tests {
                 .owner
                 .direct_contacts(
                     fixture.room,
-                    &WorkspaceTaskAuthority::Person { caller: peer },
+                    &CallerAuthority::Person { caller: peer },
                     fixture.now
                 )
                 .is_err()
@@ -1358,7 +1384,7 @@ mod tests {
         let room = RoomId::parse(crate::testing::ROOM).unwrap();
         let authority = owner
             .with_current(room, |v| {
-                Ok(WorkspaceTaskAuthority::Person {
+                Ok(CallerAuthority::Person {
                     caller: v.device().clone(),
                 })
             })
@@ -1506,7 +1532,7 @@ mod tests {
         let peer = fixture.member(81, MemberRole::Editor);
         let invocation = uuid::Uuid::new_v4();
         let saved = fixture.send(&peer, invocation, "first").unwrap();
-        let reverse = WorkspaceTaskAuthority::Person {
+        let reverse = CallerAuthority::Person {
             caller: peer.clone(),
         };
         assert!(

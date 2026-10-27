@@ -19,7 +19,7 @@
 //! | Target | Choosers | Open a file / reveal | Open a URI |
 //! |---|---|---|---|
 //! | Linux | XDG Desktop Portal `FileChooser` | portal `OpenURI` (by descriptor) | portal `OpenURI`, else the desktop opener |
-//! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime ([`confined`]) | `NSWorkspace` | `NSWorkspace` |
+//! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime (`confined`) | `NSWorkspace` | `NSWorkspace` |
 //! | Web | `<input type=file>` by contents; downloads | ⛔ | `window.open` for `http`, `https`, `mailto`, `tel` |
 //! | Unattended native ([`portal::SAVE_DIRECTORY_ENV`]) | Save answers in that directory; Open refused | the target's | the target's |
 //! | App launched by a Tilo session ([`shell`]) | the shell's own chooser, over the app's granted files | the shell opens it in its app | the shell opens it in the app that claims its scheme, else the target's |
@@ -29,6 +29,7 @@
 use std::sync::{Arc, OnceLock};
 
 mod caps;
+#[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 pub mod portal;
 #[cfg(unix)]
@@ -100,6 +101,18 @@ pub trait FilePicker: Send + Sync {
             Some(PickedPaths::One(self.pick(request)))
         };
         crate::portal::read_picked(paths, limit)
+    }
+    /// A Save chooser answering where to save, written later
+    /// ([`portal::SaveDestination::write`]). The default is the path
+    /// [`pick`](Self::pick) answers; a host without local paths (a browser
+    /// page) implements it directly.
+    fn save_destination(&self, request: PickRequest) -> portal::DestinationChannel {
+        if request.suggested_name().is_none() {
+            return portal::DestinationChannel::answered(portal::DestinationOutcome::Failed(
+                "only a Save chooser chooses where to save".to_owned(),
+            ));
+        }
+        portal::DestinationChannel::from_path(self.pick(request))
     }
     /// A Save chooser that stores `bytes`. The default writes to the path
     /// [`pick`](Self::pick) answers.
@@ -367,7 +380,7 @@ mod bounded_contents_tests {
     fn picked(picker: &Selected, request: PickRequest) -> ContentsOutcome {
         picker
             .pick_contents(request)
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap()
     }
 

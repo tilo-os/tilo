@@ -2,7 +2,7 @@
 //!
 //! Layered so each piece is testable in isolation: [`model`] (pure data +
 //! the shared annotation model reused by the PDF reader/word processor),
-//! [`doc`] (the Automerge document layer), [`xhtml`]/[`epub`]/[`content`]
+//! [`resource`] (the Automerge document layer), [`xhtml`]/[`epub`]/[`content`]
 //! (EPUB parsing + library), [`paginate`] (text layout), [`reader_theme`]/
 //! [`paint`] (palettes + drawing), and [`app`] (the retained-mode
 //! [`Widget`](ui::widget::Widget) composing the shelf and reader).
@@ -32,17 +32,20 @@
 
 pub mod actions;
 pub mod app;
+mod catalogue;
+mod commands;
 mod comment_overlay;
 pub mod component;
 pub mod content;
 pub mod epub;
 mod hosted_dropdown;
 mod input_controls;
+mod layout_worker;
+mod library_index;
 mod local_library;
 pub mod model;
 pub mod paginate;
 pub mod paint;
-mod reader_bubble;
 mod reader_keys;
 pub mod reader_theme;
 mod reading_settings;
@@ -50,6 +53,7 @@ pub mod resource;
 mod scenarios;
 pub mod search_provider;
 mod shelf_controls;
+mod store;
 #[cfg(test)]
 mod test_epub;
 pub mod xhtml;

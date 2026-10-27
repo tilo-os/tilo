@@ -15,7 +15,7 @@ use tilo_vm_protocol::{DeviceUnlockEnrol, DeviceUnlockEnrolResult};
 use crate::error::DaemonError;
 use crate::exec::{Ended, run_bounded};
 
-const HELPER: &str = "/usr/bin/tilo-sibling-unlock";
+const HELPER: &str = "/usr/libexec/tilo/tilo-sibling-unlock";
 
 #[derive(serde::Deserialize)]
 struct Status {

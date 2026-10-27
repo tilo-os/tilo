@@ -7,6 +7,7 @@ import os
 import struct
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,28 @@ sys.path.insert(0, str(HERE))
 import image_size_budget as budget  # noqa: E402
 
 REPO = HERE.parents[1]
+
+
+def t_checks() -> list[dict]:
+    """t.toml's checks with their matrices expanded, as t runs them."""
+    checks = []
+    for check in tomllib.loads((REPO / "t.toml").read_text())["check"]:
+        rows = check.get("matrix", {})
+        combos = [{}]
+        for key, values in rows.items():
+            combos = [{**combo, **(value if isinstance(value, dict) else {key: value})}
+                      for combo in combos for value in values]
+        for combo in combos:
+            def fill(value, combo=combo):
+                if isinstance(value, str):
+                    for key, sub in combo.items():
+                        value = value.replace("{" + key + "}", str(sub))
+                    return value
+                if isinstance(value, list):
+                    return [fill(item) for item in value]
+                return value
+            checks.append({key: fill(value) for key, value in check.items() if key != "matrix"})
+    return checks
 
 
 def elf_with_symtab(path: Path, symtab_size: int) -> None:
@@ -169,10 +192,40 @@ class ShippedBudgets(unittest.TestCase):
             if name.startswith(("production-", "board-")):
                 self.assertLessEqual(flavour["usr_bytes"], 10_000_000_000, name)
 
-    def test_the_image_workflow_runs_the_check_for_every_flavour(self):
-        workflow = (REPO / ".forgejo/workflows/build-image.yml").read_text()
-        self.assertIn("os/tests/image_size_budget.py check", workflow)
-        self.assertIn("tools/perf/image_size.py", workflow)
+    def test_every_board_t_publishes_has_a_budget(self):
+        data = budget.load_budgets()
+        for check in t_checks():
+            if check["name"].startswith("os-board-size-"):
+                board = check["name"].removeprefix("os-board-size-")
+                self.assertIn(f"board-{board}", data["flavour"])
+
+    def test_t_holds_every_built_image_to_its_budget_before_it_ships(self):
+        checks = {check["name"]: check for check in t_checks()}
+        boards = [name.removeprefix("os-board-") for name in checks
+                  if name.startswith("os-board-") and not name.startswith("os-board-size-")]
+        arches = [name.removeprefix("os-image-") for name in checks
+                  if name.startswith("os-image-") and not name.startswith("os-image-size-")]
+        self.assertTrue(boards and arches)
+        for arch in arches:
+            size = checks[f"os-image-size-{arch}"]
+            self.assertIn(f"os-image-{arch}", size["needs"])
+            self.assertIn(f"tools/ci/os/image-size.sh production-{arch} /target/os/{arch}/image/oci",
+                          size["run"])
+            self.assertIn(f"os-image-size-{arch}", checks[f"os-acceptance-{arch}"]["needs"])
+            release = checks[f"os-release-image-size-{arch}"]
+            self.assertIn(f"os-release-image-{arch}", release["needs"])
+            self.assertIn(f"tools/ci/os/image-size.sh production-{arch} /target/os/{arch}/release-image/oci",
+                          release["run"])
+            self.assertIn(f"os-release-image-size-{arch}", checks[f"os-release-seal-{arch}"]["needs"])
+        for board in boards:
+            size = checks[f"os-board-size-{board}"]
+            self.assertIn(f"os-board-{board}", size["needs"])
+            self.assertIn(f"tools/ci/os/image-size.sh board-{board} ", size["run"])
+            self.assertIn(f"os-board-size-{board}", checks[f"publish-os-board-{board}"]["needs"])
+        for check in checks.values():
+            if "tools/ci/os/image-size.sh" in check.get("run", ""):
+                self.assertNotIn("|| true", check["run"])
+                self.assertNotIn("; true", check["run"])
 
     def test_the_policy_that_hands_the_check_its_input_exists(self):
         self.assertIn("usr_content", (REPO / "tools/perf/image_size.py").read_text())

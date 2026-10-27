@@ -192,7 +192,75 @@ pub fn image_thumb_with(
     size: impl Into<ThumbSize>,
     limits: DecodeLimits,
 ) -> Option<RgbaThumb> {
-    downscale_to_rgba(decode_image_with(bytes, limits)?, size.into())
+    let size = size.into();
+    match decode_image_with(bytes, limits) {
+        Some(image) => downscale_to_rgba(image, size),
+        None => svg_thumb(bytes, size),
+    }
+}
+
+/// Render SVG bytes to fill `size` (a vector has no size to keep, so a small
+/// icon is drawn at the box, not scaled up from pixels). `None` for bytes
+/// that are not an SVG document, or one that does not render.
+pub fn svg_thumb(bytes: &[u8], size: impl Into<ThumbSize>) -> Option<RgbaThumb> {
+    use resvg::{tiny_skia, usvg};
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES || !looks_like_svg(bytes) {
+        return None;
+    }
+    let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).ok()?;
+    let natural = tree.size();
+    let (w, h) = (natural.width(), natural.height());
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let size = size.into().at_least_one();
+    let scale = (f64::from(size.width) / f64::from(w)).min(f64::from(size.height) / f64::from(h));
+    let width = edge_px(f64::from(w) * scale)?;
+    let height = edge_px(f64::from(h) * scale)?;
+    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the scale fits a thumbnail box of at most u32 pixels into f32 range"
+    )]
+    let scale = scale as f32;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    let rgba = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let color = pixel.demultiply();
+            [color.red(), color.green(), color.blue(), color.alpha()]
+        })
+        .collect();
+    let out = RgbaThumb {
+        rgba,
+        width,
+        height,
+    };
+    out.is_valid().then_some(out)
+}
+
+/// Whether `bytes` open as an SVG document: an `<svg` element near the top,
+/// after any XML declaration, doctype or comment.
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    let head = bytes.get(..bytes.len().min(4096)).unwrap_or(bytes);
+    head.windows(4)
+        .any(|window| window.eq_ignore_ascii_case(b"<svg"))
+}
+
+/// A rendered edge in whole pixels: at least one, at most a thumbnail's.
+fn edge_px(value: f64) -> Option<u32> {
+    let rounded = value.round().max(1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked finite, positive and below the 16k edge first"
+    )]
+    (rounded.is_finite() && rounded <= 16_384.0).then_some(rounded as u32)
 }
 
 /// What a raster source may declare before it is refused, checked against its
@@ -442,6 +510,14 @@ mod tests {
             let back = decode_png(&encoded).expect("decodes");
             assert_eq!((back.width, back.height), (t.width, t.height));
             assert_eq!(back.rgba, t.rgba, "PNG is lossless: exact round-trip");
+        }
+        // Phase `an_svg_is_drawn_at_the_box_it_fits`.
+        {
+            let svg = br##"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="16" height="8" viewBox="0 0 16 8"><rect width="16" height="8" fill="#ff0000"/></svg>"##;
+            let t = image_thumb(svg, 64).expect("renders");
+            assert_eq!((t.width, t.height), (64, 32), "a vector fills the box");
+            assert_eq!(&t.rgba[0..4], &[255, 0, 0, 255]);
+            assert!(image_thumb(b"<svg broken", 64).is_none());
         }
         // Phase `corrupt_bytes_decode_to_none`.
         {

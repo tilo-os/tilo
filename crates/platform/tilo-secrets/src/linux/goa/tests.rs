@@ -139,7 +139,6 @@ impl ServiceInterface {
         &self,
         attributes: HashMap<String, String>,
     ) -> (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) {
-        // A broader or differently generated search is a failed qualification.
         assert_eq!(
             attributes,
             HashMap::from([("goa-identity".into(), "google:gen13:account_1".into())])

@@ -40,7 +40,6 @@ fn fixed(token: &str) -> Arc<StaticCredential> {
 /// Where in the fake Drive a run is rooted.
 #[derive(Clone, Copy)]
 enum Scope {
-    /// A fresh folder in My Drive.
     Folder,
     /// The whole (empty) My Drive.
     MyDrive,

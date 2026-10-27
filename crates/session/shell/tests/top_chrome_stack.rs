@@ -30,10 +30,9 @@ const BOTTOM_MARGIN: f64 = 12.0;
 /// The step between the top bar and the windows' tab rows.
 const TOP_MARGIN: f64 = 4.0;
 
-fn tree() -> WorkspaceTree {
+fn tree(width: WindowWidth) -> WorkspaceTree {
     let ws_id = WorkspaceId(7);
-    let mut ws = Workspace::new(ws_id, "Desk");
-    ws.set_room(RoomId::parse(ROOM).expect("room id"));
+    let mut ws = Workspace::in_room(ws_id, RoomId::parse(ROOM).expect("room id"), "Desk");
     let tab = GROUP.saturating_add(5000);
     ws.strips = vec![Strip {
         id: STRIP,
@@ -47,9 +46,10 @@ fn tree() -> WorkspaceTree {
                     kind: AppKind::Other("Test".into()),
                     label: "Editor".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab,
-            width: WindowWidth::Normal,
+            width,
             maximized: false,
             focus_history: Vec::new(),
         }],
@@ -70,8 +70,13 @@ struct Panel {
 
 impl Panel {
     fn new() -> Self {
+        Self::with_width(WindowWidth::Normal)
+    }
+
+    /// The panel with its one window `width` wide.
+    fn with_width(width: WindowWidth) -> Self {
         let outputs = parse_output_spec("2944x1840@2").expect("the panel spec parses");
-        let mut fb = FrameBuilder::with_tree(tree(), combined_geometry(&outputs));
+        let mut fb = FrameBuilder::with_tree(tree(width), combined_geometry(&outputs));
         fb.set_output_geometry(output_geometry(&outputs));
         let mut panel = Self {
             fb,
@@ -102,14 +107,18 @@ impl Panel {
     /// Frames until the windows stop moving: a slide under a bar that shows
     /// or hides runs on the wall clock.
     fn settle_motion(&mut self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = tilo_test_env::hang_deadline();
         let mut last = None;
         loop {
             self.settle();
             let now = Some(self.group().0.group);
-            if now == last || std::time::Instant::now() >= deadline {
+            if now == last {
                 return;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the windows never stopped moving"
+            );
             last = now;
             std::thread::sleep(std::time::Duration::from_millis(60));
         }
@@ -333,6 +342,10 @@ fn a_hidden_top_bar_gives_the_window_its_strip_and_shows_over_it_when_reached_fo
 /// it instead of landing in the window under it; beside it, the window
 /// keeps the pointer.
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_banner_over_a_window_takes_the_pointer() {
     use shell::shell::input_policy::chrome_captures_pointer;
     use vello::kurbo::Point;
@@ -424,8 +437,231 @@ fn with_the_bar_hidden_a_maximized_window_keeps_its_own_bar() {
     assert!(
         (stack.group.y0 - at_rest.group.y0 - bar.height()).abs() < 0.5
             && (stack.group.height() - at_rest.group.height()).abs() < 0.5,
-        "the window moved down below the bar, not resized: {:?} from {:?}",
+        "the window moved down below the bar {bar:?}, not resized: {:?} from {:?}",
         stack.group,
         at_rest.group
     );
+}
+
+/// An incoming call while a window fills the panel's width, docked under
+/// the bar and maximized: the call's card stands where it covers none of
+/// the window's bar, so History, maximize or restore and close stay visible,
+/// and a click on each reaches the window rather than the card.
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+fn an_incoming_call_never_covers_the_window_bar() {
+    use shell::shell::input_policy::chrome_captures_pointer;
+    use tilo_desktop::notifications::{Addressed, Notification};
+
+    for maximized in [false, true] {
+        let mut panel = Panel::with_width(WindowWidth::Wide);
+        if maximized {
+            panel.toggle_maximized();
+            panel.settle_motion();
+        }
+        panel.fb.with_chrome(|chrome| {
+            let mut call = Notification::new("Jonas is calling", "Video call")
+                .with_addressed(Addressed::IncomingCall);
+            call.actions = vec![
+                ("answer".into(), "Answer".into()),
+                ("decline".into(), "Decline".into()),
+            ];
+            chrome.push_notification_full(call);
+        });
+        panel.settle();
+        let banner = panel.fb.host().notification_banners_rect();
+        let (window, _) = panel.group();
+        assert!(banner.area() > 0.0, "the call is shown: {banner:?}");
+        assert!(
+            banner.x0 < window.tab_bar.x1 && banner.x1 > window.tab_bar.x0,
+            "maximized {maximized}: the card {banner:?} stands over the window's column \
+             {:?}, so the check means something",
+            window.tab_bar
+        );
+        assert!(
+            banner.intersect(window.tab_bar).area() <= 0.0,
+            "maximized {maximized}: the card {banner:?} covers the window's bar {:?}",
+            window.tab_bar
+        );
+        let toggle = if maximized {
+            window
+                .restore
+                .expect("a maximized window's bar offers Restore")
+        } else {
+            window.maximize.expect("the window's bar offers maximize")
+        };
+        let close = window.close.expect("the window's bar offers close");
+        for control in [toggle, close] {
+            assert!(
+                banner.intersect(control).area() <= 0.0,
+                "maximized {maximized}: the card {banner:?} covers {control:?}"
+            );
+            panel.fb.host_mut().note_pointer(control.center());
+            assert!(
+                !chrome_captures_pointer(&panel.fb),
+                "maximized {maximized}: a click on {control:?} reaches the window"
+            );
+        }
+    }
+}
+
+/// A raw touch contact, as the compositor hands the chrome one.
+fn touch(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> winit::event::WindowEvent {
+    winit::event::WindowEvent::Touch(winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase,
+        location: winit::dpi::PhysicalPosition::new(x, y),
+        force: None,
+        id,
+    })
+}
+
+impl Panel {
+    fn dispatch(&mut self, event: &winit::event::WindowEvent) -> bool {
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        self.fb.dispatch_event(
+            event,
+            &winit::event::Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+            &mut focus,
+        )
+    }
+
+    /// A finger coming off the bezel at the top edge above `x` and dragging
+    /// down.
+    fn swipe_down_from_top(&mut self, x: f64) {
+        use winit::event::TouchPhase;
+        let top = self.output.logical_rect().y0;
+        assert!(
+            self.fb
+                .host()
+                .takes_top_edge_touch(vello::kurbo::Point::new(x, top + 2.0)),
+            "the top edge is the shell's while something hides there"
+        );
+        self.dispatch(&touch(9, TouchPhase::Started, x, top + 2.0));
+        for y in [12.0, 24.0, 40.0, 60.0] {
+            self.dispatch(&touch(9, TouchPhase::Moved, x, top + y));
+        }
+        self.dispatch(&touch(9, TouchPhase::Ended, x, top + 60.0));
+    }
+}
+
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+fn a_swipe_down_from_the_top_edge_reveals_the_bar() {
+    use tilo_desktop::chrome::TopBarPresence;
+
+    // The top bar the person hides.
+    let mut panel = Panel::new();
+    panel.fb.host_mut().set_hide_top_bar_for_tests(true);
+    panel.settle_motion();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Hidden);
+    panel.swipe_down_from_top(700.0);
+    assert_eq!(
+        panel.fb.chrome().top_bar_presence(),
+        TopBarPresence::Shown,
+        "a swipe down from the top edge shows the hidden top bar"
+    );
+}
+
+impl Panel {
+    fn fullscreen_bar_shown(&mut self) -> bool {
+        self.fb
+            .host_mut()
+            .group_row_mut_for_tests(STRIP)
+            .expect("the strip has a row")
+            .groups
+            .iter()
+            .find(|g| g.id == GROUP)
+            .is_some_and(ui::widget::WindowGroup::fullscreen_bar_shown)
+    }
+
+    /// Let the fullscreen bar's pending timer run out.
+    fn idle_fullscreen_bar(&mut self) {
+        let due = self
+            .fb
+            .host()
+            .fullscreen_bar_reveal_deadline()
+            .expect("the shown bar is due to collapse");
+        self.fb.host_mut().sync_top_bar_presence(due);
+        self.settle();
+    }
+}
+
+/// In fullscreen the window's bar shows as the window enters, collapses
+/// after a short idle, and comes back over the window, which never moves,
+/// for a swipe down from the top edge, the Super key and the pointer.
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+fn a_fullscreen_windows_bar_collapses_when_idle_and_comes_back_over_it() {
+    use vello::kurbo::Point;
+
+    let mut panel = Panel::new();
+    panel
+        .fb
+        .with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(GROUP)));
+    panel.settle_motion();
+    assert!(
+        panel.fb.chrome().is_fullscreen(),
+        "the window is fullscreen"
+    );
+    let window = panel.group().0.group;
+    assert!(
+        panel.fullscreen_bar_shown(),
+        "entering fullscreen shows the bar"
+    );
+    assert!(
+        panel.group().0.tab_bar.area() > 0.0,
+        "its bar is laid out: {:?}",
+        panel.group().0
+    );
+    panel.idle_fullscreen_bar();
+    assert!(!panel.fullscreen_bar_shown(), "idle, it collapses");
+    assert_eq!(panel.group().0.group, window, "and nothing moved");
+
+    panel.swipe_down_from_top(700.0);
+    panel.settle();
+    assert!(
+        panel.fullscreen_bar_shown(),
+        "a swipe down from the top edge shows it"
+    );
+    assert_eq!(
+        panel.group().0.group,
+        window,
+        "over the window, which keeps its whole size"
+    );
+    panel.idle_fullscreen_bar();
+    assert!(!panel.fullscreen_bar_shown());
+
+    panel.fb.host_mut().reveal_fullscreen_bar_by_key();
+    panel.settle();
+    assert!(panel.fullscreen_bar_shown(), "the key shows it");
+    panel.idle_fullscreen_bar();
+    assert!(!panel.fullscreen_bar_shown());
+
+    for y in [400.0, 300.0, 200.0, 100.0, 40.0, 0.0] {
+        panel.fb.host_mut().note_pointer(Point::new(700.0, y));
+    }
+    if !panel.fullscreen_bar_shown()
+        && let Some(due) = panel.fb.host().fullscreen_bar_reveal_deadline()
+    {
+        panel.fb.host_mut().sync_top_bar_presence(due);
+    }
+    panel.settle();
+    assert!(
+        panel.fullscreen_bar_shown(),
+        "reaching for the top shows it"
+    );
+    assert_eq!(panel.group().0.group, window, "nothing moved");
 }

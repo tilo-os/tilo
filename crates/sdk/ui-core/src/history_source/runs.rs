@@ -20,6 +20,7 @@
 
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use tilo_automerge::ReadTyped as _;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, Value};
@@ -252,12 +253,13 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         });
     }
     // Stable order so two peers with the same document build the same list.
-    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.compact_sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
-/// Mark run `key` as an agent's run of workspace task `task`. Leaves the
-/// transaction open, as [`record_run_with_details`] does.
+/// Mark run `key` as an agent's run of an issue whose changes carry the
+/// group `task` (kind [`super::steps::TASK_RUN`]): what undoing it names.
+/// Leaves the transaction open, as [`record_run_with_details`] does.
 pub fn set_run_task(doc: &mut AutoCommit, key: &str, task: &str) -> bool {
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, key) else {
         return false;

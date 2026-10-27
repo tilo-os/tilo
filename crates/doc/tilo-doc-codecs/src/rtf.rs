@@ -633,7 +633,6 @@ mod tests {
 
     #[test]
     fn rtf_import_paragraphs_text_and_destinations() {
-        // Phase `plain_paragraph_text`.
         {
             let snap = import("{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Hello world\\par}}");
             let paras: Vec<_> = snap
@@ -644,7 +643,6 @@ mod tests {
             assert_eq!(paras.len(), 1, "{snap:?}");
             assert_eq!(paras[0].text, "Hello world");
         }
-        // Phase `two_paragraphs_split_on_par`.
         {
             let snap = import("{\\rtf1\\ansi\n{\\pard First\\par}{\\pard Second\\par}}");
             let texts: Vec<_> = snap
@@ -655,7 +653,6 @@ mod tests {
                 .collect();
             assert_eq!(texts, vec!["First".to_string(), "Second".to_string()]);
         }
-        // Phase `escapes_and_unicode_decode_to_text`.
         {
             // literal `\\ \{ \}`, a hex-byte escape (é, Latin-1), and a Unicode escape (checkmark, U+2713).
             let snap = import("{\\rtf1\\ansi\n{\\pard a\\\\b\\{c\\} \\'e9 \\u10003?z\\par}}");
@@ -666,7 +663,6 @@ mod tests {
                 .expect("paragraph");
             assert_eq!(p.text, "a\\b{c} é ✓z");
         }
-        // Phase `fonttbl_and_star_destinations_are_skipped`.
         {
             // The font table and a `\*\generator` destination must not leak into body.
             let snap = import(
@@ -679,7 +675,6 @@ mod tests {
                 "only body text survives: {snap:?}"
             );
         }
-        // Phase `bullet_paragraph_becomes_list_item`.
         {
             let snap = import("{\\rtf1\\ansi\n{\\pard\\bullet\\tab Item one\\par}}");
             let li = snap
@@ -689,7 +684,6 @@ mod tests {
                 .expect("list_item block");
             assert!(li.text.contains("Item one"), "got {:?}", li.text);
         }
-        // Phase `export_is_unsupported`.
         {
             let d = Document::new();
             let err = RtfCodec
@@ -732,7 +726,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn rtf_import_control_words_become_marks() {
-        // Phase `bold_run_yields_strong_mark`.
         {
             let snap = import("{\\rtf1\\ansi\n{\\pard a{\\b bold}c\\par}}");
             let p = snap
@@ -749,7 +742,6 @@ mod tests {
             // The bold run is "bold" — chars 1..5.
             assert_eq!((strong.start, strong.end), (1, 5), "{:?}", p.marks);
         }
-        // Phase `bold_toggle_without_group`.
         {
             let snap = import("{\\rtf1\\ansi\n{\\pard x\\b on\\b0 y\\par}}");
             let p = snap
@@ -770,7 +762,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `italic_underline_strike_marks`.
         {
             let snap = import("{\\rtf1\\ansi\n{\\pard {\\i it}{\\ul un}{\\strike st}\\par}}");
             let p = snap
@@ -801,7 +792,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `color_table_maps_cf_to_color_mark`.
         {
             // colortbl: index 1 = red. `\cf1 red\cf0` applies it.
             let snap = import(
@@ -826,7 +816,6 @@ mod tests {
             );
             assert_eq!((color.start, color.end), (0, 3));
         }
-        // Phase `fs_maps_to_fontsize_in_points`.
         {
             // `\fs40` = 40 half-points = 20pt.
             let snap = import("{\\rtf1\\ansi\n{\\pard {\\fs40 big}\\par}}");

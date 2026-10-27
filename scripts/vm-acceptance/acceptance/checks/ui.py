@@ -12,10 +12,15 @@ from ..core import CheckFailed, Unobservable, check, expect
 
 AREA = "ui"
 
+# Each theme as the palette rows that select it, by provider and id: a mode
+# leaves high contrast, and the high contrast switch then turns it on.
 THEMES = {
-    "light": ("appearance.theme.light",),
-    "dark": ("appearance.theme.dark",),
-    "high-contrast": ("appearance.theme.dark", "appearance.high-contrast"),
+    "light": (("actions", "appearance.theme.light"),),
+    "dark": (("actions", "appearance.theme.dark"),),
+    "high-contrast": (
+        ("actions", "appearance.theme.dark"),
+        ("settings-pages", "setting:appearance.high_contrast"),
+    ),
 }
 
 # Chrome only: window contents scroll out of view by design.
@@ -25,8 +30,8 @@ CONTAINER = re.compile(r"(Host|Container|Layer|Root)(\[\d+\])?$")
 
 def set_theme(ctx, name: str) -> None:
     """Select the theme through shell actions, which persist it and repaint chrome."""
-    for action in THEMES[name]:
-        ctx.vm.invoke("actions", action)
+    for provider, action in THEMES[name]:
+        ctx.vm.invoke(provider, action)
     time.sleep(2.5)
 
 

@@ -48,9 +48,13 @@ impl ChatPermissions {
         }
     }
 
-    /// Adopt the context the compositor passed into `draw`.
+    /// Adopt the context the window acts under this frame.
     pub fn from_context(ctx: PermissionContext) -> Self {
         Self { ctx }
+    }
+
+    pub fn context(&self) -> &PermissionContext {
+        &self.ctx
     }
 
     /// May this peer hydrate + render the bytes behind an attachment `blob`?
@@ -132,7 +136,6 @@ mod tests {
 
     #[test]
     fn permissions_gate_writes_by_role_but_never_reading_or_leaving() {
-        // Permissive admin allows everything.
         let p = ChatPermissions::permissive();
         assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
         assert!(p.can_participate(), "admin: participate");
@@ -185,7 +188,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "Chat's composer appears the moment authorship arrives."
     #[test]
     fn the_composer_appears_the_moment_authorship_arrives() {
         use std::cell::RefCell;

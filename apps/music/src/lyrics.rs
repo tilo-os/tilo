@@ -586,7 +586,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn lrc_parsing_and_current_line_tracking() {
-        // Phase `parse_lrc_extracts_timestamps`.
         {
             let lr = parse_lrc("[00:08.50] hello\n[01:00.00] world");
             assert!(lr.synced);
@@ -596,14 +595,12 @@ mod tests {
             assert_eq!(lr.lines[1].at_ms, Some(60_000));
         }
 
-        // Phase `parse_lrc_skips_metadata_tags`.
         {
             let lr = parse_lrc("[ar:Aurora]\n[ti:Glasslight]\n[00:01.00] first line");
             assert_eq!(lr.lines.len(), 1);
             assert_eq!(lr.lines[0].text, "first line");
         }
 
-        // Phase `current_line_tracks_playhead`.
         {
             let lr = parse_lrc("[00:00.00] a\n[00:10.00] b\n[00:20.00] c");
             assert_eq!(lr.current_line(0), Some(0));
@@ -612,7 +609,6 @@ mod tests {
             assert_eq!(lr.current_line(25_000), Some(2));
         }
 
-        // Phase `plain_lyrics_have_no_current_line`.
         {
             let lr = plain("just\nsome\nwords");
             assert!(!lr.synced);
@@ -627,28 +623,23 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn bundled_lyrics_resolve_first_and_reach_the_worker() {
-        // Phase `bundled_glasslight_is_synced`.
         {
             let lr = bundled::for_track("tk_g1").expect("bundled lyrics for tk_g1");
             assert!(lr.synced);
             assert!(lr.lines.len() >= 6);
-            // A later playhead lands on a later line.
             assert!(lr.current_line(60_000).unwrap() > lr.current_line(10_000).unwrap());
         }
 
-        // Phase `bundled_pulsewidth_is_plain`.
         {
             let lr = bundled::for_track("tk_u1").expect("bundled lyrics for tk_u1");
             assert!(!lr.synced);
             assert!(!lr.lines.is_empty());
         }
 
-        // Phase `unknown_track_has_no_bundled_lyrics`.
         {
             assert!(bundled::for_track("tk_does_not_exist").is_none());
         }
 
-        // Phase `resolve_prefers_bundled`.
         {
             let meta = TrackMeta {
                 track_id: "tk_g1".into(),
@@ -661,23 +652,13 @@ mod tests {
             assert!(lr.synced);
         }
 
-        // Phase `worker_delivers_bundled_lyrics`.
         {
             let w = LyricsWorker::new();
             w.request(TrackMeta {
                 track_id: "tk_g1".into(),
                 ..Default::default()
             });
-            // Poll briefly for the worker thread to resolve + deliver.
-            let mut got = None;
-            for _ in 0..200 {
-                if let Some(r) = w.poll() {
-                    got = Some(r);
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            let (id, lyrics) = got.expect("worker delivered lyrics");
+            let (id, lyrics) = tilo_test_env::wait_for("the worker delivers lyrics", || w.poll());
             assert_eq!(id, "tk_g1");
             assert!(lyrics.synced);
         }
@@ -689,7 +670,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn lrclib_queries_normalise_youtube_metadata_and_encode() {
-        // Phase `lrclib_url_encodes_query`.
         {
             let meta = TrackMeta {
                 track_id: "x".into(),
@@ -705,7 +685,6 @@ mod tests {
             assert!(url.contains("duration=252"));
         }
 
-        // Phase `normalize_title_strips_youtube_tags_but_keeps_real_parentheticals`.
         {
             assert_eq!(
                 normalize_title("Californication (Official Music Video)"),
@@ -724,7 +703,6 @@ mod tests {
                 normalize_title("Under the Bridge (feat. Someone)"),
                 "Under the Bridge"
             );
-            // A genuine version parenthetical is preserved.
             assert_eq!(
                 normalize_title("Californication (Acoustic)"),
                 "Californication (Acoustic)"
@@ -733,7 +711,6 @@ mod tests {
             assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
         }
 
-        // Phase `normalize_artist_strips_topic_suffix`.
         {
             assert_eq!(
                 normalize_artist("Red Hot Chili Peppers - Topic"),
@@ -778,7 +755,6 @@ mod tests {
             assert!(url.ends_with("duration=329"), "{url}");
         }
 
-        // Phase `lrclib_search_url_uses_normalized_metadata`.
         #[cfg(feature = "live")]
         {
             let meta = TrackMeta {

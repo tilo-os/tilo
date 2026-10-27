@@ -106,7 +106,7 @@ fn global_search_owns_ime_and_restores_document_focus() {
         "Writer",
         "Trip notes",
         "Insert table",
-        "Filter: Applications",
+        "Filter: Apps",
         "Everywhere",
     ] {
         assert!(json.contains(name), "missing {name}");
@@ -386,7 +386,7 @@ fn accesskit_filters_and_query_share_the_current_native_controls() {
     f.perform_a11y_action(workspace, &crate::a11y::Action::Activate)
         .unwrap();
     assert!(!f.inspection_json().unwrap().contains("Other workspace"));
-    let app_filter = f.a11y_node_named("Filter: Applications").unwrap();
+    let app_filter = f.a11y_node_named("Filter: Apps").unwrap();
     f.perform_a11y_action(app_filter, &crate::a11y::Action::Activate)
         .unwrap();
     assert_eq!(
@@ -478,9 +478,26 @@ fn selected_action_collects_real_parameters_and_confirmation() {
     )));
     enter(&mut f);
     assert!(f.take_caller_operation().is_none());
+    // Cancel has the keyboard first; the name is typed in its field.
+    f.send_host_event(&crate::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+        winit::event::ElementState::Pressed,
+    ));
     f.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit(
         "INSERT".into(),
     )));
+    // Return in the field stays the safe answer: the action's own button,
+    // past Cancel, goes ahead.
+    enter(&mut f);
+    assert!(f.take_caller_operation().is_none());
+    f.send_host_event(&crate::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+        winit::event::ElementState::Pressed,
+    ));
+    f.send_host_event(&crate::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+        winit::event::ElementState::Pressed,
+    ));
     enter(&mut f);
     let operation = f.take_caller_operation().unwrap();
     assert_eq!(
@@ -717,7 +734,6 @@ fn search_captures_keyboard_before_live_and_embedded_history_toolbars() {
             !history_captures(&f),
             "Enter must not open background History"
         );
-        // Once search closes, History retains its ordinary keyboard action.
         f.perform_semantic_named("history-open", None, &crate::a11y::Action::Focus)
             .unwrap();
         enter(&mut f);

@@ -214,10 +214,6 @@ impl ThemeDocument {
     /// Structural check: the schema, the text fields, and every number
     /// finite and inside the band its role admits. A document that fails is
     /// not a theme. Legibility is [`Self::findings`].
-    ///
-    /// # Errors
-    ///
-    /// A static message naming the first field that is out of range.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != THEME_SCHEMA_VERSION {
             return Err("unsupported theme schema");
@@ -329,7 +325,6 @@ pub enum Preset {
     DarkGraphite,
     DarkSoft,
     Light,
-    /// Dark, every text pairing at WCAG AAA.
     HighContrast,
     /// Light, every text pairing at WCAG AAA.
     HighContrastLight,

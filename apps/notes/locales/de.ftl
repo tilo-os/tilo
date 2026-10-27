@@ -29,8 +29,6 @@ notes-menu-delete = Löschen
 notes-a11y-new-child-under = Neue Unternotiz in
 notes-a11y-more-actions-for = Weitere Aktionen für
 
-notes-view-editor = Editor
-
 ## Verlauf: was jede Änderung getan hat, nach Feld und nach Aktion
 
 notes-page-body = { $item } bearbeitet
@@ -70,6 +68,7 @@ notes-delete-tag = Schlagwort { $item } gelöscht
 notes-keep-image = Ein Bild im Notizbuch abgelegt
 notes-place-image = Bild zu { $item } hinzugefügt
 notes-import-markdown = { $title } importiert
+notes-append-to-note = Zu { $title } hinzugefügt
 
 ## Keyboard shortcuts sheet
 notes-help-title = Tastenkürzel
@@ -134,6 +133,8 @@ notes-no-previous = Keine frühere Notiz
 notes-no-next = Keine spätere Notiz
 notes-link-copied = Link zu { $title } kopiert
 notes-link-unsafe = Dieser Link lässt sich nicht sicher öffnen
+notes-resource-link-invalid = Dieser Link führt hier zu nichts
+notes-resource-link-open-failed = Der Link ließ sich nicht öffnen
 notes-link-open-failed = Der Link wurde nicht geöffnet
 notes-import-title = Markdown importieren
 notes-import-accept = Importieren
@@ -178,3 +179,7 @@ notes-status-counts = { $notes ->
     [one] 1 Wort
    *[other] { $words } Wörter
 }
+
+notes-outline = Gliederung
+notes-outline-empty = Keine Überschriften
+notes-outline-untitled = Unbenannte Überschrift

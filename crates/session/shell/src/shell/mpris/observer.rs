@@ -843,6 +843,7 @@ mod tests {
         let state: &'static Mutex<ObserverState> = Box::leak(Box::default());
         state.lock().unwrap().seed.send_replace(Seed::Pending);
         let listener = bus.connect().await;
+        let observer_calls = connection.clone();
         let observer = tokio::spawn(async move { observe(&connection, &listener, state).await });
         assert!(
             seeded(state, tilo_test_env::hang_bound()).await,
@@ -901,23 +902,37 @@ mod tests {
             calls.lock().unwrap().len() > startup.len()
         })
         .await;
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
         assert_eq!(
             calls.lock().unwrap().get(startup.len()..),
             Some(&["Get".to_string()][..]),
             "after start-up the observer only re-reads the playhead"
         );
 
-        // Leaving is a signal too.
         player.release_name(PROBE).await.unwrap();
         eventually("the player leaving the card", || {
             state.lock().unwrap().now_playing.is_empty()
         })
         .await;
+        // A call of our own on the observer's connection: once the monitor
+        // sees it, it has seen every call the observer made before it.
+        observer_calls
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "GetId",
+                &(),
+            )
+            .await
+            .unwrap();
+        eventually("the marker call reaching the monitor", || {
+            calls.lock().unwrap().iter().any(|member| member == "GetId")
+        })
+        .await;
         assert_eq!(
             calls.lock().unwrap().get(startup.len()..),
-            Some(&["Get".to_string()][..]),
-            "a player leaving costs no call"
+            Some(&["Get".to_string(), "GetId".to_string()][..]),
+            "an idle player and a player leaving cost no call"
         );
         observer.abort();
     }

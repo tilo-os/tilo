@@ -34,7 +34,7 @@ use account_custody::{Capability, Custodian, CustodyError, GrantState, OAuthIssu
 use accounts::{AccountId, CredentialRef, ServiceAuthorization, ServiceCredentials};
 use agent_provider_config::{
     EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, ReasoningParam,
-    transform as provider_transform,
+    SignInIssuer, transform as provider_transform,
 };
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
@@ -76,6 +76,9 @@ const AGENT_APP: &str = "so.tilo.agent";
 const CHAT_APP: &str = "so.tilo.chat";
 const PHOTOS_APP: &str = "so.tilo.photos";
 const CANVAS_APP: &str = "so.tilo.canvas";
+/// The desktop's report composer: its review asks a model which words of a
+/// report are personal, a completion without tools, as Chat's are.
+const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
@@ -160,7 +163,7 @@ fn serve(socket: &Path) -> Result<(), String> {
             });
             let listener =
                 tokio::net::UnixListener::from_std(listener).map_err(|error| error.to_string())?;
-            serve_on(listener, http, MAX_CLIENTS, same_user).await
+            serve_on(listener, http, MAX_CLIENTS, HANDOFF_TIMEOUT, same_user).await
         })
         .map_err(|error| error.to_string())?
 }
@@ -238,6 +241,7 @@ async fn serve_on(
     listener: tokio::net::UnixListener,
     http: Arc<reqwest::Client>,
     limit: usize,
+    handoff: Duration,
     authenticate: fn(&tokio::net::UnixStream) -> bool,
 ) -> Result<(), String> {
     let slots = Arc::new(Semaphore::new(limit.max(1)));
@@ -256,7 +260,7 @@ async fn serve_on(
         }
         let http = Arc::clone(&http);
         tokio::spawn(async move {
-            serve_connection(stream, &http).await;
+            serve_connection_within(stream, &http, handoff).await;
             drop(slot);
         });
     }
@@ -332,9 +336,19 @@ fn management_mutation(request: &Request) -> bool {
     )
 }
 
-async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Client) {
-    let Ok(Ok(handoff)) = tokio::time::timeout(HANDOFF_TIMEOUT, read_handoff(&mut stream)).await
-    else {
+#[cfg(test)]
+async fn serve_connection(stream: tokio::net::UnixStream, http: &reqwest::Client) {
+    serve_connection_within(stream, http, HANDOFF_TIMEOUT).await;
+}
+
+/// Serve one connection, closing it if its launcher handoff has not arrived
+/// within `handoff`.
+async fn serve_connection_within(
+    mut stream: tokio::net::UnixStream,
+    http: &reqwest::Client,
+    handoff: Duration,
+) {
+    let Ok(Ok(handoff)) = tokio::time::timeout(handoff, read_handoff(&mut stream)).await else {
         return;
     };
     let (mut reader, mut writer) = stream.into_split();
@@ -501,6 +515,7 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
         || (!crate::caller::provider_admin_app(&handoff.app_id)
             && handoff.app_id != AGENT_APP
             && handoff.app_id != CHAT_APP
+            && handoff.app_id != FEEDBACK_APP
             && handoff.app_id != PHOTOS_APP
             && handoff.app_id != CANVAS_APP)
     {
@@ -551,7 +566,8 @@ pub(super) async fn handle_streaming(
         }
         request @ (Request::Complete { .. } | Request::CompleteDefault { .. })
             if app_id == AGENT_APP
-                || (app_id == CHAT_APP && crate::caller::chat_completion(&request)) =>
+                || ((app_id == CHAT_APP || app_id == FEEDBACK_APP)
+                    && crate::caller::chat_completion(&request)) =>
         {
             return complete_request(http, request, emit)
                 .await
@@ -627,7 +643,9 @@ pub(super) async fn handle_streaming(
         Request::SegmentSubject { .. } => {
             Err("only Canvas and Photos may find a picture's subject".into())
         }
-        request if crate::caller::provider_admin_app(app_id) => settings_request(request).await,
+        request if crate::caller::provider_admin_app(app_id) => {
+            settings_request(http, request).await
+        }
         _ => Err("caller is not authorized for this gateway operation".into()),
     };
     result.unwrap_or_else(|error| rejected(&error))
@@ -648,11 +666,18 @@ fn segment_request(image: VisionImage) -> impl Future<Output = Result<String, St
 }
 
 /// Credential operations are reachable only after the Settings caller check.
-async fn settings_request(request: Request) -> Result<Response, String> {
+async fn settings_request(http: &reqwest::Client, request: Request) -> Result<Response, String> {
     let output = |output| succeeded(Some(output), None);
     let done = |()| succeeded(None, None);
     let configured = |configured| succeeded(None, Some(configured));
     match request {
+        Request::ListModels { profile_id } => Ok(list_models(http, profile_id)
+            .await
+            .and_then(|models| {
+                serde_json::to_string(&models)
+                    .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
+            })
+            .map_or_else(Response::failure, output)),
         request @ (Request::GetProviderConfig | Request::SetProviderConfig { .. }) => {
             Ok(administration::configuration_request(request).await)
         }
@@ -698,6 +723,80 @@ async fn settings_request(request: Request) -> Result<Response, String> {
         }
         _ => Err("caller is not authorized for this gateway operation".into()),
     }
+}
+
+/// The most of a model list read.
+const MAX_MODEL_LIST_BYTES: usize = 2 * 1024 * 1024;
+/// How long a model list may take.
+const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The models `profile_id`'s provider lists, asked with its stored key or
+/// a token minted from its sign-in, enabled or not: answering is also the
+/// proof that the endpoint and credential work. A provider without a model
+/// list answers [`ErrorKind::Unsupported`]; the model is then typed.
+async fn list_models(
+    http: &reqwest::Client,
+    profile_id: String,
+) -> Result<Vec<agent_provider_config::ModelDescriptor>, ModelError> {
+    let (profile, secret) = blocking_model(move || {
+        let profile = credential_profile(&profile_id)
+            .map_err(|_| ModelError::new(ErrorKind::InvalidRequest))?;
+        let secret = if profile.sign_in.is_some() {
+            Some(
+                sign_in_token(&profile, tilo_clock::unix_now(), Instant::now())
+                    .map_err(|_| ModelError::new(ErrorKind::Authentication))?
+                    .0,
+            )
+        } else {
+            plan_secret(&profile)?
+        };
+        Ok((profile, secret))
+    })
+    .await?;
+    let headers =
+        provider_transform::profile_headers(&profile, secret.as_ref().map(|key| key.as_str()))
+            .map_err(|_| ModelError::new(ErrorKind::Authentication))?;
+    drop(secret);
+    let mut request = http
+        .get(provider_transform::models_url(&profile))
+        .timeout(MODEL_LIST_TIMEOUT);
+    for header in headers {
+        let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
+            .map_err(|_| ModelError::new(ErrorKind::Authentication))?;
+        value.set_sensitive(header.secret);
+        request = request.header(header.name, value);
+    }
+    let mut response = request.send().await.map_err(|error| {
+        ModelError::new(if error.is_timeout() {
+            ErrorKind::TimedOut
+        } else {
+            ErrorKind::Transport
+        })
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        let detail = error_body(response).await;
+        return Err(match status.as_u16() {
+            404 | 405 => ModelError::new(ErrorKind::Unsupported),
+            code => {
+                crate::openai::Failure::from_http(code, &String::from_utf8_lossy(&detail), None)
+                    .model_error()
+            }
+        });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| ModelError::new(ErrorKind::Transport))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_MODEL_LIST_BYTES {
+            return Err(ModelError::new(ErrorKind::InvalidResponse));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    provider_transform::parse_models(&String::from_utf8_lossy(&body))
+        .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
 }
 
 /// Run a provider-neutral request after the launcher caller was authorized.
@@ -1186,13 +1285,28 @@ fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, Mod
     })
 }
 
-/// What a Google sign-in's provider asks for when it has to be renewed
+/// What a signed-in provider asks for when its sign-in has to be renewed
 /// interactively.
-const SIGN_IN_AGAIN: &str = "the Google sign-in for this provider has ended; sign in again in \
+const SIGN_IN_AGAIN: &str = "the sign-in for this provider has ended; sign in again in \
                              Settings, Agent Models";
 
-/// The use a Google sign-in grant of a model provider is refreshed through.
-const GOOGLE_MODELS: OAuthUse = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
+/// The use `issuer`'s grant of a model provider is refreshed through.
+fn models_use(issuer: SignInIssuer) -> OAuthUse {
+    let issuer = match issuer {
+        SignInIssuer::Google => OAuthIssuer::Google,
+        SignInIssuer::ChatGpt => OAuthIssuer::OpenAi,
+        SignInIssuer::GitHubCopilot => OAuthIssuer::GitHub,
+        SignInIssuer::HuggingFace => OAuthIssuer::HuggingFace,
+    };
+    OAuthUse::new(issuer, Capability::Models)
+}
+
+/// The issuer `profile` signs in with, or why this build cannot use it.
+fn sign_in_issuer(profile: &ProviderProfile) -> Result<SignInIssuer, String> {
+    profile
+        .sign_in_issuer()
+        .ok_or_else(|| "provider signs in with an unsupported issuer".into())
+}
 
 /// How long before a minted access token's expiry it stops being reused, so
 /// a kept token is never one custody already counts as due for refresh
@@ -1217,35 +1331,35 @@ fn grant_id(profile_id: &str) -> Result<AccountId, String> {
 }
 
 fn sign_in_state(profile: &ProviderProfile) -> Result<GrantState, String> {
-    if !profile.signs_in_with_google() {
-        return Err("provider signs in with an unsupported issuer".into());
-    }
+    sign_in_issuer(profile)?;
     Custodian::live()
         .oauth_grant_state(&grant_id(&profile.id)?)
         .map_err(|error| error.to_string())
 }
 
-/// A current access token for `profile`'s Google sign-in, refreshed by
-/// custody when due (the refresh token never leaves it), and the instant
-/// after which it must not be reused.
+/// A current access token for `profile`'s sign-in, refreshed by custody
+/// when due (the refresh token never leaves it), and the instant after
+/// which it must not be reused. For a Copilot subscription the refresh is
+/// the trade of its GitHub token for a Copilot token.
 fn sign_in_token(
     profile: &ProviderProfile,
     now_unix: u64,
     now: Instant,
 ) -> Result<(Zeroizing<String>, Option<Instant>), String> {
-    if !profile.signs_in_with_google() {
-        return Err("provider signs in with an unsupported issuer".into());
-    }
+    let issuer = sign_in_issuer(profile)?;
     let grant = grant_id(&profile.id)?;
     // A refresh reseals the grant: one read-modify-write of the vault, like
     // a key set through this gateway.
     let _serial = management_write()?;
     let (token, expires) = Custodian::live()
-        .oauth_access_token_with_expiry(&grant, GOOGLE_MODELS, false)
+        .oauth_access_token_with_expiry(&grant, models_use(issuer), false)
         .map_err(|error| match error {
             CustodyError::NeedsAuthentication => SIGN_IN_AGAIN.to_string(),
-            CustodyError::Offline => "Google could not be reached to renew the sign-in".into(),
-            other => format!("Google sign-in failed: {other}"),
+            CustodyError::Offline => format!(
+                "{} could not be reached to renew the sign-in",
+                issuer.label()
+            ),
+            other => format!("{} sign-in failed: {other}", issuer.label()),
         })?;
     Ok((token, expires.map(|unix| reuse_until(unix, now_unix, now))))
 }
@@ -1593,15 +1707,50 @@ fn outbound_body(
     model_id: &str,
     body: serde_json::Value,
     streaming: bool,
+    responses: bool,
 ) -> Result<serde_json::Value, String> {
     let serde_json::Value::Object(mut object) = body else {
         return Err("plan body must be a JSON object".into());
     };
+    let api_responses = responses && !provider_transform::speaks_responses(profile);
+    if api_responses && let Some(limit) = object.remove("max_output_tokens") {
+        object.insert("max_completion_tokens".into(), limit);
+    }
     let capped = model_output_limit(profile, model_id, &object)?;
     if profile.signs_in_with_google() && ends_with_model_turn(&object) {
         return Err("Google Vertex AI cannot continue the model\'s own reply: the conversation must end with a user or tool message".into());
     }
     object.insert("model".into(), serde_json::Value::String(model_id.into()));
+    if provider_transform::speaks_responses(profile) {
+        // The ChatGPT backend streams every answer, keeps nothing and takes
+        // no output limit or sampling temperature: its requests carry what
+        // Rig's Codex wire (or the transform) wrote, minus anything it
+        // refuses, so a model's configured output allowance cannot be sent.
+        for refused in [
+            "max_output_tokens",
+            "max_tokens",
+            "max_completion_tokens",
+            "temperature",
+            "stream_options",
+        ] {
+            object.remove(refused);
+        }
+        object.insert("stream".into(), serde_json::Value::Bool(true));
+        object.insert("store".into(), serde_json::Value::Bool(false));
+        for param in &profile.omit_params {
+            object.remove(param.as_str());
+        }
+        return Ok(serde_json::Value::Object(object));
+    }
+    if api_responses {
+        responses_body(
+            profile,
+            &mut object,
+            streaming,
+            capped.map(|(_, limit)| limit),
+        );
+        return Ok(serde_json::Value::Object(object));
+    }
     match profile.protocol {
         ProviderProtocol::OpenAiCompatible => {
             // The profile names its provider's token-limit field; whichever
@@ -1664,6 +1813,64 @@ fn outbound_body(
         object.insert(capped_field.into(), serde_json::Value::from(limit));
     }
     Ok(serde_json::Value::Object(object))
+}
+
+/// `object` as `OpenAI`'s Responses API takes it: the output limit in
+/// `max_output_tokens`, the reasoning effort as an object, and nothing kept
+/// (`store: false`), so a reasoning turn's ciphertext is asked for and
+/// carries its reasoning into the next turn. A model that does not reason
+/// refuses the ciphertext, so it is asked for only when the request reasons.
+fn responses_body(
+    profile: &ProviderProfile,
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    streaming: bool,
+    capped: Option<u64>,
+) {
+    const CIPHERTEXT: &str = "reasoning.encrypted_content";
+    let limit = object
+        .remove("max_completion_tokens")
+        .or_else(|| object.remove("max_tokens"));
+    object.remove("max_tokens");
+    if let Some(limit) = capped.map(serde_json::Value::from).or(limit) {
+        object.insert("max_output_tokens".into(), limit);
+    }
+    if let Some(effort) = object.remove("reasoning_effort") {
+        object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+    }
+    if let Some(reasoning) = &profile.reasoning {
+        object.remove("reasoning");
+        if reasoning.param != ReasoningParam::Omit {
+            object.insert(
+                "reasoning".into(),
+                serde_json::json!({ "effort": reasoning.effort }),
+            );
+        }
+    }
+    object.remove("stream_options");
+    if streaming {
+        object.insert("stream".into(), serde_json::Value::Bool(true));
+    } else {
+        object.remove("stream");
+    }
+    object.insert("store".into(), serde_json::Value::Bool(false));
+    let reasons = object
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .is_some_and(|effort| effort != "none");
+    let mut include: Vec<serde_json::Value> = object
+        .remove("include")
+        .and_then(|include| include.as_array().cloned())
+        .unwrap_or_default();
+    include.retain(|item| item != CIPHERTEXT);
+    if reasons {
+        include.push(CIPHERTEXT.into());
+    }
+    if !include.is_empty() {
+        object.insert("include".into(), serde_json::Value::Array(include));
+    }
+    for param in &profile.omit_params {
+        object.remove(param.as_str());
+    }
 }
 
 /// Whether the last message of a request is the model's (an assistant
@@ -2326,12 +2533,12 @@ fn validate_transform(ask: &TransformAsk) -> Result<(), String> {
 /// The provider request for one transformation. Deterministic sampling, one
 /// system instruction, one user turn, and no tools in either dialect.
 fn transform_body(
-    protocol: ProviderProtocol,
+    profile: &ProviderProfile,
     model_id: &str,
     ask: &TransformAsk,
 ) -> serde_json::Value {
-    provider_transform::body(
-        protocol,
+    provider_transform::profile_body(
+        profile,
         &provider_transform::Ask {
             model: model_id,
             instructions: &ask.instructions,
@@ -2344,8 +2551,8 @@ fn transform_body(
 
 /// The answer text out of a provider response, within the published output
 /// bound.
-fn transform_answer(protocol: ProviderProtocol, body: &str) -> Result<String, String> {
-    provider_transform::answer(protocol, body, crate::MAX_TRANSFORM_OUTPUT_BYTES)
+fn transform_answer(profile: &ProviderProfile, body: &str) -> Result<String, String> {
+    provider_transform::profile_answer(profile, body, crate::MAX_TRANSFORM_OUTPUT_BYTES)
 }
 
 async fn transform(
@@ -2359,7 +2566,7 @@ async fn transform(
     let (profile, secret) = blocking_model(move || plan_profile(&profile_id, &model))
         .await
         .map_err(|error| error.message)?;
-    let body = transform_body(profile.protocol, &model_id, &ask);
+    let body = transform_body(&profile, &model_id, &ask);
     let result = unary_with_retries(
         http,
         &profile,
@@ -2369,7 +2576,7 @@ async fn transform(
     )
     .await;
     drop(secret);
-    transform_answer(profile.protocol, &result?)
+    transform_answer(&profile, &result?)
 }
 
 /// Validate Photos' one fixed local-only visual-analysis operation and
@@ -2791,7 +2998,7 @@ where
 }
 
 fn provider_url(profile: &ProviderProfile) -> String {
-    provider_transform::url(profile.protocol, &profile.endpoint)
+    provider_transform::profile_url(profile)
 }
 
 /// Whether the peer's `SO_PEERCRED` uid is this process's effective uid.
@@ -2813,6 +3020,46 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    /// The report composer may ask a model which words are personal, a
+    /// completion without tools, and nothing more; an app it does not
+    /// know may ask nothing.
+    #[tokio::test]
+    async fn the_report_composer_completes_text_and_is_refused_tools() {
+        use agent_provider_config::protocol::{
+            Message, ModelRequest, Role, ToolChoice, ToolDefinition,
+        };
+        let http = provider_client().unwrap();
+        let ask = |tools: Vec<ToolDefinition>| Request::CompleteDefault {
+            request: ModelRequest {
+                messages: vec![Message::text(Role::User, "[0] Thanks Ada")],
+                tool_choice: if tools.is_empty() {
+                    ToolChoice::None
+                } else {
+                    ToolChoice::Auto
+                },
+                tools,
+                max_output_tokens: 64,
+            },
+            timeout_ms: 1_000,
+            stream: false,
+        };
+        let tool = ToolDefinition {
+            name: "send_mail".into(),
+            description: "Send mail".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let refused = handle(FEEDBACK_APP, ask(vec![tool]), &http).await;
+        assert_eq!(
+            refused.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied)
+        );
+        let other = handle("so.tilo.files", ask(Vec::new()), &http).await;
+        assert_eq!(
+            other.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied)
+        );
+    }
 
     #[tokio::test]
     async fn subject_requests_observe_the_build_capability_and_caller_boundary() {
@@ -2852,6 +3099,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![profile.clone()],
             default_profile: Some(profile.id.clone()),
+            ..Default::default()
         };
         config.save_at(&settings).unwrap();
         let store = ServiceCredentials::open_in(root.path());
@@ -3083,7 +3331,7 @@ mod tests {
             instructions: "Answer with JSON.".into(),
             input: input.into(),
             max_output_tokens: 512,
-            timeout: Duration::from_secs(5),
+            timeout: tilo_test_env::hang_bound(),
         }
     }
 
@@ -3107,7 +3355,8 @@ mod tests {
             ProviderProtocol::Anthropic,
             ProviderProtocol::OpenAiCompatible,
         ] {
-            let body = transform_body(protocol, "model-x", &ask("the input"));
+            let profile = agent_provider_config::ProviderProfile::hosted(protocol);
+            let body = transform_body(&profile, "model-x", &ask("the input"));
             assert_eq!(body["model"], "model-x");
             assert_eq!(body["max_tokens"], 512);
             assert!(body.get("tools").is_none());
@@ -3117,23 +3366,24 @@ mod tests {
 
     #[test]
     fn transform_answers_are_the_text_and_never_a_refusal_or_a_fragment() {
+        let anthropic_profile =
+            agent_provider_config::ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        let openai_profile =
+            agent_provider_config::ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
         let anthropic =
             r#"{"stop_reason":"end_turn","content":[{"type":"text","text":"{\"result\":1}"}]}"#;
         assert_eq!(
-            transform_answer(ProviderProtocol::Anthropic, anthropic).unwrap(),
+            transform_answer(&anthropic_profile, anthropic).unwrap(),
             r#"{"result":1}"#
         );
         let refused = r#"{"stop_reason":"refusal","content":[]}"#;
-        assert!(transform_answer(ProviderProtocol::Anthropic, refused).is_err());
+        assert!(transform_answer(&anthropic_profile, refused).is_err());
         let cut = r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{"}]}"#;
-        assert!(transform_answer(ProviderProtocol::Anthropic, cut).is_err());
+        assert!(transform_answer(&anthropic_profile, cut).is_err());
         let openai = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
-        assert_eq!(
-            transform_answer(ProviderProtocol::OpenAiCompatible, openai).unwrap(),
-            "{}"
-        );
+        assert_eq!(transform_answer(&openai_profile, openai).unwrap(), "{}");
         let truncated = r#"{"choices":[{"finish_reason":"length","message":{"content":"{"}}]}"#;
-        assert!(transform_answer(ProviderProtocol::OpenAiCompatible, truncated).is_err());
+        assert!(transform_answer(&openai_profile, truncated).is_err());
     }
 
     #[test]
@@ -3293,7 +3543,7 @@ mod tests {
                 serde_json::json!({"max_completion_tokens":4096}),
                 serde_json::json!({"max_tokens":4096,"max_completion_tokens":4096}),
             ] {
-                let outbound = outbound_body(&profile, "bounded", body, false).unwrap();
+                let outbound = outbound_body(&profile, "bounded", body, false, false).unwrap();
                 let key = if protocol == ProviderProtocol::Anthropic {
                     "max_tokens"
                 } else {
@@ -3322,8 +3572,8 @@ mod tests {
                 serde_json::json!({"max_tokens":1.5}),
                 serde_json::json!({"max_tokens":64,"max_completion_tokens":512}),
             ] {
-                assert!(outbound_body(&profile, "bounded", bad.clone(), false).is_err());
-                assert!(outbound_body(&profile, "legacy", bad, false).is_ok());
+                assert!(outbound_body(&profile, "bounded", bad.clone(), false, false).is_err());
+                assert!(outbound_body(&profile, "legacy", bad, false, false).is_ok());
             }
             profile.omit_params.clear();
             assert_eq!(
@@ -3331,6 +3581,7 @@ mod tests {
                     &profile,
                     "legacy",
                     serde_json::json!({"max_tokens":4096}),
+                    false,
                     false
                 )
                 .unwrap()["max_tokens"],
@@ -3361,7 +3612,14 @@ mod tests {
                 {"role": "user", "content": "u"}
             ]
         });
-        let sent = outbound_body(&vertex, "google/gemini-4-argon", caller.clone(), true).unwrap();
+        let sent = outbound_body(
+            &vertex,
+            "google/gemini-4-argon",
+            caller.clone(),
+            true,
+            false,
+        )
+        .unwrap();
         assert_eq!(sent["model"], "google/gemini-4-argon");
         assert_eq!(sent["stream"], true);
         assert_eq!(
@@ -3376,11 +3634,81 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(serde_json::json!({"role": "assistant", "content": "Hel"}));
-        let refused =
-            outbound_body(&vertex, "google/gemini-4-argon", prefill.clone(), false).unwrap_err();
+        let refused = outbound_body(
+            &vertex,
+            "google/gemini-4-argon",
+            prefill.clone(),
+            false,
+            false,
+        )
+        .unwrap_err();
         assert!(refused.contains("Vertex AI"), "{refused}");
         // Other providers accept a prefill; nothing changes for them.
-        assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false).is_ok());
+        assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false, false).is_ok());
+    }
+
+    #[test]
+    fn a_responses_body_names_its_limit_and_reasoning_and_keeps_nothing() {
+        let mut openai = hosted_openai();
+        openai.token_limit_param =
+            Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
+        let caller = serde_json::json!({
+            "model": "other", "input": [], "max_output_tokens": 64, "stream": true,
+            "stream_options": {"include_usage": true}, "reasoning_effort": "low",
+            "include": ["reasoning.encrypted_content", "message.output_text.logprobs"]
+        });
+        let body = outbound_body(&openai, "vendor/model-a", caller.clone(), false, true).unwrap();
+        assert_eq!(body["model"], "vendor/model-a");
+        assert_eq!(body["max_output_tokens"], 64);
+        assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
+        assert_eq!(body["store"], false);
+        assert_eq!(
+            body["include"],
+            serde_json::json!([
+                "message.output_text.logprobs",
+                "reasoning.encrypted_content"
+            ])
+        );
+        for chat_only in [
+            "max_completion_tokens",
+            "max_tokens",
+            "reasoning_effort",
+            "stream",
+            "stream_options",
+        ] {
+            assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+        }
+        assert_eq!(
+            outbound_body(&openai, "vendor/model-a", caller.clone(), true, true).unwrap()["stream"],
+            true
+        );
+
+        // A model that does not reason is not asked for reasoning ciphertext.
+        let mut plain = openai.clone();
+        plain.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
+        let body = outbound_body(&plain, "vendor/model-a", caller.clone(), false, true).unwrap();
+        assert!(body.get("reasoning").is_none(), "{body}");
+        assert_eq!(
+            body["include"],
+            serde_json::json!(["message.output_text.logprobs"])
+        );
+        let mut none = openai.clone();
+        none.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
+        let body =
+            outbound_body(&none, "vendor/model-a", serde_json::json!({}), false, true).unwrap();
+        assert_eq!(body["reasoning"], serde_json::json!({"effort": "none"}));
+        assert!(body.get("include").is_none(), "{body}");
+
+        // The model's own output policy caps the Responses limit.
+        let mut capped = openai;
+        capped.models[0].request_limits = Some(agent_provider_config::ModelRequestLimits {
+            max_output_tokens: 32,
+            runtime_context_tokens: None,
+            plan_timeout_ms: None,
+        });
+        let body = outbound_body(&capped, "vendor/model-a", caller, false, true).unwrap();
+        assert_eq!(body["max_output_tokens"], 32);
+        assert!(body.get("max_completion_tokens").is_none(), "{body}");
     }
 
     #[test]
@@ -3390,15 +3718,27 @@ mod tests {
             "stream_options": {"include_usage": true}, "reasoning_effort": "high", "messages": []
         });
         // An unconfigured profile: only the model, and the caller's stream, change.
-        let body =
-            outbound_body(&hosted_openai(), "vendor/model-a", caller.clone(), false).unwrap();
+        let body = outbound_body(
+            &hosted_openai(),
+            "vendor/model-a",
+            caller.clone(),
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(body["model"], "vendor/model-a");
         assert_eq!(body["max_completion_tokens"], 64);
         assert_eq!(body["reasoning_effort"], "high");
         assert!(body.get("stream").is_none() && body.get("stream_options").is_none());
 
-        let streamed =
-            outbound_body(&hosted_openai(), "vendor/model-a", caller.clone(), true).unwrap();
+        let streamed = outbound_body(
+            &hosted_openai(),
+            "vendor/model-a",
+            caller.clone(),
+            true,
+            false,
+        )
+        .unwrap();
         assert_eq!(streamed["stream"], true);
         assert_eq!(streamed["stream_options"]["include_usage"], true);
 
@@ -3406,7 +3746,7 @@ mod tests {
         let mut router = hosted_openai();
         router.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
         router.reasoning = Some(reasoning(ReasoningParam::ReasoningObject, "low"));
-        let body = outbound_body(&router, "vendor/model-a", caller.clone(), false).unwrap();
+        let body = outbound_body(&router, "vendor/model-a", caller.clone(), false, false).unwrap();
         assert_eq!(body["max_tokens"], 64);
         assert!(body.get("max_completion_tokens").is_none());
         assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
@@ -3418,7 +3758,7 @@ mod tests {
             Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
         openai.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
         let legacy = serde_json::json!({"max_tokens": 9, "reasoning": {"effort": "high"}});
-        let body = outbound_body(&openai, "vendor/model-a", legacy, false).unwrap();
+        let body = outbound_body(&openai, "vendor/model-a", legacy, false, false).unwrap();
         assert_eq!(body["max_completion_tokens"], 9);
         assert!(body.get("max_tokens").is_none() && body.get("reasoning").is_none());
         assert_eq!(body["reasoning_effort"], "none");
@@ -3428,14 +3768,14 @@ mod tests {
         let mut strict = hosted_openai();
         strict.omit_params = vec!["stream_options".into(), "parallel_tool_calls".into()];
         let with_extras = serde_json::json!({"parallel_tool_calls": false, "messages": []});
-        let body = outbound_body(&strict, "vendor/model-a", with_extras, true).unwrap();
+        let body = outbound_body(&strict, "vendor/model-a", with_extras, true, false).unwrap();
         assert_eq!(body["stream"], true);
         assert!(body.get("stream_options").is_none() && body.get("parallel_tool_calls").is_none());
 
         // `none` strips every reasoning field.
         let mut omit = hosted_openai();
         omit.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
-        let body = outbound_body(&omit, "vendor/model-a", caller, false).unwrap();
+        let body = outbound_body(&omit, "vendor/model-a", caller, false, false).unwrap();
         assert!(body.get("reasoning_effort").is_none() && body.get("reasoning").is_none());
 
         let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
@@ -3444,13 +3784,13 @@ mod tests {
         anthropic.token_limit_param =
             Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
         let caller = serde_json::json!({"model": "other", "max_tokens": 9, "stream": true});
-        let body = outbound_body(&anthropic, "claude-x", caller.clone(), false).unwrap();
+        let body = outbound_body(&anthropic, "claude-x", caller.clone(), false, false).unwrap();
         assert_eq!(body["model"], "claude-x");
         assert_eq!(body["max_tokens"], 9);
         assert!(body.get("stream").is_none() && body.get("reasoning_effort").is_none());
         // A streamed Anthropic Plan asks for the event stream, and nothing
         // of the OpenAI-compatible stream options.
-        let streamed = outbound_body(&anthropic, "claude-x", caller, true).unwrap();
+        let streamed = outbound_body(&anthropic, "claude-x", caller, true, false).unwrap();
         assert_eq!(streamed["stream"], true);
         assert!(streamed.get("stream_options").is_none());
         assert!(streamed.get("reasoning_effort").is_none());
@@ -3460,6 +3800,7 @@ mod tests {
                 &hosted_openai(),
                 "vendor/model-a",
                 serde_json::json!([]),
+                false,
                 false
             )
             .is_err()
@@ -3471,6 +3812,12 @@ mod tests {
     /// unchanged). `workers` of one proves concurrency comes from serving
     /// clients as tasks, not from a thread each.
     fn serve_in_background(listener: UnixListener, workers: usize) {
+        serve_in_background_within(listener, workers, HANDOFF_TIMEOUT);
+    }
+
+    /// [`serve_in_background`], closing connections whose handoff has not
+    /// arrived within `handoff`.
+    fn serve_in_background_within(listener: UnixListener, workers: usize, handoff: Duration) {
         listener.set_nonblocking(true).unwrap();
         let http = Arc::new(provider_client().unwrap());
         std::thread::spawn(move || {
@@ -3480,22 +3827,22 @@ mod tests {
                 .unwrap();
             runtime.block_on(async move {
                 let listener = tokio::net::UnixListener::from_std(listener).unwrap();
-                serve_on(listener, http, MAX_CLIENTS, |_| true).await
+                serve_on(listener, http, MAX_CLIENTS, handoff, |_| true).await
             })
         });
     }
 
-    fn serve_test_socket() -> PathBuf {
+    fn serve_test_socket(handoff: Duration) -> PathBuf {
         let nonce = tilo_clock::unix_now_ns();
         let path = std::env::temp_dir().join(format!("gw-{}-{nonce}.sock", std::process::id()));
-        serve_in_background(UnixListener::bind(&path).unwrap(), 2);
+        serve_in_background_within(UnixListener::bind(&path).unwrap(), 2, handoff);
         path
     }
 
     fn settings_client(path: &Path) -> UnixStream {
         let mut stream = UnixStream::connect(path).unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         write_frame(
             &mut stream,
@@ -3505,8 +3852,7 @@ mod tests {
         stream
     }
 
-    fn unauthorized_round_trip(stream: &mut UnixStream) -> Duration {
-        let began = Instant::now();
+    fn unauthorized_round_trip(stream: &mut UnixStream) {
         // Answered without configuration or network: Agent may not read secrets.
         write_frame(
             stream,
@@ -3519,32 +3865,46 @@ mod tests {
             response.error.as_deref(),
             Some("caller is not authorized for this gateway operation")
         );
-        began.elapsed()
     }
 
     #[test]
     fn one_idle_or_stalled_client_never_blocks_another() {
-        let path = serve_test_socket();
+        // A handoff no test outlives: the silent connection stays pending
+        // for the whole test, so the others are answered beside it.
+        let path = serve_test_socket(tilo_test_env::hang_bound().saturating_mul(2));
         // A connection that never sends its handoff, and one that sent it and
         // then went idle (the agent's normal, process-long channel).
-        let mut silent = UnixStream::connect(&path).unwrap();
+        let silent = UnixStream::connect(&path).unwrap();
         let mut idle = settings_client(&path);
-        std::thread::sleep(Duration::from_millis(100));
         let mut active = settings_client(&path);
         for _ in 0..3 {
-            assert!(unauthorized_round_trip(&mut active) < Duration::from_secs(1));
+            unauthorized_round_trip(&mut active);
         }
-        // The stalled handoff is closed after HANDOFF_TIMEOUT...
-        silent
-            .set_read_timeout(Some(HANDOFF_TIMEOUT + Duration::from_secs(3)))
-            .unwrap();
+        // ...while the idle authenticated channel stays usable.
+        unauthorized_round_trip(&mut idle);
+        silent.set_nonblocking(true).unwrap();
+        assert_eq!(
+            (&silent).read(&mut [0_u8; 1]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the silent connection was still waiting for its handoff"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_connection_without_its_handoff_is_closed() {
+        let path = serve_test_socket(HANDOFF_TIMEOUT);
         let began = Instant::now();
+        let mut silent = UnixStream::connect(&path).unwrap();
+        silent
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
         let mut byte = [0_u8; 1];
         assert_eq!(silent.read(&mut byte).unwrap(), 0, "closed, not answered");
-        assert!(began.elapsed() < HANDOFF_TIMEOUT + Duration::from_secs(2));
-        // ...while the idle authenticated channel stays usable indefinitely.
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(unauthorized_round_trip(&mut idle) < Duration::from_secs(1));
+        assert!(
+            began.elapsed() >= HANDOFF_TIMEOUT,
+            "closed before its handoff time"
+        );
         let _ = fs::remove_file(&path);
     }
 
@@ -3562,7 +3922,7 @@ mod tests {
 
         let mut client = UnixStream::connect(&path).unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let handoff =
             serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();

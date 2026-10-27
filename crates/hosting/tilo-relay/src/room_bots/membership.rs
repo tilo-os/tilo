@@ -39,7 +39,6 @@ pub struct HostRootCertifier {
 }
 
 impl HostRootCertifier {
-    /// The certifier signing with `root`.
     #[must_use]
     pub const fn new(root: SigningKey) -> Self {
         Self {
@@ -165,9 +164,6 @@ pub enum Kept {
 /// device of `certifier`'s root): install it when the room lacks it,
 /// update its row when its program changed, renew its delegation when due.
 /// Answers what it did and when the delegation now ends.
-///
-/// # Errors
-/// The room is not governed here, or governance refused the change.
 pub async fn keep_member(
     rooms: &Rooms,
     room: &str,

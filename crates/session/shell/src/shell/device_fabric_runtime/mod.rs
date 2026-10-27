@@ -50,7 +50,8 @@ use crate::shell::device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceFabric, DeviceFabricSnapshot, DeviceKind,
     DevicePresence, DisplayEdge, DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION,
     FabricCapabilities, FabricInputEvent, FabricStamp, InputLease, MAX_INPUT_LEASE_MS,
-    MediaHandoffFailure, MediaSession, MediaSourceLocator, PersonalFabricAction, RoamingSetting,
+    MediaHandoffFailure, MediaSession, MediaSourceLocator, OwnerSession, PersonalFabricAction,
+    RoamingSetting,
 };
 use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
 pub(crate) use nearby_changes::{
@@ -1767,21 +1768,26 @@ impl worker::FabricPump for NetworkFabricPump {
     }
 }
 
-/// Run `runtime` off the compositor thread (see [`worker`]). After each run
-/// that left spatial input or nearby-drop news for the compositor, its loop
-/// is woken to pick them up.
+/// Make the fabric's runtime and run it off the compositor thread (see
+/// [`worker`]): making it reads the settings and display files, starts their
+/// watches and binds the device-unlock socket, none of which the compositor
+/// may wait for. After each run that left spatial input or nearby-drop news
+/// for the compositor, its loop is woken to pick them up.
 ///
 /// # Errors
 ///
 /// The OS error when the thread cannot be started.
 pub(crate) fn spawn_worker(
-    runtime: DeviceFabricRuntime,
     network: Arc<ShellNetwork>,
+    notification_bridge: NotificationBridge,
 ) -> std::io::Result<worker::FabricWorker<FabricTurn>> {
     let wake = network.loop_waker();
     worker::FabricWorker::spawn(
         "device-fabric",
-        NetworkFabricPump { runtime, network },
+        move || NetworkFabricPump {
+            runtime: DeviceFabricRuntime::new(&network, notification_bridge),
+            network,
+        },
         move || {
             if fabric_output_pending() {
                 wake();
@@ -1801,7 +1807,7 @@ fn fabric_output_pending() -> bool {
 }
 
 /// Stateful, low-frequency fabric pump; the native compositor runs it on a
-/// thread of its own ([`spawn_worker`]).
+/// thread of its own (`spawn_worker`).
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,
@@ -1900,6 +1906,9 @@ impl DeviceFabricRuntime {
                 .push_incoming(crate::notifications::IncomingNotification {
                     dbus_id: self.notification_bridge.alloc_id(),
                     app_name: crate::shell::i18n::t("device-wake-app-name"),
+                    app_icon: None,
+                    desktop_entry: None,
+                    image_data: None,
                     summary,
                     body,
                     actions: Vec::new(),
@@ -2009,6 +2018,8 @@ impl DeviceFabricRuntime {
         // After the store's follow-ups and expired consents: what Files
         // would see now, announced only when it moved.
         observe_nearby_view(network, policy);
+        // And what Settings' Speakers would see, while it waits to hear.
+        crate::shell::speaker_settings::observe(network);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
@@ -2131,6 +2142,8 @@ impl DeviceFabricRuntime {
         self.merge_remote_state(network, selection, &device, policy);
         publish_device_displays(network, policy, &mut self.published_displays);
         crate::shell::device_unlock_runtime::refresh(network);
+        #[cfg(target_os = "linux")]
+        crate::shell::device_vpn::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
         {
@@ -2146,6 +2159,13 @@ impl DeviceFabricRuntime {
         policy: ContinuityPolicySnapshot,
     ) {
         self.enforce_policy(network, selection, policy);
+    }
+
+    /// Hold the periodic sample back for good: from here on a pump samples
+    /// only for a change it was told about, however long it takes.
+    #[cfg(test)]
+    pub(crate) fn hold_periodic_sample_for_test(&mut self) {
+        self.last_sample = Instant::now().checked_add(Duration::from_secs(3600));
     }
 
     fn enforce_policy(
@@ -2283,6 +2303,7 @@ impl DeviceFabricRuntime {
     fn handle_fabric_actions(&mut self, network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
         prune_spatial_leases(network);
         self.remote_capture.drain_pending_actions(network);
+        crate::shell::device_certification::pump(network);
         for received in network.take_personal_fabric_actions() {
             let crate::shell::network::ReceivedPersonalFabricAction {
                 envelope,
@@ -2304,6 +2325,9 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if crate::shell::device_wake::handle_action(network, &envelope) {
+                continue;
+            }
+            if crate::shell::device_certification::handle_action(network, &envelope) {
                 continue;
             }
             if handle_fabric_clock_action(network, &envelope, received_monotonic_us) {
@@ -2487,6 +2511,9 @@ impl DeviceFabricRuntime {
                 }
                 PersonalFabricAction::WindowViews { views, decode } => {
                     window_views::record(envelope.source, views, &decode);
+                }
+                PersonalFabricAction::ShowTab { tab } => {
+                    *shown_tab_slot().lock_recover() = Some(tab);
                 }
                 action => handle_spatial_action(network, &route, &envelope.target, action),
             }
@@ -4267,6 +4294,9 @@ fn apply_spatial_action(
         | PersonalFabricAction::SpeakerListen { .. }
         | PersonalFabricAction::SpeakerHeard { .. }
         | PersonalFabricAction::WindowViews { .. }
+        | PersonalFabricAction::ShowTab { .. }
+        | PersonalFabricAction::CertifyAsk { .. }
+        | PersonalFabricAction::CertifyAnswer { .. }
         | PersonalFabricAction::WakeDevice { .. }
         | PersonalFabricAction::WakeReport { .. }
         | PersonalFabricAction::WakeProbe { .. }
@@ -6787,28 +6817,11 @@ pub fn device_fabric_view(
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
         remote_capture: crate::shell::remote_capture::runtime::active_view(),
         device_unlocks: crate::shell::device_unlock_runtime::pending_device_unlocks(),
+        #[cfg(target_os = "linux")]
+        device_vpn: crate::shell::device_vpn::view(),
+        #[cfg(not(target_os = "linux"))]
+        device_vpn: None,
     }
-}
-
-/// Route existing local playback streams and future default-following streams
-/// to one currently enumerated output, including a connected Bluetooth sink.
-///
-/// # Errors
-///
-/// Returns an error if the node disappeared or `PipeWire` rejects any graph
-/// edit. The node id is resolved against a fresh graph before it is used.
-pub fn route_local_audio(node_id: u32) -> Result<(), String> {
-    let graph = media::audio::enumerate();
-    let sink = graph
-        .sink_by_id(node_id)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-output-gone"))?;
-    let target_serial = sink.serial;
-    let control = media::audio::real_control();
-    control.set_default_sink(node_id)?;
-    for stream in graph.playback_streams {
-        control.route_stream(stream.id, target_serial)?;
-    }
-    Ok(())
 }
 
 /// An input level in `0.0..=1.0` as a whole percentage.
@@ -6825,29 +6838,6 @@ pub fn input_level_percent(level: f32) -> u8 {
 
 /// How far one step of the input level moves.
 const INPUT_LEVEL_STEP: f32 = 0.05;
-
-/// Record from one currently enumerated input from now on: make it the
-/// default source and move every running capture stream onto it.
-///
-/// # Errors
-///
-/// Returns an error if the input disappeared or `PipeWire` rejects any graph
-/// edit. The node id is resolved against a fresh graph before it is used.
-pub fn select_local_input(node_id: u32) -> Result<(), String> {
-    let graph = media::audio::enumerate();
-    let source = graph
-        .sources
-        .iter()
-        .find(|source| source.id == node_id)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-input-gone"))?;
-    let target_serial = source.serial;
-    let control = media::audio::real_control();
-    control.set_default_source(node_id)?;
-    for stream in graph.record_streams {
-        control.route_stream(stream.id, target_serial)?;
-    }
-    Ok(())
-}
 
 /// The input level one step up or down from `current`, within `0..=1`.
 #[must_use]
@@ -7530,6 +7520,43 @@ pub(super) fn flush_spatial_input(network: &ShellNetwork) {
     }
 }
 
+fn shown_tab_slot() -> &'static Mutex<Option<u64>> {
+    static TAB: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+    TAB.get_or_init(Mutex::default)
+}
+
+/// The tab another of the person's devices last asked this one to show
+/// ([`PersonalFabricAction::ShowTab`]), taken once.
+pub(crate) fn take_shown_tab() -> Option<u64> {
+    shown_tab_slot().lock_recover().take()
+}
+
+/// Ask `target`, another of the person's devices, to show `tab`.
+///
+/// # Errors
+///
+/// Returns why the request could not be sent.
+pub(crate) fn show_tab_on(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    tab: u64,
+) -> Result<(), String> {
+    network
+        .send_personal_fabric_action(target, PersonalFabricAction::ShowTab { tab })
+        .map(|_| ())
+}
+
+fn owner_session_slot() -> &'static Mutex<OwnerSession> {
+    static SESSION: OnceLock<Mutex<OwnerSession>> = OnceLock::new();
+    SESSION.get_or_init(Mutex::default)
+}
+
+/// The person's session here, as the next local snapshot carries it to their
+/// other devices (`crate::shell::owner_session`).
+pub(crate) fn set_owner_session(session: OwnerSession) {
+    *owner_session_slot().lock_recover() = session;
+}
+
 /// One causal native-seat phase. Releases precede every surviving input in a
 /// frame, so an old lease's barrier cannot erase a replacement lease's edge.
 pub(crate) enum SpatialInputBatch {
@@ -7852,6 +7879,7 @@ fn build_local_snapshot(
             online: true,
             last_seen_unix_ms: 0,
             wake_routes: Vec::new(),
+            session: *owner_session_slot().lock_recover(),
             stamp: stamp.clone(),
         },
         media,
@@ -8667,9 +8695,7 @@ mod tests {
         );
 
         std::fs::write(&hydrating, b"small note\n").expect("the bytes arrive");
-        let read = reads
-            .recv_timeout(Duration::from_secs(30))
-            .expect("the read finished once its bytes arrived");
+        let read = tilo_test_env::recv("the read to finish once its bytes arrived", &reads);
         assert_eq!(read.target, target);
         assert_eq!(read.name, "note.txt");
         assert_eq!(read.result, Ok(b"small note\n".to_vec()));
@@ -8871,7 +8897,7 @@ mod tests {
             assert_eq!(caps.secret_store, wifi);
         }
         assert!(!permits_roaming_setting(
-            ContinuityPolicySnapshot::default(),
+            ContinuityPolicySnapshot::OFF,
             arrangement_key
         ));
     }
@@ -9277,9 +9303,7 @@ mod tests {
                 .is_none(),
             "an uncached probe waits for a background sample"
         );
-        sampling
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the sample runs on its own thread");
+        tilo_test_env::recv("the sample to run on its own thread", &sampling);
         assert!(
             answer_health_probe(&mut state, peer.clone(), [4; 16], start, || {
                 panic!("one power sample at a time")
@@ -9292,14 +9316,10 @@ mod tests {
         );
 
         release.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let replies = loop {
+        let replies = tilo_test_env::wait_for("the released power sample's replies", || {
             let replies = finish_power_sample(&mut state, start);
-            if !replies.is_empty() || Instant::now() > deadline {
-                break replies;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
+            (!replies.is_empty()).then_some(replies)
+        });
         assert_eq!(
             replies
                 .iter()
@@ -9366,6 +9386,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: counter,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: stamp.clone(),
             },
             media: Vec::new(),
@@ -10016,6 +10037,7 @@ mod tests {
                     online: true,
                     last_seen_unix_ms: 0,
                     wake_routes: Vec::new(),
+                    session: OwnerSession::default(),
                     stamp: FabricStamp {
                         counter: 0,
                         device: device.clone(),
@@ -10052,6 +10074,7 @@ mod tests {
                     online: true,
                     last_seen_unix_ms: 0,
                     wake_routes: Vec::new(),
+                    session: OwnerSession::default(),
                     stamp: old_stamp.clone(),
                 },
                 media: Vec::new(),
@@ -10401,7 +10424,7 @@ mod tests {
                 "Desktop"
             );
             assert!(
-                roaming_provenance(&fabric, ContinuityPolicySnapshot::default())
+                roaming_provenance(&fabric, ContinuityPolicySnapshot::OFF)
                     .settings
                     .is_empty()
             );

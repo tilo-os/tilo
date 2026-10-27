@@ -52,6 +52,66 @@ impl Routes {
     }
 }
 
+/// Prove this device's membership of `connect`'s room with its renewed
+/// certificate ([`tilo_joined_room::enroll::renew_membership`]), over the
+/// route its sessions take; the next heartbeat dials with it.
+/// A route whose custody no longer matches its room: when the device's
+/// certificate was renewed, it proves its membership with the renewal and
+/// dials once the room holds it.
+fn renew_route(route: &mut Route, endpoint: &iroh::Endpoint, identity: &super::HostIdentity) {
+    let renewed = matches!(route.connect.renewal(identity), Ok(Some(_)));
+    if renewed
+        && route
+            .pending
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+    {
+        return;
+    }
+    if let Some(task) = route.pending.take() {
+        task.abort();
+    }
+    if renewed {
+        route.pending = Some(renew(
+            route.connect.clone(),
+            route.https.clone(),
+            endpoint.clone(),
+            identity.clone(),
+        ));
+    }
+}
+
+fn renew(
+    connect: Connect,
+    https: Option<super::HttpsRoute>,
+    endpoint: iroh::Endpoint,
+    identity: super::HostIdentity,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = match https {
+            Some(super::HttpsRoute(http)) => {
+                tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, None)
+            }
+            None => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
+        };
+        let room = connect.room();
+        match tilo_joined_room::enroll::renew_membership(
+            client,
+            identity,
+            connect.owner().clone(),
+            room,
+        )
+        .await
+        {
+            Ok(true) => tracing::info!(%room, "renewed this device's certificate in the room"),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%room, %error, "this device's renewed certificate was not taken");
+            }
+        }
+    })
+}
+
 /// The connected relay session of the joined room on topic `ws`.
 pub(super) fn native_session(
     sessions: &HashMap<(u64, iroh::EndpointId), HostRuntime>,
@@ -225,9 +285,7 @@ impl ActorState {
             }
             if material.is_err() {
                 self.host_sessions.retain(|(topic, _), _| *topic != ws);
-                if let Some(task) = route.pending.take() {
-                    task.abort();
-                }
+                renew_route(route, &self.endpoint, identity);
                 continue;
             }
             self.host_sessions.retain(|(topic, _), runtime| {
@@ -325,6 +383,11 @@ impl ActorState {
             return;
         };
         route.pending = None;
+        // The host is reachable again: a certificate renewal that failed
+        // meanwhile tries again.
+        if result.is_ok() {
+            tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+        }
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
@@ -390,6 +453,12 @@ impl ActorState {
             if let Err(error) = sent {
                 tracing::warn!(ws, %error, "held sealed write not sent to the room's relay");
             }
+        }
+        // Pointers, cursor chat and reactions ride the room's live plane,
+        // which carries only what its members say: join it, as a workspace
+        // host's session does.
+        if let Err(error) = session.live_join() {
+            tracing::warn!(ws, %error, "could not join the room's live plane");
         }
         self.native_media.reconnected(ws, &session);
         self.host_sessions.insert(

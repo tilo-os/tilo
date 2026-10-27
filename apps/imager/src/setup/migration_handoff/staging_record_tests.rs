@@ -14,6 +14,8 @@ pub(super) fn sample() -> Plan {
             accounts: true,
         },
         home_policy: HomePolicy::Copy,
+        home_exclusions: Vec::new(),
+        deferred_handoff: None,
         // The backend keeps the home's identity fields private; a plan
         // reaches the frontend only as the record it reads.
         home: serde_json::from_value(serde_json::json!({

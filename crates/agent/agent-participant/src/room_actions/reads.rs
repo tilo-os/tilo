@@ -13,11 +13,7 @@ use tilo_actions::{
 use ui::record::RecordId;
 
 pub(super) fn record_id(wire: &str) -> Result<RecordId, String> {
-    if wire.is_empty() {
-        Ok(RecordId::package_primary())
-    } else {
-        RecordId::parse(wire).ok_or_else(|| "invalid record route".into())
-    }
+    RecordId::from_route(wire).ok_or_else(|| "invalid record route".into())
 }
 
 pub(super) struct CanonicalRead {

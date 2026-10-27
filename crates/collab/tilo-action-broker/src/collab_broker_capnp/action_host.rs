@@ -13,33 +13,75 @@ use std::sync::Arc;
 use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
-    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
-    ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CallerPrincipal, CataloguePage,
-    CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer, Confirmation,
-    InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
-    Reservation, application_provider, pending, workspace_provider, workspace_provider_room,
+    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND,
+    APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal, CataloguePage,
+    CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt,
+    InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation,
+    application_provider, application_provider_record, pending, workspace_provider,
+    workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
-    ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
+    AdmittedJoinIdentity, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
     InvocationInputs, LaunchScope, PublishedAction, PublishedSurface, app_node,
-    confirmation_satisfied, published_directory_action, validate_directory_target_input,
+    confirmation_satisfied,
 };
 use crate::automation;
-use crate::collab_broker::CrdtRoute;
+use crate::route::CrdtRoute;
+
+/// Whether the connection admitted as `current` on `route` may reach
+/// `target_app`'s published actions through one of the legacy invoke doors,
+/// whose target peer or binding the caller names itself, and be decided as
+/// the person who admitted the connection.
+///
+/// It applies the same ceiling `remote_action` does. An agent channel is its
+/// own principal and is decided for itself. Every other connection is an
+/// application, decided for the person who opened it, and reaches another
+/// application's action only when that application declared the reach in its
+/// manifest (`[actions] invoke`) — the same access `app_door` reads. Without
+/// it the call belongs on `remoteAction`, where the application door also
+/// applies the workspace's grant to that application and the person's
+/// consent.
+///
+/// A connection that named no application on its route is the shell's own
+/// device connection, not an application: it is admitted by the workspace and
+/// reaches what the person using that device reaches.
+pub(crate) fn legacy_door_may_act_as_person(
+    current: &AdmittedJoinIdentity,
+    route: &CrdtRoute,
+    target_app: &str,
+    invoke_access: bool,
+) -> bool {
+    current.agent_id.is_some()
+        || route.app_id.is_empty()
+        || route.app_id == target_app
+        || invoke_access
+}
+
+/// Refusal of a legacy invoke door aimed at another application's action.
+/// Worded so the door's `refusal()` maps it to `NotPermitted`, the answer the
+/// same request gets through `remoteAction`.
+pub(crate) const LEGACY_DOOR_FOREIGN_APP: &str =
+    "another application's action is not allowed through this door";
+
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
 #[cfg(test)]
+#[path = "agent_app_list_tests.rs"]
+mod agent_app_list_tests;
+#[cfg(test)]
 #[path = "governance_witness_tests.rs"]
 mod governance_witness_tests;
 
+mod directory;
 mod launch_child;
 mod own_device;
+mod room_nodes;
 mod shortcut_run;
+use directory::bridge_error;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
 /// change, so a change nothing signals (an idle expiry) costs latency, never
@@ -60,7 +102,7 @@ fn oversized_argument(argument: &str) -> Option<String> {
 
 /// A retired transport run cannot use a retained caller clone. Legacy callers
 /// without an execution retain their existing behavior.
-fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
+pub(super) fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
     if caller.execution_id().is_some() && !caller.execution_is_live() {
         return Err(ActionHostError::Unavailable {
             reason: "execution session ended".into(),
@@ -76,7 +118,6 @@ pub(super) struct LaunchDestination {
 }
 
 impl BrokerActor {
-    /// The broker actor a caller is admitted as.
     #[must_use]
     pub(super) fn for_caller(caller: &Caller) -> Self {
         match caller.principal() {
@@ -155,7 +196,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         self.state.action_cancel(caller, id)
     }
 
@@ -254,7 +295,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         self.state.action_cancel(caller, id)
     }
 
@@ -337,7 +378,7 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         )
     } else {
         (
-            "applications.app",
+            APPLICATION_RESOURCE_KIND,
             "Launch this application into the current workspace",
         )
     };
@@ -368,6 +409,30 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
     }
 }
 
+/// What launching an app for `request` needs of its person on the app:
+/// leave to read it when the request shows something that exists in it (a
+/// record, an item of one, such as a note shared with a Viewer), whose
+/// window is then read-only to a person who may only read; leave to change
+/// it for anything else, an app opened on nothing in particular included.
+fn launch_kind(request: &InvokeRequest) -> tilo_action_policy::ActionKind {
+    if request.target.address.action == APPLICATION_OPEN_ACTION
+        && application_provider(&request.target.provider).is_some()
+    {
+        tilo_action_policy::ActionKind::Read
+    } else {
+        tilo_action_policy::ActionKind::Undoable
+    }
+}
+
+/// Installed application `app` named to a caller that may not open it: its
+/// resource with no action, so the caller learns the app is there and that
+/// opening it is not theirs to do.
+fn app_named_row(provider: &str, app: &crate::services::LaunchableApplication) -> CatalogueRow {
+    let mut row = CatalogueRow::for_action(provider, &app.package_id, app_open_descriptor(app));
+    row.action = None;
+    row
+}
+
 fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
     ActionDescriptor {
         semantic_identity: None,
@@ -375,7 +440,7 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
             format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
             APPLICATION_CLOSE_ACTION,
         ),
-        resource_kind: "applications.app".into(),
+        resource_kind: APPLICATION_RESOURCE_KIND.into(),
         resource_label: display_name.to_string(),
         action_label: format!("Close {display_name}"),
         description: Some(
@@ -403,25 +468,56 @@ type RetainedAddresses = std::collections::HashSet<(String, String, String)>;
 
 /// Which rows a [`CapnpBrokerState::eager_catalogue`] pass builds. Every
 /// scope lists the same providers and puts each row it builds through the
-/// same checks; a narrower one only skips the rows of providers nobody asked
-/// about.
+/// same checks; a narrower one only skips rows nobody asked about — another
+/// provider's, or another application's.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum RowScope<'a> {
     /// Who publishes, and no rows.
     None,
     /// Every row the caller is offered.
     All,
-    /// The rows of this one provider.
+    /// Every row of one provider.
     Provider(&'a str),
+    /// Every row of one application, within `provider` when one is named.
+    App {
+        app_id: &'a str,
+        provider: Option<&'a str>,
+    },
 }
 
 impl RowScope<'_> {
-    /// Whether rows of `provider` are built.
+    fn applications(
+        self,
+        launcher: &dyn crate::services::LauncherServices,
+    ) -> Vec<crate::services::LaunchableApplication> {
+        match self {
+            Self::App { app_id, .. } => launcher.applications_for(app_id),
+            Self::None => Vec::new(),
+            Self::All | Self::Provider(_) => launcher.applications(),
+        }
+    }
+
     fn wants(self, provider: &str) -> bool {
         match self {
             Self::None => false,
-            Self::All => true,
-            Self::Provider(wanted) => wanted == provider,
+            Self::All | Self::App { provider: None, .. } => true,
+            Self::Provider(wanted)
+            | Self::App {
+                provider: Some(wanted),
+                ..
+            } => wanted == provider,
+        }
+    }
+
+    /// Whether rows published by application `app_id` may be built. A
+    /// provider publishing several applications (a workspace's) narrows to
+    /// the one asked for; one application's own provider publishes its own
+    /// rows either way.
+    fn wants_app(self, app_id: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All | Self::Provider(_) => true,
+            Self::App { app_id: wanted, .. } => wanted == app_id,
         }
     }
 
@@ -431,8 +527,12 @@ impl RowScope<'_> {
     fn wants_application_providers(self) -> bool {
         match self {
             Self::None => false,
-            Self::All => true,
-            Self::Provider(wanted) => application_provider(wanted).is_some(),
+            Self::All | Self::App { provider: None, .. } => true,
+            Self::Provider(wanted)
+            | Self::App {
+                provider: Some(wanted),
+                ..
+            } => application_provider(wanted).is_some(),
         }
     }
 
@@ -440,8 +540,12 @@ impl RowScope<'_> {
     fn wants_peer(self, peer_id: u64) -> bool {
         match self {
             Self::None => false,
-            Self::All => true,
-            Self::Provider(wanted) => wanted == peer_id.to_string(),
+            Self::All | Self::App { provider: None, .. } => true,
+            Self::Provider(wanted)
+            | Self::App {
+                provider: Some(wanted),
+                ..
+            } => wanted == peer_id.to_string(),
         }
     }
 }
@@ -467,6 +571,37 @@ fn launch_content_hash(argument: Option<&str>) -> &str {
 /// Map a broker refusal onto the remote vocabulary. The broker words its
 /// refusals for people; only the distinctions a caller can act on are
 /// recovered, everything else stays a plain refusal.
+/// What a start admitted: a host action already durable, or an app's
+/// invocation nobody hears of before its admission is.
+pub(super) enum Started {
+    Now(u64),
+    Staged(super::StagedJob),
+}
+
+impl Started {
+    /// The job, once delivered: never before its admission is durable.
+    async fn job(self, state: &CapnpBrokerState) -> Result<u64, ActionHostError> {
+        match self {
+            Self::Now(job) => Ok(job),
+            Self::Staged(staged) => staged.start(state).await.map(|job| job.id).map_err(refusal),
+        }
+    }
+}
+
+/// Complete `reply` with `answer` once it is known.
+pub(super) fn answer_with<T: Send + 'static>(
+    answer: Pending<Result<T, ActionHostError>>,
+    reply: Completer<Result<T, ActionHostError>>,
+) {
+    answer.then(move |answer| {
+        reply.complete(answer.unwrap_or_else(|| {
+            Err(ActionHostError::Unavailable {
+                reason: "the admission was dropped".into(),
+            })
+        }));
+    });
+}
+
 fn refusal(reason: String) -> ActionHostError {
     if reason.starts_with("action_confirmation_required")
         || reason.contains("confirmation is required")
@@ -495,11 +630,6 @@ impl CapnpBrokerState {
     /// declare `[actions] query`; invoking another app's action needs
     /// `[actions] invoke` and is then decided for the app, which holds no
     /// role and has only what the workspace grants it.
-    ///
-    /// # Errors
-    ///
-    /// The refusal to answer with, when the request is outside what the app
-    /// declared.
     pub(crate) fn app_door(
         &self,
         person: &Caller,
@@ -526,8 +656,18 @@ impl CapnpBrokerState {
                     .is_ok_and(|invocation| invocation.app == app_id)
                     .then(|| person.clone())
             }
+            // A node of the person's own workspace asked about, shared or
+            // unshared: what the person did in the app (a window shared to a
+            // channel), which the room bounds by what the person holds there.
+            // Never under the app's own identity, which the room knows not.
+            RemoteActionMessage::Invoke(request)
+                if room_nodes::node_ask(request)
+                    .is_some_and(|(room, _)| person.room() == Some(room)) =>
+            {
+                Some(person.clone())
+            }
             RemoteActionMessage::Invoke(request) => {
-                if self.app_owns(person, app_id, request) || link_request(request) {
+                if self.app_owns(person, app_id, request) || reference_request(request) {
                     Some(person.clone())
                 } else {
                     access.invoke.then_some(as_app)
@@ -643,7 +783,7 @@ impl CapnpBrokerState {
             // through its own grant, an agent a person's device handed this
             // session to (`Caller::delegated_to`) through that person's.
             Some(confined) => {
-                confined == workspace.room.to_string()
+                confined == workspace.room().to_string()
                     && match caller.principal() {
                         CallerPrincipal::Agent(_) => {
                             BrokerActor::for_caller(caller).reads_in(workspace, now)
@@ -663,6 +803,46 @@ impl CapnpBrokerState {
                     BrokerActor::for_caller(caller).reads_in(workspace, now)
                 }
             },
+        }
+    }
+
+    /// Why an agent confined to a room is served nothing there when the
+    /// reason is not that the room holds nothing: this session's workspaces
+    /// are not attached, the policy clock cannot be read, the workspace is
+    /// gone, or the agent may no longer read in it. `None` for any other
+    /// caller, and for an agent that may act in its room.
+    fn agent_room_unreachable(&self, caller: &Caller) -> Option<String> {
+        let room = caller.room()?;
+        let CallerPrincipal::Agent(agent) = caller.principal() else {
+            return None;
+        };
+        let Some(membership) = self.membership.as_ref() else {
+            return Some("this session's workspaces are not attached to its actions".into());
+        };
+        let now = match self.policy_now_ns() {
+            Ok(now) => now / 1_000_000_000,
+            Err(error) => return Some(format!("the policy clock cannot be read: {error}")),
+        };
+        let found = membership.decide_in_tree(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|workspace| workspace.room().to_string() == room)
+                .map(|workspace| {
+                    (
+                        workspace.name.clone(),
+                        Self::may_act_in(caller, workspace, now),
+                    )
+                })
+        });
+        match found {
+            Err(error) => Some(format!("this session's workspaces cannot be read: {error}")),
+            Ok(None) => Some(format!(
+                "the workspace agent {agent} was admitted to is no longer on this device"
+            )),
+            Ok(Some((name, false))) => Some(format!(
+                "agent {agent} is no longer a member of workspace {name} who may read it"
+            )),
+            Ok(Some((_, true))) => None,
         }
     }
 
@@ -706,7 +886,7 @@ impl CapnpBrokerState {
                 tree.workspaces
                     .iter()
                     .filter(|workspace| Self::may_act_in(caller, workspace, now))
-                    .map(|workspace| workspace.room.to_string())
+                    .map(|workspace| workspace.room().to_string())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -738,7 +918,7 @@ impl CapnpBrokerState {
         workspaces
             .into_iter()
             .map(|workspace| {
-                let actor = self.caller_actor(caller, &workspace.room.to_string());
+                let actor = self.caller_actor(caller, &workspace.room().to_string());
                 (workspace, actor, now)
             })
             .collect()
@@ -788,7 +968,9 @@ impl CapnpBrokerState {
                         peer_id: surface.peer_id,
                         app_id: surface.app_id.clone(),
                         route: surface.route.clone(),
-                        actions: if scope.wants_peer(surface.peer_id) {
+                        actions: if scope.wants_peer(surface.peer_id)
+                            && scope.wants_app(&surface.app_id)
+                        {
                             surface.actions.clone()
                         } else {
                             Vec::new()
@@ -810,11 +992,12 @@ impl CapnpBrokerState {
     /// open. An action the caller may not use is absent. Alongside them, the
     /// publishers the caller may browse or invoke, whatever the scope.
     ///
-    /// A narrower scope only leaves other providers' rows out: each row it
-    /// builds passes the same checks, and comes out the same, as in
-    /// [`RowScope::All`]. The installed applications and the keyboard
-    /// shortcut settings are read at most once, and only when a workspace
-    /// provider's rows are built.
+    /// A narrower scope only leaves other providers' rows, or other
+    /// applications' rows, out: each row it builds passes the same checks,
+    /// and comes out the same, as in [`RowScope::All`]. The installed
+    /// applications and the keyboard shortcut settings are read at most once,
+    /// and only when a workspace provider's rows of an application the scope
+    /// asks for are built.
     pub(super) fn eager_catalogue(
         &self,
         caller: &Caller,
@@ -852,13 +1035,13 @@ impl CapnpBrokerState {
         // Listing must retain the same local custody as dispatch. A device key
         // alone does not establish that this is a local rather than remote door.
         let host_steps = if super::host_steps::is_local_host_caller(caller, origin) {
-            super::host_steps::HostSteps::installed(&self.services)
+            self.services.host_steps.clone()
         } else {
             Vec::new()
         };
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
-            let room = workspace.room.to_string();
+            let room = workspace.room().to_string();
             let mut live_apps = std::collections::HashSet::new();
             for surface in surfaces
                 .iter()
@@ -872,7 +1055,7 @@ impl CapnpBrokerState {
                     record_id: surface.route.record_id.clone(),
                     browsable: roots.iter().any(|root| root.peer_id == surface.peer_id),
                 });
-                if !scope.wants_peer(surface.peer_id) {
+                if !scope.wants_peer(surface.peer_id) || !scope.wants_app(&surface.app_id) {
                     continue;
                 }
                 rows.extend(
@@ -914,7 +1097,10 @@ impl CapnpBrokerState {
                     .filter(|_| scope.wants_application_providers())
                 {
                     let applications = applications.get_or_insert_with(|| {
-                        (launcher.applications(), launcher.closes_applications())
+                        (
+                            scope.applications(launcher.as_ref()),
+                            launcher.closes_applications(),
+                        )
                     });
                     Self::offered_catalogue(
                         (&workspace, &policy, now),
@@ -944,18 +1130,22 @@ impl CapnpBrokerState {
                 });
             }
             if caller.room() == Some(room.as_str()) {
-                for steps in host_steps
-                    .iter()
-                    .filter(|steps| scope.wants(steps.provider()))
-                {
-                    Self::host_step_rows((&workspace, &policy, now), steps, &mut rows);
+                for steps in host_steps.iter().filter(|steps| {
+                    scope.wants(steps.provider()) && scope.wants_app(steps.app_id())
+                }) {
+                    Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
                 }
             }
             let provider = workspace_provider(&room);
             if !scope.wants(&provider) {
                 continue;
             }
-            if let Some(governance) = self.services.workspace_governance.as_ref() {
+            if let Some(governance) = self
+                .services
+                .workspace_governance
+                .as_ref()
+                .filter(|governance| scope.wants_app(governance.app_id()))
+            {
                 rows.extend(
                     governance
                         .descriptors(&workspace)
@@ -983,7 +1173,7 @@ impl CapnpBrokerState {
                         }),
                 );
             }
-            if self.services.shortcut_library.is_some() {
+            if self.services.shortcut_library.is_some() && scope.wants_app(SHORTCUTS_APP_ID) {
                 rows.extend(
                     automation::descriptors(&workspace)
                         .into_iter()
@@ -1006,7 +1196,7 @@ impl CapnpBrokerState {
                         }),
                 );
             }
-            if let Some(service) = keyboard {
+            if let Some(service) = keyboard.filter(|service| scope.wants_app(service.app_id())) {
                 let keymap =
                     keymap.get_or_insert_with(settings_store::hardware::ShortcutConfig::load);
                 rows.extend(
@@ -1035,32 +1225,44 @@ impl CapnpBrokerState {
                 && let Some(launcher) = self.services.launcher.as_ref()
             {
                 let applications = applications.get_or_insert_with(|| {
-                    (launcher.applications(), launcher.closes_applications())
+                    (
+                        scope.applications(launcher.as_ref()),
+                        launcher.closes_applications(),
+                    )
                 });
                 let (applications, closes_applications) = (&applications.0, applications.1);
+                // An agent of this machine is told every installed app, one
+                // it may not open by name alone: an empty list would tell it
+                // there are none, and it could only guess why. Its own
+                // process reads the same list from disk; a remote caller is
+                // told only what it may open. A scope asking for one
+                // application is told only that one's.
+                let names_unopened = matches!(caller.principal(), CallerPrincipal::Agent(_))
+                    && caller.device_public_key().is_none();
+                for app in applications
+                    .iter()
+                    .filter(|app| scope.wants_app(&app.package_id))
+                    .filter(|app| !live_apps.contains(&app.package_id))
+                {
+                    if policy.may_in(
+                        &workspace,
+                        &app_node(&workspace, &app.package_id),
+                        tilo_action_policy::ActionKind::Undoable,
+                        now,
+                    ) {
+                        rows.push(CatalogueRow::for_action(
+                            provider.clone(),
+                            &app.package_id,
+                            app_open_descriptor(app),
+                        ));
+                    } else if names_unopened {
+                        rows.push(app_named_row(&provider, app));
+                    }
+                }
                 rows.extend(
                     applications
                         .iter()
-                        .filter(|app| !live_apps.contains(&app.package_id))
-                        .filter(|app| {
-                            policy.may_in(
-                                &workspace,
-                                &app_node(&workspace, &app.package_id),
-                                tilo_action_policy::ActionKind::Undoable,
-                                now,
-                            )
-                        })
-                        .map(|app| {
-                            CatalogueRow::for_action(
-                                provider.clone(),
-                                &app.package_id,
-                                app_open_descriptor(app),
-                            )
-                        }),
-                );
-                rows.extend(
-                    applications
-                        .iter()
+                        .filter(|app| scope.wants_app(&app.package_id))
                         .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
@@ -1095,7 +1297,7 @@ impl CapnpBrokerState {
     /// first.
     fn host_step_rows(
         (workspace, actor, now): (&Workspace, &BrokerActor, u64),
-        steps: &super::host_steps::HostSteps,
+        steps: &dyn crate::services::HostStepServices,
         rows: &mut Vec<CatalogueRow>,
     ) {
         let start = rows.len();
@@ -1170,7 +1372,7 @@ impl CapnpBrokerState {
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
         providers: &mut Vec<CatalogueProvider>,
     ) -> RetainedAddresses {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let in_room = self
             .launchable
             .surfaces()
@@ -1199,7 +1401,7 @@ impl CapnpBrokerState {
                 )
         }) {
             let provider = launchable_provider(&surface);
-            if scope.wants(&provider) {
+            if scope.wants(&provider) && scope.wants_app(&surface.app_id) {
                 rows.extend(
                     surface
                         .actions
@@ -1247,9 +1449,10 @@ impl CapnpBrokerState {
         applications: &[crate::services::LaunchableApplication],
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
     ) {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         for app in applications.iter().filter(|app| {
-            !app.unconfined
+            scope.wants_app(&app.package_id)
+                && !app.unconfined
                 && !app.offers.is_empty()
                 && !live_apps.contains(&app.package_id)
                 && policy.may_in(
@@ -1295,15 +1498,6 @@ impl CapnpBrokerState {
                     }),
             );
         }
-    }
-
-    /// The directory root publishing `peer_id` in a workspace `caller` may
-    /// act in, with the actor the caller is admitted as there.
-    fn directory_root_for(&self, caller: &Caller, peer_id: u64) -> Option<ActionDirectoryRoot> {
-        let rooms = self.rooms_for(caller);
-        self.action_directory_roots()
-            .into_iter()
-            .find(|root| root.peer_id == peer_id && rooms.contains(&root.cluster_id))
     }
 
     /// One page of what `caller` is offered. A provider publishing a live
@@ -1367,13 +1561,29 @@ impl CapnpBrokerState {
             return self.query_directory(caller, &root, query);
         }
         // `max_results: 0` asks only who publishes, and a named provider
-        // only its own rows: build no row nobody asked for.
-        let scope = match query.provider.as_deref() {
-            Some(provider) => RowScope::Provider(provider),
-            None if query.max_results == 0 => RowScope::None,
-            None => RowScope::All,
+        // or application only its own rows: build no row nobody asked for.
+        let scope = match (query.provider.as_deref(), query.app_id.as_deref()) {
+            (Some(provider), Some(app_id)) => RowScope::App {
+                app_id,
+                provider: Some(provider),
+            },
+            (Some(provider), None) => RowScope::Provider(provider),
+            (None, _) if query.max_results == 0 => RowScope::None,
+            (None, Some(app_id)) => RowScope::App {
+                app_id,
+                provider: None,
+            },
+            (None, None) => RowScope::All,
         };
         let (rows, providers) = self.eager_catalogue_with_origin(caller, origin, scope);
+        // Nothing at all may mean the room holds nothing, or that this
+        // agent cannot reach it: only the first is an empty page.
+        if rows.is_empty()
+            && providers.is_empty()
+            && let Some(reason) = self.agent_room_unreachable(caller)
+        {
+            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+        }
         let revision = format!(
             "{}.{}",
             self.published_surfaces_generation(),
@@ -1384,106 +1594,6 @@ impl CapnpBrokerState {
             page.providers = providers;
         }
         Pending::ready(Ok(page))
-    }
-
-    fn canonical_provider_page(
-        &self,
-        caller: &Caller,
-        query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
-        let route = query
-            .canonical_route
-            .as_ref()
-            .ok_or(ActionHostError::UnknownAction)?;
-        if query.max_results != 0
-            || query.provider.is_some()
-            || query.view_resource.is_some()
-            || query.parent_resource.is_some()
-            || !query.needle.is_empty()
-            || query.target.is_some()
-            || query.revision.is_some()
-            || !query.cursor.is_empty()
-            || query.limits.is_some()
-        {
-            return Err(ActionHostError::InvalidRequest {
-                reason: "a canonical route lookup must request only its provider".into(),
-            });
-        }
-        if self.decide_for(caller, &route.room, |_, _, _| ()).is_none() {
-            return Err(ActionHostError::NotPermitted);
-        }
-        let mut page = CataloguePage {
-            exhausted: true,
-            revision: "canonical-route-v1".into(),
-            ..CataloguePage::default()
-        };
-        if let Some((root, token)) = self.canonical_directory(route)? {
-            page.providers.push(CatalogueProvider {
-                provider: token,
-                app_id: root.app_id,
-                room: root.cluster_id,
-                record_id: root.record_id,
-                browsable: true,
-            });
-        }
-        Ok(page)
-    }
-
-    fn query_directory(
-        &self,
-        caller: &Caller,
-        root: &ActionDirectoryRoot,
-        query: &CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let actor = self.caller_actor(caller, &root.cluster_id);
-        let queue = self.action_directory_request_queue();
-        let reply = if let Some(target) = &query.target {
-            let Some(revision) = query
-                .revision
-                .clone()
-                .filter(|revision| !revision.is_empty())
-            else {
-                return Pending::ready(Err(ActionHostError::InvalidRequest {
-                    reason: "resolving a target needs the revision it was chosen at".into(),
-                }));
-            };
-            queue.try_resolve_pending(
-                actor,
-                &root.cluster_id,
-                root.peer_id,
-                revision,
-                &target.resource,
-                &target.action,
-            )
-        } else {
-            let limits = query.limits.unwrap_or_default();
-            queue.try_query_pending(
-                actor,
-                &root.cluster_id,
-                runtime_collab::ActionDirectoryQuery {
-                    peer_id: root.peer_id,
-                    revision: query.revision.clone().unwrap_or_default(),
-                    cursor: query.cursor.clone(),
-                    needle: query.needle.clone(),
-                    parent_resource: query.parent_resource.clone().unwrap_or_default(),
-                    max_results: u32::try_from(query.page_size()).unwrap_or(1),
-                    // The broker clamps every budget to its own maxima.
-                    max_bytes: limits.max_bytes.unwrap_or(u32::MAX),
-                    max_work: limits.max_work.unwrap_or(u32::MAX),
-                    max_depth: limits.max_depth.unwrap_or(u16::MAX),
-                    resource_name: query.resource_name.clone().unwrap_or_default(),
-                },
-            )
-        };
-        let root = root.clone();
-        let caller = caller.clone();
-        match reply {
-            Ok(reply) => reply.map(move |reply| {
-                check_execution(&caller)?;
-                directory_page(&root, reply)
-            }),
-            Err(error) => Pending::ready(Err(bridge_error(error))),
-        }
     }
 
     /// Admit `request` for `caller`, or report the invocation already
@@ -1562,6 +1672,9 @@ impl CapnpBrokerState {
         {
             return self.invoke_launchable(caller, origin, request);
         }
+        if room_nodes::node_ask(request).is_some() {
+            return self.invoke_room_node(caller, origin, request);
+        }
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, origin, request);
         }
@@ -1574,9 +1687,9 @@ impl CapnpBrokerState {
             );
         }
         if let Some(steps) =
-            super::host_steps::HostSteps::for_provider(&self.services, &request.target.provider)
+            super::host_steps::for_provider(&self.services, &request.target.provider)
         {
-            return Pending::ready(self.invoke_host_step(caller, origin, &steps, request));
+            return Pending::ready(self.invoke_host_step(caller, origin, steps.as_ref(), request));
         }
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));
@@ -1611,7 +1724,7 @@ impl CapnpBrokerState {
                 Err(error) => Pending::ready(Err(bridge_error(error))),
             };
         }
-        Pending::ready(self.invoke_eager(caller, own_peer, launch, None, request))
+        self.invoke_eager(caller, own_peer, launch, None, request)
     }
 
     /// Invoke an action retained from a closed application: launch the app,
@@ -1634,11 +1747,7 @@ impl CapnpBrokerState {
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {
-                return Pending::ready(
-                    self.remote_job(caller, &request.invocation)
-                        .map(|job| self.receipt_for(request.invocation, job))
-                        .ok_or(ActionHostError::UnknownInvocation),
-                );
+                return self.admitted_receipt(caller, request.invocation);
             }
             Ok(Reservation::Reserved) => {}
         }
@@ -1728,7 +1837,13 @@ impl CapnpBrokerState {
                         })
                     })
                     .or_else(|| self.manifest_offer(app_id, address));
-                (room.to_owned(), app_id.to_owned(), None, offered)
+                let record = application_provider_record(&request.target.provider);
+                (
+                    room.to_owned(),
+                    app_id.to_owned(),
+                    record.map(str::to_owned),
+                    offered,
+                )
             } else {
                 let retained = self
                     .launchable
@@ -1758,14 +1873,15 @@ impl CapnpBrokerState {
             .decide_for(caller, &room, |workspace, policy, now| {
                 // A live application target is a route to an existing action,
                 // not a request to launch another instance. Reads retain their
-                // read-only authority while actual launches still require write.
+                // read-only authority while actual launches still require
+                // write, unless they only show what exists (`launch_kind`).
                 if self
                     .ready_publisher(&app_id, &room, record.as_deref(), address)
                     .is_none()
                     && !policy.may_in(
                         workspace,
                         &app_node(workspace, &app_id),
-                        tilo_action_policy::ActionKind::Undoable,
+                        launch_kind(request),
                         now,
                     )
                 {
@@ -1837,7 +1953,7 @@ impl CapnpBrokerState {
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
         };
-        let room = destination.workspace.room.to_string();
+        let room = destination.workspace.room().to_string();
         let app_id = &destination.app_id;
         let address = &request.target.address;
         let timeout = self.launchable.delivery_timeout();
@@ -1876,7 +1992,7 @@ impl CapnpBrokerState {
                 if let Some(native) = native {
                     return native.deliver(self, peer_id).await.map_err(refusal);
                 }
-                return self.start_for(caller, None, None, origin, &delivered, request);
+                return self.start_job(caller, origin, &delivered, request).await;
             }
             if !launched {
                 {
@@ -1901,7 +2017,7 @@ impl CapnpBrokerState {
                         Some(native) => native.destination(self).map_err(refusal)?,
                         None => self.admit_launchable(caller, request)?,
                     };
-                    if current.workspace.room != destination.workspace.room
+                    if current.workspace.room() != destination.workspace.room()
                         || current.app_id != *app_id
                         || current.record != destination.record
                     {
@@ -1946,7 +2062,7 @@ impl CapnpBrokerState {
         deadline: (tokio::time::Instant, &str),
     ) -> Result<(), ActionHostError> {
         let app_id = current.app_id.clone();
-        let room = current.workspace.room.to_string();
+        let room = current.workspace.room().to_string();
         let timeout = self.launchable.delivery_timeout();
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
@@ -1999,7 +2115,7 @@ impl CapnpBrokerState {
 
     /// Recheck the original signed custody while an asynchronous launch waits.
     /// The numeric dispatcher checks it again when capturing the actual offer.
-    fn check_launch_origin(
+    pub(super) fn check_launch_origin(
         &self,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
@@ -2031,9 +2147,15 @@ impl CapnpBrokerState {
                     self.verify_action_caller(&original.room, &original.presentation)
                 }
                 .map_err(refusal)?;
-                if current.owner() != original.owner() {
-                    return Err(ActionHostError::NotPermitted);
-                }
+                // The barrier re-verifies the original person and device, and
+                // refuses a delegated caller whose admission can no longer
+                // name its owner instead of dropping the delegation.
+                original
+                    .reverified(&current)
+                    .map_err(|_| ActionHostError::NotPermitted)?;
+                original
+                    .owner()
+                    .map_err(|_| ActionHostError::NotPermitted)?;
                 if caller.device_public_key().is_none() {
                     self.current_native_person(
                         room,
@@ -2116,17 +2238,27 @@ impl CapnpBrokerState {
         admitted: &super::host_action_admission::AdmittedHostAction,
         app_id: &str,
     ) -> Result<Workspace, ActionHostError> {
+        self.reauthorize_launch_effect_as(
+            custody,
+            admitted,
+            (app_id, tilo_action_policy::ActionKind::Undoable),
+        )
+    }
+
+    /// [`Self::reauthorize_launch_effect`] for a launch that needs `kind`
+    /// on the app ([`launch_kind`]).
+    fn reauthorize_launch_effect_as(
+        &self,
+        custody: (&Caller, Option<&super::InvocationCaller>, &str),
+        admitted: &super::host_action_admission::AdmittedHostAction,
+        (app_id, kind): (&str, tilo_action_policy::ActionKind),
+    ) -> Result<Workspace, ActionHostError> {
         let (caller, origin, room) = custody;
         let result = self
             .current_framework_authority(caller, origin, room)
             .and_then(|(workspace, policy, now)| {
                 policy
-                    .may_in(
-                        &workspace,
-                        &app_node(&workspace, app_id),
-                        tilo_action_policy::ActionKind::Undoable,
-                        now,
-                    )
+                    .may_in(&workspace, &app_node(&workspace, app_id), kind, now)
                     .then_some(workspace)
                     .ok_or(ActionHostError::NotPermitted)
             });
@@ -2166,30 +2298,45 @@ impl CapnpBrokerState {
             .launch(app_id, workspace, record, place)
     }
 
-    /// Where a view `caller`'s action needs opens in `room`: beside the
-    /// asking app's own view; where a person is looking, for the person's
-    /// own invocation; else beside the view the actor last worked in, so an
-    /// agent or a Shortcut keeps working next to where it already is.
+    /// Where a view `caller`'s action needs opens in `room`: where a person
+    /// is looking, for the person's own invocation and for an app's request
+    /// the person's own press in it is behind (a link clicked in Chat, a
+    /// file opened from Files), which takes them there; beside the asking
+    /// app's own view for an app's request nobody pressed for; else beside
+    /// the view the actor last worked in, so an agent or a Shortcut keeps
+    /// working next to where it already is, and beside the person's view
+    /// without taking their focus when it has none yet: nobody but the
+    /// person moves the person's view.
     pub(super) fn launch_place(
         &self,
         caller: &Caller,
         room: &str,
         launch: Option<&LaunchScope>,
     ) -> LaunchPlace {
+        let pressed_for = |app_id: &str| {
+            self.services
+                .launcher
+                .as_ref()
+                .is_some_and(|launcher| launcher.person_initiated(app_id))
+        };
         if let Some(scope) = launch {
+            if pressed_for(&scope.app_id) {
+                return LaunchPlace::Focus;
+            }
             return LaunchPlace::Beside {
                 app_id: scope.app_id.clone(),
             };
         }
         match caller.principal() {
             CallerPrincipal::Person(_) => LaunchPlace::Focus,
+            CallerPrincipal::App(app_id) if pressed_for(app_id) => LaunchPlace::Focus,
             CallerPrincipal::App(app_id) => LaunchPlace::Beside {
                 app_id: app_id.clone(),
             },
             CallerPrincipal::Agent(_) | CallerPrincipal::Bot(_) => self
                 .launchable
                 .view_of(room, &BrokerActor::for_caller(caller).id)
-                .map_or(LaunchPlace::Focus, |app_id| LaunchPlace::Beside { app_id }),
+                .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id }),
         }
     }
 
@@ -2227,24 +2374,91 @@ impl CapnpBrokerState {
         launch: Option<&LaunchScope>,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let reservation = self
             .remote_invocations
             .lock()
             .map_err(|_| ActionHostError::Unavailable {
                 reason: "the invocation ledger is unavailable".into(),
-            })?
-            .reserve(caller, request)?;
-        if reservation == Reservation::Admitted {
-            return self
-                .remote_job(caller, &request.invocation)
-                .map(|job| self.receipt_for(request.invocation, job))
-                .ok_or(ActionHostError::UnknownInvocation);
+            })
+            .and_then(|mut ledger| ledger.reserve(caller, request));
+        match reservation {
+            Err(error) => return Pending::ready(Err(error)),
+            Ok(Reservation::Admitted) => {
+                return self.admitted_receipt(caller, request.invocation);
+            }
+            Ok(Reservation::Reserved) => {}
         }
         // Signing and durable admission can block. Keep the UUID reserved, but
         // never hold the UI's lookup/enqueue mutex across those operations.
         let started = self.start_for(caller, own_peer, launch, origin, request, request);
-        self.finish_directory_admission(request.invocation, started)
+        self.finish_started(request.invocation, started)
+    }
+
+    /// Start `delivered` for `caller`: the job, once its admission is
+    /// durable and delivered.
+    async fn start_job(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        delivered: &InvokeRequest,
+        request: &InvokeRequest,
+    ) -> Result<u64, ActionHostError> {
+        self.start_for(caller, None, None, origin, delivered, request)?
+            .job(self)
+            .await
+    }
+
+    /// The receipt for `invocation`, given once what `started` admitted is
+    /// durable and delivered.
+    fn finish_started(
+        self: &Arc<Self>,
+        invocation: tilo_actions::InvocationId,
+        started: Result<Started, ActionHostError>,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        match started {
+            Err(error) => Pending::ready(self.finish_directory_admission(invocation, Err(error))),
+            Ok(Started::Now(job)) => {
+                Pending::ready(self.finish_directory_admission(invocation, Ok(job)))
+            }
+            Ok(Started::Staged(staged)) => {
+                // A retry finds the job at once, and its answer waits for
+                // the same write (`admitted_receipt`).
+                if let Ok(mut ledger) = self.remote_invocations.lock() {
+                    ledger.complete(&invocation, staged.id());
+                }
+                let (receipt, answered) = pending();
+                let state = Arc::clone(self);
+                staged.start_then(self, move |started| {
+                    let started = started.map(|job| job.id).map_err(refusal);
+                    receipt.complete(state.finish_directory_admission(invocation, started));
+                });
+                answered
+            }
+        }
+    }
+
+    /// The receipt for `invocation`, admitted for `caller` already, once its
+    /// admission is durable and delivered: a retry is told no sooner than
+    /// the first asker.
+    fn admitted_receipt(
+        self: &Arc<Self>,
+        caller: &Caller,
+        invocation: tilo_actions::InvocationId,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let Some(job) = self.remote_job(caller, &invocation) else {
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+        };
+        let (receipt, answered) = pending();
+        let state = Arc::clone(self);
+        self.journal_in_flight(&invocation).then(move |outcome| {
+            receipt.complete(
+                outcome
+                    .map(|()| state.receipt_for(invocation, job))
+                    .map_err(|reason| ActionHostError::Unavailable { reason }),
+            );
+        });
+        answered
     }
 
     pub(super) fn receipt_for(
@@ -2259,133 +2473,6 @@ impl CapnpBrokerState {
             },
             |update| InvocationState::new(invocation, update).receipt(),
         )
-    }
-
-    /// The directory publishing `request`'s target, when the action is not
-    /// on the provider's eager surface.
-    fn directory_target(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Option<ActionDirectoryRoot> {
-        let peer_id = request.target.provider.parse::<u64>().ok()?;
-        let address = &request.target.address;
-        let eager = self.surfaces.lock().is_ok_and(|surfaces| {
-            surfaces.get(&peer_id).is_some_and(|surface| {
-                surface.live
-                    && surface.actions.iter().any(|action| {
-                        action.resource == address.resource && action.action == address.action
-                    })
-            })
-        });
-        (!eager)
-            .then(|| self.directory_root_for(caller, peer_id))
-            .flatten()
-    }
-
-    fn invoke_directory(
-        self: &Arc<Self>,
-        caller: &Caller,
-        root: ActionDirectoryRoot,
-        origin: Option<&super::published_invocation::InvocationCaller>,
-        request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        let unavailable = || ActionHostError::Unavailable {
-            reason: "the invocation ledger is unavailable".into(),
-        };
-        // A request naming no revision acts on the directory as it is now:
-        // its owner resolves it so, in the same turn this broker admits it,
-        // instead of the caller first reading the revision across the same
-        // two hops.
-        let revision = match request.revision.as_deref() {
-            None => String::new(),
-            Some("") => {
-                return Pending::ready(Err(ActionHostError::InvalidRequest {
-                    reason:
-                        "an empty revision names none; omit it to act on the directory as it is now"
-                            .into(),
-                }));
-            }
-            Some(revision) => revision.to_owned(),
-        };
-        let argument = request.argument.to_slot();
-        let address = &request.target.address;
-        if let Some(reason) = argument.as_deref().and_then(oversized_argument) {
-            return Pending::ready(Err(ActionHostError::InvalidRequest { reason }));
-        }
-        if validate_directory_target_input(
-            &root.cluster_id,
-            &revision,
-            &address.resource,
-            &address.action,
-            argument.as_deref(),
-            None,
-        )
-        .is_err()
-        {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "the directory target or argument is malformed".into(),
-            }));
-        }
-        let reservation = match self.remote_invocations.lock() {
-            Ok(mut ledger) => ledger.reserve(caller, request),
-            Err(_) => Err(unavailable()),
-        };
-        match reservation {
-            Err(error) => return Pending::ready(Err(error)),
-            Ok(Reservation::Admitted) => {
-                return Pending::ready(
-                    self.remote_job(caller, &request.invocation)
-                        .map(|job| self.receipt_for(request.invocation, job))
-                        .ok_or(ActionHostError::UnknownInvocation),
-                );
-            }
-            Ok(Reservation::Reserved) => {}
-        }
-        let resolved = self.action_directory_request_queue().try_resolve_pending(
-            self.caller_actor(caller, &root.cluster_id),
-            &root.cluster_id,
-            root.peer_id,
-            revision,
-            &address.resource,
-            &address.action,
-        );
-        let resolved = match resolved {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                if let Ok(mut ledger) = self.remote_invocations.lock() {
-                    ledger.abandon(&request.invocation);
-                }
-                return Pending::ready(Err(bridge_error(error)));
-            }
-        };
-        let (completer, admitted) = pending();
-        let state = Arc::clone(self);
-        let caller = caller.clone();
-        let request = request.clone();
-        let origin = origin.cloned();
-        // Runs on the broker's local set in the same turn the owner answered,
-        // so nothing can change between resolution and admission.
-        resolved.then(move |reply| {
-            // A caller that stopped waiting (its admission deadline passed)
-            // has already been told the action did not start; keep it so.
-            let started = if completer.is_abandoned() {
-                Err(ActionHostError::Unavailable {
-                    reason: "the caller stopped waiting for admission".into(),
-                })
-            } else {
-                state.start_resolved(
-                    &caller,
-                    &root,
-                    &request,
-                    origin.as_ref(),
-                    argument.as_deref(),
-                    reply,
-                )
-            };
-            completer.complete(state.finish_directory_admission(request.invocation, started));
-        });
-        admitted
     }
 
     fn finish_directory_admission(
@@ -2413,110 +2500,6 @@ impl CapnpBrokerState {
         }
     }
 
-    fn start_resolved(
-        &self,
-        caller: &Caller,
-        root: &ActionDirectoryRoot,
-        request: &InvokeRequest,
-        origin: Option<&super::published_invocation::InvocationCaller>,
-        argument: Option<&str>,
-        reply: Option<ActionDirectoryBridgeReply>,
-    ) -> Result<u64, ActionHostError> {
-        let stale = || ActionHostError::StaleRevision;
-        let (row, resolved) = match reply {
-            Some(Ok(ActionDirectoryBridgeResponse::Resolution(
-                runtime_collab::ActionDirectoryResolution::Found { row, revision },
-            ))) => (row, revision),
-            Some(Ok(ActionDirectoryBridgeResponse::Resolution(
-                runtime_collab::ActionDirectoryResolution::StaleRevision,
-            ))) => return Err(stale()),
-            Some(Ok(_)) => return Err(ActionHostError::UnknownAction),
-            Some(Err(error)) => return Err(bridge_error(error)),
-            None => {
-                return Err(ActionHostError::Unavailable {
-                    reason: "the action directory went away".into(),
-                });
-            }
-        };
-        // The admission is bound to the revision the caller chose the target
-        // at or, when it named none, the one its owner resolved it against
-        // just now: a host refuses to run it once the directory moved on.
-        // An owner that names no revision for an empty one resolved nothing
-        // the host could check against later.
-        let revision = request.revision.clone().or(resolved).ok_or_else(stale)?;
-        let offered =
-            published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
-        // A person's confirmation covers the action as they were shown it.
-        // Without the revision it was shown at, the broker cannot tell that
-        // from the action as it is now, so only reads and plain edits act on
-        // the directory as it is now.
-        if request.revision.is_none()
-            && offered.contract.confirmation_for_argument(argument)
-                != tilo_actions::ConfirmationPolicy::None
-        {
-            return Err(ActionHostError::InvalidRequest {
-                reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
-            });
-        }
-        let actor = self.caller_actor(caller, &root.cluster_id);
-        let token = self.confirmation_token(
-            root.peer_id,
-            &root.app_id,
-            &offered,
-            argument,
-            &actor,
-            request.confirmation.as_ref(),
-            &self.witness_binding(actor.id(), &root.cluster_id, request),
-        )?;
-        let surface = PublishedSurface {
-            peer_id: root.peer_id,
-            app_id: root.app_id.clone(),
-            route: CrdtRoute {
-                app_id: root.app_id.clone(),
-                cluster_id: root.cluster_id.clone(),
-                record_id: root.record_id.clone(),
-            },
-            actions: vec![offered.clone()],
-            live: true,
-        };
-        let _admission = self
-            .admission_lock
-            .lock()
-            .map_err(|_| ActionHostError::Unavailable {
-                reason: "invocation admission unavailable".into(),
-            })?;
-        if request
-            .target
-            .provider
-            .starts_with(super::canonical_route::PROVIDER_PREFIX)
-            && self.canonical_token_directory(&request.target.provider)? != *root
-        {
-            return Err(ActionHostError::UnknownAction);
-        }
-        self.dispatch_invocation_from_offered_owned(
-            root.peer_id,
-            (surface, offered),
-            InvocationInputs {
-                original_request: Some(request),
-                caller: Some(caller),
-                requested: Some(request.invocation),
-                execution: super::ExecutionScope::for_call(caller, request.invocation),
-                argument,
-                actor: &actor,
-                confirmation_token: token.as_deref(),
-                context: request.context.clone(),
-            },
-            super::AdmissionProvenance {
-                durable: None,
-                revision: Some(&revision),
-                origin: origin.cloned(),
-                retained_time: None,
-            },
-        )
-        .map(|job| job.id)
-        .map_err(refusal)
-    }
-
     fn start_for(
         self: &Arc<Self>,
         caller: &Caller,
@@ -2525,19 +2508,14 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
         original_request: &InvokeRequest,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<Started, ActionHostError> {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
         if let Some(room) = workspace_provider_room(provider) {
-            return self.start_workspace_action(
-                caller,
-                room,
-                launch,
-                origin,
-                request,
-                argument.as_deref(),
-            );
+            return self
+                .start_workspace_action(caller, room, launch, origin, request, argument.as_deref())
+                .map(Started::Now);
         }
         let peer_id = if provider == OWN_PROVIDER {
             own_peer.ok_or(ActionHostError::UnknownAction)?
@@ -2605,9 +2583,9 @@ impl CapnpBrokerState {
             },
             origin.cloned(),
         )
-        .map(|job| {
+        .map(|staged| {
             self.launchable.note_view(&room, &actor.id, &app_id);
-            job.id
+            Started::Staged(staged)
         })
         .map_err(refusal)
     }
@@ -2785,7 +2763,7 @@ impl CapnpBrokerState {
         if !confirmed {
             return Err(ActionHostError::ConfirmationRequired);
         }
-        self.spend_once_grants(&workspace.room.to_string(), &spent);
+        self.spend_once_grants(&workspace.room().to_string(), &spent);
         Ok(())
     }
 
@@ -2820,10 +2798,6 @@ impl CapnpBrokerState {
 
     /// Launch `app_id` into `workspace`, optionally opening content-addressed
     /// bytes read-only, and record the terminal outcome as an invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not launch the application or no launcher is installed.
     pub(super) fn launch_application(
         &self,
         custody: (&Caller, Option<&super::InvocationCaller>, &str),
@@ -2851,7 +2825,7 @@ impl CapnpBrokerState {
             // Answered with the instance it started, once that instance
             // connects with the launch's ticket and publishes.
             Ok(started) => {
-                self.record_launch(admitted, (app_id, &workspace.room.to_string()), started)?;
+                self.record_launch(admitted, (app_id, &workspace.room().to_string()), started)?;
             }
             Err(error) => self.complete_host_action(
                 &admitted,
@@ -2961,7 +2935,7 @@ impl CapnpBrokerState {
         Some(change)
     }
 
-    /// [`Self::action_next_change`] counting only changes after this call:
+    /// `Self::action_next_change` counting only changes after this call:
     /// the `next_change` of a host whose waiter asks before it observes, so a
     /// change between the two still wakes it. Authorized exactly as
     /// [`Self::action_observe`]: `None` for an invocation `caller` did not
@@ -2974,111 +2948,45 @@ impl CapnpBrokerState {
         self.action_next_change(caller, id, self.invocation_changes())
     }
 
-    /// Ask an invocation `caller` admitted to stop.
+    /// Ask an invocation `caller` admitted to stop, answered once the
+    /// request is durable.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when `caller` admitted no such invocation or it cannot
-    /// be cancelled.
+    /// The answer is an error when `caller` admitted no such invocation or it
+    /// cannot be cancelled.
     pub fn action_cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        let job = self
-            .remote_job(caller, id)
-            .ok_or(ActionHostError::UnknownInvocation)?;
-        self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
-            .map_err(|reason| ActionHostError::NotCancellable { reason })
+    ) -> Pending<Result<(), ActionHostError>> {
+        let Some(job) = self.remote_job(caller, id) else {
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+        };
+        if let Some(cancelled) = self.live_views.cancel(job, None) {
+            return Pending::ready(
+                cancelled.map_err(|reason| ActionHostError::NotCancellable { reason }),
+            );
+        }
+        answered_when_durable(
+            self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
+                .map_err(|reason| ActionHostError::NotCancellable { reason }),
+        )
     }
 }
 
-/// A directory row, already validated and permission-checked on the local
-/// set, as a catalogue row.
-fn directory_row(
-    root: &ActionDirectoryRoot,
-    row: &runtime_collab::ActionDirectoryRow,
-) -> Option<CatalogueRow> {
-    let action = if row.action.is_some() {
-        Some(descriptor(&published_directory_action(row).ok()?))
-    } else {
-        None
+/// The answer to a request `staged` in the journal: given once its write
+/// resolves, and never sooner.
+pub(super) fn answered_when_durable(
+    staged: Result<super::invocation_journal::Durable, ActionHostError>,
+) -> Pending<Result<(), ActionHostError>> {
+    let durable = match staged {
+        Ok(durable) => durable,
+        Err(error) => return Pending::ready(Err(error)),
     };
-    Some(CatalogueRow {
-        provider: root.peer_id.to_string(),
-        app_id: root.app_id.clone(),
-        parent_resource: row.parent_resource.clone(),
-        resource: CatalogueResource {
-            id: row.resource.clone(),
-            kind: row.resource_kind.clone(),
-            label: row.resource_label.clone(),
-            presentation: row.presentation.clone(),
-        },
-        action,
-        has_children: row.has_children,
-        visibility: row.visibility.clone(),
-    })
-}
-
-fn directory_page(
-    root: &ActionDirectoryRoot,
-    reply: ActionDirectoryBridgeReply,
-) -> Result<CataloguePage, ActionHostError> {
-    match reply.map_err(bridge_error)? {
-        ActionDirectoryBridgeResponse::Page(page) => Ok(CataloguePage {
-            locator: None,
-            rows: page
-                .rows
-                .iter()
-                .filter_map(|row| directory_row(root, row))
-                .collect(),
-            revision: page.revision,
-            providers: Vec::new(),
-            next_cursor: page.next_cursor,
-            exhausted: page.exhausted,
-            stale_cursor: page.stale_cursor,
-            budget_exhausted: page.budget_exhausted,
-        }),
-        ActionDirectoryBridgeResponse::Resolution(resolution) => {
-            let mut page = CataloguePage {
-                exhausted: true,
-                ..CataloguePage::default()
-            };
-            match resolution {
-                runtime_collab::ActionDirectoryResolution::Found { row, .. } => {
-                    page.rows.extend(directory_row(root, &row));
-                }
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    page.stale_cursor = true;
-                }
-                runtime_collab::ActionDirectoryResolution::NotFound
-                | runtime_collab::ActionDirectoryResolution::Unavailable => {}
-            }
-            Ok(page)
-        }
-        // Only a start request answers with a started action; a query or
-        // resolution never does.
-        ActionDirectoryBridgeResponse::StartedDirectoryAction(_) => {
-            Err(ActionHostError::Unavailable {
-                reason: "the action directory answered a different request".into(),
-            })
-        }
-    }
-}
-
-fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
-    match error {
-        ActionDirectoryBridgeError::InvalidRequest => ActionHostError::InvalidRequest {
-            reason: "the directory request is malformed".into(),
-        },
-        ActionDirectoryBridgeError::TimedOut => ActionHostError::Unavailable {
-            reason: "the app has not answered its action directory for a long time: it is hung"
-                .into(),
-        },
-        other => ActionHostError::Unavailable {
-            reason: format!("the action directory is {other:?}"),
-        },
-    }
+    let (answer, answered) = tilo_actions::remote::pending();
+    durable.then(move |outcome| {
+        answer.complete(outcome.map_err(|reason| ActionHostError::Unavailable { reason }));
+    });
+    answered
 }
 
 /// Whether `query` asks only where one of `app_id`'s own resources is shown,
@@ -3095,14 +3003,19 @@ fn own_view_lookup(app_id: &str, query: &tilo_actions::remote::CatalogueQuery) -
             .is_some_and(|(app, _)| app == app_id)
 }
 
-/// Whether `request` asks for the link to a resource: `share-link`, which
-/// the framework answers for every app and no app may publish itself. It
-/// reads where the resource is shown and grants nothing, so an app showing a
-/// reference (a chat message carrying a page) may ask for it as the person
-/// using it without declared `invoke` access; the person's own grant on the
-/// resource still decides.
-fn link_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
-    request.target.address.action == "share-link"
+/// Whether `request` asks for the link to a resource or opens it:
+/// `share-link`, which the framework answers for every app and no app may
+/// publish itself, or the resource's `open` in its app
+/// ([`application_action_target`](tilo_actions::remote::application_action_target)),
+/// which shows it. Neither grants anything, so an app showing a reference (a
+/// chat message carrying a page, an issue's link) asks as the person using it
+/// without declared `invoke` access; the person's own grants on the app and
+/// the resource still decide.
+fn reference_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
+    let action = request.target.address.action.as_str();
+    action == "share-link"
+        || (action == APPLICATION_OPEN_ACTION
+            && application_provider(&request.target.provider).is_some())
 }
 
 #[cfg(test)]
@@ -3143,12 +3056,12 @@ mod own_view_lookup_tests {
     }
 
     #[test]
-    fn only_the_link_action_is_open_to_every_app() {
-        let request = |action: &str| tilo_actions::remote::InvokeRequest {
+    fn only_linking_and_opening_a_resource_are_open_to_every_app() {
+        let request = |provider: &str, action: &str| tilo_actions::remote::InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: "record:so.tilo.notes:".into(),
+                provider: provider.into(),
                 address: tilo_actions::ActionAddress::new("notes.page:1", action),
             },
             argument: tilo_actions::remote::InvokeArgument::None,
@@ -3158,9 +3071,20 @@ mod own_view_lookup_tests {
             wait_ms: None,
             appearance: None,
         };
-        assert!(super::link_request(&request("share-link")));
-        assert!(!super::link_request(&request("share-invite-link")));
-        assert!(!super::link_request(&request("rename")));
+        let record = "record:so.tilo.notes:";
+        let app = "application:room-1:so.tilo.notes:uuid:1";
+        assert!(super::reference_request(&request(record, "share-link")));
+        assert!(!super::reference_request(&request(
+            record,
+            "share-invite-link"
+        )));
+        assert!(!super::reference_request(&request(record, "rename")));
+        assert!(super::reference_request(&request(app, "open")));
+        assert!(!super::reference_request(&request(app, "rename")));
+        assert!(
+            !super::reference_request(&request("7", "open")),
+            "only the resource's own app opens it"
+        );
     }
 }
 
@@ -3199,7 +3123,7 @@ mod foreign_caller_tests {
             workspace.set_owner(hex::encode(user));
             tree.workspaces.push(workspace);
         }
-        let room = tree.workspaces[0].room.to_string();
+        let room = tree.workspaces[0].room().to_string();
         let (state, _bridge_rx) = CapnpBrokerState::new(
             &Arc::new(FanoutState::new()),
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -3289,6 +3213,7 @@ mod app_close_tests {
             self.listed
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             vec![crate::services::LaunchableApplication {
+                capabilities: Vec::new(),
                 package_id: "so.tilo.word-processor".into(),
                 display_name: "Writer".into(),
                 unconfined: false,
@@ -3318,7 +3243,7 @@ mod app_close_tests {
             self.closed
                 .lock()
                 .unwrap()
-                .push((app.to_string(), workspace.room.to_string()));
+                .push((app.to_string(), workspace.room().to_string()));
             Ok(())
         }
     }
@@ -3327,7 +3252,7 @@ mod app_close_tests {
         let user = [31; 32];
         let mut workspace = Workspace::new(WorkspaceId(8), "Close");
         workspace.set_owner(hex::encode(user));
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
@@ -3390,7 +3315,7 @@ mod app_close_tests {
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("close admission answers immediately")?;
@@ -3508,7 +3433,7 @@ mod app_close_tests {
         let before = launcher.listed.load(std::sync::atomic::Ordering::SeqCst);
         let page = state
             .action_query(caller, query)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("an eager query answers at once")
@@ -3544,7 +3469,6 @@ mod app_close_tests {
                 .iter()
                 .any(|provider| provider.provider == "4")
         );
-        // The workspace's own rows read it once, for open and close alike.
         let (page, listed) = answered(&state, &launcher, &caller, &query(Some(&workspace), 64));
         assert_eq!(listed, 1);
         assert!(page.rows.iter().all(|row| row.provider == workspace));
@@ -3595,6 +3519,10 @@ mod app_close_tests {
 }
 
 #[cfg(test)]
+#[path = "action_host/app_scope_tests.rs"]
+mod app_scope_tests;
+
+#[cfg(test)]
 mod argument_size_tests {
     use super::*;
 
@@ -3616,7 +3544,7 @@ mod argument_size_tests {
 mod device_pairing_tests {
     use super::super::CapnpBrokerState;
     use super::RowScope;
-    use crate::services::{DevicePairingOutcome, DevicePairingRequest, DevicePairingServices};
+    use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
         Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
@@ -3628,10 +3556,14 @@ mod device_pairing_tests {
     #[derive(Default)]
     struct Host {
         started: Mutex<Vec<(String, String, String)>>,
-        answers: Mutex<Vec<Completer<DevicePairingOutcome>>>,
+        answers: Mutex<Vec<Completer<HostStepOutcome>>>,
     }
 
-    impl DevicePairingServices for Host {
+    impl HostStepServices for Host {
+        fn provider(&self) -> &'static str {
+            device_pairing::PROVIDER
+        }
+
         fn app_id(&self) -> &'static str {
             "so.tilo.settings"
         }
@@ -3666,10 +3598,7 @@ mod device_pairing_tests {
                 .collect()
         }
 
-        fn start(
-            &self,
-            request: &DevicePairingRequest<'_>,
-        ) -> Result<Pending<DevicePairingOutcome>, String> {
+        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
             self.started.lock().unwrap().push((
                 request.room.to_owned(),
                 request.actor.id().to_owned(),
@@ -3703,7 +3632,7 @@ mod device_pairing_tests {
     {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("admission answers at once")
@@ -3718,7 +3647,7 @@ mod device_pairing_tests {
         let host = Arc::new(Host::default());
         let fixture = super::super::host_steps::signed_test_support::Fixture::new(
             crate::services::HostServices {
-                device_pairing: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             },
         );

@@ -3,15 +3,15 @@
 //!
 //! - **HTTPS** (TCP, HTTP/2 and HTTP/1.1): device certification, the session
 //!   handshake, and the durable plane — `/send` and the long-polled
-//!   `/events` of [`sessions`]. Routes are listed in
+//!   `/events` of `sessions`. Routes are listed in
 //!   [`tilo_relay_protocol::web`].
 //! - **WebTransport** (UDP, HTTP/3, same port number): the live plane as
 //!   `moq-lite` at [`LIVE_PATH`](tilo_relay_protocol::web::LIVE_PATH), the
 //!   [`tilo_moq::live::LiveRelay`] ported from PR 541, admitted by
-//!   [`live::Authority`]. Browsers without WebTransport use its HTTPS
+//!   `live::Authority`. Browsers without WebTransport use its HTTPS
 //!   fallback routes.
 //!
-//! Browser sessions are ordinary relay peers (see [`sessions`]), and live
+//! Browser sessions are ordinary relay peers (see `sessions`), and live
 //! frames from iroh peers are bridged into the live relay, so browser and
 //! native peers share one host order and one live room.
 //!
@@ -21,6 +21,7 @@
 //! janitor, both on tokio intervals.
 
 mod envelopes;
+mod fetch;
 mod here;
 pub mod install;
 mod live;
@@ -29,6 +30,7 @@ mod sessions;
 mod tests;
 mod tls;
 
+pub use fetch::FetchProxySetup;
 pub use tls::TlsSource;
 // The legacy-window bridge decodes the desktop's messages, so it lives with
 // the shell payload adapter.
@@ -95,6 +97,9 @@ pub struct WebConfig {
     /// host shows it to a person approving a new device and looks nothing up
     /// itself.
     pub country: Option<CountryHeader>,
+    /// The fetch proxy this host serves its members' pages at
+    /// [`protocol::FETCH_PATH`], if any.
+    pub fetch_proxy: Option<FetchProxySetup>,
 }
 
 /// The request header a proxy in front of the host names the client's
@@ -102,7 +107,6 @@ pub struct WebConfig {
 /// believed from: that proxy, never the open internet.
 #[derive(Clone, Debug)]
 pub struct CountryHeader {
-    /// The header's name.
     pub name: String,
     /// The peers whose header is believed.
     pub proxies: tilo_relay_protocol::proxies::TrustedProxies,
@@ -199,6 +203,8 @@ struct Web {
         hyper::header::HeaderName,
         tilo_relay_protocol::proxies::TrustedProxies,
     )>,
+    /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one.
+    fetch: Option<tilo_net::proxy::host::FetchProxy>,
 }
 
 /// Checks the published origins against the listeners they front, and
@@ -330,6 +336,7 @@ impl Relay {
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
             tilo_moq::tls::https_server_config(certificate).map_err(failed)?,
         ));
+        let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
         let context = self.web_context().clone();
         let sessions = Sessions::with_limits(context.clone(), config.limits);
         let grants = live::LiveGrants::with_limit(config.limits.max_live_grants);
@@ -362,7 +369,7 @@ impl Relay {
                 webtransport_origin: live_origin.clone(),
             },
             allowed_origins: config.allowed_origins,
-            features: self.web_features(),
+            features: self.web_features() | fetch.features(),
             rooms: self.rooms().cloned(),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
             profiles: envelopes::Envelopes::of(
@@ -371,8 +378,10 @@ impl Relay {
             ),
             here: Arc::new(here::Here::new(here::from_env())),
             country: config.country.and_then(country_header),
+            fetch: fetch.proxy,
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
+        tasks.extend(fetch.metrics);
         let live = web.live.clone();
         tasks.push(
             match self.voice_carrier(
@@ -885,20 +894,24 @@ where
         .await;
 }
 
-/// A response body: whole bytes or a live fallback stream.
+/// A response body: whole bytes, a live fallback stream, or what the fetch
+/// proxy relays.
 pub(crate) enum Body {
     Full(Option<Bytes>),
     Stream(FallbackStream),
+    Proxied(tilo_net::proxy::host::ProxyBody),
 }
 
 impl http_body::Body for Body {
     type Data = Bytes;
-    type Error = Infallible;
+    /// Only a relayed body fails: it breaks off at the proxy's bounds, so
+    /// the page sees an error rather than a short body that reads as whole.
+    type Error = tilo_net::proxy::host::ProxyBodyError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Infallible>>> {
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
         match self.get_mut() {
             Self::Full(bytes) => {
                 Poll::Ready(bytes.take().map(|bytes| Ok(http_body::Frame::data(bytes))))
@@ -906,6 +919,7 @@ impl http_body::Body for Body {
             Self::Stream(stream) => stream
                 .poll_next(cx)
                 .map(|chunk| chunk.map(|bytes| Ok(http_body::Frame::data(bytes)))),
+            Self::Proxied(body) => Pin::new(body).poll_frame(cx),
         }
     }
 }
@@ -931,7 +945,6 @@ fn status(status: StatusCode, message: &str) -> Response<Body> {
     reply(status, message.as_bytes().to_vec())
 }
 
-/// `value` as JSON, answered with `code`.
 fn json_status<T: serde::Serialize>(code: StatusCode, value: &T) -> Response<Body> {
     match serde_json::to_vec(value) {
         Ok(json) => {
@@ -946,7 +959,6 @@ fn json_status<T: serde::Serialize>(code: StatusCode, value: &T) -> Response<Bod
     }
 }
 
-/// `value` as JSON.
 fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }
@@ -965,10 +977,8 @@ async fn directory_door(
     use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin, DoorReport, door_route};
     let (room, step) =
         door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
-    let rooms = web
-        .rooms
-        .as_ref()
-        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+    // A relay that governs no rooms refuses before the request is parsed.
+    governed_rooms(web)?;
     let refused = |error: crate::rooms::CollaborationError| {
         json_status(
             StatusCode::FORBIDDEN,
@@ -979,7 +989,10 @@ async fn directory_door(
         "join" => {
             let join: DoorJoin = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
-            let (issued, token) = rooms.admit_listed(room, &join).await.map_err(refused)?;
+            let (issued, token) = governed_rooms(web)?
+                .admit_listed(room, &join)
+                .await
+                .map_err(refused)?;
             Ok(json(&DoorAnswer {
                 invitation: base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -992,11 +1005,25 @@ async fn directory_door(
         "report" => {
             let report: DoorReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
-            rooms.report_listed(room, &report).await.map_err(refused)?;
+            governed_rooms(web)?
+                .report_listed(room, &report)
+                .await
+                .map_err(refused)?;
             Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
         }
         _ => Err(status(StatusCode::NOT_FOUND, "not found")),
     }
+}
+
+/// The rooms this relay governs, or the answer that it governs none.
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+fn governed_rooms(web: &Web) -> Result<&crate::rooms::Rooms, Response<Body>> {
+    web.rooms
+        .as_ref()
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))
 }
 
 fn session_status(error: &SessionError) -> Response<Body> {
@@ -1102,6 +1129,15 @@ fn cors(
 }
 
 async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
+    // The fetch proxy takes the method of the request it relays.
+    if request
+        .uri()
+        .path()
+        .strip_prefix(API_PREFIX)
+        .is_some_and(|route| route == protocol::FETCH_PATH)
+    {
+        return fetch::handle(web, request).await;
+    }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let mut response = if request.method() == Method::OPTIONS {
         reply(StatusCode::NO_CONTENT, Vec::new())
@@ -1194,8 +1230,7 @@ async fn route(
         MAX_REQUEST_BYTES
     };
     let (_, bytes) = body(request, limit).await?;
-    let sessions = &web.sessions;
-    let certification = &sessions.context().certification;
+    let certification = &web.sessions.context().certification;
     #[allow(
         clippy::result_large_err,
         reason = "the error is the response the handler sends as it is"
@@ -1203,14 +1238,18 @@ async fn route(
     let authed = || {
         session
             .ok_or_else(|| status(StatusCode::UNAUTHORIZED, "no session"))
-            .and_then(|token| sessions.get(&token).map_err(|error| session_status(&error)))
+            .and_then(|token| {
+                web.sessions
+                    .get(&token)
+                    .map_err(|error| session_status(&error))
+            })
     };
     match route {
         "/host" => Ok(encoded(&web.host_info)),
         "/node" => {
             authed()?;
             Ok(encoded(&NodeInfo {
-                session: sessions.context().node_session.get().copied(),
+                session: web.sessions.context().node_session.get().copied(),
             }))
         }
         "/certify" => {
@@ -1265,14 +1304,15 @@ async fn route(
                     return Err(status(StatusCode::BAD_REQUEST, "malformed body"));
                 }
             };
-            sessions
+            web.sessions
                 .hello(&hello)
                 .map(|challenge| encoded(&challenge))
                 .map_err(|error| session_status(&error))
         }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;
-            let grant = sessions
+            let grant = web
+                .sessions
                 .finish(&finish.handshake, &finish.ack2)
                 .map_err(|error| session_status(&error))?;
             Ok(match protocol::encode_grant(&grant, web.features) {
@@ -1280,10 +1320,23 @@ async fn route(
                 Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
             })
         }
+        // A page leaving says so in a beacon, its token the body (no
+        // header rides a beacon): its session ends now, not when its polls
+        // stop. Whoever holds a token may end it, as by going quiet.
+        tilo_relay_protocol::web::SESSION_END_PATH => {
+            if let Some(token) = std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| hex::decode(text.trim()).ok())
+                .and_then(|token| <[u8; 32]>::try_from(token).ok())
+            {
+                web.sessions.end(&token);
+            }
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
         "/send" => {
             let session = authed()?;
             let envelopes = decode(&bytes)?;
-            sessions
+            web.sessions
                 .send(&session, envelopes)
                 .await
                 .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
@@ -1292,7 +1345,7 @@ async fn route(
         "/events" => {
             let session = authed()?;
             let request: EventsRequest = decode(&bytes)?;
-            sessions
+            web.sessions
                 .events(&session, request.ack, wait(request.wait_ms))
                 .await
                 .map(|page| encoded(&page))
@@ -1303,7 +1356,7 @@ async fn route(
             let workspace_id: u64 = decode(&bytes)?;
             let token = session.token();
             web.grants
-                .issue(sessions, token, &session.peer, workspace_id, None)
+                .issue(&web.sessions, token, &session.peer, workspace_id, None)
                 .await
                 .map(|grant| encoded(&grant))
                 .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
@@ -1317,7 +1370,7 @@ async fn route(
             let token = session.token();
             web.grants
                 .issue(
-                    sessions,
+                    &web.sessions,
                     token,
                     &session.peer,
                     request.workspace_id,
@@ -1371,13 +1424,18 @@ async fn route(
                     "not admitted to this workspace",
                 ));
             }
-            let (reply, job) = web.here.post(
+            let workspace_id = request.workspace_id;
+            let (mut reply, job) = web.here.post(
                 request,
                 session.peer.device_public_key,
                 session.peer.user_public_key,
                 std::time::Instant::now(),
                 tilo_clock::unix_now_ms(),
             );
+            here::pair_members(&mut reply, &web.grants.persons_in(workspace_id));
+            for person in &mut reply.people {
+                person.profile_ms = web.profiles.issued_at(&person.user).unwrap_or(0);
+            }
             if let Some(job) = job {
                 tokio::spawn(web.here.clone().summarize(job));
             }
@@ -1386,7 +1444,7 @@ async fn route(
         protocol::CHANNEL_KEYS_PATH => {
             let session = authed()?;
             let request: protocol::ChannelKeysRequest = decode(&bytes)?;
-            let relay = &sessions.context().relay;
+            let relay = &web.sessions.context().relay;
             let keys = web
                 .rooms
                 .as_ref()
@@ -1407,6 +1465,41 @@ async fn route(
             Ok(encoded(&protocol::ChannelKeys {
                 keys: keys.to_vec(),
             }))
+        }
+        tilo_relay_protocol::rooms::private::PRIVATE_PATH => {
+            use tilo_relay_protocol::rooms::private::{MAX_REQUEST_BYTES, PrivateCall};
+            let session = authed()?;
+            // The governor's private door, the one a native device reaches
+            // over iroh, within the same bounds.
+            let door = web
+                .rooms
+                .clone()
+                .map(crate::rooms::PrivateProtocol::new)
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            if bytes.len() > MAX_REQUEST_BYTES {
+                return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"));
+            }
+            let call: PrivateCall = decode(&bytes)?;
+            let device = session.peer.device_public_key;
+            let _admitted = door
+                .admit(device)
+                .ok_or_else(|| status(StatusCode::SERVICE_UNAVAILABLE, "busy"))?;
+            // A watch is a long-poll, held as long as `/events` holds one.
+            let poll = async {
+                tokio::time::sleep(wait(MAX_POLL_MS)).await;
+                Ok(())
+            };
+            let reply = door
+                .serve(
+                    &session.peer.cert,
+                    &device,
+                    &call.room,
+                    call.operation,
+                    poll,
+                )
+                .await;
+            drop(door);
+            Ok(encoded(&reply))
         }
         "/rooms" => {
             let session = authed()?;
@@ -1450,7 +1543,7 @@ async fn route(
                 .rooms
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
-            let online = sessions.online_users().into_keys().collect();
+            let online = web.sessions.online_users().into_keys().collect();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
                 workspaces: rooms.directory(&online).await,
             }))

@@ -1,0 +1,96 @@
+[package]
+name = "settings-rare"
+version = "0.1.0"
+description = "The panes of Settings people rarely open (accounts, agent models, devices and sync, speakers, storage, drives, disk unlock, printers, users, region, date and time with its globe, updates, about), loaded from the Settings engine library"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+autotests = false
+
+[lib]
+name = "settings_rare"
+path = "src/lib.rs"
+# The panes are tested in settings-core's own tests, with every pane.
+test = false
+doctest = false
+
+[dependencies]
+# The installer service, for the language packs Region & formats offers.
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+settings-core = { path = "../settings-core" }
+provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui" }
+# The Date & Time pane's globe.
+tilo-zone-globe = { path = "../../crates/platform/zone-globe" }
+tilo-locale = { path = "../../crates/platform/tilo-locale" }
+hex.workspace = true
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
+bounded-command = { path = "../../crates/system/bounded-command" }
+# One owner for ~/.config/tilo/settings.json.
+settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
+desktop-policy = { path = "../../crates/system/desktop-policy" }
+# The Tilo action model: every setting mutation is a serializable, replayable
+# `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
+tilo-actions = { path = "../../crates/collab/actions" }
+# The CA-certificate chooser and captive-portal sign-in go through
+# `ui::portal`, never a host tool.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# Shared shell-out helpers for the interactive panes (display, audio,
+# network, bluetooth). The crate lives at the workspace root so both
+# `shell` and the Settings app drive the same hardware bindings without
+# this app depending on the compositor crate.
+os-actions = { path = "../../crates/system/os-actions" }
+# Remembered NTFS drives: the mount service's protocol (panes::drives).
+tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
+# Public identity summaries, as the host's identity actions answer them. The
+# identity store itself is the host's: no record or secret enters Settings.
+runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
+runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
+# Device role, workspace residency and server relay policy use the same types
+# the tilo-relay daemon loads; Settings never keeps a shadow sync model.
+tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
+# The shared multi-account store + encrypted secret vault. Settings reads and
+# writes email + CalDAV accounts through this one canonical store, so it and
+# the Mail / Calendar apps can no longer disagree on the on-disk shape.
+accounts = { path = "../../crates/system/accounts", features = ["person"] }
+# Credential custody for cloud accounts: the shared OAuth client, Nextcloud
+# Login Flow v2, iCloud sessions and the short-lived handoff to the storage
+# daemon.
+account-custody = { path = "../../crates/system/account-custody" }
+# Provider metadata is shared with the headless agent runner. This dependency
+# contains no HTTP client and no secret values.
+agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
+# Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
+# in their signatures; we re-export them at the same versions the sibling
+# native apps pin so a shared `target/` cache hits across crates.
+automerge.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+tracing.workspace = true
+rustls = { workspace = true, features = ["std", "tls12"] }
+tilo-net = { path = "../../crates/platform/tilo-net" }
+# Account probes speak DAV through the shared bounded client and IMAP through
+# async-imap, the client Mail uses, on a per-probe current-thread runtime.
+tilo-dav = { path = "../../crates/system/tilo-dav" }
+async-imap.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+tokio-rustls.workspace = true
+zeroize.workspace = true
+# The shared account + region/format stores Settings owns are plain
+# serde-serialisable JSON documents that other apps (Mail, Calendar,
+# Sheets, Weather) read. serde/serde_json render them; dirs resolves the
+# per-user config root; uuid mints stable account ids.
+serde.workspace = true
+serde_json.workspace = true
+# The change-only directory watch the panes follow host snapshots with.
+tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[lints]
+workspace = true

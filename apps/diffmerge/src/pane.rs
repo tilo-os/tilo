@@ -37,7 +37,6 @@ pub struct CodeMetrics {
 }
 
 impl CodeMetrics {
-    /// Measure with `tr` in `theme`.
     pub fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
         let code = theme.text(TextRole::Code);
         let line_h = f64::from(tr.measure_style("Ag", None, &code).1);

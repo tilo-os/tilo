@@ -1358,7 +1358,7 @@ mod retirement_ancestry_tests {
             assert!(
                 super::super::pending_source::within_owned_task(
                     &active,
-                    std::time::Instant::now() + std::time::Duration::from_secs(1),
+                    tilo_test_env::hang_deadline(),
                     &mut owned.task,
                 )
                 .await

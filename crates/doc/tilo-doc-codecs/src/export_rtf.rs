@@ -50,8 +50,6 @@ const FONT_TABLE: &str = "{\\fonttbl\
 {\\f1\\froman Times;}\
 {\\f2\\fmodern Courier;}}";
 
-// ---- color table ------------------------------------------------------------
-
 /// Collects distinct RGB colors and renders the RTF `\colortbl`. RTF
 /// reserves color index 0 as "auto", so registered colors start at 1;
 /// `index_of` returns the 1-based `\cfN` index.
@@ -111,8 +109,6 @@ fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
         }
     }
 }
-
-// ---- block rendering --------------------------------------------------------
 
 /// Render a slice of sibling blocks. List items render individually
 /// (each a self-contained `\par`), matching qdoc's flat run.
@@ -237,8 +233,6 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
     out.push_str("\\par}\n");
 }
 
-// ---- tables -----------------------------------------------------------------
-
 fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the flat shape (cells directly under the table with a `cols`
@@ -298,8 +292,6 @@ fn strip_pars(s: &str) -> String {
         .replace(['}', '{'], "")
 }
 
-// ---- block-level formatting helpers -----------------------------------------
-
 /// Emit a paragraph alignment control word from the block's `align` attr.
 fn push_align(out: &mut String, block: &BlockView) {
     if let Some(AttrVal::Str(a)) = block.attrs.get("align") {
@@ -319,8 +311,6 @@ fn push_indent(out: &mut String, indent_level: i64) {
         let _ = write!(out, "\\li{}", indent_level.saturating_mul(INDENT_TWIPS));
     }
 }
-
-// ---- inline marks -----------------------------------------------------------
 
 /// Render `text` with qdoc's canonical character-offset mark traversal.
 fn render_inline(out: &mut String, text: &str, marks: &[MarkSpan], colors: &ColorTable) {
@@ -428,8 +418,6 @@ fn font_index(f: &str) -> usize {
     }
 }
 
-// ---- value helpers ----------------------------------------------------------
-
 /// The string payload of a valued mark (link href, color hex, font family).
 fn mark_str(m: &MarkSpan) -> Option<String> {
     m.value.as_str().map(std::string::ToString::to_string)
@@ -455,8 +443,6 @@ fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
         _ => None,
     }
 }
-
-// ---- RTF escaping -----------------------------------------------------------
 
 /// Push `text` into `out`, escaping RTF specials and emitting non-ASCII
 /// as `\uN?` unicode escapes: `\`, `{`, `}` backslash-escaped; ASCII

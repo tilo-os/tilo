@@ -3,7 +3,9 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -101,6 +103,63 @@ class TestAssets(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "filename"):
             assets.resolve(self.path, self.cache, opener=self.no_network)
 
+    def seed_with(self, payload):
+        seed = self.root / "seed"
+        entry = seed / self.row["sha256"] / self.row["file"]
+        entry.parent.mkdir(parents=True)
+        entry.write_bytes(payload)
+        return seed, entry
+
+    def test_a_seeded_asset_never_reaches_the_network_or_the_writable_cache(self):
+        seed, entry = self.seed_with(self.payload)
+        resolved = assets.resolve(self.path, self.cache, opener=self.no_network, seeds=[seed])
+        self.assertEqual(resolved, [entry.resolve()])
+        self.assertFalse(self.cache.exists())
+        self.assertEqual(assets.seeds_from(f"{self.root / 'missing'}{assets.os.pathsep}{seed}"),
+                         [self.root / "missing", seed])
+
+    def test_a_corrupt_seed_entry_fails_instead_of_being_fetched_around(self):
+        seed, _ = self.seed_with(self.payload[:-2] + b"x\n")
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            assets.resolve(self.path, self.cache, opener=self.no_network, seeds=[seed])
+
+    def test_an_asset_no_seed_holds_is_fetched_into_the_cache_not_the_seed(self):
+        seed = self.root / "seed"
+        seed.mkdir()
+        resolved = assets.resolve(self.path, self.cache, opener=self.fetch, seeds=[seed])
+        self.assertEqual(resolved[0].read_bytes(), self.payload)
+        self.assertTrue(resolved[0].is_relative_to(self.cache.resolve()))
+        self.assertEqual(list(seed.iterdir()), [])
+
+    def test_the_seed_check_holds_every_manifest_a_build_script_names(self):
+        # Builds that ship read fixtures from the `test-assets` check's seed, so a
+        # manifest a build script names but the seed leaves out would send them
+        # back to the network.
+        named = set()
+        for script in [*ROOT.glob("apps/*/build.rs"), *ROOT.glob("crates/*/*/build.rs")]:
+            text = script.read_text(encoding="utf-8")
+            if "prepare_fixture_assets" not in text:
+                continue
+            for relative in re.findall(r'"([^"]*artifacts\.json)"', text):
+                named.add((script.parent / relative).resolve().relative_to(ROOT).as_posix())
+        self.assertIn("crates/doc/fixtures/artifacts.json", named)
+        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        seed = checks["test-assets"]
+        self.assertTrue(named <= set(seed["inputs"]), sorted(named - set(seed["inputs"])))
+        for manifest_path in named:
+            self.assertIn(manifest_path, seed["run"])
+        self.assertIn("/target/test-assets/**", seed["outputs"])
+
+    def test_every_build_that_ships_takes_the_seed(self):
+        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        consumers = ["os-compile-x86_64", "os-compile-aarch64", "os-compile-dev-x86_64", "os-compile-dev-aarch64",
+                     "apps-build-{arch}", "app-binaries-{arch}",
+                     *(f"tilo-vm-pack{kind}-{arch}" for kind in ("", "-shell", "-apps") for arch in ("x86_64", "arm64"))]
+        for name in consumers:
+            with self.subTest(check=name):
+                self.assertIn("test-assets", checks[name].get("needs", []))
+                self.assertEqual(checks[name]["env"]["TILO_TEST_ASSET_SEED"], "/target/test-assets")
+
     def test_all_six_real_cases_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/sdk/ui-core/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 6)
@@ -112,16 +171,17 @@ class TestAssets(unittest.TestCase):
 
     def test_shell_decision_states_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/session/shell/tests/snapshots/artifacts.json")
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(sum(row["bytes"] for row in rows), 45740)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(sum(row["bytes"] for row in rows), 127212)
         self.assertEqual({row["file"] for row in rows}, {
+            "e2e-open-close-overview-settled.png",
             "e2e-tab-drag-reorder-settled.png",
             "e2e-maximized-tile-controls.png"})
 
     def test_reader_linux_and_windows_baselines_remain_pinned(self):
         rows = assets.manifest(ROOT / "apps/ebook/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 4)
-        self.assertEqual(sum(row["bytes"] for row in rows), 801292)
+        self.assertEqual(sum(row["bytes"] for row in rows), 804497)
         self.assertEqual({row["file"] for row in rows}, {
             "serif-reader.png", "serif-reader-windows.png",
             "math-reader.png", "math-reader-windows.png"})

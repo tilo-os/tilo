@@ -40,6 +40,9 @@ pub enum ActionError {
     /// As [`ActionError::Refused`], with a catalogue sentence for people
     /// that names the outcome and the next step.
     Explained(String),
+    /// The change these arguments make asks the person first, and they
+    /// have not confirmed it (`confirm`); nothing ran.
+    ConfirmationRequired,
 }
 
 impl ActionError {
@@ -48,6 +51,7 @@ impl ActionError {
         match self {
             ActionError::Arguments(_) => "invalid_arguments",
             ActionError::Refused(_) | ActionError::Explained(_) => "action_failed",
+            ActionError::ConfirmationRequired => "confirmation_required",
         }
     }
 
@@ -57,6 +61,7 @@ impl ActionError {
             ActionError::Explained(message) => message.clone(),
             ActionError::Arguments(_) => crate::shell::i18n::t("host-action-check-values"),
             ActionError::Refused(_) => crate::shell::i18n::t("host-action-try-again"),
+            ActionError::ConfirmationRequired => crate::shell::i18n::t("host-action-confirm"),
         }
     }
 }
@@ -66,6 +71,7 @@ impl std::fmt::Display for ActionError {
         match self {
             ActionError::Arguments(e) => write!(f, "{e}"),
             ActionError::Refused(why) | ActionError::Explained(why) => write!(f, "{why}"),
+            ActionError::ConfirmationRequired => write!(f, "explicit confirmation is required"),
         }
     }
 }
@@ -347,7 +353,7 @@ impl ActionCatalog {
     ///
     /// With no `kinds`, every kind is kept except files and folders, which
     /// stay out unless `files`: a checkout's worth of `markdown.rs` is not
-    /// what a search for an app's action means. With `kinds` (`application`,
+    /// what a search for an app's action means. With `kinds` (`app`,
     /// `action`, `note`, `file`, …; singular or plural, any case) only those
     /// are kept, files included when named. The rows left are ordered live
     /// app resources and their actions first, then by kind in the palette's
@@ -361,6 +367,10 @@ impl ActionCatalog {
                 .collect();
             if name.ends_with('s') {
                 name.pop();
+            }
+            // Apps were "applications" before they were one kind.
+            if name == "application" {
+                "app".clone_into(&mut name);
             }
             name
         }
@@ -435,24 +445,38 @@ impl ActionCatalog {
         self.select(resource).is_some()
     }
 
+    /// The semantic identity its provider gives the visible action at
+    /// `resource`: which app, room and record it belongs to.
+    pub fn hierarchy_of(&self, resource: &ResourceRef) -> Option<&ActionHierarchy> {
+        self.hierarchies
+            .get(self.visible_index(resource)?)?
+            .as_ref()
+    }
+
     /// Resolve a [`ResourceRef`] to the live action. `None` when the id
     /// isn't in this snapshot or the visibility gate hid it.
     pub fn select(&self, resource: &ResourceRef) -> Option<SelectedAction<'_>> {
-        // Two independent identity checks (provider, then id) — matching
-        // field names would be a coincidence, not a bug:
-        // `SearchResult::provider_id` and `ResourceRef::provider` name
-        // the same concept differently by design.
-        #[allow(
-            clippy::suspicious_operation_groupings,
-            reason = "provider_id/provider and id/id are two independent equality checks, not a \
-                      swapped field pair"
-        )]
-        let found = self
-            .visible
-            .iter()
-            .filter_map(|&i| self.results.get(i))
-            .find(|r| r.provider_id == resource.provider && r.id == resource.id);
-        found.map(|result| SelectedAction { result })
+        let result = self.results.get(self.visible_index(resource)?)?;
+        Some(SelectedAction { result })
+    }
+
+    /// Where the visible action at `resource` sits in `results`.
+    ///
+    /// Two independent identity checks (provider, then id) — matching field
+    /// names would be a coincidence, not a bug: `SearchResult::provider_id`
+    /// and `ResourceRef::provider` name the same concept differently by
+    /// design.
+    #[allow(
+        clippy::suspicious_operation_groupings,
+        reason = "provider_id/provider and id/id are two independent equality checks, not a \
+                  swapped field pair"
+    )]
+    fn visible_index(&self, resource: &ResourceRef) -> Option<usize> {
+        self.visible.iter().copied().find(|&i| {
+            self.results
+                .get(i)
+                .is_some_and(|r| r.provider_id == resource.provider && r.id == resource.id)
+        })
     }
 }
 
@@ -579,11 +603,6 @@ impl SelectedAction<'_> {
     /// Begin a JSON invocation while preserving asynchronous admission.
     /// Binding happens once and a pending ticket owns the in-flight request;
     /// callers poll that ticket rather than re-resolving or restarting it.
-    ///
-    /// # Errors
-    ///
-    /// Returns argument, policy, provider, or admission failures without
-    /// falling back to a different invocation callback.
     pub fn invoke_json_disposition(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -704,7 +723,9 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "Action API test");
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
@@ -855,8 +876,6 @@ mod tests {
             );
         }
 
-        // Phase `visibility_gate_hides_resources_from_enumerate_and_select`.
-        // The permission seam gates enumeration and selection uniformly.
         {
             let mut reg = registry_with_actions();
             reg.register(Rc::new(ApplicationsProvider::new()));
@@ -864,7 +883,6 @@ mod tests {
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            // Deny everything the "actions" provider exports.
             let deny_actions = |r: &ResourceRef, _k: &ResourceKind| r.provider != "actions";
             let catalog = ActionCatalog::build(
                 &reg,
@@ -892,8 +910,6 @@ mod tests {
             );
         }
 
-        // Phase `active_app_scope_narrows_to_the_focused_provider`.
-        // `ActiveApp` scope narrows the survey to the focused app's provider.
         {
             let mut reg = registry_with_actions();
             reg.register(Rc::new(ApplicationsProvider::new()));
@@ -941,8 +957,6 @@ mod tests {
         }
     }
 
-    // ---- parameters -------------------------------------------------
-
     const PARAMS: &[ActionParam] = &[
         ActionParam::required("text", ParamType::Text, "what to write"),
         ActionParam::optional("at", ParamType::Integer, "where"),
@@ -958,8 +972,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn argument_binding_follows_the_declared_parameters_exactly() {
-        // Phase `binding_accepts_the_declared_parameters`.
-        // The happy path, and the shape a caller reads back out.
         {
             let args = ActionArgs::bind(
                 PARAMS,
@@ -1212,7 +1224,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn invocations_return_the_brokers_receipt_and_admission_state() {
-        // Phase `headless_invocation_returns_the_providers_broker_receipt`.
         {
             let mut registry = SearchRegistry::new();
             registry.register(std::rc::Rc::new(ReceiptProvider));
@@ -1245,7 +1256,6 @@ mod tests {
             ));
         }
 
-        // Phase `json_invocation_begins_once_and_retains_pending_admission_ticket`.
         {
             let begins = std::rc::Rc::new(std::cell::Cell::new(0));
             let polls = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1298,7 +1308,6 @@ mod tests {
             ));
         }
 
-        // Phase `json_invocation_exposes_rejected_admission`.
         {
             let begins = std::rc::Rc::new(std::cell::Cell::new(0));
             let mut registry = SearchRegistry::new();

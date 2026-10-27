@@ -198,6 +198,107 @@ jobs:
             echo '::error::pinned OS source is not an ancestor of dispatched main'; exit 1;
           }
 
+  target_policy:
+    timeout-minutes: 45
+    # A tag release publishes the small signed target policy that lets a source
+    # host review the destination's boot policy without mounting live media.
+    # The exact published OS image supplies the bytes; this job allocates no
+    # image, generation or channel of its own. Without the existing Forgejo
+    # package-write broker the catalog honestly omits the entry rather than
+    # pointing at a package nobody published.
+    if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER != ''
+    needs: plan
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}
+    runs-on: ${{ matrix.runner }}
+    enable-openid-connect: true
+    env:
+      REGISTRY_AUTH_FILE: ${{ runner.temp }}/tilo-target-policy-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
+      TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
+      TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision || github.sha }}
+      TILO_TARGET_POLICY_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require the native target policy architecture
+        run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
+      - name: Install native target policy dependencies
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends curl jq podman skopeo
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf install -y curl jq podman skopeo
+          else
+            printf 'unsupported runner OS for target policy export\n' >&2
+            exit 1
+          fi
+      - name: Materialize checksum-verified GitHub build inputs
+        uses: ./.forgejo/actions/cache-github-assets
+        with:
+          key: github-assets-all-v1
+      - name: Install the checksum-pinned image-signature verifier
+        run: ./os/dev/install-cached-cosign.sh
+      - name: Authenticate the published OS image
+        env:
+          TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$TILO_REGISTRY_TOKEN"
+          umask 077
+          printf '%s' "$TILO_REGISTRY_TOKEN" | podman login \
+            --authfile "$REGISTRY_AUTH_FILE" code.tilo.so \
+            --username '${{ github.actor }}' --password-stdin
+      - name: Resolve the exact published OS child
+        run: |
+          set -euo pipefail
+          test -n "$TILO_PUBLISHED_OS_IMAGE"
+          generation="$(./os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE")"
+          case '${{ matrix.arch }}' in
+            x86_64) registry_arch=amd64 ;;
+            aarch64) registry_arch=arm64 ;;
+          esac
+          index_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" \
+            "docker://$TILO_PUBLISHED_OS_IMAGE")"
+          child_digest="$(jq -er --arg arch "$registry_arch" '
+            [.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest]
+            | if length == 1 then .[0] else error("index must have one matching child") end
+          ' <<<"$index_raw")"
+          printf 'TILO_TARGET_POLICY_IMAGE=registry.tilo.so/tilo/tilo@%s\nTILO_TARGET_POLICY_GENERATION=%s\n' \
+            "$child_digest" "$generation" >> "$GITHUB_ENV"
+          echo "::notice::target policy source is published generation $generation ($child_digest)"
+      - name: Export the signed target policy from the exact published OS image
+        run: |
+          set -euo pipefail
+          rm -rf dist/tilo-target-policy
+          apps/imager/packaging/export-target-policy.py export \
+            --image "$TILO_TARGET_POLICY_IMAGE" \
+            --arch '${{ matrix.arch }}' \
+            --release-id "$GITHUB_REF_NAME" \
+            --expected-source "$TILO_EXPECTED_OS_SOURCE_REVISION" \
+            --output dist/tilo-target-policy
+          test -s "dist/tilo-target-policy/tilo-target-policy-${{ matrix.arch }}.tar"
+          test -s "dist/tilo-target-policy/target-policy-catalog-${{ matrix.arch }}.json"
+      - name: Publish the target policy to its immutable generic package
+        env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER }}
+        run: apps/imager/packaging/publish-target-policy.sh dist/tilo-target-policy
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: tilo-target-policy-${{ matrix.arch }}
+          path: |
+            dist/tilo-target-policy/tilo-target-policy-${{ matrix.arch }}.tar
+            dist/tilo-target-policy/target-policy-catalog-${{ matrix.arch }}.json
+          if-no-files-found: error
+      - name: Remove target policy registry credentials
+        if: always()
+        run: rm -f -- "${REGISTRY_AUTH_FILE:?}"
+
   medium:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     timeout-minutes: 180
@@ -436,7 +537,7 @@ jobs:
       - name: Exercise the complete graphical installation cycle
         env:
           TILO_ACCEL: kvm
-          TILO_BOOT_WAIT_ATTEMPTS: "600"
+          TILO_BOOT_WAIT_SECS: "1800"
           TILO_DISTROBOX: ""
           TILO_INSTALLER_CYCLE_STORAGE: /var/tmp/tilo-installer-cycle-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS: "3600"
@@ -716,8 +817,8 @@ jobs:
 
   catalog:
     timeout-minutes: 60
-    if: always() && needs.plan.result == 'success' && (needs.medium.result == 'success' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
-    needs: [plan, medium]
+    if: always() && needs.plan.result == 'success' && (needs.medium.result == 'success' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (needs.target_policy.result == 'success' || needs.target_policy.result == 'skipped')
+    needs: [plan, medium, target_policy]
     runs-on: runner
     outputs:
       linux-matrix: ${{ needs.plan.outputs.linux-matrix }}
@@ -760,6 +861,7 @@ jobs:
       - name: Assemble the release catalog
         env:
           TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
+          TILO_TARGET_POLICY_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
           TILO_REQUIRE_INTERNAL_BUNDLE: ${{ vars.IMAGER_INTERNAL_BUNDLE == 'publish' && '1' || '0' }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then

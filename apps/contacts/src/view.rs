@@ -23,7 +23,7 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::widget::{
     AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollRegion,
     TaffyTreeExt, Widget,
@@ -31,9 +31,6 @@ use ui::widget::{
 
 use crate::form::{RowKind, Slot, TypeTarget};
 use crate::model::ContactId;
-
-/// Two presses on one row within this interval open it for editing.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// One row of the contact list: what the list shows of a person.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +102,10 @@ pub(crate) struct Bridge {
     pub selected: Option<ContactId>,
     /// Shown in place of rows when the list is empty.
     pub empty_title: Option<String>,
+    /// The empty state's sentence under its title, when it has one.
+    pub empty_message: Option<String>,
+    /// The empty state's icon (a star for favorites when `None`).
+    pub empty_icon: Option<Icon>,
     /// A row to scroll into view on the next paint.
     pub reveal: Option<ContactId>,
     /// The rows the list painted last, in window coordinates.
@@ -123,6 +124,16 @@ impl Bridge {
     /// The decoded picture at `address`, once it has loaded.
     pub(crate) fn picture(&self, address: &str) -> Option<vello::peniko::ImageData> {
         self.images.as_ref()?.get(address)
+    }
+
+    /// What the list shows in place of rows, when it says anything.
+    pub(crate) fn empty_content(&self) -> Option<EmptyStateContent<'_>> {
+        let title = self.empty_title.as_deref()?;
+        Some(EmptyStateContent {
+            icon: Some(self.empty_icon.unwrap_or(Icon::Star)),
+            message: self.empty_message.as_deref(),
+            ..EmptyStateContent::new(title)
+        })
     }
 }
 
@@ -164,6 +175,18 @@ fn fill_style() -> Style {
 
 fn select_target(id: ContactId) -> String {
     format!("contacts.select:{id}")
+}
+
+/// A contact's row: the name, and under it the organization or title when
+/// there is one. A row with neither centres the name instead of keeping an
+/// empty second line.
+fn row_face(row: &ListEntry) -> ListRowFace<'_> {
+    let face = ListRowFace::new(&row.name);
+    if row.secondary.trim().is_empty() {
+        face
+    } else {
+        face.secondary(&row.secondary)
+    }
 }
 
 /// The list of people: one [`ListRowFace`] per contact, avatar leading and
@@ -290,8 +313,7 @@ impl ContactList {
                 let selected = bridge.selected == Some(row.id);
                 let identity = row.id.to_string();
                 let picture = bridge.picture(&row.photo);
-                let mut face = ListRowFace::new(&row.name)
-                    .secondary(&row.secondary)
+                let mut face = row_face(row)
                     .leading(RowLeading::Avatar(
                         AvatarFace::new(&row.name, &identity).image(picture.as_ref()),
                     ))
@@ -312,11 +334,7 @@ impl ContactList {
                 painted.push((row.id, rect));
             }
             ctx.scene.pop_layer();
-        } else if let Some(title) = bridge.empty_title.as_deref() {
-            let content = EmptyStateContent {
-                icon: Some(Icon::Star),
-                ..EmptyStateContent::new(title)
-            };
+        } else if let Some(content) = bridge.empty_content() {
             EmptyState::paint(ctx, self.rect, &content, self.cursor);
         }
         drop(bridge);
@@ -336,9 +354,12 @@ impl ContactList {
             MouseButton::Left => {
                 self.pressed = Some(id);
                 let now = ui::time::now();
-                let double = self
-                    .last_click
-                    .is_some_and(|(at, last)| last == id && now.duration_since(at) < DOUBLE_CLICK);
+                // Two presses on one row within the shared multi-click window
+                // open it for editing, so the list honours the same interval
+                // as every other double-click in the session.
+                let double = self.last_click.is_some_and(|(at, last)| {
+                    last == id && now.duration_since(at) < ui::gesture::multi_click_interval()
+                });
                 self.last_click = (!double).then_some((now, id));
                 let request = if double {
                     Request::Edit(id)
@@ -480,6 +501,12 @@ impl Widget for ContactList {
         self.scroller.needs_animation_frame(&self.theme)
     }
 
+    /// A glide after a flick scrolls as the wheel does: a copy.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        self.scrolled |= self.scroller.advance();
+        false
+    }
+
     fn next_wake_deadline(&self) -> Option<Instant> {
         self.scroller.next_wake_deadline(&self.theme)
     }
@@ -509,8 +536,7 @@ impl Widget for ContactList {
                 let row = bridge.rows.iter().find(|row| row.id == *id)?;
                 let identity = row.id.to_string();
                 let picture = bridge.picture(&row.photo);
-                let mut face = ListRowFace::new(&row.name)
-                    .secondary(&row.secondary)
+                let mut face = row_face(row)
                     .leading(RowLeading::Avatar(
                         AvatarFace::new(&row.name, &identity).image(picture.as_ref()),
                     ))
@@ -529,7 +555,14 @@ impl Widget for ContactList {
                         ),
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // An empty list says why in words, for assistive technology too.
+        let children = match bridge.empty_content() {
+            Some(content) if bridge.rows.is_empty() => {
+                vec![content.access_node(self.rect, None, "")]
+            }
+            _ => children,
+        };
         Some(
             AccessNode::new(Role::List)
                 .with_name("Contacts")
@@ -568,9 +601,13 @@ impl Widget for ContactList {
 pub(crate) fn empty_pane(
     shared: &Shared,
     title: &str,
+    message: Option<&str>,
     action: Option<(&str, Request)>,
 ) -> ui::widget::Element {
-    let state = EmptyState::new(title).with_icon(Icon::Users);
+    let mut state = EmptyState::new(title).with_icon(Icon::Users);
+    if let Some(message) = message {
+        state = state.with_message(message);
+    }
     Box::new(match action {
         Some((label, request)) => state
             .with_action(label)

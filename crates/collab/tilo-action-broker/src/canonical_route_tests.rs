@@ -184,7 +184,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
             assert_eq!(delivered.invocation_uuid, *request.invocation.0.as_bytes());
             drop(first);
             let deadline = tilo_test_env::hang_deadline();
-            while room.state.host_workers.lock().unwrap().contains_key(&91) {
+            while room.state.host_workers.lock().unwrap().holds(91) {
                 assert!(
                     std::time::Instant::now() < deadline,
                     "actual retired socket retained worker custody"
@@ -391,6 +391,126 @@ async fn canonical_route_refuses_cross_room_forged_tokens_and_filtered_lookup() 
                     .await
                     .is_err()
             );
+        })
+        .await;
+}
+
+/// A live directory's provider token answers an application filter: the rows
+/// of another application are answered empty without asking the directory,
+/// and the exact target it holds is re-resolved only for its own app.
+#[tokio::test(flavor = "current_thread")]
+async fn a_canonical_provider_answers_another_apps_query_without_asking_its_directory() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = signed_worker::OriginalRoom::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            let (worker, _) = room.join_worker(32).await;
+            // Canonical custody requires the worker's stable invocation stream
+            // to stay subscribed, as the other canonical route fixtures keep it.
+            let _stream = worker.handle.subscribe_stable_invocations().await.unwrap();
+            let directory = signed_worker::directory_state("directory-r1");
+            worker
+                .handle
+                .publish_action_directory(
+                    &room.route.app_id,
+                    signed_worker::directory_server(&directory),
+                )
+                .await
+                .unwrap();
+            let caller = canonical_caller(&room);
+            let host = room
+                .state
+                .certified_local_action_host(
+                    &caller,
+                    &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key),
+                )
+                .unwrap();
+            let announced = canonical_pending(&room, host.query(&caller, canonical_query(&room)))
+                .await
+                .unwrap();
+            let token = announced.providers[0].provider.clone();
+            let query = |app_id: Option<&str>| tilo_actions::remote::CatalogueQuery {
+                provider: Some(token.clone()),
+                app_id: app_id.map(str::to_owned),
+                max_results: 8,
+                ..Default::default()
+            };
+            let ask =
+                |query: &tilo_actions::remote::CatalogueQuery| host.query(&caller, query.clone());
+
+            let page = canonical_pending(&room, ask(&query(Some("so.tilo.notes"))))
+                .await
+                .unwrap();
+            assert!(
+                page.rows.is_empty() && page.exhausted,
+                "another application's rows cannot be this directory's"
+            );
+            assert_eq!(
+                directory.borrow().query_count,
+                0,
+                "a query another app may not satisfy never reaches the directory"
+            );
+
+            let own = canonical_pending(&room, ask(&query(Some(room.route.app_id.as_str()))))
+                .await
+                .unwrap();
+            assert_eq!(directory.borrow().query_count, 1);
+            assert_eq!(own.rows.len(), 1);
+            assert_eq!(
+                own.rows[0].provider, token,
+                "the rows keep the provider token they were asked by"
+            );
+            assert_eq!(own.rows[0].app_id, room.route.app_id);
+
+            let unscoped = canonical_pending(&room, ask(&query(None))).await.unwrap();
+            assert_eq!(directory.borrow().query_count, 2);
+            assert_eq!(
+                unscoped.rows, own.rows,
+                "a query naming no app is unchanged"
+            );
+
+            let address = unscoped.rows[0]
+                .action
+                .as_ref()
+                .expect("a directory row offering the action")
+                .address
+                .clone();
+            let target = |app_id: Option<&str>, revision: Option<&str>| {
+                tilo_actions::remote::CatalogueQuery {
+                    target: Some(address.clone()),
+                    revision: revision.map(str::to_owned),
+                    ..query(app_id)
+                }
+            };
+            let page = canonical_pending(
+                &room,
+                ask(&target(Some("so.tilo.notes"), Some("directory-r1"))),
+            )
+            .await
+            .unwrap();
+            assert!(
+                page.rows.is_empty() && page.exhausted,
+                "an exact target under another app is answered empty"
+            );
+            assert_eq!(
+                directory.borrow().resolve_count,
+                0,
+                "an exact target another app cannot own is not resolved"
+            );
+            let page = canonical_pending(
+                &room,
+                ask(&target(
+                    Some(room.route.app_id.as_str()),
+                    Some("directory-r1"),
+                )),
+            )
+            .await
+            .unwrap();
+            assert_eq!(directory.borrow().resolve_count, 1);
+            assert_eq!(page.rows.len(), 1);
         })
         .await;
 }

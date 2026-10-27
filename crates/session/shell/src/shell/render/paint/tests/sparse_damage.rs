@@ -72,6 +72,110 @@ fn the_sparse_policy_admits_a_window_and_merges_long_lists_instead_of_refusing_t
 }
 
 #[test]
+fn overlapping_damage_renders_sparsely_while_its_union_leaves_a_quarter_untouched() {
+    let size = (2944, 1840);
+    // Two half-output windows overlapping: their areas add up to the whole output, but together
+    // they cover 2172 of its 2944 columns, under three quarters.
+    let overlapping = [rect(0, 0, 1472, 1840), rect(700, 0, 1472, 1840)];
+    assert_eq!(
+        VelloDrmBridge::normalize_damage(&overlapping, size).as_deref(),
+        Some(&overlapping[..]),
+        "overlapping windows stay two exact rectangles and render sparsely"
+    );
+    // Covering three quarters of the columns is still a dense frame.
+    let wider = [rect(0, 0, 1472, 1840), rect(736, 0, 1472, 1840)];
+    assert!(VelloDrmBridge::normalize_damage(&wider, size).is_none());
+    // A buffer-age history repeating one window many times over is that window.
+    let repeated = vec![rect(100, 100, 1400, 1700); 40];
+    assert_eq!(
+        VelloDrmBridge::normalize_damage(&repeated, size).as_deref(),
+        Some(&[rect(100, 100, 1400, 1700)][..])
+    );
+}
+
+#[test]
+fn overlapping_damage_that_copies_more_than_the_output_reads_it_back_whole() {
+    let size = (2944, 1840);
+    // A window's edge stepping right one column a frame, each step its own rectangle: together
+    // they cover 2063 of 2944 columns, so the frame renders sparsely, but copied one by one they
+    // would read the output back more than forty times.
+    let staggered: Vec<_> = (0..64).map(|step| rect(step, 0, 2000, 1840)).collect();
+    let admitted = VelloDrmBridge::normalize_damage(&staggered, size)
+        .expect("the union leaves more than a quarter untouched");
+    assert_eq!(admitted.len(), 64, "no rectangle holds another");
+    assert!(
+        FrameOutput::copied_by_rect(&admitted, size).is_none(),
+        "the readback copies the whole output once instead"
+    );
+    // Damage that copies less than the output is still read back rectangle by rectangle.
+    let windows = [rect(0, 0, 1000, 1840), rect(700, 0, 1000, 1840)];
+    let admitted = VelloDrmBridge::normalize_damage(&windows, size).expect("sparse");
+    assert_eq!(
+        FrameOutput::copied_by_rect(&admitted, size),
+        Some(&windows[..])
+    );
+}
+
+#[test]
+fn a_sparse_frame_whose_rectangles_overlap_many_times_reads_the_output_back_once() {
+    let (width, height) = (200_u32, 100_u32);
+    let pitch = width as usize * 4;
+    let mut bridge = required_bridge(width, height);
+    let mut fresh = required_bridge(width, height);
+    let before = window_scene(Color::from_rgb8(255, 255, 255));
+    let after = window_scene(Color::from_rgb8(0, 0, 0));
+    bridge.set_phase_timing_enabled(true);
+    let mut destination = vec![0; pitch * height as usize];
+    bridge
+        .paint_damage_into_xrgb8888(
+            &before,
+            SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: None,
+            },
+            &mut destination,
+            pitch,
+        )
+        .expect("first paint");
+    // The window's tile stepping right a column at a time: 137 of 200 columns, a sparse frame,
+    // whose eight rectangles copied one by one would read back the output five times over.
+    let staggered: Vec<_> = (0..8).map(|step| rect(step, 0, 130, 100)).collect();
+    bridge
+        .paint_damage_into_xrgb8888(
+            &after,
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&staggered),
+            },
+            &mut destination,
+            pitch,
+        )
+        .expect("damage paint");
+    if bridge.target.renderer.sparse_fine_supported() {
+        assert_eq!(
+            (
+                bridge.last_sparse_render_attempts(),
+                bridge.last_full_render_attempts()
+            ),
+            (1, 0),
+            "the frame renders sparsely"
+        );
+    }
+    assert_eq!(
+        bridge.last_phase_timing().expect("timing").readback_bytes,
+        u64::from(width) * u64::from(height) * 4,
+        "the output is read back once, not once per rectangle"
+    );
+    let mut expected = vec![0; pitch * height as usize];
+    fresh
+        .paint_into_xrgb8888(&after, &mut expected, pitch)
+        .expect("dense oracle");
+    assert!(destination == expected, "the pixels equal a full repaint");
+}
+
+#[test]
 fn a_window_sized_typing_update_renders_sparsely_and_equals_a_full_repaint() {
     let mut bridge = required_bridge(200, 100);
     let mut fresh = required_bridge(200, 100);
@@ -485,7 +589,7 @@ fn pooled_scratch_follows_the_frames_the_session_still_renders() {
 #[test]
 fn gpu_target_keeps_an_unchanged_frame_and_the_next_change_renders_sparse() {
     let mut target = required_target(128, 128);
-    let deadline = || Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline;
     target
         .render_until(&Scene::new(), version(1, None, None), deadline())
         .expect("seed");
@@ -576,7 +680,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &Scene::new(),
                 version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(stats.framebuffer_staging_bytes, 0);
@@ -594,7 +698,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(2, Some(1), Some(&[region])),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert!(outcome.damage_admitted);
@@ -627,7 +731,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(2, None, None),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(actual, target_pixels(&oracle));
@@ -647,14 +751,14 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(1, None, None),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         let outcome = target
             .render_until(
                 &scene,
                 version(3, Some(2), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert!(!outcome.damage_admitted);
@@ -665,7 +769,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(4, Some(3), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(outcome.sparse_attempts, 0);
@@ -687,7 +791,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(5, Some(4), Some(&regions)),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         assert_eq!(outcome.sparse_attempts, 0);
@@ -721,7 +825,7 @@ fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
             .render_until(
                 &scene,
                 version(2, Some(1), Some(&[first])),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         scene.append(&region_scene(second, Color::from_rgb8(200, 30, 50)), None);
@@ -780,7 +884,7 @@ fn default_area_frames_keep_stable_pixels_after_counter_settlement() {
         .render_until(
             &scene,
             version(1, None, None),
-            Instant::now() + Duration::from_secs(10),
+            tilo_test_env::hang_deadline(),
         )
         .unwrap();
     let expected = target_pixels(&target);
@@ -803,7 +907,7 @@ fn default_area_frames_keep_stable_pixels_after_counter_settlement() {
                     revision.checked_sub(1),
                     sparse.then_some(&damage[..]),
                 ),
-                Instant::now() + Duration::from_secs(10),
+                tilo_test_env::hang_deadline(),
             )
             .unwrap();
         eprintln!(

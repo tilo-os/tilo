@@ -14,25 +14,42 @@ use ui::tokens::TextRole;
 use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
 use ui::widget::{
-    Button, Column, Container, Element, EmptyState, ListRow, NavShell, PieChart, PieSlice,
-    PieStyle, Scrollable, Section, SectionHeader, Text, Widget,
+    Column, Container, Element, EmptyState, ListRow, NavShell, PieChart, PieSlice, PieStyle,
+    Scrollable, Section, Text, Widget,
 };
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
 use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{count, size};
+
+/// The app, as the surfaces name it when it asks for attention.
+pub(crate) const OWNER_NAME: &str = "Disk Usage Analyzer";
+const OWNER_APP: &str = "so.tilo.disk-usage";
+
+fn owner() -> ui::attention::Owner {
+    ui::attention::Owner::new(OWNER_APP, OWNER_NAME).with_icon(Icon::HardDrive)
+}
+
+/// How a scan reports the bytes it has seen to its job: the registry takes
+/// the count, and the effect's own progress wakes the app to draw it.
+fn reporter(job: &ui::jobs::Running) -> impl Fn(u64, u64) + Send + Sync + 'static {
+    let job = job.clone();
+    move |bytes, _files| job.seen(bytes)
+}
 
 /// How many folders the chart names before it groups the rest.
 const NAMED_SLICES: usize = 8;
 
 #[derive(Clone)]
-struct Place {
+pub(crate) struct Place {
     label: String,
     path: PathBuf,
 }
 
 enum View {
     Home,
-    Loading(PathBuf),
+    /// What wants a person, opened from the window's bar.
+    Needs,
     Analysis(ScanResult),
     Error(PathBuf, String),
 }
@@ -41,12 +58,22 @@ enum View {
 /// buttons invoke.
 const CHOOSE: DiskUsageEffect = DiskUsageEffect::Choose;
 
+/// The window bar's action that chooses a folder to analyze.
+pub(crate) const CHOOSE_FOLDER: &str = "disk-usage.choose";
+
+/// The window bar's action that opens what wants a person.
+pub(crate) const NEEDS_YOU: &str = "disk-usage.needs";
+
 /// What a control in the current view asks for. Controls run inside the
 /// widget tree; the app applies their requests on its next update.
 enum Request {
     Analyze(PathBuf),
     /// The shell's Back: the folder this one was opened from, or home.
     Back,
+    /// Open what wants a person.
+    Needs,
+    /// Go to a folder a job was working on.
+    Show(PathBuf),
 }
 
 type Inbox = Rc<RefCell<Vec<Request>>>;
@@ -260,9 +287,11 @@ impl ui::widget::Decorator for SliceChart {
 
 pub struct DiskUsageApp {
     view: View,
-    /// The window: the current view as its content, the folder as the
-    /// header's title, and the shell's Back while there is a way back.
+    /// The window: the current view as its content, and the shell's Back
+    /// while there is a way back.
     content: NavShell,
+    /// What the window's bar names: the folder on screen, or the home view.
+    title: String,
     /// Whether Back leads anywhere: any view but home.
     can_go_back: Rc<std::cell::Cell<bool>>,
     structure_dirty: bool,
@@ -270,12 +299,36 @@ pub struct DiskUsageApp {
     history: Vec<PathBuf>,
     pub(crate) recent: Vec<PathBuf>,
     pub(crate) recents: Option<Setting<RecentFolders>>,
-    places: Vec<Place>,
+    pub(crate) places: Vec<Place>,
     inbox: Inbox,
-    scan_cancellation: Option<ScanCancellation>,
+    /// The analysis that finished last, so a job's "Show me" returns to it
+    /// instead of scanning again.
+    finished: Option<ScanResult>,
+    /// What the jobs band and the stack report back.
+    jobs: ui::jobs::Presses,
+    needs: ui::attention::Presses,
     pub(crate) immediate: bool,
     pub(crate) dispatcher: Option<Dispatcher<DiskUsage>>,
     pub(crate) actions: Option<Actions<DiskUsage>>,
+}
+
+/// The places a capture lists: the sample's home and workspace, and the
+/// file system.
+pub(crate) fn sample_places() -> Vec<Place> {
+    vec![
+        Place {
+            label: "Home".into(),
+            path: PathBuf::from("/home/you"),
+        },
+        Place {
+            label: "Workspace".into(),
+            path: PathBuf::from(tilo_paths::WORKSPACE_MOUNT),
+        },
+        Place {
+            label: "File system".into(),
+            path: PathBuf::from("/"),
+        },
+    ]
 }
 
 impl DiskUsageApp {
@@ -301,12 +354,17 @@ impl DiskUsageApp {
         ];
         let inbox: Inbox = Rc::default();
         let can_go_back = Rc::new(std::cell::Cell::new(false));
+        // What runs, across the window's foot: it stays whatever page the
+        // window shows, so a measurement outlives the page that started it.
+        let jobs = ui::jobs::Presses::new();
         let content = {
             let can = Rc::clone(&can_go_back);
             let inbox = Rc::clone(&inbox);
             NavShell::new()
                 .content_kind(ui::widget::ContentKind::List)
                 .with_id("disk-usage.shell")
+                .with_window_toolbar()
+                .bottom_band(Box::new(ui::jobs::Band::with_presses(jobs.clone())))
                 .on_back(
                     move || can.get(),
                     move || inbox.borrow_mut().push(Request::Back),
@@ -315,6 +373,7 @@ impl DiskUsageApp {
         let mut app = Self {
             view: View::Home,
             content,
+            title: String::new(),
             can_go_back,
             structure_dirty: false,
             inspected: None,
@@ -323,7 +382,9 @@ impl DiskUsageApp {
             recents: None,
             places,
             inbox,
-            scan_cancellation: None,
+            finished: None,
+            jobs,
+            needs: ui::attention::Presses::new(),
             immediate: false,
             dispatcher: None,
             actions: None,
@@ -359,37 +420,80 @@ impl DiskUsageApp {
         self.view = view;
         self.rebuild();
     }
-    fn apply(&self, request: Request) {
+    fn apply(&mut self, request: Request) {
         let effect = match request {
+            Request::Needs => {
+                self.open_needs();
+                return;
+            }
+            Request::Show(path) => {
+                if let Some(finished) = self.finished.as_ref().filter(|done| done.path == path) {
+                    let finished = finished.clone();
+                    self.show(View::Analysis(finished));
+                    return;
+                }
+                analyze(&path)
+            }
             Request::Analyze(path) => analyze(&path),
-            Request::Back => DiskUsageEffect::Back,
+            Request::Back => self.back_effect(),
         };
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(&effect);
         }
     }
+
+    /// Back, as an effect: the door publishes it, so an agent can go back
+    /// the way the button does.
+    fn back_effect(&self) -> DiskUsageEffect {
+        DiskUsageEffect::Back
+    }
+    /// Measure `path` as a job: the people's window keeps working, the band
+    /// says what it has seen and offers Stop, and the job survives this page
+    /// being left.
     pub(crate) fn scan(
         &mut self,
         path: PathBuf,
         push_history: bool,
         cx: &mut EffectCx<DiskUsage, Self>,
     ) -> Effected {
-        self.cancel_scan();
         if push_history && let View::Analysis(current) = &self.view {
             self.history.push(current.path.clone());
         }
         let cancellation = ScanCancellation::default();
-        self.scan_cancellation = Some(cancellation.clone());
-        self.show(View::Loading(path.clone()));
+        let title = folder_title(&self.places, &path);
+        let job = ui::jobs::start(
+            ui::jobs::Spec::new(format!("Measuring {title}"))
+                .subject(
+                    ui::jobs::Subject::new(owner(), title.clone())
+                        .opens(path.to_string_lossy().into_owned()),
+                )
+                .unit(ui::jobs::Unit::Bytes)
+                .phase("Reading")
+                .stoppable({
+                    let cancellation = cancellation.clone();
+                    move || cancellation.cancel()
+                }),
+        );
         let worker = cancellation.clone();
+        let reporting = reporter(&job);
         cx.thread(
-            move |_| crate::scan::scan_with_cancellation(path, &worker),
+            move |progress| {
+                crate::scan::scan(path, &worker, &|bytes, files| {
+                    reporting(bytes, files);
+                    progress.report("Reading", Some(files), None);
+                })
+            },
             move |app: &mut Self, result: ScanResult, _cx| {
-                if cancellation.is_cancelled() {
-                    return Err("The scan was stopped".into());
+                if job.is_stopped() {
+                    job.stopped();
+                    ui::attention::publish(ui::attention::Notice::did(
+                        owner(),
+                        format!("Stopped measuring {title}"),
+                    ));
+                    return Ok(Effected::done());
                 }
-                app.scan_cancellation = None;
                 if let Some(message) = result.error.clone() {
+                    job.failed(message.clone());
                     app.show(View::Error(result.path, message.clone()));
                     return Err(message);
                 }
@@ -399,6 +503,8 @@ impl DiskUsageApp {
                     "bytes": result.total,
                     "entries": result.entries.len(),
                 });
+                job.done(format!("Measured {}", size(result.total)));
+                app.finished = Some(result.clone());
                 app.set_result(result);
                 Ok(Effected::value(answer))
             },
@@ -424,23 +530,83 @@ impl DiskUsageApp {
             },
         )
     }
-    fn cancel_scan(&mut self) {
-        if let Some(cancellation) = self.scan_cancellation.take() {
-            cancellation.cancel();
-        }
-    }
     pub(crate) fn go_home(&mut self) {
-        self.cancel_scan();
         self.history.clear();
         self.show(View::Home);
     }
     pub(crate) fn go_back(&mut self, cx: &mut EffectCx<DiskUsage, Self>) -> Effected {
-        self.cancel_scan();
         if let Some(path) = self.history.pop() {
             self.scan(path, false, cx)
         } else {
             self.show(View::Home);
             Effected::done()
+        }
+    }
+
+    /// A measurement under way, for a capture: the band says what it is
+    /// doing and offers Stop, exactly as a live one does.
+    pub(crate) fn sample_job(&mut self, folder: &str) {
+        if ui::jobs::is_active() {
+            return;
+        }
+        let job = ui::jobs::start(
+            ui::jobs::Spec::new(format!("Measuring {folder}"))
+                .subject(ui::jobs::Subject::new(owner(), folder.to_owned()))
+                .unit(ui::jobs::Unit::Bytes)
+                .phase("Reading")
+                .stoppable(|| {}),
+        );
+        job.seen(41_200_000_000);
+    }
+
+    /// What wants a person, from the window's bar.
+    pub(crate) fn open_needs(&mut self) {
+        if matches!(self.view, View::Needs) {
+            return;
+        }
+        self.show(View::Needs);
+    }
+
+    /// Go to the folder a job was working on: its analysis if it is still
+    /// here, else measuring it again.
+    fn ask_for_folder(&self, target: &str) {
+        let path = PathBuf::from(target);
+        if self
+            .finished
+            .as_ref()
+            .is_some_and(|finished| finished.path == path)
+        {
+            self.inbox.borrow_mut().push(Request::Show(path));
+        } else {
+            self.inbox.borrow_mut().push(Request::Analyze(path));
+        }
+    }
+
+    /// Carry out what the person pressed on the jobs band or the stack.
+    fn answer_presses(&mut self) {
+        for press in self.jobs.take() {
+            if let Some(subject) = ui::jobs::apply(press)
+                && let Some(target) = subject.target
+            {
+                self.ask_for_folder(&target);
+            }
+        }
+        for press in self.needs.take() {
+            let Some(acted) = ui::attention::apply(press) else {
+                continue;
+            };
+            if acted.action.verb != ui::attention::SHOW_JOB {
+                continue;
+            }
+            let Some(ui::attention::Target::Job(number)) = acted.target else {
+                continue;
+            };
+            let Some(subject) = ui::jobs::show(ui::jobs::JobId::from_number(number)) else {
+                continue;
+            };
+            if let Some(target) = subject.target {
+                self.ask_for_folder(&target);
+            }
         }
     }
     /// The places and the recent folders the home view offers. A recent
@@ -465,8 +631,8 @@ impl DiskUsageApp {
 
     fn rebuild(&mut self) {
         let (title, view) = match &self.view {
-            View::Home => (String::new(), self.home_view()),
-            View::Loading(path) => (folder_title(&self.places, path), Self::loading_view()),
+            View::Home => ("Analyze storage".to_owned(), self.home_view()),
+            View::Needs => ("Needs you".to_owned(), self.needs_view()),
             View::Analysis(result) => (
                 folder_title(&self.places, &result.path),
                 self.analysis_view(result),
@@ -480,19 +646,8 @@ impl DiskUsageApp {
         self.can_go_back.set(back);
         self.content.set_can_go_back(back);
         self.content.set_content(view);
-        self.content.set_content_title(title);
+        self.title = title;
         self.structure_dirty = true;
-    }
-
-    fn bind(&self, button: Button, effect: &DiskUsageEffect) -> Button {
-        match self
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.effect(effect))
-        {
-            Some(binding) => button.on_action(binding),
-            None => button.with_enabled(false),
-        }
     }
 
     fn bind_folder(&self, row: ListRow, path: &std::path::Path) -> ListRow {
@@ -523,21 +678,12 @@ impl DiskUsageApp {
 
     fn home_view(&self) -> Element {
         let (places, recent) = self.locations();
-        let choose = self.bind(
-            Button::new("disk-usage.choose", "Choose folder").with_icon(Icon::FolderOpen),
-            &CHOOSE,
-        );
         let mut page = Column::new()
             .with_intrinsic_height()
-            .push(Box::new(
-                Text::new("Analyze storage")
-                    .with_role(TextRole::LargeTitle)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(
-                Section::new(places.iter().map(|p| self.place_row(p)).collect())
-                    .with_header(SectionHeader::heading("Places").action(choose)),
-            ));
+            .push(Box::new(Section::titled(
+                "Places",
+                places.iter().map(|p| self.place_row(p)).collect(),
+            )));
         if !recent.is_empty() {
             page = page.push(Box::new(Section::titled(
                 "Recent",
@@ -547,9 +693,9 @@ impl DiskUsageApp {
         Box::new(Scrollable::new_vertical().with_child(Box::new(page)))
     }
 
-    fn loading_view() -> Element {
-        // The empty state's own spinner keeps itself moving.
-        Box::new(EmptyState::new("Calculating folder sizes").busy())
+    /// What wants a person: the system's waiting stack, in this window.
+    fn needs_view(&self) -> Element {
+        Box::new(ui::attention::Stack::with_presses(self.needs.clone()))
     }
 
     fn error_view(&self, path: &std::path::Path, message: &str) -> Element {
@@ -623,14 +769,6 @@ impl Default for DiskUsageApp {
     }
 }
 
-impl Drop for DiskUsageApp {
-    fn drop(&mut self) {
-        if let Some(cancellation) = &self.scan_cancellation {
-            cancellation.cancel();
-        }
-    }
-}
-
 impl ui::widget::Decorator for DiskUsageApp {
     type Inner = NavShell;
 
@@ -652,11 +790,17 @@ impl ui::widget::Decorator for DiskUsageApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.run_window_toolbar();
         let mut changed = self.content.update(state, path);
+        self.answer_presses();
         let requests = std::mem::take(&mut *self.inbox.borrow_mut());
         for request in requests {
             self.apply(request);
             changed = true;
+        }
+        // The stack counts what nobody has looked at as soon as it is open.
+        if matches!(self.view, View::Needs) {
+            ui::attention::seen();
         }
         changed
     }
@@ -670,11 +814,52 @@ impl ui::widget::Decorator for DiskUsageApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        matches!(self.view, View::Loading(_)) || self.content.needs_animation_frame()
+        self.content.needs_animation_frame()
     }
 }
 
 impl DiskUsageApp {
+    /// Run what the person did in the window's bar, then declare its slots:
+    /// the shell's own (Back while there is a way back), the place on
+    /// screen as the location, and Choose folder.
+    fn run_window_toolbar(&mut self) {
+        let live = self
+            .actions
+            .as_ref()
+            .is_some_and(|actions| actions.effect(&CHOOSE).is_some());
+        for event in ui::window_toolbar::take_events() {
+            if self.content.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = &event {
+                if id == CHOOSE_FOLDER
+                    && live
+                    && let Some(dispatcher) = &self.dispatcher
+                {
+                    dispatcher.effect(&CHOOSE);
+                }
+                if id == NEEDS_YOU {
+                    self.inbox.borrow_mut().push(Request::Needs);
+                }
+            }
+        }
+        let mut toolbar = self.content.window_toolbar();
+        toolbar.location = Some(ToolbarLocation {
+            label: self.title.clone(),
+            ..ToolbarLocation::default()
+        });
+        let needs = ui::attention::pill();
+        let mut actions = vec![
+            ToolbarAction::new(CHOOSE_FOLDER, Icon::FolderOpen.name(), "Choose folder")
+                .enabled(live),
+        ];
+        if let Some(label) = needs {
+            actions.push(ToolbarAction::new(NEEDS_YOU, Icon::Bell.name(), label).labelled());
+        }
+        NavShell::push_window_actions(&mut toolbar, actions);
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+
     pub(crate) fn inspect(&mut self, id: &str) {
         self.inspected = Some(id.into());
         if matches!(self.view, View::Analysis(_)) {
@@ -742,7 +927,7 @@ mod view_tests {
         let places = [
             Place {
                 label: "Home".into(),
-                path: PathBuf::from("/var/home/lena"),
+                path: PathBuf::from("/var/home/you"),
             },
             Place {
                 label: "File system".into(),
@@ -750,7 +935,7 @@ mod view_tests {
             },
         ];
         assert_eq!(
-            folder_title(&places, std::path::Path::new("/var/home/lena")),
+            folder_title(&places, std::path::Path::new("/var/home/you")),
             "Home"
         );
         assert_eq!(
@@ -758,7 +943,7 @@ mod view_tests {
             "File system"
         );
         assert_eq!(
-            folder_title(&places, std::path::Path::new("/var/home/lena/Projects")),
+            folder_title(&places, std::path::Path::new("/var/home/you/Projects")),
             "Projects"
         );
         assert_eq!(folder_title(&[], std::path::Path::new("/")), "/");
@@ -802,8 +987,15 @@ mod navigation_tests {
             ui::prelude::TestApp::<crate::resource::DiskUsageShell>::capture(Some("home-narrow"))
                 .unwrap();
         let frame = app.harness().inspection_json().unwrap();
-        for name in ["Home", "Workspace", "File system", "Choose folder"] {
+        for name in ["Home", "Workspace", "File system"] {
             assert!(frame.contains(name), "missing {name}: {frame}");
         }
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert!(
+            bar.actions
+                .iter()
+                .any(|action| action.name == "Choose folder"),
+            "{bar:?}"
+        );
     }
 }

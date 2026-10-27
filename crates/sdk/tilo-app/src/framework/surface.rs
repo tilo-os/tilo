@@ -12,7 +12,7 @@ use ui_core::widget::{AppModel, ModelPath};
 use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, Widget};
 use ui_core::{PresencePayload, WakeHandle};
@@ -31,7 +31,45 @@ pub(crate) struct SurfaceScope {
     children: RefCell<Vec<Weak<Self>>>,
     jobs: RefCell<Vec<SyncWeak<AtomicBool>>>,
 }
+/// Keep `now` in `statuses` when it says something else. Not generic, so
+/// every app's hosts share it.
+#[inline(never)]
+fn note_statuses(statuses: &RefCell<Vec<EffectStatus>>, now: Vec<EffectStatus>) {
+    if *statuses.borrow() != now {
+        *statuses.borrow_mut() = now;
+    }
+}
+
+/// Have a hosted surface of `scope` stage what `stages` run, on its next
+/// sync through `pending`, while the scope is active. Not generic, so every
+/// app's hosts share it.
+#[inline(never)]
+fn stage_hosted(stages: &super::stage::Stages, scope: Rc<SurfaceScope>, pending: Staging) {
+    stages.push(
+        scope.alive(),
+        Box::new(move |scenario| {
+            if scope.active() {
+                *pending.borrow_mut() = Some(scenario.map(str::to_owned));
+            }
+        }),
+    );
+}
+
 impl SurfaceScope {
+    /// A scope alive while `parent` is, a child of the surface scope
+    /// `within` when there is one. Not generic, so every app's hosts share
+    /// it.
+    #[inline(never)]
+    fn under(parent: Weak<()>, within: Option<&Rc<Self>>) -> Rc<Self> {
+        let scope = Self::new(parent);
+        if let Some(within) = within {
+            let mut children = within.children.borrow_mut();
+            children.retain(|child| child.strong_count() > 0);
+            children.push(Rc::downgrade(&scope));
+        }
+        scope
+    }
+
     fn new(parent: Weak<()>) -> Rc<Self> {
         Rc::new(Self {
             token: RefCell::new(Some(Rc::new(()))),
@@ -223,6 +261,26 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// of keeping its own copy.
     fn landed(&mut self, participant: &tilo_actions::ParticipantId, place: &tilo_resource::Place) {
         let _ = (participant, place);
+    }
+
+    /// Whether the surface is told of the actions applied here
+    /// ([`applied`](Self::applied)). A surface that implements it says so
+    /// here; no other surface's window keeps them.
+    const APPLIED: bool = false;
+
+    /// `action` was applied to the resource here through the door: invoked
+    /// from the palette, a script or an agent, or submitted by the surface's
+    /// own control, and only once the person agreed when it asks first.
+    /// Called after [`present`](Self::present) showed the state holding it;
+    /// never for a collaborator's change merged in, nor for an undo or a
+    /// restore.
+    ///
+    /// What an action means on this device beyond the document (a file
+    /// grant a removal forgets) is carried out here, so it happens when the
+    /// action applies and never when the person cancelled it. Asked only of
+    /// a surface that sets [`APPLIED`](Self::APPLIED).
+    fn applied(&mut self, action: &R::Action) {
+        let _ = action;
     }
 
     /// The participant's permission to edit changed while the app runs: a
@@ -549,12 +607,7 @@ impl<R: Resource> SurfaceCx<R> {
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
-        let scope = SurfaceScope::new(self.alive.clone());
-        if let Some(parent) = &self.scope {
-            let mut children = parent.children.borrow_mut();
-            children.retain(|child| child.strong_count() > 0);
-            children.push(Rc::downgrade(&scope));
-        }
+        let scope = SurfaceScope::under(self.alive.clone(), self.scope.as_ref());
         let jobs = self.effects.scoped_surface_jobs(&scope);
         let mut cx = self.clone();
         cx.jobs = jobs.clone();
@@ -570,15 +623,7 @@ impl<R: Resource> SurfaceCx<R> {
             Rc::clone(&scope),
             surface,
         );
-        let pending = host.staging();
-        self.stages.push(
-            scope.alive(),
-            Box::new(move |scenario| {
-                if scope.active() {
-                    *pending.borrow_mut() = Some(scenario.map(str::to_owned));
-                }
-            }),
-        );
+        stage_hosted(&self.stages, scope, host.staging());
         HostedSurface::element(Box::new(host))
     }
     /// The host-owned identity of the record this surface shows. A durable
@@ -729,9 +774,14 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     surface: S,
     search_queries: SearchQueries,
     live: Live<R>,
-    presented: u64,
+    /// The live revision and loads ([`Live::loads`]) of the state last
+    /// presented.
+    presented: (u64, u64),
     /// The number of the next landing to tell the surface of.
     landings: u64,
+    /// The number of the next action applied here to tell the surface of,
+    /// when it follows them ([`ResourceSurface::APPLIED`]).
+    applied: Option<u64>,
     dispatch: Dispatcher<R>,
     read_only: bool,
     /// A scenario to stage on the next sync.
@@ -749,6 +799,9 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
 impl<R: Resource, S, E> Drop for SurfaceHost<R, S, E> {
     fn drop(&mut self) {
         self.scope.retire();
+        if self.applied.is_some() {
+            self.live.unfollow_applied();
+        }
     }
 }
 
@@ -785,8 +838,9 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
             });
         }
         Self {
-            presented: live.revision(),
-            landings: live.landings_since(u64::MAX).1,
+            presented: (live.revision(), live.loads()),
+            landings: live.next_landing(),
+            applied: S::APPLIED.then(|| live.follow_applied()),
             live,
             read_only: dispatch.read_only(),
             dispatch,
@@ -857,7 +911,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
     }
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
-        self.live.revision() == self.presented
+        (self.live.revision(), self.live.loads()) == self.presented
             && self.staging.borrow().is_none()
             && self.search_queries.0.borrow().pending.is_none()
             && self.dispatch.read_only() == self.read_only
@@ -874,14 +928,22 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
             self.read_only = read_only;
             self.surface.read_only_changed(read_only);
         }
-        if self.live.revision() != self.presented {
-            self.presented = self.live.revision();
+        let held = (self.live.revision(), self.live.loads());
+        if held != self.presented {
+            self.presented = held;
             self.surface.present(&self.live.get());
         }
         let (landed, next) = self.live.landings_since(self.landings);
         self.landings = next;
         for (participant, place) in &landed {
             self.surface.landed(participant, place);
+        }
+        if let Some(from) = self.applied {
+            let (applied, next) = self.live.applied_since(from);
+            self.applied = Some(next);
+            for action in &applied {
+                self.surface.applied(action);
+            }
         }
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {
@@ -897,10 +959,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         self.search_queries
             .settle(self.effects.is_some() && self.surface.search_pending());
         if self.effects.is_some() {
-            let now = self.surface.effects();
-            if *self.statuses.borrow() != now {
-                *self.statuses.borrow_mut() = now;
-            }
+            note_statuses(&self.statuses, self.surface.effects());
         }
     }
     fn start_effect(
@@ -936,6 +995,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
 /// one widget type every surface shares.
 pub(crate) struct HostedSurface {
     host: Box<dyn SurfaceDriver>,
+    /// The empty states the surface painted itself, described for it.
+    painted: ui_core::widget::empty_state::PaintedEmptyStates,
 }
 
 impl HostedSurface {
@@ -944,13 +1005,17 @@ impl HostedSurface {
     /// compiled once in the shared runtime rather than in every app.
     #[inline(never)]
     pub(crate) fn element(host: Box<dyn SurfaceDriver>) -> ui_core::widget::Element {
-        Box::new(Self { host })
+        Box::new(Self {
+            host,
+            painted: ui_core::widget::empty_state::PaintedEmptyStates::default(),
+        })
     }
 }
 
-// The host adds three things to the surface — presenting new resource state
-// before the surface syncs, answering its effects, and publishing what it
-// says of them — and forwards everything else to it.
+// The host adds four things to the surface — presenting new resource state
+// before the surface syncs, answering its effects, publishing what it says
+// of them, and describing the empty states it paints itself — and forwards
+// everything else to it.
 impl Decorator for HostedSurface {
     fn provide<'a>(&'a self, request: &mut ui_core::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn SurfacePublication>() {
@@ -959,6 +1024,10 @@ impl Decorator for HostedSurface {
         }
         if request.wants::<dyn ui_core::resources::PublishesResources>() {
             request.provide::<dyn ui_core::resources::PublishesResources>(self);
+            return;
+        }
+        if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
             return;
         }
         self.host.surface().provide(request);
@@ -976,6 +1045,10 @@ impl Decorator for HostedSurface {
             request.provide::<dyn ui_core::resources::PublishesResources>(self);
             return;
         }
+        if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
+            return;
+        }
         self.host.surface_mut().provide_mut(request);
     }
 
@@ -991,6 +1064,42 @@ impl Decorator for HostedSurface {
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
         self.host.view_only_scroll(event)
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut ui_core::vello::Scene,
+        transform: ui_core::vello::kurbo::Affine,
+        text_renderer: &mut ui_core::TextRenderer,
+        theme: &ui_core::Theme,
+        presence: &ui_core::PresenceCtx,
+    ) {
+        let surface = self.host.surface_mut();
+        self.painted.draw(transform, || {
+            surface.draw(scene, transform, text_renderer, theme, presence);
+        });
+    }
+
+    // An empty state drawn as pixels is described as well, its action a
+    // button that clicks where it is drawn: often the only way on from a
+    // first-use screen, for a screen reader as much as for anyone.
+    fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {
+        let surface = self.host.surface();
+        self.painted.describe(surface.accessibility(), surface)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<ui_core::vello::kurbo::Rect> {
+        // Asked once per node without bounds of its own while the tree is
+        // built, so describing the whole surface here made a build
+        // quadratic in its nodes (a long Chat channel: tens of
+        // milliseconds). With no empty state painted there is nothing of
+        // the host's own to place.
+        if self.painted.is_empty() {
+            return self.host.surface().synthetic_accessibility_rect(path);
+        }
+        Decorator::accessibility(self)
+            .and_then(|described| self.painted.action_rect(&described, path))
+            .or_else(|| self.host.surface().synthetic_accessibility_rect(path))
     }
 
     // The host adds no structure of its own: a change its surface can
@@ -1015,25 +1124,6 @@ impl Decorator for HostedSurface {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.host.sync(state, path);
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = self.host.start_effect(op, doc.doc())? {
-            return Ok(Some(started));
-        }
-        // The surface answers its operations as its effect vocabulary; only
-        // the toolkit's own widgets inside it (a button bound to a view)
-        // answer theirs, never the surface by hand.
-        let before = doc.pending_ops();
-        let started =
-            ui_core::host_operation::start_in_children(self.host.surface_mut(), op, doc, path);
-        refuse_raw_writes(doc, before, "start_operation");
-        started
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -1064,6 +1154,38 @@ impl Decorator for HostedSurface {
         });
         performed
     }
+}
+
+impl ResourceOperations for HostedSurface {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        ui_core::host_operation::resource_operation_handlers(self.host.surface())
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = self.host.start_effect(op, doc.doc())? {
+            return Ok(Some(started));
+        }
+        // The surface answers its operations as its effect vocabulary; only
+        // the toolkit's own widgets inside it (a button bound to a view)
+        // answer theirs, never the surface by hand. A toolkit container the
+        // surface decorates (its shell) routes them to its parts, those its
+        // children do not list among them too (a header button shown in
+        // the window's bar), as it lists their handlers.
+        let before = doc.pending_ops();
+        let surface = self.host.surface_mut();
+        let started = if decorates_routing(surface) {
+            ui_core::host_operation::start_operation(surface, op, doc, path)
+        } else {
+            ui_core::host_operation::start_in_children(surface, op, doc, path)
+        };
+        refuse_raw_writes(doc, before, "start_operation");
+        started
+    }
 
     fn poll_resource_operation(
         &mut self,
@@ -1075,14 +1197,33 @@ impl Decorator for HostedSurface {
         if let Some(update) = self.host.poll_effect(invocation, cancellation_requested) {
             return Some(update);
         }
-        self.host
-            .surface_mut()
-            .children_mut()
-            .into_iter()
-            .find_map(|child| {
-                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-            })
+        let surface = self.host.surface_mut();
+        if decorates_routing(surface) {
+            return ui_core::host_operation::poll_resource_operation(
+                surface,
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            );
+        }
+        surface.children_mut().into_iter().find_map(|child| {
+            ui_core::host_operation::poll_resource_operation(
+                child,
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            )
+        })
     }
+}
+
+/// Whether `surface` decorates a toolkit container that routes operations
+/// itself ([`ResourceOperations`]), rather than leaving them to its
+/// children.
+fn decorates_routing(surface: &(impl Widget + ?Sized)) -> bool {
+    ui_core::widget::capability::capability::<dyn ResourceOperations>(surface).is_some()
 }
 
 impl SurfacePublication for HostedSurface {
@@ -1328,7 +1469,6 @@ mod tests {
     fn what_a_surface_applied_through_actions_stays() {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "applied").unwrap();
-        // The executor commits every action it applies.
         doc.commit();
         let heads = doc.get_heads();
         refuse_raw_writes(&doc, 0, "sync");

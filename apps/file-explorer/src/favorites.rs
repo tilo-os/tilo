@@ -247,10 +247,8 @@ mod tests {
                     "Videos"
                 ]
             );
-            // The Documents favourite points at the localized directory.
             let docs = favs.iter().find(|f| f.kind == FavKind::Documents).unwrap();
             assert_eq!(docs.path, PathBuf::from("/home/u/Dokumente"));
-            // And its evocative glyph survives the localized label.
             assert_eq!(docs.icon(), Icon::FileText);
             let pics = favs.iter().find(|f| f.kind == FavKind::Pictures).unwrap();
             assert_eq!(pics.path, PathBuf::from("/home/u/Bilder"));
@@ -278,11 +276,9 @@ mod tests {
             let mut favs = defaults(home, &dirs);
             // Adding an existing path is a no-op.
             assert!(!add(&mut favs, home.join("Documents"), home, &dirs));
-            // A fresh folder is appended with its file-name label.
             assert!(add(&mut favs, PathBuf::from("/data/projects"), home, &dirs));
             assert_eq!(favs.last().unwrap().label, "projects");
             assert_eq!(favs.last().unwrap().kind, FavKind::Folder);
-            // Remove drops it again.
             assert!(remove(&mut favs, Path::new("/data/projects")));
             assert!(favs.iter().all(|f| f.path != Path::new("/data/projects")));
             // Home is pinned: a remove request for it is ignored.

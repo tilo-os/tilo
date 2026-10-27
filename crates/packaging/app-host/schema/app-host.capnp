@@ -28,6 +28,24 @@ enum RemoteAction {
     disable @3;
 }
 
+# Why the host refused a catalogue read. A refused read returns no rows and
+# names the refusal here, with `detail` for logs only: the Store decides what
+# to say from the refusal alone, so rewording a detail never changes it.
+# Failures that are not one of these are raised as errors.
+enum CatalogueRefusal {
+    none                  @0;
+    # The system's interface declaration cannot be read by this host: the
+    # system needs an update before any repository can be judged.
+    systemUpdateNeeded    @1;
+    # The repository's catalogue is authentic but expired, not renewed.
+    expired               @2;
+    # The repository did not answer within the read's deadline.
+    timedOut              @3;
+    # A device-provided Flatpak repository has no OCI summary yet; the
+    # device must refresh it.
+    deviceRepositoryStale @4;
+}
+
 struct PackageEntry {
     # 32-byte PackageId (raw, not `tapp:` prefixed).
     id            @0 :Data;
@@ -105,12 +123,14 @@ interface AppHost {
                       expectedSizeBytes :UInt64) -> (id :Data);
     # Cached AppStream rows from one configured repository, isolated from failures
     # in other remotes. Queries have fixed arguments and bounded output/time.
-    flatpakCatalogue @15 (remote :Text, userManaged :Bool) -> (rows :Text);
+    flatpakCatalogue @15 (remote :Text, userManaged :Bool)
+        -> (rows :Text, refusal :CatalogueRefusal, detail :Text);
     # Install only from an existing repository in this account's Flatpak scope.
     flatpakInstallRemote @16 (remote :Text, appId :Text, branch :Text) -> (status :Text);
     # Verified entries from one enabled host-configured Tilo repository. The
     # host owns durable rollback checkpoints; callers cannot supply keys/URLs.
-    registryCatalogue @17 (registry :Text) -> (entries :Text);
+    registryCatalogue @17 (registry :Text)
+        -> (entries :Text, refusal :CatalogueRefusal, detail :Text);
 
     # Review using this person's existing scoped attestors and revocations.
     # No caller publisher, trust key, host path or download source is accepted.
@@ -130,7 +150,8 @@ interface AppHost {
     # without the network so a slow or unreachable repository still describes
     # what it listed. The stored snapshot is verified again against the pinned
     # owner key, the rollback checkpoint and its expiry; fails when none does.
-    lastVerifiedCatalogue @25 (registry :Text) -> (entries :Text);
+    lastVerifiedCatalogue @25 (registry :Text)
+        -> (entries :Text, refusal :CatalogueRefusal, detail :Text);
     # Resolve a precise runtime from enabled, pinned repositories, including retained versions.
     runtimeOffer @24 (registry :Text, runtime :Text) -> (offer :Text);
     # Optional-runtime inspection originally used @20, before catalogue lookup

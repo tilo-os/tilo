@@ -48,7 +48,7 @@ fn local_host_request(directory: bool) -> tilo_actions::remote::InvokeRequest {
 }
 
 async fn local_host_answer<T>(mut pending: tilo_actions::remote::Pending<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tilo_test_env::within("actual broker admission completes", async {
         loop {
             match pending.poll_ready() {
                 tilo_actions::remote::PendingPoll::Ready(value) => return Some(value),
@@ -58,7 +58,6 @@ async fn local_host_answer<T>(mut pending: tilo_actions::remote::Pending<T>) -> 
         }
     })
     .await
-    .expect("actual broker admission completes")
     .expect("actual broker admission remains open")
 }
 
@@ -68,9 +67,8 @@ async fn local_host_lease(
     invocation: tilo_actions::InvocationId,
 ) -> ui::invocation_scope::PublishedInvocationLease {
     let delivered =
-        tokio::time::timeout(Duration::from_secs(2), rig.stream.as_ref().unwrap().read())
+        tilo_test_env::within("the admitted delivery", rig.stream.as_ref().unwrap().read())
             .await
-            .unwrap()
             .unwrap();
     assert_eq!(delivered.invocation_uuid, *invocation.0.as_bytes());
     let request = ui::invocation_scope::PublishedInvocationRequest {
@@ -109,7 +107,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                 let rig = Rig::new(&env).await;
                 if member_worker {
                     let workers = rig.state.host_workers.lock().unwrap();
-                    let admitted = workers.get(&903).unwrap();
+                    let admitted = workers.only(903).unwrap();
                     assert!(admitted.host_scope.is_none());
                     assert!(admitted.worker_registration.is_some());
                 }
@@ -141,7 +139,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                     .unwrap();
                 assert_eq!(retry, receipt);
                 let lease = local_host_lease(&rig, &caller, request.invocation).await;
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 assert!(events.try_recv().is_err(), "retry is not new execution");
                 // Rollback cannot keep the original caller certificate alive.
                 env.control.set_wall_ns(1);
@@ -153,7 +151,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                         .await
                         .is_err()
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 rig.stop().await;
             }
         })
@@ -235,7 +233,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .await
                     .is_err()
             );
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             rig.stop().await;
         })
         .await;
@@ -275,7 +273,7 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
                     local_host_answer(pending).await.is_err(),
                     "{lapse} cannot rebind queued work"
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 rig.stop().await;
             }
         })
@@ -300,11 +298,12 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
             let receipt = local_host_answer(rig.state.action_invoke(&caller, None, None, &request))
                 .await
                 .unwrap();
-            let delivered =
-                tokio::time::timeout(Duration::from_secs(2), rig.stream.as_ref().unwrap().read())
-                    .await
-                    .expect("scoped stable delivery timed out")
-                    .unwrap();
+            let delivered = tilo_test_env::within(
+                "the scoped stable delivery",
+                rig.stream.as_ref().unwrap().read(),
+            )
+            .await
+            .unwrap();
             assert_eq!(delivered.invocation_uuid, *request.invocation.0.as_bytes());
             assert_eq!(receipt.invocation, request.invocation);
             assert_eq!(events.try_recv().unwrap().invocation, request.invocation);
@@ -314,7 +313,7 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
                     .unwrap(),
                 receipt
             );
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             rig.stream = Some(rig.worker.handle.subscribe_invocations().await.unwrap());
             let refused = local_host_answer(rig.state.action_invoke(
                 &caller,
@@ -329,7 +328,7 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
                     .to_string()
                     .contains("stable_identity_unavailable")
             );
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             // The timed-out client read may still own the server-side recv.
             // Isolate the subsequent positive control on a fresh subscription.
             rig.stream = Some(rig.worker.handle.subscribe_invocations().await.unwrap());
@@ -346,11 +345,12 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
                 )
                 .await
                 .unwrap();
-            let delivered =
-                tokio::time::timeout(Duration::from_secs(2), rig.stream.as_ref().unwrap().read())
-                    .await
-                    .expect("unscoped legacy delivery timed out")
-                    .unwrap();
+            let delivered = tilo_test_env::within(
+                "the unscoped legacy delivery",
+                rig.stream.as_ref().unwrap().read(),
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 delivered.invocation_uuid,
                 *legacy_request.invocation.0.as_bytes(),
@@ -429,7 +429,7 @@ async fn retired_execution_cannot_receive_a_queued_directory_query() {
             rig.state.drain_action_directory_bridge(&rig.directories);
             let error = local_host_answer(answer).await.unwrap_err();
             assert!(error.to_string().contains("execution session ended"));
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             rig.stop().await;
         })
         .await;
@@ -510,7 +510,7 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
                     "retained restricted write custody must obey the tightened cap"
                 );
                 leases.next().unwrap().check().unwrap();
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 rig.stop().await;
             }
         })
@@ -615,8 +615,17 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
         .run_until(async {
             let mut env = Environment::new();
             env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
-            env.membership.write().workspaces[0].room =
-                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            {
+                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let fanout = Arc::new(FanoutState::new());
@@ -671,8 +680,17 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
         .run_until(async {
             let mut env = Environment::new();
             env.route.cluster_id = uuid::Uuid::new_v4().to_string();
-            env.membership.write().workspaces[0].room =
-                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            {
+                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
 
@@ -700,8 +718,17 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
                     .is_err()
             );
             env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
-            env.membership.write().workspaces[0].room =
-                tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+            {
+                let room = tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let (state, _) = CapnpBrokerState::new(
@@ -792,7 +819,6 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             assert_eq!(receipt.invocation, request.invocation);
             let _lease = local_host_lease(&rig, &caller, request.invocation).await;
 
-            // The admission lent to that dispatch ended with the call.
             let before = verifications();
             local_host_answer(host.query(
                 &caller,
@@ -826,7 +852,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
                     .is_err(),
                 "and the very next open"
             );
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             rig.stop().await;
         })
         .await;
@@ -882,8 +908,10 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                         .is_none()
                 );
                 assert!(matches!(
-                    host.cancel(&ui_caller, &ui_request.invocation),
-                    Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+                    host.cancel(&ui_caller, &ui_request.invocation).poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Err(
+                        tilo_actions::remote::ActionHostError::UnknownInvocation
+                    ))
                 ));
                 // Keep both pending answers alive: the duplicate must reuse the
                 // eventual job; the fresh UUID must enqueue without waiting.
@@ -895,9 +923,10 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
             crate::evidence_signer::BEFORE_SIGN.with(|hook| {
                 *hook.borrow_mut() = Some(Box::new(move || {
                     send.send(()).unwrap();
-                    let pending = completed
-                        .recv_timeout(Duration::from_secs(2))
-                        .expect("UI lookup/cancel/enqueue must finish while signing is stalled");
+                    let pending = tilo_test_env::recv(
+                        "UI lookup/cancel/enqueue to finish while signing is stalled",
+                        &completed,
+                    );
                     answers.send(pending).unwrap();
                 }));
             });
@@ -914,7 +943,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
             );
             let _first = local_host_lease(&rig, &caller, request.invocation).await;
             let _second = local_host_lease(&rig, &caller, fresh.invocation).await;
-            no_delivery(&rig).await;
+            no_delivery(&rig);
             assert!(rig.state.remote_job(&caller, &request.invocation).is_some());
             assert!(rig.state.remote_job(&caller, &fresh.invocation).is_some());
             rig.stop().await;
@@ -977,6 +1006,7 @@ async fn certified_local_host_remembers_only_the_exact_verified_proof() {
 /// and 10,000 effect receipts. Prints the numbers (`--nocapture`); the
 /// counting tests are the regression guard.
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "measurement; run with --ignored --nocapture"]
 async fn certified_local_host_open_list_and_invoke_cost() {
     const LISTINGS: u32 = 100;
     const INVOKES: u32 = 20;

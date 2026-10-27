@@ -80,7 +80,7 @@ use test_hooks::{observe_reader_backlog, stop_tracking_reader_backlog, track_rea
 
 use access::{
     action_peer_admitted, audit_subscriber_access, current_action_peer, current_session,
-    session_peer_authorized, unavailable_target,
+    lost_session, session_peer_authorized, unavailable_target,
 };
 pub(crate) use actions::{ActionTarget, PrivateOutbound};
 #[cfg(test)]
@@ -89,7 +89,7 @@ use actions::{
     RemoteActionRoute, enable_actions, enable_broker_client, handle_remote_action, register_broker,
     route_private, route_signed_directed, write_private_delivery,
 };
-use commit::{handle_commit, over_change_limit};
+use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit};
 use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
@@ -138,7 +138,6 @@ pub enum PeerError {
     /// Writer error.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// Postcard encode error.
     #[error("encode: {0}")]
     Encode(#[from] postcard::Error),
     /// Backing store error.
@@ -168,7 +167,6 @@ const fn autobind_has_capacity(current: usize) -> bool {
 /// workspaces explicitly.
 #[derive(Clone)]
 pub struct WorkspaceAutobind {
-    /// Relay state root under which a newly seen workspace is persisted.
     pub state_root: std::path::PathBuf,
     /// The adapter a newly seen workspace's store classifies co-edit bodies
     /// with: the one the relay was started with.

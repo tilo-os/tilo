@@ -109,7 +109,36 @@ pub(crate) fn infix_allowed(query: &[char]) -> bool {
     letters >= MIN_INFIX_SCALARS || query.iter().copied().any(unspaced_script)
 }
 
-/// [`infix_allowed`] for typed text: whether `query` may match inside a word
+/// Fewest letters a query needs before it matches anything besides a name
+/// begun: a keyword, an identity or a description begun with "pi" ("ping",
+/// "take a picture") is not what a person typing two letters is after.
+pub const MIN_ALIAS_SCALARS: usize = 3;
+
+/// Whether `query` is still only the start of a name: shorter than
+/// [`MIN_ALIAS_SCALARS`] letters, in a script with word spaces (two Han
+/// characters are a whole word).
+pub(crate) fn names_only(query: &[char]) -> bool {
+    query
+        .iter()
+        .filter(|scalar| scalar.is_alphanumeric())
+        .count()
+        < MIN_ALIAS_SCALARS
+        && !query.iter().copied().any(unspaced_script)
+}
+
+/// Whether a query that is [`names_only`] may match `tier` in a field of
+/// `weight`: a name begun, or a whole word of any other field typed in full
+/// (an app's initials, "tv", a file's ".rs").
+pub(crate) fn admitted(names_only: bool, tier: MatchTier, weight: FieldWeight) -> bool {
+    !names_only
+        || weight == FieldWeight::TITLE
+        || matches!(
+            tier,
+            MatchTier::Exact | MatchTier::PrefixWord | MatchTier::Word
+        )
+}
+
+/// `infix_allowed` for typed text: whether `query` may match inside a word
 /// ([`MatchTier::Contains`]) rather than only at word starts.
 #[must_use]
 pub fn matches_inside_words(query: &str) -> bool {
@@ -283,7 +312,7 @@ impl Matching {
 /// "termin".
 fn typo_queries(
     fields: &Fields,
-    used: Used,
+    (used, names_only): (Used, bool),
     ranks: Ranks,
     typos: &Typos,
     query_words: &[String],
@@ -302,6 +331,7 @@ fn typo_queries(
     ]
     .into_iter()
     .filter(|(slot, ..)| used.slots.get(*slot).copied().unwrap_or(false))
+    .filter(|(_, _, weight, _)| admitted(names_only, MatchTier::Typo, *weight))
     .filter_map(|(_, field, weight, vocabulary)| {
         let rank = ranks(MatchTier::Typo, weight)?;
         let every = query_words
@@ -370,6 +400,23 @@ fn spanning_typo_query(
 
 /// The query for typed `text`, or `None` when nothing can match. An empty
 /// query browses every record.
+/// Every one of `chunks` in some field of `slots`.
+fn spanning_query(fields: &Fields, slots: &[usize], chunks: &[&str]) -> Option<BoxQuery> {
+    let every: Option<Vec<BoxQuery>> = chunks
+        .iter()
+        .map(|chunk| {
+            let chunk = marked(chunk, false);
+            any_of(
+                slots
+                    .iter()
+                    .filter_map(|slot| sequence_query(*fields.grams.get(*slot)?, &chunk))
+                    .collect(),
+            )
+        })
+        .collect();
+    every.map(all_of)
+}
+
 pub(crate) fn compile(
     fields: &Fields,
     used: Used,
@@ -394,6 +441,7 @@ pub(crate) fn compile(
         .enumerate()
         .filter_map(|(slot, used)| used.then_some(slot))
         .collect();
+    let names_only = names_only(&query);
     let mut ranked = Vec::new();
     for &slot in &slots {
         let (Some(field), Some(weight)) = (fields.grams.get(slot), INDEXED_WEIGHTS.get(slot))
@@ -401,6 +449,9 @@ pub(crate) fn compile(
             continue;
         };
         for tier in MatchTier::FIELD {
+            if !admitted(names_only, tier, *weight) {
+                continue;
+            }
             let Some(rank) = ranks(tier, *weight) else {
                 continue;
             };
@@ -413,29 +464,24 @@ pub(crate) fn compile(
     }
     let chunks: Vec<&str> = text.split_whitespace().collect();
     if matching.spanning
+        && !names_only
         && chunks.len() > 1
         && let Some(rank) = ranks(MatchTier::Spanning, FieldWeight::UNRANKED)
+        && let Some(every) = spanning_query(fields, &slots, &chunks)
     {
-        let every: Option<Vec<BoxQuery>> = chunks
-            .iter()
-            .map(|chunk| {
-                let chunk = marked(chunk, false);
-                any_of(
-                    slots
-                        .iter()
-                        .filter_map(|slot| sequence_query(*fields.grams.get(*slot)?, &chunk))
-                        .collect(),
-                )
-            })
-            .collect();
-        if let Some(every) = every {
-            ranked.push(constant(all_of(every), rank));
-        }
+        ranked.push(constant(every, rank));
     }
     let query_words = words(text);
     if matching.typos {
-        ranked.extend(typo_queries(fields, used, ranks, typos, &query_words));
+        ranked.extend(typo_queries(
+            fields,
+            (used, names_only),
+            ranks,
+            typos,
+            &query_words,
+        ));
         if matching.spanning
+            && !names_only
             && chunks.len() > 1
             && let Some(found) =
                 spanning_typo_query(fields, &slots, used, typos, &chunks, &query_words)
@@ -449,6 +495,7 @@ pub(crate) fn compile(
         parts.push(Box::new(DisjunctionMaxQuery::new(ranked)) as BoxQuery);
     }
     if used.body
+        && !names_only
         && let Some(found) = sequence_query(fields.body_grams, &query)
     {
         let found: BoxQuery = Box::new(ConstScoreQuery::new(found, 0.0));

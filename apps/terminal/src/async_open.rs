@@ -58,7 +58,8 @@ mod tests {
     use super::*;
     use std::io::{BufRead, Read, Write};
     use std::os::unix::net::UnixStream;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
+    use tilo_test_env::{hang_bound, hang_deadline};
     use ui::widget::Widget;
 
     /// The persistent-control handshake that precedes every open: read the
@@ -103,7 +104,7 @@ mod tests {
     }
 
     fn finish(widget: &mut crate::TerminalWidget, doc: &automerge::AutoCommit) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = hang_deadline();
         while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
             assert!(Instant::now() < deadline, "open must finish");
             widget.update(doc, &automerge::ROOT);
@@ -140,7 +141,7 @@ mod tests {
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
             received.send(line).unwrap();
-            delayed.recv_timeout(Duration::from_secs(5)).unwrap();
+            delayed.recv_timeout(hang_bound()).unwrap();
             (&server)
                 .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"delayed runtime check\"}\n")
                 .unwrap();
@@ -152,7 +153,7 @@ mod tests {
         assert!(widget.try_write_input(b"must not disappear\r").is_err());
         assert!(
             request
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(hang_bound())
                 .unwrap()
                 .contains("open-session")
         );
@@ -169,9 +170,7 @@ mod tests {
     #[test]
     fn closing_pending_tab_disconnects_supervisor_before_reply() {
         let (client, mut server) = UnixStream::pair().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        server.set_read_timeout(Some(hang_bound())).unwrap();
         let mut widget = tab(client);
         widget.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
         let mut reader = accept_hello(&server);
@@ -189,9 +188,7 @@ mod tests {
     #[test]
     fn repeated_open_cancels_old_attempt_and_never_attaches_its_reply() {
         let (client, mut server) = UnixStream::pair().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        server.set_read_timeout(Some(hang_bound())).unwrap();
         let waker = Arc::new(Mutex::new(ui::WakeHandle::new()));
         let mut sessions =
             crate::sessions::Sessions::hosted(HostedProcessServices { ush: Some(client) });
@@ -219,17 +216,13 @@ mod tests {
     #[test]
     fn accepted_open_keeps_lifetime_until_tab_closes_even_with_reader_clone() {
         let (client, server) = UnixStream::pair().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        server.set_read_timeout(Some(hang_bound())).unwrap();
         let worker = std::thread::spawn(move || {
             let mut reader = accept_hello(&server);
             let mut request = String::new();
             reader.read_line(&mut request).unwrap();
             let mut lease = grant_session(&server, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-            lease
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
+            lease.set_read_timeout(Some(hang_bound())).unwrap();
             assert_eq!(
                 lease.read(&mut [0]).unwrap(),
                 0,
@@ -258,9 +251,7 @@ mod tests {
                 let mut request = String::new();
                 reader.read_line(&mut request).unwrap();
                 let mut lease = grant_session(&server, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-                lease
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
+                lease.set_read_timeout(Some(hang_bound())).unwrap();
                 assert_eq!(
                     lease.read(&mut [0]).unwrap(),
                     0,
@@ -294,9 +285,7 @@ mod tests {
             let mut request = String::new();
             reader.read_line(&mut request).unwrap();
             let mut lease = grant_session(&server, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-            lease
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
+            lease.set_read_timeout(Some(hang_bound())).unwrap();
             sent.send(()).unwrap();
             assert_eq!(lease.read(&mut [0]).unwrap(), 0);
         });
@@ -308,10 +297,10 @@ mod tests {
             Arc::new(Mutex::new(ui::WakeHandle::new())),
         )
         .unwrap();
-        handed.recv_timeout(Duration::from_secs(5)).unwrap();
+        handed.recv_timeout(hang_bound()).unwrap();
         // Keep the result queued, with its descriptors received but unaccepted.
         // Worker completion pins that race without consuming the UI's answer.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = hang_deadline();
         while !pending.answer.is_finished() {
             assert!(Instant::now() < deadline, "the answer must be queued");
             std::thread::yield_now();

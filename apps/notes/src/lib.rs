@@ -34,6 +34,7 @@ pub mod metadata;
 pub mod model;
 pub mod note_header;
 pub mod notebook;
+mod outline;
 pub mod read;
 pub mod resource;
 mod save_notice;

@@ -133,9 +133,9 @@ def main() -> int:
     if violations:
         print("ui host-inputs contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+            print(violation)
         return 1
-    print("ui host-inputs contract OK (portable toolkit code reads no process environment)")
+    print("ui host-inputs contract OK (portable toolkit code reads no process environment)", file=sys.stderr)
     return 0
 
 

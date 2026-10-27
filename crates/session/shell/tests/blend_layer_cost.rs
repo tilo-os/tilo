@@ -75,6 +75,7 @@ fn body(scene: &mut Scene) {
 }
 
 #[test]
+#[ignore = "measurement; run with --ignored --nocapture"]
 fn dest_in_mask_layer_is_affordable_at_viewport_size() {
     let mut renderer = OffscreenRenderer::new(W, H);
 

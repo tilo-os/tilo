@@ -61,7 +61,6 @@ struct CurvePath {
 struct CurveKey {
     /// `(expr, visible)` for every function, in order.
     funcs: Vec<(String, bool)>,
-    deg: bool,
     cx: u64,
     cy: u64,
     scale: u64,
@@ -89,7 +88,6 @@ impl CurveKey {
                 .iter()
                 .map(|f| (f.expr.clone(), f.visible))
                 .collect(),
-            deg: model.deg,
             cx: bits(model.view2d.cx),
             cy: bits(model.view2d.cy),
             scale: bits(model.view2d.scale),
@@ -105,17 +103,12 @@ impl CurveKey {
 
 impl Graph2dScreen {
     /// Resolve the panel, the content column and the plot for the window
-    /// `area` (the header row included).
+    /// `area`. The plot fills the content column: its controls are the
+    /// window bar's.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.area = area;
         self.panel.layout(area, model.funcs.len());
-        let content = self.panel.side().content();
-        self.canvas = Rect::new(
-            content.x0,
-            (content.y0 + self.panel.side().header_height()).min(content.y1),
-            content.x1,
-            content.y1,
-        );
+        self.canvas = self.panel.side().content();
     }
 
     /// Measure the formulas and lay the screen out for this frame, then
@@ -124,7 +117,6 @@ impl Graph2dScreen {
         self.panel.fit(&model.funcs, tr, theme);
         self.layout(area, model);
         self.panel.side_mut().tick(theme);
-        // Advance the smooth-zoom ease one frame toward the model target.
         self.zoom.tick(model.view2d, theme.reduce_motion);
         self.layout(area, model);
     }
@@ -191,8 +183,6 @@ impl Graph2dScreen {
             self.draw_trace(scene, t, tr, theme, model, (p, view));
         }
     }
-
-    // ----- canvas internals -------------------------------------------------
 
     fn plane(&self, v: &View2d) -> FunctionPlane {
         FunctionPlane::new(self.canvas, Point::new(v.cx, v.cy), v.scale)
@@ -270,7 +260,7 @@ impl Graph2dScreen {
             if !f.visible || f.expr.trim().is_empty() {
                 continue;
             }
-            let Ok(comp) = engine::compile(&f.expr, model.deg, false) else {
+            let Ok(comp) = engine::compile(&f.expr, engine::PLOT_IN_DEGREES, false) else {
                 continue;
             };
             let mut path = BezPath::new();
@@ -401,7 +391,7 @@ impl Graph2dScreen {
         if !active.visible {
             return None;
         }
-        let curve = engine::compile(&active.expr, model.deg, false).ok()?;
+        let curve = engine::compile(&active.expr, engine::PLOT_IN_DEGREES, false).ok()?;
         let x = self.to_world(pointer, view).x;
         let mut point = Point::new(x, curve.eval1(x));
         let mut snapped = false;
@@ -410,7 +400,7 @@ impl Graph2dScreen {
             if index == model.active_fn || !row.visible {
                 continue;
             }
-            let Ok(other) = engine::compile(&row.expr, model.deg, false) else {
+            let Ok(other) = engine::compile(&row.expr, engine::PLOT_IN_DEGREES, false) else {
                 continue;
             };
             if let Some(crossing) = crossing_near(&curve, &other, x, radius / view.scale) {
@@ -424,8 +414,6 @@ impl Graph2dScreen {
         }
         point.y.is_finite().then_some((point, snapped))
     }
-
-    // ----- hit-testing ------------------------------------------------------
 
     pub fn canvas_contains(&self, p: Point) -> bool {
         // While a floating drawer (and its scrim) is up, the canvas is not
@@ -562,8 +550,8 @@ mod tests {
                 "canvas starts after the docked panel"
             );
             assert!(
-                s.canvas.y0 >= area.y0 + s.panel.side().header_height() - 0.5,
-                "the plot stands below the header row"
+                (s.canvas.y0 - area.y0).abs() < 0.5,
+                "no header row: the plot starts at the top, its controls are the window bar's"
             );
         }
 
@@ -590,15 +578,6 @@ mod tests {
                 (s.canvas.width() - area.width()).abs() < 0.5,
                 "the plot gets the full width when collapsed"
             );
-            let toggle = s
-                .panel
-                .toggle_rect()
-                .expect("a button must be present to open it");
-            assert!(
-                toggle.x0 < area.x0 + s.panel.side().header_height(),
-                "the button sits at the leading edge of the content header"
-            );
-            assert!(s.panel.side().toggle_at(toggle.center()));
         }
 
         // phase narrow_drawer_opens_with_scrim_and_dismisses
@@ -613,16 +592,9 @@ mod tests {
             assert!(s.panel.side().is_open() && s.panel.side().is_overlay());
             let column = s.panel.side().column();
             assert!(column.width() > 0.0, "an open drawer is drawn");
-            assert!(
-                s.panel
-                    .toggle_rect()
-                    .is_some_and(|t| column.contains_rect(t)),
-                "the drawer carries its own show/hide button"
-            );
             // A press inside the drawer must not pan the plot.
             assert!(!s.canvas_contains(column.center()));
             assert!(s.panel.side().covers(column.center()));
-            // A press on the scrim, beside the drawer, dismisses it.
             let beside = Point::new(area.x1 - 10.0, area.center().y);
             assert!(s.panel.side().scrim_at(beside));
             s.panel.side_mut().close();
@@ -716,7 +688,6 @@ mod tests {
                 s.curve_cache.rebuilds, 1,
                 "re-sampled with no geometry change"
             );
-            // Switching tabs and back leaves funcs/view/canvas identical.
             m.mode = Mode::Calc;
             s.ensure_curves(&m);
             m.mode = Mode::Graph2d;

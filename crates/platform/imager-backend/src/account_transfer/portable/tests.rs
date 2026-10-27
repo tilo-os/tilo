@@ -526,7 +526,6 @@ fn private_artifact_reader_rejects_fifo_without_waiting_for_writer() {
     use std::{
         ffi::CString,
         os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-        time::{Duration, Instant},
     };
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().canonicalize().unwrap();
@@ -534,22 +533,24 @@ fn private_artifact_reader_rejects_fifo_without_waiting_for_writer() {
     let path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // SAFETY: a valid NUL-terminated path inside an isolated private fixture.
     assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
-    // Release a regressed blocking reader, so failure cannot hang the test suite.
-    let writer_path = fifo.clone();
-    let writer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
-        let _ = std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(writer_path);
+    // No writer opens the FIFO until the read has answered, so a reader
+    // that waited for one would never answer.
+    let (answered, answer) = std::sync::mpsc::channel();
+    let reading = fifo.clone();
+    let reader = std::thread::spawn(move || {
+        let _ = answered.send(PasswordSealedAccounts::read(&reading).is_err());
     });
-    let started = Instant::now();
-    assert!(PasswordSealedAccounts::read(&fifo).is_err());
-    let elapsed = started.elapsed();
-    writer.join().unwrap();
-    assert!(
-        elapsed < Duration::from_millis(250),
-        "Private artifact FIFO must be refused without waiting: {elapsed:?}"
+    let refused = answer.recv_timeout(tilo_test_env::hang_bound());
+    // Release a regressed blocking reader, so failure cannot hang the suite.
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&fifo);
+    reader.join().unwrap();
+    assert_eq!(
+        refused,
+        Ok(true),
+        "Private artifact FIFO must be refused without waiting for a writer"
     );
 }
 

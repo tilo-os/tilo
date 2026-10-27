@@ -1,4 +1,3 @@
-//! Existing filesystem wire over an owned private stream and actual live grants.
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, reason = "owned integration fixture assertions")]
 use runtime_fs::selected_file::SelectedFileBackend;
@@ -9,7 +8,6 @@ use runtime_fs::{FsOwner, FsRight, NativeGrantAuthority, OpenMode};
 use std::{
     os::{fd::IntoRawFd, unix::net::UnixStream},
     sync::Arc,
-    time::Duration,
 };
 
 fn client(stream: UnixStream) -> runtime_fs::FsClient {
@@ -81,7 +79,7 @@ async fn selected_file_private_wire_revokes_existing_handle_and_has_no_sibling_a
             );
             drop(server);
             assert!(
-                tokio::time::timeout(Duration::from_secs(5), fs.list(""))
+                tokio::time::timeout(tilo_test_env::hang_bound(), fs.list(""))
                     .await
                     .unwrap()
                     .is_err()
@@ -258,7 +256,7 @@ impl WriteGate {
             .changed
             .wait_timeout_while(
                 self.release.lock().unwrap(),
-                Duration::from_secs(10),
+                tilo_test_env::hang_bound().saturating_mul(2),
                 |released| !*released,
             )
             .unwrap();
@@ -342,17 +340,18 @@ async fn blocked_native_pipeline_refuses_excess_write_before_copy_or_invocation(
                 }));
             }
             for _ in 0..8 {
-                tokio::time::timeout(Duration::from_secs(5), waiting.recv())
+                tokio::time::timeout(tilo_test_env::hang_bound(), waiting.recv())
                     .await
                     .unwrap()
                     .unwrap();
             }
             assert_eq!(writes.load(Ordering::Acquire), 8);
             let payload = vec![9; runtime_fs::MAX_READ_CHUNK as usize];
-            let error = tokio::time::timeout(Duration::from_secs(2), handle.write_at(20, &payload))
-                .await
-                .unwrap()
-                .unwrap_err();
+            let error =
+                tokio::time::timeout(tilo_test_env::hang_bound(), handle.write_at(20, &payload))
+                    .await
+                    .unwrap()
+                    .unwrap_err();
             assert!(error.to_string().contains("workspace backend busy"));
             assert_eq!(
                 writes.load(Ordering::Acquire),
@@ -433,7 +432,7 @@ async fn actual_selected_private_connection_retire_and_malformed_disconnect_repo
                     }
                     control.shutdown(Shutdown::Write).unwrap();
                     let outcome = tokio::time::timeout(
-                        Duration::from_secs(5),
+                        tilo_test_env::hang_bound(),
                         tokio::task::spawn_blocking(move || server.wait()),
                     )
                     .await
@@ -559,7 +558,6 @@ async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
                     .await
                     .is_err()
             );
-            // Exercise the server's independent bound, bypassing the SDK check.
             let mut raw_open = raw.open_request();
             raw_open.get().set_path("file");
             raw_open.get().set_mode(runtime_fs::raw::OpenMode::Append);

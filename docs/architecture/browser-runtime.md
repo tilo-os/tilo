@@ -1478,9 +1478,14 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
      `connectPeer({profile, device})` keeps certificates and the outbox in
      the profile's durable store and mounts desktops there.
    - Verified with two headless Chrome instances (see [Shared
-     sessions](#shared-sessions) for the numbers).
-   - Open: a native shell in the same room is not verified yet (same
-     routes, untested); text previews (`publishPreview`) are not produced
+     sessions](#shared-sessions) for the numbers). A native shell in the
+     same room is verified from the shell's side: it joins a site's
+     workspace over the host's HTTPS routes and shares records with a
+     `tilo-browser-peer` joined through the same door
+     (`site_join_tests::a_computer_joins_a_sites_workspace_through_its_door_and_shares_it_with_a_browser`).
+     Still open there: a page that mounts the wasm runtime beside a native
+     shell, and pairing a shell to a room a page already holds.
+   - Open: text previews (`publishPreview`) are not produced
      by editors; a text input's caret is keyed by its document field, so
      two open records of one app share carets until inputs take a record
      scope; the desktop merges last-writer-wins rather than per tab; live
@@ -1560,7 +1565,7 @@ npm run dev:tilo -- --port 9998 --host-origin https://localhost:9443 --user-publ
 
 ## Updating the engine without replacing the desktop SDK
 
-A worktree `tilo-vm swap userspace` assembles the native toolkit and apps in one
+A worktree `tilo device swap userspace` assembles the native toolkit and apps in one
 Cargo graph. It does not build Chromium's optional runtime. Browser declares the
 exact engine reference in its signed `optional-runtimes`; a missing engine does
 not become available merely because the nine userspace components were updated.

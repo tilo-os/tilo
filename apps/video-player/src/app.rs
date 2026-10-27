@@ -3,24 +3,26 @@
 //!
 //! `PlayerApp` is the root widget. The video fills the whole surface — there is
 //! **no persistent app chrome bar** (the OS owns window chrome; HIG §1e wants
-//! video immersive). Library, the media title and Open float over the picture
-//! in a strip that appears with the player's controls and auto-hides during
-//! playback (`strip`), and the library itself is a sheet over a scrim
-//! (`library`). With no picture the same area says why: nothing is open, a
-//! first frame is coming, or the open failed. It opens files through the XDG
+//! video immersive). The library's toggle, the media title and Open are slots
+//! in the window's bar (`window_bar`), which steps aside with the rest of the
+//! desktop's chrome while the video plays full screen, and the library
+//! itself is a sheet over a scrim (`library`). With no picture the area says
+//! why (`status`): nothing is open, a first frame is coming, or the open
+//! failed. It opens files through the XDG
 //! `FileChooser` portal (or `--open PATH`), and — when a collab session is
 //! attached — keeps playback in sync across peers via the shared [`media`]
 //! transport.
 
 mod library;
-mod strip;
+mod status;
+mod window_bar;
 
 use library::{
     local_library_accessibility_nodes, shared_accessibility_nodes, shared_accessibility_targets,
 };
 
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::percent;
@@ -32,10 +34,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::icons::Icon;
 use ui::paint::fill_rect;
-use ui::portal::{
-    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PickedContents, PortalChannel,
-    PortalOutcome,
-};
+use ui::portal::{ContentsOutcome, PickedContents, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -52,22 +51,35 @@ use ui::framework::{
 use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
-use crate::preferences::{PlayerSettings, RecentMedia};
+use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, ResumePoints};
 use crate::shared::{Library as PlayerResource, library as verbs};
 
 /// The playback preferences the player follows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct PlaybackPreferences {
     autoplay: bool,
     loop_enabled: bool,
+    /// The output volume, `0.0..=1.0`.
+    volume: f32,
+    /// The playback speed, one of [`PLAYBACK_RATES`].
+    rate: f32,
 }
 
 impl Default for PlaybackPreferences {
     fn default() -> Self {
         let defaults = PlayerSettings::default();
+        Self::from_settings(&defaults)
+    }
+}
+
+impl PlaybackPreferences {
+    /// What this device stored, as the player follows it.
+    fn from_settings(stored: &PlayerSettings) -> Self {
         Self {
-            autoplay: defaults.autoplay,
-            loop_enabled: defaults.loop_enabled,
+            autoplay: stored.autoplay,
+            loop_enabled: stored.loop_enabled,
+            volume: stored.volume,
+            rate: stored.rate,
         }
     }
 }
@@ -75,43 +87,9 @@ impl Default for PlaybackPreferences {
 /// A decoder open is asynchronous. Do not turn portal/direct admission into a
 /// false successful history entry until a first picture has actually arrived.
 const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
-/// One file-picker request at a time.  A portal response is asynchronous and
-/// cannot be cancelled at the protocol level, so the app owns the receiver and
-/// drops it when a newer direct open supersedes the request.  `generation` is
-/// deliberately separate from the media generation: it identifies *this
-/// chooser* rather than the media that may eventually be selected.
-struct PendingPortalOpen {
-    channel: PickerChannel,
-    generation: u64,
-    /// The caller of the open effect, answered once a picture decodes.
-    reply: Option<EffectReply>,
-}
+mod opening;
 
-/// A host with paths answers with the chosen path; a host without them (a
-/// browser page) hands over the file's bytes.
-enum PickerChannel {
-    Path(PortalChannel),
-    Contents(ContentsChannel),
-}
-
-/// What the picker chose, in the form the host could give it.
-enum Picked {
-    Path(PathBuf),
-    Contents(PickedContents),
-}
-
-/// A picker's answer, with the request generation it answers.
-type PortalOpenOutcome = (u64, Result<Picked, Option<String>>);
-
-/// A canonical open invocation awaiting its decoder's first picture. This is
-/// separate from the file-picker request: the picker can succeed while decode
-/// fails, stalls, or is superseded before a frame appears.
-struct PendingMediaOpen {
-    reply: EffectReply,
-    source_id: String,
-    deadline: ui::time::Instant,
-}
-
+use opening::*;
 /// A file-backed local record. The source is deliberately kept only in this
 /// process; public resources expose the opaque `id` and friendly basename.
 #[derive(Clone)]
@@ -174,7 +152,7 @@ impl LibraryTab {
 /// decodes with the system's engine and announces itself to the session's
 /// media controls. A capture or a past version gets the deterministic
 /// synthesized engine and reaches nothing outside the process.
-fn configured_player(mode: RunMode, autoplay: bool, loop_enabled: bool) -> VideoPlayer {
+fn configured_player(mode: RunMode, preferences: PlaybackPreferences) -> VideoPlayer {
     let engine = if mode.is_live() {
         media::MediaEngine::new()
     } else {
@@ -186,14 +164,35 @@ fn configured_player(mode: RunMode, autoplay: bool, loop_enabled: bool) -> Video
     if mode.is_live() {
         player.enable_mpris("tilo_video_player", "Video Player");
     }
-    configure_player_settings(&mut player, autoplay, loop_enabled);
+    configure_player_settings(&mut player, preferences);
     player
 }
 
-/// The playback speeds the settings menu offers.
-const PLAYBACK_RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
+/// How often a playing video's resume point is written while it plays.
+const RESUME_WRITE_INTERVAL_MS: u64 = 3_000;
+/// Within this of the end, a video counts as finished: replaying it starts at
+/// the beginning rather than in its last moments.
+const RESUME_END_MARGIN_MS: u64 = 2_000;
+/// A volume change is kept once it settles: a slider drag writes one value
+/// instead of one per step, and the value it comes to rest at is never
+/// dropped.
+const VOLUME_SETTLE_MS: u64 = 400;
 
-fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enabled: bool) {
+/// Put this device's own volume and speed on `player`: what the person last
+/// chose here, whatever video it plays next. The volume is only set when it
+/// differs, so an unrelated preference change does not unmute a player the
+/// person muted.
+fn apply_playback_levels(player: &mut VideoPlayer, preferences: PlaybackPreferences) {
+    if (player.volume() - preferences.volume).abs() > f32::EPSILON {
+        player.set_volume(preferences.volume);
+    }
+    if let Some(engine) = player.engine_mut() {
+        engine.set_rate(preferences.rate);
+    }
+}
+
+fn configure_player_settings(player: &mut VideoPlayer, preferences: PlaybackPreferences) {
+    apply_playback_levels(player, preferences);
     // These settings are implemented by this app, so the shared settings
     // popover is never decorative.
     player.set_setting(PlayerSetting::toggle(
@@ -201,16 +200,18 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
         Icon::Play,
         "Autoplay",
         0,
-        autoplay,
+        preferences.autoplay,
     ));
     player.set_setting(PlayerSetting::toggle(
         "loop",
         Icon::Repeat1,
         "Repeat current video",
         0,
-        loop_enabled,
+        preferences.loop_enabled,
     ));
-    let rate = player.engine().map_or(1.0, media::MediaEngine::rate);
+    let rate = player
+        .engine()
+        .map_or(preferences.rate, media::MediaEngine::rate);
     let selected = PLAYBACK_RATES
         .iter()
         .position(|candidate| (*candidate - rate).abs() < f32::EPSILON)
@@ -234,9 +235,11 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
     ));
 }
 
-/// Build a taffy node from `children` already built in the same tree.
-/// `new_with_children` only fails when a child id does not resolve in this
-/// tree, which cannot happen for children this same call just built.
+pub(crate) mod source;
+
+pub(crate) use source::demo_media_ref;
+use source::*;
+
 #[allow(
     clippy::unwrap_used,
     reason = "new_with_children cannot fail for children built in this same tree; see doc comment"
@@ -244,89 +247,6 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
 fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
     taffy.new_with_children(style, children).unwrap()
 }
-
-fn video_open_request() -> PickRequest {
-    PickRequest::open("Open a video", "Play")
-        .thread_name("video-player-portal")
-        .filter(
-            FileFilter::new("Video")
-                .mimetype("video/mp4")
-                .mimetype("video/webm")
-                .mimetype("video/x-matroska")
-                .mimetype("video/quicktime")
-                .glob("*.mp4")
-                .glob("*.webm")
-                .glob("*.mkv")
-                .glob("*.mov")
-                .glob("*.avi"),
-        )
-        .all_files()
-}
-
-/// Build a [`media::Source`] for a filesystem path: a path under the FUSE
-/// workspace mount becomes a [`media::Source::Workspace`] (read-through,
-/// hydrate-on-demand); anything else is a [`media::Source::LocalFile`].
-pub fn source_for_path(path: &Path) -> media::Source {
-    let root = media::Source::workspace_root();
-    if path.starts_with(&root) {
-        media::Source::Workspace(path.to_path_buf())
-    } else {
-        media::Source::LocalFile(path.to_path_buf())
-    }
-}
-
-/// The source a launch argument names: a stream's `http(s)` URL, else a
-/// path.
-pub fn source_for_argument(argument: &str) -> media::Source {
-    if argument.starts_with("http://") || argument.starts_with("https://") {
-        media::Source::Remote {
-            url: argument.to_owned(),
-        }
-    } else {
-        source_for_path(Path::new(argument))
-    }
-}
-
-/// What a source is called before anyone names it: a file's name, or a
-/// stream's.
-fn source_title(source: &media::Source) -> String {
-    match source {
-        media::Source::LocalFile(path) | media::Source::Workspace(path) => path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("selected video")
-            .to_string(),
-        media::Source::Remote { .. } => "Streaming video".to_string(),
-    }
-}
-
-/// The synthesized clip a capture plays when its launch named no video.
-fn demo_source() -> media::Source {
-    media::Source::Remote {
-        url: "https://demo.local/clip.mp4".into(),
-    }
-}
-
-/// The shareable identity of the capture's demo clip, which its scenarios'
-/// shared annotations point at.
-pub(crate) fn demo_media_ref() -> String {
-    local_source_token(&demo_source(), 0)
-}
-
-/// Opaque, deterministic per-process identity for a local source. Resource
-/// IDs and action payload guards need a stable token, but publishing a URI
-/// would expose an absolute path to search, history, or a collaborator.
-fn local_source_token(source: &media::Source, generation: u64) -> String {
-    // FNV-1a is used only as an opaque UI identifier, not as a security
-    // boundary. The monotonic generation prevents a same-path reopen from
-    // accepting stale dynamic stream/chapter actions.
-    let mut hasher = fnv::FnvHasher::default();
-    std::hash::Hasher::write(&mut hasher, media::session::session_key(source).as_bytes());
-    let hash = std::hash::Hasher::finish(&hasher);
-    format!("local-media-{hash:016x}-open-{generation}")
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "overlay, local library, portal, and frame-dirty flags are independent widget state"
@@ -335,28 +255,32 @@ pub struct PlayerApp {
     player: VideoPlayer,
     title: String,
     rect: Rect,
-    /// The Open button's hit rect (top-right of the video). Zero while there
-    /// is nothing open: the empty state owns Open then.
-    open_button_rect: Rect,
-    library_button_rect: Rect,
-    /// The window's History control, held in the top strip: the strip is this
-    /// app's header row, so the window draws no bar above the picture.
-    history: ui::widget::HistoryOpener,
-    /// Where the History control sits in the strip.
-    history_button_rect: Rect,
     /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
-    /// The library sheet: a trailing drawer over the video.
+    /// A video dropped anywhere on the window opens like one chosen.
+    file_open: ui::widget::FileOpenSurface,
+    /// How far the docked library pushes the picture in from the leading
+    /// edge, as the last layout laid the player out.
+    content_inset: f64,
+    /// The docked library's width changed since the player was laid out.
+    content_inset_stale: bool,
+    /// The top of the player's transport, shown or not: a floating library
+    /// stops above it.
+    transport_top: f64,
+    /// The library sheet: a leading drawer over the video, on the side of
+    /// the Library button that opens it.
     drawer: SidebarDrawer,
     /// Where the sheet's lists scroll to, and how far they can.
     library_scroll: f64,
     library_max_scroll: f64,
     /// The area of the sheet its rows live in; rows outside it do not act.
     library_list_rect: Rect,
+    /// The way back to the picture while the library fills a narrow window's
+    /// content area ([`Self::library_takes_the_window`]).
+    library_back_rect: Rect,
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
     library_shared_tab_rect: Rect,
-    library_close_rect: Rect,
     library_row_hits: Vec<LibraryRowHit>,
     library_clear_rect: Rect,
     shared_watch_later_rect: Rect,
@@ -374,16 +298,25 @@ pub struct PlayerApp {
     portal_open: Option<PendingPortalOpen>,
     media_open: Option<PendingMediaOpen>,
     portal_generation: u64,
-    open_focused: bool,
-    library_focused: bool,
     library_focus_id: Option<String>,
     /// Playback watched together with everyone who has the same video open.
     together: Together,
-    /// The playback preferences the player follows.
     preferences: PlaybackPreferences,
     /// This device's settings, where a live window keeps its preferences
     /// and recent videos; `None` for a capture or a past version.
     setting: Option<Setting<PlayerSettings>>,
+    /// Where each video left off on this device, by its opaque identity, so
+    /// opening it again resumes: see [`ResumePoints`].
+    resume: ResumePoints,
+    /// The resume point last written for the open video, so a playing video
+    /// writes every few seconds and a still one only when it moves.
+    resume_write: Option<ResumeWrite>,
+    /// Where the open video is to be moved once its length is known: the
+    /// decoder answers that asynchronously, and a seek before then would be
+    /// clamped to the unknown length.
+    pending_resume: Option<PendingResume>,
+    /// When the volume last changed, while it is still settling.
+    volume_settling_since: Option<u64>,
     /// Deterministic decoder metadata used only by the explicit headless
     /// `metadata` screenshot fixture. Live runs always read the active engine.
     shot_metadata: Option<DecoderMetadata>,
@@ -395,6 +328,10 @@ pub struct PlayerApp {
     /// Where the shared library's edits and the player's own controls go:
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
+    /// The shared library's verbs bound to what the player shows, published
+    /// for the view that hosts it: the view reads it, so it does not hold
+    /// the player.
+    playhead: Option<crate::resource::Playhead>,
     /// The shared library as last presented.
     shared_library: crate::shared::Library,
     /// What the window is built for: only a live one starts a decoder
@@ -416,7 +353,8 @@ pub struct PlayerApp {
     /// when a later picker request fails.
     open_error: Option<String>,
     missing_codec: Option<String>,
-    formats_focused: bool,
+    /// The empty state's action holds the keyboard.
+    status_focused: bool,
     formats_label: String,
     /// Where files have no path: the kept copy (`crate::kept`) of each
     /// queue or recent entry opened by contents, by entry id.
@@ -458,6 +396,23 @@ enum TogetherStep {
     /// Say where playback stands here: this player moved it.
     Publish(media::TransportState),
     Stay,
+}
+
+/// The resume point of the open video as it was last written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResumeWrite {
+    media_ref: String,
+    position_ms: u64,
+    playing: bool,
+    at_ms: u64,
+}
+
+/// Where a just-opened video is to be moved, for its identity: applied once
+/// the decoder knows how long the video is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingResume {
+    media_ref: String,
+    position_ms: u64,
 }
 
 /// What this player last knew of playback watched together.
@@ -515,6 +470,14 @@ impl Together {
                     self.leading = true;
                     return TogetherStep::Stay;
                 }
+                if !Self::current(shared, now, duration_ms) {
+                    // A playback that already ran past the end (such as an
+                    // older one the room put back when it undid this
+                    // player's move) is over: following it would seek here
+                    // to the end again and swallow every seek and replay.
+                    self.over = true;
+                    return TogetherStep::Stay;
+                }
                 self.settling_until = now.saturating_add(TOGETHER_SETTLE_MS);
                 return TogetherStep::Follow(state);
             }
@@ -541,7 +504,11 @@ impl Together {
         match joined {
             // Ride along with a peer's playback: small drift rides, the
             // engine corrects larger drift.
-            Some(shared) if shared.playing && !self.leading => TogetherStep::Follow(shared.state()),
+            Some(shared)
+                if shared.playing && !self.leading && Self::current(shared, now, duration_ms) =>
+            {
+                TogetherStep::Follow(shared.state())
+            }
             _ => TogetherStep::Stay,
         }
     }
@@ -591,6 +558,17 @@ impl PlayerApp {
             chapters: &self.shown_metadata.chapters,
             queue: self.library_items(self.queue.iter()),
             recent: self.library_items(self.recent.iter()),
+            playing: self.player.is_playing(),
+        }
+    }
+
+    /// What the current queue or recent row says about the open video: its
+    /// real state, playing or paused.
+    pub(crate) fn current_row_state(&self) -> &'static str {
+        if self.player.is_playing() {
+            "Playing"
+        } else {
+            "Paused"
         }
     }
 
@@ -748,7 +726,7 @@ impl PlayerApp {
         #[cfg(test)]
         ui::host::install_default(ui::host::HostServices::recording().0);
         let preferences = PlaybackPreferences::default();
-        let player = configured_player(mode, preferences.autoplay, preferences.loop_enabled);
+        let player = configured_player(mode, preferences);
         Self::from_prepared(player, preferences, VecDeque::new(), mode)
     }
 
@@ -766,21 +744,25 @@ impl PlayerApp {
             player,
             title: "No media".to_string(),
             rect: Rect::ZERO,
-            open_button_rect: Rect::ZERO,
-            library_button_rect: Rect::ZERO,
-            history: ui::widget::HistoryOpener::new(),
-            history_button_rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
-            drawer: SidebarDrawer::new().right().closed().overlay_only(),
+            file_open: ui::widget::FileOpenSurface::default(),
+            drawer: SidebarDrawer::new()
+                .left()
+                .closed()
+                .content_kind(ui::widget::ContentKind::Document)
+                .with_push(),
+            content_inset: 0.0,
+            content_inset_stale: false,
+            transport_top: 0.0,
             library_scroll: 0.0,
             library_max_scroll: 0.0,
             library_list_rect: Rect::ZERO,
             library_queue_tab_rect: Rect::ZERO,
             library_recent_tab_rect: Rect::ZERO,
             library_shared_tab_rect: Rect::ZERO,
-            library_close_rect: Rect::ZERO,
             library_row_hits: Vec::new(),
             library_clear_rect: Rect::ZERO,
+            library_back_rect: Rect::ZERO,
             shared_watch_later_rect: Rect::ZERO,
             shared_bookmark_rect: Rect::ZERO,
             shared_row_hits: Vec::new(),
@@ -793,16 +775,19 @@ impl PlayerApp {
             portal_open: None,
             media_open: None,
             portal_generation: 0,
-            open_focused: false,
-            library_focused: false,
             library_focus_id: None,
             together: Together::default(),
             preferences,
             setting: None,
+            resume: ResumePoints::default(),
+            resume_write: None,
+            pending_resume: None,
+            volume_settling_since: None,
             shot_metadata: None,
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
+            playhead: None,
             shared_library: crate::shared::Library::default(),
             mode,
             capture_awaits: CaptureAwaits::Nothing,
@@ -813,7 +798,7 @@ impl PlayerApp {
             shown_metadata: DecoderMetadata::default(),
             open_error: None,
             missing_codec: None,
-            formats_focused: false,
+            status_focused: false,
             formats_label: crate::i18n::t("video-formats-title"),
             kept: HashMap::new(),
             kept_retained,
@@ -842,6 +827,9 @@ impl PlayerApp {
             return;
         }
         if let Some(handoff) = handoff {
+            // The handoff says where playback stood a moment ago, which is
+            // newer than anything this device stored: it wins.
+            self.pending_resume = None;
             self.player.seek_to_ms(handoff.position_ms);
             if handoff.resume_playing {
                 self.player.play();
@@ -879,22 +867,25 @@ impl PlayerApp {
         if matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             return;
         }
+        // A capture shows a real video decoded, the launch's or the demo
+        // clip, never a synthesized stand-in: without the system decoder it
+        // waits for a picture that cannot come and refuses to capture.
+        let engine = media::MediaEngine::new();
+        if !engine.is_real_decode() {
+            self.open_error =
+                Some("A real video capture requires the GStreamer decoder and runtime".into());
+            self.capture_awaits = CaptureAwaits::Frame;
+            return;
+        }
+        self.player.set_engine(engine);
         if let Some(argument) = launched {
-            // A capture of a real file shows that file decoded, never the
-            // synthesized stand-in: without the system decoder it waits for
-            // a picture that cannot come and refuses to capture.
-            let engine = media::MediaEngine::new();
-            if !engine.is_real_decode() {
-                self.open_error =
-                    Some("A real video capture requires the GStreamer decoder and runtime".into());
-                self.capture_awaits = CaptureAwaits::Frame;
-                return;
-            }
-            self.player.set_engine(engine);
             let source = source_for_argument(argument);
             let title = source_title(&source);
             let queue_id = self.ensure_queued(source.clone(), title.clone());
             let _ = self.open_local_source(source, title, Some(queue_id));
+            // Held still for a stable picture, as the demo clip is; the
+            // `playing` scenario starts it.
+            self.player.pause();
             self.capture_awaits = match scenario {
                 Some("native-error") => CaptureAwaits::Outcome,
                 Some("loading") => CaptureAwaits::Nothing,
@@ -902,18 +893,16 @@ impl PlayerApp {
             };
             return;
         }
-        // The demo stays hermetic: the synthesized engine draws a
-        // deterministic frame and the placeholder host is never contacted.
         let source = demo_source();
-        let queue_id = self.ensure_queued(source.clone(), "Demo clip".into());
+        let queue_id = self.ensure_queued(source.clone(), DEMO_TITLE.into());
         let _ = self.set_current_source(&source);
         self.player.open(source);
-        self.title = "Demo clip".to_string();
+        self.title = DEMO_TITLE.to_string();
         self.current_queue_id = Some(queue_id);
         // Park at a fixed position for a stable reference frame. The
         // explicit `playing` fixture starts the engine below; default and
         // `paused` deliberately stay deterministic.
-        self.player.seek_to_ms(8_000);
+        self.player.seek_to_ms(DEMO_POSITION_MS);
         self.player.pause();
         if scenario != Some("loading") {
             self.capture_awaits = CaptureAwaits::Frame;
@@ -939,7 +928,7 @@ impl PlayerApp {
                 self.missing_codec = Some("HEVC".into());
             }
             // A video opened and the decoder then gave up on it: the title
-            // and the strip stay, the picture is the failure.
+            // stays in the window's bar, the picture is the failure.
             Some("native-error") => {
                 self.shot_loading = true;
                 self.fail_playback();
@@ -1027,6 +1016,22 @@ impl PlayerApp {
         }
     }
 
+    /// Publish what the playhead is on into `playhead`, which the view that
+    /// hosts this player reads.
+    pub(crate) fn share_playhead(&mut self, playhead: &crate::resource::Playhead) {
+        self.playhead = Some(playhead.clone());
+        self.publish_playhead();
+    }
+
+    /// Tell the view what the playhead is on now. Nothing happens before the
+    /// view hands over where to say it.
+    fn publish_playhead(&self) {
+        let Some(playhead) = &self.playhead else {
+            return;
+        };
+        *playhead.borrow_mut() = self.playhead_declarations();
+    }
+
     /// Show the shared library the document holds.
     pub(crate) fn present_library(&mut self, state: &crate::shared::Library) {
         if state != &self.shared_library {
@@ -1054,17 +1059,11 @@ impl PlayerApp {
         }
     }
 
-    /// Follow this device's stored preferences and recent videos.
+    /// Follow this device's stored preferences, the levels it plays at, its
+    /// recent videos and where each of them left off.
     fn adopt_settings(&mut self, stored: &PlayerSettings) {
-        self.preferences = PlaybackPreferences {
-            autoplay: stored.autoplay,
-            loop_enabled: stored.loop_enabled,
-        };
-        configure_player_settings(
-            &mut self.player,
-            self.preferences.autoplay,
-            self.preferences.loop_enabled,
-        );
+        self.preferences = PlaybackPreferences::from_settings(stored);
+        configure_player_settings(&mut self.player, self.preferences);
         self.recent = stored
             .recent_history
             .iter()
@@ -1074,6 +1073,15 @@ impl PlayerApp {
                 source: entry.source.clone(),
             })
             .collect();
+        // Rows are newest first; the map is oldest first, so it drops the
+        // same row a bounded recent history would.
+        self.resume.clear();
+        for entry in stored.recent_history.iter().rev() {
+            // A row read back from a launch is a place to resume from, never
+            // an instruction to start playing: a restart never autoplays.
+            self.resume
+                .record(&resume_key(&entry.source), entry.position_ms, false);
+        }
         self.kept_retained = self
             .recent
             .iter()
@@ -1104,6 +1112,13 @@ impl PlayerApp {
         &self.player
     }
 
+    /// What this device keeps between launches, as the next launch reads it:
+    /// `None` for a capture or a past version, which keep nothing.
+    #[cfg(test)]
+    pub(crate) fn stored_settings(&self) -> Option<PlayerSettings> {
+        self.setting.as_ref().map(Setting::get)
+    }
+
     /// Whether a decoded picture is currently on the surface. The `--shots`
     /// path pumps `sync` until this is true so a real (asynchronously prerolled)
     /// decode is captured, not a blank frame.
@@ -1124,6 +1139,16 @@ impl PlayerApp {
         let title = source_title(&source);
         let queue_id = self.ensure_queued(source.clone(), title.clone());
         self.open_local_source(source, title, Some(queue_id))
+    }
+
+    /// Open a video dropped on the window, saying over the picture why it
+    /// cannot be when it cannot.
+    fn open_dropped(&mut self, path: &Path) {
+        self.open_error = None;
+        self.missing_codec = None;
+        if let Err(error) = self.open_path(path) {
+            self.open_error = Some(error);
+        }
     }
 
     /// Open a video the host handed over as bytes (a browser page has no
@@ -1255,6 +1280,9 @@ impl PlayerApp {
             self.recall_kept(&token, title, queue_id);
             return Ok(());
         }
+        // This open leaves the video that was open: keep where it stood
+        // before its decoder is replaced.
+        self.remember_position(true);
         if let Err(error) = self.set_current_source(&source) {
             self.open_error = Some(error.clone());
             self.dirty = true;
@@ -1267,7 +1295,22 @@ impl PlayerApp {
         self.title = title;
         self.current_queue_id = queue_id;
         self.player.open(source);
-        if self.preferences.autoplay {
+        // Every open plays at this device's own levels, loudly enough and at
+        // the speed this person chose here.
+        apply_playback_levels(&mut self.player, self.preferences);
+        self.resume_write = None;
+        // Where this video left off, if it did: the seek lands once the
+        // decoder reports the length (see `apply_pending_resume`).
+        let resume = self
+            .current_media_ref
+            .as_deref()
+            .and_then(|media_ref| self.resume.point(media_ref));
+        self.pending_resume = resume.map(|(position_ms, _)| PendingResume {
+            media_ref: self.current_media_ref.clone().unwrap_or_default(),
+            position_ms,
+        });
+        let playing = resume.map_or(self.preferences.autoplay, |(_, playing)| playing);
+        if playing {
             self.player.play();
         } else {
             self.player.pause();
@@ -1310,29 +1353,156 @@ impl PlayerApp {
     }
 
     fn persist_recent_history(&self) -> std::io::Result<()> {
-        // A page's `blob:` source dies with the page: an entry is kept by its
-        // kept copy, while that copy is retained, or not at all.
         let entries: Vec<RecentMedia> = self
             .recent
             .iter()
-            .filter_map(|entry| {
-                let source = match self.kept.get(&entry.id) {
-                    Some(token) => crate::kept::source(token),
-                    None => entry.source.clone(),
-                };
-                let retained = crate::kept::token_of(&source)
-                    .is_none_or(|token| self.kept_retained.iter().any(|kept| kept == token));
-                (retained && !crate::kept::page_local(&source)).then(|| RecentMedia {
-                    id: entry.id.clone(),
-                    title: entry.title.clone(),
-                    source,
-                })
-            })
+            .filter_map(|entry| self.saved_recent_row(entry))
             .collect();
         match &self.setting {
             Some(setting) => setting.update(|stored| stored.recent_history = entries),
             None => Ok(()),
         }
+    }
+
+    /// The row `entry` is kept as, or `None` when it cannot be kept: a page's
+    /// `blob:` source dies with the page, so an entry is kept by its kept
+    /// copy, while that copy is retained, or not at all. The row carries where
+    /// the video stood, which is the only place a resume point outlives the
+    /// session.
+    fn saved_recent_row(&self, entry: &LocalMediaEntry) -> Option<RecentMedia> {
+        let source = match self.kept.get(&entry.id) {
+            Some(token) => crate::kept::source(token),
+            None => entry.source.clone(),
+        };
+        let retained = crate::kept::token_of(&source)
+            .is_none_or(|token| self.kept_retained.iter().any(|kept| kept == token));
+        (retained && !crate::kept::page_local(&source)).then(|| RecentMedia {
+            id: entry.id.clone(),
+            title: entry.title.clone(),
+            position_ms: self.position_of(&source),
+            source,
+        })
+    }
+
+    /// Where `source` left off here, `0` when it has nothing to resume.
+    fn position_of(&self, source: &media::Source) -> u64 {
+        self.resume
+            .point(&resume_key(source))
+            .map_or(0, |(position_ms, _)| position_ms)
+    }
+
+    /// Write where the open video stands into its Recent row, leaving the
+    /// rest of this device's settings as they are.
+    fn persist_resume_position(&self) -> std::io::Result<()> {
+        let Some(setting) = &self.setting else {
+            return Ok(());
+        };
+        let resume = &self.resume;
+        setting.update(|stored| {
+            for row in &mut stored.recent_history {
+                row.position_ms = resume
+                    .point(&resume_key(&row.source))
+                    .map_or(0, |(position_ms, _)| position_ms);
+            }
+        })
+    }
+
+    /// Remember where the open video stands, so opening it again resumes
+    /// there. A playing video writes every few seconds; `settled` writes at
+    /// once, for the moments playback pauses, the item closes and another
+    /// item replaces it. A video within [`RESUME_END_MARGIN_MS`] of its end
+    /// has finished, so its point is cleared and replaying starts at the
+    /// beginning.
+    ///
+    /// A source whose length the decoder never reports (a live stream) has no
+    /// place to seek back to, so it keeps no point: the pending seek of the
+    /// point it was opened with is never spent, and nothing is written.
+    fn remember_position(&mut self, settled: bool) {
+        // While a stored point is still waiting for the decoder's length, the
+        // playhead means nothing yet: writing it would forget that point.
+        if self.pending_resume.is_some() {
+            return;
+        }
+        let Some(media_ref) = self.current_media_ref.clone() else {
+            return;
+        };
+        if !self.player.has_media() {
+            return;
+        }
+        let position = self.player.position_ms();
+        let playing = self.player.is_playing();
+        let now = unix_now_ms();
+        let written = self.resume_write.as_ref();
+        if written.is_some_and(|written| {
+            written.media_ref == media_ref
+                && written.position_ms == position
+                && written.playing == playing
+        }) {
+            return;
+        }
+        // A drag across the timeline, or a video playing on, is one write
+        // every few seconds, not one per frame. The newest value still lands:
+        // playback comes to rest with a `settled` write.
+        if !settled
+            && playing
+            && written.is_some_and(|written| {
+                written.media_ref == media_ref
+                    && now.saturating_sub(written.at_ms) < RESUME_WRITE_INTERVAL_MS
+            })
+        {
+            return;
+        }
+        self.resume_write = Some(ResumeWrite {
+            media_ref: media_ref.clone(),
+            position_ms: position,
+            playing,
+            at_ms: now,
+        });
+        let duration = self.player.duration_ms();
+        let position = if duration > 0 {
+            position.min(duration)
+        } else {
+            position
+        };
+        if duration > 0 && position.saturating_add(RESUME_END_MARGIN_MS) >= duration {
+            // Finished: replay starts at the beginning.
+            self.resume.forget(&media_ref);
+        } else {
+            self.resume.record(&media_ref, position, playing);
+        }
+        if let Err(error) = self.persist_resume_position() {
+            tracing::warn!(%error, "video player: could not keep where the video stood");
+        }
+    }
+
+    /// Move a just-opened video to where it left off, once the decoder knows
+    /// how long it is: a seek is clamped to the length the player knows, and
+    /// until the decoder answers, that is only the placeholder length it was
+    /// built with.
+    fn apply_pending_resume(&mut self) {
+        let Some(pending) = self.pending_resume.clone() else {
+            return;
+        };
+        if self.current_media_ref.as_deref() != Some(pending.media_ref.as_str()) {
+            // The video it was taken for is gone.
+            self.pending_resume = None;
+            return;
+        }
+        let duration = self
+            .player
+            .engine()
+            .and_then(media::MediaEngine::duration_ms);
+        let Some(duration) = duration.filter(|duration| *duration > 0) else {
+            return;
+        };
+        if self.player.duration_ms() != duration {
+            // The player has not picked the length up yet: a seek now would be
+            // clamped to the placeholder it still holds.
+            return;
+        }
+        self.pending_resume = None;
+        self.player.seek_to_ms(pending.position_ms.min(duration));
+        self.dirty = true;
     }
 
     fn clear_recent_history(&mut self) -> Result<(), String> {
@@ -1342,6 +1512,9 @@ impl PlayerApp {
             self.recent = previous;
             return Err(format!("could not clear local recent history: {error}"));
         }
+        // A cleared history is a cleared memory of where those videos stood.
+        self.resume.clear();
+        self.resume_write = None;
         if !self.kept_retained.is_empty() {
             self.kept.clear();
             self.kept_retained.clear();
@@ -1399,11 +1572,11 @@ impl PlayerApp {
     fn close_media(&mut self) {
         self.missing_codec = None;
         self.fail_open("video was closed before decoding a first frame".into());
-        let player = configured_player(
-            self.mode,
-            self.preferences.autoplay,
-            self.preferences.loop_enabled,
-        );
+        // Closing is one of the moments the video rests: keep where it stood.
+        self.remember_position(true);
+        self.pending_resume = None;
+        self.resume_write = None;
+        let player = configured_player(self.mode, self.preferences);
         self.player = player;
         self.title = "No media".into();
         self.current_source_id = None;
@@ -1448,111 +1621,89 @@ impl PlayerApp {
         self.missing_codec.is_some() && self.open_error.is_some()
     }
 
-    fn formats_access_index(&self) -> Option<usize> {
-        self.accessibility()?
-            .children
-            .iter()
-            .position(|node| node.action_target.as_deref() == Some("video-player.formats"))
+    /// Where the empty state's action (Open a video, or the formats remedy)
+    /// stands among the player's accessible children, while it shows.
+    fn status_access_index(&self) -> Option<usize> {
+        self.accessibility()?.children.iter().position(|node| {
+            matches!(
+                node.action_target.as_deref(),
+                Some("video-player.formats" | "video-player.open")
+            )
+        })
     }
 
+    /// Give the keyboard to the library sheet's control at `path`, the
+    /// order [`Widget::accessibility`] lists them in: "Back to video" where
+    /// the library fills the window, the three tabs, then the shared tab's
+    /// actions and rows or the local rows.
     fn focus_player_control(&mut self, path: &[usize]) -> bool {
-        match path {
-            [0] => {
-                self.open_focused = true;
-                self.library_focused = false;
-                self.player.reveal_controls();
+        if !self.library_visible {
+            return false;
+        }
+        let back = self.library_back_rect.width() > 0.0;
+        let index = match path {
+            [0] if back => {
+                self.library_focus_id = Some("library-back".to_owned());
                 self.dirty = true;
-                true
+                return true;
             }
-            [1] => {
-                self.library_focused = true;
-                self.open_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [2] if self.library_visible => {
-                self.library_focus_id = Some("library-close".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [3] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-queue".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [4] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-recent".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [5] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-shared".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-watch-later".into());
-                self.dirty = true;
-                true
-            }
-            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-bookmark".into());
-                self.dirty = true;
-                true
-            }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                let Some((focus, _, _)) = shared_accessibility_targets(self)
-                    .get(index.saturating_sub(8))
-                    .cloned()
-                else {
-                    return false;
-                };
-                self.library_focus_id = Some(focus);
-                self.dirty = true;
-                true
-            }
-            [index] => {
-                let library_index = index.saturating_sub(6);
-                let play_count = self.library_row_hits.len();
-                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
-                {
-                    Some(row.id.clone())
-                } else if self.library_tab == LibraryTab::Recent
-                    && !self.recent.is_empty()
-                    && library_index == play_count
-                {
-                    Some("library-clear".into())
-                } else {
-                    let remove_index = library_index.saturating_sub(
-                        play_count
-                            + usize::from(
-                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
-                            ),
-                    );
-                    self.library_row_hits
-                        .iter()
-                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
-                        .nth(remove_index)
-                        .map(|id| format!("library-remove-{id}"))
-                };
-                if self.library_focus_id.is_none() {
-                    return false;
-                }
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            _ => false,
+            [index] => index.saturating_sub(usize::from(back)),
+            _ => return false,
+        };
+        let shared = self.library_tab == LibraryTab::Shared;
+        let focus = match index {
+            0 => Some("library-tab-queue".to_owned()),
+            1 => Some("library-tab-recent".to_owned()),
+            2 => Some("library-tab-shared".to_owned()),
+            3 if shared => Some("shared-watch-later".to_owned()),
+            4 if shared => Some("shared-bookmark".to_owned()),
+            index if shared => shared_accessibility_targets(self)
+                .get(index.saturating_sub(5))
+                .map(|(focus, _, _)| focus.clone()),
+            index => self.local_row_focus(index.saturating_sub(3)),
+        };
+        let Some(focus) = focus else {
+            return false;
+        };
+        self.library_focus_id = Some(focus);
+        self.dirty = true;
+        true
+    }
+
+    /// The focus id of the local list's control at `library_index`: each
+    /// row's Play, then Clear on the recent tab, then each row's Remove.
+    fn local_row_focus(&self, library_index: usize) -> Option<String> {
+        let play_count = self.library_row_hits.len();
+        let clears = self.library_tab == LibraryTab::Recent && !self.recent.is_empty();
+        if let Some(row) = self.library_row_hits.get(library_index) {
+            Some(row.id.clone())
+        } else if clears && library_index == play_count {
+            Some("library-clear".into())
+        } else {
+            let remove_index = library_index.saturating_sub(play_count + usize::from(clears));
+            self.library_row_hits
+                .iter()
+                .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
+                .nth(remove_index)
+                .map(|id| format!("library-remove-{id}"))
+        }
+    }
+
+    /// Where the local list's control at `library_index` is, in the order
+    /// [`Self::local_row_focus`] names them.
+    fn local_row_rect(&self, library_index: usize) -> Option<Rect> {
+        let play_count = self.library_row_hits.len();
+        let clears = self.library_tab == LibraryTab::Recent && !self.recent.is_empty();
+        if let Some(row) = self.library_row_hits.get(library_index) {
+            Some(row.play)
+        } else if clears && library_index == play_count {
+            Some(self.library_clear_rect)
+        } else {
+            let remove_index = library_index.saturating_sub(play_count + usize::from(clears));
+            self.library_row_hits
+                .iter()
+                .filter_map(|row| row.remove)
+                .nth(remove_index)
         }
     }
 
@@ -1603,6 +1754,15 @@ impl PlayerApp {
         self.request(&VideoEffect::HideLibrary);
     }
 
+    /// Back to the picture from a library that fills the window: the library
+    /// is one action away again, through the bar's sidebar toggle, the
+    /// `L` shortcut or the palette.
+    fn request_video_show(&mut self) {
+        self.request_library_hide();
+        self.player.reveal_controls();
+        self.dirty = true;
+    }
+
     fn request_library_tab(&self, tab: LibraryTab) {
         self.request(&VideoEffect::ShowLibrary {
             tab: tab.name().to_owned(),
@@ -1639,7 +1799,6 @@ impl PlayerApp {
         self.dispatch_shared(PlayerResource::DELETE_ANNOTATION.with(Id::from_raw(id)));
     }
 
-    /// Delete playlist `id` with its videos.
     fn delete_playlist(&self, id: &str) {
         self.dispatch_shared(PlayerResource::DELETE_PLAYLIST.with(Id::from_raw(id)));
     }
@@ -1936,9 +2095,7 @@ impl PlayerApp {
             }
             VideoEffect::Restart => self.player.seek_to_ms(0),
             VideoEffect::JumpToEnd => self.player.seek_to_ms(self.player.duration_ms()),
-            VideoEffect::SetVolume { volume } => {
-                self.player.set_volume(volume.clamp(0.0, 1.0) as f32);
-            }
+            VideoEffect::SetVolume { volume } => self.volume_changed(volume),
             VideoEffect::SetAutoplay { enabled } => {
                 if self.preferences.autoplay != enabled {
                     self.preferences.autoplay = enabled;
@@ -1962,6 +2119,13 @@ impl PlayerApp {
                 if let Some(selected) = selected {
                     self.player.set_choice_selection("playback-rate", selected);
                 }
+                // The speed this device plays at is remembered like its
+                // volume: 1.5× opened the same lecture quickly next time.
+                self.preferences.rate = self
+                    .player
+                    .engine()
+                    .map_or(rate as f32, media::MediaEngine::rate);
+                self.persist_preferences();
             }
             VideoEffect::SelectAudioTrack { track } => {
                 let index = self
@@ -2052,22 +2216,57 @@ impl PlayerApp {
 
     /// Show and keep the preferences just changed.
     fn preferences_changed(&mut self) {
-        configure_player_settings(
-            &mut self.player,
-            self.preferences.autoplay,
-            self.preferences.loop_enabled,
-        );
-        if let Some(setting) = &self.setting {
-            let preferences = self.preferences;
-            // A device-local preference must never prevent playback; the
-            // next change retries the write.
-            if let Err(error) = setting.update(|stored| {
-                stored.autoplay = preferences.autoplay;
-                stored.loop_enabled = preferences.loop_enabled;
-            }) {
-                tracing::warn!(%error, "video player: could not keep playback preferences");
-            }
+        configure_player_settings(&mut self.player, self.preferences);
+        self.persist_preferences();
+    }
+
+    /// Keep the playback preferences with this device's settings. A
+    /// device-local preference must never prevent playback, so a refused write
+    /// is logged and the next change retries it.
+    fn persist_preferences(&self) {
+        let Some(setting) = &self.setting else {
+            return;
+        };
+        let preferences = self.preferences;
+        if let Err(error) = setting.update(|stored| {
+            stored.autoplay = preferences.autoplay;
+            stored.loop_enabled = preferences.loop_enabled;
+            stored.volume = preferences.volume;
+            stored.rate = preferences.rate;
+        }) {
+            tracing::warn!(%error, "video player: could not keep playback preferences");
         }
+    }
+
+    /// A volume change is kept once it settles, so a drag writes one value
+    /// instead of one per step.
+    fn volume_changed(&mut self, volume: f64) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a fraction in 0.0..=1.0; f32 precision is sufficient"
+        )]
+        let volume = volume.clamp(0.0, 1.0) as f32;
+        self.player.set_volume(volume);
+        // `set_volume` clamps and unmutes, so the player answers the level
+        // that actually plays.
+        if (self.preferences.volume - self.player.volume()).abs() > f32::EPSILON {
+            self.preferences.volume = self.player.volume();
+            self.volume_settling_since = Some(unix_now_ms());
+        }
+    }
+
+    /// Keep the volume once the person has stopped changing it. The last
+    /// value always lands, because a change that keeps arriving keeps the
+    /// timer running until it stops.
+    fn settle_volume(&mut self) {
+        let Some(since) = self.volume_settling_since else {
+            return;
+        };
+        if unix_now_ms().saturating_sub(since) < VOLUME_SETTLE_MS {
+            return;
+        }
+        self.volume_settling_since = None;
+        self.persist_preferences();
     }
 
     /// Drain a pending picker answer, opening the chosen file.
@@ -2192,7 +2391,6 @@ impl PlayerApp {
 
     /// Do what the player's own settings menu chose.
     fn drain_player_settings(&mut self) {
-        const RATES: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
         for event in self.player.take_setting_events() {
             let source_id = self.current_source_id.clone().unwrap_or_default();
             let effect = match event {
@@ -2202,9 +2400,11 @@ impl PlayerApp {
                 PlayerSettingEvent::Toggled { id, on } if id == "loop" => {
                     Some(VideoEffect::SetLoop { enabled: on })
                 }
-                PlayerSettingEvent::Chose { id, index } if id == "playback-rate" => RATES
+                PlayerSettingEvent::Chose { id, index } if id == "playback-rate" => PLAYBACK_RATES
                     .get(index)
-                    .map(|rate| VideoEffect::SetPlaybackRate { rate: *rate }),
+                    .map(|rate| VideoEffect::SetPlaybackRate {
+                        rate: f64::from(*rate),
+                    }),
                 PlayerSettingEvent::Chose { id, index } if id == "audio-track" => {
                     self.shown_metadata.audio_tracks.get(index).map(|track| {
                         VideoEffect::SelectAudioTrack {
@@ -2268,6 +2468,11 @@ impl PlayerApp {
                 // person is told what it means for them.
                 tracing::warn!(error = %message, "video player: the decoder reported an error");
                 self.fail_playback();
+                // A file this device cannot decode is no use in the queue:
+                // keeping it there leaves a dead entry beside the good ones.
+                if let Some(id) = self.current_queue_id.take() {
+                    self.queue.retain(|entry| entry.id != id);
+                }
                 if let Some(pending) = self.media_open.take() {
                     pending.reply.finish(Err(message));
                 }
@@ -2280,7 +2485,8 @@ impl PlayerApp {
             }
             media::MediaEvent::Buffering { .. }
             | media::MediaEvent::Position { .. }
-            | media::MediaEvent::DurationKnown { .. } => {}
+            | media::MediaEvent::DurationKnown { .. }
+            | media::MediaEvent::LimitReached => {}
         }
     }
 
@@ -2296,22 +2502,12 @@ impl PlayerApp {
         }
     }
 
-    /// Where Open is: its button over a video, the empty state's action
-    /// without one.
-    fn open_target_rect(&self) -> Rect {
-        if self.open_button_rect.width() > 0.0 {
-            self.open_button_rect
-        } else {
-            self.status_action_rect
-        }
-    }
-
     fn handle_app_pointer(&mut self, _state: &mut ui::widget::Edits<'_>) -> bool {
-        self.drawer.resolve(self.rect);
+        self.resolve_library();
         let in_list = self.library_list_rect.contains(self.last_cursor);
         if self.library_visible && self.drawer.sidebar_contains(self.last_cursor) {
-            if self.library_close_rect.contains(self.last_cursor) {
-                self.request_library_hide();
+            if self.library_back_rect.contains(self.last_cursor) {
+                self.request_video_show();
             } else if self.library_queue_tab_rect.contains(self.last_cursor) {
                 self.request_library_tab(LibraryTab::Queue);
             } else if self.library_recent_tab_rect.contains(self.last_cursor) {
@@ -2375,14 +2571,6 @@ impl PlayerApp {
             self.request_status_action();
             return true;
         }
-        if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
-            self.request_open_action();
-            return true;
-        }
-        if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-            self.request_library_visibility_change();
-            return true;
-        }
         false
     }
 
@@ -2438,6 +2626,23 @@ impl PlayerApp {
         self.handle_app_shortcut_input(logical_key, state, modifiers)
             || self.player.handle_key_input(logical_key, state)
     }
+
+    /// Where the library's tab, action or row at `index` in
+    /// [`Widget::accessibility`]'s order (past "Back to video") stands.
+    fn library_control_rect(&self, index: usize) -> Option<Rect> {
+        let shared = self.library_tab == LibraryTab::Shared;
+        match index {
+            0 => Some(self.library_queue_tab_rect),
+            1 => Some(self.library_recent_tab_rect),
+            2 => Some(self.library_shared_tab_rect),
+            3 if shared => Some(self.shared_watch_later_rect),
+            4 if shared => Some(self.shared_bookmark_rect),
+            index if shared => shared_accessibility_targets(self)
+                .get(index.saturating_sub(5))
+                .map(|(_, _, rect)| *rect),
+            index => self.local_row_rect(index.saturating_sub(3)),
+        }
+    }
 }
 
 impl Default for PlayerApp {
@@ -2480,7 +2685,6 @@ impl Widget for PlayerApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls,
     );
 
@@ -2490,11 +2694,19 @@ impl Widget for PlayerApp {
         self.drain_portal();
         self.tick_together();
         self.player.sync(state, path);
+        self.apply_pending_resume();
         self.drain_player_media_events();
         self.sync_decoder_settings();
         self.drain_player_settings();
         self.maybe_loop_current_media();
+        self.remember_position(false);
+        self.settle_volume();
         self.poll_open_frame();
+        self.publish_playhead();
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+        self.run_window_toolbar();
     }
 
     fn build_layout(
@@ -2504,9 +2716,11 @@ impl Widget for PlayerApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.drawer.scale_for(theme);
-        // Edge-to-edge: the player fills the whole surface. The app keeps itself
-        // in the node map (so it can intercept the floating Open pill) by owning
-        // a single-child root that stretches the player to 100%×100%.
+        self.content_inset_stale = false;
+        // Edge-to-edge: the player fills the whole surface beside the docked
+        // library. The app keeps itself in the node map (so it can intercept
+        // the floating Open pill) by owning a single-child root that
+        // stretches the player over what the library leaves.
         let player_node = self.player.build_layout(taffy, theme, node_map);
         let root = parent_node(
             taffy,
@@ -2517,13 +2731,43 @@ impl Widget for PlayerApp {
                     width: percent(1.0_f32),
                     height: percent(1.0_f32),
                 },
+                padding: taffy::Rect {
+                    left: taffy::style_helpers::length(ui::num::f32_of_f64(self.content_inset)),
+                    ..taffy::Rect::zero()
+                },
                 ..Default::default()
             },
             &[player_node],
         );
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        self.history.tree_rebuilt();
         root
+    }
+
+    /// The docked library's width, as the leading padding the player is
+    /// laid out beside, on a retained tree as on a rebuilt one.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        self.content_inset_stale = false;
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let inset = taffy::style_helpers::length(ui::num::f32_of_f64(self.content_inset));
+        if style.padding.left == inset {
+            return false;
+        }
+        let mut style = style.clone();
+        style.padding.left = inset;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    /// The player's place follows the docked library, which follows the
+    /// window's width.
+    fn composition_follows_allocation(&self) -> bool {
+        true
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2537,7 +2781,7 @@ impl Widget for PlayerApp {
             return;
         };
         self.player.apply_layout(taffy, player_node, new_origin);
-        self.drawer.resolve(self.rect);
+        self.resolve_library();
     }
 
     fn draw(
@@ -2548,8 +2792,13 @@ impl Widget for PlayerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A key (L, Ctrl+O) or an arriving picture changes what the bar
+        // shows without a sync.
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.sync_library_sheet();
         self.drawer.tick(theme);
+        self.transport_top = self.player.transport_rect(theme).y0;
+        self.resolve_library();
         if self.shot_loading {
             self.paint_letterbox(scene, transform, theme);
         } else {
@@ -2557,10 +2806,6 @@ impl Widget for PlayerApp {
                 .draw(scene, transform, text_renderer, theme, presence);
         }
         self.paint_media_status(scene, transform, text_renderer, theme);
-        self.place_top_strip(text_renderer, theme);
-        if self.overlay_visible() {
-            self.paint_overlay(scene, transform, text_renderer, theme);
-        }
         self.paint_library_panel(scene, transform, text_renderer, theme);
     }
 
@@ -2569,28 +2814,18 @@ impl Widget for PlayerApp {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        let history_hovered = self.history.is_hovered();
-        // The library paints above the strip and its scrim owns background
-        // input. In particular its Close face overlaps the trailing History
-        // face, so that covered control must not consume the library click.
-        let history_rect = if self.overlay_visible() && !self.library_visible {
-            self.history_button_rect
-        } else {
-            Rect::ZERO
-        };
-        if self
-            .history
-            .handle_event(event, history_rect, ctx.scale_factor)
-        {
-            *ctx.handled = true;
+        if let Some(file) = self.file_open.handle_event(event) {
+            if let ui::widget::FileOpenEvent::Open(path) = file {
+                self.open_dropped(&path);
+            }
             self.dirty = true;
+            *ctx.handled = true;
             return;
         }
-        self.dirty |= history_hovered != self.history.is_hovered();
         // The library drawer reads its own dismissals (a press on the scrim,
         // Escape); the library's hide action is what closes it, so the
         // drawer stays open until that action lands.
-        self.drawer.resolve(self.rect);
+        self.resolve_library();
         let drawer_open = self.drawer.is_open();
         if self.drawer.handle_event(event, ctx) {
             if drawer_open && !self.drawer.is_open() {
@@ -2642,66 +2877,33 @@ impl Widget for PlayerApp {
         }
     }
 
-    /// The player, and the window's History control at its place in the
-    /// strip, so it is addressable like any control; the strip paints it
-    /// and routes its pointer through the opener.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children = vec![&self.player as &dyn Widget];
-        if let Some(history) = self.history.button() {
-            children.push(history);
-        }
-        children
+        vec![&self.player as &dyn Widget]
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children = vec![&mut self.player as &mut (dyn Widget + '_)];
-        if let Some(history) = self.history.button_mut() {
-            children.push(history);
-        }
-        children
+        vec![&mut self.player as &mut (dyn Widget + '_)]
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let mut children = vec![
-            AccessNode::new(Role::Button)
-                .with_name("Open video")
-                .with_description("Ctrl+O")
-                .with_action_target("video-player.open")
-                .with_bounds(self.open_target_rect())
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.open_focused,
-                    disabled: self.portal_open.is_some(),
-                    ..Default::default()
-                }),
-            AccessNode::new(Role::Button)
-                .with_name(if self.library_visible {
-                    "Hide library"
-                } else {
-                    "Show queue and recent videos"
-                })
-                .with_description("L")
-                .with_action_target("video-player.library")
-                .with_bounds(self.library_button_rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.library_focused,
-                    ..Default::default()
-                }),
-        ];
+        let mut children = Vec::new();
         if self.library_visible {
+            if self.library_back_rect.width() > 0.0 {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Back to video")
+                        .with_description("Escape")
+                        .with_action_target("video-player.library.back")
+                        .with_bounds(self.library_back_rect)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.library_focus_id.as_deref() == Some("library-back"),
+                            ..Default::default()
+                        }),
+                );
+            }
             children.extend([
-                AccessNode::new(Role::Button)
-                    .with_name("Close library")
-                    .with_description("Escape")
-                    .with_action_target("video-player.library.close")
-                    .with_bounds(self.library_close_rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.library_focus_id.as_deref() == Some("library-close"),
-                        ..Default::default()
-                    }),
                 AccessNode::new(Role::Tab)
                     .with_name("Queue")
                     .with_action_target("video-player.library.tab.queue")
@@ -2738,16 +2940,24 @@ impl Widget for PlayerApp {
             }
             children.extend(local_library_accessibility_nodes(self));
         }
-        children.extend(self.history.accessibility(self.history_button_rect));
-        if self.formats_visible() && self.status_action_rect.width() > 0.0 {
-            children.push(
+        if self.status_action_rect.width() > 0.0 {
+            let action = if self.formats_visible() {
                 AccessNode::new(Role::Button)
                     .with_name(self.formats_label.clone())
                     .with_action_target("video-player.formats")
+            } else {
+                AccessNode::new(Role::Button)
+                    .with_name("Open video")
+                    .with_description("Ctrl+O")
+                    .with_action_target("video-player.open")
+            };
+            children.push(
+                action
                     .with_bounds(self.status_action_rect)
                     .with_state(AccessState {
                         focusable: true,
-                        focused: self.formats_focused,
+                        focused: self.status_focused,
+                        disabled: self.portal_open.is_some() && !self.formats_visible(),
                         ..Default::default()
                     }),
             );
@@ -2765,66 +2975,32 @@ impl Widget for PlayerApp {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         if let [index] = path
-            && self.formats_access_index() == Some(*index)
+            && self.status_access_index() == Some(*index)
         {
             return Some(self.status_action_rect);
         }
-        match path {
-            [0] => Some(self.open_target_rect()),
-            [1] => Some(self.library_button_rect),
-            [2] if self.library_visible => Some(self.library_close_rect),
-            [3] if self.library_visible => Some(self.library_queue_tab_rect),
-            [4] if self.library_visible => Some(self.library_recent_tab_rect),
-            [5] if self.library_visible => Some(self.library_shared_tab_rect),
-            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                Some(self.shared_watch_later_rect)
-            }
-            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                Some(self.shared_bookmark_rect)
-            }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                shared_accessibility_targets(self)
-                    .get(index.saturating_sub(8))
-                    .map(|(_, _, rect)| *rect)
-            }
-            [index] => {
-                let library_index = index.saturating_sub(6);
-                let play_count = self.library_row_hits.len();
-                if let Some(row) = self.library_row_hits.get(library_index) {
-                    Some(row.play)
-                } else if self.library_tab == LibraryTab::Recent
-                    && !self.recent.is_empty()
-                    && library_index == play_count
-                {
-                    Some(self.library_clear_rect)
-                } else {
-                    let remove_index = library_index.saturating_sub(
-                        play_count
-                            + usize::from(
-                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
-                            ),
-                    );
-                    self.library_row_hits
-                        .iter()
-                        .filter_map(|row| row.remove)
-                        .nth(remove_index)
-                }
-            }
-            _ => None,
+        if !self.library_visible {
+            return None;
         }
+        let back = self.library_back_rect.width() > 0.0;
+        if back && path == [0] {
+            return Some(self.library_back_rect);
+        }
+        let [index] = path else {
+            return None;
+        };
+        self.library_control_rect(index.saturating_sub(usize::from(back)))
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         if let [index] = path
-            && self.formats_access_index() == Some(*index)
+            && self.status_access_index() == Some(*index)
         {
-            self.formats_focused = true;
-            self.open_focused = false;
-            self.library_focused = false;
+            self.status_focused = true;
             self.dirty = true;
             return true;
         }
-        self.formats_focused = false;
+        self.status_focused = false;
         self.focus_player_control(path)
     }
 
@@ -2838,23 +3014,18 @@ impl Widget for PlayerApp {
         if target == "video-player.formats" && matches!(action, ui::a11y::Action::Activate) {
             self.request(&VideoEffect::OpenFormats);
             true
-        } else if self.history.perform_semantic_action(target, action) {
-            true
         } else if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
-            true
-        } else if target == "video-player.library" && matches!(action, ui::a11y::Action::Activate) {
-            self.request_library_visibility_change();
             true
         } else if let Some(item_id) = target.strip_prefix("video-player.library.play.")
             && matches!(action, ui::a11y::Action::Activate)
         {
             self.request_library_play(item_id);
             true
-        } else if target == "video-player.library.close"
+        } else if target == "video-player.library.back"
             && matches!(action, ui::a11y::Action::Activate)
         {
-            self.request_library_hide();
+            self.request_video_show();
             true
         } else if target == "video-player.library.tab.queue"
             && matches!(action, ui::a11y::Action::Activate)
@@ -2915,24 +3086,16 @@ impl Widget for PlayerApp {
         if self.formats_visible() && self.status_action_rect.contains(self.last_cursor) {
             return Some(self.formats_label.as_str());
         }
-        if (self.overlay_visible() && self.open_button_rect.contains(self.last_cursor))
-            || self.status_action_rect.contains(self.last_cursor)
-        {
+        if self.status_action_rect.contains(self.last_cursor) {
             Some("Open video (Ctrl+O)")
-        } else if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-            Some(if self.library_visible {
-                "Hide queue and recent videos (L)"
-            } else {
-                "Show queue and recent videos (L)"
-            })
-        } else if self.library_visible && self.library_close_rect.contains(self.last_cursor) {
-            Some("Close library (Escape)")
+        } else if self.library_visible && self.library_back_rect.contains(self.last_cursor) {
+            Some("Go back to the video")
         } else if self.library_visible && self.library_queue_tab_rect.contains(self.last_cursor) {
             Some("Show this device's queue")
         } else if self.library_visible && self.library_recent_tab_rect.contains(self.last_cursor) {
             Some("Show recently played videos on this device")
         } else if self.library_visible && self.library_shared_tab_rect.contains(self.last_cursor) {
-            Some("Show shared playlists and timestamp notes")
+            Some("Show the playlists and bookmarks everyone in this workspace shares")
         } else if self.library_visible
             && self.library_tab == LibraryTab::Shared
             && self.shared_watch_later_rect.contains(self.last_cursor)
@@ -3006,7 +3169,7 @@ impl Widget for PlayerApp {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.player.is_layout_dirty()
+        self.player.is_layout_dirty() || self.content_inset_stale
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3023,23 +3186,9 @@ impl Widget for PlayerApp {
     }
 }
 
-/// The top strip is the window's header row: it holds the History control
-/// the host offers, over the picture, hiding with the other controls.
 impl ui::widget::controls::ActionControls for PlayerApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.history.take()
-    }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         ui::widget::semantic_action_bindings(self.accessibility())
-    }
-}
-
-impl ui::widget::WindowHeader for PlayerApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.history.control() != control {
-            self.history.set_control(control);
-            self.dirty = true;
-        }
     }
 }
 
@@ -3047,8 +3196,8 @@ impl PlayerApp {}
 
 #[cfg(test)]
 mod tests {
-    use super::strip::TopStrip;
     use super::*;
+    use std::path::PathBuf;
     use ui::headless::Framed;
 
     #[test]
@@ -3070,17 +3219,12 @@ mod tests {
                 theme,
             );
             assert!(
-                framed.open_button_rect.width() > 0.0,
-                "another video stays reachable"
-            );
-            let open = framed.open_button_rect;
-            let formats = framed.status_action_rect;
-            assert!(
-                open.x1 <= formats.x0
-                    || formats.x1 <= open.x0
-                    || open.y1 <= formats.y0
-                    || formats.y1 <= open.y0,
-                "Open and the formats remedy have distinct painted targets"
+                framed
+                    .window_toolbar()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == window_bar::OPEN && action.enabled),
+                "another video stays reachable from the window's bar"
             );
             let root = framed.accessibility().expect("player accessibility");
             let offers: Vec<_> = root
@@ -3103,28 +3247,19 @@ mod tests {
                     crate::i18n::t("video-formats-unavailable")
                 )));
             let index = framed
-                .formats_access_index()
+                .status_access_index()
                 .expect("the formats control is addressable");
             assert!(framed.focus_synthetic_accessibility(&[index]));
-            assert!(framed.formats_focused);
-            assert!(!framed.open_focused, "Formats focus excludes Open focus");
-            assert!(
-                framed.focus_synthetic_accessibility(&[0]),
-                "the original Open accessibility target keeps its index"
-            );
-            assert!(
-                framed.open_focused && !framed.formats_focused,
-                "returning to Open clears Formats focus"
-            );
+            assert!(framed.status_focused);
             let tree = framed
                 .accessibility()
                 .expect("focused player accessibility");
             assert_eq!(
-                tree.children[0].action_target.as_deref(),
-                Some("video-player.open")
+                tree.children[index].action_target.as_deref(),
+                Some("video-player.formats"),
+                "the formats remedy replaces the empty state's Open"
             );
-            assert!(tree.children[0].state.focused);
-            assert!(!tree.children[index].state.focused);
+            assert!(tree.children[index].state.focused);
             assert_eq!(
                 framed.synthetic_accessibility_rect(&[index]),
                 Some(framed.status_action_rect)
@@ -3145,9 +3280,25 @@ mod tests {
         }
     }
 
+    /// A video dropped anywhere on the window opens like one chosen, with no
+    /// hover before it (Wayland may report only the drop).
+    #[test]
+    fn a_dropped_video_opens_without_a_hover() {
+        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut doc = automerge::AutoCommit::new();
+        ui::testing::Dispatch::new().doc(&mut doc).send(
+            &mut app,
+            &WindowEvent::DroppedFile("/tmp/Dropped.mp4".into()),
+        );
+        assert_eq!(app.title, "Dropped.mp4");
+        assert_eq!(
+            app.player.engine().unwrap().source(),
+            Some(&media::Source::LocalFile(PathBuf::from("/tmp/Dropped.mp4")))
+        );
+    }
+
     #[test]
     fn opening_sources_sets_identity_without_exposing_paths() {
-        // Case `source_for_path_splits_local_vs_workspace`.
         {
             // Point the mount at a scratch root so the classification is testable.
             let root = std::env::temp_dir().join(format!("tilo-vp-app-{}", std::process::id()));
@@ -3158,7 +3309,6 @@ mod tests {
             let local = source_for_path(Path::new("/home/u/b.mp4"));
             assert!(matches!(local, media::Source::LocalFile(_)));
         }
-        // Case `opening_a_path_sets_title_and_loads_the_engine`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             app.open_path(&PathBuf::from("/tmp/Holiday.mp4"))
@@ -3170,7 +3320,6 @@ mod tests {
                 Some(&media::Source::LocalFile(PathBuf::from("/tmp/Holiday.mp4")))
             );
         }
-        // Case `source_identity_generation_exhaustion_refuses_the_new_open`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Original.mp4"))
@@ -3196,7 +3345,6 @@ mod tests {
                 original_source.as_ref()
             );
         }
-        // Case `local_source_identity_and_now_playing_never_expose_an_absolute_path`.
         {
             let mut app = synth_app();
             let path = Path::new("/home/alice/Private videos/launch-cut.mp4");
@@ -3207,7 +3355,6 @@ mod tests {
             assert!(!source_id.contains("/home/alice"));
             assert!(!source_id.contains("launch-cut"));
         }
-        // Case `reopening_the_same_uri_invalidates_old_dynamic_targets`.
         {
             let mut app = PlayerApp::for_shot(Some("metadata"));
             let old_source = app.current_source_id.clone().unwrap();
@@ -3230,7 +3377,6 @@ mod tests {
 
     #[test]
     fn portal_open_is_single_flight_generation_fenced_and_retained() {
-        // Case `portal_outcome_opens_the_chosen_file`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
@@ -3244,7 +3390,6 @@ mod tests {
                 "channel cleared after the outcome"
             );
         }
-        // Case `portal_open_is_single_flight_and_a_direct_open_supersedes_it`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             app.trigger_open(None).expect("first picker starts");
@@ -3265,7 +3410,6 @@ mod tests {
                 "a direct open drops the stale picker receiver before it can win later"
             );
         }
-        // Case `portal_generation_exhaustion_fails_closed_without_aliasing_old_requests`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             app.portal_generation = u64::MAX;
@@ -3276,20 +3420,17 @@ mod tests {
             assert!(app.portal_open.is_none());
             assert_eq!(app.portal_generation, u64::MAX);
         }
-        // Case `stale_portal_outcome_cannot_open_media_in_release_or_debug_builds`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Stale.webm")));
             ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
-            // A newer request generation makes the delivered outcome stale.
             app.portal_generation += 1;
             app.drain_portal();
             assert_eq!(app.title, "No media");
             assert!(app.current_source_id.is_none());
             assert!(app.portal_open.is_none());
         }
-        // Case `portal_failure_is_retained_for_the_empty_state`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
@@ -3307,7 +3448,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn markers_and_metadata_targets_stay_fresh_and_canonical() {
-        // Case `durable_marker_media_reference_survives_a_reopen_but_source_actions_stay_fresh`.
         {
             let mut app = synth_app();
             let path = Path::new("/tmp/review-cut.mp4");
@@ -3325,7 +3465,6 @@ mod tests {
                 "the durable reference remains opaque"
             );
         }
-        // Case `marker_jump_seeks_the_video_its_note_belongs_to`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/review-cut.mp4"))
@@ -3369,7 +3508,6 @@ mod tests {
             );
             assert_eq!(app.player.position_ms(), 12_500);
         }
-        // Case `stale_stream_and_chapter_targets_are_refused_before_engine_mutation`.
         {
             let mut app = PlayerApp::for_shot(Some("metadata"));
             let audio = app.shot_metadata.as_ref().unwrap().audio_tracks[0].clone();
@@ -3408,7 +3546,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn library_controls_emit_canonical_host_actions_and_are_accessible() {
-        // Case `library_play_focus_has_a_real_accessibility_target_and_visual_state`.
         {
             let mut app = PlayerApp::for_shot(Some("library"));
             let focused_id = app.queue[1].id.clone();
@@ -3426,31 +3563,38 @@ mod tests {
                     remove: Some(Rect::new(44.0, 44.0, 88.0, 88.0)),
                 },
             ];
-            assert!(Widget::focus_synthetic_accessibility(&mut app, &[7]));
+            assert!(Widget::focus_synthetic_accessibility(&mut app, &[4]));
             assert_eq!(app.library_focus_id.as_deref(), Some(focused_id.as_str()));
             assert_eq!(
-                Widget::synthetic_accessibility_rect(&app, &[7]),
+                Widget::synthetic_accessibility_rect(&app, &[4]),
                 Some(Rect::new(0.0, 44.0, 44.0, 88.0))
             );
         }
-        // Case `library_close_and_tabs_are_reachable_accessibility_controls`.
         {
             let mut app = PlayerApp::for_shot(Some("library"));
-            app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
             app.library_queue_tab_rect = Rect::new(44.0, 0.0, 132.0, 44.0);
             app.library_recent_tab_rect = Rect::new(132.0, 0.0, 220.0, 44.0);
             app.library_shared_tab_rect = Rect::new(220.0, 0.0, 308.0, 44.0);
 
             let tree = Widget::accessibility(&app).expect("application accessibility tree");
-            assert_eq!(tree.children[2].name.as_deref(), Some("Close library"));
-            assert_eq!(tree.children[3].name.as_deref(), Some("Queue"));
-            assert!(tree.children[3].state.selected);
-            assert_eq!(tree.children[4].name.as_deref(), Some("Recent"));
-            assert!(!tree.children[4].state.selected);
-            assert_eq!(tree.children[5].name.as_deref(), Some("Shared"));
-            assert!(!tree.children[5].state.selected);
+            assert_eq!(tree.children[0].name.as_deref(), Some("Queue"));
+            assert!(tree.children[0].state.selected);
+            assert_eq!(tree.children[1].name.as_deref(), Some("Recent"));
+            assert!(!tree.children[1].state.selected);
+            assert_eq!(tree.children[2].name.as_deref(), Some("Shared"));
+            assert!(!tree.children[2].state.selected);
+            let mut names = Vec::new();
+            for node in &tree.children {
+                names.extend(node.name.clone());
+            }
+            assert!(
+                !names
+                    .iter()
+                    .any(|name| name == "Library" || name == "Close library"),
+                "the sheet has no title or close of its own: {names:?}"
+            );
 
-            assert!(Widget::focus_synthetic_accessibility(&mut app, &[4]));
+            assert!(Widget::focus_synthetic_accessibility(&mut app, &[1]));
             assert_eq!(app.library_focus_id.as_deref(), Some("library-tab-recent"));
 
             app.perform(VideoEffect::ShowLibrary {
@@ -3468,13 +3612,40 @@ mod tests {
             app.perform(VideoEffect::HideLibrary).unwrap();
             assert!(!app.library_visible);
         }
-        // Case `library_has_conventional_escape_close_and_complete_hover_help`.
+        // The library filling a narrow window leads with the way back, and
+        // pressing it (or its accessible node) returns to the picture.
         {
-            let mut app = PlayerApp::for_shot(Some("shared"));
-            app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
-            app.last_cursor = Point::new(20.0, 20.0);
-            assert_eq!(app.tooltip(), Some("Close library (Escape)"));
-
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (420.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            let back = app.library_back_rect;
+            assert!(back.width() > 0.0, "the way back leads the library screen");
+            let tree = Widget::accessibility(&*app).expect("application accessibility tree");
+            let node = tree
+                .children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some("video-player.library.back"))
+                .expect("the way back is addressable");
+            assert_eq!(node.name.as_deref(), Some("Back to video"));
+            assert_eq!(node.bounds.map(ui::a11y::AccessBounds::to_rect), Some(back));
+            let mut doc = automerge::AutoCommit::new();
+            let mut edits = ui::widget::Edits::lend(&mut doc);
+            assert!(app.perform_semantic_action(
+                "video-player.library.back",
+                &ui::a11y::Action::Activate,
+                &mut edits,
+                &(),
+            ));
+            assert!(
+                app.library_visible,
+                "the library is one action away again, not lost"
+            );
+        }
+        {
+            let app = PlayerApp::for_shot(Some("shared"));
             assert!(
                 app.handle_app_shortcut_input(
                     &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
@@ -3492,7 +3663,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn player_resources_and_transport_guards_are_published_honestly() {
-        // Case `picture_in_picture_uses_the_shell_owned_floating_surface_contract`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
@@ -3512,7 +3682,6 @@ mod tests {
                 matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "so.tilo.video-player" && element_id == "video_surface")
             );
         }
-        // Case `live_rows_cover_the_open_video_its_streams_and_the_library`.
         {
             let app = PlayerApp::for_shot(Some("metadata"));
             let rows: Vec<_> = crate::actions::live_rows(&app.player_rows(), 32)
@@ -3551,7 +3720,6 @@ mod tests {
                 "a row resolves by id"
             );
         }
-        // Case `missing_media_leaves_transport_unavailable`.
         {
             let empty = PlayerApp::new(RunMode::Capture);
             assert!(empty.effect_statuses().iter().any(|status| {
@@ -3580,7 +3748,6 @@ mod tests {
         }
         let mut app = TestApp::<crate::resource::VideoPlayerShell>::new().unwrap();
         surface(&mut app, |player| {
-            // Hermetic authored media, with live framework action admission.
             player
                 .player
                 .set_engine(media::MediaEngine::new_synthesized());
@@ -3634,24 +3801,37 @@ mod tests {
             surface(&mut app, |player| player.library_tab_name()),
             "recent"
         );
-        let close = surface(&mut app, |player| player.library_close_rect.center());
-        app.harness().click_at(close.x, close.y);
+        // Wide, the library is docked beside the picture: a press on the
+        // picture leaves it open.
+        app.harness().click_at(1160.0, 400.0);
         app.settle();
-        assert!(!surface(&mut app, |player| player.library_visible));
-        app.effect(&VideoEffect::ShowLibrary {
-            tab: "queue".into(),
-        })
-        .unwrap();
-        assert!(surface(&mut app, |player| player.library_visible));
-        app.harness().click_at(40.0, 400.0);
+        assert!(
+            surface(&mut app, |player| player.library_visible),
+            "a press beside the docked library keeps it"
+        );
+        // Narrower, it takes the window as a screen of its own; "Back to
+        // video" puts it away and the picture is one press away again.
+        app.harness()
+            .relayout_themed(
+                ui::headless::viewport((420.0, 800.0)),
+                Theme::dark().with_reduce_motion(true),
+            )
+            .unwrap();
+        app.settle();
+        assert!(
+            surface(&mut app, |player| player.library_visible),
+            "a library too wide to share the window stays open over it"
+        );
+        let back = surface(&mut app, |player| player.library_back_rect.center());
+        app.harness().click_at(back.x, back.y);
         app.settle();
         assert!(
             !surface(&mut app, |player| player.library_visible),
-            "the scrim closes the actual hosted library"
+            "the way back closes the actual hosted library"
         );
         assert!(
             !surface(&mut app, |player| {
-                player.last_cursor = Point::new(40.0, 400.0);
+                player.last_cursor = Point::new(400.0, 400.0);
                 player.handle_app_pointer(&mut ui::widget::Edits::lend(
                     &mut automerge::AutoCommit::new(),
                 ))
@@ -3691,45 +3871,11 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
-        // Case `top_strip_is_one_centre_line_that_contains_its_buttons`: the
-        // Library and Open buttons share the strip's centre line, sit inside
-        // the fade and keep the strip margin at 100% and 200% text.
+        // Case `library_sheet_stacks_tabs_and_rows`: the sheet is one
+        // column: the tab strip across it, then the rows, at 100% and 200%
+        // text, with the actions clear of one another.
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let app = lay_out(
-                PlayerApp::for_shot_open(None, Some("playing")),
-                (1200.0, 800.0),
-                scale,
-            );
-            let strip = TopStrip::at(app.rect.y0, &theme);
-            let margin = f64::from(theme.tokens.spacing.s4);
-            let (open, library) = (app.open_button_rect, app.library_button_rect);
-            assert!(
-                library.width() > 0.0 && open.width() > 0.0,
-                "{scale}×: both buttons are placed once painted"
-            );
-            assert!(
-                (open.center().y - strip.center_y).abs() < 0.01
-                    && (library.center().y - strip.center_y).abs() < 0.01,
-                "{scale}×: Open {open:?} and Library {library:?} share the strip centre {}",
-                strip.center_y
-            );
-            assert!(
-                open.y1 <= app.rect.y0 + strip.height && library.y1 <= app.rect.y0 + strip.height,
-                "{scale}×: the fade ({}) contains both buttons",
-                strip.height
-            );
-            assert!(
-                (app.rect.x1 - open.x1 - margin).abs() < 0.01
-                    && (library.x0 - app.rect.x0 - margin).abs() < 0.01,
-                "{scale}×: both buttons keep the strip margin"
-            );
-            assert!(open.x0 > library.x1, "{scale}×: the buttons do not meet");
-        }
-        // Case `library_sheet_stacks_header_tabs_and_rows`: the sheet is one
-        // column: its header, then the tab strip across it, then the rows,
-        // at 100% and 200% text, with the actions clear of one another.
-        for scale in [1.0_f32, 2.0] {
             let app = lay_out_still(
                 PlayerApp::for_shot_open(None, Some("library")),
                 (1200.0, 800.0),
@@ -3737,8 +3883,11 @@ mod tests {
             );
             let sheet = app.drawer.sidebar_rect();
             assert!(sheet.width() > 0.0, "{scale}×: the sheet is open");
+            assert!(
+                sheet.center().x < app.rect.center().x,
+                "{scale}×: the sheet opens on the leading side, under the bar's sidebar toggle"
+            );
             for rect in [
-                app.library_close_rect,
                 app.library_queue_tab_rect,
                 app.library_recent_tab_rect,
                 app.library_shared_tab_rect,
@@ -3749,8 +3898,10 @@ mod tests {
                 );
             }
             assert!(
-                app.library_close_rect.y1 <= app.library_queue_tab_rect.y0,
-                "{scale}×: tabs start under the header"
+                (app.library_queue_tab_rect.y0 - sheet.y0 - f64::from(theme.tokens.spacing.s4))
+                    .abs()
+                    < 0.01,
+                "{scale}×: the tabs lead the sheet, with no title above them"
             );
             assert!(
                 (app.library_queue_tab_rect.x1 - app.library_recent_tab_rect.x0).abs() < 0.01
@@ -3777,6 +3928,59 @@ mod tests {
                 );
             }
         }
+        // Case `library_never_covers_the_transport`: wide, the library docks
+        // at its own width beside the picture and the player lays out beside
+        // it; narrower than its own width plus the picture's, it takes the
+        // content area as a screen of its own and leads with the way back.
+        {
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (1200.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            let sheet = app.drawer.sidebar_rect();
+            assert!(app.drawer.is_docked(), "wide, the library docks");
+            assert!(
+                app.player.get_rect().x0 >= sheet.x1 - 0.5,
+                "the picture {:?} stands beside the library {sheet:?}",
+                app.player.get_rect()
+            );
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (420.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            let sheet = app.drawer.sidebar_rect();
+            assert!(
+                app.drawer.is_push(),
+                "a picture too narrow to keep its library shows the library whole"
+            );
+            assert_eq!(sheet, app.rect, "the library fills the content area");
+            let back = app.library_back_rect;
+            assert!(
+                back.width() > 0.0 && sheet.contains_rect(back),
+                "the way back to the picture {back:?} leads the library {sheet:?}"
+            );
+            assert!(
+                back.y1 <= app.library_queue_tab_rect.y0,
+                "it stands above the tabs it shares the sheet with"
+            );
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (420.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            app.perform(VideoEffect::HideLibrary).unwrap();
+            Framed::harness_mut(&mut app).relayout();
+            assert!(
+                !app.library_visible,
+                "the same toggle puts the picture back"
+            );
+            assert_eq!(app.library_back_rect, Rect::ZERO);
+        }
         // Case `library_sheet_follows_its_drawer`: closing the library moves
         // no hit rect into the video.
         {
@@ -3792,10 +3996,9 @@ mod tests {
             app.sync_library_sheet();
             app.drawer.tick(&theme);
             app.paint_library_panel(&mut scene, Affine::IDENTITY, &mut text, &theme);
-            assert_eq!(app.library_close_rect, Rect::ZERO);
+            assert_eq!(app.library_queue_tab_rect, Rect::ZERO);
             assert!(app.library_row_hits.is_empty());
         }
-        // Case `fresh_player_shows_a_clean_empty_state_with_no_frame`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let doc = automerge::AutoCommit::new();
@@ -3827,7 +4030,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn decoder_lifecycle_confirms_opens_only_on_a_real_frame() {
-        // Case `opening_a_file_then_syncing_lands_a_frame_and_duration`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
@@ -3884,15 +4086,10 @@ mod tests {
 
     #[test]
     fn transport_settings_reach_the_engine_and_snapshot() {
-        // Case `autoplay_and_repeat_are_real_settings_not_demo_affordances`.
         {
             let mut app = synth_app();
             app.preferences.autoplay = false;
-            configure_player_settings(
-                &mut app.player,
-                app.preferences.autoplay,
-                app.preferences.loop_enabled,
-            );
+            configure_player_settings(&mut app.player, app.preferences);
             app.open_path(Path::new("/tmp/Clip.mp4"))
                 .expect("source identity available");
             assert!(
@@ -3903,11 +4100,7 @@ mod tests {
             let doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT);
             app.preferences.loop_enabled = true;
-            configure_player_settings(
-                &mut app.player,
-                app.preferences.autoplay,
-                app.preferences.loop_enabled,
-            );
+            configure_player_settings(&mut app.player, app.preferences);
             let end = app.player.duration_ms();
             app.player.seek_to_ms(end);
             app.player.pause();
@@ -3915,19 +4108,16 @@ mod tests {
             assert_eq!(app.player.position_ms(), 0, "repeat restarts at the end");
             assert!(app.player.is_playing(), "repeat resumes playback");
         }
-        // Case `playhead_advances_while_playing_and_a_mid_play_seek_holds`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
                 .expect("source identity available");
             let doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT); // baseline the synth clock
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            app.sync(&doc, &automerge::ROOT);
-            assert!(
-                app.player.position_ms() > 0,
-                "playhead advanced while playing"
-            );
+            tilo_test_env::wait_until("the playhead advances while playing", || {
+                app.sync(&doc, &automerge::ROOT);
+                app.player.position_ms() > 0
+            });
 
             // Seek mid-play: the target lands in both the widget cache and the engine.
             app.player.seek_to_ms(50_000);
@@ -3935,14 +4125,13 @@ mod tests {
             assert_eq!(app.player.engine().unwrap().position_ms(), 50_000);
 
             // Playback continues forward from the seek target, not back to the start.
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            app.sync(&doc, &automerge::ROOT);
-            assert!(
-                app.player.position_ms() >= 50_000,
-                "seek stuck; playback rode on from it"
-            );
+            tilo_test_env::wait_until("playback rides on from the seek", || {
+                app.sync(&doc, &automerge::ROOT);
+                let position = app.player.position_ms();
+                assert!(position >= 50_000, "playback went back to {position} ms");
+                position > 50_000
+            });
         }
-        // Case `volume_and_mute_propagate_to_the_engine`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
@@ -3956,7 +4145,6 @@ mod tests {
                 "mute drops the engine volume to zero"
             );
         }
-        // Case `playback_speed_action_changes_the_engine_and_collaborative_snapshot`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
@@ -3967,7 +4155,6 @@ mod tests {
             assert!((engine.rate() - 2.0).abs() < f32::EPSILON);
             assert!((engine.transport_state(unix_now_ms()).rate - 2.0).abs() < f32::EPSILON);
         }
-        // Case `space_key_routed_through_the_app_toggles_playback`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
@@ -4076,7 +4263,6 @@ mod tests {
             ),
             TogetherStep::Publish(sought)
         );
-        // Pausing is a move too.
         assert_eq!(
             here.step(
                 "clip",
@@ -4122,6 +4308,96 @@ mod tests {
     }
 
     #[test]
+    fn a_playback_put_back_after_the_end_does_not_swallow_a_replay() {
+        // This player played the clip to its end and said so. The room then
+        // put back the older "playing from the start" (it undid the change),
+        // which has long run past the end. Seeking back and replaying must
+        // stay with the person, not snap to the end again.
+        let start = 50_000_000;
+        let playing = transport(true, 0, start);
+        let mut here = Together::default();
+        assert_eq!(
+            here.step("clip", None, playing, start, 6_000),
+            TogetherStep::Publish(playing)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), playing, start + 50, 6_000),
+            TogetherStep::Stay,
+            "its own play came back"
+        );
+        let now = start + 7_000;
+        let ended = transport(false, 6_000, now);
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), ended, now, 6_000),
+            TogetherStep::Publish(ended)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(ended)), ended, now + 50, 6_000),
+            TogetherStep::Stay,
+            "its own pause came back"
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), ended, now + 100, 6_000),
+            TogetherStep::Stay,
+            "an old playback past the end is not followed"
+        );
+        let replay = transport(true, 0, now + 200);
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), replay, now + 200, 6_000),
+            TogetherStep::Publish(replay),
+            "the replay is this player's move"
+        );
+    }
+
+    #[test]
+    fn a_video_that_cannot_be_decoded_leaves_the_queue() {
+        let mut app = PlayerApp::for_shot(None);
+        let good = app.ensure_queued(
+            source_for_path(Path::new("/videos/good.mp4")),
+            "good.mp4".into(),
+        );
+        let broken = app.ensure_queued(
+            source_for_path(Path::new("/videos/broken.mp4")),
+            "broken.mp4".into(),
+        );
+        app.current_queue_id = Some(broken.clone());
+        app.handle_media_event(media::MediaEvent::Error("decode failed".into()));
+        assert!(app.open_error.is_some(), "the person is told it can't play");
+        let ids: Vec<_> = app.queue.iter().map(|entry| entry.id.clone()).collect();
+        assert!(ids.contains(&good), "the good video stays");
+        assert!(
+            !ids.contains(&broken),
+            "the broken one is not kept beside it"
+        );
+    }
+
+    #[test]
+    fn the_current_row_says_whether_the_video_plays_or_is_paused() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
+        let current_label = |app: &PlayerApp| {
+            crate::actions::live_rows(&app.player_rows(), 32)
+                .into_iter()
+                .map(ui::framework::LiveRow::into_resource)
+                .find(|row| row.kind == "media.queue")
+                .and_then(|queue| {
+                    queue
+                        .children
+                        .into_iter()
+                        .find(|row| row.label.starts_with("Clip.mp4"))
+                })
+                .map(|row| row.label)
+        };
+        app.player.pause();
+        assert_eq!(app.current_row_state(), "Paused");
+        assert_eq!(current_label(&app).as_deref(), Some("Clip.mp4 is paused"));
+        app.player.play();
+        assert_eq!(app.current_row_state(), "Playing");
+        assert_eq!(current_label(&app).as_deref(), Some("Clip.mp4 is playing"));
+    }
+
+    #[test]
     fn revealing_the_controls_never_changes_transport() {
         let mut app = PlayerApp::for_shot(None);
         app.player.pause();
@@ -4129,5 +4405,205 @@ mod tests {
         app.perform(VideoEffect::Reveal).unwrap();
         assert!(!app.player.is_playing());
         assert_eq!(app.player.position_ms(), position);
+    }
+
+    /// A recent row for `path`, as this device would have saved it.
+    fn recent_row(path: &str, position_ms: u64) -> (RecentMedia, String) {
+        let source = source_for_path(Path::new(path));
+        let id = format!("local-queue-{}", resume_key(&source));
+        (
+            RecentMedia {
+                id: id.clone(),
+                title: source_title(&source),
+                source,
+                position_ms,
+            },
+            id,
+        )
+    }
+
+    #[test]
+    fn the_volume_and_speed_this_device_chose_are_kept_and_restored() {
+        use ui::framework::testing::TestApp;
+
+        // A live window keeps this device's settings on its own profile.
+        let mut app = TestApp::<crate::resource::VideoPlayerShell>::new()
+            .expect("a live window opens on a private profile");
+        let stored = |app: &mut TestApp<crate::resource::VideoPlayerShell>| {
+            app.with_surface::<PlayerApp, _>(|player| player.stored_settings())
+                .flatten()
+        };
+        let fresh = stored(&mut app).expect("the window keeps its settings");
+        assert!((fresh.volume - crate::preferences::DEFAULT_VOLUME).abs() < f32::EPSILON);
+        assert!((fresh.rate - crate::preferences::DEFAULT_RATE).abs() < f32::EPSILON);
+
+        // The person drags the volume to a third and picks 1.5×. (The
+        // production path, past the effect door's open-video guard.)
+        app.with_surface::<PlayerApp, _>(|player| {
+            player
+                .perform(VideoEffect::SetVolume { volume: 0.35 })
+                .expect("the volume follows");
+            player
+                .perform(VideoEffect::SetPlaybackRate { rate: 1.5 })
+                .expect("the speed follows");
+        })
+        .expect("the window shows the player");
+        assert!(
+            (stored(&mut app).expect("settings").rate - 1.5).abs() < f32::EPSILON,
+            "a chosen speed is kept at once"
+        );
+
+        // The volume is kept once the drag settles, and the value it came to
+        // rest at is the one kept.
+        tilo_test_env::wait_until("the chosen volume settles into the settings", || {
+            app.settle();
+            stored(&mut app).is_some_and(|stored| (stored.volume - 0.35).abs() < 1e-6)
+        });
+
+        // The next launch's player follows what this device kept.
+        let kept = stored(&mut app).expect("settings");
+        let mut restarted = synth_app();
+        restarted.adopt_settings(&kept);
+        assert!(
+            (restarted.player.volume() - 0.35).abs() < 1e-6,
+            "the volume it was left at plays: {}",
+            restarted.player.volume()
+        );
+        let engine = restarted.player.engine().expect("an engine");
+        assert!(
+            (engine.rate() - 1.5).abs() < f32::EPSILON,
+            "1.5× is restored: {}",
+            engine.rate()
+        );
+        let speed = restarted
+            .player
+            .settings()
+            .iter()
+            .find(|setting| setting.id == "playback-rate")
+            .expect("the speed is in the settings menu");
+        assert_eq!(
+            speed.control,
+            ui::widget::video_player::PlayerSettingControl::Choice {
+                options: PLAYBACK_RATES
+                    .iter()
+                    .map(|rate| format!("{rate}×"))
+                    .collect(),
+                selected: 5,
+            },
+            "the menu shows the restored speed, so it is not lying"
+        );
+
+        // Closing the video builds a fresh player; it plays at the same
+        // levels, so a clip opened next is not suddenly loud again.
+        restarted.perform(VideoEffect::Close).unwrap();
+        assert!((restarted.player.volume() - 0.35).abs() < 1e-6);
+        assert!((restarted.player.engine().expect("an engine").rate() - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reopening_a_video_resumes_where_it_was_left_and_does_not_autoplay() {
+        let (row, id) = recent_row("/videos/Lecture.mp4", 30_000);
+        let mut app = synth_app();
+        app.adopt_settings(&PlayerSettings {
+            autoplay: true,
+            recent_history: vec![row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&id)
+            .expect("the recent row opens its video");
+        assert!(
+            !app.player.is_playing(),
+            "a video resumed mid-way does not start playing on its own"
+        );
+        let doc = automerge::AutoCommit::new();
+        tilo_test_env::wait_until("the decoder reports the lecture's length", || {
+            app.sync(&doc, &automerge::ROOT);
+            app.pending_resume.is_none()
+        });
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            app.player.position_ms(),
+            30_000,
+            "it continues where this device left it, not at 0:00"
+        );
+        assert!(!app.player.is_playing(), "and stays paused");
+
+        // A video with nothing stored opens as the autoplay preference says.
+        let (fresh_row, fresh_id) = recent_row("/videos/Talk.mp4", 0);
+        app.adopt_settings(&PlayerSettings {
+            autoplay: true,
+            recent_history: vec![fresh_row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&fresh_id)
+            .expect("the other recent row opens");
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(app.player.position_ms(), 0, "a new video starts at 0:00");
+        assert!(app.player.is_playing(), "and autoplay starts it");
+    }
+
+    #[test]
+    fn finishing_a_video_clears_its_resume_point_so_a_replay_starts_at_the_top() {
+        let (row, id) = recent_row("/videos/Seminar.mp4", 20_000);
+        let source = row.source.clone();
+        let mut app = synth_app();
+        app.adopt_settings(&PlayerSettings {
+            recent_history: vec![row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&id).expect("the recent row opens");
+        let doc = automerge::AutoCommit::new();
+        tilo_test_env::wait_until("the video resumes where it was left", || {
+            app.sync(&doc, &automerge::ROOT);
+            app.player.position_ms() == 20_000
+        });
+        assert_eq!(app.position_of(&source), 20_000, "the row carries it");
+
+        // Playback reaches the end.
+        let end = app.player.duration_ms();
+        assert!(end > 0, "the decoder reported a length");
+        app.player.seek_to_ms(end);
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            app.resume.point(&resume_key(&source)),
+            None,
+            "a finished video has nowhere to resume"
+        );
+        assert_eq!(app.position_of(&source), 0, "its saved row says so too");
+
+        // Opened again, it starts at the beginning.
+        app.open_local_entry(&id).expect("the row opens again");
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(app.player.position_ms(), 0, "the replay starts at 0:00");
+    }
+
+    #[test]
+    fn a_paused_video_keeps_where_it_stopped_in_its_recent_row() {
+        let (row, id) = recent_row("/videos/Panel.mp4", 0);
+        let mut app = synth_app();
+        app.adopt_settings(&PlayerSettings {
+            recent_history: vec![row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&id).expect("the recent row opens");
+        let doc = automerge::AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
+        app.player.seek_to_ms(12_000);
+        app.player.pause();
+        app.sync(&doc, &automerge::ROOT);
+
+        let entry = app
+            .recent
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .expect("the video is in Recent");
+        let saved = app
+            .saved_recent_row(&entry)
+            .expect("the row is kept on this device");
+        assert_eq!(
+            saved.position_ms, 12_000,
+            "pausing writes where playback stopped, into the row a restart reads"
+        );
     }
 }

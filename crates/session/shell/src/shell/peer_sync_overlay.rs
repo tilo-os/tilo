@@ -1,31 +1,36 @@
-//! Peer invite/connect overlay.
+//! Peer invite, join and pairing sheet.
 //!
-//! This component owns the complete local interaction: prompt state, editing,
-//! clipboard actions, painted geometry and input routing. The shell host only
-//! performs the network request emitted by [`PeerSyncOverlay::handle_event`]
-//! and returns its result through [`PeerSyncOverlay::finish_request`].
+//! This component owns the local interaction: what the sheet is asking,
+//! what was typed and chosen, the clipboard and the requests it makes. The
+//! sheet itself is the shared modal and the shared controls
+//! (`sheet::Sheet`); this file says what they mean. The shell host mounts
+//! the overlay in its widget tree like any retained widget, performs the
+//! network request it takes from [`PeerSyncOverlay::take_request`] and
+//! returns the result through [`PeerSyncOverlay::finish_typed_request`].
 
-use ui::num::f32_of_f64;
+use std::collections::HashMap;
+
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::WindowEvent;
+use winit::keyboard::NamedKey;
 
-use ui::paint::PaintCtx;
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
 
 use crate::shell::i18n::{t, t_args};
-use ui::TextRole;
-use ui::theme::Theme;
-use ui::widget::ButtonRole;
 
-mod accessibility;
-pub use accessibility::is_sheet_target as is_accessibility_target;
+mod sheet;
 
 /// How long a copied invite token stays on the clipboard: time to paste it
 /// into a message to the person it is for.
 const INVITE_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How long an invite admits: an hour, as a person's invite does.
+pub const INVITE_EXPIRES_IN_SECONDS: u64 = 3600;
 
 /// A transport request emitted by the overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +48,9 @@ pub enum PeerSyncRequest {
     /// Leave a site's workspace: it goes from this computer, and is not
     /// joined again unasked.
     LeaveSite(crate::shell::state::RoomId),
-    /// Make a pairing link for a new device of the person.
+    /// Try again to join a workspace whose join failed, or that needs
+    /// joining again: from the workspace itself, which is the room.
+    RetryJoin(crate::shell::state::RoomId),
     InviteDevice,
     /// The new devices asking under this computer's open pairing links.
     DevicesAsking,
@@ -73,7 +80,6 @@ pub enum PeerSyncRequest {
         room: crate::shell::state::RoomId,
         reason: String,
     },
-    /// Whether the workspace in `room` is public, and with what.
     Publication(crate::shell::state::RoomId),
     /// Make the workspace in `room` public with `listing`, or private again
     /// with `None`.
@@ -173,6 +179,16 @@ pub enum InviteRecipientPath {
     /// The recipient supplied a fresh identity card out of band.
     #[default]
     New,
+    /// No one in particular: whoever opens the link joins. The sheet says
+    /// so, since the link itself is the credential.
+    Link,
+}
+
+impl InviteRecipientPath {
+    /// The invite names a person (a remembered or a pasted identity).
+    pub fn is_person(self) -> bool {
+        !matches!(self, Self::Link)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,7 +208,6 @@ pub enum PeerSyncResponse {
         link: String,
         expires_at_ms: u64,
     },
-    /// The new devices asking to be the person.
     DevicesAsking(Vec<DeviceAskingSummary>),
     /// The public workspaces, in the order the directory sheet shows them.
     Directory(Vec<crate::shell::network::DirectoryListing>),
@@ -219,6 +234,9 @@ pub struct DeviceAskingSummary {
     pub requested_at_ms: u64,
     /// Where it came from, when the host can say (ISO 3166-1 alpha-2).
     pub country: Option<String>,
+    /// The person's device that found it, when another of their devices
+    /// asks this one to approve it.
+    pub via: Option<String>,
 }
 
 impl From<String> for PeerSyncResponse {
@@ -244,10 +262,8 @@ pub struct PeerSyncSnapshot {
     pub pending_invitations: Vec<PendingInvitationSummary>,
     pub invite_recipient_key: Option<[u8; 32]>,
     pub invite_recipient_path: InviteRecipientPath,
-    pub invite_review_open: bool,
     pub invite_context: InviteContext,
     pub status: Option<String>,
-    /// "Pair a new device" is open.
     pub pairing_open: bool,
     /// Its link, once made: what the new device opens.
     pub pairing_link: Option<String>,
@@ -255,56 +271,39 @@ pub struct PeerSyncSnapshot {
     pub pairing_copied: bool,
 }
 
+/// What the person asked the sheet for, whichever control they used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Button {
+enum Intent {
     CreateInvite,
-    ReviewInvite,
-    BackToComposer,
+    /// Who the invite is for: a person (`false`) or anyone with the link.
+    SelectWho(bool),
     SelectRole(crate::network::invite::InviteRole),
+    /// A person the Who field suggested, by their place among the people
+    /// this computer knows.
     SelectKnown(usize),
-    SelectNewRecipient,
+    /// Let go of a pasted identity.
+    ForgetIdentity,
     Join,
     Cancel,
     CopyToken,
     PasteToken,
     Resend([u8; 32]),
     CancelPending([u8; 32]),
-    PasteIdentity,
     CopyIdentity,
     CopyPairLink,
 }
 
-/// What one painted target says, for assistive technology.
+/// Result of one intent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DrawnLabel {
-    label: String,
-    /// Whose row the target acts on, when the label alone is ambiguous.
-    description: Option<String>,
-    /// For a choice, whether it is the chosen one.
-    selected: Option<bool>,
-}
-
-/// Result of routing one input event through the overlay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EventOutcome {
-    pub consumed: bool,
-    pub request: Option<PeerSyncRequest>,
+struct EventOutcome {
+    request: Option<PeerSyncRequest>,
     /// A named invite asks to copy only after minting succeeds.
-    pub copy_result: bool,
+    copy_result: bool,
 }
 
 impl EventOutcome {
     fn consumed() -> Self {
         Self {
-            consumed: true,
-            request: None,
-            copy_result: false,
-        }
-    }
-
-    fn ignored() -> Self {
-        Self {
-            consumed: false,
             request: None,
             copy_result: false,
         }
@@ -312,7 +311,6 @@ impl EventOutcome {
 
     fn request(request: PeerSyncRequest, copy_result: bool) -> Self {
         Self {
-            consumed: true,
             request: Some(request),
             copy_result,
         }
@@ -323,18 +321,20 @@ impl EventOutcome {
 pub struct PeerSyncOverlay {
     state: PeerSyncSnapshot,
     remembered_invitees: Vec<RememberedInvitee>,
-    rect: Rect,
-    button_rects: Vec<(Button, Rect)>,
-    /// What each painted target says, in `button_rects` order: the label,
-    /// whose row it acts on, and for a choice whether it is chosen.
-    button_labels: Vec<DrawnLabel>,
-    pending_offset: usize,
+    /// The sheet: the shared modal and the controls in it.
+    sheet: sheet::Sheet,
+    /// Whether the status says something went wrong, shown as an error.
+    status_is_error: bool,
+    /// The request the person's last input made, until the host takes it,
+    /// and whether its result is copied once it is back.
+    requested: Option<(PeerSyncRequest, bool)>,
     enrollment: Option<u64>,
     enrollment_poll_at: Option<std::time::Instant>,
     retired_enrollments: std::collections::VecDeque<u64>,
-    /// Turns beside "Waiting for your new device…" while a pairing link is
-    /// out.
-    waiting: ui::widget::Spinner,
+    /// Whether the sheet offers an invite link for anyone besides an invite
+    /// for a person. Off: such a link is a credential whoever holds it can
+    /// use, and the product has not decided to offer it here.
+    link_invites: bool,
 }
 
 impl PeerSyncOverlay {
@@ -364,10 +364,25 @@ impl PeerSyncOverlay {
     }
 
     pub fn visible(&self) -> bool {
-        self.state.connect_input.is_some()
-            || self.state.invite_token.is_some()
-            || self.state.invite_name.is_some()
-            || self.state.pairing_open
+        sheet::Mode::of(&self.state).is_some()
+    }
+
+    /// Say `status`, as information.
+    fn say(&mut self, status: String) {
+        self.state.status = Some(status);
+        self.status_is_error = false;
+    }
+
+    /// Say what went wrong and what the person can do, as an error.
+    fn fail(&mut self, status: String) {
+        self.state.status = Some(status);
+        self.status_is_error = true;
+    }
+
+    /// Say nothing.
+    fn quiet(&mut self) {
+        self.state.status = None;
+        self.status_is_error = false;
     }
 
     /// Open "Pair a new device": the link is being made.
@@ -376,11 +391,11 @@ impl PeerSyncOverlay {
         self.state.invite_name = None;
         self.state.connect_input = None;
         self.state.invite_token = None;
-        self.state.invite_review_open = false;
         self.state.pairing_open = true;
         self.state.pairing_link = None;
         self.state.pairing_copied = false;
-        self.state.status = Some(t("pairing-making"));
+        self.say(t("pairing-making"));
+        self.refresh();
     }
 
     /// Show the pairing link the network made, while the sheet is open.
@@ -390,22 +405,25 @@ impl PeerSyncOverlay {
         }
         self.state.pairing_link = Some(link);
         self.state.pairing_copied = false;
-        self.state.status = Some(t("pairing-waiting"));
+        self.say(t("pairing-waiting"));
+        self.refresh();
     }
 
-    /// Whether the sheet animates: its waiting indicator turns while a
-    /// pairing link is out.
+    /// Whether the sheet animates: it arrives, and its waiting indicator
+    /// turns while a pairing link is out.
     #[must_use]
     pub fn needs_animation_frame(&self) -> bool {
-        self.state.pairing_open
-            && self.state.pairing_link.is_some()
-            && ui::widget::Widget::needs_animation_frame(&self.waiting)
+        self.sheet
+            .dialog()
+            .is_some_and(ui::widget::Widget::needs_animation_frame)
     }
 
     /// Say why no pairing link could be made.
     pub fn pairing_failed(&mut self, error: &str) {
         if self.state.pairing_open {
-            self.state.status = Some(error.to_owned());
+            tracing::warn!(%error, "no pairing link");
+            self.fail(t("pairing-failed"));
+            self.refresh();
         }
     }
 
@@ -414,10 +432,11 @@ impl PeerSyncOverlay {
     pub fn pairing_done(&mut self, label: &str) {
         if self.state.pairing_open {
             self.state.pairing_link = None;
-            self.state.status = Some(t_args(
+            self.say(t_args(
                 "pairing-done",
                 &[("device", label.to_owned().into())],
             ));
+            self.refresh();
         }
     }
 
@@ -459,21 +478,58 @@ impl PeerSyncOverlay {
         self.state.invite_for = None;
         self.state.invite_recipient_key = None;
         self.state.invite_recipient_path = InviteRecipientPath::New;
-        self.state.invite_review_open = false;
-        self.state.status = None;
-        self.pending_offset = 0;
+        self.quiet();
+        self.refresh();
+    }
+
+    /// Offer, or stop offering, an invite link for anyone. Off by default.
+    pub fn set_link_invites_enabled(&mut self, enabled: bool) {
+        self.link_invites = enabled;
+        if !enabled && self.state.invite_recipient_path == InviteRecipientPath::Link {
+            self.state.invite_recipient_path = InviteRecipientPath::New;
+        }
+        // Who stands above the field only while there is a choice.
+        self.sheet.rebuild();
+        self.refresh();
+    }
+
+    /// The invite is for a person: always, unless links for anyone are
+    /// offered and chosen.
+    fn names_person(&self) -> bool {
+        self.state.invite_recipient_path.is_person() || !self.link_invites
+    }
+
+    pub fn composer_open(&self) -> bool {
+        self.state.invite_name.is_some()
+    }
+
+    /// Say, in place of anything the network would have answered, why the
+    /// sheet cannot invite right now and what the person can do.
+    pub fn show_unavailable(&mut self, message: String) {
+        self.fail(message);
+        self.refresh();
+    }
+
+    /// The network came up: an explanation of its absence no longer holds.
+    pub fn clear_unavailable(&mut self, message: &str) {
+        if self.state.status.as_deref() == Some(message) {
+            self.quiet();
+            self.refresh();
+        }
     }
 
     pub fn prompt_invite_for(&mut self, name: String) {
         self.prompt_invite();
         self.state.invite_name = Some(name);
+        self.refresh();
     }
 
     pub fn prompt_connect(&mut self) {
         self.retire_enrollment();
         self.state.invite_name = None;
         self.state.connect_input = Some(String::new());
-        self.state.status = Some(t("peer-sync-paste-token"));
+        self.quiet();
+        self.refresh();
     }
 
     /// Open the join field holding `text`, a link or a code the person
@@ -484,8 +540,9 @@ impl PeerSyncOverlay {
         let text: String = text.split_whitespace().collect();
         if !text.is_empty() {
             self.state.connect_input = Some(text);
-            self.state.status = None;
+            self.quiet();
         }
+        self.refresh();
     }
 
     /// Say the card's `request` is being carried out: minting, redeeming,
@@ -495,11 +552,13 @@ impl PeerSyncOverlay {
         if matches!(
             request,
             PeerSyncRequest::IssueInviteFor { .. }
+                | PeerSyncRequest::IssueInvitation(_)
                 | PeerSyncRequest::AcceptInvite(_)
                 | PeerSyncRequest::ResendInvitation(_)
                 | PeerSyncRequest::CancelInvitation(_)
         ) {
-            self.state.status = Some(t("peer-sync-working"));
+            self.say(t("peer-sync-working"));
+            self.refresh();
         }
     }
 
@@ -515,6 +574,9 @@ impl PeerSyncOverlay {
         self.finish_typed_request(request, outcome, copy_result);
     }
 
+    /// Apply one request's outcome to the sheet. A failure is said in the
+    /// person's terms, with what they can do; what the network answered is
+    /// logged, never shown.
     #[allow(
         clippy::too_many_lines,
         reason = "one arm per request and response pair keeps every outcome of the card in one table"
@@ -525,11 +587,14 @@ impl PeerSyncOverlay {
         outcome: Result<PeerSyncResponse, String>,
         copy_result: bool,
     ) {
+        if let Err(error) = &outcome {
+            tracing::warn!(%error, ?request, "peer-sync request failed");
+        }
         match (request, outcome) {
             (PeerSyncRequest::AcceptInvite(_), Ok(PeerSyncResponse::EnrollmentPending { id })) => {
                 self.enrollment = Some(id);
                 self.enrollment_poll_at = None;
-                self.state.status = Some(t("peer-sync-joining"));
+                self.say(t("peer-sync-joining"));
             }
             (
                 PeerSyncRequest::PollEnrollment(requested),
@@ -542,21 +607,21 @@ impl PeerSyncOverlay {
                 self.enrollment = None;
                 self.enrollment_poll_at = None;
                 self.state.connect_input = None;
-                self.state.status = Some(format!("Joined room {room}"));
+                self.say(format!("Joined room {room}"));
             }
             (PeerSyncRequest::PollEnrollment(id), Err(error)) if self.enrollment == Some(*id) => {
                 self.enrollment = None;
                 self.enrollment_poll_at = None;
-                self.state.status = Some(format!("Join incomplete: {error}"));
+                self.fail(failure(&error, "peer-sync-join-refused"));
             }
             // An invitation action answers its caller, not this card; leaving
             // a workspace and pairing a device answer the surfaces that asked.
             (
                 PeerSyncRequest::PollEnrollment(_)
                 | PeerSyncRequest::CancelEnrollment(_)
-                | PeerSyncRequest::IssueInvitation(_)
                 | PeerSyncRequest::PrepareInvitation
                 | PeerSyncRequest::LeaveSite(_)
+                | PeerSyncRequest::RetryJoin(_)
                 | PeerSyncRequest::InviteDevice
                 | PeerSyncRequest::DevicesAsking
                 | PeerSyncRequest::AnswerDevice { .. }
@@ -571,7 +636,7 @@ impl PeerSyncOverlay {
 
             (PeerSyncRequest::ExportIdentity, Ok(PeerSyncResponse::Message(card))) => {
                 ui::text_selection::clipboard_copy(&card);
-                self.state.status = Some(t("peer-sync-identity-copied"));
+                self.say(t("peer-sync-identity-copied"));
             }
             (
                 PeerSyncRequest::IssueInviteFor { name, .. },
@@ -579,37 +644,36 @@ impl PeerSyncOverlay {
             ) => {
                 self.finish_invite(token, Some(name.clone()), copy_result);
             }
-            (PeerSyncRequest::IssueInviteFor { .. }, Err(error)) => {
+            // A link for anyone: the card's own, with no one named.
+            (PeerSyncRequest::IssueInvitation(_), Ok(PeerSyncResponse::Message(token))) => {
+                self.finish_invite(token, None, copy_result);
+            }
+            (
+                PeerSyncRequest::IssueInviteFor { .. } | PeerSyncRequest::IssueInvitation(_),
+                Err(error),
+            ) => {
                 self.state.invite_token = None;
                 self.state.invite_for = None;
-                self.state.status = Some(t_args(
-                    "peer-sync-invite-failed",
-                    &[("error", error.into())],
-                ));
+                self.fail(failure(&error, "peer-sync-invite-failed"));
             }
             (PeerSyncRequest::ExportIdentity, Err(error)) => {
-                self.state.status = Some(t_args(
-                    "peer-sync-identity-unavailable",
-                    &[("error", error.into())],
-                ));
+                self.fail(failure(&error, "peer-sync-identity-unavailable"));
             }
             (PeerSyncRequest::AcceptInvite(_), Ok(PeerSyncResponse::Message(room))) => {
                 self.state.connect_input = None;
-                self.state.status = Some(t_args("peer-sync-joined-room", &[("room", room.into())]));
+                self.say(t_args("peer-sync-joined-room", &[("room", room.into())]));
             }
             (PeerSyncRequest::AcceptInvite(_), Err(error)) => {
-                self.state.status =
-                    Some(t_args("peer-sync-join-refused", &[("error", error.into())]));
+                self.fail(failure(&error, "peer-sync-join-refused"));
             }
             (
                 PeerSyncRequest::ListPendingInvitations,
                 Ok(PeerSyncResponse::PendingInvitations(rows)),
             ) => self.state.pending_invitations = rows,
-            (PeerSyncRequest::ListPendingInvitations, Err(error)) => {
-                self.state.status = Some(t_args(
-                    "peer-sync-pending-unavailable",
-                    &[("error", error.into())],
-                ));
+            // Without the list there is nothing pending to show; the person
+            // can still invite, and the network's own words stay in the log.
+            (PeerSyncRequest::ListPendingInvitations, Err(_)) => {
+                self.state.pending_invitations.clear();
             }
             (PeerSyncRequest::ResendInvitation(id), Ok(PeerSyncResponse::Message(token))) => {
                 let name = self
@@ -621,223 +685,263 @@ impl PeerSyncOverlay {
                 self.finish_invite(token, name, true);
             }
             (PeerSyncRequest::ResendInvitation(_), Err(error)) => {
-                self.state.status = Some(t_args(
-                    "peer-sync-resend-failed",
-                    &[("error", error.into())],
-                ));
+                self.fail(failure(&error, "peer-sync-resend-failed"));
             }
             (PeerSyncRequest::CancelInvitation(_), Ok(PeerSyncResponse::Message(_))) => {
-                self.state.status = Some(t("peer-sync-invite-canceled"));
+                self.say(t("peer-sync-invite-canceled"));
             }
             (PeerSyncRequest::CancelInvitation(_), Err(error)) => {
-                self.state.status = Some(t_args(
-                    "peer-sync-cancel-failed",
-                    &[("error", error.into())],
-                ));
+                self.fail(failure(&error, "peer-sync-cancel-failed"));
             }
             (_, Ok(_)) => {
-                self.state.status = Some(t("peer-sync-unexpected-response"));
+                self.fail(t("peer-sync-unexpected-response"));
             }
         }
+        self.refresh();
     }
 
     fn finish_invite(&mut self, token: String, invite_for: Option<String>, copy_result: bool) {
-        self.state.status = None;
+        self.quiet();
         self.state.invite_token = Some(token);
         self.state.invite_for = invite_for;
         self.state.invite_name = None;
-        self.state.invite_review_open = false;
         if copy_result {
             self.copy_invite_token();
         }
     }
 
-    pub fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: Modifiers,
-        cursor: Option<Point>,
-    ) -> EventOutcome {
-        let connect_open = self.state.connect_input.is_some();
-        let composer_open = self.state.invite_name.is_some();
-        let mods = modifiers.state();
-        let chord = mods.control_key() || mods.super_key();
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => self.handle_key(logical_key, chord, connect_open, composer_open),
-            WindowEvent::KeyboardInput { .. } => EventOutcome {
-                consumed: connect_open || composer_open,
-                request: None,
-                copy_result: false,
-            },
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                let Some(point) = cursor else {
-                    return EventOutcome::ignored();
-                };
-                if let Some(button) = self.button_rects.iter().find_map(|(button, rect)| {
-                    (rect.area() > 0.0 && rect.contains(point)).then_some(*button)
-                }) {
-                    return self.activate(button);
+    /// The request the person's last input made, and whether its result is
+    /// copied once it is back. The host carries it out.
+    pub fn take_request(&mut self) -> Option<(PeerSyncRequest, bool)> {
+        self.requested.take()
+    }
+
+    /// Route one event to the sheet. While it is up the sheet is modal:
+    /// every event is its own, so a token's characters never reach a
+    /// shell chord. Only the unmodified Tab, and the Enter or Space it did
+    /// not use, go on to the window, which moves focus or presses the
+    /// focused control with them.
+    fn route(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if !self.visible() {
+            return;
+        }
+        let modifiers = ctx.modifiers.state();
+        let chord = modifiers.control_key() || modifiers.super_key();
+        // Showing an invite, Copy is the sheet's whole point: the copy
+        // chord does it too.
+        if chord
+            && sheet::Mode::of(&self.state) == Some(sheet::Mode::Created)
+            && typed(event).is_some_and(|key| key.eq_ignore_ascii_case("c"))
+        {
+            self.activate(Intent::CopyToken);
+            *ctx.handled = true;
+            self.refresh();
+            return;
+        }
+        self.sheet.before_event();
+        self.sheet.handle_event(event, ctx);
+        let unmodified = !modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
+        let window_key = unmodified
+            && [NamedKey::Tab, NamedKey::Enter, NamedKey::Space]
+                .iter()
+                .any(|key| pressed(event, *key));
+        if !window_key {
+            *ctx.handled = true;
+        }
+        self.after_input();
+    }
+
+    /// Read what the person did in the sheet and act on it.
+    fn after_input(&mut self) {
+        match sheet::Mode::of(&self.state) {
+            Some(sheet::Mode::Invite) => {
+                let typed = self.sheet.who_text();
+                if self.state.invite_name.as_deref() != Some(typed.as_str()) {
+                    self.name_typed(typed);
                 }
-                EventOutcome {
-                    consumed: self.visible() && self.rect.contains(point),
-                    request: None,
-                    copy_result: false,
+                if let Some(key) = self.sheet.take_accepted()
+                    && let Some(index) = self
+                        .remembered_invitees
+                        .iter()
+                        .position(|person| person.user_public_key == key)
+                {
+                    self.activate(Intent::SelectKnown(index));
+                }
+                let role = sheet::ROLES
+                    .get(self.sheet.role.get())
+                    .copied()
+                    .unwrap_or(self.state.invite_role);
+                if role != self.state.invite_role {
+                    self.activate(Intent::SelectRole(role));
+                }
+                if self.link_invites {
+                    let link = self.sheet.audience.get() == 1;
+                    if link == self.names_person() {
+                        self.activate(Intent::SelectWho(link));
+                    }
                 }
             }
-            WindowEvent::MouseWheel { delta, .. }
-                if composer_open && !self.state.invite_review_open =>
-            {
-                let down = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y < 0.0,
-                    winit::event::MouseScrollDelta::PixelDelta(point) => point.y < 0.0,
-                };
-                let max = self.state.pending_invitations.len().saturating_sub(3);
-                self.pending_offset = if down {
-                    self.pending_offset.saturating_add(1).min(max)
-                } else {
-                    self.pending_offset.saturating_sub(1)
-                };
-                EventOutcome::consumed()
+            Some(sheet::Mode::Join) => {
+                // No site, link or invite holds a space: what a link picked
+                // up on its way here (a chat's line breaks) is let go.
+                let typed: String = self.sheet.link_text().split_whitespace().collect();
+                if self.state.connect_input.as_deref() != Some(typed.as_str()) {
+                    self.state.connect_input = Some(typed);
+                }
             }
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseWheel { .. }
-            | WindowEvent::MouseInput { .. } => EventOutcome {
-                consumed: self.visible() && cursor.is_some_and(|p| self.rect.contains(p)),
-                request: None,
-                copy_result: false,
-            },
-            _ => EventOutcome::ignored(),
+            Some(sheet::Mode::Created | sheet::Mode::Pairing) | None => {}
+        }
+        let presses = self.sheet.presses.clone();
+        let mut intents: Vec<Intent> = [
+            (&presses.create, Intent::CreateInvite),
+            (&presses.join, Intent::Join),
+            (&presses.paste_link, Intent::PasteToken),
+            (&presses.copy_identity, Intent::CopyIdentity),
+            (&presses.copy_invite, Intent::CopyToken),
+            (&presses.copy_pair_link, Intent::CopyPairLink),
+            (&presses.forget_identity, Intent::ForgetIdentity),
+            (&presses.cancel, Intent::Cancel),
+        ]
+        .into_iter()
+        .filter(|(flag, _)| sheet::take(flag))
+        .map(|(_, intent)| intent)
+        .collect();
+        intents.extend(sheet::take_id(&presses.resend).map(Intent::Resend));
+        intents.extend(sheet::take_id(&presses.cancel_pending).map(Intent::CancelPending));
+        for intent in intents {
+            let outcome = self.activate(intent);
+            if let Some(request) = outcome.request {
+                self.requested = Some((request, outcome.copy_result));
+            }
+        }
+        self.refresh();
+    }
+
+    /// The Who field changed. An identity pasted into it binds the invite
+    /// to that identity and leaves the rest of what was typed as the name;
+    /// anything else is the name, which narrows the people offered.
+    fn name_typed(&mut self, typed: String) {
+        if let Some((key, rest)) = find_recipient_identity(&typed) {
+            // Never carry a remembered person's display name over to a
+            // freshly exchanged key; the token would remain safe, but the
+            // recipient name recorded alongside it would be misleading.
+            let name = if self.state.invite_recipient_path == InviteRecipientPath::Known {
+                String::new()
+            } else {
+                rest
+            };
+            self.state.invite_name = Some(name);
+            self.state.invite_recipient_key = Some(key);
+            self.state.invite_recipient_path = InviteRecipientPath::New;
+            self.quiet();
+            self.sheet.close_suggestions();
+            return;
+        }
+        self.state.invite_name = Some(typed);
+        self.name_edited();
+        let offered: Vec<(String, [u8; 32], String)> = self
+            .suggestions()
+            .into_iter()
+            .filter_map(|index| self.remembered_invitees.get(index))
+            .map(|person| {
+                (
+                    person.name.clone(),
+                    person.user_public_key,
+                    person.verification.clone(),
+                )
+            })
+            .collect();
+        self.sheet.offer(&offered);
+    }
+
+    /// The name was typed into: a remembered person stays chosen only while
+    /// the field still holds their name, so a name never carries another
+    /// person's identity.
+    fn name_edited(&mut self) {
+        if self.state.invite_recipient_path != InviteRecipientPath::Known {
+            return;
+        }
+        let typed = self.state.invite_name.as_deref().unwrap_or_default();
+        let still = self.remembered_invitees.iter().any(|person| {
+            Some(person.user_public_key) == self.state.invite_recipient_key && person.name == typed
+        });
+        if !still {
+            self.state.invite_recipient_path = InviteRecipientPath::New;
+            self.state.invite_recipient_key = None;
+            self.quiet();
         }
     }
 
-    fn handle_key(
-        &mut self,
-        key: &Key,
-        chord: bool,
-        connect_open: bool,
-        composer_open: bool,
-    ) -> EventOutcome {
-        match key {
-            Key::Character(s) if chord && s.eq_ignore_ascii_case("c") => {
-                self.copy_invite_token();
-                EventOutcome::consumed()
-            }
-            Key::Character(s) if chord && s.eq_ignore_ascii_case("v") => {
-                if composer_open {
-                    self.paste_recipient_identity();
-                } else {
-                    self.paste_invite_token();
-                }
-                EventOutcome::consumed()
-            }
-            Key::Named(NamedKey::Escape) if self.visible() => {
-                if self.state.invite_review_open {
-                    self.state.invite_review_open = false;
-                    self.state.status = None;
+    /// The remembered people whose name holds what was typed, by their index
+    /// in the remembered list: the field's suggestions. Nobody is offered
+    /// once the field names the person already chosen.
+    fn suggestions(&self) -> Vec<usize> {
+        let typed = self
+            .state
+            .invite_name
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        if typed.is_empty() || self.state.invite_recipient_path == InviteRecipientPath::Known {
+            return Vec::new();
+        }
+        self.remembered_invitees
+            .iter()
+            .enumerate()
+            .filter(|(_, person)| person.name.to_lowercase().contains(&typed))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn activate(&mut self, intent: Intent) -> EventOutcome {
+        match intent {
+            Intent::CreateInvite => self.submit_invite(),
+            Intent::SelectWho(link) => {
+                if link && !self.link_invites {
                     return EventOutcome::consumed();
                 }
-                self.dismiss();
-                EventOutcome::consumed()
-            }
-            Key::Named(NamedKey::Enter) if composer_open && self.state.invite_review_open => {
-                self.submit_invite()
-            }
-            Key::Named(NamedKey::Enter) if composer_open => self.begin_review(),
-            Key::Named(NamedKey::Enter) if connect_open => self.submit_connect(),
-            Key::Named(NamedKey::Backspace)
-                if connect_open || (composer_open && !self.state.invite_review_open) =>
-            {
-                self.active_input_mut(connect_open)
-                    .map(ui::delete_last_grapheme);
-                EventOutcome::consumed()
-            }
-            Key::Character(s)
-                if (connect_open || (composer_open && !self.state.invite_review_open))
-                    && !chord =>
-            {
-                if let Some(input) = self.active_input_mut(connect_open) {
-                    input.push_str(s.as_str());
+                if link {
+                    self.state.invite_recipient_path = InviteRecipientPath::Link;
+                } else if !self.state.invite_recipient_path.is_person() {
+                    self.state.invite_recipient_path = if self.state.invite_recipient_key.is_some()
+                        && self.remembered_invitees.iter().any(|person| {
+                            Some(person.user_public_key) == self.state.invite_recipient_key
+                        }) {
+                        InviteRecipientPath::Known
+                    } else {
+                        InviteRecipientPath::New
+                    };
                 }
+                self.quiet();
                 EventOutcome::consumed()
             }
-            Key::Named(NamedKey::Space)
-                if composer_open && !self.state.invite_review_open && !chord =>
-            {
-                if let Some(input) = self.state.invite_name.as_mut() {
-                    input.push(' ');
-                }
-                EventOutcome::consumed()
-            }
-            _ if connect_open || composer_open => EventOutcome::consumed(),
-            _ => EventOutcome::ignored(),
-        }
-    }
-
-    fn active_input_mut(&mut self, connect_open: bool) -> Option<&mut String> {
-        if connect_open {
-            self.state.connect_input.as_mut()
-        } else if self.state.invite_recipient_path == InviteRecipientPath::New {
-            self.state.invite_name.as_mut()
-        } else {
-            None
-        }
-    }
-
-    fn activate(&mut self, button: Button) -> EventOutcome {
-        match button {
-            Button::CreateInvite => self.submit_invite(),
-            Button::ReviewInvite => self.begin_review(),
-            Button::BackToComposer => {
-                self.state.invite_review_open = false;
-                EventOutcome::consumed()
-            }
-            Button::SelectRole(role) => {
+            Intent::SelectRole(role) => {
                 self.state.invite_role = role;
                 EventOutcome::consumed()
             }
-            Button::SelectKnown(index) => {
+            Intent::SelectKnown(index) => {
                 if let Some(person) = self.remembered_invitees.get(index) {
                     self.state.invite_name = Some(person.name.clone());
                     self.state.invite_recipient_key = Some(person.user_public_key);
                     self.state.invite_recipient_path = InviteRecipientPath::Known;
-                    self.state.status = Some(t_args(
-                        "peer-sync-using-verified-identity",
-                        &[("verification", person.verification.as_str().into())],
-                    ));
+                    self.quiet();
                 }
+                self.sheet.close_suggestions();
                 EventOutcome::consumed()
             }
-            Button::SelectNewRecipient => {
-                self.state.invite_recipient_path = InviteRecipientPath::New;
-                self.state.invite_name = Some(String::new());
+            Intent::ForgetIdentity => {
                 self.state.invite_recipient_key = None;
-                self.state.status = Some(t("peer-sync-ask-for-identity"));
+                self.state.invite_recipient_path = InviteRecipientPath::New;
+                self.quiet();
                 EventOutcome::consumed()
             }
-            Button::Join => self.submit_connect(),
-            Button::Cancel => {
-                self.retire_enrollment();
-                self.state.connect_input = None;
-                self.state.invite_name = None;
-                self.state.pairing_open = false;
-                self.state.pairing_link = None;
-                self.state.pairing_copied = false;
-                self.state.status = None;
+            Intent::Join => self.submit_connect(),
+            Intent::Cancel => {
+                self.dismiss();
                 EventOutcome::consumed()
             }
-            Button::CopyPairLink => {
+            Intent::CopyPairLink => {
                 if let Some(link) = self.state.pairing_link.as_deref() {
                     // The link makes whoever opens it a device of the person
                     // once approved: it stays out of clipboard history and
@@ -847,55 +951,60 @@ impl PeerSyncOverlay {
                     {
                         self.state.pairing_copied = true;
                     } else {
-                        self.state.status = Some(t("peer-sync-copy-failed"));
+                        self.fail(t("peer-sync-copy-failed"));
                     }
                 }
                 EventOutcome::consumed()
             }
-            Button::CopyToken => {
+            Intent::CopyToken => {
                 self.copy_invite_token();
                 EventOutcome::consumed()
             }
-            Button::PasteToken => {
+            Intent::PasteToken => {
                 self.paste_invite_token();
                 EventOutcome::consumed()
             }
-            Button::Resend(id) => {
+            Intent::Resend(id) => {
                 EventOutcome::request(PeerSyncRequest::ResendInvitation(id), false)
             }
-            Button::CancelPending(id) => {
+            Intent::CancelPending(id) => {
                 EventOutcome::request(PeerSyncRequest::CancelInvitation(id), false)
             }
-            Button::PasteIdentity => {
-                // Never carry a remembered person's display name over to a
-                // freshly exchanged key; the token would remain safe, but the
-                // recipient name recorded alongside it would be misleading.
-                if self.state.invite_recipient_path == InviteRecipientPath::Known {
-                    self.state.invite_name = Some(String::new());
-                }
-                self.state.invite_recipient_key = None;
-                self.state.invite_recipient_path = InviteRecipientPath::New;
-                self.paste_recipient_identity();
-                EventOutcome::consumed()
-            }
-            Button::CopyIdentity => EventOutcome::request(PeerSyncRequest::ExportIdentity, false),
+            Intent::CopyIdentity => EventOutcome::request(PeerSyncRequest::ExportIdentity, false),
         }
     }
 
+    /// The one primary action: mint the invite as the sheet shows it. A
+    /// person's invite is bound to their identity, so only they can redeem
+    /// it; a link admits whoever opens it before it expires.
     fn submit_invite(&mut self) -> EventOutcome {
-        if !self.state.invite_review_open {
-            return self.begin_review();
+        if self.state.invite_name.is_none() {
+            return EventOutcome::consumed();
         }
-        let Some(name) = self.state.invite_name.as_deref() else {
-            return EventOutcome::ignored();
-        };
-        let name = name.trim().to_string();
+        if self.state.invite_recipient_path == InviteRecipientPath::Link && self.link_invites {
+            return EventOutcome::request(
+                PeerSyncRequest::IssueInvitation(InvitationTerms {
+                    role: self.state.invite_role,
+                    expires_in_seconds: INVITE_EXPIRES_IN_SECONDS,
+                    invitee_name: None,
+                    recipient_user_public_key: None,
+                }),
+                true,
+            );
+        }
+        let name = self
+            .state
+            .invite_name
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if name.is_empty() {
-            self.state.status = Some(t("peer-sync-name-required"));
+            self.fail(t("peer-sync-name-required"));
             return EventOutcome::consumed();
         }
         let Some(recipient_user_public_key) = self.state.invite_recipient_key else {
-            self.state.status = Some(t("peer-sync-identity-required"));
+            self.fail(t("peer-sync-identity-required"));
             return EventOutcome::consumed();
         };
         EventOutcome::request(
@@ -908,30 +1017,12 @@ impl PeerSyncOverlay {
         )
     }
 
-    /// Move into the explicit final review; no network operation happens here.
-    fn begin_review(&mut self) -> EventOutcome {
-        let Some(name) = self.state.invite_name.as_deref() else {
-            return EventOutcome::ignored();
-        };
-        if name.trim().is_empty() {
-            self.state.status = Some(t("peer-sync-name-required"));
-            return EventOutcome::consumed();
-        }
-        if self.state.invite_recipient_key.is_none() {
-            self.state.status = Some(t("peer-sync-recipient-required"));
-            return EventOutcome::consumed();
-        }
-        self.state.invite_review_open = true;
-        self.state.status = None;
-        EventOutcome::consumed()
-    }
-
     fn submit_connect(&self) -> EventOutcome {
         if self.enrollment.is_some() {
             return EventOutcome::consumed();
         }
         let Some(token) = self.state.connect_input.as_deref() else {
-            return EventOutcome::ignored();
+            return EventOutcome::consumed();
         };
         EventOutcome::request(
             PeerSyncRequest::AcceptInvite(token.trim().to_string()),
@@ -945,14 +1036,11 @@ impl PeerSyncOverlay {
         };
         // The token admits whoever pastes it: it stays out of clipboard
         // history and device sync, and leaves the clipboard after a while.
-        self.state.status = Some(t(
-            if ui::try_clipboard_copy_secret(token, INVITE_ON_CLIPBOARD_FOR).outcome() == Some(true)
-            {
-                "peer-sync-copied"
-            } else {
-                "peer-sync-copy-failed"
-            },
-        ));
+        if ui::try_clipboard_copy_secret(token, INVITE_ON_CLIPBOARD_FOR).outcome() == Some(true) {
+            self.say(t("peer-sync-copied"));
+        } else {
+            self.fail(t("peer-sync-copy-failed"));
+        }
     }
 
     fn paste_invite_token(&mut self) {
@@ -965,1026 +1053,291 @@ impl PeerSyncOverlay {
         match pasted {
             Some(token) => {
                 self.state.connect_input = Some(token);
-                self.state.status = Some(t("peer-sync-pasted"));
+                self.quiet();
             }
-            None => self.state.status = Some(t("peer-sync-clipboard-empty")),
-        }
-    }
-
-    fn paste_recipient_identity(&mut self) {
-        self.state.invite_recipient_path = InviteRecipientPath::New;
-        let Some(raw) = ui::text_selection::clipboard_paste() else {
-            self.state.status = Some(t("peer-sync-clipboard-empty"));
-            return;
-        };
-        match parse_recipient_identity(&raw) {
-            Some(key) => {
-                self.state.invite_recipient_key = Some(key);
-                self.state.status = Some(t_args(
-                    "peer-sync-identity-bound",
-                    &[("fingerprint", identity_fingerprint(&key).into())],
-                ));
-            }
-            None => {
-                self.state.status = Some(t("peer-sync-identity-invalid"));
-            }
+            None => self.fail(t("peer-sync-clipboard-empty")),
         }
     }
 
     fn dismiss(&mut self) {
         self.retire_enrollment();
-        self.state = PeerSyncSnapshot::default();
+        let context = std::mem::take(&mut self.state.invite_context);
+        self.state = PeerSyncSnapshot {
+            invite_context: context,
+            ..PeerSyncSnapshot::default()
+        };
+        self.status_is_error = false;
+        self.refresh();
     }
 
-    pub fn draw(
-        &mut self,
-        host_rect: Rect,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        // Theme type tokens already carry the user's text scale, and this
-        // sheet lays out and paints with those resolved sizes; the renderer
-        // must not scale them a second time (HIG §7a), so it is reset for
-        // the pass exactly as the lens pass resets it, and restored after.
-        let renderer_scale = text_renderer.text_scale();
-        text_renderer.set_text_scale(1.0);
-        self.draw_at_theme_scale(host_rect, scene, transform, text_renderer, theme);
-        text_renderer.set_text_scale(renderer_scale);
+    /// Bring the sheet up to date with what the overlay holds.
+    fn refresh(&mut self) {
+        self.sheet.refresh(
+            &self.state,
+            &self.remembered_invitees,
+            self.link_invites,
+            self.status_is_error,
+        );
     }
 
-    fn draw_at_theme_scale(
-        &mut self,
-        host_rect: Rect,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.button_rects.clear();
-        self.button_labels.clear();
-        if !self.visible() {
-            self.rect = Rect::ZERO;
-            return;
-        }
-        self.rect = card_rect(host_rect, &self.state, theme);
-        let rect = self.rect;
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        // Panel role (HIG §9.1/§9.5): the Panel radius, ground and derived
-        // edge, painted by the one Panel painter.
-        let _ = ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
+    /// The sheet's card as last laid out.
+    #[must_use]
+    pub fn card_rect(&self) -> Rect {
+        self.sheet.card()
+    }
 
-        // Panel padding (HIG §9.6).
-        let pad = f64::from(tokens.spacing.s4);
-        let mut y = rect.y0 + pad;
-        let title_size = tokens.typography.size(TextRole::Body).max(14.0);
-        let body_size = tokens.typography.size(TextRole::Caption).max(10.0);
-        let m = SheetMetrics {
-            rect,
-            pad,
-            avail: rect.width() - pad * 2.0,
-            body: body_size,
-            name: tokens.typography.size(TextRole::Caption).max(12.0),
-        };
-        let title = t(if self.state.pairing_open {
-            "pairing-title"
-        } else if self.state.invite_review_open {
-            "peer-sync-title-review"
-        } else if self.state.invite_name.is_some() {
-            "peer-sync-title-invite"
-        } else if self.state.connect_input.is_some() {
-            "peer-sync-title-join"
-        } else {
-            "peer-sync-title-workspace-invite"
-        });
-        // Pairing is a guided sheet of its own, under a heading.
-        let title_role = if self.state.pairing_open {
-            TextRole::Heading
-        } else {
-            TextRole::Body
-        };
-        let title = text_renderer.elide_to_width_style(
-            &title,
-            f32_of_f64(m.avail),
-            &theme.text(title_role),
-        );
-        text_renderer.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-            &theme.text(title_role),
-        );
-        y += if self.state.pairing_open {
-            f64::from(theme.text(TextRole::Heading).line_height_px()) + f64::from(tokens.spacing.s4)
-        } else {
-            f64::from(title_size) + f64::from(tokens.spacing.s3)
-        };
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        // The footer first: its buttons stay anchored to the sheet's bottom
-        // edge, wrapping onto more rows on a narrow sheet, and the body
-        // above them clips at the footer so a short window never paints the
-        // form through its buttons.
-        let footer = self.layout_buttons(&mut ctx, &m);
-        let footer_top = footer
-            .iter()
-            .map(|(_, _, rect, _)| rect.y0)
-            .fold(rect.y1 - pad, f64::min);
-        let body_clip = Rect::new(
-            rect.x0,
-            y,
-            rect.x1,
-            (footer_top - f64::from(tokens.spacing.s2)).max(y),
-        );
-        ctx.scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &body_clip,
-        );
-        y = self.draw_body(&mut ctx, &m, y);
-        if self.state.invite_name.is_some() && !self.state.pending_invitations.is_empty() {
-            y = self.draw_pending_invitations(&mut ctx, &m, y);
-        }
-        if let Some(status) = self
-            .state
-            .status
-            .as_deref()
-            .filter(|_| !self.state.pairing_open)
-        {
-            let status = ctx.text.elide_to_width_style(
-                status,
-                f32_of_f64(m.avail),
-                &theme.text(TextRole::Caption),
-            );
-            ctx.text.draw_style(
-                ctx.scene,
-                &status,
-                colors.text_primary,
-                transform.pre_translate((rect.x0 + pad, y).into()),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-        }
-        ctx.scene.pop_layer();
-        // A control the clip hid is not a target either: keep only the body
-        // controls wholly inside the visible body (labels are index-aligned).
-        let shown = |at: &Rect| at.y0 >= body_clip.y0 - 0.5 && at.y1 <= body_clip.y1 + 0.5;
-        let (rects, labels): (Vec<_>, Vec<_>) = std::mem::take(&mut self.button_rects)
+    /// The sheet's named controls and where they were last laid out, for
+    /// tests and `tilo-control`'s named targets.
+    pub fn targets(&self) -> Vec<(String, Rect)> {
+        self.controls()
             .into_iter()
-            .zip(std::mem::take(&mut self.button_labels))
-            .filter(|((_, at), _)| shown(at))
-            .unzip();
-        self.button_rects = rects;
-        self.button_labels = labels;
-        self.paint_buttons(&mut ctx, footer);
+            .map(|control| (control.id, control.rect))
+            .collect()
     }
 
-    fn draw_pending_invitations(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        m: &SheetMetrics,
-        mut y: f64,
-    ) -> f64 {
-        let (rect, pad, body) = (m.rect, m.pad, m.body);
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let colors = &theme.tokens.colors;
-        let total = self.state.pending_invitations.len();
-        let end = self.pending_offset.saturating_add(3).min(total);
-        let heading = pending_heading(self.pending_offset, end, total);
-        let heading = text.elide_to_width_style(
-            &heading,
-            f32_of_f64(m.avail),
-            &theme.text(TextRole::Caption),
-        );
-        text.draw_style(
-            scene,
-            &heading,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-        let spacing = &theme.tokens.spacing;
-        let (s1, s2) = (f64::from(spacing.s1), f64::from(spacing.s2));
-        y += f64::from(body) + s2;
-        for invite in self
-            .state
-            .pending_invitations
-            .iter()
-            .skip(self.pending_offset)
-            .take(3)
-        {
-            // Two caption lines inside `s1` above, between and below, never
-            // under the pointer target its buttons need.
-            let row_h = (2.0 * f64::from(body) + 3.0 * s1)
-                .max(f64::from(theme.tokens.metrics.min_pointer_target) + 2.0 * s1);
-            let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row_h);
-            // Control role (HIG §9.1/§9.5): a row card at the Control radius
-            // (`radii.detail` is for details inside a control) with an edge
-            // derived from its lift floor, so it registers in light as well.
-            ui::surface::card(
-                scene,
-                transform,
-                row,
-                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
-                rest_floor(theme),
-            );
-            let detail = role_and_expiry(
-                "peer-sync-role-expires",
-                invite.role,
-                invite.expiry_unix_seconds,
-            );
-            // The row's buttons are as wide as their labels (`s3` either
-            // side), `s1` apart, inset `s1` from the row; the name and the
-            // detail take the room left of them.
-            let copy_label = t("peer-sync-copy");
-            let cancel_label = t("peer-sync-cancel");
-            let label_w = |text: &mut TextRenderer, label: &str| {
-                f64::from(
-                    text.measure_style(label, None, &theme.text(TextRole::Caption))
-                        .0,
-                ) + 2.0 * f64::from(spacing.s3)
-            };
-            let cancel_w = label_w(text, &cancel_label);
-            let copy_w = label_w(text, &copy_label);
-            let target = f64::from(theme.tokens.metrics.min_pointer_target);
-            let by0 = row.center().y - target / 2.0;
-            let cancel = Rect::new(row.x1 - s1 - cancel_w, by0, row.x1 - s1, by0 + target);
-            let resend = Rect::new(cancel.x0 - s1 - copy_w, by0, cancel.x0 - s1, by0 + target);
-            let text_w = f32_of_f64((resend.x0 - row.x0 - s2 - s2).max(0.0));
-            let shown_name =
-                text.elide_to_width_style(&invite.name, text_w, &theme.text(TextRole::Caption));
-            let shown_detail =
-                text.elide_to_width_style(&detail, text_w, &theme.text(TextRole::Caption));
-            text.draw_style(
-                scene,
-                &shown_name,
-                colors.text_primary,
-                transform.pre_translate((row.x0 + s2, row.y0 + s1).into()),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-            text.draw_style(
-                scene,
-                &shown_detail,
-                colors.text_dim,
-                transform.pre_translate((row.x0 + s2, row.y1 - s1 - f64::from(body)).into()),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-            for (label, button, button_rect) in [
-                (copy_label, Button::Resend(invite.id), resend),
-                (cancel_label, Button::CancelPending(invite.id), cancel),
-            ] {
-                Self::draw_row_button(
-                    &mut PaintCtx::new(scene, transform, text, theme),
-                    button_rect,
-                    label.as_str(),
-                );
-                self.button_rects.push((button, button_rect));
-                self.button_labels.push(DrawnLabel {
-                    label,
-                    description: Some(invite.name.clone()),
-                    selected: None,
+    /// The sheet's named controls in reading order: their names, what a
+    /// screen reader calls them and where they were last laid out.
+    pub fn controls(&self) -> Vec<SheetControl> {
+        fn walk(widget: &dyn Widget, out: &mut Vec<SheetControl>) {
+            if let Some(id) = widget.test_id()
+                && id.starts_with(sheet::SHEET)
+            {
+                let node = widget.accessibility();
+                out.push(SheetControl {
+                    id: id.to_owned(),
+                    label: node
+                        .as_ref()
+                        .and_then(|node| node.name.clone())
+                        .unwrap_or_default(),
+                    button: node.is_some_and(|node| node.role == ui::a11y::Role::Button),
+                    rect: widget.get_rect(),
                 });
             }
-            y = row.y1 + s2;
-        }
-        y
-    }
-
-    /// A pill button inside a pending-invitation row: its lift and its
-    /// centred label.
-    fn draw_row_button(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let colors = &theme.tokens.colors;
-        ui::surface::card(
-            scene,
-            transform,
-            rect,
-            rect.height() / 2.0,
-            rest_floor(theme),
-        );
-        let (width, height) = text.measure_style(label, None, &theme.text(TextRole::Caption));
-        text.draw_style(
-            scene,
-            label,
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    rect.center().x - f64::from(width) / 2.0,
-                    rect.center().y - f64::from(height) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-    }
-
-    fn draw_body(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
-        if self.state.pairing_open {
-            return self.draw_pairing(ctx, m, y);
-        }
-        let invite_name = self.state.invite_name.clone();
-        if let Some(typed) = invite_name.as_deref() {
-            if self.state.invite_review_open {
-                self.draw_invite_review(ctx, m, y)
-            } else {
-                let y = draw_naming(
-                    ctx,
-                    m,
-                    y,
-                    typed,
-                    self.state.invite_recipient_path,
-                    self.state.invite_recipient_key.as_ref(),
-                );
-                let y = self.draw_recipient_choices(ctx, m, y);
-                self.draw_role_choices(ctx, m, y)
+            for child in widget.children() {
+                walk(child, out);
             }
-        } else if let Some(token) = self.state.invite_token.as_deref() {
-            draw_invite(ctx, m, y, token, self.state.invite_for.as_deref())
-        } else {
-            draw_receiving(ctx, m, y, self.state.connect_input.as_deref().unwrap_or(""))
         }
-    }
-
-    /// "Pair a new device": the link as a large code a phone scans, the
-    /// link in a chip that copies it, the three ways a new device uses it,
-    /// why it is safe, and the sheet waiting for the device.
-    fn draw_pairing(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
-        let Some(link) = self.state.pairing_link.clone() else {
-            // Making the link, a failure or the device paired: one line.
-            return self.draw_pairing_status(ctx, m, y);
-        };
-        let SheetMetrics { rect, .. } = *m;
-        let spacing = &ctx.theme.tokens.spacing;
-        let (s3, s4) = (f64::from(spacing.s3), f64::from(spacing.s4));
-
-        // The code, large and centred.
-        let side = PAIRING_QR_SIDE.min(m.avail);
-        let qr_x = rect.center().x - side / 2.0;
-        let mut code = ui::widget::qr::QrWidget::new(link.as_bytes())
-            .with_secret()
-            .with_alt(t("pairing-qr-alt"));
-        code.set_bounds(Rect::new(qr_x, y, qr_x + side, y + side));
-        ui::widget::Widget::draw(
-            &mut code,
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &ui::presence::PresenceCtx::empty(),
-        );
-        y += side + s3;
-        y = self.draw_pair_link_chip(ctx, m, y, &link) + s4;
-        y = draw_pairing_ways(ctx, m, y) + s3;
-        y = draw_pairing_safe(ctx, m, y) + s4;
-        self.draw_pairing_waiting(ctx, m, y)
-    }
-
-    /// The sheet's one line while no link is out.
-    fn draw_pairing_status(&self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
-        let Some(status) = self.state.status.as_deref() else {
-            return y;
-        };
-        let body = ctx.theme.text(TextRole::Body);
-        let (_, height) = ctx
-            .text
-            .measure_style(status, Some(f32_of_f64(m.avail)), &body);
-        ctx.text.draw_style(
-            ctx.scene,
-            status,
-            ctx.theme.tokens.colors.text_primary,
-            ctx.transform.pre_translate((m.rect.x0 + m.pad, y).into()),
-            Some(f32_of_f64(m.avail)),
-            &body,
-        );
-        y + f64::from(height)
-    }
-
-    /// The link, shortened to its site, in a centred chip that copies it.
-    fn draw_pair_link_chip(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        m: &SheetMetrics,
-        y: f64,
-        link: &str,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let tokens = &theme.tokens;
-        let caption = theme.text(TextRole::Caption);
-        let caption_h = f64::from(caption.line_height_px());
-        let (s2, s3) = (f64::from(tokens.spacing.s2), f64::from(tokens.spacing.s3));
-        let copied = self.state.pairing_copied;
-        let chip_text = if copied {
-            t("pairing-copied")
-        } else {
-            format!("{} · {}", short_pairing_link(link), t("pairing-copy-link"))
-        };
-        let icon = 14.0;
-        let (text_w, _) = ctx.text.measure_style(&chip_text, None, &caption);
-        let chip_h = f64::from(tokens.metrics.min_pointer_target).max(caption_h + s2 * 2.0);
-        let chip_w = (icon + s2 + f64::from(text_w) + s3 * 2.0).min(m.avail);
-        let cx = m.rect.center().x;
-        let chip = Rect::new(cx - chip_w / 2.0, y, cx + chip_w / 2.0, y + chip_h);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            rest_floor(theme),
-            None,
-            &RoundedRect::from_rect(chip, chip_h / 2.0),
-        );
-        let mid = chip.center().y;
-        ui::icons::draw_icon(
-            ctx.scene,
-            ctx.transform,
-            Rect::new(
-                chip.x0 + s3,
-                mid - icon / 2.0,
-                chip.x0 + s3 + icon,
-                mid + icon / 2.0,
-            ),
-            if copied {
-                ui::icons::Icon::Check
-            } else {
-                ui::icons::Icon::Copy
-            },
-            tokens.colors.text_primary,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let shown = ctx.text.elide_to_width_style(
-            &chip_text,
-            f32_of_f64((chip_w - icon - s2 - s3 * 2.0).max(0.0)),
-            &caption,
-        );
-        ctx.text.draw_style(
-            ctx.scene,
-            &shown,
-            tokens.colors.text_primary,
-            ctx.transform
-                .pre_translate((chip.x0 + s3 + icon + s2, mid - caption_h / 2.0).into()),
-            None,
-            &caption,
-        );
-        self.button_rects.push((Button::CopyPairLink, chip));
-        self.button_labels.push(DrawnLabel {
-            label: t("pairing-copy-link"),
-            description: None,
-            selected: None,
-        });
-        y + chip_h
-    }
-
-    /// Waiting, gently: a small turning indicator beside the line, centred.
-    fn draw_pairing_waiting(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
-        let theme = ctx.theme;
-        let caption = theme.text(TextRole::Caption);
-        let caption_h = f64::from(caption.line_height_px());
-        let s2 = f64::from(theme.tokens.spacing.s2);
-        let status = self
-            .state
-            .status
-            .clone()
-            .unwrap_or_else(|| t("pairing-waiting"));
-        let (status_w, _) = ctx.text.measure_style(&status, None, &caption);
-        let line_w = caption_h + s2 + f64::from(status_w);
-        let x = m.rect.center().x - line_w / 2.0;
-        self.waiting
-            .set_rect(Rect::new(x, y, x + caption_h, y + caption_h));
-        ui::widget::Widget::draw(
-            &mut self.waiting,
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &ui::presence::PresenceCtx::empty(),
-        );
-        ctx.text.draw_style(
-            ctx.scene,
-            &status,
-            theme.tokens.colors.text_dim,
-            ctx.transform.pre_translate((x + caption_h + s2, y).into()),
-            None,
-            &caption,
-        );
-        y + caption_h
-    }
-
-    fn draw_recipient_choices(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        m: &SheetMetrics,
-        mut y: f64,
-    ) -> f64 {
-        let SheetMetrics {
-            rect, pad, body, ..
-        } = *m;
-        let colors = &ctx.theme.tokens.colors;
-        let heading = ctx.text.elide_to_width_style(
-            &t("peer-sync-recipient-heading"),
-            f32_of_f64(m.avail),
-            &ctx.theme.text(TextRole::Caption),
-        );
-        ctx.text.draw_style(
-            ctx.scene,
-            &heading,
-            colors.text_dim,
-            ctx.transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-            &ctx.theme.text(TextRole::Caption),
-        );
-        let spacing = &ctx.theme.tokens.spacing;
-        let (s1, s2, s3) = (
-            f64::from(spacing.s1),
-            f64::from(spacing.s2),
-            f64::from(spacing.s3),
-        );
-        let choice_h = f64::from(ctx.theme.tokens.metrics.min_pointer_target);
-        y += f64::from(body) + s2;
-        // Snapshot the short rendered list before registering hit targets;
-        // drawing a target mutates `self.button_rects`, so borrowing the
-        // source collection through that call would be invalid.
-        let choices: Vec<RememberedInvitee> =
-            self.remembered_invitees.iter().take(2).cloned().collect();
-        for (index, person) in choices.into_iter().enumerate() {
-            let choice = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + choice_h);
-            let selected = self.state.invite_recipient_path == InviteRecipientPath::Known
-                && self.state.invite_recipient_key == Some(person.user_public_key);
-            // The name leads and how they were verified trails in secondary
-            // ink: two facts, not one string joined by a dot.
-            self.draw_choice(
-                ctx,
-                choice,
-                (person.name.as_str(), Some(person.verification.as_str())),
-                selected,
-                Button::SelectKnown(index),
-            );
-            y = choice.y1 + s1;
-        }
-        let choice = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + choice_h);
-        self.draw_choice(
-            ctx,
-            choice,
-            (t("peer-sync-recipient-new").as_str(), None),
-            self.state.invite_recipient_path == InviteRecipientPath::New,
-            Button::SelectNewRecipient,
-        );
-        choice.y1 + s3
-    }
-
-    fn draw_role_choices(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
-        let SheetMetrics {
-            rect, pad, body, ..
-        } = *m;
-        let colors = &ctx.theme.tokens.colors;
-        let heading = ctx.text.elide_to_width_style(
-            &t("peer-sync-role-heading"),
-            f32_of_f64(m.avail),
-            &ctx.theme.text(TextRole::Caption),
-        );
-        ctx.text.draw_style(
-            ctx.scene,
-            &heading,
-            colors.text_dim,
-            ctx.transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-            &ctx.theme.text(TextRole::Caption),
-        );
-        let spacing = &ctx.theme.tokens.spacing;
-        let choice_h = f64::from(ctx.theme.tokens.metrics.min_pointer_target);
-        y += f64::from(body) + f64::from(spacing.s2);
-        let options = [
-            (crate::network::invite::InviteRole::Viewer, 0.0),
-            (crate::network::invite::InviteRole::Commenter, 1.0),
-            (crate::network::invite::InviteRole::Editor, 2.0),
-        ];
-        let gap = f64::from(spacing.s2);
-        let width = (rect.width() - pad * 2.0 - gap * 2.0) / 3.0;
-        for (role, column) in options {
-            let label = role_label(role);
-            let x0 = rect.x0 + pad + (width + gap) * column;
-            let choice = Rect::new(x0, y, x0 + width, y + choice_h);
-            self.draw_choice(
-                ctx,
-                choice,
-                (label.as_str(), None),
-                self.state.invite_role == role,
-                Button::SelectRole(role),
-            );
-        }
-        y + choice_h
-    }
-
-    fn draw_invite_review(&self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
-        let SheetMetrics {
-            rect,
-            pad,
-            body,
-            avail,
-            ..
-        } = *m;
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let colors = &theme.tokens.colors;
-        let key = self.state.invite_recipient_key.as_ref();
-        let workspace = self.state.invite_context.workspace_name.as_str();
-        let inviter = self.state.invite_context.inviter_name.as_str();
-        let lines = [
-            if workspace.trim().is_empty() {
-                t("peer-sync-review-workspace-this")
-            } else {
-                t_args(
-                    "peer-sync-review-workspace",
-                    &[("workspace", workspace.into())],
-                )
-            },
-            if inviter.trim().is_empty() {
-                t("peer-sync-review-inviter-you")
-            } else {
-                t_args("peer-sync-review-inviter", &[("inviter", inviter.into())])
-            },
-            self.state.invite_name.as_deref().map_or_else(
-                || t("peer-sync-review-recipient-unnamed"),
-                |name| t_args("peer-sync-review-recipient", &[("name", name.into())]),
-            ),
-            t_args(
-                "peer-sync-review-role",
-                &[("role", role_label(self.state.invite_role).into())],
-            ),
-            key.map_or_else(
-                || t("peer-sync-review-identity-missing"),
-                |key| {
-                    t_args(
-                        "peer-sync-review-identity",
-                        &[("fingerprint", identity_fingerprint(key).into())],
-                    )
-                },
-            ),
-        ];
-        for (index, line) in lines.iter().enumerate() {
-            let color = if index == 4 {
-                colors.intent.accent
-            } else {
-                colors.text_primary
-            };
-            let shown =
-                text.elide_to_width_style(line, f32_of_f64(avail), &theme.text(TextRole::Caption));
-            text.draw_style(
-                scene,
-                &shown,
-                color,
-                transform.pre_translate((rect.x0 + pad, y).into()),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-            y += f64::from(body) + f64::from(theme.tokens.spacing.s2);
-        }
-        let note = text.elide_to_width_style(
-            &t("peer-sync-review-note"),
-            f32_of_f64(avail),
-            &theme.text(TextRole::Caption),
-        );
-        text.draw_style(
-            scene,
-            &note,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + pad, y + f64::from(theme.tokens.spacing.s1)).into()),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-        y + f64::from(body) + f64::from(theme.tokens.spacing.s2)
-    }
-
-    fn draw_choice(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        (label, detail): (&str, Option<&str>),
-        selected: bool,
-        button: Button,
-    ) {
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let colors = &theme.tokens.colors;
-        // Selector role (HIG §9.3): the chosen recipient or role is a lift
-        // with the tier's hairline, never an accent fill (the accent means
-        // live state, §9.4); idle choices rest on the lift floor.
-        let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
-        let fill = if selected {
-            tier.fill
-        } else {
-            rest_floor(theme)
-        };
-        let radius = rect.height() / 2.0;
-        let shape = RoundedRect::from_rect(rect, radius);
-        scene.fill(Fill::NonZero, transform, fill, None, &shape);
-        if let Some(border) = tier.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                border,
-                None,
-                &ui::surface::edge_outline(rect, radius),
-            );
-        }
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let room = (rect.width() - 2.0 * inset).max(0.0);
-        if let Some(detail) = detail {
-            // A row: the label on the leading inset, the detail ending on
-            // the trailing one, each elided against the room the other left.
-            let (detail_w, _) = text.measure_style(detail, None, &theme.text(TextRole::Caption));
-            let detail_w = f64::from(detail_w).min(room / 2.0);
-            let shown = text.elide_to_width_style(
-                label,
-                f32_of_f64((room - detail_w - inset).max(0.0)),
-                &theme.text(TextRole::Caption),
-            );
-            let detail = text.elide_to_width_style(
-                detail,
-                f32_of_f64(detail_w),
-                &theme.text(TextRole::Caption),
-            );
-            let (_, height) = text.measure_style(&shown, None, &theme.text(TextRole::Caption));
-            let ty = rect.center().y - f64::from(height) / 2.0;
-            text.draw_style(
-                scene,
-                &shown,
-                colors.text_primary,
-                transform.pre_translate((rect.x0 + inset, ty).into()),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-            let (dw, _) = text.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            text.draw_style(
-                scene,
-                &detail,
-                colors.text_dim,
-                transform.pre_translate((rect.x1 - inset - f64::from(dw), ty).into()),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-        } else {
-            let shown =
-                text.elide_to_width_style(label, f32_of_f64(room), &theme.text(TextRole::Caption));
-            let (width, height) = text.measure_style(&shown, None, &theme.text(TextRole::Caption));
-            text.draw_style(
-                scene,
-                &shown,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        rect.center().x - f64::from(width) / 2.0,
-                        rect.center().y - f64::from(height) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-        }
-        self.button_rects.push((button, rect));
-        self.button_labels.push(DrawnLabel {
-            label: label.to_owned(),
-            description: detail.map(str::to_owned),
-            selected: Some(selected),
-        });
-    }
-
-    /// The footer's buttons and where they go: right-aligned on the sheet's
-    /// bottom padding line, each as wide as its face, wrapping onto a row
-    /// above when the next one would run past the sheet's leading padding.
-    fn layout_buttons(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        m: &SheetMetrics,
-    ) -> Vec<(String, Button, Rect, bool)> {
-        let SheetMetrics { rect, pad, .. } = *m;
-        let (text, theme) = (&mut *ctx.text, ctx.theme);
-        let buttons: Vec<(String, Button)> = if self.state.pairing_open {
-            // The link copies from its chip; the footer only closes.
-            vec![(t("pairing-done-button"), Button::Cancel)]
-        } else if self.state.invite_review_open {
-            vec![
-                (t("peer-sync-create-invite"), Button::CreateInvite),
-                (t("peer-sync-back"), Button::BackToComposer),
-                (t("peer-sync-cancel"), Button::Cancel),
-            ]
-        } else if self.state.invite_name.is_some() {
-            vec![
-                (t("peer-sync-review-invite"), Button::ReviewInvite),
-                (t("peer-sync-paste-identity"), Button::PasteIdentity),
-                (t("peer-sync-cancel"), Button::Cancel),
-            ]
-        } else if self.state.connect_input.is_some() {
-            vec![
-                (t("peer-sync-join"), Button::Join),
-                (t("peer-sync-cancel"), Button::Cancel),
-                (t("peer-sync-paste"), Button::PasteToken),
-                (t("peer-sync-copy-identity"), Button::CopyIdentity),
-            ]
-        } else {
-            vec![(t("peer-sync-copy"), Button::CopyToken)]
-        };
-        // Shared `Button` faces (HIG §9.9) at the minimum pointer target
-        // (§9.6) with the Control radius (§9.1).
-        let bh = f64::from(theme.tokens.metrics.min_pointer_target);
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let mut by = rect.y1 - pad - bh;
-        let mut bx = rect.x1 - pad;
-        let mut out = Vec::with_capacity(buttons.len());
-        for (label, button) in buttons {
-            let primary = matches!(
-                button,
-                Button::Join | Button::CopyToken | Button::CreateInvite | Button::CopyPairLink
-            );
-            // Sized by the face itself (its label style, role and padding),
-            // not by the label measured at the sheet's caption size: the
-            // Large face sets its label in its own, larger style, so a
-            // caption-measured width elided "Cancel" to "Ca...".
-            let bw = button_face(Rect::ZERO, &label, primary)
-                .intrinsic_width(text, theme)
-                .min(m.avail);
-            if bx - bw < rect.x0 + pad - 0.5 && bx < rect.x1 - pad {
-                by -= bh + gap;
-                bx = rect.x1 - pad;
-            }
-            let brect = Rect::new(bx - bw, by, bx, by + bh);
-            out.push((label, button, brect, primary));
-            bx = brect.x0 - gap;
+        let mut out = Vec::new();
+        if let Some(dialog) = self.sheet.dialog() {
+            walk(dialog, &mut out);
         }
         out
     }
 
-    fn paint_buttons(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        buttons: Vec<(String, Button, Rect, bool)>,
-    ) {
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        for (label, button, brect, primary) in buttons {
-            let face = button_face(brect, &label, primary);
-            ui::widget::Button::paint(scene, transform, text, theme, &face);
-            self.button_rects.push((button, brect));
-            self.button_labels.push(DrawnLabel {
-                label,
-                description: None,
-                selected: None,
-            });
-        }
-    }
-
-    /// The sheet's rect and its drawn buttons' labels, as painted last frame.
+    /// Focus the sheet's field, as the window does when it opens.
     #[cfg(test)]
-    pub fn drawn_labels_for_tests(&self) -> (Rect, Vec<String>) {
-        (
-            self.rect,
-            self.button_labels
-                .iter()
-                .map(|drawn| drawn.label.clone())
-                .collect(),
-        )
-    }
-
-    pub fn button_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {
-        self.button_rects
-            .iter()
-            .map(|(button, rect)| {
-                (
-                    match button {
-                        Button::CreateInvite => "create",
-                        Button::ReviewInvite => "review",
-                        Button::BackToComposer => "back",
-                        Button::SelectRole(_) => "role",
-                        Button::SelectKnown(_) => "known",
-                        Button::SelectNewRecipient => "new-recipient",
-                        Button::Join => "join",
-                        Button::Cancel => "cancel",
-                        Button::CopyToken => "copy",
-                        Button::PasteToken => "paste",
-                        Button::Resend(_) => "resend",
-                        Button::CancelPending(_) => "cancel-pending",
-                        Button::PasteIdentity => "paste-identity",
-                        Button::CopyIdentity => "copy-identity",
-                        Button::CopyPairLink => "copy-pair-link",
-                    },
-                    *rect,
-                )
-            })
-            .collect()
+    pub fn focus_field_for_tests(&mut self) {
+        self.sheet.focus_field();
     }
 
     #[cfg(test)]
     pub fn set_snapshot_for_tests(&mut self, snapshot: PeerSyncSnapshot) {
         self.state = snapshot;
+        self.refresh();
     }
 
     /// Show `snapshot`, for a screenshot scene.
     pub fn set_snapshot_for_shots(&mut self, snapshot: PeerSyncSnapshot) {
         self.state = snapshot;
+        self.refresh();
+    }
+
+    /// Show `snapshot` with its status as an error, for a screenshot scene.
+    pub fn set_failed_snapshot_for_shots(&mut self, snapshot: PeerSyncSnapshot) {
+        self.state = snapshot;
+        self.status_is_error = true;
+        self.refresh();
     }
 }
 
-/// The sheet's card, its inner padding and content width, and the body and
-/// name type sizes every section of one paint pass lays out against.
-#[derive(Clone, Copy)]
-struct SheetMetrics {
-    rect: Rect,
-    pad: f64,
-    avail: f64,
-    body: f32,
-    name: f32,
+/// One of the sheet's named controls, as [`PeerSyncOverlay::controls`]
+/// reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetControl {
+    /// Its address (`peer-sync.primary`, `peer-sync-who`, …).
+    pub id: String,
+    /// What a screen reader calls it.
+    pub label: String,
+    pub button: bool,
+    pub rect: Rect,
 }
 
-/// The pending list's heading, with the page it shows when it pages.
-fn pending_heading(offset: usize, end: usize, total: usize) -> String {
-    if total > 3 {
-        t_args(
-            "peer-sync-pending-heading-paged",
-            &[
-                ("first", offset.saturating_add(1).into()),
-                ("last", end.into()),
-                ("total", total.into()),
-            ],
-        )
+/// What a failed request says: the network being off in the person's
+/// terms, else `key`'s message with what they can do.
+fn failure(error: &str, key: &str) -> String {
+    if error == NOT_RUNNING {
+        t("peer-sync-offline")
     } else {
-        t("peer-sync-pending-heading")
+        t(key)
     }
 }
 
-/// A footer button's face: a Large shared `Button`, the primary role for
-/// the step's main action.
-fn button_face(at: Rect, label: &str, primary: bool) -> ui::widget::ButtonFace<'_> {
-    let face = ui::widget::ButtonFace::new(at, label).control_size(ui::widget::ControlSize::Large);
-    if primary {
-        face.role(ButtonRole::Primary)
-    } else {
-        face
+/// The characters a key press types, if it types any.
+fn typed(event: &WindowEvent) -> Option<&str> {
+    match event {
+        WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Character(text),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } => Some(text.as_str()),
+        _ => None,
     }
 }
 
-/// The resting floor of a row, field or choice on the sheet: the first
-/// step of the floor ramp from the panel ground (HIG §9.3), so its hover
-/// and chosen states continue the same ramp.
-fn rest_floor(theme: &Theme) -> vello::peniko::Color {
-    ui::chrome::selection_floor_ramp(
-        theme,
-        ui::chrome::SelectionState::active(false),
-        ui::chrome::shell::panel_ground(theme),
+fn pressed(event: &WindowEvent, key: NamedKey) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: winit::event::KeyEvent {
+                logical_key: winit::keyboard::Key::Named(named),
+                state: winit::event::ElementState::Pressed,
+                ..
+            },
+            ..
+        } if *named == key
     )
 }
 
-fn card_rect(host: Rect, state: &PeerSyncSnapshot, theme: &Theme) -> Rect {
-    // A sheet with a form in it takes the sheet width (HIG §9.6), shrinking
-    // inside the panel padding on a narrow host rather than a bespoke
-    // 400–520 band. Its height is what the form wants, never more than the
-    // host less the same margin: on a short window the body clips above
-    // footer buttons that stay anchored (see `draw_at_theme_scale`).
-    let margin = f64::from(theme.tokens.spacing.s4);
-    let w = f64::from(theme.tokens.metrics.panel_width_sheet)
-        .min(host.width() - 2.0 * margin)
-        .max(0.0);
-    let wanted: f64 = if state.pairing_open {
-        if state.pairing_link.is_some() {
-            PAIRING_SHEET_HEIGHT
-        } else {
-            200.0
+/// What a request answers in a session with no network to run it.
+pub(crate) const NOT_RUNNING: &str = "peer-sync is not running in this session";
+
+/// The overlay is a retained widget the host mounts while the sheet is up:
+/// its one child is the shared modal.
+impl Widget for PeerSyncOverlay {
+    /// A field typed into or a button pressed through the window's focus
+    /// reaches its control directly, not through [`Widget::handle_event`]:
+    /// each pass reads what the controls hold before the sheet shows the
+    /// overlay's state again.
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        self.after_input();
+        if let Some(dialog) = self.sheet.dialog_mut() {
+            dialog.sync(state, path);
         }
-    } else if state.invite_review_open {
-        330.0
-    } else if state.invite_name.is_some() {
-        if state.pending_invitations.is_empty() {
-            430.0
+    }
+
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let before = self.state.clone();
+        self.after_input();
+        let changed = self.state != before || self.requested.is_some();
+        self.sheet
+            .dialog_mut()
+            .is_some_and(|dialog| dialog.update(state, path))
+            || changed
+    }
+
+    /// The overlay's own box, the window the sheet stands in, holding the
+    /// sheet's node.
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let sheet = self.sheet.build_layout(taffy, theme, node_map);
+        let style = if sheet.is_some() {
+            taffy::Style {
+                size: taffy::Size::from_percent(1.0, 1.0),
+                ..taffy::Style::default()
+            }
         } else {
-            610.0
-        }
-    } else if state.connect_input.is_some() {
-        270.0
-    } else {
-        200.0
-    };
-    let h = wanted.min(host.height() - 2.0 * margin).max(0.0);
-    let cx = f64::midpoint(host.x0, host.x1);
-    let cy = f64::midpoint(host.y0, host.y1);
-    Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+            // Closed: nothing to lay out.
+            taffy::Style {
+                display: taffy::Display::None,
+                ..taffy::Style::default()
+            }
+        };
+        let node = ui::widget::TaffyTreeExt::parent_node(taffy, style, sheet.as_slice());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let placed = ui::widget::layout_rect(taffy, node, origin);
+        let Some(sheet) = taffy
+            .children(node)
+            .ok()
+            .and_then(|nodes| nodes.first().copied())
+        else {
+            return;
+        };
+        self.sheet.apply_layout(taffy, sheet, placed.origin());
+    }
+
+    /// The sheet is drawn in the top layer, over everything.
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.sheet
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.route(event, ctx);
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        PeerSyncOverlay::needs_animation_frame(self)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.sheet.take_structure_dirty()
+    }
+
+    fn take_focus_reset(&mut self) -> bool {
+        self.sheet
+            .dialog_mut()
+            .is_some_and(Widget::take_focus_reset)
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.sheet
+            .dialog()
+            .map(|dialog| vec![dialog as &dyn Widget])
+            .unwrap_or_default()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.sheet
+            .dialog_mut()
+            .map(|dialog| vec![dialog as &mut dyn Widget])
+            .unwrap_or_default()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.sheet.card()
+    }
+
+    fn name(&self) -> &'static str {
+        "PeerSyncOverlay"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }
-
-/// The height of "Pair a new device" with its link out: the heading, the
-/// code, the link chip, the three ways, the reassurance, the waiting line
-/// and the footer, with nothing left over below.
-const PAIRING_SHEET_HEIGHT: f64 = ui::tokens::Layout::BASE.pairing_sheet_height as f64;
-
-/// The side of the pairing code: large enough for a phone camera from
-/// arm's length.
-const PAIRING_QR_SIDE: f64 = ui::tokens::Layout::BASE.pairing_qr_side as f64;
 
 /// The pairing link as its chip shows it: the site, then an ellipsis for
 /// the secret rest.
@@ -1993,133 +1346,6 @@ fn short_pairing_link(link: &str) -> String {
         .ok()
         .and_then(|url| url.host_str().map(|host| format!("{host}/…")))
         .unwrap_or_else(|| "…".to_owned())
-}
-
-/// The three ways a new device uses the pairing link: its icon, the kind of
-/// device, and what to do on it.
-const PAIRING_WAYS: [(ui::icons::Icon, &str, &str); 3] = [
-    (
-        ui::icons::Icon::Phone,
-        "pairing-way-phone",
-        "pairing-way-phone-how",
-    ),
-    (
-        ui::icons::Icon::Monitor,
-        "pairing-way-computer",
-        "pairing-way-computer-how",
-    ),
-    (
-        ui::icons::Icon::Globe,
-        "pairing-way-browser",
-        "pairing-way-browser-how",
-    ),
-];
-
-/// The side of a way's icon.
-const PAIRING_WAY_ICON: f64 = ui::tokens::Layout::BASE.avatar as f64;
-
-/// The column the ways and the reassurance share, centred under the code:
-/// its left edge, its width, and where the "how" text starts in it.
-fn pairing_column(ctx: &mut PaintCtx<'_>, m: &SheetMetrics) -> (f64, f64, f64) {
-    let body = ctx.theme.text(TextRole::Body);
-    let spacing = &ctx.theme.tokens.spacing;
-    let (s3, s4) = (f64::from(spacing.s3), f64::from(spacing.s4));
-    let mut label_w: f64 = 0.0;
-    let mut how_w: f64 = 0.0;
-    for (_, label, how) in PAIRING_WAYS {
-        label_w = label_w.max(f64::from(ctx.text.measure_style(&t(label), None, &body).0));
-        how_w = how_w.max(f64::from(ctx.text.measure_style(&t(how), None, &body).0));
-    }
-    let how_at = PAIRING_WAY_ICON + s3 + label_w + s4;
-    let width = (how_at + how_w).min(m.avail);
-    (m.rect.center().x - width / 2.0, width, how_at)
-}
-
-/// The three ways, one line each, in the shared column.
-fn draw_pairing_ways(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
-    let (x0, width, how_at) = pairing_column(ctx, m);
-    let theme = ctx.theme;
-    let tokens = &theme.tokens;
-    let body = theme.text(TextRole::Body);
-    let body_h = f64::from(body.line_height_px());
-    let (s2, s3) = (f64::from(tokens.spacing.s2), f64::from(tokens.spacing.s3));
-    let icon = PAIRING_WAY_ICON;
-    let row_h = body_h.max(icon) + s2;
-    for (glyph, label, how) in PAIRING_WAYS {
-        let mid = y + row_h / 2.0;
-        ui::icons::draw_icon(
-            ctx.scene,
-            ctx.transform,
-            Rect::new(x0, mid - icon / 2.0, x0 + icon, mid + icon / 2.0),
-            glyph,
-            tokens.colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        ctx.text.draw_style(
-            ctx.scene,
-            &t(label),
-            tokens.colors.text_primary,
-            ctx.transform
-                .pre_translate((x0 + icon + s3, mid - body_h / 2.0).into()),
-            None,
-            &body,
-        );
-        let how_x = x0 + how_at;
-        let how = ctx.text.elide_to_width_style(
-            &t(how),
-            f32_of_f64((x0 + width - how_x).max(0.0)),
-            &body,
-        );
-        ctx.text.draw_style(
-            ctx.scene,
-            &how,
-            tokens.colors.text_dim,
-            ctx.transform
-                .pre_translate((how_x, mid - body_h / 2.0).into()),
-            None,
-            &body,
-        );
-        y += row_h;
-    }
-    y
-}
-
-/// Why pairing is safe, said once, beside a shield, in the shared column.
-fn draw_pairing_safe(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
-    let (x0, column, _) = pairing_column(ctx, m);
-    let theme = ctx.theme;
-    let tokens = &theme.tokens;
-    let caption = theme.text(TextRole::Caption);
-    let caption_h = f64::from(caption.line_height_px());
-    let s2 = f64::from(tokens.spacing.s2);
-    let shield = 14.0;
-    let width = (column - shield - s2).max(0.0);
-    let safe = t("pairing-safe");
-    let (_, height) = ctx
-        .text
-        .measure_style(&safe, Some(f32_of_f64(width)), &caption);
-    ui::icons::draw_icon(
-        ctx.scene,
-        ctx.transform,
-        Rect::new(
-            x0,
-            y + (caption_h - shield) / 2.0,
-            x0 + shield,
-            y + (caption_h + shield) / 2.0,
-        ),
-        ui::icons::Icon::Shield,
-        tokens.colors.text_dim,
-        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
-    ctx.text.draw_style(
-        ctx.scene,
-        &safe,
-        tokens.colors.text_dim,
-        ctx.transform.pre_translate((x0 + shield + s2, y).into()),
-        Some(f32_of_f64(width)),
-        &caption,
-    );
-    y + f64::from(height)
 }
 
 fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> {
@@ -2208,379 +1434,77 @@ fn elide_token(token: &str) -> String {
             .collect::<String>()
     )
 }
-
-/// Whose identity the invite binds, or how to bind one.
-fn naming_identity_note(recipient: Option<&[u8; 32]>, path: InviteRecipientPath) -> String {
-    recipient.map_or_else(
-        || t("peer-sync-recipient-hint"),
-        |key| {
-            let fingerprint: ui::i18n::ArgValue = identity_fingerprint(key).into();
-            match path {
-                InviteRecipientPath::Known => t_args(
-                    "peer-sync-identity-remembered",
-                    &[("fingerprint", fingerprint)],
-                ),
-                InviteRecipientPath::New => {
-                    t_args("peer-sync-identity-new", &[("fingerprint", fingerprint)])
-                }
-            }
-        },
-    )
-}
-
-fn draw_naming(
-    ctx: &mut PaintCtx<'_>,
-    m: &SheetMetrics,
-    mut y: f64,
-    typed: &str,
-    recipient_path: InviteRecipientPath,
-    recipient: Option<&[u8; 32]>,
-) -> f64 {
-    let SheetMetrics {
-        rect,
-        pad,
-        avail,
-        body,
-        ..
-    } = *m;
-    let (scene, transform, text, theme) =
-        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let colors = &theme.tokens.colors;
-    let spacing = &theme.tokens.spacing;
-    let (s2, s3) = (f64::from(spacing.s2), f64::from(spacing.s3));
-    let label = text.elide_to_width_style(
-        &t(if recipient_path == InviteRecipientPath::Known {
-            "peer-sync-selected-person"
-        } else {
-            "peer-sync-name-new-person"
-        }),
-        f32_of_f64(avail),
-        &theme.text(TextRole::Caption),
-    );
-    text.draw_style(
-        scene,
-        &label,
-        colors.text_dim,
-        transform.pre_translate((rect.x0 + pad, y).into()),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-    y += f64::from(body) + s2;
-    let field_h = f64::from(theme.tokens.metrics.min_pointer_target) + f64::from(spacing.s1);
-    let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
-    let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.detail));
-    scene.fill(Fill::NonZero, transform, rest_floor(theme), None, &rr);
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        colors.intent.accent,
-        None,
-        &rr,
-    );
-    let shown = text.elide_to_width_style(
-        typed,
-        f32_of_f64((avail - 2.0 * s3 - s2).max(0.0)),
-        &theme.text(TextRole::Caption),
-    );
-    let (tw, th) = text.measure_style(&shown, None, &theme.text(TextRole::Caption));
-    let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
-    let caret_w = 1.5;
-    // The caret sits on the text origin; an empty field shows its placeholder
-    // one `s1` to the right of the caret so the two never overlap (HIG §7).
-    let text_x = field.x0
-        + s3
-        + if typed.is_empty() {
-            caret_w + f64::from(theme.tokens.spacing.s1)
-        } else {
-            0.0
-        };
-    text.draw_style(
-        scene,
-        &if typed.is_empty() {
-            t("peer-sync-name-placeholder")
-        } else {
-            shown.clone()
-        },
-        if typed.is_empty() {
-            colors.text_dim
-        } else {
-            colors.text_primary
-        },
-        transform.pre_translate((text_x, ty).into()),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-    let caret_x = field.x0
-        + s3
-        + if typed.is_empty() {
-            0.0
-        } else {
-            f64::from(tw) + 2.0
-        };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.intent.accent,
-        None,
-        &Rect::new(caret_x, field.y0 + s2, caret_x + caret_w, field.y1 - s2),
-    );
-    y = field.y1 + s3;
-    let identity = naming_identity_note(recipient, recipient_path);
-    let note =
-        text.elide_to_width_style(&identity, f32_of_f64(avail), &theme.text(TextRole::Caption));
-    text.draw_style(
-        scene,
-        &note,
-        colors.text_dim,
-        transform.pre_translate((rect.x0 + pad, y).into()),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-    y + f64::from(body) + s2
-}
-
-fn draw_invite(
-    ctx: &mut PaintCtx<'_>,
-    m: &SheetMetrics,
-    mut y: f64,
-    token: &str,
-    invite_for: Option<&str>,
-) -> f64 {
-    let SheetMetrics {
-        rect, pad, avail, ..
-    } = *m;
-    let parsed = parse_invite(token);
-    let anyone = t("peer-sync-invite-anyone");
-    let who = invite_for.unwrap_or(&anyone);
-    let sub = parsed.as_ref().map_or_else(String::new, |invite| {
-        role_and_expiry(
-            "peer-sync-role-expires",
-            invite.role,
-            invite.expiry_unix_seconds,
-        )
-    });
-    let row_h = person_h(ctx.theme);
-    y = draw_person(
-        ctx,
-        Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row_h),
-        who,
-        &sub,
-        invite_for.is_some(),
-    ) + f64::from(ctx.theme.tokens.spacing.s3);
-    if let Some(invite) = parsed {
-        y = draw_code(
-            ctx,
-            Point::new(rect.x0 + pad, y),
-            &peer_fingerprint(&invite.owner_peer_id),
-            avail,
-        );
-    }
-    y
-}
-
-fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &str) -> f64 {
-    let SheetMetrics {
-        rect,
-        pad,
-        avail,
-        body,
-        name,
-    } = *m;
-    if let Some(invite) = parse_invite(typed) {
-        let row_h = person_h(ctx.theme);
-        y = draw_person(
-            ctx,
-            Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row_h),
-            &t("peer-sync-invite-received"),
-            &role_and_expiry(
-                "peer-sync-received-role-expires",
-                invite.role,
-                invite.expiry_unix_seconds,
-            ),
-            false,
-        ) + f64::from(ctx.theme.tokens.spacing.s3);
-        return draw_code(
-            ctx,
-            Point::new(rect.x0 + pad, y),
-            &peer_fingerprint(&invite.owner_peer_id),
-            avail,
-        );
-    }
-    let (scene, transform, text, theme) =
-        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let colors = &theme.tokens.colors;
-    let (line, understood) = if typed.is_empty() {
-        (t("peer-sync-paste-invite-hint"), false)
-    } else {
-        match crate::shell::network::join_field::describe(typed) {
-            Some(line) => (line, true),
-            None => (
-                t_args(
-                    "peer-sync-token-characters",
-                    &[
-                        ("token", elide_token(typed).into()),
-                        ("count", typed.chars().count().into()),
-                    ],
-                ),
-                false,
-            ),
-        }
-    };
-    if understood {
-        // What was typed, in a field, so the person sees what joins.
-        let field_h = f64::from(theme.tokens.metrics.min_pointer_target);
-        let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            rest_floor(theme),
-            None,
-            &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
-        );
-        let style = theme.text(TextRole::Body);
-        let shown = text.elide_to_width_style(typed, f32_of_f64(avail - 24.0), &style);
-        let (_, shown_h) = text.measure_style(&shown, None, &style);
-        text.draw_style(
-            scene,
-            &shown,
-            colors.text_primary,
-            transform.pre_translate(
-                (field.x0 + 12.0, field.center().y - f64::from(shown_h) / 2.0).into(),
-            ),
-            None,
-            &style,
-        );
-        y = field.y1 + 8.0;
-    }
-    let line = text.elide_to_width_style(&line, f32_of_f64(avail), &theme.text(TextRole::Caption));
-    text.draw_style(
-        scene,
-        &line,
-        if typed.is_empty() || understood {
-            colors.text_dim
-        } else {
-            colors.text_primary
-        },
-        transform.pre_translate((rect.x0 + pad, y).into()),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-    y += f64::from(name) + 8.0;
-    if !typed.is_empty() && !understood {
-        let incomplete = text.elide_to_width_style(
-            &t("peer-sync-token-incomplete"),
-            f32_of_f64(avail),
-            &theme.text(TextRole::Caption),
-        );
-        text.draw_style(
-            scene,
-            &incomplete,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-        y += f64::from(body) + 8.0;
-    }
-    y
-}
-
-/// A person row: the panel row height (HIG §9.6).
-fn person_h(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.panel_row_height)
-}
-
-fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: bool) -> f64 {
-    let (scene, transform, text, theme) =
-        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let colors = &theme.tokens.colors;
-    let center = Point::new(rect.x0 + 16.0, rect.y0 + 18.0);
-    if named {
-        let initial = who
-            .chars()
-            .next()
-            .map(|c| c.to_uppercase().to_string())
-            .unwrap_or_default();
-        ui::widget::AvatarFace::new(&initial, who).paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-            Rect::new(
-                center.x - 16.0,
-                center.y - 16.0,
-                center.x + 16.0,
-                center.y + 16.0,
-            ),
-        );
-    } else {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-            transform,
-            ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
-            None,
-            &vello::kurbo::Circle::new(center, 16.0),
-        );
-    }
-    let x = center.x + 30.0;
-    let ns = theme.tokens.typography.size(TextRole::Caption).max(12.0);
-    let ss = theme.tokens.typography.size(TextRole::Caption).max(10.0);
-    let who =
-        text.elide_to_width_style(who, f32_of_f64(rect.x1 - x), &theme.text(TextRole::Caption));
-    text.draw_style(
-        scene,
-        &who,
-        colors.text_primary,
-        transform.pre_translate((x, rect.y0 + 2.0).into()),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-    let sub =
-        text.elide_to_width_style(sub, f32_of_f64(rect.x1 - x), &theme.text(TextRole::Caption));
-    text.draw_style(
-        scene,
-        &sub,
-        colors.text_dim,
-        transform.pre_translate((x, rect.y0 + 2.0 + f64::from(ns) + 6.0).into()),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-    rect.y0 + 2.0 + f64::from(ns) + 6.0 + f64::from(ss)
-}
-
-fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
-    let (scene, transform, text, theme) =
-        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let colors = &theme.tokens.colors;
-    let (_, fh) = text.measure_style(code, None, &theme.text(TextRole::Heading));
-    let (inset_x, inset_y) = (
-        f64::from(theme.tokens.spacing.s3),
-        f64::from(theme.tokens.spacing.s2),
-    );
-    let field = Rect::new(
-        at.x,
-        at.y,
-        at.x + avail,
-        at.y + f64::from(fh) + 2.0 * inset_y,
-    );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        rest_floor(theme),
-        None,
-        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
-    );
-    text.draw_style(
-        scene,
-        code,
-        colors.text_primary,
-        transform.pre_translate((field.x0 + inset_x, field.y0 + inset_y).into()),
-        None,
-        &theme.text(TextRole::Heading),
-    );
-    field.y1
+/// An identity pasted into the Who field, anywhere among what was typed,
+/// and the rest of what was typed, which is the person's name.
+fn find_recipient_identity(typed: &str) -> Option<([u8; 32], String)> {
+    let words: Vec<&str> = typed.split_whitespace().collect();
+    let (at, key) = words
+        .iter()
+        .enumerate()
+        .find_map(|(at, word)| parse_recipient_identity(word).map(|key| (at, key)))?;
+    let rest = words
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != at)
+        .map(|(_, word)| *word)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((key, rest))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::FrameHarness;
+
+    /// The overlay mounted in a window, as the shell mounts it.
+    fn mounted(overlay: PeerSyncOverlay, theme: Theme) -> FrameHarness {
+        let mut frame = FrameHarness::for_root(ui::State::new(), overlay, (1280, 800), theme);
+        frame.recompose().expect("the sheet lays out");
+        frame
+    }
+
+    fn overlay(frame: &FrameHarness) -> &PeerSyncOverlay {
+        frame.root::<PeerSyncOverlay>()
+    }
+
+    /// Change the overlay as its host does between frames.
+    fn with(frame: &mut FrameHarness, change: impl FnOnce(&mut PeerSyncOverlay)) {
+        change(frame.root_mut::<PeerSyncOverlay>());
+        frame.recompose().expect("the sheet lays out");
+    }
+
+    /// The request the person's input made, as the host takes it.
+    fn request(frame: &mut FrameHarness) -> Option<(PeerSyncRequest, bool)> {
+        let mut taken = None;
+        with(frame, |overlay| taken = overlay.take_request());
+        taken
+    }
+
+    fn find<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+        if widget.test_id() == Some(id) {
+            return Some(widget);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find(child, id))
+    }
+
+    fn named(frame: &FrameHarness, id: &str) -> Rect {
+        overlay(frame)
+            .targets()
+            .into_iter()
+            .find_map(|(name, rect)| (name == id).then_some(rect))
+            .unwrap_or_else(|| panic!("no {id} in {:?}", overlay(frame).targets()))
+    }
+
+    fn type_into_who(frame: &mut FrameHarness, text: &str) {
+        frame
+            .click_named(sheet::WHO_FIELD)
+            .expect("the Who field is there");
+        frame.type_text(text);
+    }
 
     /// The pairing sheet shows its link as the site only, animates only
     /// while it waits for a device, and stops once closed.
@@ -2588,16 +1512,27 @@ mod tests {
     fn the_pairing_sheet_shows_the_site_and_waits_while_its_link_is_out() {
         let shown = short_pairing_link("https://tilo.coffee/#/@eu1.tilo.coffee/w/x?pair=a1a1");
         assert_eq!(shown, "tilo.coffee/…");
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_pair();
-        assert!(!overlay.needs_animation_frame(), "nothing to wait for yet");
-        overlay.show_pairing("https://tilo.coffee/#/w/x?pair=a1".into());
+        let mut pairing = PeerSyncOverlay::default();
+        pairing.prompt_pair();
+        let mut frame = mounted(pairing, Theme::dark());
         assert!(
-            overlay.needs_animation_frame(),
+            frame.settle_for_capture(ui::time::Duration::from_secs(5)),
+            "nothing to wait for yet"
+        );
+        with(&mut frame, |overlay| {
+            overlay.show_pairing("https://tilo.coffee/#/w/x?pair=a1".into());
+        });
+        assert!(
+            overlay(&frame).needs_animation_frame(),
             "waiting for the new device"
         );
-        overlay.pairing_done("Safari on iPhone");
-        assert!(!overlay.needs_animation_frame(), "the device paired");
+        with(&mut frame, |overlay| {
+            overlay.pairing_done("Safari on iPhone");
+        });
+        assert!(
+            frame.settle_for_capture(ui::time::Duration::from_secs(5)),
+            "the device paired"
+        );
     }
 
     #[test]
@@ -2605,132 +1540,65 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn named_invites_bind_role_and_verified_identity_before_review() {
-        /// HIG §9.5: the invite card's rows and mini pills rest on the lift
-        /// floor with an edge derived from it; that edge must register on every
-        /// shipped palette, and the card's Panel border on its Panel ground:
-        /// as a hairline in high contrast, where it alone separates the panel,
-        /// and as the quieter floating edge elsewhere.
-        fn invite_rows_and_panel_edge_register_on_every_palette() {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let ground = ui::chrome::shell::panel_ground(&theme);
-                let floor = rest_floor(&theme);
-                let panel_min = if theme.tokens.colors.palette.high_contrast {
-                    ui::tokens::colors::HAIRLINE_MIN_DELTA
-                } else {
-                    ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
-                };
-                for (what, edge, fill, min) in [
-                    (
-                        "panel border",
-                        ui::chrome::shell::panel_border(&theme),
-                        ground,
-                        panel_min,
-                    ),
-                    (
-                        "row card",
-                        ui::surface::edge_on(floor),
-                        floor,
-                        ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    ),
-                ] {
-                    let delta = ui::surface::edge_delta(edge, fill);
-                    assert!(
-                        delta >= min,
-                        "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
-                        theme.name
-                    );
-                }
-            }
-        }
-
+    fn named_invites_bind_role_and_verified_identity() {
         fn named_invite_refuses_blank_and_preserves_name_after_transport_failure() {
-            let mut overlay = PeerSyncOverlay::default();
-            overlay.prompt_invite();
-            let blank = overlay.handle_event(
-                &key(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                None,
-            );
-            assert!(blank.request.is_none());
+            let mut invite = PeerSyncOverlay::default();
+            invite.prompt_invite();
+            let mut frame = mounted(invite, Theme::dark());
+            frame.click_named(sheet::WHO_FIELD).unwrap();
+            frame.key("Enter");
+            assert!(request(&mut frame).is_none());
             assert_eq!(
-                overlay.state.status.as_deref(),
+                overlay(&frame).state.status.as_deref(),
                 Some("Say who this invite is for")
             );
-            overlay.handle_event(
-                &key(Key::Character("Ada".into())),
-                Modifiers::default(),
-                None,
-            );
-            let unbound = overlay.handle_event(
-                &key(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                None,
-            );
+            frame.type_text("Ada");
+            frame.key("Enter");
             assert!(
-                unbound.request.is_none(),
-                "ordinary UI must not mint a bearer invite"
+                request(&mut frame).is_none(),
+                "an invite for a person is bound to their identity"
             );
-            overlay.state.invite_recipient_key = Some([0x11; 32]);
-            let review = overlay.handle_event(
-                &key(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                None,
-            );
-            assert!(review.request.is_none(), "review must not mint a token");
-            assert!(overlay.state.invite_review_open);
-            let submit = overlay.handle_event(
-                &key(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                None,
-            );
+            with(&mut frame, |overlay| {
+                overlay.state.invite_recipient_key = Some([0x11; 32]);
+            });
+            frame.click_named(sheet::WHO_FIELD).unwrap();
+            frame.key("Enter");
+            let (submit, copy) = request(&mut frame).expect("Enter creates the invite");
             assert_eq!(
-                submit.request,
-                Some(PeerSyncRequest::IssueInviteFor {
+                submit,
+                PeerSyncRequest::IssueInviteFor {
                     name: "Ada".into(),
                     role: crate::network::invite::InviteRole::Editor,
                     recipient_user_public_key: [0x11; 32],
-                })
+                }
             );
-            overlay.finish_request(
-                submit.request.as_ref().unwrap(),
-                Err("offline".into()),
-                submit.copy_result,
-            );
-            assert_eq!(overlay.state.invite_name.as_deref(), Some("Ada"));
+            with(&mut frame, |overlay| {
+                overlay.finish_request(&submit, Err("offline".into()), copy);
+            });
+            assert_eq!(overlay(&frame).state.invite_name.as_deref(), Some("Ada"));
         }
 
-        fn explicit_role_choice_and_review_reach_the_recipient_bound_request() {
-            let mut overlay = PeerSyncOverlay::default();
-            overlay.prompt_invite();
-            overlay.handle_event(
-                &key(Key::Character("Lin".into())),
-                Modifiers::default(),
-                None,
-            );
-            overlay.state.invite_recipient_key = Some([0x22; 32]);
-            assert!(
-                overlay
-                    .activate(Button::SelectRole(
-                        crate::network::invite::InviteRole::Viewer
-                    ))
-                    .request
-                    .is_none()
-            );
-            let review = overlay.handle_event(
-                &key(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                None,
-            );
-            assert!(review.request.is_none());
-            assert!(overlay.snapshot().invite_review_open);
-            let submit = overlay.handle_event(
-                &key(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                None,
-            );
+        fn explicit_role_choice_reaches_the_recipient_bound_request() {
+            let mut invite = PeerSyncOverlay::default();
+            invite.prompt_invite();
+            let mut frame = mounted(invite, Theme::dark());
+            type_into_who(&mut frame, "Lin");
+            with(&mut frame, |overlay| {
+                overlay.state.invite_recipient_key = Some([0x22; 32]);
+            });
+            frame.click_named("peer-sync-access").unwrap();
+            // The control's own keys move the choice: Viewer, its first.
+            frame.key("Home");
+            assert!(request(&mut frame).is_none());
             assert_eq!(
-                submit.request,
+                overlay(&frame).state.invite_role,
+                crate::network::invite::InviteRole::Viewer
+            );
+            frame
+                .click_named(&format!("{}.primary", sheet::SHEET))
+                .unwrap();
+            assert_eq!(
+                request(&mut frame).map(|(request, _)| request),
                 Some(PeerSyncRequest::IssueInviteFor {
                     name: "Lin".into(),
                     role: crate::network::invite::InviteRole::Viewer,
@@ -2739,41 +1607,83 @@ mod tests {
             );
         }
 
-        fn remembered_person_selects_their_verified_identity_before_review() {
-            let mut overlay = PeerSyncOverlay::default();
-            overlay.set_remembered_invitees(vec![RememberedInvitee {
-                name: "Ada Lovelace".into(),
-                user_public_key: [0x41; 32],
-                verification: "Verified yesterday".into(),
-            }]);
-            overlay.set_invite_context(InviteContext {
-                workspace_name: "Compiler club".into(),
-                inviter_name: "Quinn".into(),
-            });
-            overlay.prompt_invite();
-            overlay.activate(Button::SelectKnown(0));
+        fn remembered_person_is_suggested_and_selects_their_verified_identity() {
+            let mut invite = PeerSyncOverlay::default();
+            invite.set_remembered_invitees(vec![
+                RememberedInvitee {
+                    name: "Ada Lovelace".into(),
+                    user_public_key: [0x41; 32],
+                    verification: "Verified yesterday".into(),
+                },
+                RememberedInvitee {
+                    name: "Bo".into(),
+                    user_public_key: [0x42; 32],
+                    verification: "Verified in person".into(),
+                },
+            ]);
+            invite.prompt_invite();
+            let mut frame = mounted(invite, Theme::dark());
+            type_into_who(&mut frame, "ad");
             assert_eq!(
-                overlay.snapshot().invite_name.as_deref(),
+                overlay(&frame).suggestions(),
+                [0],
+                "typing narrows the people"
+            );
+            // The field offers them; the arrow and Enter take one.
+            frame.key("ArrowDown");
+            frame.key("Enter");
+            assert_eq!(
+                overlay(&frame).snapshot().invite_name.as_deref(),
                 Some("Ada Lovelace")
             );
             assert_eq!(
-                overlay.snapshot().invite_recipient_path,
+                overlay(&frame).snapshot().invite_recipient_path,
                 InviteRecipientPath::Known
             );
-            let review = overlay.activate(Button::ReviewInvite);
-            assert!(review.request.is_none());
-            let snapshot = overlay.snapshot();
-            assert!(snapshot.invite_review_open);
-            assert_eq!(snapshot.invite_context.workspace_name, "Compiler club");
-            let mint = overlay.activate(Button::CreateInvite);
+            assert!(
+                request(&mut frame).is_none(),
+                "taking a person is not inviting"
+            );
+            frame
+                .click_named(&format!("{}.primary", sheet::SHEET))
+                .unwrap();
             assert_eq!(
-                mint.request,
+                request(&mut frame).map(|(request, _)| request),
                 Some(PeerSyncRequest::IssueInviteFor {
                     name: "Ada Lovelace".into(),
                     role: crate::network::invite::InviteRole::Editor,
                     recipient_user_public_key: [0x41; 32],
                 })
             );
+            // Editing the name lets go of the person it no longer names.
+            frame.click_named(sheet::WHO_FIELD).unwrap();
+            frame.key("End");
+            frame.key("Backspace");
+            assert_eq!(overlay(&frame).snapshot().invite_recipient_key, None);
+            assert_eq!(
+                overlay(&frame).snapshot().invite_recipient_path,
+                InviteRecipientPath::New
+            );
+        }
+
+        fn an_identity_pasted_into_who_binds_the_invite_and_leaves_the_name() {
+            let mut invite = PeerSyncOverlay::default();
+            invite.prompt_invite();
+            let mut frame = mounted(invite, Theme::dark());
+            let key = [0x5a; 32];
+            frame.click_named(sheet::WHO_FIELD).unwrap();
+            frame.commit_text(&format!("Lin tilo-identity:{}", hex::encode(key)));
+            let snapshot = overlay(&frame).snapshot();
+            assert_eq!(snapshot.invite_recipient_key, Some(key));
+            assert_eq!(snapshot.invite_recipient_path, InviteRecipientPath::New);
+            assert_eq!(snapshot.invite_name.as_deref(), Some("Lin"));
+            assert_eq!(
+                overlay(&frame).sheet.name.get(),
+                "Lin",
+                "the field keeps the name"
+            );
+            frame.click_named("peer-sync-forget-identity").unwrap();
+            assert_eq!(overlay(&frame).snapshot().invite_recipient_key, None);
         }
 
         fn closing_the_sheet_keeps_host_supplied_verified_people_for_next_invite() {
@@ -2786,77 +1696,126 @@ mod tests {
             overlay.prompt_invite();
             overlay.dismiss();
             overlay.prompt_invite();
-            overlay.activate(Button::SelectKnown(0));
+            overlay.activate(Intent::SelectKnown(0));
             assert_eq!(overlay.snapshot().invite_name.as_deref(), Some("Mina"));
             assert_eq!(overlay.snapshot().invite_recipient_key, Some([0x52; 32]));
         }
 
         fn pending_invites_are_named_and_emit_exact_resend_and_cancel_requests() {
-            let mut overlay = PeerSyncOverlay::default();
-            overlay.prompt_invite();
+            let mut invite = PeerSyncOverlay::default();
+            invite.prompt_invite();
             let row = PendingInvitationSummary {
                 id: [7; 32],
                 name: "Ada".into(),
                 role: crate::network::invite::InviteRole::Commenter,
                 expiry_unix_seconds: u64::MAX,
             };
-            overlay.finish_typed_request(
+            invite.finish_typed_request(
                 &PeerSyncRequest::ListPendingInvitations,
                 Ok(PeerSyncResponse::PendingInvitations(vec![row.clone()])),
                 false,
             );
-            assert_eq!(overlay.snapshot().pending_invitations, vec![row]);
+            assert_eq!(invite.snapshot().pending_invitations, vec![row]);
+            let mut frame = mounted(invite, Theme::dark());
+            let id = hex::encode([7; 32]);
+            // The row's action says what it does, unlike the sheet's own
+            // footer, which only closes the sheet.
+            let label = |frame: &FrameHarness, id: &str| {
+                overlay(frame)
+                    .controls()
+                    .into_iter()
+                    .find_map(|control| (control.id == id).then_some(control.label))
+                    .unwrap_or_default()
+            };
             assert_eq!(
-                overlay.activate(Button::Resend([7; 32])).request,
+                label(&frame, &format!("peer-sync-cancel-pending-{id}")),
+                "Revoke"
+            );
+            assert_eq!(label(&frame, "peer-sync.primary"), "Create invite");
+            assert_eq!(label(&frame, "peer-sync.secondary"), "Done");
+            frame
+                .click_named(&format!("peer-sync-resend-{id}"))
+                .unwrap();
+            assert_eq!(
+                request(&mut frame).map(|(request, _)| request),
                 Some(PeerSyncRequest::ResendInvitation([7; 32]))
             );
+            frame
+                .click_named(&format!("peer-sync-cancel-pending-{id}"))
+                .unwrap();
             assert_eq!(
-                overlay.activate(Button::CancelPending([7; 32])).request,
+                request(&mut frame).map(|(request, _)| request),
                 Some(PeerSyncRequest::CancelInvitation([7; 32]))
             );
         }
 
-        invite_rows_and_panel_edge_register_on_every_palette();
         named_invite_refuses_blank_and_preserves_name_after_transport_failure();
-        explicit_role_choice_and_review_reach_the_recipient_bound_request();
-        remembered_person_selects_their_verified_identity_before_review();
+        explicit_role_choice_reaches_the_recipient_bound_request();
+        remembered_person_is_suggested_and_selects_their_verified_identity();
+        an_identity_pasted_into_who_binds_the_invite_and_leaves_the_name();
         closing_the_sheet_keeps_host_supplied_verified_people_for_next_invite();
         pending_invites_are_named_and_emit_exact_resend_and_cancel_requests();
     }
 
-    fn key(key: Key) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-        ui::synthetic_input::keyboard_input(event)
+    /// A failure says what happened in the person's terms and what to do,
+    /// shown as an error; the network's own words never reach the sheet.
+    #[test]
+    fn failures_are_said_in_peoples_terms() {
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_invite();
+        let mint = PeerSyncRequest::IssueInviteFor {
+            name: "Ada".into(),
+            role: crate::network::invite::InviteRole::Editor,
+            recipient_user_public_key: [1; 32],
+        };
+        overlay.finish_request(&mint, Err(NOT_RUNNING.into()), true);
+        let said = overlay.snapshot().status.unwrap_or_default();
+        assert!(
+            said.starts_with("Invites need the network to be on"),
+            "{said}"
+        );
+        assert!(overlay.status_is_error);
+        overlay.finish_request(&mint, Err("relay quota exceeded (code 7)".into()), true);
+        let said = overlay.snapshot().status.unwrap_or_default();
+        assert!(
+            !said.contains("quota") && !said.contains("peer-sync"),
+            "{said}"
+        );
+        overlay.finish_typed_request(
+            &PeerSyncRequest::ListPendingInvitations,
+            Err("table locked".into()),
+            false,
+        );
+        assert!(
+            !overlay
+                .snapshot()
+                .status
+                .unwrap_or_default()
+                .contains("locked"),
+            "a pending list that could not be read is not the person's problem"
+        );
     }
 
     #[test]
     #[serial_test::serial(clipboard)]
     fn connect_and_identity_cards_are_trimmed_exact_and_non_secret() {
         fn connect_is_trimmed_and_only_closes_after_success() {
-            let mut overlay = PeerSyncOverlay::default();
-            overlay.prompt_connect();
-            overlay.handle_event(
-                &key(Key::Character(" token ".into())),
-                Modifiers::default(),
-                None,
-            );
-            let submit = overlay.handle_event(
-                &key(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                None,
-            );
-            assert_eq!(
-                submit.request,
-                Some(PeerSyncRequest::AcceptInvite("token".into()))
-            );
-            overlay.finish_request(
-                submit.request.as_ref().unwrap(),
-                Err("bad token".into()),
-                false,
-            );
-            assert!(overlay.state.connect_input.is_some());
-            overlay.finish_request(submit.request.as_ref().unwrap(), Ok("room-7".into()), false);
-            assert!(overlay.state.connect_input.is_none());
+            let mut join = PeerSyncOverlay::default();
+            join.prompt_connect();
+            let mut frame = mounted(join, Theme::dark());
+            frame.click_named(sheet::LINK_FIELD).unwrap();
+            frame.type_text(" token ");
+            frame.key("Enter");
+            let (submit, _) = request(&mut frame).expect("Enter joins");
+            assert_eq!(submit, PeerSyncRequest::AcceptInvite("token".into()));
+            with(&mut frame, |overlay| {
+                overlay.finish_request(&submit, Err("bad token".into()), false);
+            });
+            assert!(overlay(&frame).state.connect_input.is_some());
+            with(&mut frame, |overlay| {
+                overlay.finish_request(&submit, Ok("room-7".into()), false);
+            });
+            assert!(overlay(&frame).state.connect_input.is_none());
         }
 
         fn fingerprint_is_stable_grouped_and_safe_for_short_ids() {
@@ -2879,15 +1838,24 @@ mod tests {
             );
             assert_eq!(parse_recipient_identity("5a"), None);
             assert_eq!(parse_recipient_identity(&"g".repeat(64)), None);
+            assert_eq!(find_recipient_identity("Ada"), None, "a name is a name");
         }
 
         fn exporting_identity_copies_a_non_secret_card_without_closing_join() {
-            let mut overlay = PeerSyncOverlay::default();
-            overlay.prompt_connect();
+            let mut join = PeerSyncOverlay::default();
+            join.prompt_connect();
+            let mut frame = mounted(join, Theme::dark());
+            frame.click_named("peer-sync-copy-identity").unwrap();
+            assert_eq!(
+                request(&mut frame).map(|(request, _)| request),
+                Some(PeerSyncRequest::ExportIdentity)
+            );
             let card = format!("tilo-identity:{}", hex::encode([0x2a; 32]));
-            overlay.finish_request(&PeerSyncRequest::ExportIdentity, Ok(card.clone()), false);
+            with(&mut frame, |overlay| {
+                overlay.finish_request(&PeerSyncRequest::ExportIdentity, Ok(card.clone()), false);
+            });
             assert_eq!(ui::text_selection::clipboard_paste(), Some(card));
-            assert!(overlay.state.connect_input.is_some());
+            assert!(overlay(&frame).state.connect_input.is_some());
         }
 
         fn long_tokens_are_elided_without_changing_short_ones() {
@@ -2903,64 +1871,223 @@ mod tests {
         exporting_identity_copies_a_non_secret_card_without_closing_join();
         long_tokens_are_elided_without_changing_short_ones();
     }
-}
 
-#[cfg(test)]
-mod native_enrollment_ui_tests {
-    use super::*;
     #[test]
-    fn native_pending_join_is_polled_and_never_reported_joined_early() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_connect();
-        overlay.finish_typed_request(
-            &PeerSyncRequest::AcceptInvite("signed".into()),
-            Ok(PeerSyncResponse::EnrollmentPending { id: 7 }),
-            false,
+    fn the_invite_sheet_is_built_from_the_shared_sheet_field_segmented_control_and_buttons() {
+        let mut invite = PeerSyncOverlay::default();
+        invite.prompt_invite();
+        let frame = mounted(invite, Theme::dark());
+        let dialog = overlay(&frame).sheet.dialog().expect("the sheet is up");
+        assert!(
+            dialog.as_any().is_some_and(
+                <dyn std::any::Any>::is::<ui::widget::ModalDialog<ui::widget::Column>>
+            ),
+            "the shared modal sheet"
         );
-        assert_eq!(overlay.enrollment, Some(7));
-        assert!(!overlay.snapshot().status.unwrap().contains("Joined"));
+        let who = find(dialog, sheet::WHO_FIELD).expect("a Who field");
+        assert!(
+            who.as_any()
+                .is_some_and(<dyn std::any::Any>::is::<ui::widget::Autocomplete>),
+            "Who is the shared field with type-ahead"
+        );
+        let access = find(dialog, "peer-sync-access").expect("an Access control");
         assert_eq!(
-            overlay.pending_enrollment_request(),
-            Some(PeerSyncRequest::PollEnrollment(7))
+            access.name(),
+            "ToggleGroup",
+            "Access is the shared segmented control"
         );
-        assert_eq!(overlay.pending_enrollment_request(), None);
-        overlay.finish_typed_request(
-            &PeerSyncRequest::PollEnrollment(7),
-            Ok(PeerSyncResponse::EnrollmentJoined {
-                id: 7,
-                room: "actual".into(),
-            }),
-            false,
-        );
-        assert_eq!(
-            overlay.snapshot().status.as_deref(),
-            Some("Joined room actual")
-        );
-        assert_eq!(overlay.enrollment, None);
+        for footer in ["primary", "secondary"] {
+            let id = format!("{}.{footer}", sheet::SHEET);
+            assert!(
+                named(&frame, &id).area() > 0.0,
+                "the sheet's own {footer} button"
+            );
+        }
     }
+
+    #[cfg(test)]
+    mod native_enrollment_ui_tests {
+        use super::*;
+
+        #[test]
+        fn native_pending_join_is_polled_and_never_reported_joined_early() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_connect();
+            overlay.finish_typed_request(
+                &PeerSyncRequest::AcceptInvite("signed".into()),
+                Ok(PeerSyncResponse::EnrollmentPending { id: 7 }),
+                false,
+            );
+            assert_eq!(overlay.enrollment, Some(7));
+            assert!(!overlay.snapshot().status.unwrap().contains("Joined"));
+            assert_eq!(
+                overlay.pending_enrollment_request(),
+                Some(PeerSyncRequest::PollEnrollment(7))
+            );
+            assert_eq!(overlay.pending_enrollment_request(), None);
+            overlay.finish_typed_request(
+                &PeerSyncRequest::PollEnrollment(7),
+                Ok(PeerSyncResponse::EnrollmentJoined {
+                    id: 7,
+                    room: "actual".into(),
+                }),
+                false,
+            );
+            assert_eq!(
+                overlay.snapshot().status.as_deref(),
+                Some("Joined room actual")
+            );
+            assert_eq!(overlay.enrollment, None);
+        }
+
+        #[test]
+        fn native_overlay_close_cancels_once_and_ignores_late_join() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_connect();
+            overlay.finish_typed_request(
+                &PeerSyncRequest::AcceptInvite("signed".into()),
+                Ok(PeerSyncResponse::EnrollmentPending { id: 7 }),
+                false,
+            );
+            overlay.dismiss();
+            assert_eq!(
+                overlay.pending_enrollment_request(),
+                Some(PeerSyncRequest::CancelEnrollment(7))
+            );
+            assert_eq!(overlay.pending_enrollment_request(), None);
+            overlay.finish_typed_request(
+                &PeerSyncRequest::PollEnrollment(7),
+                Ok(PeerSyncResponse::EnrollmentJoined {
+                    id: 7,
+                    room: "late".into(),
+                }),
+                false,
+            );
+            assert!(overlay.snapshot().status.is_none());
+        }
+    }
+
     #[test]
-    fn native_overlay_close_cancels_once_and_ignores_late_join() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_connect();
-        overlay.finish_typed_request(
-            &PeerSyncRequest::AcceptInvite("signed".into()),
-            Ok(PeerSyncResponse::EnrollmentPending { id: 7 }),
-            false,
+    fn the_invite_sheet_is_who_then_access_then_one_primary_invite() {
+        let mut invite = PeerSyncOverlay::default();
+        invite.prompt_invite();
+        let mut frame = mounted(invite, Theme::dark());
+        let names: Vec<String> = overlay(&frame)
+            .targets()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let first = |name: &str| names.iter().position(|n| n == name).unwrap_or(usize::MAX);
+        let primary = format!("{}.primary", sheet::SHEET);
+        assert!(
+            first(sheet::WHO_FIELD) < first("peer-sync-access")
+                && first("peer-sync-access") < first(&primary),
+            "who, then access, then Invite: {names:?}"
         );
-        overlay.dismiss();
+        let who = named(&frame, sheet::WHO_FIELD);
+        let access = named(&frame, "peer-sync-access");
+        let create = named(&frame, &primary);
+        assert!(
+            who.y1 <= access.y0 && access.y1 <= create.y0,
+            "who stands above access, above the button"
+        );
         assert_eq!(
-            overlay.pending_enrollment_request(),
-            Some(PeerSyncRequest::CancelEnrollment(7))
+            names.iter().filter(|n| **n == primary).count(),
+            1,
+            "one Invite"
         );
-        assert_eq!(overlay.pending_enrollment_request(), None);
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("review") || n.contains("back")),
+            "no second step: {names:?}"
+        );
+        // Access is one segmented control: three segments of one row,
+        // touching, all the same height.
+        let dialog = overlay(&frame).sheet.dialog().expect("the sheet is up");
+        let control = find(dialog, "peer-sync-access").expect("Access");
+        let roles: Vec<Rect> = control
+            .accessibility()
+            .map(|node| node.children)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|segment| segment.bounds.map(ui::a11y::AccessBounds::to_rect))
+            .collect();
+        assert_eq!(roles.len(), 3, "{roles:?}");
+        for pair in roles.windows(2) {
+            assert!(
+                (pair[0].x1 - pair[1].x0).abs() < 0.5,
+                "segments touch: {roles:?}"
+            );
+            assert!(
+                (pair[0].y0 - pair[1].y0).abs() < 0.5
+                    && (pair[0].height() - pair[1].height()).abs() < 0.5
+            );
+        }
+        // The Invite button is the primary one, and the only one the sheet
+        // marks so: Enter presses it.
+        let focused = frame.tab_through();
+        assert!(
+            focused
+                .iter()
+                .any(|(_, name)| name.as_deref() == Some("Create invite")),
+            "{focused:?}"
+        );
+
+        // Links for anyone are not offered until the product decides to:
+        // no Who choice, and choosing a link does nothing.
+        assert!(
+            !names.iter().any(|n| n == "peer-sync-audience"),
+            "{names:?}"
+        );
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_invite();
+        overlay.activate(Intent::SelectWho(true));
+        assert!(overlay.snapshot().invite_recipient_path.is_person());
+
+        // Offered, a link for anyone asks no name or identity, and one
+        // Invite mints it.
+        overlay.set_link_invites_enabled(true);
+        overlay.activate(Intent::SelectWho(true));
+        let mint = overlay.activate(Intent::CreateInvite);
+        assert_eq!(
+            mint.request,
+            Some(PeerSyncRequest::IssueInvitation(InvitationTerms {
+                role: crate::network::invite::InviteRole::Editor,
+                expires_in_seconds: INVITE_EXPIRES_IN_SECONDS,
+                invitee_name: None,
+                recipient_user_public_key: None,
+            }))
+        );
         overlay.finish_typed_request(
-            &PeerSyncRequest::PollEnrollment(7),
-            Ok(PeerSyncResponse::EnrollmentJoined {
-                id: 7,
-                room: "late".into(),
-            }),
+            mint.request.as_ref().unwrap(),
+            Ok(PeerSyncResponse::Message("tilo-invite".into())),
             false,
         );
-        assert!(overlay.snapshot().status.is_none());
+        assert_eq!(
+            overlay.snapshot().invite_token.as_deref(),
+            Some("tilo-invite")
+        );
+    }
+
+    #[test]
+    fn the_name_placeholder_and_caret_share_one_line_centred_in_the_field() {
+        let theme = Theme::dark();
+        let mut invite = PeerSyncOverlay::default();
+        invite.prompt_invite();
+        let frame = mounted(invite, theme.clone());
+        let dialog = overlay(&frame).sheet.dialog().expect("the sheet is up");
+        let who = find(dialog, sheet::WHO_FIELD)
+            .and_then(|who| who.as_any())
+            .and_then(|any| any.downcast_ref::<ui::widget::Autocomplete>())
+            .expect("the Who field");
+        let field = who.input().get_rect();
+        let caret = who.input().caret_rect(&theme, 0);
+        assert!(caret.height() > 0.0, "{caret:?}");
+        assert!(
+            (caret.center().y - field.center().y).abs() < 1.0,
+            "the text's line is centred in the field, so the caret drawn over it and the placeholder stand level: {caret:?} in {field:?}"
+        );
+        assert!(caret.y0 > field.y0 && caret.y1 < field.y1);
     }
 }

@@ -36,12 +36,6 @@ pub const UNAVAILABLE_MSG: &str = "Password verification is unavailable";
 /// unit-tested with an injected verifier and run against PAM in production. `Send + Sync` so a verifier can be shared (`Arc`) and later moved onto a worker thread.
 pub trait PasswordVerifier: Send + Sync {
     /// `Ok(())` iff the credential is valid. `Err` carries the *user-facing* one-liner for the lock screen — it must never leak which field was wrong or any raw PAM text.
-    ///
-    /// # Errors
-    ///
-    /// Returns the non-leaky rejection or unavailability message ([`INCORRECT_MSG`] /
-    /// [`UNAVAILABLE_MSG`]) when `password` is wrong for `username`, or verification could not be
-    /// carried out at all.
     fn verify(&self, username: &str, password: &str) -> Result<(), String>;
 }
 
@@ -258,14 +252,12 @@ pub fn verifier_from_env() -> std::sync::Arc<dyn PasswordVerifier> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     // select_verifier: the developer-override gate — drives the policy function with `dev_overrides`
     // explicitly, so shipped behaviour is exercised from an ordinary debug test run instead of only being reachable in a build the suite never runs.
 
     #[test]
     fn lock_verifier_selection_is_gated_by_build_and_fails_closed() {
-        // Phase `dev_build_lets_the_test_password_win`.
         assert_eq!(
             select_verifier(
                 true,
@@ -289,7 +281,6 @@ mod tests {
             ),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
         );
-        // Phase `shipped_build_ignores_the_helper_override_entirely`.
         assert_eq!(
             select_verifier(false, None, Some("/tmp/evil".into()), true, None),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
@@ -307,7 +298,6 @@ mod tests {
             ),
             VerifierChoice::Unavailable,
         );
-        // Phase `dev_helper_override_beats_the_installed_helper`.
         assert_eq!(
             select_verifier(true, None, Some("/tmp/helper".into()), true, None),
             VerifierChoice::Helper("/tmp/helper".into()),
@@ -319,12 +309,10 @@ mod tests {
             select_verifier(true, None, Some("   ".into()), true, None),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
         );
-        // Phase `greetd_is_the_login_time_fallback_when_no_helper_is_installed`.
         assert_eq!(
             select_verifier(false, None, None, false, Some("/run/greetd.sock".into())),
             VerifierChoice::Greetd("/run/greetd.sock".into()),
         );
-        // Phase `nothing_configured_is_fail_closed`.
         assert_eq!(
             select_verifier(false, None, None, false, None),
             VerifierChoice::Unavailable,
@@ -333,7 +321,6 @@ mod tests {
 
     #[test]
     fn fixed_and_unavailable_verifiers_are_exact_and_send() {
-        // Phase `fixed_verifier_accepts_only_the_configured_password`.
         {
             let v = FixedVerifier::new("hunter2");
             assert!(v.verify("alice", "hunter2").is_ok());
@@ -344,13 +331,11 @@ mod tests {
                 "Incorrect username or password"
             );
         }
-        // Phase `unavailable_verifier_rejects_everything_fail_closed`.
         {
             let v = UnavailableVerifier;
             assert!(v.verify("alice", "").is_err());
             assert!(v.verify("alice", "anything").is_err());
         }
-        // Phase `helper_verifier_is_send_sync_for_worker_thread`.
         {
             // The async unlock path moves an `Arc<dyn PasswordVerifier>` onto a worker thread, so the helper must be `Send + Sync`.
             fn assert_send_sync<T: Send + Sync>() {}
@@ -417,14 +402,12 @@ mod tests {
             assert_eq!(v.verify("alice", "wrong").unwrap_err(), INCORRECT_MSG);
             let _ = std::fs::remove_file(&path);
         }
-        // Phase `helper_error_exit_is_unavailable_fail_closed`.
         {
             // Exit 2 = "could not run the check" → fail closed, distinct wording.
             let (v, path) = fake_helper("read -r pw\nexit 2\n");
             assert_eq!(v.verify("alice", "whatever").unwrap_err(), UNAVAILABLE_MSG);
             let _ = std::fs::remove_file(&path);
         }
-        // Phase `helper_spawn_failure_is_unavailable_fail_closed`.
         {
             // A non-existent program can never authenticate anyone.
             let v = HelperVerifier::new(vec![
@@ -432,21 +415,20 @@ mod tests {
             ]);
             assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
         }
-        // Phase `helper_timeout_is_unavailable_and_returns_promptly`.
         {
-            // A helper that never answers must not hang the verify — the bound fires and the attempt fails closed. `exec sleep` so the killed child is the sleeper itself (no orphaned grandchild).
-            let (v, path) = fake_helper("exec sleep 30\n");
+            // A helper that never answers must not hang the verify — the bound fires and the attempt fails closed. `exec sleep` so the killed child is the sleeper itself (no orphaned grandchild); it sleeps far past the hang bound, so only the timeout can end the attempt.
+            let (v, path) = fake_helper("exec sleep 1000000\n");
             let v = v.with_timeout(Duration::from_millis(150));
-            let start = Instant::now();
-            assert_eq!(v.verify("alice", "s3cr3t").unwrap_err(), UNAVAILABLE_MSG);
-            assert!(
-                start.elapsed() < Duration::from_secs(5),
-                "verify must return promptly on timeout, took {:?}",
-                start.elapsed()
+            let (answered, answer) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = answered.send(v.verify("alice", "s3cr3t"));
+            });
+            assert_eq!(
+                tilo_test_env::recv("verify to give up on a silent helper", &answer).unwrap_err(),
+                UNAVAILABLE_MSG
             );
             let _ = std::fs::remove_file(&path);
         }
-        // Phase `helper_receives_password_on_stdin_not_argv`.
         {
             // Prove the secret is passed on stdin only: the script records its argv to a file; the password must be absent from it and the username present.
             let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);

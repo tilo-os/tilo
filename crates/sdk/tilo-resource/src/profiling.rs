@@ -183,10 +183,6 @@ mod recorder {
     }
 
     /// Run the real operation and return every scope it ran, by name.
-    ///
-    /// # Panics
-    /// Panics for a nested observation, a lost recorder, or more distinct
-    /// scope names than one observation keeps.
     pub fn observe<T>(operation: impl FnOnce() -> T) -> (T, Vec<Sample>) {
         RECORDS.with(|records| {
             let mut records = records.borrow_mut();

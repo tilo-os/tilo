@@ -201,10 +201,6 @@ impl RecordLog {
     }
 
     /// Every stored changeset, by workspace, device and sequence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unreadable or undecodable entries.
     pub fn changesets(&self) -> Result<Vec<LoggedChangeset>, RecordLogError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CHANGESETS)?;

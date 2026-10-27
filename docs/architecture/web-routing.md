@@ -617,10 +617,19 @@ new page, so nothing of one room's state or pending work reaches the
 other. Back and Forward across a switch load the room anew, never inside
 the previous room's desktop. A bare desktop entry under a home reopens
 the room the person last chose (choosing the home goes back to it); never
-in an embed. A remembered room whose admission fails is offered as "did
-not open last time" and is no longer reopened by a bare entry, and the
-failure page offers the person's other workspaces. Remembering grants
-nothing: every room still decides at its own door.
+in an embed. Each remembered room is pinned to the host that held it (its
+device key): a room lives in its host's state, so once the origin answers
+as another host (set up again on fresh state), the rooms the host before
+held are gone and the browser forgets them. It learns that from the host
+its page is connected to, and, when opening a remembered room fails, by
+asking the room's origin which host answers there now. A host that cannot
+be reached, or fails, says nothing about its rooms: a remembered room
+whose admission fails for any other reason stays, offered as "did not
+open last time", and is no longer reopened by a bare entry, and the
+failure page offers the person's other workspaces. Two remembered
+workspaces with one name are listed with their host, and their room when
+one host holds both. Remembering grants nothing: every room still
+decides at its own door.
 
 The `web-entry` image (`crates/browser/tilo-browser-runtime/container/`)
 is the runtime's desktop bundle as static files. Its `entry.json` is

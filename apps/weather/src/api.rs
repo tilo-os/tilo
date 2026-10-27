@@ -109,10 +109,6 @@ struct DailyRaw {
 
 /// Parse a forecast JSON body into a [`WeatherSnapshot`]. The hourly strip
 /// is sliced to the 24 hours starting at the current observation time.
-///
-/// # Errors
-/// Returns an error message if `body` doesn't decode as the expected
-/// Open-Meteo forecast JSON shape.
 pub fn parse_forecast(
     body: &str,
     location_id: LocationId,
@@ -230,10 +226,6 @@ struct AirQualityCurrentRaw {
 
 /// Parse an air-quality JSON body into an [`AirQuality`] reading. Missing
 /// fields decode to `None` (honest "unavailable"), never a fabricated zero.
-///
-/// # Errors
-/// Returns an error message if `body` doesn't decode as the expected
-/// Open-Meteo air-quality JSON shape.
 pub fn parse_air_quality(
     body: &str,
     location_id: LocationId,
@@ -292,10 +284,6 @@ struct GeocodeResult {
 }
 
 /// Parse a geocoding JSON body into a list of candidate locations.
-///
-/// # Errors
-/// Returns an error message if `body` doesn't decode as the expected
-/// Open-Meteo geocoding JSON shape.
 pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
     let raw: GeocodeResponse =
         serde_json::from_str(body).map_err(|e| format!("geocode decode: {e}"))?;
@@ -320,6 +308,31 @@ pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
         .collect())
 }
 
+/// The places worth offering for `query`, in the provider's order.
+///
+/// Open-Meteo also matches a place's other names, so "Amsterdam" brings back
+/// a town now called "eMvelo"; when some results carry the query in their
+/// own name, the others are dropped. Places that would read the same in the
+/// list ("Amsterdam, Ohio, United States" twice) are shown once.
+#[must_use]
+pub fn refine_geocode(query: &str, results: Vec<SavedLocation>) -> Vec<SavedLocation> {
+    let needle = query.trim().to_lowercase();
+    let named = |r: &SavedLocation| r.name.to_lowercase().contains(&needle);
+    let any_named = !needle.is_empty() && results.iter().any(named);
+    let mut seen = std::collections::HashSet::new();
+    results
+        .into_iter()
+        .filter(|r| !any_named || named(r))
+        .filter(|r| {
+            seen.insert((
+                r.name.to_lowercase(),
+                r.region.to_lowercase(),
+                r.country.to_lowercase(),
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -328,7 +341,6 @@ mod tests {
 
     #[test]
     fn open_meteo_urls_carry_params_and_encoding() {
-        // Case `forecast_url_has_required_params`.
         {
             let u = forecast_url(52.52, 13.41, Units::IMPERIAL);
             assert!(u.contains("latitude=52.5200"));
@@ -338,11 +350,39 @@ mod tests {
             assert!(u.contains("wind_speed_unit=mph"));
             assert!(u.contains("timezone=auto"));
         }
-        // Case `geocode_url_encodes_spaces`.
         {
             let u = geocode_url("New York");
             assert!(u.contains("name=New%20York"), "{u}");
         }
+    }
+
+    #[test]
+    fn place_search_drops_other_names_and_repeats() {
+        let place = |name: &str, region: &str, country: &str, lat: f64| {
+            SavedLocation::new(name, region, country, "", lat, 0.0, "auto")
+        };
+        let results = vec![
+            place("Amsterdam", "North Holland", "The Netherlands", 52.4),
+            place("Amsterdam", "Ohio", "United States", 40.5),
+            place("eMvelo", "Mpumalanga", "South Africa", -26.5),
+            place("Amsterdam", "Ohio", "United States", 41.0),
+            place("New Amsterdam", "Indiana", "United States", 38.1),
+        ];
+        let shown: Vec<_> = refine_geocode(" amsterdam", results)
+            .into_iter()
+            .map(|r| format!("{}, {}", r.name, r.region))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "Amsterdam, North Holland",
+                "Amsterdam, Ohio",
+                "New Amsterdam, Indiana"
+            ]
+        );
+        // A query in another language matches no own name: keep them all.
+        let munich = vec![place("Munich", "Bavaria", "Germany", 48.1)];
+        assert_eq!(refine_geocode("München", munich).len(), 1);
     }
 
     #[test]
@@ -403,7 +443,6 @@ mod tests {
             );
             assert_eq!(snap.daily.len(), 1);
         }
-        // Case `parse_air_quality_maps_fields_and_nulls`.
         {
             let body = serde_json::json!({
                 "current": {
@@ -424,7 +463,6 @@ mod tests {
             assert!(aq.has_any());
             assert_eq!(aq.fetched_at, 1234);
         }
-        // Case `european_aqi_bands_cover_the_scale`.
         {
             assert_eq!(european_aqi_band(10.0), "Good");
             assert_eq!(european_aqi_band(30.0), "Fair");
@@ -433,7 +471,6 @@ mod tests {
             assert_eq!(european_aqi_band(90.0), "Very poor");
             assert_eq!(european_aqi_band(140.0), "Extremely poor");
         }
-        // Case `parse_geocode_maps_fields`.
         {
             let body = serde_json::json!({
                 "results": [{
@@ -452,7 +489,6 @@ mod tests {
             assert_eq!(locs[0].name, "Berlin");
             assert_eq!(locs[0].timezone, "Europe/Berlin");
         }
-        // Case `parse_geocode_empty_results_ok`.
         {
             let body = serde_json::json!({}).to_string();
             let locs = parse_geocode(&body).unwrap();

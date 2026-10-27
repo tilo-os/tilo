@@ -3,7 +3,7 @@
 //!
 //! The document holds account metadata (names, order and lifecycle
 //! collaborate without credentials entering history); this device's secret
-//! store holds each account's seed ([`Seeds`]). The surface joins the two into
+//! store holds each account's seed (`Seeds`). The surface joins the two into
 //! the accounts it shows and submits every metadata change as a field edit or verb
 //! through the framework's dispatcher. The window's header row, with its
 //! search and add buttons, belongs to the framework's navigation shell around
@@ -12,7 +12,7 @@
 //!
 //!  * the [`AccountList`] (main screen), with a banner above it when a
 //!    secret could not be saved on this device,
-//!  * a [`Notice`] for what just happened, which the shell shows as a toast,
+//!  * a `Notice` for what just happened, which the shell shows as a toast,
 //!  * the [`AddAccountPanel`] sheet (second screen), in the window's top layer.
 //!
 //! The list is painted from the root rect rather than through the taffy tree:
@@ -23,9 +23,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::{Duration, Instant};
 
-/// How long a copied code stays on the clipboard: one code period, after
-/// which it is useless anyway.
-const CODE_ON_CLIPBOARD_FOR: Duration = Duration::from_secs(30);
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -37,7 +34,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{ContentsOutcome, FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::secrets::SecretStore;
 use ui::text_render::TextRenderer;
@@ -92,7 +89,6 @@ const UNSAVED_DETAIL: &str = "Restore keyring or storage access on this device, 
 pub struct AuthenticatorApp {
     /// The accounts as the document holds them: metadata, no secrets.
     accounts: Rc<Vec<Account>>,
-    /// Each account's seed on this device.
     seeds: Seeds,
     /// The accounts joined with this device's seeds: what the list shows and
     /// codes are computed from.
@@ -104,7 +100,7 @@ pub struct AuthenticatorApp {
     /// and hands the chosen path back over this channel, drained once per
     /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
     /// never draws its own picker (HIG §5).
-    portal_rx: Option<PortalChannel>,
+    portal_rx: Option<ui::portal::ContentsChannel>,
 
     rect: Rect,
     /// The readable column the banner and rows stand in, from the last paint.
@@ -148,6 +144,9 @@ pub struct AuthenticatorApp {
     account_count: Option<ui::LocalState<usize>>,
     /// A capture's clock was moved to its scenario's step already.
     clock_staged: bool,
+    /// Why codes may be rejected because this device's clock is not
+    /// synchronised, when the platform can say so.
+    clock_warning: Option<&'static str>,
 }
 
 impl Default for AuthenticatorApp {
@@ -193,6 +192,7 @@ impl AuthenticatorApp {
             has_accounts: None,
             account_count: None,
             clock_staged: false,
+            clock_warning: totp::clock_drift_warning(),
         }
     }
 
@@ -349,9 +349,13 @@ impl AuthenticatorApp {
                 return;
             }
             let code = totp::current_code(&acc);
+            // A copied code is useful for exactly the account's own period,
+            // not a fixed thirty seconds: a 60-second code would otherwise be
+            // wiped while still valid.
+            let lifetime = Duration::from_secs(u64::from(acc.period.max(1)));
             if !self
                 .copy
-                .watch(ui::try_clipboard_copy_secret(&code, CODE_ON_CLIPBOARD_FOR))
+                .watch(ui::try_clipboard_copy_secret(&code, lifetime))
             {
                 self.toast("Could not copy to the clipboard", ToastKind::Error);
                 return;
@@ -455,6 +459,11 @@ impl AuthenticatorApp {
                 self.copy_account(id);
                 self.list_dirty = true;
             }
+            ListEvent::Reveal(id) => {
+                self.selected = Some(id);
+                self.list.show_code(id);
+                self.list_dirty = true;
+            }
             ListEvent::Select(id) => {
                 self.selected = Some(id);
                 self.list_dirty = true;
@@ -462,7 +471,6 @@ impl AuthenticatorApp {
             ListEvent::Edit(id) | ListEvent::SetUp(id) => {
                 self.open_for(id);
             }
-            ListEvent::Add => self.open_add(),
             ListEvent::MoveUp(id) => self.submit(Totp::MOVE_UP.with(Totp::item(id))),
             ListEvent::MoveDown(id) => self.submit(Totp::MOVE_DOWN.with(Totp::item(id))),
             ListEvent::Delete(id) => {
@@ -482,7 +490,7 @@ impl AuthenticatorApp {
         self.structure_dirty = true;
         match ev {
             AddPanelEvent::Cancel => {}
-            AddPanelEvent::PickImageForQr => self.import_qr_from_image(),
+            AddPanelEvent::PickImageForQr => self.request_qr_via_portal(),
             AddPanelEvent::Save(mut acc) => {
                 acc.color = (self.vault.len() % 7) as u8;
                 let order = self.vault.next_order();
@@ -583,6 +591,7 @@ impl AuthenticatorApp {
         }
         let event = match verb {
             "totp.select" => ListEvent::Select(id),
+            "totp.reveal" => ListEvent::Reveal(id),
             "totp.copy" => ListEvent::Copy(id),
             "totp.edit" => ListEvent::Edit(id),
             "totp.move-up" => ListEvent::MoveUp(id),
@@ -650,53 +659,39 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Import a QR code from an image file into the open add sheet.
-    ///
-    /// Choosing the screenshot/photo goes through the **host** file chooser
-    /// (the XDG Desktop Portal, [`ui::portal`]) — the app never draws its
-    /// own picker (HIG §5). The portal round-trip runs on a worker thread and
-    /// the chosen path is drained each frame and decoded by the pure-Rust,
-    /// offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE` environment
-    /// variable short-circuits the chooser with a fixed path — the seam the
-    /// headless captures and test flows drive.
-    fn import_qr_from_image(&mut self) {
-        if let Some(path) = std::env::var_os("TOTP_QR_IMAGE") {
-            self.decode_qr_path(std::path::Path::new(&path));
-            return;
-        }
-        self.request_qr_via_portal();
-    }
-
-    /// Ask the host desktop's file chooser for a QR image. Per HIG §5 the app
-    /// never draws its own picker: the portal round-trip runs on a worker
-    /// thread ([`ui::portal::PickRequest`]) and the chosen path comes back
-    /// over a channel drained each frame in [`Self::drain_portal`]. A second
-    /// request while one is in flight is ignored, so a double-tap can't stack
-    /// two host dialogs.
+    /// Ask the host's file chooser for a QR image. Per HIG §5 the app never
+    /// draws its own picker: the chooser delivers the image's contents, the
+    /// same on every host, a browser page included, over a channel drained
+    /// each frame in [`Self::drain_portal`]. A second request while one is in
+    /// flight is ignored, so a double-tap can't stack two host dialogs.
     fn request_qr_via_portal(&mut self) {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(qr_image_request().send());
+        self.portal_rx = Some(qr_image_request().send_contents());
     }
 
-    /// Drain a completed portal request, if any. Called once per frame from
-    /// [`Widget::sync`]: decodes the chosen image into the open add sheet,
-    /// surfaces a decode/cancel/failure via the toast, and clears the
-    /// in-flight channel. Never blocks — a still pending picker leaves the
-    /// channel installed for the next frame.
-    fn drain_portal(&mut self) {
+    /// Drain a completed portal request, if any; whether it took one.
+    /// Called every frame from [`Widget::update`]: decodes the chosen image
+    /// into the open add sheet, surfaces a decode/cancel/failure via the
+    /// toast, and clears the in-flight channel. Never blocks — a still
+    /// pending picker leaves the channel installed for the next frame.
+    fn drain_portal(&mut self) -> bool {
         let Some(rx) = self.portal_rx.as_ref() else {
-            return;
+            return false;
         };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    PortalOutcome::Opened(path) => self.decode_qr_path(&path),
+                    ContentsOutcome::Picked(files) => {
+                        if let Some(file) = files.first() {
+                            self.decode_qr_bytes(&file.bytes);
+                        }
+                    }
                     // A cancel is a no-op — the sheet is left as it was.
-                    PortalOutcome::Cancelled => {}
-                    PortalOutcome::Failed(reason) => {
+                    ContentsOutcome::Cancelled => {}
+                    ContentsOutcome::Failed(reason) => {
                         self.toast(
                             format!("Couldn\u{2019}t open the file chooser: {reason}"),
                             ToastKind::Error,
@@ -705,22 +700,26 @@ impl AuthenticatorApp {
                 }
             }
             // Still waiting on the host dialog, or the worker vanished.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
             }
         }
+        true
     }
 
-    /// Decode a QR image at `path` into the open add sheet, or surface why
-    /// it couldn't be read.
-    fn decode_qr_path(&mut self, path: &std::path::Path) {
-        match crate::qr::decode_image_file(path) {
+    /// Decode a chosen QR image into the open add sheet, or surface why it
+    /// couldn't be read.
+    fn decode_qr_bytes(&mut self, bytes: &[u8]) {
+        match crate::qr::decode_image_bytes(bytes) {
             Ok(uri) => {
                 self.add_panel.apply_uri(&uri);
                 self.toast("QR code read", ToastKind::Success);
             }
-            Err(reason) => self.toast(reason, ToastKind::Error),
+            Err(reason) => {
+                tracing::debug!(%reason, "totp: no code read from the chosen image");
+                self.toast(crate::i18n::t("totp-scan-unreadable"), ToastKind::Error);
+            }
         }
     }
 
@@ -839,8 +838,6 @@ impl AuthenticatorApp {
         self.list_dirty = true;
     }
 
-    // ---- painting --------------------------------------------------------
-
     /// The readable strip the banner and rows stand in: the window less its
     /// gutters, no wider than a sheet carrying a form, and centred.
     fn readable_column(rect: Rect, theme: &Theme) -> Rect {
@@ -860,9 +857,9 @@ impl AuthenticatorApp {
         let mut top = self.rect.y0;
         self.banner_rect = Rect::ZERO;
         self.retry_rect = Rect::ZERO;
-        if self.persistence_pending() {
-            // The banner spans the column the rows stand in and holds Retry:
-            // beside its text when it fits, under it inside the box when not.
+        if self.persistence_pending() || self.clock_warning.is_some() {
+            // The banner spans the column the rows stand in; the unsaved
+            // changes banner holds Retry, the clock warning holds no action.
             let content = self.banner_content();
             let banner_h = Banner::height(&content, self.column.width(), ctx.text, theme);
             let y0 = top + f64::from(spacing.s2);
@@ -878,19 +875,24 @@ impl AuthenticatorApp {
         self.list.set_viewport(list_rect, self.column);
     }
 
-    /// The unsaved-changes banner, with Retry inside it.
+    /// The banner in the window: unsaved changes with Retry, or the clock
+    /// warning that explains codes every server may reject.
     fn banner_content(&self) -> BannerContent<'_> {
-        BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
-            .with_message(Some(
-                self.persistence_message
-                    .as_deref()
-                    .unwrap_or(UNSAVED_DETAIL),
-            ))
-            .action(RETRY_LABEL)
+        if self.persistence_pending() {
+            return BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
+                .with_message(Some(
+                    self.persistence_message
+                        .as_deref()
+                        .unwrap_or(UNSAVED_DETAIL),
+                ))
+                .action(RETRY_LABEL);
+        }
+        BannerContent::new(BannerKind::Warning, "This device’s clock may be off")
+            .with_message(self.clock_warning)
     }
 
     fn paint_banner(&self, ctx: &mut PaintCtx<'_>) {
-        if !self.persistence_pending() {
+        if !self.persistence_pending() && self.clock_warning.is_none() {
             return;
         }
         Banner::paint(
@@ -920,6 +922,22 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // The chooser answers between frames, off the UI thread. A frame
+        // only syncs when something changed, and a browser page's chooser
+        // leaves nothing else changed when it closes, so the answer is
+        // taken here, where every frame looks.
+        let answered = self.drain_portal();
+        // A glide moves the list's rows, which the frame repaints; it
+        // changes no model.
+        self.list.advance_scroll();
+        let mut changed = answered;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
+
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         // Hosted controls can enqueue a local request after event routing.
         // Settle the retained sheet first, then consume those requests in
@@ -934,9 +952,6 @@ impl Widget for AuthenticatorApp {
         if self.copy.failed() {
             self.toast("Could not copy to the clipboard", ToastKind::Error);
         }
-        // Pull in any QR image the host portal picker returned since the last
-        // frame (off-thread; never blocks the UI).
-        self.drain_portal();
         // Sheets that left the tree last frame can go now.
         if self.add_panel.reap() {
             self.structure_dirty = true;
@@ -1054,7 +1069,8 @@ impl Widget for AuthenticatorApp {
                 button: winit::event::MouseButton::Left,
                 ..
             }
-        ) && self.retry_rect.contains(self.last_mouse)
+        ) && self.persistence_pending()
+            && self.retry_rect.contains(self.last_mouse)
             && self.retry_persist()
         {
             *ctx.handled = true;
@@ -1146,7 +1162,23 @@ impl Widget for AuthenticatorApp {
                 let row = self.list.account_bounds(account.id)?;
                 let name = Self::accessible_account_name(account);
                 let id = account.id;
+                let revealed = self.list.is_revealed(id);
                 let mut row_children = vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(if revealed {
+                            format!("Hide code for {name}")
+                        } else {
+                            format!("Reveal code for {name}")
+                        })
+                        .with_description(
+                            "Codes are hidden until you ask to see one; they stay readable for a few seconds.",
+                        )
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(!account.secret_is_valid()),
+                        )
+                        .with_action_target(format!("totp.reveal:{id}")),
                     AccessNode::new(Role::Button)
                         .with_name(format!("Copy code for {name}"))
                         .with_description(if account.secret_is_valid() {
@@ -1300,7 +1332,7 @@ fn account_edits(before: &Account, after: &Account) -> Vec<Edit<Totp>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::add_panel::tests::{click, hosted, nodes, panel, rect, settle, type_into};
     use crate::model::demo_accounts;
@@ -1378,7 +1410,6 @@ mod tests {
     fn copy_paths_share_row_semantics_and_toast_severity() {
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
-        // Case `accessibility_copy_uses_the_existing_list_event_path`.
         {
             let mut framed = framed(app_with_state(), 640, 700);
             let (app, state) = Framed::split(&mut framed);
@@ -1393,7 +1424,6 @@ mod tests {
             assert!(app.last_copied().is_some());
         }
 
-        // Case `copy_event_selects_the_account_and_confirms_with_a_toast`.
         {
             let (mut app, _state) = app_with_state();
             let id = app.vault.ordered()[0].id;
@@ -1423,7 +1453,6 @@ mod tests {
             );
         }
 
-        // Case `enter_copies_the_selected_accounts_live_code`.
         {
             let mut app = framed(app_with_state(), 1000, 800);
             let id = app
@@ -1447,7 +1476,6 @@ mod tests {
             assert_eq!(kind, ToastKind::Success);
         }
 
-        // Case `copy_without_a_local_secret_is_an_error_toast`.
         {
             let (mut app, _state) = app_with_seeds(demo_accounts().len());
             let id = app.vault.ordered()[0].id;
@@ -1503,9 +1531,7 @@ mod tests {
         assert!(
             !focus_order.iter().any(|node| matches!(
                 node.semantic_key.as_deref(),
-                Some(
-                    "search-open" | "add-account" | "nav-shell-more-content" | "nav-shell-history"
-                )
+                Some("add-account" | "nav-shell-more-content" | "nav-shell-history")
             )),
             "the modal trap excludes background header controls: {focus_order:?}"
         );
@@ -1548,7 +1574,6 @@ mod tests {
         );
     }
 
-    /// Narrow, missing-key and resized layouts keep targets inside one centred column.
     #[test]
     fn narrow_and_resized_layouts_keep_one_readable_column() {
         let mut app = hosted((320, 640), None);
@@ -1716,6 +1741,40 @@ mod tests {
         assert!(!app.persistence_pending());
     }
 
+    /// A chooser that answers between frames is heard by the next frame's
+    /// update, the pass every frame runs, not only by a sync that a change
+    /// elsewhere has to ask for; an image without a code says so.
+    #[test]
+    fn a_chooser_answer_is_taken_up_by_the_next_frame_without_a_sync() {
+        let (mut app, state) = app_with_state();
+        app.add_panel.open();
+        let (answer, channel) = std::sync::mpsc::channel();
+        app.portal_rx = Some(channel);
+        app.update(&state.doc, &state.root);
+        assert!(app.portal_rx.is_some(), "a frame before the answer waits");
+        let mut photo = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_pixel(96, 96, image::Luma([255]))
+            .write_to(&mut photo, image::ImageFormat::Png)
+            .unwrap();
+        answer
+            .send(ContentsOutcome::Picked(vec![ui::portal::PickedContents {
+                name: "photo.png".into(),
+                media_type: Some("image/png".into()),
+                bytes: photo.into_inner(),
+                location: None,
+            }]))
+            .unwrap();
+        assert!(app.update(&state.doc, &state.root), "the answer is news");
+        assert!(app.portal_rx.is_none(), "the chooser is done");
+        assert_eq!(
+            app.notice.with(Clone::clone),
+            Some(Notice::Show(
+                "Couldn\u{2019}t read a code from that image".into(),
+                ToastKind::Error
+            ))
+        );
+    }
+
     /// QR import: host portal routing, frame drain, cancel and file decoding.
     #[test]
     fn qr_import_routes_through_the_host_portal_and_fills_the_panel() {
@@ -1741,7 +1800,6 @@ mod tests {
             assert_eq!(requests[0].title(), "Choose a QR image");
         }
 
-        // Case `portal_chosen_qr_image_fills_the_add_panel_via_frame_drain`.
         {
             let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
             let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
@@ -1753,9 +1811,12 @@ mod tests {
             app.add_panel.open();
 
             let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(img));
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(img));
+            let work = ui::background::Pumped::new();
+            let _work = work.background().enter();
             ui::host::scoped(&services, || app.request_qr_via_portal());
-            app.sync(&state.doc, &state.root);
+            work.run_pending();
+            app.update(&state.doc, &state.root);
 
             assert!(
                 app.portal_rx.is_none(),
@@ -1768,15 +1829,17 @@ mod tests {
             std::fs::remove_dir_all(&dir).ok();
         }
 
-        // Case `portal_cancel_leaves_the_add_panel_untouched`.
         {
             let (mut app, state) = app_with_state();
             app.add_panel.open();
             let before = app.add_panel.field_snapshot();
             let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Cancelled);
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+            let work = ui::background::Pumped::new();
+            let _work = work.background().enter();
             ui::host::scoped(&services, || app.request_qr_via_portal());
-            app.sync(&state.doc, &state.root);
+            work.run_pending();
+            app.update(&state.doc, &state.root);
             assert!(
                 app.portal_rx.is_none(),
                 "the portal channel clears after a cancel"
@@ -1788,12 +1851,12 @@ mod tests {
             );
         }
 
-        // Case `qr_image_file_decodes_and_fills_the_panel`.
         {
             let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
             let path = std::env::temp_dir().join(format!("totp-qr-{}.png", uuid::Uuid::new_v4()));
             render_qr_png(uri, &path);
-            let decoded = crate::qr::decode_image_file(&path).expect("decode a real QR png file");
+            let decoded = crate::qr::decode_image_bytes(&std::fs::read(&path).unwrap())
+                .expect("decode a real QR png file");
             let mut panel = crate::add_panel::AddAccountPanel::new();
             panel.open();
             panel.apply_uri(&decoded);
@@ -1872,7 +1935,7 @@ mod tests {
 
     /// Rasterise `data` as a QR code into a greyscale PNG on disk, scaling
     /// modules up with a quiet zone so the decoder has clean finder patterns.
-    fn render_qr_png(data: &str, path: &std::path::Path) {
+    pub(crate) fn render_qr_png(data: &str, path: &std::path::Path) {
         use image::{GrayImage, Luma};
         use qrcode::{EcLevel, QrCode};
         let code = QrCode::with_error_correction_level(data.as_bytes(), EcLevel::M).unwrap();

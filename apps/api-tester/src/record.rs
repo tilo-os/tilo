@@ -300,11 +300,24 @@ pub struct Sent {
     pub duration_ms: u64,
     /// When it completed, in milliseconds since the Unix epoch.
     pub at_ms: i64,
+    /// The request as it was authored when it was sent, as JSON: its
+    /// headers, body, parameters and the credential's *reference* (never the
+    /// credential), so re-opening the entry brings the whole request back
+    /// instead of a blank one with a method and a URL.
+    pub replay: Atom,
 }
 
 impl Sent {
-    /// What was sent, labelled by its safe route.
-    pub fn new(method: HttpMethod, url: &str, status: u16, duration_ms: u64, at_ms: i64) -> Self {
+    /// What was sent, labelled by its safe route, with the request that
+    /// produced it.
+    pub fn new(
+        method: HttpMethod,
+        url: &str,
+        status: u16,
+        duration_ms: u64,
+        at_ms: i64,
+        request: Option<model::RequestSnapshot>,
+    ) -> Self {
         Self {
             route: Atom(route_of(method, url, status)),
             method,
@@ -312,7 +325,20 @@ impl Sent {
             status,
             duration_ms,
             at_ms,
+            replay: Atom(
+                request
+                    .map(|request| serde_json::to_string(&request).unwrap_or_default())
+                    .unwrap_or_default(),
+            ),
         }
+    }
+
+    /// The request this entry sent, as it was authored, when the entry kept
+    /// it.
+    pub fn replay_of(&self) -> Option<model::RequestSnapshot> {
+        (!self.replay.0.is_empty())
+            .then(|| serde_json::from_str(&self.replay.0).ok())
+            .flatten()
     }
 
     fn shown(&self, id: &Id) -> model::HistoryEntry {
@@ -322,6 +348,7 @@ impl Sent {
             url: self.url.0.clone(),
             status: self.status,
             duration_ms: self.duration_ms,
+            replay: self.replay_of(),
         }
     }
 }

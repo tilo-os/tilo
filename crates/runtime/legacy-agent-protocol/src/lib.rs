@@ -273,7 +273,6 @@ pub enum ProtocolError {
     Invalid(&'static str),
 }
 
-/// Write one message and flush.
 pub fn send<W: Write + ?Sized, T: Serialize>(
     writer: &mut W,
     message: &T,

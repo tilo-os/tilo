@@ -44,6 +44,51 @@
 ; fails with EPERM, status 203/EXEC.
 (allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))
 
+; tilo-firstboot-user.service (initrc_t) runs with NoNewPrivileges=yes and
+; creates the first account with useradd (useradd_t) and sets its password
+; with chpasswd and chage (passwd_t). Under no_new_privs those are bounded
+; transitions that need their own permission; denied, the tools run on in
+; initrc_t instead of the domains that confine them and label what they write.
+(allow initrc_t useradd_t (process2 (nnp_transition nosuid_transition)))
+(allow initrc_t passwd_t (process2 (nnp_transition nosuid_transition)))
+
+; bootc (install_exec_t) belongs in install_t, the domain Fedora's policy
+; gives it when systemd or an admin runs it: install_t holds mac_admin, which
+; bootc needs to write labels the running policy does not know yet (an update
+; to an image with new types). Tilo's deployment services are scripts in
+; unconfined_service_t that run bootc, mostly under NoNewPrivileges, and
+; Fedora has no transition from there. bootc then probes mac_admin with chcon
+; on every call, `bootc status` included, is denied, copies itself to /tmp
+; and re-executes, and stays without it. install_t is unconfined like
+; unconfined_service_t; what the transition adds is mac_admin, for the one
+; family of programs the policy means to have it.
+(typetransition unconfined_service_t install_exec_t process install_t)
+(allow unconfined_service_t install_t (process (transition)))
+(allow unconfined_service_t install_t (process2 (nnp_transition nosuid_transition)))
+
+; systemd's TPM measurement log, /run/log/systemd/tpm2-measure.log, is what
+; makes the PCR extensions of each boot phase auditable. The initrd, with no
+; policy loaded yet, creates it as systemd-pcrphase measures enter-initrd;
+; after switch-root /run is relabelled and the file falls under /run/log's
+; syslogd_var_run_t, which systemd-tpm2-setup.service (init_t, it has no
+; domain of its own) may create but not write. The service then fails on
+; every boot of a measured UKI. A type of its own gives exactly the
+; measurement log to the two writers, not the volatile journal beside it.
+; What a writer does to it (systemd's tpm2_userspace_log_*): create it 0600,
+; flock it, fstat it, fchmod the sticky bit on as a dirty marker and off
+; again around each record, seek to the end and write, and read it back.
+(type tilo_tpm2_measure_log_t)
+(roletype object_r tilo_tpm2_measure_log_t)
+(typeattributeset file_type (tilo_tpm2_measure_log_t))
+(typeattributeset non_auth_file_type (tilo_tpm2_measure_log_t))
+(typeattributeset non_security_file_type (tilo_tpm2_measure_log_t))
+(typeattributeset pidfile (tilo_tpm2_measure_log_t))
+(filecon "/run/log/systemd/tpm2-measure\.log" file (system_u object_r tilo_tpm2_measure_log_t ((s0) (s0))))
+(typetransition init_t syslogd_var_run_t file "tpm2-measure.log" tilo_tpm2_measure_log_t)
+(typetransition systemd_pcrextend_t syslogd_var_run_t file "tpm2-measure.log" tilo_tpm2_measure_log_t)
+(allow init_t tilo_tpm2_measure_log_t (file (create open getattr setattr read write append lock ioctl)))
+(allow systemd_pcrextend_t tilo_tpm2_measure_log_t (file (create open getattr setattr read write append lock ioctl)))
+
 ; --- what fs does, grouped by subsystem -------------------------------------
 ; Types the domain attribute already grants (proc, sysfs, /dev/null and
 ; urandom, shared libraries, locale, its own process signals, unix stream
@@ -73,8 +118,10 @@
 
 ; The workspace as fs sees it: the FUSE mount, and the native data plane's
 ; store volume, which tilo-store-volume mounts with context=fusefs_t (its
-; capability probes and content area at /var/lib/tilo/store).
-(allow tilo_fs_t fusefs_t (dir (getattr search open read ioctl write add_name remove_name create)))
+; capability probes and content area at /var/lib/tilo/store). setattr on a
+; directory is the change signal: fs sets its no-op user.tilo.change-signal
+; attribute through its own mount so inotify hears of a peer's edit.
+(allow tilo_fs_t fusefs_t (dir (getattr search open read ioctl write add_name remove_name create setattr)))
 (allow tilo_fs_t fusefs_t (file (getattr open read write create rename lock ioctl)))
 
 ; The content store and record database under /var/cache/quick-fs (var_t,
@@ -142,3 +189,19 @@
 ; every other virtio port stays root-only by owner and mode, so this MAC
 ; grant does not widen who can open them.
 (allow xdm_t virtio_device_t (chr_file (open read write getattr ioctl lock)))
+
+; tilo-authd checks every secret. It runs unconfined (unconfined_service_t)
+; and listens on /run/tilo-auth/socket, a var_run_t socket in its runtime
+; directory. The PAM callers that run confined must reach it: greetd and the
+; greeter (xdm_t: the sign-in and the boot sign-in), polkit's authentication
+; helper (policykit_auth_t), console login (local_login_t) and sshd (sshd_t).
+; Sessions run unconfined and need nothing. The daemon decides what each
+; peer may ask from its credentials, so this grant only opens the door.
+(allow xdm_t var_run_t (sock_file (getattr write)))
+(allow xdm_t unconfined_service_t (unix_stream_socket (connectto)))
+(allow policykit_auth_t var_run_t (sock_file (getattr write)))
+(allow policykit_auth_t unconfined_service_t (unix_stream_socket (connectto)))
+(allow local_login_t var_run_t (sock_file (getattr write)))
+(allow local_login_t unconfined_service_t (unix_stream_socket (connectto)))
+(allow sshd_t var_run_t (sock_file (getattr write)))
+(allow sshd_t unconfined_service_t (unix_stream_socket (connectto)))

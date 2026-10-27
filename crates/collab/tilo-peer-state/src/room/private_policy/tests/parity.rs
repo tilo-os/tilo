@@ -45,7 +45,7 @@ fn original(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u6
                     return Err("nonpersistent governed private policy grant".into());
                 }
                 tilo_action_policy::Lifetime::Until(at) => expiries.push(at.div_ceil(1000)),
-                _ => {}
+                tilo_action_policy::Lifetime::UntilRevoked => {}
             }
         }
     }

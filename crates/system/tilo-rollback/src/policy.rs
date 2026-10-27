@@ -219,10 +219,6 @@ pub fn flush(runner: &dyn Runner) {
 
 /// Load the prediction authority's public key and return its TPM Name — that, not the PEM,
 /// is what `TPM2_PolicyAuthorize` commits to and what a sealed token is bound to.
-///
-/// # Errors
-///
-/// Returns an error if loading the key or reading its public area fails.
 pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> Result<Vec<u8>> {
     flush(runner);
     let ctx = ws.path("signkey.ctx");
@@ -256,10 +252,6 @@ pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> R
 /// Compute the digest a `TPM2_PolicyPCR` over `pcr_values` reaches. `pcr_values` is a
 /// `tpm2_pcrread -o` blob (the predicted measurements); pass `None` to use the machine's live
 /// PCRs, as enrollment does when generating its own first prediction on the machine itself.
-///
-/// # Errors
-///
-/// Returns an error if the trial policy session or reading its digest fails.
 pub fn approved_policy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -329,7 +321,71 @@ pub struct GenerationPolicy<'a> {
     pub pin: bool,
 }
 
-impl GenerationPolicy<'_> {
+/// A signed, generation-bound boot policy with no rollback-floor counter.
+///
+/// This is the same `PolicyPCR -> PolicyAuthorize -> PolicyPCR` chain used by
+/// a rollback token, without `PolicyNV`: a caller that has no existing TPM NV
+/// index (the installer before the target system exists) still binds its
+/// secret to the signed target UKI and this machine's platform state. The
+/// rollback-floor constraint remains mandatory for the installed disk
+/// keyslots; this variant only serves artifacts created before one exists.
+#[derive(Debug, Clone, Copy)]
+pub struct BootPolicy<'a> {
+    /// The generation, which is also the `PolicyAuthorize` policy reference.
+    pub generation: u64,
+    /// TPM Name of the prediction authority's public key.
+    pub key_name: &'a [u8],
+    pub pcr_bank: &'a str,
+    /// PCRs covered by the signed prediction, before `PolicyAuthorize`.
+    pub pcrs: &'a [u32],
+    /// Device-local PCRs applied after `PolicyAuthorize`.
+    pub platform_pcrs: &'a [u32],
+    /// Is a PIN (`PolicyAuthValue`) part of the policy?
+    pub pin: bool,
+}
+
+/// One internal policy description so the floor and floorless forms share the
+/// exact `PolicyAuthorize` and platform-PCR steps.
+#[derive(Clone, Copy)]
+struct PolicySpec<'a> {
+    generation: u64,
+    key_name: &'a [u8],
+    pcr_bank: &'a str,
+    pcrs: &'a [u32],
+    platform_pcrs: &'a [u32],
+    pin: bool,
+    nv: Option<NvConstraint>,
+}
+
+impl<'a> From<&'a GenerationPolicy<'a>> for PolicySpec<'a> {
+    fn from(policy: &'a GenerationPolicy<'a>) -> Self {
+        Self {
+            generation: policy.generation,
+            key_name: policy.key_name,
+            pcr_bank: policy.pcr_bank,
+            pcrs: policy.pcrs,
+            platform_pcrs: policy.platform_pcrs,
+            pin: policy.pin,
+            nv: Some(policy.nv),
+        }
+    }
+}
+
+impl<'a> From<&'a BootPolicy<'a>> for PolicySpec<'a> {
+    fn from(policy: &'a BootPolicy<'a>) -> Self {
+        Self {
+            generation: policy.generation,
+            key_name: policy.key_name,
+            pcr_bank: policy.pcr_bank,
+            pcrs: policy.pcrs,
+            platform_pcrs: policy.platform_pcrs,
+            pin: policy.pin,
+            nv: None,
+        }
+    }
+}
+
+impl PolicySpec<'_> {
     fn selection(&self) -> String {
         pcr_selection(self.pcr_bank, self.pcrs)
     }
@@ -340,20 +396,38 @@ impl GenerationPolicy<'_> {
 }
 
 /// The full seal policy digest for one generation.
-///
-/// # Errors
-///
-/// Returns an error if any step of the trial policy session fails.
 pub fn seal_policy(
     runner: &dyn Runner,
     ws: &Workspace,
     policy: &GenerationPolicy<'_>,
 ) -> Result<Vec<u8>> {
+    seal_policy_spec(runner, ws, &PolicySpec::from(policy))
+}
+
+/// The full seal policy digest for a signed target boot policy with no NV
+/// counter. See [`BootPolicy`].
+pub fn seal_boot_policy(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    policy: &BootPolicy<'_>,
+) -> Result<Vec<u8>> {
+    seal_policy_spec(runner, ws, &PolicySpec::from(policy))
+}
+
+fn seal_policy_spec(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    policy: &PolicySpec<'_>,
+) -> Result<Vec<u8>> {
     flush(runner);
     let name_file = ws.put("signkey.name", policy.key_name)?;
     let ref_file = ws.put("policyref.bin", &generation::policy_ref(policy.generation))?;
-    let operand_file = ws.put("operand.bin", &policy.nv.operand.to_be_bytes())?;
-    let idx = format!("0x{:08X}", policy.nv.index);
+    let operand_file = policy
+        .nv
+        .as_ref()
+        .map(|nv| ws.put("operand.bin", &nv.operand.to_be_bytes()))
+        .transpose()?;
+    let idx = policy.nv.as_ref().map(|nv| format!("0x{:08X}", nv.index));
     let platform_selection = policy.platform_selection();
     let sess = ws.path("trial_seal.ctx");
 
@@ -386,21 +460,23 @@ pub fn seal_policy(
             &argv!["-S", sess.as_os_str(), "-l", &platform_selection],
             "binding the seal to this machine's platform PCRs",
         )?;
-        require(
-            runner,
-            "tpm2_policynv",
-            &argv![
-                "-S",
-                sess.as_os_str(),
-                "-i",
-                operand_file.as_os_str(),
-                &idx,
-                "ule",
-                "-C",
-                &idx,
-            ],
-            "computing the rollback-floor PolicyNV digest",
-        )?;
+        if let (Some(operand_file), Some(idx)) = (&operand_file, &idx) {
+            require(
+                runner,
+                "tpm2_policynv",
+                &argv![
+                    "-S",
+                    sess.as_os_str(),
+                    "-i",
+                    operand_file.as_os_str(),
+                    idx,
+                    "ule",
+                    "-C",
+                    idx,
+                ],
+                "computing the rollback-floor PolicyNV digest",
+            )?;
+        }
         if policy.pin {
             require(
                 runner,
@@ -464,12 +540,6 @@ struct PredictionTicket {
 /// wrong policy reference) — an expected outcome when trying several predictions, not an
 /// error. `Err` is reserved for "the mechanism itself is broken", except a `PolicyNV` failure
 /// which *is* an error: it means the machine is below the rollback floor.
-///
-/// # Errors
-///
-/// Returns an error if loading the prediction key or minting its verification ticket fails
-/// outright (as opposed to simply not verifying), if the policy session fails to start, if
-/// reading live PCRs fails, or if the rollback-floor `PolicyNV` step fails.
 pub fn satisfy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -482,7 +552,32 @@ pub fn satisfy(
     else {
         return Ok(None);
     };
-    drive_policy_session(runner, ws, policy, &prediction_ticket)
+    drive_policy_session(runner, ws, &PolicySpec::from(policy), &prediction_ticket)
+}
+
+/// Drive a real policy session for a signed target boot policy with no NV
+/// counter. See [`BootPolicy`].
+///
+/// Returns `Ok(None)` when the prediction does not match this machine's live
+/// state. It never silently falls back to another matcher.
+///
+/// # Errors
+///
+/// Returns an error if the mechanism fails: loading the prediction key,
+/// minting its ticket, starting the session, or reading live PCRs.
+pub fn satisfy_boot(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    public_key_pem: &Path,
+    policy: &BootPolicy<'_>,
+    prediction: &Prediction,
+) -> Result<Option<SatisfiedSession>> {
+    let Some(prediction_ticket) =
+        verify_prediction_signature(runner, ws, public_key_pem, prediction, policy.generation)?
+    else {
+        return Ok(None);
+    };
+    drive_policy_session(runner, ws, &PolicySpec::from(policy), &prediction_ticket)
 }
 
 /// Stage 1 of [`satisfy`]: mint the verification ticket with only the external key loaded.
@@ -551,82 +646,107 @@ fn verify_prediction_signature(
     Ok(Some(PredictionTicket { approved, ticket }))
 }
 
-/// Stage 2 of [`satisfy`]: the real policy session, spending the ticket stage 1 minted.
-fn drive_policy_session(
+/// The policy session stage 2 drives and the files it needs from stage 1.
+struct PolicySession {
+    context: PathBuf,
+    key_name: PathBuf,
+    policy_ref: PathBuf,
+    operand: Option<PathBuf>,
+    index: Option<String>,
+}
+
+impl PolicySession {
+    /// Start the policy session and write every input the policy steps read.
+    fn start(runner: &dyn Runner, ws: &Workspace, policy: &PolicySpec<'_>) -> Result<Self> {
+        let context = ws.path("policy.ctx");
+        require(
+            runner,
+            "tpm2_startauthsession",
+            &argv!["--policy-session", "-S", context.as_os_str()],
+            "starting the unseal policy session",
+        )?;
+        Ok(Self {
+            key_name: ws.put("signkey.name", policy.key_name)?,
+            policy_ref: ws.put("policyref.bin", &generation::policy_ref(policy.generation))?,
+            operand: policy
+                .nv
+                .as_ref()
+                .map(|nv| ws.put("operand.bin", &nv.operand.to_be_bytes()))
+                .transpose()?,
+            index: policy.nv.as_ref().map(|nv| format!("0x{:08X}", nv.index)),
+            context,
+        })
+    }
+
+    fn flush(&self, runner: &dyn Runner) {
+        let _ = runner.run("tpm2_flushcontext", &argv![self.context.as_os_str()], None);
+    }
+}
+
+/// Every step that must hold before this session may authorise an unseal.
+fn apply_policy_steps(
     runner: &dyn Runner,
-    ws: &Workspace,
-    policy: &GenerationPolicy<'_>,
+    session: &PolicySession,
+    policy: &PolicySpec<'_>,
     prediction_ticket: &PredictionTicket,
-) -> Result<Option<SatisfiedSession>> {
+) -> Result<Option<()>> {
     let gen_num = policy.generation;
     let selection = policy.selection();
     let platform_selection = policy.platform_selection();
-    let sess = ws.path("policy.ctx");
-    require(
-        runner,
-        "tpm2_startauthsession",
-        &argv!["--policy-session", "-S", sess.as_os_str()],
-        "starting the unseal policy session",
+    // Live PCRs.
+    let pcr = runner.run(
+        "tpm2_policypcr",
+        &argv!["-S", session.context.as_os_str(), "-l", &selection],
+        None,
     )?;
-    let name_file = ws.put("signkey.name", policy.key_name)?;
-    let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
-    let operand_file = ws.put("operand.bin", &policy.nv.operand.to_be_bytes())?;
-    let idx = format!("0x{:08X}", policy.nv.index);
-
-    let drive = || -> Result<Option<()>> {
-        // Live PCRs.
-        let pcr = runner.run(
-            "tpm2_policypcr",
-            &argv!["-S", sess.as_os_str(), "-l", &selection],
-            None,
-        )?;
-        if !pcr.ok() {
-            bail!(
-                "reading live PCRs for the policy session failed: {}",
-                pcr.last_error_line()
-            );
-        }
-        // Does the live state match what was signed?
-        let auth_args = argv![
-            "-S",
-            sess.as_os_str(),
-            "-i",
-            prediction_ticket.approved.as_os_str(),
-            "-n",
-            name_file.as_os_str(),
-            "-q",
-            ref_file.as_os_str(),
-            "-t",
-            prediction_ticket.ticket.as_os_str(),
-        ];
-        let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
-        if !auth.ok() {
-            trace_failure("tpm2_policyauthorize", &auth_args, &auth);
-            return Ok(None); // wrong prediction for the current state
-        }
-        let platform = runner.run(
-            "tpm2_policypcr",
-            &argv!["-S", sess.as_os_str(), "-l", &platform_selection],
-            None,
-        )?;
-        if !platform.ok() {
-            bail!(
-                "reading device-local platform PCRs failed: {}",
-                platform.last_error_line()
-            );
-        }
-        // Rollback floor.
+    if !pcr.ok() {
+        bail!(
+            "reading live PCRs for the policy session failed: {}",
+            pcr.last_error_line()
+        );
+    }
+    // Does the live state match what was signed?
+    let auth_args = argv![
+        "-S",
+        session.context.as_os_str(),
+        "-i",
+        prediction_ticket.approved.as_os_str(),
+        "-n",
+        session.key_name.as_os_str(),
+        "-q",
+        session.policy_ref.as_os_str(),
+        "-t",
+        prediction_ticket.ticket.as_os_str(),
+    ];
+    let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
+    if !auth.ok() {
+        trace_failure("tpm2_policyauthorize", &auth_args, &auth);
+        return Ok(None); // wrong prediction for the current state
+    }
+    let platform = runner.run(
+        "tpm2_policypcr",
+        &argv!["-S", session.context.as_os_str(), "-l", &platform_selection,],
+        None,
+    )?;
+    if !platform.ok() {
+        bail!(
+            "reading device-local platform PCRs failed: {}",
+            platform.last_error_line()
+        );
+    }
+    // Rollback floor, when this policy has one.
+    if let (Some(operand_file), Some(idx)) = (&session.operand, &session.index) {
         let nv = runner.run(
             "tpm2_policynv",
             &argv![
                 "-S",
-                sess.as_os_str(),
+                session.context.as_os_str(),
                 "-i",
                 operand_file.as_os_str(),
-                &idx,
+                idx,
                 "ule",
                 "-C",
-                &idx,
+                idx,
             ],
             None,
         )?;
@@ -637,25 +757,36 @@ fn drive_policy_session(
                 nv.last_error_line()
             );
         }
-        if policy.pin {
-            require(
-                runner,
-                "tpm2_policyauthvalue",
-                &argv!["-S", sess.as_os_str()],
-                "adding the PIN authorisation to the policy session",
-            )?;
-        }
-        Ok(Some(()))
-    };
+    }
+    if policy.pin {
+        require(
+            runner,
+            "tpm2_policyauthvalue",
+            &argv!["-S", session.context.as_os_str()],
+            "adding the PIN authorisation to the policy session",
+        )?;
+    }
+    Ok(Some(()))
+}
 
-    match drive() {
-        Ok(Some(())) => Ok(Some(SatisfiedSession { context: sess })),
+/// Stage 2 of [`satisfy`]: the real policy session, spending the ticket stage 1 minted.
+fn drive_policy_session(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    policy: &PolicySpec<'_>,
+    prediction_ticket: &PredictionTicket,
+) -> Result<Option<SatisfiedSession>> {
+    let session = PolicySession::start(runner, ws, policy)?;
+    match apply_policy_steps(runner, &session, policy, prediction_ticket) {
+        Ok(Some(())) => Ok(Some(SatisfiedSession {
+            context: session.context,
+        })),
         Ok(None) => {
-            let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+            session.flush(runner);
             Ok(None)
         }
         Err(e) => {
-            let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+            session.flush(runner);
             Err(e)
         }
     }
@@ -667,12 +798,10 @@ mod tests {
 
     #[test]
     fn policy_marshalling_matches_tool_and_tpm_layouts() {
-        // Phase `pcr_selection_matches_the_tools_syntax`.
         {
             assert_eq!(pcr_selection("sha256", &[7, 11]), "sha256:7,11");
             assert_eq!(pcr_selection("sha384", &[0]), "sha384:0");
         }
-        // Phase `rsassa_marshalling_has_the_tpm_structure_layout`.
         {
             let sig = vec![0xABu8; 256];
             let m = marshal_rsassa_sha256(&sig).unwrap();
@@ -682,11 +811,9 @@ mod tests {
             assert_eq!(&m[4..6], &[0x01, 0x00], "size must be 256 big-endian");
             assert_eq!(&m[6..], &sig[..]);
         }
-        // Phase `an_oversized_signature_is_refused_rather_than_truncated`.
         {
             assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
         }
-        // Phase `workspace_writes_scratch_files`.
         {
             let d = tempfile::tempdir().unwrap();
             let ws = Workspace::new(d.path());

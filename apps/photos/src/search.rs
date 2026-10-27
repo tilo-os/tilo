@@ -33,7 +33,6 @@ use ui::lock::RwLockRecover as _;
 /// Search group label for Photos results.
 pub const PHOTO_SEARCH_KIND: &str = "Photos";
 
-/// The library's own resource id.
 pub const LIBRARY_ID: &str = "photos.library";
 
 /// A complete, bounded-query index of the library the timeline filters by,
@@ -118,7 +117,6 @@ impl RowKind {
     }
 }
 
-/// One searchable row of the library.
 struct LibraryRow {
     /// What the row is found by, beside its title.
     text: String,
@@ -201,7 +199,6 @@ impl LibraryRow {
     }
 }
 
-/// The searchable row of `photo`.
 fn photo_row(photo: &LibraryPhoto) -> LibraryRow {
     // Omit repeated kind/action boilerplate: it creates huge shared
     // postings in a large library without helping find a photograph.
@@ -637,7 +634,6 @@ mod tests {
         super::opened(&crate::test_doc::library(doc), anchor).map(|effect| effect.id().to_owned())
     }
 
-    /// The resource `id` as the library `doc` holds publishes it.
     fn published(doc: &AutoCommit, id: &str) -> Option<Resource> {
         let library = crate::test_doc::library(doc);
         if id == LIBRARY_ID {

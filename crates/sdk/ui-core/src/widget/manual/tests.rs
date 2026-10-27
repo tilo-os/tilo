@@ -463,7 +463,7 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
         });
         assert!(matches!(
             solve(Box::new(oscillating)),
-            Err(WidgetLayoutError::DidNotSettle)
+            Err(WidgetLayoutError::DidNotSettle { .. })
         ));
         let mut nested: Element = Box::new(Text::new("Bottom"));
         for _ in 0..34 {

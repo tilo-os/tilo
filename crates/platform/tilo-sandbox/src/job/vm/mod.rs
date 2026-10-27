@@ -638,9 +638,6 @@ pub struct Passt {
 
 impl Passt {
     /// Start passt on `socket` (a path that does not exist yet) and wait for it to listen.
-    ///
-    /// # Errors
-    /// passt is missing, failed, or did not listen within five seconds.
     pub fn start(socket: &Path) -> io::Result<Self> {
         let child = Command::new("passt")
             .args(["--foreground", "--one-off", "--quiet", "--no-map-gw"])
@@ -687,6 +684,22 @@ impl Drop for Passt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guest's root copies every change up in full, so what a step changed is all in its
+    /// upper directory: a moved directory or a chmod under `redirect_dir` or `metacopy` would live in
+    /// overlay xattrs, and a layer made of the upper directory would lose it.
+    #[test]
+    fn the_guest_root_overlay_copies_changes_up_in_full() {
+        let mount = INIT
+            .lines()
+            .skip_while(|l| !l.contains("mount -t overlay"))
+            .take(3)
+            .collect::<String>();
+        assert!(
+            mount.contains("redirect_dir=off") && mount.contains("metacopy=off"),
+            "{mount}"
+        );
+    }
 
     fn spec() -> VmSpec {
         VmSpec {
@@ -773,6 +786,35 @@ mod tests {
         assert_eq!(
             escape_option(OsStr::new("/a,b/c")),
             OsString::from("/a,,b/c")
+        );
+    }
+
+    #[test]
+    fn the_init_flushes_only_the_output_disk_before_it_stops_the_machine() {
+        // A global sync reaches the host's whole filesystem through every virtio-fs share,
+        // and a busy node took longer to sync it than t lets a step make no progress.
+        let commands: Vec<&str> = INIT
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        assert!(
+            !commands
+                .iter()
+                .any(|l| l.split([' ', ';', '&', '|']).any(|w| w == "sync")),
+            "the init syncs every filesystem"
+        );
+        let finish = INIT
+            .split("finish() {")
+            .nth(1)
+            .and_then(|f| f.split("\n}").next())
+            .expect("the init has finish()");
+        let flush = finish
+            .find("conv=notrunc,fsync")
+            .expect("finish flushes the output disk");
+        assert!(
+            flush < finish.find("reboot -f").expect("finish stops the machine"),
+            "{finish}"
         );
     }
 

@@ -9,7 +9,7 @@ use crate::shell::launcher::{
 use crate::shell::test_control::{Command, Response};
 use tilo_lock::MutexRecover as _;
 
-const PROVIDER: &str = "session-diagnostics";
+pub(crate) const PROVIDER: &str = "session-diagnostics";
 
 pub(super) fn owner_required(command: &Command) -> Option<Response> {
     matches!(command, Command::ActionsInvoke { provider, .. } if provider == PROVIDER).then(|| {
@@ -176,46 +176,49 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
         }
         _ => {}
     }
-    let session = LaunchSession::current();
-    if admitted.encoded.payload == b"configure" {
-        let flags = FIELDS.map(|(field, _)| {
-            args.get(field)
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        });
-        if flags[3] && !flags[2] {
-            return Some(Response::Err {
-                code: "invalid_arguments".into(),
-                message: crate::shell::i18n::t("session-diagnostics-dispatch-requires-timestamps"),
+    LaunchSession::with(|session| {
+        if admitted.encoded.payload == b"configure" {
+            let flags = FIELDS.map(|(field, _)| {
+                args.get(field)
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
             });
+            if flags[3] && !flags[2] {
+                return Some(Response::Err {
+                    code: "invalid_arguments".into(),
+                    message: crate::shell::i18n::t(
+                        "session-diagnostics-dispatch-requires-timestamps",
+                    ),
+                });
+            }
+            session.configure_diagnostics(Options(flags));
         }
-        session.configure_diagnostics(Options(flags));
-    }
-    let flags = session.diagnostic_options();
-    let mut answer = serde_json::Map::from_iter([
-        ("applies_to".into(), json!("subsequent_launches")),
-        ("diagnostics".into(), flags.value()),
-        ("live_input_delivery".into(), json!(flags.0[0])),
-        ("current_gpu_renderer".into(), json!("unchanged")),
-    ]);
-    if admitted.encoded.payload == b"inspect" {
-        let mut history = session.launch_history.lock_recover().value();
-        if let Some(app) = args.get("app_id").and_then(serde_json::Value::as_str)
-            && let Some(attempts) = history
-                .get_mut("attempts")
-                .and_then(serde_json::Value::as_array_mut)
-        {
-            attempts.retain(|attempt| {
-                attempt
-                    .get("package_id")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(app)
-            });
+        let flags = session.diagnostic_options();
+        let mut answer = serde_json::Map::from_iter([
+            ("applies_to".into(), json!("subsequent_launches")),
+            ("diagnostics".into(), flags.value()),
+            ("live_input_delivery".into(), json!(flags.0[0])),
+            ("current_gpu_renderer".into(), json!("unchanged")),
+        ]);
+        if admitted.encoded.payload == b"inspect" {
+            let mut history = session.launch_history.lock_recover().value();
+            if let Some(app) = args.get("app_id").and_then(serde_json::Value::as_str)
+                && let Some(attempts) = history
+                    .get_mut("attempts")
+                    .and_then(serde_json::Value::as_array_mut)
+            {
+                attempts.retain(|attempt| {
+                    attempt
+                        .get("package_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(app)
+                });
+            }
+            answer.insert("launch_history".into(), history);
+            answer.insert("profile".into(), super::metrics::profile::status());
         }
-        answer.insert("launch_history".into(), history);
-        answer.insert("profile".into(), super::metrics::profile::status());
-    }
-    Some(Response::Answer(serde_json::Value::Object(answer)))
+        Some(Response::Answer(serde_json::Value::Object(answer)))
+    })
 }
 
 /// Start profiling the compositor for `seconds` (default
@@ -359,13 +362,8 @@ mod tests {
         recorder.end_tick();
         assert!(!recorder.is_enabled(), "recording stops with the profile");
 
-        // The summary is written last, off the loop.
         let summary_path = dir.join("summary.json");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while !summary_path.exists() {
-            assert!(Instant::now() < deadline, "the profile completes");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the profile to complete", || summary_path.exists());
         let frames = std::fs::read_to_string(dir.join("frames.csv")).unwrap();
         let mut rows = frames.lines();
         assert_eq!(rows.next(), Some(CSV_HEADER));
@@ -410,70 +408,71 @@ mod tests {
 
     #[test]
     fn session_diagnostics_strict_admission_readback_and_session_isolation() {
-        let session = LaunchSession::current();
-        assert!(session.diagnostics.lock().unwrap().is_none());
-        let mut command = Command::ActionsInvoke {
-            provider: PROVIDER.into(), id: "configure@session-diagnostics".into(),
-            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None, wait_ms: None,
-        };
-        assert!(
-            matches!(dispatch(&command), Some(Response::Answer(value)) if value["diagnostics"]["presentation"] == true)
-        );
-        let options = session.diagnostic_options();
-        if let Command::ActionsInvoke { args, .. } = &mut command {
-            args.insert(
-                "environment".into(),
-                json!({"TILO_NATIVE_SCENARIO":"private"}),
+        LaunchSession::with(|session| {
+            assert!(session.diagnostics.lock().unwrap().is_none());
+            let mut command = Command::ActionsInvoke {
+                provider: PROVIDER.into(), id: "configure@session-diagnostics".into(),
+                args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None, wait_ms: None,
+            };
+            assert!(
+                matches!(dispatch(&command), Some(Response::Answer(value)) if value["diagnostics"]["presentation"] == true)
             );
-        }
-        assert!(
-            matches!(dispatch(&command), Some(Response::Err { code, .. }) if code == "invalid_arguments")
-        );
-        assert_eq!(session.diagnostic_options(), options);
-        if let Command::ActionsInvoke { args, .. } = &mut command {
-            args.remove("environment");
-            args.insert("gpu_timestamps".into(), json!(false));
-            args.insert("gpu_dispatch_timestamps".into(), json!(true));
-        }
-        assert!(
-            matches!(dispatch(&command), Some(Response::Err { code, .. }) if code == "invalid_arguments")
-        );
-        assert_eq!(session.diagnostic_options(), options);
-        assert!(
-            LaunchSession::default()
-                .diagnostics
-                .lock()
-                .unwrap()
-                .is_none()
-        );
-        let read = Command::ActionsInvoke {
-            provider: PROVIDER.into(),
-            id: "inspect@session-diagnostics".into(),
-            args: serde_json::Map::new(),
-            device: None,
-            wait_ms: None,
-        };
-        assert!(
-            matches!(dispatch(&read), Some(Response::Answer(value)) if value["applies_to"] == "subsequent_launches" && value["diagnostics"] == options.value())
-        );
-        crate::shell::launcher::set_pending_placement(
-            "dev.tilo.diagnostic-app",
-            crate::shell::tab_binding::Placement::IntoTab(77),
-        );
-        let Some(Response::Answer(value)) = dispatch(&read) else {
-            panic!("owner inspect receipt");
-        };
-        assert_eq!(value["launch_history"]["attempts"][0]["saved_tab"], 77);
-        assert_eq!(
-            value["launch_history"]["stderr_policy"],
-            "fully_redacted_fixed_reason_only"
-        );
-        assert!(
-            value["launch_history"]["attempts"][0]["requested_epoch_ns"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        crate::shell::launcher::clear_pending_placements();
+            let options = session.diagnostic_options();
+            if let Command::ActionsInvoke { args, .. } = &mut command {
+                args.insert(
+                    "environment".into(),
+                    json!({"TILO_NATIVE_SCENARIO":"private"}),
+                );
+            }
+            assert!(
+                matches!(dispatch(&command), Some(Response::Err { code, .. }) if code == "invalid_arguments")
+            );
+            assert_eq!(session.diagnostic_options(), options);
+            if let Command::ActionsInvoke { args, .. } = &mut command {
+                args.remove("environment");
+                args.insert("gpu_timestamps".into(), json!(false));
+                args.insert("gpu_dispatch_timestamps".into(), json!(true));
+            }
+            assert!(
+                matches!(dispatch(&command), Some(Response::Err { code, .. }) if code == "invalid_arguments")
+            );
+            assert_eq!(session.diagnostic_options(), options);
+            assert!(
+                LaunchSession::default()
+                    .diagnostics
+                    .lock()
+                    .unwrap()
+                    .is_none()
+            );
+            let read = Command::ActionsInvoke {
+                provider: PROVIDER.into(),
+                id: "inspect@session-diagnostics".into(),
+                args: serde_json::Map::new(),
+                device: None,
+                wait_ms: None,
+            };
+            assert!(
+                matches!(dispatch(&read), Some(Response::Answer(value)) if value["applies_to"] == "subsequent_launches" && value["diagnostics"] == options.value())
+            );
+            crate::shell::launcher::set_pending_placement(
+                "dev.tilo.diagnostic-app",
+                crate::shell::tab_binding::Placement::IntoTab(77),
+            );
+            let Some(Response::Answer(value)) = dispatch(&read) else {
+                panic!("owner inspect receipt");
+            };
+            assert_eq!(value["launch_history"]["attempts"][0]["saved_tab"], 77);
+            assert_eq!(
+                value["launch_history"]["stderr_policy"],
+                "fully_redacted_fixed_reason_only"
+            );
+            assert!(
+                value["launch_history"]["attempts"][0]["requested_epoch_ns"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
+            crate::shell::launcher::clear_pending_placements();
+        });
     }
 }

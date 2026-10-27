@@ -46,7 +46,7 @@ impl Monitor {}
 /// (its PID with its kernel start time), so a delayed invocation never
 /// reaches a process that reused the PID.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "monitor.effect", device_only)]
+#[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
     /// Refresh processes.
     #[effect(kind = "read")]
@@ -124,6 +124,7 @@ pub struct MonitorShell;
 impl ResourceApp for MonitorShell {
     type Resource = Monitor;
     const ID: &'static str = "so.tilo.monitor";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "System Monitor";
     const ICON: Option<&'static str> = Some("monitor");
 
@@ -220,36 +221,6 @@ mod tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
 
-    /// The accessibility node named `name`, depth first.
-    fn announced(node: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
-        if node.get("name").and_then(serde_json::Value::as_str) == Some(name) {
-            return Some(node.clone());
-        }
-        match node {
-            serde_json::Value::Object(fields) => {
-                fields.values().find_map(|child| announced(child, name))
-            }
-            serde_json::Value::Array(items) => {
-                items.iter().find_map(|child| announced(child, name))
-            }
-            _ => None,
-        }
-    }
-
-    /// The accessibility node whose semantic key is `key`, depth first.
-    fn keyed(node: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
-        if node.get("semantic_key").and_then(serde_json::Value::as_str) == Some(key) {
-            return Some(node.clone());
-        }
-        match node {
-            serde_json::Value::Object(fields) => {
-                fields.values().find_map(|child| keyed(child, key))
-            }
-            serde_json::Value::Array(items) => items.iter().find_map(|child| keyed(child, key)),
-            _ => None,
-        }
-    }
-
     /// Whether the inspector shows the process `pid`: its PID property, not
     /// the table's cell.
     fn inspected(app: &mut TestApp<MonitorShell>, pid: u32) -> bool {
@@ -271,87 +242,33 @@ mod tests {
         find(&inspection, &pid.to_string())
     }
 
-    /// Whether the tab segment `index` (0 Processes, 1 Resources) is on.
+    /// The window bar's slots as the window declares them now.
+    fn bar(app: &mut TestApp<MonitorShell>) -> ui::window_toolbar::WindowToolbar {
+        app.settle();
+        ui::window_toolbar::declared().expect("the window declares its slots")
+    }
+
+    /// Whether the bar's view `index` (0 Processes, 1 Resources) is chosen.
     fn tab_shown(app: &mut TestApp<MonitorShell>, index: usize) -> Option<bool> {
-        let inspection: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        keyed(&inspection, &format!("monitor.tabs:segment:{index}"))
-            .map(|tab| tab["state"]["checked"] == true)
+        bar(app)
+            .views
+            .map(|views| views.chosen_index() == Some(index))
     }
 
-    fn named_node(app: &mut TestApp<MonitorShell>, name: &str) -> serde_json::Value {
-        let inspection: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        announced(&inspection, name).unwrap_or_else(|| panic!("`{name}` is announced"))
+    /// Press the window bar's slot `id`, as the desktop's bar does.
+    fn press(app: &mut TestApp<MonitorShell>, id: &str) {
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
-    /// The exact accessible name of the real retained cadence button, rather
-    /// than a similarly named popup item or resource declaration.
+    /// The update frequency the window bar's menu button names.
     fn shown_interval(app: &mut TestApp<MonitorShell>) -> String {
-        fn cadence(node: &serde_json::Value) -> Option<&serde_json::Value> {
-            if node.get("test_id").and_then(serde_json::Value::as_str) == Some("monitor.cadence") {
-                return node.get("semantics");
-            }
-            match node {
-                serde_json::Value::Object(fields) => fields.values().find_map(cadence),
-                serde_json::Value::Array(items) => items.iter().find_map(cadence),
-                _ => None,
-            }
-        }
-        let inspection: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        cadence(&inspection).expect("the retained cadence button publishes accessibility semantics")
-            ["name"]
-            .as_str()
-            .expect("the cadence button announces its update frequency")
-            .to_owned()
-    }
-
-    /// Click the control named `name` where a person sees it.
-    fn click(app: &mut TestApp<MonitorShell>, name: &str) {
-        let node = named_node(app, name);
-        click_node(app, &node);
-    }
-
-    /// Click the widget whose test id is `id`, where it is laid out.
-    fn click_widget(app: &mut TestApp<MonitorShell>, id: &str) {
-        fn rect_of(node: &serde_json::Value, id: &str) -> Option<[f64; 4]> {
-            if node.get("test_id").and_then(serde_json::Value::as_str) == Some(id)
-                && let Some(rect) = node.get("rect").and_then(serde_json::Value::as_array)
-            {
-                let rect: Vec<f64> = rect.iter().filter_map(serde_json::Value::as_f64).collect();
-                if let Ok(rect) = <[f64; 4]>::try_from(rect) {
-                    return Some(rect);
-                }
-            }
-            match node {
-                serde_json::Value::Object(fields) => {
-                    fields.values().find_map(|child| rect_of(child, id))
-                }
-                serde_json::Value::Array(items) => {
-                    items.iter().find_map(|child| rect_of(child, id))
-                }
-                _ => None,
-            }
-        }
-        let inspection: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        let [x, y, w, h] = rect_of(&inspection, id).unwrap_or_else(|| panic!("`{id}` is laid out"));
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-        app.harness().relayout();
-    }
-
-    fn click_node(app: &mut TestApp<MonitorShell>, node: &serde_json::Value) {
-        let bounds = &node["bounds"];
-        let coordinate = |low: &str, high: &str| {
-            f64::midpoint(
-                bounds[low].as_f64().unwrap(),
-                bounds[high].as_f64().unwrap(),
-            )
-        };
-        let (x, y) = (coordinate("x0", "x1"), coordinate("y0", "y1"));
-        app.harness().click_at(x, y);
-        app.harness().relayout();
+        bar(app)
+            .actions
+            .into_iter()
+            .find(|action| action.id == crate::app::window_bar::CADENCE)
+            .expect("the bar holds the update frequency")
+            .name
     }
 
     #[test]
@@ -362,7 +279,6 @@ mod tests {
             "Update frequency: Every 1.5 seconds"
         );
 
-        // Another of the person's devices changed them.
         app.settings::<MonitorPreferences>()
             .set(&MonitorPreferences {
                 interval_ms: 3000,
@@ -376,13 +292,8 @@ mod tests {
             "Update frequency: Every 3 seconds"
         );
 
-        // A cadence chosen here is stored for every device.
         let versions = app.versions().len();
-        // The menu opens on the current cadence; the next one down is 5 s.
-        click_widget(&mut app, "monitor.cadence");
-        app.harness().key("ArrowDown");
-        app.harness().key("Enter");
-        app.harness().relayout();
+        press(&mut app, &crate::view::Cadence::Every(5000).item_id());
         assert_eq!(
             shown_interval(&mut app),
             "Update frequency: Every 5 seconds"
@@ -448,7 +359,7 @@ mod tests {
         assert_eq!(app.state().sort, SortKey::Name);
         assert!(app.state().ascending);
         assert_eq!(app.versions().len(), versions + 2);
-        click(&mut app, "Tree view");
+        press(&mut app, crate::app::window_bar::TREE);
         assert!(app.state().flat);
         assert!(app.undo());
         assert!(!app.state().flat);
@@ -462,12 +373,11 @@ mod tests {
         })
         .unwrap();
         app.harness().relayout();
-        let inspection: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        assert_eq!(
-            keyed(&inspection, "monitor.filter").unwrap()["value"],
-            "cargo"
-        );
+        let mut count = None;
+        ui::widget::with_filterable(app.surface_mut::<MonitorApp>(), &mut |list| {
+            count = list.filter_count();
+        });
+        assert!(count.is_some(), "the list is narrowed to the query");
         app.effect(&MonitorEffect::ShowTab {
             tab: "resources".into(),
         })
@@ -495,7 +405,6 @@ mod tests {
                 .expect("a stat line")
                 .started_at
         };
-        // Elsewhere, as the service in this process reads it.
         #[cfg(not(target_os = "linux"))]
         let started_at = {
             use tilo_system_stats::probe::Probe as _;
@@ -548,8 +457,7 @@ mod tests {
         })
         .unwrap();
 
-        // Inspecting its row through the door selects it.
-        click(&mut app, "Tree view");
+        press(&mut app, crate::app::window_bar::TREE);
         assert!(
             !inspected(&mut app, child.id()),
             "the child is not selected"
@@ -558,7 +466,6 @@ mod tests {
         app.harness().relayout();
         assert!(inspected(&mut app, child.id()), "the child is selected");
 
-        // A search hit is anchored at the row, and opening it inspects it.
         let hit = app
             .surface_mut::<MonitorApp>()
             .process_search_entries()
@@ -566,10 +473,7 @@ mod tests {
             .find(|entry| entry.anchor.as_deref() == Some(id.as_str()))
             .expect("the child is found");
         assert!(hit.action.is_none(), "a hit names its row, never an action");
-        app.harness()
-            .perform_named("monitor.tabs:segment:1", &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
+        press(&mut app, crate::app::Tab::Resources.view_id());
         assert_eq!(tab_shown(&mut app, 1), Some(true));
         app.call("open", serde_json::json!({ "anchor": id }))
             .unwrap();
@@ -696,7 +600,7 @@ mod tests {
         crate::sampler::reset_provider_read_count();
         let mut app = TestApp::<MonitorShell>::capture(None).unwrap();
         app.harness().relayout();
-        click(&mut app, "Tree view");
+        press(&mut app, crate::app::window_bar::TREE);
         let first = app.versions().first().unwrap().hash;
         assert!(app.past_version(&[first]).is_ok());
         assert_eq!(
@@ -713,14 +617,11 @@ mod tests {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "processes: {audit:?}");
-        click(&mut app, "Tree view");
+        press(&mut app, crate::app::window_bar::TREE);
         assert!(app.state().flat);
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "flat processes: {audit:?}");
-        app.harness()
-            .perform_named("monitor.tabs:segment:1", &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
+        press(&mut app, crate::app::Tab::Resources.view_id());
         assert_eq!(tab_shown(&mut app, 1), Some(true));
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "resources: {audit:?}");
@@ -821,5 +722,29 @@ mod tests {
             (invoker.kind, invoker.on_behalf_of.as_deref()),
             (ActorKind::Agent, Some("ada"))
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios show a sample table, which no signal reaches;
+    /// the app someone opens lists this machine's processes, and walking
+    /// its Kill would signal every one of them, the test's own among them.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::MonitorShell::scenarios() {
+            let mut app = TestApp::<super::MonitorShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

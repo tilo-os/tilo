@@ -28,10 +28,10 @@ static int run(int allowed) {
     pid_t pid = fork();
     if (pid < 0) return 0;
     if (pid == 0) {
-        if (allowed) execl("/usr/bin/tilo-launcher", "tilo-launcher", "__sandbox-exec",
+        if (allowed) execl("/usr/libexec/tilo/tilo-launcher", "tilo-launcher", "__sandbox-exec",
             "--ro", "/usr", "--ro", "/lib", "--ro", "/lib64", "--rw", "/tmp",
             "--net-restricted", "--", "/usr/bin/tmp-probe", "allow", (char *)NULL);
-        else execl("/usr/bin/tilo-launcher", "tilo-launcher", "__sandbox-exec",
+        else execl("/usr/libexec/tilo/tilo-launcher", "tilo-launcher", "__sandbox-exec",
             "--ro", "/usr", "--ro", "/lib", "--ro", "/lib64",
             "--net-restricted", "--", "/usr/bin/tmp-probe", "deny", (char *)NULL);
         perror("exec launcher");

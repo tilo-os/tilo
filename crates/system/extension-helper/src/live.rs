@@ -17,9 +17,9 @@
 //! (`/usr/share/tilo/components.toml`).
 //!
 //! 1. The staged and the booted deployments are opened read-only: on the
-//!    sealed composefs layout each is mounted from its composefs image with
-//!    the fs-verity digest bootc reports, so what is read is exactly the
-//!    verified image; on the ostree layout each is its deployment checkout.
+//!    sealed composefs layout each is mounted from its composefs image once
+//!    the image's fs-verity digest is the one bootc reports, so what is read
+//!    is exactly the verified image; on the ostree layout each is its deployment checkout.
 //! 2. Their `/usr` trees are compared, and every difference is classified by
 //!    the staged image's component manifest: a system component (`vm` scope:
 //!    system services, the greeter), a session component (the compositor,
@@ -62,9 +62,10 @@
 //! trusted.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read as _};
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::{MetadataExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -193,7 +194,8 @@ pub fn status(layout: &Layout) -> i32 {
 /// (or nothing to apply), 1 failed (and rolled back).
 ///
 /// # Errors
-/// A failure before anything changed: no layer was merged.
+/// A failure before anything changed: no layer was merged, and the state
+/// records the update as failed.
 pub fn apply(host: &dyn Host, live: &dyn LiveHost, layout: &Layout, phase: Phase) -> Result<i32> {
     let (booted, staged) = deployments(&live.bootc_status()?)?;
     let Some(staged) = staged else {
@@ -219,10 +221,39 @@ pub fn apply(host: &dyn Host, live: &dyn LiveHost, layout: &Layout, phase: Phase
     let system_applied = previous
         .as_ref()
         .is_some_and(|state| state.applied == Some(Phase::System));
+    let outcome = open_and_apply(host, live, layout, phase, booted, &staged, system_applied);
+    if let Err(error) = &outcome {
+        // Nothing changed, but the image cannot apply live: it waits for the
+        // next restart of the machine, which the desktop then asks for (or an
+        // always-on host takes when nobody is at it).
+        write_state(
+            layout,
+            &State {
+                image: staged.image().to_owned(),
+                reboot_required: true,
+                failed: true,
+                detail: error.to_string(),
+                ..State::current()
+            },
+        )?;
+    }
+    outcome
+}
+
+/// [`apply`] of the staged deployment over the booted one.
+fn open_and_apply(
+    host: &dyn Host,
+    live: &dyn LiveHost,
+    layout: &Layout,
+    phase: Phase,
+    booted: Option<Deployment>,
+    staged: &Deployment,
+    system_applied: bool,
+) -> Result<i32> {
     let booted = booted.ok_or_else(|| Error::pack("bootc reports no booted deployment"))?;
     let mounts = mounts(layout);
     let base_root = live.open(layout, &booted, &mounts.join("booted"))?;
-    let new_root = match live.open(layout, &staged, &mounts.join("staged")) {
+    let new_root = match live.open(layout, staged, &mounts.join("staged")) {
         Ok(root) => root,
         Err(error) => {
             live.close(&mounts.join("booted"));
@@ -235,7 +266,7 @@ pub fn apply(host: &dyn Host, live: &dyn LiveHost, layout: &Layout, phase: Phase
         layout,
         Target {
             phase,
-            staged: &staged,
+            staged,
             system_applied,
         },
         &base_root,
@@ -457,10 +488,6 @@ impl Deployment {
 }
 
 /// The booted and the staged deployment in `bootc status --format json`.
-///
-/// # Errors
-/// Output that is not bootc's status, or a deployment whose identity is
-/// malformed.
 pub fn deployments(json: &str) -> Result<(Option<Deployment>, Option<Deployment>)> {
     let status: Value = serde_json::from_str(json)
         .map_err(|error| Error::Pack(format!("malformed bootc status: {error}")))?;
@@ -555,9 +582,6 @@ pub struct Components(pub Vec<Component>);
 
 impl Components {
     /// Read the manifest.
-    ///
-    /// # Errors
-    /// Text that is not the manifest.
     pub fn parse(text: &str) -> Result<Self> {
         let table: toml::Table = text
             .parse()
@@ -610,7 +634,6 @@ impl Components {
         Ok(Self(components))
     }
 
-    /// The component that installs `path`.
     pub fn owner(&self, path: &str) -> Option<&Component> {
         self.0.iter().find(|component| {
             component.files.iter().any(|to| {
@@ -656,7 +679,6 @@ pub struct Change {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
-    /// New or different in the staged image.
     Written,
     /// Gone from the staged image.
     Removed,
@@ -1227,7 +1249,6 @@ pub struct State {
     pub image: String,
     /// The last phase applied; `None` before any, or after a failure.
     pub applied: Option<Phase>,
-    /// Part of the update waits for a desktop restart.
     pub desktop_pending: bool,
     /// Part of the update waits for a restart of the machine.
     pub reboot_required: bool,
@@ -1342,7 +1363,6 @@ pub trait LiveHost {
     fn reload_user(&self, user: &str) -> Result<()>;
     /// Restart `unit` if it runs, in `user`'s manager or the system's.
     fn try_restart(&self, user: Option<&str>, unit: &str) -> Result<()>;
-    /// Whether `unit` failed.
     fn unit_failed(&self, user: Option<&str>, unit: &str) -> bool;
     /// Start `unit` without waiting for it.
     fn start_no_block(&self, unit: &str);
@@ -1403,6 +1423,81 @@ fn user_name(uid: u32) -> Option<String> {
     (output.success && !name.is_empty()).then_some(name)
 }
 
+/// `mount.composefs` of `image` at `at`, every file it names fs-verity
+/// checked, as bootc mounts the root at boot. No `digest=`: libcomposefs
+/// measures only SHA-256 fs-verity and refuses bootc's SHA-512 images, so
+/// the caller checks the image's digest itself ([`verity_matches`]).
+fn composefs_mount(objects: &Path, image: &Path, at: &Path) -> Vec<OsString> {
+    let mut options = OsString::from("ro,verity,basedir=");
+    options.push(objects);
+    vec![
+        "mount.composefs".into(),
+        "-o".into(),
+        options,
+        image.into(),
+        at.into(),
+    ]
+}
+
+/// Whether a measured fs-verity digest is `expected`, the hex digest bootc
+/// reports: SHA-512 for 128 digits, SHA-256 for 64.
+fn verity_matches(algorithm: u16, digest: &[u8], expected: &str) -> bool {
+    let wanted = match expected.len() {
+        64 => FS_VERITY_HASH_ALG_SHA256,
+        128 => FS_VERITY_HASH_ALG_SHA512,
+        _ => return false,
+    };
+    algorithm == wanted && hex::encode(digest).eq_ignore_ascii_case(expected)
+}
+
+/// `FS_VERITY_HASH_ALG_SHA256`.
+const FS_VERITY_HASH_ALG_SHA256: u16 = 1;
+/// `FS_VERITY_HASH_ALG_SHA512`.
+const FS_VERITY_HASH_ALG_SHA512: u16 = 2;
+
+/// The fs-verity digest of `file` as the kernel holds it: its algorithm and
+/// bytes. Reads no file data.
+fn measure_verity(file: &fs::File) -> io::Result<(u16, Vec<u8>)> {
+    /// `_IOWR('f', 134, struct fsverity_digest)`.
+    const FS_IOC_MEASURE_VERITY: libc::Ioctl = 0xC004_6686;
+    /// `struct fsverity_digest` followed by room for the largest digest.
+    #[repr(C)]
+    struct Measure {
+        digest_algorithm: u16,
+        digest_size: u16,
+        digest: [u8; 64],
+    }
+    let mut arg = Measure {
+        digest_algorithm: 0,
+        digest_size: 64,
+        digest: [0; 64],
+    };
+    // SAFETY: the descriptor is live for the call; `arg` is a
+    // `struct fsverity_digest` whose `digest_size` announces the 64 bytes of
+    // `digest` after it, which is all the kernel writes.
+    let result = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            FS_IOC_MEASURE_VERITY,
+            std::ptr::from_mut(&mut arg),
+        )
+    };
+    if result != 0 {
+        let error = io::Error::last_os_error();
+        return Err(match error.raw_os_error() {
+            Some(libc::ENODATA | libc::EOPNOTSUPP | libc::ENOTTY) => {
+                io::Error::other(format!("the file has no fs-verity: {error}"))
+            }
+            _ => error,
+        });
+    }
+    let digest = arg
+        .digest
+        .get(..usize::from(arg.digest_size))
+        .ok_or_else(|| io::Error::other("the kernel reported an oversized fs-verity digest"))?;
+    Ok((arg.digest_algorithm, digest.to_vec()))
+}
+
 impl LiveHost for crate::System {
     fn bootc_status(&self) -> Result<String> {
         run_strings(
@@ -1443,23 +1538,28 @@ impl LiveHost for crate::System {
                 self.close(at);
                 fs::create_dir_all(at).at(at)?;
                 let repository = layout.at("/sysroot/composefs");
-                let image = repository.join("images").join(verity);
-                let options = format!(
-                    "ro,basedir={},digest={verity}",
-                    repository.join("objects").display()
-                );
-                // mount.composefs checks the image's fs-verity digest against
-                // the one bootc reported before it mounts anything.
+                let path = repository.join("images").join(verity);
+                let image = fs::File::open(&path).at(&path)?;
+                let measured = measure_verity(&image).at(&path)?;
+                if !verity_matches(measured.0, &measured.1, verity) {
+                    return Err(Error::Pack(format!(
+                        "the composefs image {} is not the one bootc reports",
+                        path.display()
+                    )));
+                }
+                // The measured file itself, through the descriptor held open
+                // here: nothing can swap the image between the check and the
+                // mount.
+                let held = PathBuf::from(format!(
+                    "/proc/{}/fd/{}",
+                    std::process::id(),
+                    image.as_raw_fd()
+                ));
                 run(
-                    &[
-                        OsStr::new("mount"),
-                        OsStr::new("-t"),
-                        OsStr::new("composefs"),
-                        OsStr::new("-o"),
-                        OsStr::new(&options),
-                        image.as_os_str(),
-                        at.as_os_str(),
-                    ],
+                    &composefs_mount(&repository.join("objects"), &held, at)
+                        .iter()
+                        .map(OsString::as_os_str)
+                        .collect::<Vec<_>>(),
                     true,
                 )?;
                 Ok(at.to_path_buf())

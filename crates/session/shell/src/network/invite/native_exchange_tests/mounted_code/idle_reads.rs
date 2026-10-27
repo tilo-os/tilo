@@ -222,6 +222,7 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
     );
     tokio::time::sleep(SETTLE).await;
     let (captures, checks) = counter.sample();
+    let handed = counter.handed();
     let announcements = tilo_identity_host::policy_change::epoch();
     // The test process's own threads, sampled from /proc over the window:
     // the apps' collaboration shovels and the broker are among them.
@@ -232,6 +233,7 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
     .unwrap()
     .expect("sample the test process's threads");
     let (captures_after, checks_after) = counter.sample();
+    let handed_after = counter.handed();
     let announcements_seen = tilo_identity_host::policy_change::epoch().wrapping_sub(announcements);
     let idle_captures = captures_after.saturating_sub(captures);
     let idle_checks = checks_after.saturating_sub(checks);
@@ -262,9 +264,13 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
         thread("ui-collab-shove"),
         broker_wakeups,
     );
-    assert_eq!(
-        idle_captures, 0,
+    assert!(
+        idle_captures == 0,
         "an idle shared document was captured {idle_captures} times in {WINDOW:?} ({idle_checks} cheap checks): is its reader polling again?"
+    );
+    assert_eq!(
+        handed_after, handed,
+        "an idle reader was handed (whole, changes) reads of a document nobody edited"
     );
     assert!(
         mounted.code.app.collaboration_is_connected(),

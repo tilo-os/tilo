@@ -2,7 +2,8 @@
 use super::{RoomId, ShellNetwork};
 use std::sync::Arc;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_relay_session::rooms::private::{PrivateClient, PrivateOperation, PrivateReply};
+use tilo_relay_protocol::rooms::private::{PrivateOperation, PrivateReply};
+use tilo_relay_session::rooms::private::PrivateClient;
 use tilo_user_identity::DeviceCert;
 
 // Deliberately not Debug: addresses and principals belong to the private route.
@@ -36,7 +37,7 @@ impl ShellNetwork {
                 return Ok(None);
             }
             let (hint, _) =
-                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
                     .map_err(|_| "private governor transport hint invalid")?;
             if hint.room != room.to_string()
                 || &hint.governing_authority != view.governor()

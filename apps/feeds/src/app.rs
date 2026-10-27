@@ -1,7 +1,7 @@
 //! Root widget for the Feeds reader — RSS, Atom and Gemini.
 //!
 //! The window is the shared [`NavShell`]: the sidebar lists the library's
-//! places (smart lists, folders with their feeds, tags) in a [`NavList`],
+//! places (smart lists, folders with their feeds, tags) in a [`NavList`](ui::widget::NavList),
 //! the overview is the article list of the chosen place, and the content is
 //! the open article. The shell owns the header row, the sidebar toggle, the
 //! drawer at narrow widths and the push to the article at very narrow
@@ -9,8 +9,8 @@
 //!
 //! State that *converges* (subscriptions, read and star flags, cached
 //! articles, reading settings) lives in the Automerge document via
-//! [`crate::doc`]. State that is *local* to this peer (the chosen place, the
-//! open article, scroll offsets, open dialogs and menus) lives in [`Core`].
+//! [`crate::resource`]. State that is *local* to this peer (the chosen place, the
+//! open article, scroll offsets, open dialogs and menus) lives in `Core`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -21,7 +21,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
 use ui::portal::{
-    FileFilter, LaunchChannel, LaunchOutcome, PickRequest, PortalChannel, PortalOutcome,
+    ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
+    SaveChannel, SaveOutcome,
 };
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -30,16 +31,18 @@ use ui::time::Instant;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    AppModel, Button, Column, Element, ModalDialog, ModelPath, NavPane, NavShell, Popover,
-    PopoverSide, SidebarPlacement, TextInputKind, Widget,
+    AppModel, Column, ModalDialog, ModelPath, NavPane, NavShell, Popover, PopoverSide,
+    SidebarPlacement, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::{Anchor, HeaderButton, reader_settings_panel};
-use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
+
+use crate::chrome::reader_settings_panel;
+use crate::fetch::{FetchRequest, FetchResult, FetchWorker, RefreshFailure};
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
 use crate::model::{
@@ -84,6 +87,8 @@ pub(crate) type Shared = Rc<RefCell<Core>>;
 /// What the core asks of the window's notice.
 enum ToastChange {
     Show(String),
+    /// A change that ran at once, with Undo to take it back.
+    Undo(String),
     Dismiss,
 }
 
@@ -105,10 +110,8 @@ pub(crate) enum Request {
     OpenOriginal,
     /// Show or hide the reading settings.
     ReaderSettings,
-    /// The overview's menu (import, export).
-    ListMenu,
-    /// The open article's menu (read state, tags).
-    ArticleMenu,
+    /// What a menu row or a menu entry of the window's bar does.
+    Menu(MenuAction),
     /// A feed's menu: the row it acts on (its lift), and the point it opens
     /// at (the pointer, or under the row or its More button).
     FeedMenu(Id, Rect, Option<Point>),
@@ -146,12 +149,87 @@ impl MenuAction {
     }
 }
 
+/// What a press of the reader's slot `id` in the window's bar asks for.
+fn window_request(id: &str) -> Option<Request> {
+    Some(match id {
+        "feeds.refresh" => Request::Refresh,
+        "feeds.add" => Request::AddSubscription,
+        "feeds.mark-all-read" => Request::MarkAllRead,
+        "feeds.import" => Request::Menu(MenuAction::Import),
+        "feeds.export" => Request::Menu(MenuAction::Export),
+        "feeds.star" => Request::StarOpen,
+        "feeds.open-original" => Request::OpenOriginal,
+        "feeds.reader-settings" => Request::ReaderSettings,
+        "feeds.toggle-read" => Request::Menu(MenuAction::ToggleRead),
+        "feeds.edit-tags" => Request::Menu(MenuAction::EditTags),
+        _ => return None,
+    })
+}
+
+/// The reader's commands in the window's bar. With an article in front its
+/// own commands lead (star, open the original, reading settings, then its
+/// read state and tags in the menu) and the library's follow in the menu;
+/// otherwise the library's lead. A command with nothing to act on is
+/// disabled, and one whose meaning flips with state names what it does now.
+fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
+    let action = |id: &str, icon: Icon, name: &str| ToolbarAction::new(id, icon.name(), name);
+    let refresh = match core.refresh_unavailable() {
+        Some((_, reason)) => action("feeds.refresh", Icon::Refresh, reason).enabled(false),
+        None => action("feeds.refresh", Icon::Refresh, "Refresh all feeds"),
+    };
+    let mark_all_read = action("feeds.mark-all-read", Icon::Check, "Mark all as read")
+        .enabled(core.store.unread_count_for(&core.filter) > 0);
+    let add = action("feeds.add", Icon::Plus, "Add subscription");
+    let import = action("feeds.import", Icon::FolderOpen, "Import OPML…").in_menu();
+    let export = action("feeds.export", Icon::Download, "Export OPML…")
+        .enabled(!core.store.feeds.is_empty())
+        .in_menu();
+    let article = core.open_article().filter(|_| front == NavPane::Content);
+    let Some(article) = article else {
+        return vec![refresh, add, mark_all_read, import, export];
+    };
+    let starred = article.starred;
+    vec![
+        action(
+            "feeds.star",
+            Icon::Star,
+            if starred {
+                "Remove star"
+            } else {
+                "Star article"
+            },
+        )
+        .on(starred),
+        action(
+            "feeds.open-original",
+            Icon::ExternalLink,
+            "Open original article",
+        )
+        .enabled(!article.url.is_empty()),
+        action("feeds.reader-settings", Icon::Settings2, "Reading settings"),
+        action(
+            "feeds.toggle-read",
+            Icon::Mail,
+            if article.read {
+                "Mark as unread"
+            } else {
+                "Mark as read"
+            },
+        )
+        .in_menu(),
+        action("feeds.edit-tags", Icon::Pencil, "Edit tags…").in_menu(),
+        refresh.in_menu(),
+        mark_all_read.in_menu(),
+        add.in_menu(),
+        import,
+        export,
+    ]
+}
+
 /// Which menu is open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MenuKind {
     Feed(Id),
-    List,
-    Article,
 }
 
 /// The open menu and what each of its rows does.
@@ -295,7 +373,7 @@ impl RefreshState {
             return true;
         }
         self.finished_at
-            .is_some_and(|t| t.elapsed().as_secs_f32() < 6.0)
+            .is_some_and(|t| ui::time::now().saturating_duration_since(t).as_secs_f32() < 6.0)
     }
 
     /// One sentence for the progress line.
@@ -370,7 +448,15 @@ pub(crate) struct Core {
     pub(crate) menu: Option<OpenMenu>,
     /// A change to the window's notice, for the root to hand its shell.
     toast: Option<ToastChange>,
+    /// Whether the notice showing offers to undo the person's last step.
+    /// Any later change of theirs ends the offer: Undo would take back that
+    /// change instead.
+    undo_offered: bool,
     pub(crate) refresh: RefreshState,
+    /// Subscriptions whose last refresh failed, and why, kept until that
+    /// subscription refreshes successfully: the batch summary counts them,
+    /// and each failing row names its own reason.
+    pub(crate) feed_failures: HashMap<Id, RefreshFailure>,
     pub(crate) pending_landings: Vec<Landing>,
     /// Articles opened from search or by an agent, to mark read on the next
     /// pass that holds the document, as a click does.
@@ -378,8 +464,12 @@ pub(crate) struct Core {
     /// New subscriptions and folders this window asked for, until the
     /// library holds them.
     pub(crate) awaited: Vec<Awaited>,
-    pub(crate) import_rx: Option<PortalChannel>,
-    pub(crate) export_rx: Option<(PortalChannel, String)>,
+    /// The OPML file being chosen for import, read by the host: a browser
+    /// page has no path to hand over, only the file's contents.
+    pub(crate) import_rx: Option<ContentsChannel>,
+    /// The OPML export being saved where the person chooses (a browser
+    /// page's Save dialog or a download).
+    pub(crate) export_rx: Option<SaveChannel>,
     open_link_rx: Option<LaunchChannel>,
     background_poll_deadline: Cell<Option<Instant>>,
     pub(crate) worker: Option<FetchWorker>,
@@ -397,8 +487,6 @@ pub(crate) struct Core {
     pub(crate) window: Rect,
     /// The screen a narrow window should bring to the front next.
     show_pane: Option<NavPane>,
-    /// Where the header controls that open a menu or panel sit.
-    pub(crate) anchors: HashMap<Anchor, Rect>,
     /// The first feed's sidebar row (its lift), as last painted.
     pub(crate) first_feed_row: Option<(Id, Rect)>,
 }
@@ -427,7 +515,9 @@ impl Core {
             modal_open: false,
             menu: None,
             toast: None,
+            undo_offered: false,
             refresh: RefreshState::default(),
+            feed_failures: HashMap::new(),
             pending_landings: Vec::new(),
             pending_reads: Vec::new(),
             awaited: Vec::new(),
@@ -444,7 +534,6 @@ impl Core {
             pointer: Point::ZERO,
             window: Rect::ZERO,
             show_pane: None,
-            anchors: HashMap::new(),
             first_feed_row: None,
         };
         if demo {
@@ -478,6 +567,13 @@ impl Core {
         self.toast = Some(ToastChange::Show(msg.into()));
     }
 
+    /// Say what just changed, with Undo to take it back: the standard
+    /// notice of a change that runs at once rather than asking first.
+    fn offer_undo(&mut self, msg: impl Into<String>) {
+        self.toast = Some(ToastChange::Undo(msg.into()));
+        self.undo_offered = true;
+    }
+
     fn worker(&mut self) -> &mut FetchWorker {
         self.worker.get_or_insert_with(FetchWorker::spawn)
     }
@@ -486,8 +582,6 @@ impl Core {
     pub(crate) fn open_article(&self) -> Option<Row<'_, Article>> {
         self.selected.as_ref().and_then(|id| self.store.article(id))
     }
-
-    // --- titles ----------------------------------------------------------
 
     /// The overview's title: what the chosen place is called.
     pub(crate) fn filter_title(&self) -> String {
@@ -519,8 +613,6 @@ impl Core {
             .map(|f| f.title.clone())
             .unwrap_or_default()
     }
-
-    // --- places and selection --------------------------------------------
 
     pub(crate) fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;
@@ -571,7 +663,7 @@ impl Core {
     pub(crate) fn toggle_star(&mut self, id: &Id, doc: &mut ui::widget::Edits<'_>) {
         if let Some(starred) = self.store.article(id).map(|article| !article.starred) {
             self.perform(doc, Library::paths().articles.item(id).starred.set(starred));
-            self.set_toast(if starred {
+            self.say_when_kept(if starred {
                 "Article starred"
             } else {
                 "Star removed"
@@ -584,7 +676,7 @@ impl Core {
             && let Some(now_read) = self.store.article(&id).map(|article| !article.read)
         {
             self.perform(doc, read_edit(&id, now_read));
-            self.set_toast(if now_read {
+            self.say_when_kept(if now_read {
                 "Marked as read"
             } else {
                 "Marked as unread"
@@ -608,7 +700,9 @@ impl Core {
         let ids = self.store.unread_ids_for(&filter);
         if !ids.is_empty() {
             match &filter {
-                Filter::All => self.perform(doc, Library::MARK_EVERYTHING_READ.invoke()),
+                Filter::All => {
+                    self.perform(doc, Library::MARK_EVERYTHING_READ.invoke());
+                }
                 Filter::Feed(feed) => {
                     self.perform(doc, Library::MARK_FEED_READ.with(feed.clone()));
                 }
@@ -619,32 +713,75 @@ impl Core {
                 }
             }
         }
-        self.set_toast(format!(
+        self.say_when_kept(format!(
             "Marked {} as read",
             plural(ids.len(), "article", "articles")
         ));
     }
 
-    // --- action model -----------------------------------------------------
+    /// Say `text` of a library change just submitted once it is kept: at
+    /// once in a library nobody else decides, once the room accepts it in a
+    /// shared one, and never when the room refuses it
+    /// ([`Self::announce_answers`]).
+    pub(crate) fn say_when_kept(&mut self, text: impl Into<String>) {
+        match &self.dispatcher {
+            Some(dispatcher) => dispatcher.say_when_kept(text),
+            None => self.set_toast(text),
+        }
+    }
+
+    /// Show what the room answered of this window's changes: one it kept
+    /// is said done ("Article starred"), and one it refused, which the
+    /// record withdrew, says why instead.
+    pub(crate) fn announce_answers(&mut self) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let (said, refused) = (dispatcher.said(), dispatcher.refused());
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.set_toast(text);
+        }
+        if let Some(refusal) = refused.with(Clone::clone) {
+            refused.set(None);
+            self.set_toast(format!("The library was not changed: {}", refusal.reason));
+        }
+    }
 
     /// Submit one field edit or verb through the library's door, now: the
     /// single mutation path, shared with the palette and agents. One event's
     /// submissions are one undo step.
+    /// Whether it went through.
     pub(crate) fn perform(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
         submit: impl ui::framework::Submit<Library>,
-    ) {
+    ) -> bool {
+        // A new step of the person's: an Undo offered for the one before
+        // would now take back this one, so the offer goes.
+        if std::mem::take(&mut self.undo_offered) {
+            self.toast = Some(ToastChange::Dismiss);
+        }
+        self.submit(edits, submit)
+    }
+
+    /// [`Self::perform`] of a change that is nobody's step (what a refresh
+    /// fetched), which leaves an offered Undo standing.
+    fn submit(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<Library>,
+    ) -> bool {
         let Some(dispatcher) = self.dispatcher.as_ref() else {
             self.set_toast("The library is not attached to its resource.");
-            return;
+            return false;
         };
         if let Err(error) = dispatcher.submit_now(edits, submit) {
             self.set_toast(format!("The library was not changed: {error}"));
+            return false;
         }
+        true
     }
-
-    // --- reading settings -------------------------------------------------
 
     /// Change the reading settings and persist them, so the change survives
     /// restarts and converges with collaborators.
@@ -658,8 +795,6 @@ impl Core {
         }
     }
 
-    // --- folders and subscriptions -----------------------------------------
-
     /// Add a folder through the same verb the palette uses; it is shown
     /// once the library holds it.
     fn add_folder(&mut self, name: &str, doc: &mut ui::widget::Edits<'_>) {
@@ -672,15 +807,36 @@ impl Core {
         self.perform(doc, Library::NEW_FOLDER.with(name));
     }
 
+    /// Why refreshing every subscription is not possible now, as a code and
+    /// the reason a person reads: nothing is subscribed, or a refresh is
+    /// already running. The Refresh effect and its header button both follow
+    /// it.
+    pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
+        if self.store.feeds.is_empty() {
+            Some(("no_subscriptions", "There are no subscriptions to refresh"))
+        } else if self.refresh.in_progress() {
+            Some(("refreshing", "A refresh is already running"))
+        } else {
+            None
+        }
+    }
+
     /// Start a refresh of every subscription. Only enqueues on the worker:
     /// no network I/O on the UI thread. Results drain every frame.
+    /// While one runs this does nothing: it is already fetching every
+    /// subscription, and asking again would fetch each twice and restart
+    /// its count.
     pub(crate) fn refresh_all(&mut self) {
+        if self.refresh.in_progress() {
+            return;
+        }
         let ids: Vec<Id> = self.store.feeds.ids().cloned().collect();
         self.refresh_feeds(&ids);
         self.toast = Some(ToastChange::Dismiss);
     }
 
-    /// Enqueue a background refresh of `ids`.
+    /// Enqueue a background refresh of `ids`. While a refresh runs they
+    /// join it, so its progress and its answer wait for them too.
     pub(crate) fn refresh_feeds(&mut self, ids: &[Id]) {
         let reqs: Vec<FetchRequest> = ids
             .iter()
@@ -701,10 +857,14 @@ impl Core {
         for r in reqs {
             w.send(r);
         }
-        self.refresh = RefreshState {
-            total: n,
-            ..Default::default()
-        };
+        if self.refresh.in_progress() {
+            self.refresh.total += n;
+        } else {
+            self.refresh = RefreshState {
+                total: n,
+                ..Default::default()
+            };
+        }
     }
 
     /// Add a subscription through the library's verb, in the folder the
@@ -778,50 +938,36 @@ impl Core {
             return;
         }
         let xml = opml::export(&self.store);
-        self.export_rx = Some((opml_export_request().send(), xml));
+        self.export_rx = Some(opml_export_request().send_save_contents(xml.into_bytes()));
     }
 
     fn drain_export(&mut self) {
-        let Some((rx, _)) = &self.export_rx else {
+        let Some(rx) = &self.export_rx else {
             return;
         };
         let outcome = match rx.try_recv() {
             Ok(outcome) => outcome,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                PortalOutcome::Failed("the file chooser closed without a result".into())
+                SaveOutcome::Failed("the file chooser closed without a result".into())
             }
         };
-        let Some((_, xml)) = self.export_rx.take() else {
-            return;
-        };
+        self.export_rx = None;
         match outcome {
-            PortalOutcome::Opened(path) => {
-                match tilo_files::file_at(&path).and_then(|(dir, name)| {
-                    tilo_files::blocking::save_document(&dir, &name, xml.as_bytes())
-                }) {
-                    Ok(()) => self.set_toast(format!(
-                        "Exported subscriptions to {}",
-                        path.file_name().map_or_else(
-                            || path.display().to_string(),
-                            |n| n.to_string_lossy().into_owned()
-                        )
-                    )),
-                    Err(error) => self.set_toast(format!("Export failed: {error}")),
-                }
-            }
-            PortalOutcome::Cancelled => self.set_toast("Export cancelled"),
-            PortalOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
+            SaveOutcome::Saved => self.set_toast("Exported subscriptions"),
+            SaveOutcome::Cancelled => self.set_toast("Export cancelled"),
+            SaveOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
         }
     }
 
-    /// Ask the host portal for an `.opml` file. The chooser runs off the UI
-    /// thread; the chosen path arrives over a channel drained each frame.
+    /// Ask the host for an `.opml` file's contents, which every host can
+    /// hand over, a browser page included. The chooser runs off the UI
+    /// thread; the contents arrive over a channel drained each frame.
     pub(crate) fn request_import(&mut self) {
         if self.import_rx.is_some() || self.export_rx.is_some() {
             return;
         }
-        self.import_rx = Some(opml_import_request().send());
+        self.import_rx = Some(opml_import_request().send_contents());
     }
 
     /// Drain an in-flight import. A chosen file is read and parsed, every
@@ -840,11 +986,12 @@ impl Core {
         };
         self.import_rx = None;
         match outcome {
-            PortalOutcome::Opened(path) => match tilo_files::file_at(&path)
-                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
-                .and_then(|bytes| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+            ContentsOutcome::Picked(files) => match files
+                .into_iter()
+                .next()
+                .ok_or_else(|| "no file was chosen".to_owned())
+                .and_then(|file| {
+                    String::from_utf8(file.bytes).map_err(|_| "the file is not UTF-8 text".into())
                 }) {
                 Ok(text) => {
                     let added = self.apply_opml_import(&text, doc);
@@ -863,8 +1010,8 @@ impl Core {
                     true
                 }
             },
-            PortalOutcome::Cancelled => false,
-            PortalOutcome::Failed(reason) => {
+            ContentsOutcome::Cancelled => false,
+            ContentsOutcome::Failed(reason) => {
                 self.set_toast(format!("Import failed: {reason}"));
                 true
             }
@@ -898,8 +1045,6 @@ impl Core {
         self.perform(doc, Library::IMPORT_SUBSCRIPTIONS.with(outlines));
         added
     }
-
-    // --- menus --------------------------------------------------------------
 
     /// Open a menu of `actions` under `anchor`; `row` is the row it acts on.
     fn open_menu(
@@ -964,69 +1109,11 @@ impl Core {
                     MenuItem::action("Rename…", || {}).with_icon(Icon::Pencil),
                     MenuAction::RenameFeed(feed_id.clone()),
                 ),
+                // It runs at once and offers Undo, so nothing follows the
+                // choice: no ellipsis.
                 (
-                    MenuItem::destructive_action("Unsubscribe…", || {}).with_icon(Icon::Trash2),
+                    MenuItem::destructive_action("Unsubscribe", || {}).with_icon(Icon::Trash2),
                     MenuAction::Unsubscribe(feed_id),
-                ),
-            ],
-        );
-    }
-
-    fn open_list_menu(&mut self) {
-        let anchor = self
-            .anchors
-            .get(&Anchor::ListMenu)
-            .copied()
-            .unwrap_or_default();
-        let has_feeds = !self.store.feeds.is_empty();
-        self.open_menu(
-            MenuKind::List,
-            anchor,
-            None,
-            vec![
-                (
-                    MenuItem::action("Import OPML…", || {}).with_icon(Icon::FolderOpen),
-                    MenuAction::Import,
-                ),
-                (
-                    MenuItem::action("Export OPML…", || {})
-                        .with_icon(Icon::Download)
-                        .with_enabled(has_feeds),
-                    MenuAction::Export,
-                ),
-            ],
-        );
-    }
-
-    fn open_article_menu(&mut self) {
-        let Some(read) = self.open_article().map(|a| a.read) else {
-            return;
-        };
-        let anchor = self
-            .anchors
-            .get(&Anchor::ArticleMenu)
-            .copied()
-            .unwrap_or_default();
-        self.open_menu(
-            MenuKind::Article,
-            anchor,
-            None,
-            vec![
-                (
-                    MenuItem::action(
-                        if read {
-                            "Mark as unread"
-                        } else {
-                            "Mark as read"
-                        },
-                        || {},
-                    )
-                    .with_icon(Icon::Mail),
-                    MenuAction::ToggleRead,
-                ),
-                (
-                    MenuItem::action("Edit tags…", || {}).with_icon(Icon::Pencil),
-                    MenuAction::EditTags,
                 ),
             ],
         );
@@ -1056,10 +1143,17 @@ impl Core {
                     .unwrap_or_default();
                 self.open_modal(FeedsModal::rename(feed_id, &title));
             }
-            // The host asks the person before it unsubscribes; the feed
-            // leaves the sidebar once the library no longer holds it.
+            // Undo takes it back, so it runs at once and says so with Undo
+            // to hand; the feed leaves the sidebar once the library no
+            // longer holds it.
             MenuAction::Unsubscribe(feed_id) => {
-                self.perform(doc, Library::UNSUBSCRIBE.with(feed_id));
+                let title = self.store.feed(&feed_id).map(|feed| feed.title.clone());
+                if self.perform(doc, Library::UNSUBSCRIBE.with(feed_id)) {
+                    self.offer_undo(title.map_or_else(
+                        || "Unsubscribed".to_owned(),
+                        |title| format!("Unsubscribed from {title}"),
+                    ));
+                }
             }
             MenuAction::Import => self.request_import(),
             MenuAction::Export => self.export_opml(),
@@ -1090,8 +1184,6 @@ impl Core {
             self.apply_menu_action(action, &mut ctx.state);
         }
     }
-
-    // --- dialogs ------------------------------------------------------------
 
     fn open_modal(&mut self, modal: FeedsModal) {
         self.menu = None;
@@ -1164,8 +1256,6 @@ impl Core {
         }
     }
 
-    // --- fetch results ------------------------------------------------------
-
     /// Fold what the fetch worker produced into the store and the refresh
     /// progress, without touching the document (safe while painting).
     /// Each change queues its CRDT write for the next pass that holds the
@@ -1186,6 +1276,8 @@ impl Core {
                     articles,
                     certificate_pin,
                 } => {
+                    // It answered: whatever went wrong last time is over.
+                    self.feed_failures.remove(&feed_id);
                     let Some(feed) = self.store.feed(&feed_id) else {
                         self.refresh.done += 1;
                         self.maybe_finish_refresh();
@@ -1232,10 +1324,23 @@ impl Core {
                     }
                     self.maybe_finish_refresh();
                 }
-                FetchResult::Failed { feed_id, message } => {
-                    if feed_id.is_some() {
+                FetchResult::Failed {
+                    feed_id,
+                    reason,
+                    message,
+                } => {
+                    if let Some(feed_id) = feed_id {
+                        // The subscription keeps its place in the summary, and
+                        // its row keeps the reason: "two failed" is a count,
+                        // not an answer.
                         self.refresh.done += 1;
                         self.refresh.failed_feeds += 1;
+                        // The row names the kind of failure; the transport's
+                        // own words are for a failure with no subscription to
+                        // blame, where there is no row to put them on.
+                        if self.store.feed(&feed_id).is_some() {
+                            self.feed_failures.insert(feed_id, reason);
+                        }
                         self.maybe_finish_refresh();
                     } else {
                         self.set_toast(format!("Could not fetch the feed: {message}"));
@@ -1288,7 +1393,9 @@ impl Core {
             };
             fetched
         };
-        self.perform(doc, Library::REFRESHED.with(fetched));
+        // What a feed brought in is nobody's step: it leaves an Undo
+        // offered for the person's last change standing.
+        self.submit(doc, Library::REFRESHED.with(fetched));
     }
 
     /// Reconcile with the document: seed or adopt it on the first pass, then
@@ -1302,8 +1409,6 @@ impl Core {
         self.drain_export();
         self.drain_open_link();
     }
-
-    // --- links --------------------------------------------------------------
 
     pub(crate) fn open_selected_link(&mut self) {
         if let Some(url) = self.open_article().map(|a| a.url.clone())
@@ -1346,8 +1451,6 @@ impl Core {
         }
     }
 
-    // --- requests -----------------------------------------------------------
-
     /// Apply what a retained control asked for.
     fn apply(&mut self, request: Request, doc: &mut ui::widget::Edits<'_>) {
         match request {
@@ -1362,8 +1465,7 @@ impl Core {
                 }
             }
             Request::OpenOriginal => self.open_selected_link(),
-            Request::ListMenu => self.open_list_menu(),
-            Request::ArticleMenu => self.open_article_menu(),
+            Request::Menu(action) => self.apply_menu_action(action, doc),
             Request::FeedMenu(id, row, None) => self.open_feed_menu(id, row),
             Request::FeedMenu(id, row, Some(at)) => self.open_feed_menu_at(id, row, at),
             Request::SetFolderCollapsed(id, collapsed) => {
@@ -1492,125 +1594,6 @@ impl Core {
 /// Layouts at one window size before a capture stages its scenario.
 const SETTLED_LAYOUTS: u32 = 3;
 
-/// The header row's actions: icon buttons that ask the root for a request.
-struct HeaderActions<'a> {
-    core: &'a Shared,
-    requests: &'a Requests,
-}
-
-impl HeaderActions<'_> {
-    fn button(&self, id: &str, icon: Icon, label: &str, request: Request) -> HeaderButton {
-        let requests = Rc::clone(self.requests);
-        HeaderButton::new(
-            Button::icon_only(id, icon, label)
-                .on_effect(move || requests.borrow_mut().push(request.clone())),
-            self.core,
-        )
-    }
-
-    /// The library's commands, beside the sidebar toggle.
-    fn sidebar(&self) -> Vec<Element> {
-        vec![
-            Box::new(
-                self.button(
-                    "feeds.refresh",
-                    Icon::Refresh,
-                    "Refresh all feeds",
-                    Request::Refresh,
-                )
-                .enabled_when(|core| !core.store.feeds.is_empty() && !core.refresh.in_progress()),
-            ),
-            Box::new(self.button(
-                "feeds.new-folder",
-                Icon::FolderPlus,
-                "New folder",
-                Request::NewFolder,
-            )),
-            Box::new(self.button(
-                "feeds.add",
-                Icon::Plus,
-                "Add subscription",
-                Request::AddSubscription,
-            )),
-        ]
-    }
-
-    /// The article list's commands: search, mark all read, import and export.
-    fn overview(&self) -> Vec<Element> {
-        vec![
-            Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            )),
-            Box::new(
-                self.button(
-                    "feeds.mark-all-read",
-                    Icon::Check,
-                    "Mark all as read",
-                    Request::MarkAllRead,
-                )
-                .enabled_when(|core| core.store.unread_count_for(&core.filter) > 0),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.list-menu",
-                    Icon::MoreHorizontal,
-                    "More",
-                    Request::ListMenu,
-                )
-                .anchor(Anchor::ListMenu),
-            ),
-        ]
-    }
-
-    /// The open article's commands.
-    fn content(&self) -> Vec<Element> {
-        let has_article = |core: &Core| core.open_article().is_some();
-        vec![
-            Box::new(
-                self.button("feeds.star", Icon::Star, "Star article", Request::StarOpen)
-                    .enabled_when(has_article)
-                    .toggled_by(|core| core.open_article().is_some_and(|a| a.starred))
-                    .named_by(|core| {
-                        if core.open_article().is_some_and(|a| a.starred) {
-                            "Remove star"
-                        } else {
-                            "Star article"
-                        }
-                    }),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.open-original",
-                    Icon::ExternalLink,
-                    "Open original article",
-                    Request::OpenOriginal,
-                )
-                .enabled_when(|core| core.open_article().is_some_and(|a| !a.url.is_empty())),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.reader-settings",
-                    Icon::Settings2,
-                    "Reading settings",
-                    Request::ReaderSettings,
-                )
-                .enabled_when(has_article)
-                .anchor(Anchor::ReaderSettings),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.article-menu",
-                    Icon::MoreHorizontal,
-                    "More",
-                    Request::ArticleMenu,
-                )
-                .enabled_when(has_article)
-                .anchor(Anchor::ArticleMenu),
-            ),
-        ]
-    }
-}
-
 /// The root's nodes while a dialog or the reading settings are mounted
 /// beside the shell. They join the tree so their controls take part in
 /// focus order and native accessibility; both present themselves in the
@@ -1628,11 +1611,8 @@ pub struct FeedsApp {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    /// The column titles last handed to the shell.
-    titles: (String, String),
-    /// The reading settings, open under their header button.
+    /// The reading settings, open under the window bar's Reading settings.
     settings_panel: Option<Popover<Column>>,
-    /// The open dialog.
     pub(crate) modal: Option<FeedsModal>,
     /// The dialog opened or closed: the retained tree must be rebuilt.
     overlays_dirty: bool,
@@ -1666,28 +1646,19 @@ impl FeedsApp {
     fn build(demo: bool) -> Self {
         let core: Shared = Rc::new(RefCell::new(Core::new(demo)));
         let requests: Requests = Rc::default();
-        let titles = {
-            let core = core.borrow();
-            (core.filter_title(), core.article_title())
-        };
-        let actions = HeaderActions {
-            core: &core,
-            requests: &requests,
-        };
+        // The reader's commands are the window bar's slots
+        // ([`Self::declare_window_toolbar`]): the shell draws no header row.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("feeds.shell")
+            .with_window_toolbar()
             .sidebar(Box::new(SidebarNav::new(&core, &requests)))
             .overview(Box::new(ListPane::new(&core)))
-            .content(Box::new(ReaderPane::new(&core)))
-            .sidebar_header("", actions.sidebar())
-            .overview_header(titles.0.clone(), actions.overview())
-            .content_header(titles.1.clone(), actions.content());
+            .content(Box::new(ReaderPane::new(&core)));
         Self {
             core,
             requests,
             shell,
-            titles,
             settings_panel: None,
             modal: None,
             overlays_dirty: false,
@@ -1721,8 +1692,6 @@ impl FeedsApp {
         }
     }
 
-    // --- capture staging ----------------------------------------------------
-
     /// Stage a screenshot scenario once the window has its final size:
     ///
     /// * `"sidebar-open"` — the sidebar drawer open over a narrow window.
@@ -1751,12 +1720,7 @@ impl FeedsApp {
                     core.set_toast(error);
                 }
                 drop(core);
-                let ready = self
-                    .core
-                    .borrow()
-                    .anchors
-                    .get(&Anchor::ReaderSettings)
-                    .is_some_and(|r| r.area() > 0.0);
+                let ready = self.shell.geometry().content_column.width() > 0.0;
                 if !ready {
                     self.pending_scenario = Some(scenario);
                     return;
@@ -1812,14 +1776,10 @@ impl FeedsApp {
         };
     }
 
-    // --- framework host ---------------------------------------------------------
-
     /// Attach the framework dispatcher when hosted as a resource surface.
     pub(crate) fn attach_framework(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.core.borrow_mut().dispatcher = Some(dispatcher);
     }
-
-    // --- observation --------------------------------------------------------------
 
     /// The open article.
     pub fn selected_article(&self) -> Option<Id> {
@@ -1844,6 +1804,12 @@ impl FeedsApp {
     #[cfg(test)]
     pub(crate) fn core(&self) -> std::cell::Ref<'_, Core> {
         self.core.borrow()
+    }
+
+    /// The notice the window shows, if any.
+    #[cfg(test)]
+    pub(crate) fn notice(&self) -> Option<String> {
+        self.shell.toast_text().map(str::to_owned)
     }
 
     #[cfg(test)]
@@ -1871,8 +1837,6 @@ impl FeedsApp {
     pub(crate) fn settings_panel_open(&self) -> bool {
         self.settings_panel.as_ref().is_some_and(Popover::is_open)
     }
-
-    // --- the loop -------------------------------------------------------------------
 
     /// Present the dialog the core asked for.
     fn take_pending_modal(&mut self) {
@@ -1952,19 +1916,18 @@ impl FeedsApp {
             self.close_settings_panel();
             return;
         }
-        let (anchor, settings) = {
+        let settings = {
             let core = self.core.borrow();
             if core.open_article().is_none() {
                 return;
             }
-            (
-                core.anchors
-                    .get(&Anchor::ReaderSettings)
-                    .copied()
-                    .unwrap_or_default(),
-                core.settings,
-            )
+            core.settings
         };
+        // The panel opens from the window bar's Reading settings, which
+        // stands over the article's column: under the column's top edge,
+        // at its trailing side.
+        let column = self.shell.geometry().content_column;
+        let anchor = Rect::new(column.x1, column.y0, column.x1, column.y0);
         self.core.borrow_mut().menu = None;
         let window = Widget::get_rect(&self.shell);
         self.settings_panel = Some(
@@ -1978,18 +1941,23 @@ impl FeedsApp {
         self.overlays_dirty = true;
     }
 
-    /// Apply what retained controls asked for, bring the screen a choice
-    /// asked for to the front, and keep the column titles current.
     /// Hand the core's latest notice to the shell, which shows and expires it.
     fn take_toast(&mut self) {
+        self.core.borrow_mut().announce_answers();
         match self.core.borrow_mut().toast.take() {
             Some(ToastChange::Show(message)) => self.shell.toast(message, ToastKind::Info),
+            Some(ToastChange::Undo(message)) => {
+                self.shell.dismiss_toast();
+                self.shell
+                    .toast_with_action(message, ToastKind::Info, "undo-2", "Undo");
+            }
             Some(ToastChange::Dismiss) => self.shell.dismiss_toast(),
             None => {}
         }
     }
 
     fn settle_controls(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.take_window_toolbar_events();
         let opened = std::mem::take(&mut *self.opened.borrow_mut());
         for id in opened {
             let _ = self.core.borrow_mut().open_item(&id);
@@ -2011,13 +1979,7 @@ impl FeedsApp {
         {
             self.close_settings_panel();
         }
-        let (pane, titles) = {
-            let mut core = self.core.borrow_mut();
-            (
-                core.show_pane.take(),
-                (core.filter_title(), core.article_title()),
-            )
-        };
+        let pane = self.core.borrow_mut().show_pane.take();
         if let Some(pane) = pane {
             // Only a narrow window has screens to bring forward.
             if !self.shell.geometry().stack.is_empty() {
@@ -2030,14 +1992,48 @@ impl FeedsApp {
                 self.shell.close_sidebar();
             }
         }
-        if titles.0 != self.titles.0 {
-            self.shell.set_overview_title(titles.0.clone());
-        }
-        if titles.1 != self.titles.1 {
-            self.shell.set_content_title(titles.1.clone());
-        }
-        self.titles = titles;
+        self.declare_window_toolbar();
         self.take_toast();
+    }
+
+    /// Turn what the person pressed in the window's bar into requests: the
+    /// shell runs its own slots (the sidebar toggle, Back).
+    fn take_window_toolbar_events(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = event
+                && let Some(request) = window_request(&id)
+            {
+                self.requests.borrow_mut().push(request);
+            }
+        }
+    }
+
+    /// Declare the window bar's slots: the shell's own, the place being
+    /// read as the location, and the reader's commands.
+    fn declare_window_toolbar(&self) {
+        let mut toolbar = self.shell.window_toolbar();
+        let core = self.core.borrow();
+        let narrow = self.shell.geometry().stack.len() > 1;
+        let front = if narrow {
+            self.shell.front_pane()
+        } else {
+            NavPane::Content
+        };
+        // The list being read; a narrow window showing an article names its
+        // feed, as the article's own title is the reader's heading.
+        let feed = Some(core.article_title()).filter(|title| narrow && !title.is_empty());
+        toolbar.location = Some(ToolbarLocation {
+            label: feed
+                .filter(|_| front == NavPane::Content)
+                .unwrap_or_else(|| core.filter_title()),
+            ..ToolbarLocation::default()
+        });
+        NavShell::push_window_actions(&mut toolbar, window_actions(&core, front));
+        drop(core);
+        ui::window_toolbar::declare(Some(toolbar));
     }
 
     fn handle_semantic(
@@ -2130,6 +2126,8 @@ impl ui::widget::Decorator for FeedsApp {
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
+        } else if request.wants::<dyn ui::undo::UndoControl>() {
+            request.provide::<dyn ui::undo::UndoControl>(self);
         } else {
             Widget::provide(&self.shell, request);
         }
@@ -2137,13 +2135,25 @@ impl ui::widget::Decorator for FeedsApp {
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
+        } else if request.wants::<dyn ui::undo::UndoControl>() {
+            request.provide::<dyn ui::undo::UndoControl>(self);
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        for child in Widget::children_mut(self) {
-            child.settle(edits, path);
+        // The shell settles itself, not only its children: that is where it
+        // runs what the person pressed in the window's bar (Show sidebar, a
+        // header button). Without an overlay the root's children are the
+        // shell's own, so the overlays settle on their own after it.
+        Widget::settle(&mut self.shell, edits, path);
+        if let Some(mount) = self.mount {
+            if let (Some(modal), Some(_)) = (self.modal.as_mut(), mount.dialog) {
+                Widget::settle(&mut modal.dialog, edits, path);
+            }
+            if let (Some(panel), Some(_)) = (self.settings_panel.as_mut(), mount.panel) {
+                Widget::settle(panel, edits, path);
+            }
         }
         self.core.borrow_mut().flush_doc_writes(edits);
         self.core.borrow_mut().drain_import(edits);
@@ -2162,6 +2172,7 @@ impl ui::widget::Decorator for FeedsApp {
         }
         self.take_toast();
         Widget::sync(&mut self.shell, state, path);
+        self.declare_window_toolbar();
         if let Some(modal) = self.modal.as_mut() {
             modal.dialog.sync(state, path);
         }
@@ -2284,6 +2295,18 @@ impl ui::widget::Decorator for FeedsApp {
         for child in ui::widget::Decorator::children(self) {
             visitor(child);
         }
+    }
+
+    /// The shell, and the overlays it may mount over it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.shell);
+        if let Some(modal) = &self.modal {
+            visitor(&modal.dialog);
+        }
+        if let Some(panel) = &self.settings_panel {
+            visitor(panel);
+        }
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -2478,8 +2501,6 @@ impl ui::widget::Decorator for FeedsApp {
                 AccessNode::new(Role::Menu)
                     .with_name(match open.kind {
                         MenuKind::Feed(_) => "Feed actions",
-                        MenuKind::List => "More",
-                        MenuKind::Article => "Article actions",
                     })
                     .with_children(items),
             );
@@ -2523,10 +2544,6 @@ impl ui::widget::Decorator for FeedsApp {
         handled
     }
 
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        self.core.borrow().menu.is_some() || self.settings_panel.is_some()
-    }
-
     fn name(&self) -> &'static str {
         "FeedsApp"
     }
@@ -2535,6 +2552,15 @@ impl ui::widget::Decorator for FeedsApp {
 impl ui::undo::LocalUndo for FeedsApp {
     fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
         self.core.borrow().menu.is_some() || self.settings_panel.is_some()
+    }
+}
+
+/// The notice's Undo goes through the host's undo, the same as Ctrl+Z.
+impl ui::undo::UndoControl for FeedsApp {
+    fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
+        self.shell.take_toast_action()?;
+        std::mem::take(&mut self.core.borrow_mut().undo_offered)
+            .then_some(ui::undo::UndoRequest::Undo)
     }
 }
 
@@ -2586,6 +2612,9 @@ impl FeedsApp {
         if first && core.selected.is_none() {
             core.select_featured();
         }
+        // A subscription that is gone takes its recorded failure with it.
+        let store = Rc::clone(&core.store);
+        core.feed_failures.retain(|id, _| store.feed(id).is_some());
         core.synced = true;
     }
     pub(crate) fn attach_dispatcher(&self, dispatcher: ui::framework::Dispatcher<Library>) {
@@ -2615,14 +2644,7 @@ impl FeedsApp {
         core.refresh_reply = Some(reply);
     }
     pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
-        let core = self.core.borrow();
-        if core.store.feeds.is_empty() {
-            Some(("no_subscriptions", "There are no subscriptions to refresh"))
-        } else if core.refresh.in_progress() {
-            Some(("refreshing", "A refresh is already running"))
-        } else {
-            None
-        }
+        self.core.borrow().refresh_unavailable()
     }
     pub(crate) fn request_import(&self) {
         self.core.borrow_mut().request_import();

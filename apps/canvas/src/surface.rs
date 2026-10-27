@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use ui::a11y::{AccessNode, Role};
 use ui::framework::{Dispatcher, ResourceSurface, SurfaceCx};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
-use ui::tilo_actions::{self, ActionOutput};
+use ui::tilo_actions::ActionOutput;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use ui::vello::peniko::Fill;
@@ -37,13 +37,17 @@ use crate::gesture::area::{self, AreaGesture};
 use crate::gesture::brush::BrushDraft;
 use crate::gesture::outline::{Part, PenDraft, PointRef, constrain_45};
 use crate::gesture::points::Editable;
+use crate::gesture::read::{Sampled, Sampling};
 use crate::gesture::snap::{Guide, Snap, snap_point, snap_rect};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
-use crate::resource::{ExportSvg, ViewOp};
+use crate::resource::ViewOp;
 use crate::view_ops;
+
+pub mod peers;
+mod views;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
 const MAX_INLINE_SVG: usize = 48 * 1024;
@@ -182,6 +186,11 @@ pub struct CanvasSurface {
     look_text: Option<TextRenderer>,
     pictures: crate::background::Pictures,
     finding: Rc<Cell<bool>>,
+    /// What a click is reading off a picture of the artwork.
+    sampling: Option<Sampling>,
+    /// Views whose pictures the frame loop is rendering, answered once
+    /// they came.
+    due: Vec<views::Due>,
     tools: Tools,
     /// The tool the modes below belong to; a change of tool ends them.
     tool: Tool,
@@ -222,6 +231,9 @@ pub struct CanvasSurface {
     /// The theme's spacing: how far a click may wander, how near an edge
     /// snaps, how far a copy lands from its original.
     spacing: ui::tokens::Spacing,
+    /// A remote participant's own view of this artwork, and where it says it
+    /// is (see [`peers`]).
+    participants: peers::PeerViews,
 }
 
 impl CanvasSurface {
@@ -246,6 +258,8 @@ impl CanvasSurface {
             look_text: None,
             pictures: crate::background::Pictures::default(),
             finding: Rc::default(),
+            sampling: None,
+            due: Vec::new(),
             tools,
             tool,
             drag: None,
@@ -269,6 +283,7 @@ impl CanvasSurface {
             stylus: None,
             metrics: ui::tokens::Metrics::BASE,
             spacing: ui::tokens::Spacing::BASE,
+            participants: peers::PeerViews::default(),
         }
     }
 
@@ -746,11 +761,43 @@ impl CanvasSurface {
             return;
         }
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let shown =
-            view_ops::shown_colour(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
-        // A canvas that cannot draw a picture of itself picks nothing.
-        if let Ok(colour) = shown {
-            self.tools.pick(colour);
+        let patch =
+            view_ops::colour_patch(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
+        self.sampling = Some(Sampling::Colour(patch.request()));
+        self.take_sampled();
+    }
+
+    /// Carry out what a click read, once its picture came: the brush takes
+    /// the colour, the wand selects the area, the bucket fills it. A canvas
+    /// that cannot draw a picture of itself says why beside the title
+    /// rather than ignoring the click.
+    fn take_sampled(&mut self) {
+        let Some(sampling) = self.sampling.as_mut() else {
+            return;
+        };
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let Some(read) = sampling.poll(&mut self.tools.renderer.borrow_mut(), text, &self.art)
+        else {
+            return;
+        };
+        self.sampling = None;
+        let (found, fill, mode) = match read {
+            Err(why) => return self.tools.notice.set(Some(why)),
+            Ok(Sampled::Colour(colour)) => return self.tools.pick(colour),
+            Ok(Sampled::Area { found, fill, mode }) => (found, fill, mode),
+        };
+        let action = if fill {
+            area::bucket(
+                &self.art,
+                &found,
+                self.ink(),
+                edit::fresh_id(&self.art, "fill", &[]),
+            )
+        } else {
+            Some(area::found(&found, mode))
+        };
+        if let Some(action) = action {
+            self.dispatch(&action);
         }
     }
 
@@ -802,29 +849,18 @@ impl CanvasSurface {
             ..crate::author::ColourQuery::default()
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let found = crate::author::colour_region(
+        let search = crate::author::ColourSearch::start(
             &mut self.tools.renderer.borrow_mut(),
             text,
             &self.art,
-            &query,
+            query,
         );
-        // A canvas that cannot draw a picture of itself finds nothing.
-        let Ok(found) = found else {
-            return;
-        };
-        let action = if fill {
-            area::bucket(
-                &self.art,
-                &found,
-                self.ink(),
-                edit::fresh_id(&self.art, "fill", &[]),
-            )
-        } else {
-            Some(area::found(&found, mode))
-        };
-        if let Some(action) = action {
-            self.dispatch(&action);
-        }
+        self.sampling = Some(Sampling::Area {
+            search: Box::new(search),
+            fill,
+            mode,
+        });
+        self.take_sampled();
     }
 
     /// The brush or eraser lands at `at`: a stroke, carried on from the
@@ -1672,25 +1708,32 @@ impl CanvasSurface {
 
     /// The view keys: zoom in and out, to fit, to 100 %, to the selection,
     /// and the overview of the keys.
+    ///
+    /// `Ctrl+=`, `Ctrl+-` and `Ctrl+0` zoom the artwork, as they zoom any
+    /// content with a size of its own (`ui::content_zoom`), and the bare keys
+    /// do the same. Alt keeps its own meaning throughout, and a chord the
+    /// system reserves for something else is not a zoom: the artwork is not
+    /// the only thing on the screen that a key can speak to.
     fn view_key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
         let Key::Character(ch) = key else {
             return false;
         };
         let command = modifiers.control_key() || modifiers.super_key();
-        match (ch.as_str(), command, modifiers.shift_key()) {
+        let alt = modifiers.alt_key();
+        match (ch.as_str(), command, modifiers.shift_key(), alt) {
             // The keys, which a keyboard may report as Shift and slash.
-            ("?", false, _) | ("/", false, true) => {
+            ("?", false, _, false) | ("/", false, true, false) => {
                 return crate::panels::files::window_key(&self.tools, "?", modifiers);
             }
-            ("+" | "=", _, _) => self.zoom_by(ZOOM_STEP, None),
-            ("-" | "_", _, _) => self.zoom_by(1.0 / ZOOM_STEP, None),
-            ("0", true, _) | ("!" | "1", false, true) => self.zoom_to_fit(),
-            ("1", true, _) | ("0" | ")", false, true) => {
+            ("+" | "=", _, _, false) => self.zoom_by(ZOOM_STEP, None),
+            ("-" | "_", _, _, false) => self.zoom_by(1.0 / ZOOM_STEP, None),
+            ("0", true, _, false) | ("!" | "1", false, true, false) => self.zoom_to_fit(),
+            ("1", true, _, false) | ("0" | ")", false, true, false) => {
                 self.zoom_motion = None;
                 self.viewport.set_zoom(1.0);
                 self.moved_by_hand = true;
             }
-            ("2" | "@", false, true) => self.zoom_to_selection(),
+            ("2" | "@", false, true, false) => self.zoom_to_selection(),
             _ => return false,
         }
         true
@@ -2185,158 +2228,27 @@ impl CanvasSurface {
         })
     }
 
-    fn export_svg(
-        &mut self,
-        art: &Artwork,
-        revision: &str,
-        export: &ExportSvg,
-    ) -> Result<ActionOutput, String> {
-        let part = match &export.ids {
-            Some(ids) => Some(view_ops::part(art, ids)?),
-            None => None,
-        };
-        let ground = part.is_none();
-        let art = part.as_ref().unwrap_or(art);
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let svg = crate::panels::export::svg(
-            &mut self.tools.renderer.borrow_mut(),
-            text,
-            art,
-            ground,
-            export.outline_text == Some(true),
-        );
-        let address = crate::resource::store(svg.as_bytes())?;
-        let mut value = json!({
-            "format": "svg",
-            "bytes": svg.len(),
-            "content": address,
-            "revision": revision,
-        });
-        let written = match &export.path {
-            Some(path) => Some(crate::document::export_to(path, &["svg"], svg.as_bytes())?),
-            None => None,
-        };
-        if let (Some(written), Value::Object(fields)) = (&written, &mut value) {
-            fields.insert("path".into(), written.clone().into());
-        }
-        // Written to a file, the markup need not be read again.
-        if written.is_none()
-            && svg.len() <= MAX_INLINE_SVG
-            && let Value::Object(fields) = &mut value
-        {
-            fields.insert("svg".into(), svg.into());
-        }
-        Ok(ActionOutput {
-            value: Some(value),
-            resources: vec![address],
-        })
-    }
-
-    /// The reference picture as `inspect` reports it, when there is one.
-    fn reference_info(&self, art: &Artwork) -> Option<Value> {
-        let reference = art.reference.as_ref()?;
-        let mut renderer = self.tools.renderer.borrow_mut();
-        let frame = renderer.reference_frame(art);
-        let pixels = renderer
-            .reference_image(art)
-            .map(|image| [image.width, image.height]);
-        Some(json!({
-            "image": reference.image,
-            "frame": frame.map(|frame| [frame.x0, frame.y0, frame.width(), frame.height()]),
-            "pixels": pixels,
-            "opacity": reference.opacity,
-            "visible": reference.visible,
-        }))
-    }
-
-    /// The invocation sees one immutable revision, even when the person edits
-    /// while its settled picture is being rendered.
-    fn picture_job(&self, op: ViewOp, cx: &mut Reading) -> ui::framework::EffectAnswer {
-        let version = match &op {
-            ViewOp::Look { look } => look.version.as_deref(),
-            _ => None,
-        };
-        let (art, revision, shown) = Self::at_version(cx, version)?;
-        let path = match &op {
-            ViewOp::Export { export } => export.path.clone(),
-            _ => None,
-        };
-        let pictures = self.pictures.clone();
-        let content = crate::content::store();
-        let output_store = content.clone();
-        let phase = ui::i18n::I18nManager::lookup_plain("canvas-rendering-artwork");
-        Ok(cx.thread(
-            move |progress| {
-                progress.report(phase, None, None);
-                pictures.render(&art, content, &op)
-            },
-            move |_, result, _| {
-                let (picture, mut info) = result?;
-                if let Some(path) = &path {
-                    let extensions: &[&str] = match picture.format {
-                        "jpeg" => &["jpg", "jpeg"],
-                        "webp" => &["webp"],
-                        _ => &["png"],
-                    };
-                    let written = crate::document::export_to(path, extensions, &picture.bytes)?;
-                    if let Value::Object(fields) = &mut info {
-                        fields.insert("path".into(), written.into());
-                    }
-                }
-                Self::picture_output(&picture, info, &revision, shown.as_deref(), &output_store)
-                    .map(ui::framework::Effected::Done)
-            },
-        ))
-    }
-
-    fn picture_output(
-        picture: &view_ops::Picture,
-        mut info: Value,
-        revision: &str,
-        shown: Option<&str>,
-        content: &tilo_content::ContentStore,
-    ) -> Result<ActionOutput, String> {
-        let hash = content
-            .put(&picture.bytes)
-            .map_err(|error| format!("the picture could not be stored: {error}"))?;
-        let address = tilo_actions::content_resource(&hash)
-            .ok_or_else(|| "the picture has no content address".to_owned())?;
-        if let Value::Object(fields) = &mut info {
-            fields.insert("revision".into(), revision.into());
-            fields.insert("content".into(), address.clone().into());
-            if let Some(shown) = shown {
-                fields.insert("version".into(), shown.into());
-            }
-        }
-        Ok(ActionOutput {
-            value: Some(info),
-            resources: vec![address],
-        })
-    }
-
     /// The model and edge filter share the framework's progress, permission
     /// checks and attributed completion for buttons and semantic callers.
     fn area_job(
-        &self,
-        select: crate::selection::Select,
+        &mut self,
+        select: crate::resource::FindArea,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
+        let (art, _, _) = Self::at_version(cx, None)?;
+        let document = cx
+            .document()
+            .ok_or_else(|| "the artwork is not open here".to_owned())?
+            .clone();
+        if let Some(query) = crate::author::colour_query(&select, &art)? {
+            return Ok(self.colour_job(select, query, art, document, cx));
+        }
         if !ui::rt::available(ui::rt::Feature::Threads) {
             return Err("image area finding needs background threads on this platform".into());
         }
         if self.finding.get() {
             return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
         }
-        if select.subject != Some(true) && select.refine.is_none() {
-            return Err(
-                "give subject: true or refine: units; use select for geometric areas".into(),
-            );
-        }
-        let (art, _, _) = Self::at_version(cx, None)?;
-        let document = cx
-            .document()
-            .ok_or_else(|| "the artwork is not open here".to_owned())?
-            .clone();
         if let Some(layer) = &select.layer
             && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
         {
@@ -2365,128 +2277,15 @@ impl CanvasSurface {
             move |_surface, result, cx| {
                 drop(finding);
                 let (area, matte, found) = result?;
-                if cx.live().with(|current| current != &art) {
-                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-changed"));
-                }
-                if cx.dispatcher().read_only() {
-                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-read-only"));
-                }
                 let subject = select.subject == Some(true);
-                let select = crate::author::found(select, area, matte);
-                let mut selected = Artwork::from_doc(&document).map_err(|error| error.to_string())?;
-                let before = selected.clone();
-                select.apply(&mut selected, &before).map_err(|refusal| refusal.0)?;
-                let mut answer = json!({"selection": crate::answer::selection(&selected)});
+                let select = crate::author::found(&select, &area, matte);
+                let mut answer = views::select_found(select, &art, &document, cx)?;
                 if subject && let Value::Object(fields) = &mut answer {
                     fields.insert("found_by".into(), json!({"model": found.model, "load_ms": found.load_ms, "infer_ms": found.infer_ms, "refine_ms": found.refine_ms}));
                 }
-                cx.submit(Artwork::SELECT.with(crate::selection::Select { d: select.d, matte: select.matte, mode: select.mode, feather: select.feather, ..Default::default() }));
                 Ok(ui::framework::Effected::value(answer))
             },
         ))
-    }
-
-    fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<ActionOutput, String> {
-        let version = match op {
-            ViewOp::Look { look } => look.version.as_deref(),
-            ViewOp::Inspect { inspect } => inspect.version.as_deref(),
-            _ => None,
-        };
-        let (art, revision, shown) = Self::at_version(cx, version)?;
-        let stamp = |info: &mut Value| {
-            if let Value::Object(fields) = info {
-                fields.insert("revision".into(), revision.clone().into());
-                if let Some(shown) = &shown {
-                    fields.insert("version".into(), shown.clone().into());
-                }
-            }
-        };
-        let picture = |result: Result<(Option<view_ops::Picture>, Value), String>| -> Result<ActionOutput, String> {
-            let (picture, mut info) = result?;
-            stamp(&mut info);
-            let Some(picture) = picture else {
-                return Ok(ActionOutput {
-                    value: Some(info),
-                    resources: Vec::new(),
-                });
-            };
-            let hash = crate::content::store()
-                .put(&picture.bytes)
-                .map_err(|error| format!("the picture could not be stored: {error}"))?;
-            let address = tilo_actions::content_resource(&hash)
-                .ok_or_else(|| "the picture has no content address".to_owned())?;
-            if let Value::Object(fields) = &mut info {
-                fields.insert("content".into(), address.clone().into());
-            }
-            Ok(ActionOutput {
-                value: Some(info),
-                resources: vec![address],
-            })
-        };
-        let some = |result: Result<(view_ops::Picture, Value), String>| {
-            result.map(|(picture, info)| (Some(picture), info))
-        };
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        match op {
-            ViewOp::Look { look } => picture(some(view_ops::look(
-                &mut self.tools.renderer.borrow_mut(),
-                text,
-                &art,
-                look,
-            ))),
-            ViewOp::Export { export } => picture(some(view_ops::export(
-                &mut self.tools.renderer.borrow_mut(),
-                text,
-                &art,
-                export,
-            ))),
-            ViewOp::CompareVersions { diff } => {
-                let versions = Self::versions(cx, &art, diff)?;
-                let look = diff.look.unwrap_or(false);
-                picture(view_ops::diff(
-                    &mut self.tools.renderer.borrow_mut(),
-                    text,
-                    &versions,
-                    look,
-                ))
-            }
-            ViewOp::Compare { compare } => picture(some(view_ops::compare(
-                &mut self.tools.renderer.borrow_mut(),
-                text,
-                &art,
-                compare,
-            ))),
-            ViewOp::ExportSvg { svg: export } => self.export_svg(&art, &revision, export),
-            ViewOp::Inspect { inspect } => {
-                let mut value = view_ops::inspect(&art, inspect)?;
-                if let Some(ids) = &inspect.measure {
-                    let measured =
-                        view_ops::measure(&mut self.tools.renderer.borrow_mut(), text, &art, ids)?;
-                    if let Value::Object(fields) = &mut value {
-                        fields.insert("measured".into(), measured);
-                    }
-                }
-                stamp(&mut value);
-                if let Value::Object(fields) = &mut value
-                    && shown.is_none()
-                {
-                    fields.insert("selected".into(), json!(self.selection));
-                    if let Some(reference) = self.reference_info(&art) {
-                        fields.insert("reference".into(), reference);
-                    }
-                }
-                Ok(ActionOutput {
-                    value: Some(value),
-                    resources: Vec::new(),
-                })
-            }
-            ViewOp::Media => Ok(ActionOutput {
-                value: Some(view_ops::media(&art)),
-                resources: Vec::new(),
-            }),
-            ViewOp::SaveArtwork { save } => saved(crate::document::save(&art, save), &stamp),
-            ViewOp::FindArea { .. } => Err("area finding is handled as a job".into()),
-        }
     }
 
     /// What the pointer hovers over, outlined so a person sees what a click
@@ -2521,6 +2320,61 @@ impl CanvasSurface {
         self.overlay_footprint(scene, to_screen, theme);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
+        }
+    }
+
+    /// Collaborators' selections, in their own colours and with their names,
+    /// where the presence they published says they are: a range over the
+    /// artwork's marks, resolved here against this screen's copy of them.
+    ///
+    /// Read from `presence`, never from anything this window remembers about
+    /// them, so a wash left by a peer whose frame stopped arriving fades with
+    /// their presence instead of sitting on the artwork for good.
+    fn paint_peers(
+        &self,
+        scene: &mut Scene,
+        to_screen: Affine,
+        theme: &Theme,
+        text: &mut TextRenderer,
+        presence: &PresenceCtx,
+    ) {
+        let keys = presence_keys();
+        let bounds = to_screen.transform_rect_bbox(self.rect);
+        for key in &keys {
+            let Some(list) = presence.selections.get(key) else {
+                continue;
+            };
+            for (user, range) in list {
+                if range.is_empty() {
+                    continue;
+                }
+                let view = peers::PeerView::new(range.start, range.end, self.art.marks.len());
+                let name = presence.display_name(user);
+                // Each mark is outlined; the name hangs off the first one, so
+                // a peer who picked eight marks is named once, not eight
+                // times.
+                for (index, id) in view.picked(&self.art).enumerate() {
+                    let Some(mark) = self.art.mark(id) else {
+                        continue;
+                    };
+                    let screen = to_screen.transform_rect_bbox(mark.bounds());
+                    let mut ctx = ui::paint::PaintCtx::new(scene, Affine::IDENTITY, text, theme);
+                    if index == 0 {
+                        presence.draw_peer_outline_labeled_within(
+                            &mut ctx, user, &name, screen, 0.0, bounds,
+                        );
+                    } else {
+                        presence.draw_peer_outline(
+                            ctx.scene,
+                            ctx.theme,
+                            ctx.transform,
+                            user,
+                            screen,
+                            0.0,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -2914,6 +2768,7 @@ impl CanvasSurface {
             size,
             line_height,
             align,
+            width,
             ..
         } = &session.shape
         else {
@@ -2947,9 +2802,12 @@ impl CanvasSurface {
         };
         let prefix = measure(text, words.get(line_start..caret).unwrap_or_default());
         let whole = measure(text, words.get(line_start..line_end).unwrap_or_default());
-        let left = match align.as_deref() {
-            Some("center") => x - whole / 2.0,
-            Some("end") => x - whole,
+        // With a width the line aligns within its box, as it is drawn.
+        let left = match (width, align.as_deref()) {
+            (None, Some("center")) => x - whole / 2.0,
+            (None, Some("end")) => x - whole,
+            (Some(width), Some("center")) => x + (width - whole) / 2.0,
+            (Some(width), Some("end")) => x + width - whole,
             _ => *x,
         };
         let leading = size * line_height.unwrap_or(1.2);
@@ -3005,14 +2863,14 @@ impl CanvasSurface {
 /// `handles`; `active` fills it.
 /// An image mark's picture as it shows in its frame, untransformed and
 /// unclipped (the document does that), for an SVG to embed: cropped,
-/// turned and graded, at the picture's own resolution; a JPEG when it is
-/// opaque.
-pub(crate) fn embedded_picture(
+/// turned and graded, at the picture's own resolution, drawn for
+/// [`embed`] once rendered.
+pub(crate) fn embedded_drawing(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
     mark: &Mark,
-) -> Option<crate::svg::Embedded> {
+) -> Option<view_ops::Drawing> {
     let Shape::Image { src, .. } = &mark.shape else {
         return None;
     };
@@ -3048,19 +2906,21 @@ pub(crate) fn embedded_picture(
         bare: true,
         ..Options::default()
     };
-    let (rgba, width, height) =
-        view_ops::render_rgba(renderer, text, &solo, frame, scale, &options).ok()?;
+    Some(view_ops::draw_rgba(
+        renderer, text, &solo, frame, scale, &options,
+    ))
+}
+
+/// A rendered picture as an SVG embeds it: a JPEG when it is opaque.
+pub(crate) fn embed(rgba: &[u8], width: u32, height: u32) -> Option<crate::svg::Embedded> {
     let opaque = rgba.chunks_exact(4).all(|pixel| pixel.get(3) == Some(&255));
     let (bytes, mime) = if opaque {
         (
-            view_ops::encode_jpeg_at(&rgba, width, height, 92).ok()?,
+            view_ops::encode_jpeg_at(rgba, width, height, 92).ok()?,
             "image/jpeg",
         )
     } else {
-        (
-            view_ops::encode_png(&rgba, width, height).ok()?,
-            "image/png",
-        )
+        (view_ops::encode_png(rgba, width, height).ok()?, "image/png")
     };
     Some(crate::svg::Embedded { bytes, mime })
 }
@@ -3103,6 +2963,8 @@ fn draw_anchor(
 }
 
 impl Widget for CanvasSurface {
+    ui::provides!(dyn ui::collaboration::participants::Participants);
+
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
         if reduced && let Some((motion, focal)) = self.zoom_motion.take() {
@@ -3168,7 +3030,7 @@ impl Widget for CanvasSurface {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.advance_zoom();
         self.follow_tool();
@@ -3176,6 +3038,8 @@ impl Widget for CanvasSurface {
         self.follow_view();
         self.follow_crop();
         self.take_picked();
+        self.take_sampled();
+        self.take_due();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -3231,6 +3095,7 @@ impl Widget for CanvasSurface {
         }
         ui::surface::ContentFrame::Sheet.draw(scene, transform, sheet, theme);
         self.paint_overlay(scene, to_screen, theme, text_renderer);
+        self.paint_peers(scene, to_screen, theme, text_renderer, presence);
         if self.focused && !self.pressed_into_focus {
             ui::widget::paint_focus_ring(scene, transform, self.rect.inset(-2.0), 0.0, theme);
         }
@@ -3396,13 +3261,15 @@ impl Widget for CanvasSurface {
 
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
-        // drawing until it has caught up. A picture being chosen, or
-        // decoded, is waited for. Close up, the finer tiles of a painted
+        // drawing until it has caught up. A picture being chosen,
+        // decoded or read for a click is waited for. Close up, the finer tiles of a painted
         // layer arrive as they are simulated, and a painted layer's
         // simulation catches up with a stroke just laid.
         self.zoom_motion.is_some()
             || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
+            || self.sampling.is_some()
+            || !self.due.is_empty()
             || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
             || self.tools.renderer.borrow().detail_pending()
@@ -3485,9 +3352,72 @@ impl Widget for CanvasSurface {
 /// What a canvas view reads the artwork through.
 type Reading = ui::framework::EffectCx<Artwork, CanvasSurface>;
 
+impl ui::collaboration::participants::Participants for CanvasSurface {
+    fn join_participant(&mut self, participant: &ui::tilo_actions::ParticipantId) -> bool {
+        self.participants.join(participant, ui::time::now())
+    }
+
+    fn leave_participant(&mut self, participant: &ui::tilo_actions::ParticipantId) {
+        self.participants.leave(participant);
+    }
+
+    fn set_participant_label(
+        &mut self,
+        participant: &ui::tilo_actions::ParticipantId,
+        label: &str,
+    ) {
+        self.participants.set_label(participant, label);
+    }
+
+    /// Where each participant's own view has selected, under the same
+    /// resource key this window's selection is published under, so a peer
+    /// resolves the marks on their own screen.
+    fn participant_presence(&self, _doc: &ui::tilo_resource::Doc) -> Vec<ui::ParticipantPresence> {
+        let mut presence: Vec<ui::ParticipantPresence> = self
+            .participants
+            .iter()
+            .filter(|(_, view, _)| !view.is_empty())
+            .map(|(participant, view, label)| ui::ParticipantPresence {
+                participant: participant.clone(),
+                label: label.map(str::to_owned),
+                key: peer_presence_key(),
+                payload: ui::PresencePayload::Selection {
+                    start: view.marks.start,
+                    end: view.marks.end,
+                },
+            })
+            .collect();
+        presence.sort_by(|a, b| a.participant.as_str().cmp(b.participant.as_str()));
+        presence
+    }
+
+    fn set_participant_host(&mut self, _host: bool) {}
+}
+
+/// The presence key a participant's place in an artwork travels under: the
+/// artwork's own selection, which covers marks rather than a caret in a run
+/// of text.
+fn peer_presence_key() -> ui::PresenceKey {
+    ui::framework::ResourceSelection::Item(peers::SELECTION_ITEM.to_owned())
+        .presence::<Artwork>(crate::APP_ID)
+        .0
+}
+
+/// The keys a peer's selection may arrive under: the resource key itself,
+/// and the digest stand-in a key too long for the wire crosses as.
+fn presence_keys() -> Vec<ui::PresenceKey> {
+    let exact = peer_presence_key();
+    let mut keys = vec![exact.clone()];
+    if let Some(digest) = exact.digest_form() {
+        keys.push(digest);
+    }
+    keys
+}
+
 impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
-    /// Settled pictures and image areas run as jobs; other views answer
-    /// directly from the current artwork or the version the caller named.
+    /// Settled pictures run on a thread where there is one, and image areas
+    /// as jobs; other views answer from the current artwork or the version
+    /// the caller named, once any picture they need is rendered.
     fn effect(
         &mut self,
         op: ViewOp,
@@ -3495,13 +3425,14 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
     ) -> ui::framework::EffectAnswer {
         if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. })
             && ui::rt::available(ui::rt::Feature::Threads)
+            && !ui::offscreen::pixels::frame_loop_renders()
         {
             return self.picture_job(op, cx);
         }
         if let ViewOp::FindArea { area: select } = op {
-            return self.area_job(select.into(), cx);
+            return self.area_job(select, cx);
         }
-        self.answer(&op, cx).map(ui::framework::Effected::Done)
+        self.answer_when_drawn(&op, cx)
     }
 
     fn present(&mut self, state: &Rc<Artwork>) {
@@ -3541,6 +3472,11 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
             self.text = None;
         }
         self.art = Rc::clone(state);
+        // The window's bar says where the window is: the artwork's name, as
+        // the canvas reads it here, so a rename by anyone shows at once.
+        if self.tools.title.with(|shown| *shown != state.title) {
+            self.tools.title.set(state.title.clone());
+        }
         // What the window shows is what the magic wand finds colour in.
         crate::author::see(&self.tools.renderer, &self.art);
     }
@@ -3555,6 +3491,25 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
 
     fn read_only_changed(&mut self, read_only: bool) {
         self.read_only = read_only;
+    }
+
+    /// A participant's action left them on the marks it selected. Only a
+    /// participant this canvas already holds a view for is placed: a binding
+    /// that expired, or that was never joined here, records nothing rather
+    /// than inventing presence for it.
+    fn landed(
+        &mut self,
+        participant: &ui::tilo_actions::ParticipantId,
+        place: &ui::tilo_resource::Place,
+    ) {
+        let ui::tilo_resource::Place::Range { item, start, end } = place else {
+            return;
+        };
+        if item != peers::SELECTION_ITEM {
+            return;
+        }
+        let view = peers::PeerView::new(*start, *end, self.art.marks.len());
+        self.participants.set(participant, view, ui::time::now());
     }
 
     /// The screenshots show the canvas mid-work: a selection with its
@@ -3622,6 +3577,88 @@ mod tests {
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};
 
+    /// A surface showing an artwork with `marks` drawn on it, ready to be
+    /// told where participants are.
+    fn surface_with_marks() -> CanvasSurface {
+        let mut doc = ui::tilo_resource::Doc::new();
+        <Artwork as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
+        for action in crate::sample::shapes() {
+            Artwork::apply_to(&mut doc, action);
+        }
+        let mut surface = CanvasSurface::new(Tools::default());
+        surface.present(&Rc::new(Artwork::from_doc(&doc).unwrap()));
+        assert!(surface.art.marks.len() > 2, "marks to select");
+        surface
+    }
+
+    fn participant(id: &str) -> ui::tilo_actions::ParticipantId {
+        ui::tilo_actions::ParticipantId::new(id).unwrap()
+    }
+
+    fn selection(start: usize, end: usize) -> ui::tilo_resource::Place {
+        ui::tilo_resource::Place::Range {
+            item: peers::SELECTION_ITEM.to_owned(),
+            start,
+            end,
+        }
+    }
+
+    #[test]
+    fn a_participant_that_joined_is_published_where_it_selected() {
+        let mut surface = surface_with_marks();
+        let task = participant("agent-task:paint");
+        assert!(
+            ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
+        );
+        surface.landed(&task, &selection(1, 3));
+        let doc = ui::tilo_resource::Doc::new();
+        let presence =
+            ui::collaboration::participants::Participants::participant_presence(&surface, &doc);
+        let [one] = presence.as_slice() else {
+            panic!("one participant's presence, got {presence:?}");
+        };
+        assert_eq!(one.participant, task);
+        assert_eq!(one.key, peer_presence_key());
+        assert_eq!(
+            one.payload,
+            ui::PresencePayload::Selection { start: 1, end: 3 }
+        );
+    }
+
+    #[test]
+    fn a_participant_this_canvas_never_joined_is_not_placed_or_presenced() {
+        let mut surface = surface_with_marks();
+        let stranger = participant("agent-task:stranger");
+        surface.landed(&stranger, &selection(0, 2));
+        assert!(!surface.participants.contains(&stranger));
+        let doc = ui::tilo_resource::Doc::new();
+        assert!(
+            ui::collaboration::participants::Participants::participant_presence(&surface, &doc)
+                .is_empty(),
+            "a binding that was never joined is not presence"
+        );
+    }
+
+    #[test]
+    fn a_participant_that_left_is_not_presenced_and_cannot_be_placed_again() {
+        let mut surface = surface_with_marks();
+        let task = participant("agent-task:gone");
+        assert!(
+            ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
+        );
+        surface.landed(&task, &selection(0, 2));
+        ui::collaboration::participants::Participants::leave_participant(&mut surface, &task);
+        surface.landed(&task, &selection(2, 4));
+        assert!(
+            ui::collaboration::participants::Participants::participant_presence(
+                &surface,
+                &ui::tilo_resource::Doc::new()
+            )
+            .is_empty(),
+            "the view it left does not come back"
+        );
+    }
+
     #[test]
     fn capture_waits_for_requested_artwork_painting() {
         let mut doc = ui::tilo_resource::Doc::new();
@@ -3637,8 +3674,12 @@ mod tests {
         surface.present(&Rc::new(art));
         let mut harness =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(surface), (390, 844));
+        // Painting the landscape's layers is real work: a few seconds here,
+        // many times that on a small, busy runner. Only a wait that never
+        // finishes is a failure, so it waits as long as any test waits for
+        // a worker.
         harness
-            .wait_for_visuals(std::time::Duration::from_secs(30))
+            .wait_for_visuals(tilo_test_env::hang_bound())
             .expect("the production capture wait completes");
         let renderer = tools.renderer.borrow();
         assert!(
@@ -3728,7 +3769,6 @@ mod tests {
                 surface.selection = vec![first.clone()];
                 // Grouping takes two marks; ungrouping, a group.
                 if keys == "Enter" {
-                    // Entering edits a path's points or a text.
                     let editable = art
                         .marks
                         .iter()

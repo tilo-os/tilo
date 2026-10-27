@@ -103,11 +103,25 @@ async fn finish(
         .unwrap();
 }
 
-/// Take the next routed job on the worker and report it running.
-async fn accept_job(worker: &mut ComputeClient, binding: &ComputeJobBinding) -> ComputeJobSpec {
-    let request = tilo_test_env::within("a job on the worker", worker.receive())
-        .await
-        .unwrap();
+/// Take the next routed job on the worker and report it running. A job the
+/// relay refused instead ends at its requester at once: that is a failure
+/// with the relay's reason, not a wait for a job that never comes.
+async fn accept_job(
+    worker: &mut ComputeClient,
+    requester: &mut ComputeClient,
+    binding: &ComputeJobBinding,
+) -> ComputeJobSpec {
+    let request = tilo_test_env::within("a job on the worker", async {
+        tokio::select! {
+            request = worker.receive() => request,
+            refused = requester.receive() => panic!(
+                "the relay answered the requester instead of routing the job: {:?}",
+                refused.map(|delivery| delivery.envelope)
+            ),
+        }
+    })
+    .await
+    .unwrap();
     worker.acknowledge(&request).await.unwrap();
     let ComputeEnvelope::Request { spec } = request.envelope else {
         panic!("worker expected a job, got {:?}", request.envelope);
@@ -266,7 +280,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&specification).await.unwrap();
     assert_eq!(
-        accept_job(&mut worker_client, &binding).await,
+        accept_job(&mut worker_client, &mut requester_client, &binding).await,
         specification
     );
 
@@ -386,7 +400,10 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
             next_job += 1;
             advertise(&mut worker_client, worker_key).await;
             requester_client.submit(&spec).await.unwrap();
-            assert_eq!(accept_job(&mut worker_client, &binding).await, spec);
+            assert_eq!(
+                accept_job(&mut worker_client, &mut requester_client, &binding).await,
+                spec
+            );
             let ran = tilo_test_env::within(
                 "the job stages and runs",
                 run_compute_assignment(
@@ -435,7 +452,10 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     let probing = job([40; 16], vec![secret_digest]);
     advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&probing).await.unwrap();
-    assert_eq!(accept_job(&mut worker_client, &binding).await, probing);
+    assert_eq!(
+        accept_job(&mut worker_client, &mut requester_client, &binding).await,
+        probing
+    );
     assert_eq!(
         prove_job_input(
             &worker_client.connection(),
@@ -482,7 +502,10 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     let listed = job([41; 16], vec![input_digest]);
     advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&listed).await.unwrap();
-    assert_eq!(accept_job(&mut worker_client, &binding).await, listed);
+    assert_eq!(
+        accept_job(&mut worker_client, &mut requester_client, &binding).await,
+        listed
+    );
     let (proof, locator) = prove_job_input(
         &worker_client.connection(),
         (WORKSPACE, listed.job_id),
@@ -510,7 +533,10 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     let unavailable = job([22; 16], vec![missing]);
     advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&unavailable).await.unwrap();
-    assert_eq!(accept_job(&mut worker_client, &binding).await, unavailable);
+    assert_eq!(
+        accept_job(&mut worker_client, &mut requester_client, &binding).await,
+        unavailable
+    );
     let failed = tilo_test_env::within(
         "a missing input fails rather than hangs",
         run_compute_assignment(
@@ -575,6 +601,22 @@ async fn attached_session(
 /// Advertise `worker` as able to run [`APP`] in [`WORKSPACE`].
 async fn advertise(client: &mut ComputeClient, worker: [u8; 32]) {
     let issued_at_ms = unix_now_ms();
+    advertise_between(
+        client,
+        worker,
+        issued_at_ms,
+        issued_at_ms.saturating_add(MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS),
+    )
+    .await;
+}
+
+/// Advertise `worker` for [`APP`] from `issued_at_ms` until `expires_at_ms`.
+async fn advertise_between(
+    client: &mut ComputeClient,
+    worker: [u8; 32],
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+) {
     client
         .send(&ComputeEnvelope::Advertise {
             workspace_id: WORKSPACE,
@@ -591,7 +633,7 @@ async fn advertise(client: &mut ComputeClient, worker: [u8; 32]) {
                 power: PowerAvailability::External,
                 energy_saver: false,
                 issued_at_ms,
-                expires_at_ms: issued_at_ms.saturating_add(MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS),
+                expires_at_ms,
             },
         })
         .await
@@ -599,6 +641,114 @@ async fn advertise(client: &mut ComputeClient, worker: [u8; 32]) {
     client.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
         client.receive().await.unwrap().envelope,
+        ComputeEnvelope::Pong
+    ));
+}
+
+/// A job the relay will not route ends at its requester at once, failed
+/// with the reason, on a session that goes on: a requester never waits out
+/// a job that was refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_for_a_worker_whose_advertisement_expired_is_refused_to_its_requester_at_once() {
+    let user = TestUser::fresh("refused job owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let requester = user.enrol("laptop", DeviceCapabilities::primary());
+    let requester_key = requester.device_pubkey();
+    let worker = user.enrol("home server", DeviceCapabilities::host());
+    let worker_key = worker.device_pubkey();
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[WORKSPACE],
+        &[requester_key, worker_key],
+    ))
+    .await;
+    let address = relay.relay.node_addr();
+    let root = tempfile::tempdir().unwrap();
+    let (_, package_digest) = installed_package(root.path(), APP, ENTRYPOINT);
+    let mut worker_client = attached_session(address.clone(), &user, relay_key, worker).await;
+    let mut requester_client = attached_session(address, &user, relay_key, requester).await;
+
+    // The worker's last advertisement ends a moment from now; the job
+    // arrives after it has.
+    let now = unix_now_ms();
+    let expires_at_ms = now.saturating_add(2_000);
+    advertise_between(
+        &mut worker_client,
+        worker_key,
+        expires_at_ms.saturating_sub(MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS),
+        expires_at_ms,
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(
+        expires_at_ms
+            .saturating_sub(unix_now_ms())
+            .saturating_add(1),
+    ))
+    .await;
+    let spec = ComputeJobSpec {
+        version: 1,
+        job_id: [70; 16],
+        requester: requester_key,
+        worker: worker_key,
+        workspace_id: WORKSPACE,
+        app_id: APP.into(),
+        package_digest,
+        entrypoint: ENTRYPOINT.into(),
+        arguments: Vec::new(),
+        inputs: Vec::new(),
+        limits: ComputeResourceLimits {
+            cpu_time_ms: 5_000,
+            memory_bytes: 64 * 1024 * 1024,
+            output_bytes: 16 * 1024 * 1024,
+            gpu: false,
+        },
+        issued_at_ms: unix_now_ms(),
+        expires_at_ms: unix_now_ms().saturating_add(MAX_COMPUTE_JOB_LIFETIME_MS),
+    };
+    requester_client.submit(&spec).await.unwrap();
+    let refused = tilo_test_env::within("the refusal at the requester", requester_client.receive())
+        .await
+        .unwrap();
+    let ComputeEnvelope::Result { result } = refused.envelope else {
+        panic!(
+            "the requester expected its job's end, got {:?}",
+            refused.envelope
+        );
+    };
+    assert_eq!(
+        result.binding,
+        ComputeJobBinding {
+            workspace_id: WORKSPACE,
+            job_id: spec.job_id,
+            requester: requester_key,
+            worker: worker_key,
+        }
+    );
+    assert_eq!(
+        result.phase,
+        ComputeJobPhase::Failed {
+            code: tilo_relay::compute_transport::WORKER_ADVERTISEMENT_EXPIRED.into()
+        }
+    );
+
+    // The refusal ended one job, not the requester's session, and the
+    // worker was never asked.
+    requester_client.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        tilo_test_env::within("the requester's pong", requester_client.receive())
+            .await
+            .unwrap()
+            .envelope,
+        ComputeEnvelope::Pong
+    ));
+    worker_client.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        tilo_test_env::within("the worker's pong", worker_client.receive())
+            .await
+            .unwrap()
+            .envelope,
         ComputeEnvelope::Pong
     ));
 }
@@ -717,7 +867,10 @@ async fn a_batch_of_small_inputs_a_home_server_replica_holds_moves_no_bytes() {
             // worker.
             advertise(&mut worker_client, worker_key).await;
             requester_client.submit(&spec).await.unwrap();
-            assert_eq!(accept_job(&mut worker_client, &binding).await, spec);
+            assert_eq!(
+                accept_job(&mut worker_client, &mut requester_client, &binding).await,
+                spec
+            );
             let staged = FileComputeContentStore::open(
                 root.path()
                     .join("staged")
@@ -730,8 +883,6 @@ async fn a_batch_of_small_inputs_a_home_server_replica_holds_moves_no_bytes() {
             )
             .await
             .unwrap();
-            // Whichever copy they came from, the staged inputs are the
-            // laptop's bytes.
             for digest in inputs {
                 let bytes = staged.get(*digest).unwrap().unwrap();
                 assert_eq!(blake3::hash(&bytes).as_bytes(), digest);

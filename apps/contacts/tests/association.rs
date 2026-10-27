@@ -21,7 +21,6 @@ fn manifest() -> Manifest {
     Manifest::from_toml_str(src).expect("contacts tilo-app.toml parses as a manifest")
 }
 
-/// The manifest is a valid app declaring `vCard` file types and the file-chooser portal.
 #[test]
 fn manifest_declares_a_valid_vcard_app_with_the_file_chooser() {
     // --- phase: manifest_is_a_valid_tilo_app ---
@@ -42,7 +41,6 @@ fn manifest_declares_a_valid_vcard_app_with_the_file_chooser() {
     // --- phase: manifest_declares_the_vcard_file_types ---
     {
         let m = manifest();
-        // The vCard MIME types both spellings of the type carry.
         for mime in ["text/vcard", "text/x-vcard"] {
             assert!(
                 m.providers.mime.iter().any(|t| t == mime),

@@ -23,10 +23,7 @@ use crate::{EntryKind, MAX_READ_CHUNK, MAX_WRITE_CHUNK, Metadata};
 use cap_std::fs::{Dir, File, MetadataExt};
 use rustix::fs::OFlags;
 
-// Metadata and the wire protocol use u32; Darwin's libc mode_t is u16.
-pub(crate) fn mode_bits(mode: impl Into<u32>) -> u32 {
-    mode.into()
-}
+pub(crate) use tilo_fs_client::directory_types::mode_bits;
 
 #[path = "native/history_read_subject.rs"]
 mod history_read_subject;
@@ -325,8 +322,6 @@ impl NativeGrantAuthority {
     }
 
     /// Consume a directory descriptor supplied by the authenticated host.
-    /// # Errors
-    /// Returns `Unsupported` for a non-directory and typed metadata I/O errors.
     pub fn admit_directory(
         &self,
         opened: std::fs::File,
@@ -350,8 +345,6 @@ impl NativeGrantAuthority {
     }
 
     /// Consume exactly the supplied file descriptor, without acquiring a parent.
-    /// # Errors
-    /// Returns `Unsupported` for a directory and typed metadata I/O errors.
     pub fn admit_file(
         &self,
         opened: std::fs::File,
@@ -383,8 +376,6 @@ impl NativeGrantAuthority {
     }
 
     /// Bind only the listed live grants to the caller-supplied mount identity.
-    /// # Errors
-    /// Returns `Denied` for owner/authority mismatch and `Revoked` for expired grants.
     pub fn bind(
         &self,
         owner: FsOwner,
@@ -426,15 +417,11 @@ impl NativeGrantAuthority {
     }
 
     /// Revoke this directory and every existing descendant without changing disk.
-    /// # Errors
-    /// Returns `Denied` for a foreign grant and `Revoked` for an expired grant.
     pub fn revoke_directory(&self, grant: &DirectoryGrant) -> Result<(), FsError> {
         self.revoke(&grant.lease)
     }
 
     /// Revoke this file and all of its clones without changing disk.
-    /// # Errors
-    /// Returns `Denied` for a foreign grant and `Revoked` for an expired grant.
     pub fn revoke_file(&self, grant: &FileGrant) -> Result<(), FsError> {
         self.revoke(&grant.lease)
     }
@@ -539,7 +526,6 @@ impl FsSession {
 
     /// Terminal for this session and its clones. A fresh bind is independent.
     pub fn close(&self) {
-        // Serialize closure with the next syscall boundary and release snapshots.
         let table = self.inner.authority.state.lock();
         self.inner.closed.store(true, Ordering::Release);
         if let Ok(mut table) = table {
@@ -601,8 +587,6 @@ impl FsSession {
     }
 
     /// Check live directory scope without accessing the filesystem.
-    /// # Errors
-    /// Returns `Closed`, `Revoked`, or `Denied` for invalid lifetime, lineage or rights.
     pub fn check_directory(&self, grant: &DirectoryGrant) -> Result<(), FsError> {
         let table = self.call()?;
         self.validate(&table, &grant.lease, Some(FsRight::Enumerate))
@@ -627,8 +611,6 @@ impl FsSession {
 
     /// Observe filesystem capacity on the actual held directory, without opening
     /// child bytes or upgrading Read/Write rights. Calls belong on bounded workers.
-    /// # Errors
-    /// Refuses revoked Enumerate scope, native errors or unsupported/overflowing statistics.
     pub fn directory_statfs(
         &self,
         grant: &DirectoryGrant,
@@ -667,8 +649,6 @@ impl FsSession {
         Ok(stats)
     }
     /// Resolve one native child into a retained descriptor or link object.
-    /// # Errors
-    /// Returns live-scope errors, `NotFound`, or typed filesystem errors.
     pub fn lookup(&self, dir: &DirectoryGrant, name: &EntryName) -> Result<GrantedEntry, FsError> {
         let mut table = self.call()?;
         self.lookup_locked(&mut table, &dir.lease, name)
@@ -726,8 +706,6 @@ impl FsSession {
 
     /// Observe one raw component without opening its bytes or following links.
     /// The descriptor and actual enumerating parent grant remain held throughout.
-    /// # Errors
-    /// Returns live scope, missing component, or native metadata errors.
     pub fn stat_child(
         &self,
         dir: &DirectoryGrant,
@@ -805,8 +783,6 @@ impl FsSession {
             .ok_or(FsError::LimitExceeded)
     }
 
-    /// # Errors
-    /// Exact held-link observation is currently implemented only on Linux.
     #[cfg(not(target_os = "linux"))]
     pub fn readlink_child(
         &self,
@@ -1007,8 +983,6 @@ impl FsSession {
     }
 
     /// Return metadata for the retained native object, without retargeting names.
-    /// # Errors
-    /// Returns live-scope, missing-right, or typed metadata I/O errors.
     pub fn metadata(&self, entry: &GrantedEntry) -> Result<Metadata, FsError> {
         let table = self.call()?;
         self.metadata_locked(&table, entry.lease())
@@ -1040,9 +1014,6 @@ impl FsSession {
     }
 
     /// Read at most `MAX_READ_CHUNK` bytes, after live-scope and rights validation.
-    /// # Errors
-    /// Returns live-scope errors, typed link errors, `Unsupported` for special files,
-    /// and host I/O errors. EOF is an empty successful chunk.
     pub fn read_at(&self, file: &FileGrant, offset: u64, max_len: u32) -> Result<Vec<u8>, FsError> {
         let table = self.call()?;
         self.validate(&table, &file.lease, Some(FsRight::Read))?;
@@ -1085,10 +1056,6 @@ impl FsSession {
     /// replacing the selected name never redirects this grant. It does not
     /// truncate, sync, or provide a mutation job/receipt. A partial successful
     /// syscall returns its byte count; another call must recheck live authority.
-    /// # Errors
-    /// Returns live-scope or missing-right errors, `LimitExceeded` for oversized
-    /// chunks/offset overflow, `Unsupported` for links/special/append descriptors,
-    /// `Denied` for a read-only descriptor, and typed host I/O errors.
     pub fn write_at(&self, file: &FileGrant, offset: u64, bytes: &[u8]) -> Result<u32, FsError> {
         let table = self.call()?;
         self.validate(&table, &file.lease, Some(FsRight::Write))?;
@@ -1141,10 +1108,6 @@ impl FsSession {
     }
 
     /// Sync bytes and metadata of exactly the writable held regular file.
-    /// # Errors
-    /// Returns live-scope/missing-Write errors, `Unsupported` for links/special
-    /// files, `Denied` for a read-only descriptor, and typed host I/O errors.
-    /// The authority gate remains held until the sync syscall completes.
     pub fn sync_file(&self, file: &FileGrant) -> Result<(), FsError> {
         let table = self.call()?;
         let descriptor = self.writable_file(&table, file)?;
@@ -1522,8 +1485,6 @@ impl NativeObject {
 }
 impl NativeGrantAuthority {
     /// Bind the host's durable operation namespace once for its authenticated owner.
-    /// # Errors
-    /// Returns `Denied` if a different store is already bound for this owner.
     pub fn attach_operations(
         &self,
         owner: Arc<crate::recovery::OperationOwner>,

@@ -16,6 +16,7 @@
 //! enough for round-trip stability on documents we produce.
 
 use std::ops::Range;
+use tilo_sort::CompactSort as _;
 
 use uuid::Uuid;
 
@@ -46,6 +47,13 @@ pub enum Mark {
     Transclusion(PageId),
     /// `[label](https://example.test)` — a host-opened external URI.
     ExternalLink(String),
+    /// A `link` whose target names another resource of this desktop: the
+    /// address `tilo://open#…` a reference is written as
+    /// ([`crate::RESOURCE_LINK_SCHEME`](crate::convert::RESOURCE_LINK_SCHEME)).
+    /// The marked text is the label shown — the resource's title or its kind
+    /// — and activating it opens the resource through its own app's `open`,
+    /// as a chip does. The address, not the label, is what it opens.
+    ResourceLink(String),
     /// `@Ada` — a reference to a participant, by the owning model's id; the
     /// marked text is the label shown. Renders bold in the participant's
     /// colours ([`MentionPaint`]), accent-coloured by default.
@@ -79,6 +87,7 @@ impl Mark {
                 | (Mark::Link(_), Mark::Link(_))
                 | (Mark::Transclusion(_), Mark::Transclusion(_))
                 | (Mark::ExternalLink(_), Mark::ExternalLink(_))
+                | (Mark::ResourceLink(_), Mark::ResourceLink(_))
                 | (Mark::Mention(_), Mark::Mention(_))
         )
     }
@@ -125,7 +134,7 @@ pub fn range_fully_covered(spans: &[MarkSpan], range: &Range<usize>, mark: &Mark
         .filter(|s| s.mark.same_kind(mark))
         .map(|s| &s.range)
         .collect();
-    sorted.sort_by_key(|r| r.start);
+    sorted.compact_sort_by_key(|r| r.start);
     for r in sorted {
         if r.start > covered {
             return false;
@@ -180,7 +189,7 @@ pub fn remove_mark_from_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, ma
             out.push(MarkSpan::new(range.end..s.range.end, s.mark.clone()));
         }
     }
-    out.sort_by_key(|s| s.range.start);
+    out.compact_sort_by_key(|s| s.range.start);
     *spans = out;
 }
 
@@ -205,7 +214,7 @@ pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: M
     // A merged Link span's payload is not preserved — the new payload wins.
     // Simpler, and most callers pass the same Link payload anyway.
     out.push(MarkSpan::new(start..end, mark));
-    out.sort_by_key(|s| s.range.start);
+    out.compact_sort_by_key(|s| s.range.start);
     *spans = out;
 }
 
@@ -316,7 +325,7 @@ pub fn shift_after_edit(
             out.push(MarkSpan::new(start..end, s.mark.clone()));
         }
     }
-    out.sort_by_key(|s| s.range.start);
+    out.compact_sort_by_key(|s| s.range.start);
     *spans = out;
 }
 
@@ -336,6 +345,8 @@ pub struct MarkSegment {
     pub strikethrough: bool,
     pub link: Option<PageId>,
     pub external_link: bool,
+    /// The `tilo://open#…` address a [`Mark::ResourceLink`] names.
+    pub resource_link: Option<String>,
     /// The participant a mention covering this segment refers to.
     pub mention: Option<String>,
 }
@@ -351,6 +362,7 @@ impl MarkSegment {
             strikethrough: false,
             link: None,
             external_link: false,
+            resource_link: None,
             mention: None,
         }
     }
@@ -375,7 +387,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
             boundaries.push(s.range.end);
         }
     }
-    boundaries.sort_unstable();
+    boundaries.compact_sort();
     boundaries.dedup();
     let mut out = Vec::with_capacity(boundaries.len());
     for w in boundaries.windows(2) {
@@ -400,6 +412,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Strikethrough => seg.strikethrough = true,
                     Mark::Link(id) | Mark::Transclusion(id) => seg.link = Some(*id),
                     Mark::ExternalLink(_) => seg.external_link = true,
+                    Mark::ResourceLink(href) => seg.resource_link = Some(href.clone()),
                     Mark::Mention(id) => seg.mention = Some(id.clone()),
                 }
             }

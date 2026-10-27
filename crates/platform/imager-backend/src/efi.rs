@@ -36,7 +36,6 @@ pub struct HardDriveLoadOption {
     pub file_path: String,
 }
 
-/// `Boot####` variable name for a boot number.
 pub fn boot_var_name(number: u16) -> String {
     format!("Boot{number:04X}")
 }
@@ -57,8 +56,6 @@ pub fn parse_boot_number(text: &str) -> Result<u16, String> {
 }
 
 /// `BootOrder`/`BootNext` payloads are little-endian `u16` arrays.
-/// # Errors
-/// Returns an error for an odd byte count.
 pub fn parse_u16_list(bytes: &[u8]) -> Result<Vec<u16>, String> {
     if !bytes.len().is_multiple_of(2) {
         return Err("odd-length boot number list".into());
@@ -95,8 +92,6 @@ pub fn allocate_boot_number(
 }
 
 /// Mixed-endian EFI GUID bytes from canonical text.
-/// # Errors
-/// Returns an error for a noncanonical GUID.
 pub fn guid_bytes(text: &str) -> Result<[u8; 16], String> {
     let lower = text.to_ascii_lowercase();
     if !super::is_guid(&lower) {
@@ -135,8 +130,6 @@ fn valid_file_path(path: &str) -> bool {
 
 /// Encode an `EFI_LOAD_OPTION` (attributes ACTIVE, HD + File + End device
 /// path, no optional data).
-/// # Errors
-/// Returns an error for invalid partition fields, text or loader paths.
 pub fn encode_load_option(option: &HardDriveLoadOption) -> Result<Vec<u8>, String> {
     if option.partition_number == 0 || option.size_lba == 0 || option.start_lba == 0 {
         return Err("invalid HD() partition fields".into());
@@ -202,8 +195,6 @@ fn read_utf16z(bytes: &[u8]) -> Result<(String, usize), String> {
 /// concatenates them), then `End`. Trailing optional data is permitted and
 /// ignored. Options whose device path starts elsewhere (`PciRoot`, URI, ...)
 /// are rejected; callers compare those by bytes only.
-/// # Errors
-/// Returns an error for truncated, malformed or unsupported device paths.
 pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
     let ([_, _, _, _, low, high], rest) = bytes
         .split_first_chunk::<6>()
@@ -286,7 +277,6 @@ pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
     })
 }
 
-/// Attributes word of a load option.
 pub fn load_option_attributes(bytes: &[u8]) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
 }
@@ -316,7 +306,6 @@ mod tests {
     /// optional data unless `-@`/`-u` is given. The GUID is stored
     /// mixed-endian as in `efi_guid_t`.
     const FIXTURE: &[u8] = &[
-        // Attributes = LOAD_OPTION_ACTIVE
         0x01, 0x00, 0x00, 0x00, //
         // FilePathListLength = 42 (HD) + 48 (File: 4 + 22 units * 2) + 4 (End) = 94
         0x5e, 0x00, //
@@ -334,7 +323,6 @@ mod tests {
         // Signature 3f0e2d1c-4b5a-4796-a8b9-c0d1e2f30415 (mixed-endian)
         0x1c, 0x2d, 0x0e, 0x3f, 0x5a, 0x4b, 0x96, 0x47, 0xa8, 0xb9, 0xc0, 0xd1, 0xe2, 0xf3, 0x04,
         0x15, //
-        // MBRType = GPT, SignatureType = GUID
         0x02, 0x02, //
         // File: type 4, subtype 4, length 48
         0x04, 0x04, 0x30, 0x00, //
@@ -342,27 +330,22 @@ mod tests {
         b'\\', 0, b'E', 0, b'F', 0, b'I', 0, b'\\', 0, b'B', 0, b'O', 0, b'O', 0, b'T', 0, b'\\', 0,
         b'B', 0, b'O', 0, b'O', 0, b'T', 0, b'X', 0, b'6', 0, b'4', 0, b'.', 0, b'E', 0, b'F', 0,
         b'I', 0, 0, 0, //
-        // End Entire Device Path
         0x7f, 0xff, 0x04, 0x00,
     ];
 
-    /// Encoder and decoder of EFI load options.
     #[test]
     fn efi_load_option_codec_round_trips_and_rejects_unsafe_data() {
-        // Phase `encoder_matches_the_hand_assembled_fixture_byte_for_byte`.
         {
             assert_eq!(FIXTURE.len(), 4 + 2 + 30 + 94);
             let bytes = encode_load_option(&fixture_option()).unwrap();
             assert_eq!(hex::encode(&bytes), hex::encode(FIXTURE));
         }
 
-        // Phase `decoder_round_trips_the_fixture`.
         {
             assert_eq!(decode_load_option(FIXTURE).unwrap(), fixture_option());
             assert_eq!(load_option_attributes(FIXTURE), Some(LOAD_OPTION_ACTIVE));
         }
 
-        // Phase `decoder_accepts_optional_data_and_split_file_nodes`.
         {
             // Firmware sometimes writes one File() node per path component.
             let mut option = Vec::new();
@@ -390,7 +373,6 @@ mod tests {
             assert_eq!(decode_load_option(&option).unwrap(), fixture_option());
         }
 
-        // Phase `decoder_rejects_malformed_options`.
         {
             assert!(decode_load_option(&FIXTURE[..40]).is_err());
             let mut long = FIXTURE.to_vec();
@@ -407,7 +389,6 @@ mod tests {
             assert!(decode_load_option(&unterminated).is_err());
         }
 
-        // Phase `encoder_refuses_unsafe_inputs`.
         {
             let mut option = fixture_option();
             option.file_path = "EFI/BOOT/BOOTX64.EFI".into();
@@ -427,7 +408,6 @@ mod tests {
     /// GUID layout and boot number allocation.
     #[test]
     fn efi_guids_and_boot_numbers_follow_firmware_layout() {
-        // Phase `guid_bytes_follow_efi_guid_layout`.
         {
             let g = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
             let bytes = guid_bytes(g).unwrap();
@@ -440,7 +420,6 @@ mod tests {
             assert_eq!(guid_bytes(&g.to_ascii_uppercase()).unwrap(), bytes);
         }
 
-        // Phase `boot_numbers_skip_order_and_existing_entries`.
         {
             let order = [0x0001, 0x0000, 0x0100];
             let existing = [0x0101_u16, 0x0103];

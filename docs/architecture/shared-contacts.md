@@ -79,8 +79,8 @@ provider evidence and the existing device grant before I/O.
 
 The same pattern supports unified reads from many accounts while preserving
 which account supplied each result and requiring an explicit sending identity.
-This change adds no Gmail or Calendar integration and does not modify their
-account selection behavior.
+Calendar reads the directory's mailbox hints (below) but chooses no sending
+account; Gmail is not integrated.
 
 ## Integration boundaries
 
@@ -134,6 +134,24 @@ following a later sidebar selection. The outbox delivery also matches the
 reviewed account ID and email; two accounts sharing an email cannot substitute
 for one another, and removal of the reviewed account refuses delivery. This is an address-book selection, not a
 confirmed endpoint, provider identity proof, workspace permission or SMTP grant.
-No credentials are stored in the directory or draft. Calendar attendee lookup
-and other non-messaging consumers remain to be integrated; provider evidence
-and live Messages journeys remain with the Messages task.
+No credentials are stored in the directory or draft. Provider evidence and
+live Messages journeys remain with the Messages task.
+
+`ContactDirectory::email_hints` is the one list of reviewable mailbox choices
+(canonical, once per person, removed people left out) and
+`ContactDirectory::holds` checks that a reviewed choice still stands; Mail and
+Calendar both use them rather than matching the address book themselves.
+
+## Calendar attendees
+
+Calendar reads the same person record read-only. An event's Guests field and
+its `contact-attendees` action open system search scoped to that event, one row
+per contact address not yet invited. A row offers the calendar's own `invite`
+verb with the event, address and name bound, so the permission check, history
+and undo are those of typing the address; it asks for confirmation first,
+since the name and address become visible to everyone sharing the calendar.
+A row's id is the reviewed facts themselves: a renamed or removed contact, an
+edited address or an address already invited refuses an earlier choice. Only
+a fresh attendee id, the name and the address enter the calendar; the contact's
+id stays on this device. Preparing the invitation remains Calendar's existing
+handoff to Mail's `prepare-calendar-invitation`, reviewed in Mail.

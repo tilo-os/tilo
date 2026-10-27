@@ -217,9 +217,6 @@ pub fn parse_catalog(json: &str) -> Result<Vec<DesktopRelease>, String> {
 }
 
 /// Catalog authenticated by the signed application, never a network manifest.
-///
-/// # Errors
-/// Returns an error if the embedded catalog is invalid.
 pub fn bundled_releases() -> Result<Vec<DesktopRelease>, String> {
     parse_catalog(include_str!("../../desktop-catalog.json"))
 }
@@ -240,10 +237,8 @@ mod tests {
         json!({"schema":1,"tag":"test-1","releases":releases}).to_string()
     }
 
-    /// Accepted catalogs, typed formats and runtime evidence.
     #[test]
     fn desktop_catalog_accepts_strict_typed_entries_and_empty_releases() {
-        // Phase `desktop_catalog_accepts_explicit_unreleased_empty_catalog`.
         {
             assert!(
                 parse_catalog(include_str!("../../desktop-catalog.json"))
@@ -255,7 +250,6 @@ mod tests {
             assert!(parse_catalog(r#"{"schema":1,"tag":"released","releases":[]}"#).is_err());
         }
 
-        // Phase `desktop_catalog_uses_typed_formats_and_exact_selectors`.
         {
             for format in ["rpm", "deb", "arch", "nix_closure"] {
                 let mut release = release_json();
@@ -269,7 +263,6 @@ mod tests {
             }
         }
 
-        // Phase `desktop_catalog_runtime_evidence_is_digest_bound_and_strict`.
         {
             let mut release = release_json();
             release["verified_runtime"] = json!({"schema":1,"reference":"docs/evidence/test.md",
@@ -327,10 +320,8 @@ mod tests {
         assert!(legacy.require_account_protocol(Some(1)).is_err());
     }
 
-    /// Rejected catalogs.
     #[test]
     fn desktop_catalog_rejects_duplicates_invalid_metadata_and_untrusted_urls() {
-        // Phase `desktop_catalog_rejects_duplicate_selectors_and_ids`.
         {
             let release = release_json();
             let mut other = release.clone();
@@ -341,7 +332,6 @@ mod tests {
             assert!(parse_catalog(&catalog(vec![release, other])).is_err());
         }
 
-        // Phase `desktop_catalog_rejects_invalid_metadata_and_unknown_fields`.
         {
             for (field, value) in [
                 ("sha256", json!("bad")),
@@ -367,7 +357,6 @@ mod tests {
             assert!(parse_catalog(&value.to_string()).is_err());
         }
 
-        // Phase `desktop_catalog_rejects_untrusted_urls`.
         {
             for url in [
                 "http://code.tilo.so/test.rpm",

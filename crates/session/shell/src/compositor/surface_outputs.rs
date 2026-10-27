@@ -136,7 +136,6 @@ mod tests {
 
     #[test]
     fn surface_output_membership_enters_and_leaves_exactly_once() {
-        // Phase `a_surface_moves_between_two_outputs_without_duplicate_enters`.
         {
             let outputs = outputs();
             let mut memberships = Memberships::default();
@@ -166,7 +165,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `a_surface_spanning_the_seam_enters_both_outputs_once`.
         {
             let outputs = outputs();
             let mut memberships = Memberships::default();
@@ -189,7 +187,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `a_surface_that_is_no_longer_painted_leaves_its_output`.
         {
             let outputs = outputs();
             let mut memberships = Memberships::default();
@@ -204,7 +201,6 @@ mod tests {
                 }]
             );
         }
-        // Phase `removed_output_leaves_before_its_global_is_withdrawn`.
         {
             let outputs = outputs();
             let mut memberships = Memberships::default();
@@ -222,7 +218,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `scale_change_keeps_membership_but_the_output_identity_is_stable`.
         {
             let mut outputs = outputs();
             let mut memberships = Memberships::default();

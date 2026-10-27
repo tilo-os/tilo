@@ -37,7 +37,6 @@ def build(output: Path) -> None:
             str(output),
         ],
         check=True,
-        timeout=30,
     )
 
 

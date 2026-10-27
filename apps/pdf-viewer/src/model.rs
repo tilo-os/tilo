@@ -120,7 +120,10 @@ impl Document {
 // Tools
 // ----------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a press on the page does: select text, or author one kind of
+/// markup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Tool {
     Select,
     Highlight,
@@ -1331,7 +1334,6 @@ mod tests {
         // 800x600 once rotated, fitted by width into the 600x800 card.
         assert!((map.scale - 0.75).abs() < 1e-9);
         assert!(close(map.offset, (0.0, 175.0)));
-        // The page's user-space top-left corner lands top-right when rotated.
         assert!(close(map.user_to_card((0.0, 800.0)), (600.0, 175.0)));
         let p = (123.0, 456.0);
         assert!(close(map.card_to_user(map.user_to_card(p)), p));
@@ -1340,7 +1342,6 @@ mod tests {
         let layer = map.own.to_display(tilo_pdf::Point::new(123.0, 456.0));
         let via_layer = map.layer_to_card((f64::from(layer.x), f64::from(layer.y)));
         assert!(close(via_layer, map.user_to_card(p)));
-        // An unrotated page the size of its card maps exactly.
         assert!(PageMap::new(own, 0, 600.0, 800.0).is_identity());
 
         // Annotations round-trip between card and user space on a page whose
@@ -1399,7 +1400,6 @@ mod tests {
         assert!(d.page(1).is_some());
         assert!(d.page(7).is_none());
         assert!(!d.outline.is_empty());
-        // Every outline entry points at a real page.
         for item in &d.outline {
             assert!(
                 d.page(item.page).is_some(),
@@ -1412,7 +1412,6 @@ mod tests {
         assert!(!hits.is_empty(), "expected to find 'sandbox'");
         // Page 2 discusses sandboxing.
         assert!(hits.iter().any(|m| m.page == 2));
-        // Byte range points at the real text.
         let m = &hits[0];
         let page = d.page(m.page).unwrap();
         let text = page.blocks[m.block].search_text().unwrap();
@@ -1483,7 +1482,6 @@ mod tests {
                 WORD,
                 vec![(0, "ink"), (20, "ink")],
             ),
-            // Case expansion and contraction keep source byte spans.
             (
                 "unicode case folding keeps source spans",
                 unicode,
@@ -1509,7 +1507,6 @@ mod tests {
                 vec![(0, "İ")],
             ),
             ("case-sensitive kelvin misses", unicode, "k", CASE, vec![]),
-            // Accents, combining marks and underscores belong to words.
             (
                 "whole words use complete source words",
                 words,
@@ -1520,7 +1517,6 @@ mod tests {
                     (words.find("(test)").unwrap() + 1, "test"),
                 ],
             ),
-            // The precomposed and the combining spelling are the same word.
             (
                 "accented whole word matches both spellings",
                 words,
@@ -1557,7 +1553,6 @@ mod tests {
             assert_eq!(&got, expected, "case {case}");
         }
 
-        // Materialisation is bounded.
         let d = one_page(&"a ".repeat(MAX_SEARCH_RESULTS + 100));
         assert_eq!(
             search(&d, "a", SearchOptions::default()).len(),

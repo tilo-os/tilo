@@ -2,7 +2,7 @@ windows-app-title = Windows Apps
 windows-apps-title = Apps
 windows-no-apps = No Windows apps yet.
 windows-empty-title = No Windows apps yet
-windows-empty-body = Windows apps you install appear here.
+windows-empty-body = Add one to run it on this computer.
 windows-service-missing-title = Windows apps can't run right now
 windows-service-missing-body = Windows app support isn't running on this computer, so apps can't be added or opened.
 windows-open-with = Open with
@@ -111,6 +111,121 @@ windows-suspend-starting = Suspending Windows…
 windows-resume-starting = Resuming Windows…
 windows-shutdown-starting = Shutting down Windows…
 windows-temporary-connection-starting = Connecting Windows temporarily and opening the recovery desktop…
+
+## The Windows appliance: how it stands, what it says and what it refuses.
+## Each of these is a sentence a person reads, never a literal in the code.
+
+windows-appliance-checking-status = Checking the Windows appliance…
+
+windows-power-running = Running
+windows-power-suspended = Suspended
+windows-power-paused = Paused
+windows-power-shut-down = Shut down
+windows-power-unknown = Power state unavailable
+
+windows-phase-not-set-up = Not set up
+windows-phase-installing = Windows is installing
+windows-phase-finishing-setup = Finishing Windows setup
+windows-phase-ready = Ready
+windows-phase-needs-recovery = Needs recovery
+windows-phase-unavailable = Status unavailable
+
+windows-status-running = Windows is running and ready for your apps.
+windows-status-suspended = Windows is suspended. Resume it to open your apps.
+windows-status-paused = Windows is paused. Resume it to open your apps.
+windows-status-shut-down = Windows is shut down. Start it to open your apps.
+windows-status-ready = Windows is ready for your apps.
+windows-status-not-set-up = Choose Windows installation media to set it up.
+windows-status-installing = Windows is installing. Finish setup in the setup desktop.
+windows-status-finishing-setup = Finish connecting Windows to Tilo in the recovery desktop.
+windows-status-needs-recovery = Windows needs repair. Open the recovery desktop to fix it.
+windows-status-unavailable = Windows didn't report its status. Check it before making changes.
+
+windows-license-unknown = Windows hasn't reported it yet
+windows-license-digital = Windows says it's activated with a digital license
+windows-license-product-key = Windows says it's activated with a product key
+windows-license-managed = Managed by your organization
+windows-license-evaluation = Windows says it's an evaluation edition
+windows-license-unlicensed = Windows says it isn't activated
+windows-license-unknown-detail = Finish Windows Setup, then return here to check its activation status.
+windows-license-unlicensed-detail = Activate Windows from the recovery desktop. Tilo doesn't keep product keys or decide whether a license is valid.
+windows-license-evaluation-detail = Evaluation editions have their own terms and expiry date. Tilo doesn't keep product keys or decide whether a license is valid.
+
+windows-purpose-activation = Windows activation
+windows-purpose-update = Windows Update
+windows-connection-opened-activation = Windows has a temporary activation connection. Opening the recovery desktop…
+windows-connection-opened-update = Windows has a temporary update connection. Opening the recovery desktop…
+windows-connection-expired = Expired; refreshing status…
+windows-connection-expires-seconds = Expires in { $seconds }s
+windows-connection-expires = Expires in { $minutes }m { $seconds }s
+windows-connection-revoked = The temporary Windows connection was revoked.
+
+windows-start-done = Windows has started.
+windows-restart-done = Windows has restarted.
+windows-suspend-done = Windows has been suspended.
+windows-resume-done = Windows has resumed.
+windows-shutdown-done = Windows has been shut down.
+windows-media-accepted = Windows media was accepted. Opening the initial setup desktop…
+windows-recovery-open = The Windows setup and recovery desktop is open.
+
+windows-error-unmanageable = The Windows appliance can't be managed in this session.
+windows-error-busy = A Windows appliance action is already in progress.
+windows-error-recovery-unavailable = The Windows recovery desktop is unavailable until the appliance is provisioned.
+windows-error-set-up-power = Set up the Windows appliance before managing its power state.
+windows-error-set-up-connection = Set up the Windows appliance before connecting it temporarily.
+windows-error-not-running = Windows must be running before it can be connected temporarily.
+windows-error-connection-no-lease = There is no active temporary Windows connection to revoke.
+windows-error-power-state = { $action } isn't available in the appliance's current power state.
+windows-error-command = The Windows appliance command failed: { $error }
+windows-error-status-read = Couldn't read the Windows appliance's status: { $error }
+windows-error-status-invalid = The Windows appliance reported a status this version can't read: { $error }
+windows-error-status-schema = The Windows appliance returned a status this version can't read.
+windows-error-permission = Permission wasn't granted.
+windows-error-permission-ask = Couldn't ask for permission: { $error }
+windows-error-recovery-open = Couldn't open the Windows recovery desktop: { $error }
+
+windows-app-status-ready = Ready
+windows-app-status-running = Running
+windows-app-status-needs-attention = Needs attention
+windows-app-status-installing = Installing
+windows-app-status-uninstalling = Uninstalling
+windows-app-status-failed = Setup didn't finish
+windows-app-status-uninstalled = Uninstalled, data kept
+
+windows-confidence-verified = Verified
+windows-confidence-community = Community tested
+windows-confidence-best-match = Best match
+windows-confidence-untested = Untested
+
+windows-route-capsule-security = It runs in a private capsule that sees only the files and devices you allow.
+windows-route-vm-security = It shares Windows with your other Windows apps. Files reach it only when you open them with it.
+
+windows-search-group = Windows apps
+windows-pick-app-title = Add a Windows application
+windows-pick-app-confirm = Install
+windows-pick-app-filter = Windows applications
+windows-pick-iso-title = Choose Windows installation media
+windows-pick-iso-confirm = Use this ISO
+windows-pick-iso-filter = Windows installation media
+windows-pick-file-title = Open a file in Windows
+windows-pick-file-confirm = Open read-only
+windows-error-open = Couldn't open the { $what }: { $error }
+windows-on = On
+windows-off = Off
+windows-location-one = 1 location
+windows-locations = { $count } locations
+windows-approved-site-one = 1 approved site
+windows-approved-sites = { $count } approved sites
+windows-grant-audio-playback = Audio playback
+windows-grant-clipboard = Clipboard
+windows-grant-microphone = Microphone
+windows-grant-network = Network
+windows-grant-read-only-files = Read-only files
+windows-grant-writable-files = Writable files
+windows-files-cannot-reach = This app's window can't receive files from this computer yet.
+
+windows-error-app-gone = The Windows application is no longer available.
+windows-error-operation-gone = The Windows operation is no longer available.
 
 ## History of the shared launch routes
 

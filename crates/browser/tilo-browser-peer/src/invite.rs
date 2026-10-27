@@ -49,10 +49,6 @@ pub async fn guest_certificate(
 }
 
 /// One `/join` step.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or answers badly.
 pub async fn join(client: &dyn HttpClient, step: &JoinStep) -> Result<JoinReply, LinkError> {
     https::join(client, step).await
 }
@@ -62,11 +58,6 @@ pub async fn join(client: &dyn HttpClient, step: &JoinStep) -> Result<JoinReply,
 /// names exactly this invitation, device and request, and answer it.
 /// Resolves to [`JoinReply::Waiting`] once the request waits for the owner,
 /// or to the host's refusal.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached, answers badly, or
-/// sends a challenge for anything else.
 pub async fn ask_to_join(
     client: &dyn HttpClient,
     invitation: &[u8],

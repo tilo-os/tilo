@@ -3,10 +3,10 @@
 # Every file that looks like a test (see tools/ci/suites.py: SCOPE) is gated by
 # exactly one of:
 #
-#   * tools/security-boundary-invariants.txt, tools/policy/run.sh or a literal
-#     step in check.yml/lint.yml, which run on every applicable change;
+#   * tools/security-boundary-invariants.txt or tools/policy/run.sh, which run
+#     on every applicable change;
 #   * a [[group]] below: a cheap, hermetic suite (no root-only host state, KVM,
-#     built image or network) that the "suites" job in check.yml runs whenever
+#     built image or network) whose `suite-<group>` check in t.toml runs whenever
 #     a changed path matches one of the group's inputs or the suite itself;
 #   * a [[covered]] entry: exercised by the named, already gated suite; or
 #   * an [[unrequired]] entry with the reason it cannot be a required check.
@@ -69,12 +69,6 @@ inputs = ["scripts/headless-examples/spawn-headless.sh"]
 suites = ["scripts/headless-examples/test_spawn_headless.py"]
 
 [[group]]
-name = "chat-task-approval"
-requirement = { cores = 1, memory = "1GiB" }
-inputs = ["apps/chat/"]
-suites = ["apps/chat/tests/test_agent_start_surface.py"]
-
-[[group]]
 name = "runtime-dependency-closure"
 requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]
@@ -91,7 +85,7 @@ requirement = { cores = 1, memory = "1GiB" }
 # The container policy is generated from keys/ by tools/signing/release_trust.py;
 # the image recipes install what it names, and t's signing scripts sign the
 # repositories it verifies.
-inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml"]
+inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
 suites = ["os/tests/test_container_signature_policy.py"]
 
 [[group]]
@@ -123,9 +117,10 @@ suites = [
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
   "os/tests/boot_health_greeter.sh",
-  "os/tests/board_release_promotion.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
+  "os/tests/firewalld_names.sh",
+  "os/tests/clock_floor.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
@@ -139,8 +134,13 @@ suites = [
   "os/tests/setup_handoff_transport.sh",
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
+  "os/tests/rollback_luks_device.sh",
+  "os/tests/firstboot_user_selinux.sh",
+  "os/tests/boot_selinux_domains.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
+  "os/tests/deployment_dual_esp.sh",
+  "os/tests/boot_fallback.sh",
   "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
@@ -149,6 +149,7 @@ suites = [
   "os/tests/test_oci_archive_layer_report.py",
   "os/tests/test_local_image_epoch.py",
   "os/tests/security_audit_kconfig.sh",
+  "os/tests/env_runtime_fingerprint.sh",
   "os/tests/boot_chain_source.sh",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
@@ -158,6 +159,7 @@ suites = [
   "os/tests/test_no_ui_toolkits.py",
   "os/tests/test_no_python_runtime.py",
   "os/tests/test_flatpak_defaults.py",
+  "os/tests/test_authselect_unchanged.py",
   "os/tests/test_hardlink_identical.py",
   "os/tests/test_seed_env_runtime.py",
   "os/tests/test_boot_unit_ordering.py",
@@ -175,7 +177,6 @@ suites = [
   "os/tests/test_create_development_disk.py",
   "os/tests/dev_base_inputs_tree.sh",
   "os/tests/test_cargo_freshness.py",
-  "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_composefs.py",
   "os/tests/test_development_loader.py",
@@ -191,7 +192,7 @@ suites = [
   "os/tests/test_guest_loader_inspection.py",
   "os/tests/test_hardware_firmware_artifact.py",
   "os/tests/test_identity_public_key.py",
-  "os/tests/test_image_cohort_archives.py",
+  "os/tests/test_image_apps_once.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
   "os/tests/test_installed_development_disk.py",
@@ -211,6 +212,7 @@ suites = [
   "os/tests/test_oci_image_diff.py",
   "os/tests/test_oci_rechunk.py",
   "os/tests/test_pack_apps_cleanup.py",
+  "os/tests/test_pack_apps_surface.py",
   "os/tests/test_shipped_runtimes.py",
   "os/tests/test_dev_tools_sysext.py",
   "os/tests/test_image_build_script_copies.py",
@@ -269,7 +271,7 @@ suites = ["tools/ci/test_native_store_autoclear.py"]
 [[group]]
 name = "os-workflows"
 requirement = { cores = 2, memory = "1GiB" }
-inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/publish/"]
+inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/t_matrix.py", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
@@ -296,8 +298,27 @@ name = "no-cisco-openh264"
 requirement = { cores = 1, memory = "1GiB" }
 # No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
 # finished-rootfs gate, and the CI/developer environments that alone may carry it.
-inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
+inputs = ["os/", "t.toml", "tools/ci/t_matrix.py", "dist/ci/install-build-deps.sh"]
 suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
+name = "openssl-free"
+requirement = { cores = 1, memory = "2GiB" }
+# No OpenSSL, native-tls or second crypto provider in the workspace's dependency
+# graph or any lockfile, and none started by the shipped runtime's sources, image
+# recipes or workflows. It scans every Rust and shell source and resolves the
+# whole graph with cargo tree, so it is a group of its own, which answers in
+# seconds, rather than part of security, whose micro-VM every crate change
+# would otherwise boot. It reads the OS tree and the workflows whole, the Rust
+# and shell sources of the apps and crates, every manifest and lockfile (cargo
+# tree resolves the vendored crates' too) and the two packaging recipes it
+# greps.
+inputs = [
+  "os/", ".forgejo/", ".cargo/", "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
+  "crates/*.rs", "crates/*.sh", "apps/*.rs", "apps/*.sh",
+  "dist/arch/PKGBUILD", "dist/nix/package.nix",
+]
+suites = ["os/tests/no_openssl_runtime.sh"]
 
 [[group]]
 name = "mount-source-cache-keys"
@@ -319,11 +340,29 @@ suites = ["os/tests/dev_feature_targets.py"]
 [[group]]
 name = "containerfile-sources"
 requirement = { cores = 1, memory = "1GiB" }
-# Every host-side COPY source of every image Containerfile must exist, so a
-# move or deletion anywhere in the build context can break it.
+# Every host-side COPY source of every image Containerfile must exist. The
+# Containerfiles are under os/, and what they copy from outside it is listed
+# here as it is copied: a file by its path, so deleting or moving it runs the
+# group, and a whole directory by its name, which can't go away without a
+# change to os/ (the suite fails while a source outside os/ isn't listed).
 inputs = [
-  "os/", ".cargo/", ".containerignore", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
-  "apps/", "crates/", "dist/", "docs/", "examples/", "keys/", "tools/", "vendor/",
+  "os/", ".containerignore", ".cargo/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+  "apps", "crates", "dist", "examples", "vendor", "vendor/zlink-macros/", "keys/release/",
+  "docs/developers/tasks/", "tools/perf/tapp-size-budget/",
+  "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules",
+  "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service",
+  "crates/dev/tilo-vmd/data/tilo-vm-restore.service", "crates/dev/tilo-vmd/data/tilo-vm-session@.service",
+  "crates/dev/tilo-vmd/data/tilo-vm-vkms.conf", "crates/dev/tilo-vmd/data/tilo-vm-community.toml",
+  "crates/session/install-profile-model/locales.txt",
+  "docs/recovery.md", "docs/security/boot-chain.md", "docs/security/repair-mode.md",
+  "docs/security/rollback.md", "docs/windows-presentation.md", "docs/windows-vm.md",
+  "keys/cosign.pub", "keys/cosign-dev.pub", "keys/extensions.pub", "keys/tpm2-pcr-signing.public.pem",
+  "scripts/browser/build-host.py", "scripts/browser/cef-lock.json",
+  "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py",
+  "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py",
+  "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py",
+  "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml",
+  "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py",
 ]
 suites = ["os/tests/containerfile_sources.sh"]
 
@@ -366,7 +405,8 @@ suites = ["os/tests/direct_boot_bundle_export.sh"]
 name = "home-peer"
 requirement = { cores = 1, memory = "1GiB" }
 inputs = [
-  "os/", "apps/settings/", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
+  "os/", "apps/settings-rare/", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
+  "crates/session/shell/src/shell/device_pairing.rs", "crates/runtime/tilo-identity-host/",
 ]
 suites = ["os/tests/home_peer_setup.sh"]
 
@@ -401,7 +441,6 @@ name = "image-size"
 requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/image-size-budget.toml", "os/tests/image_size_budget.py", "tools/perf/image_size.py",
-  ".forgejo/workflows/build-image.yml",
 ]
 suites = ["os/tests/test_image_size_budget.py"]
 
@@ -411,8 +450,9 @@ requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
   "crates/session/shell/src/shell/windows_compat.rs",
-  # test_windows_compat_sysext.py: the helper that installs the image.
-  "crates/system/extension-helper/src/",
+  # test_windows_compat_sysext.py: the helper that installs the image, and the checks that
+  # publish it.
+  "crates/system/extension-helper/src/", "t.toml", "tools/ci/t_matrix.py",
 ]
 suites = [
   "os/tests/windows_compat_stack.sh",
@@ -424,15 +464,15 @@ suites = [
 [[group]]
 name = "kernel-signer"
 requirement = { cores = 1, memory = "1GiB" }
-# Projects tilo-crypto's manifest against the workspace for the kernel build.
-inputs = ["os/", "Cargo.toml", "crates/system/tilo-crypto/"]
+# Projects tilo-crypto's manifest and lock against the workspace for the kernel build.
+inputs = ["os/", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/"]
 suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
 requirement = { cores = 2, memory = "1GiB" }
-inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", "tools/ci/products.toml", "dist/session/vm-e2e/run.py"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py", "apps/imager/packaging/test_target_policy.py"]
 
 [[group]]
 name = "native-qualification-storage"
@@ -449,11 +489,10 @@ suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/
 [[group]]
 name = "dist"
 requirement = { cores = 2, memory = "1GiB" }
-inputs = ["dist/", "os/registry-runtime-publisher.hex"]
+inputs = ["dist/", "os/registry-runtime-publisher.hex", "tools/ci/products.toml"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/ci/tests/test_failed_rpm_retention.py",
-  "dist/ci/tests/test_host_session_rpm_replay.py",
   "dist/ci/tests/test_package_lane.py",
   "dist/session/tests/vm-e2e-exit-status.py",
   "dist/session/tests/vm-e2e-input-import.py",
@@ -468,6 +507,7 @@ suites = [
   "dist/rpm/test-rename-contract.sh",
   "dist/rpm/test-rpmbuild-route.sh",
   "dist/rpm/test-rpmlint-config.py",
+  "dist/rpm/test-ostree-package-conflicts.sh",
 ]
 
 [[group]]
@@ -491,8 +531,9 @@ suites = [
 
 [[group]]
 name = "vm-acceptance"
-# acceptance/records.py writes its records through tools/perf/record.py.
-inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml", "tools/perf/"]
+# acceptance/records.py writes its records through tools/perf/record.py;
+# test_layer_artifacts.py holds the cohort checks to their trust boundary.
+inputs = ["scripts/vm-acceptance/", "tools/ci/vm-acceptance.sh", "tools/ci/vm-cohort.sh", "t.toml", "tools/perf/"]
 suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
@@ -501,6 +542,7 @@ suites = [
   "scripts/vm-acceptance/test_layer_artifacts.py",
   "scripts/vm-acceptance/test_provenance.py",
   "scripts/vm-acceptance/test_records.py",
+  "scripts/vm-acceptance/test_secrets.py",
   "scripts/vm-acceptance/test_resources.py",
   "scripts/vm-acceptance/test_management.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
@@ -512,18 +554,25 @@ suites = [
   "scripts/vm-acceptance/test_dialog_guard.py",
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
+  "scripts/vm-acceptance/test_session_guard.py",
+  "scripts/vm-acceptance/test_skip.py",
+  "scripts/vm-acceptance/test_window_guard.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
+  "scripts/vm-acceptance/test_basics.py",
+  "scripts/vm-acceptance/test_report.py",
+  "scripts/vm-acceptance/test_clock.py",
 ]
 
 [[group]]
 name = "perf-tools"
 requirement = { cores = 4, memory = "1GiB" }
 inputs = [
-  "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
-  # tools/perf/test_compare.py and test_ab.py hold the workflows' groups and
-  # benchmarks equal to the budgets' lanes and the A/B groups.
-  ".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml",
+  "scripts/perf/", "apps/settings-core/src/categories.rs", "tools/perf/",
+  # tools/perf/test_compare.py and test_ab.py hold the scheduled groups, their
+  # t checks and benchmarks, and vm-acceptance-perf's groups equal to the
+  # budgets' lanes and the A/B groups.
+  "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh", "t.toml",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_timing.rs",
@@ -539,6 +588,9 @@ inputs = [
   "crates/session/shell/examples/redraw_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
+  # ... and the native stream qualification's Safari run drives Safari through
+  # tools/web/webdriver.mjs.
+  "tools/web/webdriver.mjs",
   # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
   # session example draws.
   "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
@@ -549,8 +601,11 @@ inputs = [
 suites = [
   "scripts/perf/browser_qualification.test.mjs",
   "scripts/perf/native_stream_qualification.test.mjs",
+  "tools/web/webdriver.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/desktop_chrome_bench_test.py",
   "scripts/perf/device_latency_bench_test.py",
+  "scripts/perf/drm_hardware_checks_test.py",
   "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
@@ -560,6 +615,7 @@ suites = [
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
   "scripts/perf/latency_bench_test.py",
+  "scripts/perf/lock_screen_bench_test.py",
   "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/physical_notes_stages_test.py",
   "scripts/perf/agent_rtt_test.py",
@@ -621,11 +677,12 @@ suites = [
 [[group]]
 name = "platform-web"
 requirement = { cores = 1, memory = "1GiB" }
-# The portal crates' browser modules behind their wasm32 backends.
+# The portal and media crates' browser modules behind their wasm32 backends.
 inputs = [
   "crates/platform/tilo-clipboard/web/",
   "crates/platform/tilo-dialogs/web/",
   "crates/platform/tilo-location/web/",
+  "crates/platform/tilo-media/web/",
   "crates/platform/tilo-notify/web/",
   "crates/platform/tilo-secrets/web/",
 ]
@@ -633,6 +690,7 @@ suites = [
   "crates/platform/tilo-clipboard/web/clipboard.test.mjs",
   "crates/platform/tilo-dialogs/web/dialogs.test.mjs",
   "crates/platform/tilo-location/web/location.test.mjs",
+  "crates/platform/tilo-media/web/tilo-media.test.mjs",
   "crates/platform/tilo-notify/web/notify.test.mjs",
   "crates/platform/tilo-secrets/web/secrets.test.mjs",
 ]
@@ -661,14 +719,15 @@ name = "browser-runtime-web"
 requirement = { cores = 6, memory = "1GiB" }
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
-# app catalogue. The live transport suites load the MoQ library that check.yml
-# builds from scripts/moq-browser before the offline suites run.
+# app catalogue. The live transport suites load the MoQ library built from
+# scripts/moq-browser before the offline suites run.
 # bundle-update runs the split modules' loader that wasm-split's main.rs writes.
 inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
   "crates/browser/tilo-browser-runtime/web/here.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
@@ -679,8 +738,11 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/profile-photos.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-core-status.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-core-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
   "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
@@ -692,13 +754,16 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs",
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/door-wait-list.test.mjs",
   "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
@@ -708,6 +773,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/image-decode.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
@@ -745,12 +811,19 @@ inputs = ["scripts/browser/"]
 suites = [
   "scripts/browser/benchmark-pages.test.mjs",
   "scripts/browser/scroll-response.test.mjs",
+  "scripts/browser/test_benchmark_input.py",
 ]
 
 # Cargo packages whose code reads repository files outside their directory.
 # A change to an input tests the whole package, unless every changed input is
 # listed in the entry's optional `scope`: then only the scope's `filter`
 # (a nextest filterset) within its `test` target runs for that package.
+# `dependencies_of` names directories whose packages' normal local dependencies
+# the package reads too; tools/ci/t_toml.py adds those packages' directories to
+# its inputs from the workspace's metadata, so a crate an app comes to depend on
+# is counted without listing it here. `tools/ci/suites.py check` holds each
+# entry's inputs to what its code reads where literals say: includes, and paths
+# built from CARGO_MANIFEST_DIR, including every entry of a directory it lists.
 
 
 [[cargo]]
@@ -769,6 +842,8 @@ inputs = [
   "crates/browser/tilo-browser-runtime/src/background_work.rs",
   "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
+  # The ratchets find the checkout by its workspace manifest.
+  "Cargo.toml",
 ]
 readers = [
   "crates/sdk/ui-core/src/headless.rs",
@@ -824,6 +899,12 @@ inputs = ["apps/tl/counter/app.tl"]
 readers = ["crates/platform/tilolang-tilo/tests/fixtures.rs"]
 
 [[cargo]]
+package = "mail"
+# The engine test mirrors the end mark the mail writes.
+inputs = ["apps/browser/chromium/tests/resize_frames.py"]
+readers = ["apps/mail/src/html_mail/tests.rs"]
+
+[[cargo]]
 package = "discord-worker"
 # The bridge test and the live example install the bridge bot from its
 # program file, beside the worker in the connector app.
@@ -831,6 +912,16 @@ inputs = ["apps/discord/bridge/program.json"]
 readers = [
   "apps/discord/worker/tests/bridge.rs",
   "apps/discord/worker/examples/live_bridge.rs",
+]
+
+[[cargo]]
+package = "tilo-relay"
+# The room's bot runner is tested with the Discord bridge's program as it
+# ships, the import it plans resuming after the room refused part of a run.
+inputs = ["apps/discord/bridge/program.json"]
+readers = [
+  "crates/hosting/tilo-relay/src/room_bots/tests.rs",
+  "crates/hosting/tilo-relay/tests/governed_rooms/app_push.rs",
 ]
 
 [[cargo]]
@@ -886,8 +977,9 @@ readers = ["crates/system/tilo-crypto/src/release_bundle.rs"]
 
 [[cargo]]
 package = "tilo-firstboot-files"
-# The first-boot cases run the shipped tilo-firstboot-user with this helper.
-inputs = ["os/usr/libexec/tilo-firstboot-user"]
+# The first-boot cases run the shipped tilo-firstboot-user with this helper, which
+# publishes through the compatibility oracle.
+inputs = ["os/usr/libexec/tilo-firstboot-user", "os/tests/oracles/tilo-firstboot-home-seeds.py"]
 readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
 
 [[cargo]]
@@ -994,9 +1086,18 @@ readers = [
 
 [[cargo]]
 package = "greeter"
-# The greeter offers exactly the sessions the image ships.
-inputs = ["os/usr/share/wayland-sessions/*.desktop"]
-readers = ["crates/session/greeter/src/greeter_app.rs"]
+# The greeter offers exactly the sessions the image ships, and records its
+# input where the boot assessment reads it. Its look is generated from the
+# greeter's theme and committed as the plymouth theme's look.json, which the
+# test compares.
+inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session", "os/usr/share/plymouth/themes/tilo/look.json"]
+readers = ["crates/session/greeter/src/greeter_app.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
+
+[[cargo]]
+package = "pam-tilo"
+# The conversation tests run the PAM services the image ships.
+inputs = ["os/etc/pam.d/tilo-auth", "os/etc/pam.d/greetd", "os/etc/pam.d/tilo-unlock", "os/etc/pam.d/polkit-1", "os/etc/pam.d/sudo"]
+readers = ["crates/system/pam-tilo/tests/conversation.rs"]
 
 [[cargo]]
 package = "launcher"
@@ -1040,7 +1141,8 @@ readers = ["crates/runtime/egress/src/policy.rs"]
 
 [[cargo]]
 package = "tilo-vm"
-inputs = ["apps/*/tilo-app.toml", "os/dev/vm.sh"]
+# Its build plan comes from the image's component manifest.
+inputs = ["apps/*/tilo-app.toml", "os/dev/vm.sh", "os/components.toml"]
 readers = ["crates/dev/tilo-vm/src/build.rs", "crates/dev/tilo-vm/src/hypervisor.rs"]
 
 [[cargo]]
@@ -1057,6 +1159,8 @@ inputs = [
   "os/usr/libexec/tilo-seat-session", "os/usr/libexec/tilo-session",
   "os/usr/share/tilo/system-interfaces.toml", "tools/font-catalog.py",
   "crates/sdk/ui-core/assets/fonts/**",
+  # The session file must start the login wrapper.
+  "os/usr/share/wayland-sessions/shell.desktop",
 ]
 readers = [
   "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
@@ -1086,73 +1190,23 @@ inputs = [
   # Standalone apps take the SDK's toolchain and lock file.
   "rust-toolchain.toml", "Cargo.lock",
   "tools/ci/rustc-sdk-consumer.sh", "os/dev/export-sdk-compiler.py",
-  "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh", "apps/*/Cargo.toml",
+  "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
-  # Canonical worker builder sources and the real packaging manifest fixture.
-  "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
-  # Workspace certification tells a windowless service from a window by its manifest.
-  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/web-search/tilo-app.toml", "apps/osk/tilo-app.toml",
+  # Canonical worker builder sources.
+  "crates/browser/tilo-browser-compute/",
+  # Tests over every app of the workspace read each one's manifests and sources: the
+  # capability and portability lints, the record kinds each manifest must declare, the
+  # SDK graph of every app, workspace certification and the packaging fixtures.
+  "apps/",
   # A new app's services speak the runtime interface version the image serves.
   "os/usr/share/tilo/system-interfaces.toml",
-  # The production resource regression reads Music and its whole normal local
-  # dependency closure. SDK/platform/vendor roots above already cover theirs;
-  # keep the remaining source roots explicit when the Music graph changes.
-  "apps/music/", "crates/doc/tilo-doc/", "crates/system/accounts/",
-  "crates/browser/paint-stream/",
-  "crates/collab/actions/",
-  "crates/collab/automation/",
-  "crates/collab/channel-crypto/",
-  "crates/collab/collab-types/",
-  "crates/collab/threshold-identity/",
-  "crates/collab/tilo-user-identity/",
-  "crates/dev/headless-schema/",
-  "crates/dev/test-env/",
-  "crates/dev/test-http/",
-  "crates/dev/ui-graph/",
-  "crates/doc/bounded-zip/",
-  "crates/doc/tilo-automerge/",
-  "crates/doc/tilo-doc-codecs/",
-  "crates/media/thumbnail/",
-  "crates/packaging/package-store/",
-  "crates/packaging/registry-types/",
-  "crates/packaging/tilo-app-package/",
-  "crates/runtime/cli/",
-  "crates/runtime/runtime-collab/",
-  "crates/runtime/runtime-fs/",
-  "crates/runtime/runtime-identity/",
-  "crates/runtime/runtime-portal/",
-  "crates/session/desktop-model/",
-  "crates/system/account-custody/",
-  "crates/system/advisory-lock/",
-  "crates/system/app-state/",
-  "crates/system/bounded-command/",
-  "crates/system/cloud-source-dav/",
-  "crates/system/cloud-source-dropbox/",
-  "crates/system/cloud-source-gdrive/",
-  "crates/system/cloud-source-icloud/",
-  "crates/system/cloud-source-onedrive/",
-  "crates/system/cloud-source/",
-  "crates/system/content/",
-  "crates/system/desktop-policy/",
-  "crates/system/durable-store/",
-  "crates/system/fs-content/",
-  "crates/system/fs-native/",
-  "crates/system/fs/",
-  "crates/system/power/",
-  "crates/system/sandbox-core/",
-  "crates/system/secret-vault/",
-  "crates/system/settings-store/",
-  "crates/system/tilo-dav/",
-  "crates/system/tilo-native-certs/",
-  "crates/system/tilo-oauth/",
-  "crates/system/tilo-seal/",
-  "crates/system/tilo-startup-metrics/",
-  "crates/system/tts/",
-  "crates/system/wire-frame/",
-  "crates/text/spellcheck/",
-  "crates/workspace-hack/",
+  # A check runs inside the test environment, as cargo's runner starts every test.
+  "tools/with-test-environment.sh",
 ]
+# The record-kinds tests read the sources of the local crates the apps depend on, the
+# production resource regression Music's whole normal local dependency closure.
+dependencies_of = ["apps/"]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   # The SDK's current interfaces are the image's declaration from the same commit.
@@ -1191,12 +1245,67 @@ inputs = [
   # backend and mounted tests against Settings' own mount.
   "crates/sdk/provider-settings-ui/src/fake_backend.rs",
   "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+  # Appearance's wallpaper-name test reads the Settings catalogues.
+  "apps/settings-core/locales/en-US.ftl",
+  "apps/settings-core/locales/de-DE.ftl",
 ]
 readers = [
-  "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
+  "apps/settings/src/panes/appearance.rs",
   "apps/settings/tests/cloud_ux.rs",
-  "apps/settings/src/panes/agent_models/admin_tests.rs",
 ]
+
+[[cargo]]
+package = "settings-core"
+inputs = [
+  # Its own tests compile every pane in (src/test_panes.rs): the app's and
+  # settings-rare's sources.
+  "apps/settings/src/**",
+  "apps/settings-rare/src/**",
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/sdk/provider-settings-ui/src/fake_backend.rs",
+  "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+]
+readers = [
+  "apps/settings-core/src/lib.rs",
+  "apps/settings-core/src/test_panes.rs",
+]
+
+[[cargo]]
+package = "settings-rare"
+inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/sdk/provider-settings-ui/src/fake_backend.rs",
+  "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+]
+readers = [
+  "apps/settings-rare/src/panes/accounts/cloud_import_acceptance.rs",
+  "apps/settings-rare/src/panes/agent_models/admin_tests.rs",
+]
+
+[[cargo]]
+package = "browser"
+inputs = [
+  # Its own tests compile browser-parts in, and its views read the parts'
+  # English catalogue.
+  "apps/browser-parts/**",
+  "apps/browser/chromium/src/extension_tabs.js",
+]
+readers = [
+  "apps/browser/src/lib.rs",
+  "apps/browser/src/personal_bookmark_view.rs",
+]
+
+[[cargo]]
+package = "browser-parts"
+inputs = [
+  # The engine's tab script, which it writes into each extension's worker.
+  "apps/browser/chromium/src/extension_tabs.js",
+]
+readers = ["apps/browser-parts/src/extensions.rs"]
 
 [[cargo]]
 package = "tilo-fs"
@@ -1276,6 +1385,7 @@ readers = [
 [[cargo]]
 package = "imager-backend"
 inputs = [
+  "keys/tpm2-pcr-signing.public.pem",
   "os/usr/libexec/tilo-firstboot-user",
   "crates/system/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
@@ -1283,6 +1393,7 @@ inputs = [
 readers = [
   "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
   "crates/platform/imager-backend/src/probe.rs",
+  "crates/platform/imager-backend/src/setup/prepared_tpm/native.rs",
 ]
 
 [[cargo]]
@@ -1345,14 +1456,31 @@ readers = ["apps/pdf-viewer/build.rs"]
 [[cargo]]
 package = "tilo-agent-participant"
 # The session tests mount apps against the controlled font fixture and share
-# the browser peer's relay test support.
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
+# the browser peer's relay test support; the campaign benchmark runs its
+# confined workers inside the test environment script.
+inputs = [
+  "crates/sdk/ui-core/assets/fonts/",
+  "crates/browser/tilo-browser-peer/tests/support/",
+  "tools/with-test-environment.sh",
+]
 readers = [
   "crates/agent/agent-participant/tests/asking_first.rs",
+  "crates/agent/agent-participant/tests/campaign_bench.rs",
+  "crates/agent/agent-participant/tests/check_facts.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
   "crates/agent/agent-participant/tests/shared_session.rs",
+]
+
+[[cargo]]
+package = "tilo-video-render"
+# The helper's tests render footage the video editor's test support
+# generates, so a change to that generator runs them.
+inputs = ["apps/video-editor/tests/support/"]
+readers = [
+  "crates/media/video-render/tests/render_helper.rs",
+  "crates/media/video-render/tests/support/media_stack.rs",
 ]
 
 [[cargo]]
@@ -1383,7 +1511,10 @@ readers = ["apps/notes/build.rs"]
 package = "shell"
 inputs = [
   "apps/browser/tilo-app.toml",
+  "apps/imager/packaging/linux/tilo-imager.svg",
   "apps/file-explorer/tilo-app.toml",
+  # The session names Settings' own surface as it holds the app's records.
+  "apps/settings/surface.toml",
   "tools/protocols/airdrop_sender.py",
   "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
@@ -1403,6 +1534,7 @@ inputs = [
   "apps/*.rs",
 ]
 readers = [
+  "crates/session/shell/src/bin/shots/driver/downloaded_scene.rs",
   "crates/session/shell/src/shell/doc_open.rs",
   "crates/session/shell/src/shell/search/relevance_tests.rs",
   "crates/session/shell/src/shell/selection_agent.rs",
@@ -1416,6 +1548,7 @@ readers = [
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/compositor/chooser_service.rs",
+  "crates/session/shell/src/shell/settings_records.rs",
 ]
 
 
@@ -1444,12 +1577,12 @@ suite = "apps/imager/packaging/test_release_catalog.py"
 by = "os/tests/imager_release_invariants.sh"
 
 [[covered]]
-suite = "os/containers/tilo-relay/test-base-retry.sh"
-by = "os/containers/tilo-relay/test-contract.sh"
-
-[[covered]]
 suite = "os/tests/test_require_cosign_authority.py"
 by = "os/tests/workflow_dependency_invariants.sh"
+
+[[covered]]
+suite = "os/tests/restart_fixture.py"
+by = "os/tests/test_fex_patches.py"
 
 [[covered]]
 suite = "os/tests/frozen_source_fixture.py"
@@ -1506,10 +1639,6 @@ by = "os/tests/imager_release_invariants.sh"
 [[covered]]
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
-
-[[covered]]
-suite = "tools/ci/focused_test.py"
-by = "tools/tests/test_focused_test.py"
 
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
@@ -1571,27 +1700,26 @@ reason = "boots VMs (KVM) from a built installer image"
 [[unrequired]]
 suite = "os/tests/validation_drive_qemu.sh"
 reason = "requires a native ARM KVM host and QEMU"
-workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-joined-device-startup.sh"
-reason = "boots the installed OS image in a VM and signs in"
-workflow = "build-image.yml"
+reason = "boots the gated dev disk in a VM and signs in; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
-workflow = "build-image.yml"
+reason = "boots three VMs (KVM) from the gated dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-device-admin-reach.sh"
-reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs"
-workflow = "build-image.yml"
+reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs; t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
+suite = "os/dev/test-installed-desktop.sh"
+reason = "boots the gated dev disk in a VM and signs in at its greeter; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-slow-frame-launch.sh"
-reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
-workflow = "build-image.yml"
+reason = "signs in again on the booted, gated dev disk's VM and opens apps there; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
@@ -1620,8 +1748,7 @@ reason = "needs make and a kernel source tree"
 
 [[unrequired]]
 suite = "os/kernel/tests/test-rpm.sh"
-reason = "needs the built kernel RPM"
-workflow = "build-kernel.yml"
+reason = "needs the built kernel RPM; kernel-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/test-vm-headless.sh"
@@ -1657,8 +1784,11 @@ reason = "needs a booted image (SSH into a VM)"
 
 [[unrequired]]
 suite = "os/tests/booted_app_update.sh"
-reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
-workflow = "build-image.yml"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate); t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
+suite = "os/tests/booted_flatpak_lifecycle.sh"
+reason = "drives a booted, signed-in dev VM or tilo-vm slot and installs a real Flathub app"
 
 [[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
@@ -1666,8 +1796,7 @@ reason = "build helper: needs a Windows guest SDK"
 
 [[unrequired]]
 suite = "os/tests/collaborative-files-image-contract.sh"
-reason = "needs an assembled image root (OS_ROOT)"
-workflow = "build-image.yml"
+reason = "needs an assembled image root (OS_ROOT); t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/container_build_context.py"
@@ -1739,13 +1868,15 @@ reason = "needs a built tilo-installer binary"
 
 [[unrequired]]
 suite = "os/tests/installed-admin-actions.sh"
-reason = "runs inside a booted guest as its device admin, after first login"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest as its device admin, after first login; t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
+suite = "os/tests/live-update-check.sh"
+reason = "runs inside a booted dev VM as root and stages an update; t's os-dev-gate-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"
-reason = "runs inside a booted guest's graphical session, partly as root"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest's graphical session, partly as root; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
@@ -1778,8 +1909,11 @@ reason = "needs a FEX runtime container"
 
 [[unrequired]]
 suite = "os/tests/projection-boot-check.sh"
-reason = "runs inside a booted guest"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest; t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
+suite = "os/tests/h264-boot-check.py"
+reason = "runs inside a booted guest: it decodes with the image's own GStreamer and reads the decoder the kernel and the pipeline actually chose (os/dev/test-installed-desktop.sh)"
 
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache.py"
@@ -1799,7 +1933,7 @@ reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
 suite = "os/tests/boot_assessment_rollback.sh"
-reason = "stages an update on a booted disk and reboots it until the boot loader falls back"
+reason = "stages an update on a booted disk and reboots it until the boot loader falls back: t's boot-assessment-x86_64 check runs it on a dev disk, boot-assessment-release-x86_64 on the sealed release disk"
 workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
@@ -1829,23 +1963,19 @@ reason = "needs FEX sources and a guest rootfs container"
 
 [[unrequired]]
 suite = "os/tests/secureboot_vm_probe.sh"
-reason = "needs a compiled kernel, OVMF and QEMU"
-workflow = "build-kernel.yml"
+reason = "needs a compiled kernel, OVMF and QEMU; kernel-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/session-context-check.sh"
-reason = "runs inside a booted guest after a greetd login"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest after a greetd login; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
-reason = "destructive, root: loop devices"
-workflow = "ci-staging-loop.yml"
+reason = "destructive, root: loop devices; t.toml's staging-loop check runs it"
 
 [[unrequired]]
 suite = "os/tests/staging_reclaim_loop.sh"
-reason = "destructive, root: loop devices"
-workflow = "ci-staging-loop.yml"
+reason = "destructive, root: loop devices; t.toml's staging-loop check runs it"
 
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
@@ -1874,6 +2004,18 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
 reason = "drives a VM over SSH; the real-fuse check in t.toml runs it"
+
+[[unrequired]]
+suite = "os/tests/named_public_trust_context.sh"
+reason = "needs a container engine and builds images in it; run by hand where a backend needs qualifying (docs/development-signing.md)"
+
+[[unrequired]]
+suite = "tools/ci/test-vendored-crates.sh"
+reason = "compiles each patched vendored crate's own tests; the vendored check in t.toml runs it"
+
+[[unrequired]]
+suite = "tools/test-env.sh"
+reason = "the test environment tools/ci/t-nextest.sh sources, not a suite of its own"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
@@ -1926,10 +2068,6 @@ reason = "a bun test of the MoQ bundle, which needs its npm dependencies install
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/semantics.test.mjs"
-reason = "Node 22 and 24 crash (SIGSEGV) in its composition-revocation tests; it passes on Node 26, which Fedora 44 does not package"
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/storage.test.mjs"
@@ -2035,3 +2173,11 @@ suites = ["tools/ci/test_rystic_ci.py"]
 [[unrequired]]
 suite = "tools/ci/run-rystic-ci.sh"
 reason = "metered integration runner; t's cloud-rystic, weekly-cloud-rystic and cloud-rystic-contracts checks execute it with native build artifacts and a trusted RYSTIC_CI_TOKEN secret"
+
+[[cargo]]
+package = "tilo-cli"
+# Every program moved off PATH must be installed in /usr/libexec/tilo with its
+# old command name linked to tilo; the alias table is checked against the
+# image's component manifest.
+inputs = ["os/components.toml"]
+readers = ["crates/system/tilo-cli/src/aliases.rs"]

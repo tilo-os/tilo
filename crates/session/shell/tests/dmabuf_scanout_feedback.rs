@@ -52,7 +52,6 @@ const TILED: u64 = 0x0100_0000_0000_0001;
 /// The on-screen keyboard's surface, published directly.
 const KEYBOARD: u64 = 9_907_731;
 
-/// One tranche of a feedback batch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Tranche {
     device: u64,

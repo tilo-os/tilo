@@ -71,7 +71,6 @@ pub enum SidebarTransfer {
     InsertImage(PageId),
 }
 
-/// The tree type the sidebar hosts.
 pub type PageTreeView = TreeView<(), PageTree>;
 
 /// The hidden root every top-level page hangs from.
@@ -872,8 +871,9 @@ mod tests {
 
     #[test]
     fn sidebar_drag_and_scroll_reveal_hidden_targets() {
+        use ui::time::testing::with_monotonic_time;
         eprintln!("phase dragging_over_collapsed_branch_springs_it_open_after_dwell");
-        {
+        with_monotonic_time(ui::time::now(), || {
             let mut ws = Workspace::new();
             let target = ws.create_page(None);
             let _child = ws.create_page(Some(target));
@@ -899,13 +899,13 @@ mod tests {
             let doc = AutoCommit::new();
             tree.update(&doc, &ObjId::Root);
             assert!(!tree.is_expanded(target_key), "no spring before the dwell");
-            std::thread::sleep(std::time::Duration::from_millis(700));
-            tree.update(&doc, &ObjId::Root);
+            let dwelt = ui::time::now() + std::time::Duration::from_millis(700);
+            with_monotonic_time(dwelt, || tree.update(&doc, &ObjId::Root));
             assert!(tree.is_expanded(target_key), "the dwell opens the branch");
-        }
+        });
 
         eprintln!("phase dragging_in_bottom_edge_band_autoscrolls_toward_hidden_targets");
-        {
+        with_monotonic_time(ui::time::now(), || {
             let mut workspace = Workspace::new();
             for _ in 0..30 {
                 workspace.create_page(None);
@@ -920,13 +920,13 @@ mod tests {
             assert!(tree.is_dragging());
             let doc = AutoCommit::new();
             tree.update(&doc, &ObjId::Root);
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            tree.update(&doc, &ObjId::Root);
+            let later = ui::time::now() + std::time::Duration::from_millis(30);
+            with_monotonic_time(later, || tree.update(&doc, &ObjId::Root));
             assert!(
                 tree.scroll_offset() > 0.0,
                 "edge dragging reveals lower drop targets without ending the gesture"
             );
-        }
+        });
 
         eprintln!("phase large_tree_scroll_is_clamped_and_keyboard_reveals_the_selection");
         {

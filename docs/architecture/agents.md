@@ -66,15 +66,24 @@ confirms (it sends, publishes, deletes for good) asks first whatever a broader
 answer says; only "Always allow this", an answer for that one action, lifts
 it.
 
+An action that needs its person attending (`tilo_actions::ATTENDED_TAG`,
+`#[effect(attended)]`: it opens a chooser for them, asks them for a credential
+or a sign-in, or shows something only they may see) asks first every time: no
+answer allows it, not even "Always allow this", and Deny still refuses it.
+There is no other rule about who may run an action; reaching the files,
+hardware or services of a device is an outside effect like any other.
+
 Ask first pauses the agent's task run instead of refusing. The broker renders
 the invocation as a draft (`tilo_actions::draft`: one field per parameter,
 resource references and attachments by label, secrets withheld, a message
 previewed as a message) and records it in the task's control sidecar, so the
-pause outlives restarts. The person sees it in Task Center and in a
-notification, and confirms (optionally editing the draft's fields), declines
-with a reason, or always allows it; the published `answer-confirmation` task
-action does the same without the card. The agent's step waits and asks again
-with the same arguments; the broker runs exactly those arguments with the
+pause outlives restarts. The person sees it on the task's issue in the Tasks
+app ([tasks.md](tasks.md)), and confirms (optionally editing the draft's
+fields), declines with a reason, or always allows it; the published `answer-confirmation` task
+action does the same without the card. The agent's step waits and asks once more
+with the same arguments, an ask the broker holds until the person answers, a
+grant that decides it changes or the run stops (each announced through
+`policy_change`), never on a clock; the broker runs exactly those arguments with the
 person's edits, carried to dispatch by a one-use token bound to them. Other
 arguments are a new question. The draft keeps no raw arguments, so secrets
 never enter the room.
@@ -85,13 +94,14 @@ Tilo owns identity, credentials, grants, confirmation, audit and runtime
 lifecycle. Provider translation is delegated to mature components:
 
 ```text
-Agent profile / Task Center
+Agent profile / Tasks
            |
            v
 Tilo model gateway (native launcher or light authenticated HTTP host)
            |
            +-- common accounts credential broker (keys stay server-side)
-           +-- Rig provider adapters -> OpenAI, Anthropic, compatible APIs
+           +-- account custody (sign-in grants, refreshed server-side)
+           +-- Rig provider adapters -> OpenAI, Anthropic, ChatGPT, compatible APIs
            +-- compatible endpoint -> vLLM, LM Studio, Ollama, etc.
            |
            v
@@ -108,6 +118,54 @@ provider credentials never enter their sandbox. Existing host-side
 OpenAI-compatible planners can opt in to [request presets](agent-model-presets.md);
 these provider hints do not change credentials, context selection or authority.
 
+Each agent plans with a model of its person's providers: the one chosen for it
+in the agent's workspace settings (Model, above its apps' answers), else
+Settings' default. The choice is the person's, kept with their provider
+settings by agent id (`ProviderConfig::agent_models`), and is listed in
+Settings' providers with the way back to the default; it grants nothing. The
+desktop hands the agent its model when it starts it, as the nonsecret
+profile/model/protocol selection, so a change applies from its next start.
+
+### Setting up providers
+
+Settings adds a provider from a known one (`agent_provider_config::presets`):
+OpenAI, Anthropic, Google Gemini, Mistral, OpenRouter, Groq, xAI, DeepSeek,
+Together, Fireworks, Hugging Face, Ollama and LM Studio on this device, or any
+other OpenAI-compatible endpoint typed by hand. A preset fills the name,
+endpoint, protocol and location; nothing records which preset made a profile.
+**Test connection** asks the gateway to list the provider's models with the
+stored key or sign-in (`ListModels`): the answer proves the endpoint and
+credential work, and the person picks the model from it or still types any
+other id.
+
+A provider can also be set up by signing in instead of typing a key. Every
+sign-in is sealed in this device's vault under the profile's own grant id,
+apart from Mail's and Files' grants; the gateway mints request tokens from it
+and agents never see it.
+
+- **Google**: Vertex AI, or the Gemini API, billed to one of the person's
+  Cloud projects (`x-goog-user-project`).
+- **ChatGPT**: the person's OpenAI account, for their ChatGPT subscription.
+  Requests go to the ChatGPT backend in the OpenAI Responses format, always
+  streamed and never stored, through Rig's ChatGPT dialect. OpenAI offers this
+  sign-in to no other application, so it uses the public client of OpenAI's
+  Codex CLI the way Codex does; it can stop working whenever OpenAI changes
+  it, Settings says so, and the scheduled `nightly-live-sign-in` check watches
+  the client, its redirect and the backend.
+- **GitHub Copilot**: GitHub's device sign-in with the client of GitHub's own
+  Copilot extensions (unofficial in the same way); custody trades the GitHub
+  token for short-lived Copilot tokens as its refresh.
+- **OpenRouter**: OpenRouter's own PKCE flow for apps, which hands back an
+  ordinary API key, stored like a typed one.
+- **Hugging Face**: OAuth with the `inference-api` scope, once a distributor
+  registers a client (`TILO_OAUTH_HUGGINGFACE_CLIENT_ID`); until then a Hugging
+  Face access token is typed as the key.
+
+A Claude subscription (claude.ai account) is not offered: Anthropic's terms
+do not allow other applications to sign people in with their Claude account
+or to route requests through Free, Pro or Max plan credentials. Anthropic is
+set up with a Console API key.
+
 The native launcher authenticates a caller through its capability transport.
 The light HTTP adapter authenticates host-issued, expiring, revocable sessions;
 it needs no relay/node runtime and never trusts a caller ID in request JSON.
@@ -121,6 +179,12 @@ retains bounded discovery, confirmation and broker authorization. Provider tool
 deltas remain inert until a successful complete turn validates arguments and
 unique call IDs; failed, truncated or refused turns do not authorize calls.
 
+A model whose descriptor declares `vision` is shown the pictures its invokes
+answered with: a Canvas look, a PDF page (`look-page`), a photo. After the
+turn's results the loop adds them as images (PNG, JPEG, GIF or WebP; at most
+four a turn and 4 MiB each), read from the device content the agent was handed.
+Any other model sees only their content addresses.
+
 The Agent producer streams ordered answer and provider-reasoning events through
 the replicated Chat document, retaining partial output and terminal outcomes.
 The reasoning UI identifies **Reasoning shared by the provider** honestly:
@@ -128,16 +192,26 @@ provider-exposed reasoning tokens need not be summaries and are not suppressed
 merely for being raw reasoning. No reasoning is fabricated when a provider
 exposes none, and the assistant's own hidden chain of thought is never substituted.
 
-A local model deployment can use the [Hugging Face Hub download/cache
-workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
-to an immutable revision, and starts [vLLM's OpenAI-compatible
-server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
-against that resolved snapshot. A managed installation UI must present license,
-size, revision, download/load progress and VRAM state, and supervise the process
-behind a loopback or network-namespace boundary. This is a deployment/lifecycle
-requirement, not a claim that the gateway downloads or supervises models today.
-Downloading must be an explicit management operation, never a side effect of an
-agent request.
+Local models come from two sources: the signed catalog's curated
+recommendation, and any model a person picks on Hugging Face (search, an id or
+link, their own fine-tunes) or adds as a GGUF file from the device. The
+per-user model manager pins a Hub pick to the commit it was shown at, downloads
+each file resumably and verifies it against the hash the Hub publishes (the
+LFS SHA-256 of weights, the git blob id of small config files) before it enters
+the device's content-addressed store. Settings shows every variant's files,
+size, fit for the probed hardware and licence first; gated models use the
+person's Hugging Face sign-in or pasted token from the device vault. Either way the model is
+served by a digest-pinned runtime from the signed catalog —
+[llama.cpp](https://github.com/ggml-org/llama.cpp) for GGUF,
+[vLLM's OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
+for safetensors — supervised behind a loopback port, and a running model
+becomes a model of the local provider profile that agents and Chat choose
+from. Weights are data a signed runtime reads; runtimes are code and stay
+signed. Why that split is safe, and the store's layout, are in
+[system extensions and local models](../system-extensions-and-local-models.md#a-persons-own-models).
+Downloading is an explicit management action (`install-hub-model`), granted
+or denied like every other; it is never a side effect of an agent's model
+request.
 
 ## Agent experience and MCP
 
@@ -210,8 +284,9 @@ browser.
 2. **Provider-neutral model protocol** — preserve the implemented Rig adapters,
    OpenAI-compatible tool calls, provider profiles, streaming and broker-backed
    credentials as new providers and hosts are added.
-3. **Task Center** — manual typed tasks first, then optional model-backed
-   planning; cancellation/retry only where the action contract permits it.
+3. **Tasks** — issues in the Tasks app, agent runs as tracker actions
+   ([tasks.md](tasks.md)); cancellation/retry only where the action contract
+   permits it.
 4. **Local runtime** — explicit HF snapshot lifecycle, hardware fit checks and
    supervised vLLM status.
 5. **Resource/MCP projection** — publish permission-filtered resources beside

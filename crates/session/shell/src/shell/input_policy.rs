@@ -684,9 +684,77 @@ fn v120_component(value: f64) -> i32 {
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
+/// Where the shell holds the pointer back from clients.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PointerCapture {
+    /// The pointer is the windows' wherever it is.
+    #[default]
+    Nowhere,
+    /// The shell takes it wherever it is.
+    Everywhere,
+    /// The shell takes it within these rects (global, as drawn).
+    Within(Vec<Rect>),
+}
+
+impl PointerCapture {
+    /// Whether the shell takes the pointer at `point`.
+    #[must_use]
+    pub fn at(&self, point: KurboPoint) -> bool {
+        match self {
+            Self::Nowhere => false,
+            Self::Everywhere => true,
+            Self::Within(rects) => rects.iter().any(|rect| rect.contains(point)),
+        }
+    }
+}
+
+/// What the shell holds back from client windows this frame: the one
+/// decision local input ([`chrome_captures_input`], [`chrome_captures_pointer`])
+/// and input from other devices (the remote-input firewall's view) both
+/// follow.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InputCapture {
+    /// No window hears a key.
+    pub keyboard: bool,
+    /// Where no window gets the pointer.
+    pub pointer: PointerCapture,
+}
+
+impl InputCapture {
+    /// Nothing held back.
+    pub const NONE: Self = Self {
+        keyboard: false,
+        pointer: PointerCapture::Nowhere,
+    };
+    /// Everything held back.
+    pub const ALL: Self = Self {
+        keyboard: true,
+        pointer: PointerCapture::Everywhere,
+    };
+}
+
+/// What the shell holds back from client windows this frame. A modal
+/// overlay, the palette, a prompt and the like hold all input
+/// ([`chrome_takes_all_input`]); a file chooser's sheet holds the keyboard
+/// while the window that asked for it is focused and the pointer over
+/// itself and that window, so a click on another window reaches it.
+pub fn input_capture(fb: &FrameBuilder) -> InputCapture {
+    if chrome_takes_all_input(fb) {
+        InputCapture::ALL
+    } else {
+        fb.host().file_picker_capture()
+    }
+}
+
+/// Whether the shell chrome is currently claiming the keyboard
+/// ([`input_capture`]).
+pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+    input_capture(fb).keyboard
+}
+
 /// Whether the shell chrome is currently claiming all input: an overlay,
 /// the command palette, the peer-sync card, the workspace-name editor, or a permission prompt — in any of those a client must not receive keys or pointer focus.
-pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+fn chrome_takes_all_input(fb: &FrameBuilder) -> bool {
     // First-login chrome is a compositor-owned security boundary. It hides the
     // entire desktop and must mute both the local Wayland seat and the remote
     // input firewall, just like the session lock does.
@@ -704,11 +772,6 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     // The emoji picker types into its own search field; the field it will
     // insert into gets the keyboard back when it closes.
     if fb.host().emoji_picker_open() {
-        return true;
-    }
-    // The portal's file chooser, for the same reason as the peer-sync card
-    // below: modal, drawn over a scrim, but "drawn above" and "receives the click" are separate — without this it was unreachable with mouse or keyboard.
-    if fb.host().file_picker().is_some() {
         return true;
     }
     // Permission and other portal sheets are the same kind of modal. Without
@@ -731,6 +794,15 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     // A window's location is being edited in its bar: typing goes to the
     // field, not to the window under it, until Enter or Esc.
     if fb.host().window_location_editing() {
+        return true;
+    }
+    // A tab is being named in its pill: the same, until Enter or Esc.
+    if fb.host().tab_renaming() {
+        return true;
+    }
+    // Pointing at what is wrong to report it: the picker takes every key
+    // and the pointer everywhere until the person finishes or leaves.
+    if fb.host().feedback_picker_open() {
         return true;
     }
     // Cursor chat is typed beside the pointer: every key is the message's
@@ -764,17 +836,32 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         || !chrome.pending_grants.is_empty()
 }
 
-/// Whether the shell takes the pointer: whenever it takes all input, and
-/// also while the pointer is on the bar a maximized window shows over its
-/// client, or on a notification banner over a window. That bar takes only the pointer — the client keeps the keyboard,
-/// so typing never stops because the pointer rests near the window's top.
+/// Whether the shell takes the pointer where it is: where [`input_capture`]
+/// holds it back, and also while the pointer is on the bar a maximized
+/// window shows over its client, or on a notification banner over a window.
+/// That bar takes only the pointer — the client keeps the keyboard, so
+/// typing never stops because the pointer rests near the window's top.
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
-    chrome_captures_input(fb)
-        || fb.host().maximized_chrome_captures_pointer()
-        || fb.host().strip_switcher_captures_pointer()
-        || fb.host().top_bar_captures_pointer()
-        || fb.host().notification_banner_captures_pointer()
-        || fb.host().presence_notice_captures_pointer()
+    let capture = input_capture(fb).pointer;
+    let held = match fb.host().pointer_position() {
+        Some(at) => capture.at(at),
+        None => capture == PointerCapture::Everywhere,
+    };
+    held || fb.host().chrome_band_captures_pointer()
+}
+
+/// Whether the shell takes a finger landing at `point` (global, as drawn):
+/// exactly when it would take the pointer standing there
+/// ([`chrome_captures_pointer`]). Touch equals pointer: a contact on an
+/// overlay is the overlay's, never also the window's beneath.
+///
+/// A finger landing on a display's top edge while something hides there (the
+/// top bar the person hides, a fullscreen window's bar) is the shell's too: a
+/// swipe down from it reveals what hides there, and no client sees it.
+pub fn chrome_captures_touch_at(fb: &FrameBuilder, point: vello::kurbo::Point) -> bool {
+    input_capture(fb).pointer.at(point)
+        || fb.host().chrome_band_captures_pointer_at(Some(point))
+        || fb.host().takes_top_edge_touch(point)
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.
@@ -811,6 +898,7 @@ pub(crate) fn insert_foreign_group(
             app_id: resolved,
             surface_id,
         },
+        app_title: None,
     };
     let tab_id = tab.id;
     let group = WindowGroup {
@@ -928,7 +1016,6 @@ pub enum SuperGesture {
 pub struct SuperTap {
     /// When the lone Super went down, while nothing else has happened.
     armed: Option<std::time::Instant>,
-    /// The hold became a peek.
     peeking: bool,
     /// The peek grew into the whole surface.
     full: bool,
@@ -1296,6 +1383,7 @@ mod tests {
                 kind: AppKind::Terminal,
                 label: "Terminal".into(),
             },
+            app_title: None,
         };
         let stub_tab_id = stub_tab.id;
         let stub = WindowGroup {
@@ -1313,6 +1401,7 @@ mod tests {
                 app_id: "org.example.client".into(),
                 surface_id,
             },
+            app_title: None,
         };
         let foreign_tab_id = foreign_tab.id;
         let foreign = WindowGroup {
@@ -1779,6 +1868,7 @@ mod tests {
                         kind: AppKind::Other((*name).into()),
                         label: (*name).into(),
                     },
+                    app_title: None,
                 })
                 .collect();
             let ids: Vec<u64> = tabs.iter().map(|t| t.id).collect();
@@ -2327,6 +2417,7 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply,
             });
             assert!(
@@ -2393,7 +2484,6 @@ pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, 
     let (group, tab) = *windows.get(idx)?;
     Some((strip.id, group, tab))
 }
-use crate::compositor::lock_controller::LockKey;
 /// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
 /// The panic key for a shared session — stops whatever a guest is doing.
 /// Checked ahead of the client router and the shell's own Escape handling
@@ -2455,34 +2545,6 @@ pub fn lock_chord_matches(
     crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
 }
 
-/// Map a live winit key event to the lock screen's normalised [`LockKey`]
-/// while locked. Non-press/unhandled keys become [`LockKey::Ignored`] —
-/// still swallowed (never routed to apps behind the overlay), but inert on
-/// the password buffer. The test-control path produces the same `LockKey`s so both drive one routing.
-pub fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return LockKey::Ignored;
-    };
-    if event.state != ElementState::Pressed {
-        return LockKey::Ignored;
-    }
-    match &event.logical_key {
-        Key::Named(NamedKey::Enter) => LockKey::Submit,
-        Key::Named(NamedKey::Escape) => LockKey::Cancel,
-        Key::Named(NamedKey::Backspace) => LockKey::Backspace,
-        Key::Named(NamedKey::Space) => LockKey::Text(" ".to_string()),
-        Key::Character(s) => LockKey::Text(s.to_string()),
-        _ => {
-            // Some layouts deliver typed text on otherwise-Named keys.
-            match &event.text {
-                Some(t) if !t.is_empty() && !t.chars().all(char::is_control) => {
-                    LockKey::Text(t.to_string())
-                }
-                _ => LockKey::Ignored,
-            }
-        }
-    }
-}
 #[cfg(test)]
 mod lock_chord_tests {
     use super::*;
@@ -2615,7 +2677,6 @@ mod lock_chord_tests {
 
     #[test]
     fn remote_input_kill_switch_is_only_a_super_escape_press_owned_by_the_shell() {
-        /// `Super+Esc` on press is the remote-input kill switch.
         fn super_escape_press_is_the_remote_input_kill_switch() {
             let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
             assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));
@@ -2652,34 +2713,5 @@ mod lock_chord_tests {
         escape_without_super_is_not_the_kill_switch();
         super_escape_release_is_not_the_kill_switch();
         super_escape_is_a_shell_chord_and_never_reaches_a_client();
-    }
-
-    #[test]
-    fn lock_keys_map_presses_to_submit_cancel_text_and_backspace() {
-        /// Enter and Escape on press are the explicit unlock action.
-        fn enter_and_escape_press_map_to_submit_and_cancel() {
-            let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
-            let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-            assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
-            assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
-        }
-
-        /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
-        fn char_key_maps_to_text() {
-            let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
-            assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
-        }
-
-        /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
-        fn backspace_maps_and_release_is_ignored() {
-            let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
-            assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
-            let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
-            assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
-        }
-
-        enter_and_escape_press_map_to_submit_and_cancel();
-        char_key_maps_to_text();
-        backspace_maps_and_release_is_ignored();
     }
 }

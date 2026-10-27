@@ -187,10 +187,6 @@ impl Drop for ConversationExchange {
 /// Run the same login exchange with an interactive response callback and
 /// cancellation control. The callback owns private transient response values;
 /// this client neither publishes nor logs them.
-///
-/// # Errors
-/// Returns the ordinary typed greetd error, or Cancelled after the normal
-/// cancellation exchange ends. Success exits the greeter for greetd as usual.
 #[allow(
     clippy::exit,
     reason = "greetd takes over the VT after the greeter exits on normal authenticated session start"

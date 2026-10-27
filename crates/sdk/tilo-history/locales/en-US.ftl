@@ -35,6 +35,10 @@ history-edit-settle-failed = { $item } from { $field } failed: { $reason }
 history-edit-settle-failed-unnamed = An entry of { $field } failed: { $reason }
 history-edit-forget = Cleared { $item } from { $field }
 history-edit-forget-unnamed = Cleared an entry of { $field }
+history-edit-react = Reacted with { $new } to { $item }
+history-edit-react-unnamed = Reacted with { $new }
+history-edit-unreact = Took back a { $new } reaction to { $item }
+history-edit-unreact-unnamed = Took back a { $new } reaction
 history-edit = Changed { $field } of { $item }
 history-edit-unnamed = Changed { $field }
 
@@ -77,12 +81,15 @@ history-value-true = on
 history-value-false = off
 history-value-empty = nothing
 
-## Who did it.
+## Who did it. An action is attributed to the task it was taken in (there are
+## no separate agents): $person via $task, "ada via task 'Prepare Q3
+## financials'".
+history-actor-via-task = { $person } via task ‘{ $task }’
 history-actor-for = { $actor }, for { $for }
 history-actor-you = You
 history-actor-you-for = You, for { $for }
 history-actor-unknown = Someone
-history-actor-agent = { $actor } · Agent
+history-actor-agent = { $actor } · Software
 history-actor-shortcut = { $actor } · Shortcut
 history-actor-app = { $actor } · App
 history-actor-bot = { $actor } · Bot

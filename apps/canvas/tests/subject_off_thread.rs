@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use canvas::App;
 use serde_json::json;
-use tilo_model_gateway::{Frame, Request, Response, SubjectMatte, read_frame, write_frame};
+use tilo_model_client::{Frame, Request, Response, SubjectMatte, read_frame, write_frame};
 use ui::prelude::TestApp;
 use ui::tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -46,7 +46,7 @@ impl HeldModel {
         let (app, mut service) = UnixStream::pair().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
-            tilo_model_gateway::SERVICE_FD_ENV,
+            tilo_model_client::SERVICE_FD_ENV,
             app.as_raw_fd().to_string(),
         );
         let (asked_by, asked) = channel();
@@ -224,12 +224,18 @@ fn the_window_takes_input_while_the_subject_model_works() {
     let says = |harness: &ui::headless::FrameHarness, what: &str| {
         harness.inspection_json().unwrap().contains(what)
     };
+    // What the canvas is doing is said in the window's bar, where a transient
+    // notice belongs: the row it used to stand in under the title is the
+    // bar's now.
+    let says_it_is_finding = |_: &ui::headless::FrameHarness| {
+        ui::window_toolbar::shown()
+            .and_then(|toolbar| toolbar.notice)
+            .is_some_and(|notice| notice.text == finding)
+    };
     assert!(
         app.harness()
-            .wait_until(tilo_test_env::hang_bound(), |harness| says(
-                harness, &finding
-            )),
-        "the header says {finding:?}"
+            .wait_until(tilo_test_env::hang_bound(), says_it_is_finding),
+        "the window bar says {finding:?}"
     );
     assert!(
         says(app.harness(), "0 selected;"),

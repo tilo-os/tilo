@@ -27,9 +27,10 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every apps/ directory that's a Cargo crate, i.e. every app the workspace builds a binary for.
-/// An `apps/<name>-model` crate is a library of an app's data shared with
-/// other crates, not an app of its own.
+/// Every apps/ directory that's a Cargo crate the workspace builds a binary
+/// for, i.e. every app. A crate there with no binary is a library of an app
+/// (an `apps/<name>-model` crate of its data, the parts an app loads from
+/// its engine library such as `settings-core`), not an app of its own.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&apps)
@@ -37,10 +38,7 @@ fn app_dirs() -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.join("Cargo.toml").is_file())
-        .filter(|p| {
-            !p.file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with("-model"))
-        })
+        .filter(|p| builds_a_binary(p))
         .collect();
     out.sort();
     assert!(
@@ -49,6 +47,14 @@ fn app_dirs() -> Vec<PathBuf> {
         out.len()
     );
     out
+}
+
+/// Whether the crate at `dir` builds a binary: a `src/main.rs`, or a
+/// `[[bin]]` target of its own.
+fn builds_a_binary(dir: &Path) -> bool {
+    dir.join("src/main.rs").is_file()
+        || std::fs::read_to_string(dir.join("Cargo.toml"))
+            .is_ok_and(|manifest| manifest.lines().any(|line| line.trim() == "[[bin]]"))
 }
 
 fn manifest_path(app_dir: &Path) -> PathBuf {
@@ -200,6 +206,7 @@ fn shipped_apps_declare_presentation_metadata() {
         const CATEGORIES: &[&str] = &[
             "Accessibility",
             "Development",
+            "Game",
             "Graphics",
             "Multimedia",
             "Network",

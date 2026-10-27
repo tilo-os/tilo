@@ -204,7 +204,6 @@ impl Encoder {
         Ok(())
     }
 
-    /// The plugged touchpad, with its device.
     fn touchpad(&self) -> Result<(Device, DeviceProfile), String> {
         self.plugged
             .iter()
@@ -300,9 +299,31 @@ impl Encoder {
                 dx_mm,
                 dy_mm,
                 duration_ms,
+                press,
             } => {
                 let dx = profile.mm_to_units(ABS_MT_POSITION_X, i32::from(*dx_mm));
                 let dy = profile.mm_to_units(ABS_MT_POSITION_Y, i32::from(*dy_mm));
+                let span = |code| {
+                    profile
+                        .axis(code)
+                        .map_or(0, |axis| axis.max.saturating_sub(axis.min))
+                };
+                if dx.saturating_abs() > span(ABS_MT_POSITION_X)
+                    || dy.saturating_abs() > span(ABS_MT_POSITION_Y)
+                {
+                    // A finger off the pad moves nothing: say so, not silently.
+                    let mm = |code| {
+                        span(code)
+                            .checked_div(profile.mm_to_units(code, 1))
+                            .unwrap_or(0)
+                    };
+                    return Err(format!(
+                        "a swipe of {dx_mm},{dy_mm} mm does not fit on this {} x {} mm touchpad; \
+                         swipe twice, or faster for more pointer travel",
+                        mm(ABS_MT_POSITION_X),
+                        mm(ABS_MT_POSITION_Y),
+                    ));
+                }
                 // Start so the movement is centred on the pad and never leaves it.
                 let start = (
                     centre.0.saturating_sub(dx / 2),
@@ -311,6 +332,11 @@ impl Encoder {
                 let at = Self::pad_fingers(&profile, start, *fingers);
                 self.pad_down(pad, &at);
                 self.wait(SETTLE_MS);
+                if *press {
+                    self.emit(device, EV_KEY, BTN_LEFT, 1);
+                    self.syn(device);
+                    self.wait(PRESS_MS);
+                }
                 let steps = i32::try_from((duration_ms / MOTION_STEP_MS).max(1)).unwrap_or(1);
                 for step in 1..=steps {
                     let moved: Vec<(i32, i32)> = at
@@ -332,6 +358,11 @@ impl Encoder {
                 }
                 // Lift after a pause, so a fast flick is not read as a fling.
                 self.wait(SETTLE_MS);
+                if *press {
+                    self.emit(device, EV_KEY, BTN_LEFT, 0);
+                    self.syn(device);
+                    self.wait(TAP_MS);
+                }
                 self.pad_up(device, at.len());
             }
             _ => return Err("not a touchpad action".into()),
@@ -1212,7 +1243,6 @@ mod tests {
 
     #[test]
     fn input_events_press_type_click_and_route_per_slot() {
-        // Phase `combos_press_in_order_and_release_in_reverse`.
         {
             let steps = events(&[InputAction::Key {
                 combos: vec!["ctrl+t".into()],
@@ -1226,7 +1256,6 @@ mod tests {
             assert!(evs.iter().all(|e| e.device == Device::Keyboard));
             assert_eq!(evs.iter().filter(|e| e.kind == EV_SYN).count(), 4);
         }
-        // Phase `typing_holds_shift_only_for_shifted_characters`.
         {
             let steps = events(&[InputAction::Type { text: "aB".into() }]).unwrap();
             assert_eq!(
@@ -1234,7 +1263,6 @@ mod tests {
                 [(30, 1), (30, 0), (42, 1), (48, 1), (48, 0), (42, 0)]
             );
         }
-        // Phase `clicks_move_first_and_use_the_pointer`.
         {
             let evs = emitted(
                 &events(&[InputAction::Click {
@@ -1249,13 +1277,11 @@ mod tests {
             assert!(evs.contains(&ev(Device::Pointer, EV_KEY, 0x111, 1)));
             assert_eq!(evs.last(), Some(&ev(Device::Pointer, EV_SYN, 0, 0)));
         }
-        // Phase `modes_parse`.
         {
             assert_eq!(parse_mode("1024x768\n800x600\n"), Some((1024, 768)));
             assert_eq!(parse_mode("1920x1080i\n"), Some((1920, 1080)));
             assert_eq!(parse_mode(""), None);
         }
-        // Phase `unit_and_socket_follow_the_slot`.
         {
             assert_eq!(unit_name("a"), "tilo-vm-input-a.service");
             assert_eq!(socket_path("a"), Path::new("/run/tilo-vm-input/a.sock"));
@@ -1593,7 +1619,6 @@ mod tests {
         let abs = on(&steps, pad, EV_ABS);
         assert!(abs.contains(&(ABS_MT_POSITION_X, 1570)), "{abs:?}");
         assert!(abs.contains(&(ABS_MT_POSITION_Y, 921)), "{abs:?}");
-        // The pad names what touched it, like the real one.
         assert!(abs.contains(&(ABS_MT_TOOL_TYPE, 0)));
         assert_eq!(
             on(&steps, pad, EV_KEY),
@@ -1617,6 +1642,7 @@ mod tests {
                     dx_mm: 0,
                     dy_mm: -20,
                     duration_ms: 40,
+                    press: false,
                 },
             ])
             .unwrap();
@@ -1640,7 +1666,6 @@ mod tests {
         assert_eq!(ys.len(), 2 * (1 + 4));
         assert_eq!(ys[0], 921 + 240);
         assert_eq!(ys[ys.len() - 1], 921 - 240);
-        // The fingers stay a hand's width apart horizontally.
         let xs: Vec<i32> = on(&steps, pad, EV_ABS)
             .into_iter()
             .filter(|(code, _)| *code == ABS_MT_POSITION_X)
@@ -1649,6 +1674,73 @@ mod tests {
         assert_eq!(xs[1] - xs[0], 14 * 24);
         let max_x = profile(TP).unwrap().axis(ABS_MT_POSITION_X).unwrap().max;
         assert!(xs.iter().all(|x| (0..=max_x).contains(x)));
+    }
+
+    #[test]
+    fn a_pressed_swipe_holds_the_clickpad_down_while_the_finger_moves() {
+        let steps = Encoder::default()
+            .encode(&[
+                plug(TP),
+                InputAction::TouchpadSwipe {
+                    fingers: 1,
+                    dx_mm: 40,
+                    dy_mm: 0,
+                    duration_ms: 40,
+                    press: true,
+                },
+            ])
+            .unwrap();
+        let pad = Device::Profile(TP);
+        assert_eq!(
+            on(&steps, pad, EV_KEY),
+            [
+                (BTN_TOUCH, 1),
+                (BTN_TOOL_FINGER, 1),
+                (BTN_LEFT, 1),
+                (BTN_LEFT, 0),
+                (BTN_TOUCH, 0),
+                (BTN_TOOL_FINGER, 0)
+            ]
+        );
+        let at = |code: u16, value: i32| {
+            steps
+                .iter()
+                .position(|step| *step == event(pad, EV_KEY, code, value))
+                .unwrap()
+        };
+        let moves: Vec<usize> = steps
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| {
+                step.event()
+                    .is_some_and(|e| e.device == pad && e.code == ABS_MT_POSITION_X)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert!(moves.len() > 2);
+        assert!(
+            moves[1..]
+                .iter()
+                .all(|m| (at(BTN_LEFT, 1)..at(BTN_LEFT, 0)).contains(m)),
+            "every move after the touch-down happens with the button held"
+        );
+    }
+
+    #[test]
+    fn a_swipe_longer_than_the_pad_is_refused() {
+        let error = Encoder::default()
+            .encode(&[
+                plug(TP),
+                InputAction::TouchpadSwipe {
+                    fingers: 1,
+                    dx_mm: 200,
+                    dy_mm: 0,
+                    duration_ms: 400,
+                    press: true,
+                },
+            ])
+            .unwrap_err();
+        assert!(error.contains("130 x 76 mm"), "{error}");
     }
 
     #[test]

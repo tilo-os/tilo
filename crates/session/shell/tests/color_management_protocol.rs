@@ -449,7 +449,6 @@ fn color_management_protocol_negotiates_records_and_survives_unsupported_request
             "compositor's SurfaceData did not record the attached BT.2020/PQ image description"
         );
 
-        // SurfaceData is consumed indirectly via `surface_current_colorimetry`.
         let _ = std::marker::PhantomData::<ColorManagementSurfaceData>;
     }
 }

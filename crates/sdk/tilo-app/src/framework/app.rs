@@ -7,8 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
-    AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
-    RestoreInput,
+    AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, HostContext,
+    LaunchTarget, RestoreInput,
 };
 use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
@@ -86,15 +86,24 @@ pub trait ResourceApp: 'static {
     /// a device) sets `false`: it publishes no History actions and its
     /// window offers no History.
     const DOCUMENT_HISTORY: bool = true;
-    /// The app keeps one record per room, the room's own, rather than one
-    /// per window: every window of the app in the room opens that record,
-    /// and the first one creates it (and applies [`Self::seed`]). A room's
-    /// conversation is such a record, and so is a notebook. Without it, each
-    /// window a launcher opens has a record of its own: right for an editor
-    /// whose windows are different documents, wrong for an app whose windows
-    /// are views of one collection. An app that switches to it brings its
-    /// windows' records along in its seed ([`SeedCx::window_records`]).
+    /// The app brings what its windows kept before it kept one record per
+    /// workspace into that record in its own seed
+    /// ([`SeedCx::window_records`]), as Notes copies its pages by id. Every
+    /// app keeps one record per workspace, which every window of it there
+    /// opens and the first one creates; without this the framework copies
+    /// the earlier windows' records into it value by value
+    /// (`adopt_windows`).
     const ROOM_RECORD: bool = false;
+    /// Each window shows a resource of its own: a document an editor opened
+    /// (Word Processor, Code Editor, Sheets), a terminal session. A window
+    /// that names none starts a new one, and two windows show two of them
+    /// (or one document together, when both open it); no window mirrors
+    /// another. The documents earlier windows started stay in the workspace:
+    /// the app lists them with [`RecordEnv::window_documents`](super::RecordEnv::window_documents)
+    /// and opens one in a window with [`RecordEnv::open_here`](super::RecordEnv::open_here).
+    /// Without it the app's record is its library and settings,
+    /// one per workspace, which every window of the app there shows.
+    const WINDOW_RESOURCE: bool = false;
     /// The app's own command-line options that take a value
     /// (`--purpose number` or `--purpose=number`): how this window runs
     /// rather than what it opens. [`Self::launch`] reads them from its
@@ -117,6 +126,12 @@ pub trait ResourceApp: 'static {
     /// the filesystem's projection, not the app's document. The app's
     /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
+    /// What of the machine it runs on the app shows (its journal, its
+    /// processes, its drives, the person's real files). A headless drive
+    /// that captures it must then name one of its [scenarios](Self::scenarios)
+    /// and is built from that scenario's fixtures, so no picture of the app
+    /// shows the machine of whoever took it.
+    const READS_HOST: &'static [ui_core::launch::HostSource] = &[];
 
     /// The app this process is, when only the launch knows it: a runtime that runs a package
     /// (a tilolang app) is the package's app, with its id, title and icon, rather than
@@ -271,9 +286,6 @@ pub trait ResourceApp: 'static {
     /// on `input` through the window's own event path after the actions
     /// and staging, so the frame shows the app's real answer to that input.
     /// Must be deterministic, like the rest of the scenario.
-    ///
-    /// # Errors
-    /// Returns why the input could not be given (its target is missing).
     fn scenario_input(
         name: Option<&str>,
         input: &mut ui_core::headless::FrameHarness,
@@ -385,17 +397,25 @@ pub(crate) fn leaked<T: Send + Sync + 'static>(
     key: TypeId,
     make: impl FnOnce() -> T,
 ) -> &'static T {
-    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
-    let table = TABLE.get_or_init(Mutex::default);
-    let mut table = table.lock_recover();
-    let entry = *table
-        .entry(key)
-        .or_insert_with(|| Box::leak(Box::new(make())) as Leaked);
-    drop(table);
+    let mut make = Some(make);
+    let entry = leaked_entry(key, &mut || match make.take() {
+        Some(make) => Box::leak(Box::new(make())) as Leaked,
+        None => unreachable_definition(),
+    });
     // One value per (type, T) key is ever inserted, so the downcast holds.
     entry
         .downcast_ref::<T>()
         .unwrap_or_else(|| unreachable_definition())
+}
+
+/// The value kept under `key`, made by `make` the first time. Not generic,
+/// so the table is compiled once rather than for every app and key.
+#[inline(never)]
+fn leaked_entry(key: TypeId, make: &mut dyn FnMut() -> Leaked) -> Leaked {
+    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
+    let table = TABLE.get_or_init(Mutex::default);
+    let mut table = table.lock_recover();
+    *table.entry(key).or_insert_with(make)
 }
 
 #[allow(
@@ -418,16 +438,33 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
 }
 
 fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
+    // An app's library and settings are one record per workspace: every
+    // window of it there opens the same data, across closing, reopening and
+    // restarts, and keeps only its view of it (scroll, selection). An app
+    // whose windows each show a resource of their own (a document, a
+    // session) keeps that per window.
+    application_definition(hooks::<A>(), A::OPENS, !A::WINDOW_RESOURCE, create::<A>)
+}
+
+/// The toolkit definition of the app `app` describes. Not generic, so it is
+/// compiled once rather than for every app.
+#[inline(never)]
+fn application_definition(
+    app: &AppHooks,
+    opens: &'static [&'static str],
+    room_record: bool,
+    create: ComponentFactory,
+) -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: hooks::<A>().id().into(),
-        title: hooks::<A>().title().into(),
-        icon: icon(hooks::<A>()),
-        record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
+        app_id: app.id().into(),
+        title: app.title().into(),
+        icon: icon(app),
+        record_kind: RecordKind::new(app.kind),
         required: vec![],
         optional: vec![],
-        opens: A::OPENS,
-        room_record: A::ROOM_RECORD,
-        create: create::<A>,
+        opens,
+        room_record,
+        create,
     }
 }
 
@@ -469,7 +506,6 @@ pub(crate) struct AppHooks {
     /// Initialize a record the launch created: the resource's own
     /// initialization, the launch's genesis and the creator's seed.
     new_record: NewRecord,
-    /// The capture's run, from the app's fixture.
     prepare_capture: fn(&mut HostContext, Option<&str>) -> Result<Run, LaunchError>,
     /// Read the record `context` opened, build the root over it and take
     /// the launch's actions on it; or why the record does not read.
@@ -529,7 +565,6 @@ impl<A: ResourceApp> Hooks<A> {
     };
 }
 
-/// `A`'s [`AppHooks`].
 impl AppHooks {
     /// The app's id: as the launch names it, else [`ResourceApp::ID`].
     pub(crate) fn id(&self) -> &'static str {
@@ -546,6 +581,7 @@ impl AppHooks {
     }
 }
 
+/// `A`'s [`AppHooks`].
 pub(crate) fn hooks<A: ResourceApp>() -> &'static AppHooks {
     &Hooks::<A>::HOOKS
 }
@@ -617,6 +653,12 @@ impl RootShell {
     fn runs_effects(&self) -> bool {
         self.permissions.is_some() && self.run.mode.is_live()
     }
+
+    /// Whether the effects someone invokes run, though the window starts
+    /// no work on its own: a capture a headless drive invokes actions on.
+    fn runs_invoked_effects(&self) -> bool {
+        self.permissions.is_some() && self.run.driven
+    }
 }
 
 /// Build the framework root for a resource state: the live handle, the
@@ -634,6 +676,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     }
     let shell = RootShell::new(app, editing, storage, hosted);
     let runs_effects = shell.runs_effects();
+    let runs_invoked_effects = shell.runs_invoked_effects();
     let RootShell {
         scope,
         permissions,
@@ -646,7 +689,12 @@ pub(crate) fn build_root<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_deref());
+    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_deref()).on_record(
+        run.launched
+            .record
+            .as_ref()
+            .map_or("", |record| record.route()),
+    );
     let dispatch = if permissions.is_none() {
         dispatch.past()
     } else {
@@ -655,14 +703,25 @@ pub(crate) fn build_root<A: ResourceApp>(
     // A window someone uses opens the records the app keeps beside its own,
     // so they are published before any view shows them.
     if permissions.is_some() {
-        A::records(&mut super::Records::new(&storage).with_base(live.clone()));
+        A::records(&mut super::Records::new(&storage).with_base(live.clone(), dispatch.clone()));
     }
-    let effects = runs_effects.then(|| Effects::live(dispatch.clone(), live.clone()));
+    let effects = if runs_effects {
+        Some(Effects::live(dispatch.clone(), live.clone()))
+    } else {
+        runs_invoked_effects.then(|| Effects::invoked(dispatch.clone(), live.clone()))
+    };
+    let awaiting = run.room.clone();
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.env.effects = effects;
     }
-    let content = A::view(&mut cx);
+    // A record the room may hold shows once the room's holdings arrived;
+    // the app's view says nothing about it. Holdings already here (no
+    // shell hosts the window, or the room synced) need no stand-in.
+    let content: Element = match awaiting {
+        Some(holdings) if room_pending(&holdings) => cx.arriving_room(&holdings, A::view),
+        _ => A::view(&mut cx),
+    };
     let live = permissions.is_some();
     let root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
         .following(permissions, scope)
@@ -675,6 +734,13 @@ pub(crate) fn build_root<A: ResourceApp>(
         return root.drawing_past(super::preview::draw_past::<A>);
     }
     root
+}
+
+/// Whether the room's holdings are still on their way.
+fn room_pending(
+    holdings: &ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>,
+) -> bool {
+    holdings.with(|room| room.ready().is_none())
 }
 
 /// The decoders of every edit `A`'s document takes: its resource's actions
@@ -782,13 +848,28 @@ fn new_record<A: ResourceApp>(
         host: Some(context),
         room: None,
     });
+    // What the app's windows kept, one record each, before it kept one per
+    // workspace; an app that adopts them in its own seed
+    // (`ResourceApp::ROOM_RECORD`) has done so.
+    let windows = if A::ROOM_RECORD {
+        Vec::new()
+    } else {
+        context.window_records()
+    };
     initialize_record(
         context,
         &mut |doc| {
             <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())?;
             write_genesis(doc, &genesis)
         },
-        &mut |doc| apply_seed::<A>(doc, &author, &seed),
+        &mut |doc| {
+            apply_seed::<A>(doc, &author, &seed)?;
+            super::adopt_windows::adopt(doc, &windows, &|window| {
+                tilo_resource::evolution::migrate::<A::Resource>(window)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+        },
     )
 }
 
@@ -886,6 +967,10 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
             context.author().0.clone(),
             context.live_permissions(),
         )),
+        workspace: context
+            .workspace_records()
+            .cloned()
+            .map(|records| (records, context.wake_handle())),
     }
 }
 
@@ -915,7 +1000,6 @@ fn create<A: ResourceApp>(
     create_component(hooks::<A>(), context, &target)
 }
 
-/// [`create`] of the app `app` describes.
 fn create_component(
     app: &'static AppHooks,
     mut context: HostContext,
@@ -944,8 +1028,15 @@ fn create_component(
         super::launch::OpenHere::new(move |arguments| open_in_place(app, &reopener, arguments))
     });
     let run = match context.capture().cloned() {
-        Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?,
-        None => Run::live(context.content().cloned()).in_private(context.is_private()),
+        Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?
+            .driven_by_drive(capture.is_driven()),
+        // The room's record, not on this device when the window opened:
+        // the room may hold it, so the view waits for what the room holds.
+        None => Run::live(context.content().cloned())
+            .in_private(context.is_private())
+            .awaiting_room(
+                matches!(target, LaunchTarget::PrimaryNew).then(ui_core::room_sync::holdings),
+            ),
     };
     if let Some(file) = &file {
         file.report_opened(app.kind);
@@ -958,6 +1049,7 @@ fn create_component(
             file,
             handoff: context.take_handoff(),
             lent: super::scenario::Lent::new(context.take_lent()),
+            reveal: std::cell::RefCell::new(revealed(target)),
         })
         .opening_with(opener)
         .showing_file_history(
@@ -989,6 +1081,20 @@ fn create_component(
     Ok(component)
 }
 
+/// The item a launch on a record asked to show: the resource its `open`
+/// names.
+fn revealed(target: &LaunchTarget) -> Option<String> {
+    match target {
+        LaunchTarget::Record {
+            reveal: Some(address),
+            ..
+        } if address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION => {
+            Some(address.resource.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Join the content store the host lent a window to its record's route:
 /// content the record references and this device lacks is asked of the
 /// route, and content the app stores reaches the record's other readers.
@@ -1000,9 +1106,9 @@ fn record_content(context: &mut HostContext) {
     let Some(local) = context.content().cloned() else {
         return;
     };
-    let lane = ui_core::collaboration::record_content::ContentLane::of(
+    let lane = ui_core::collaboration::record_content::ContentLane::of_record(
         context.app_id(),
-        context.record().id.as_str(),
+        &context.record().id,
     );
     context
         .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
@@ -1014,7 +1120,8 @@ fn prepare_capture<A: ResourceApp>(
     context: &mut HostContext,
     scenario: Option<&str>,
 ) -> Result<Run, LaunchError> {
-    let mut fixture = Fixture::<A::Resource>::new(scenario, context.content().cloned());
+    let mut fixture =
+        Fixture::<A::Resource>::new(scenario, &context.author().0, context.content().cloned());
     A::fixture(&mut fixture);
     if context.content().is_none()
         && let Some(content) = fixture.lent_content()
@@ -1059,7 +1166,7 @@ pub(crate) fn data_dir_host(
     author: &UserId,
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<ApplicationHost, LaunchError> {
-    let root = std::path::absolute(directory).map_err(operation)?;
+    let root = std::path::absolute(directory).map_err(super::headless::operation)?;
     ApplicationHost::new(
         root,
         "local-device".into(),
@@ -1077,11 +1184,6 @@ pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<Permissio
     Rc::new(RefCell::new(PermissionContext::member(author, role)))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn operation(error: impl std::fmt::Display) -> LaunchError {
-    LaunchError::Operation(error.to_string())
-}
-
 /// Prepare `definition` on `host`: the record a launch named, else the one
 /// the instance showed last, else the room's default.
 #[cfg(tilo_native_runner)]
@@ -1094,10 +1196,12 @@ pub(crate) fn prepare_on(
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let kind = definition.record_kind.clone();
     match named {
-        Some(id) => {
+        // A launch naming the workspace's own record (a notification about
+        // something in it) opens it as a launch naming nothing does.
+        Some(id) if !(id.is_package_primary() && definition.keeps_room_record()) => {
             host.prepare_record(definition, instance, RecordCheckout::new(id, kind), inputs)
         }
-        None => host.prepare_default(
+        _ => host.prepare_default(
             definition,
             instance,
             RecordCheckout::new(RecordId::room_default(), kind),
@@ -1119,7 +1223,6 @@ fn prepare_app<A: ResourceApp>(
     prepare_hooked(hooks::<A>(), definition, args)
 }
 
-/// [`prepare_app`] of the app `app` describes.
 #[cfg(tilo_native_runner)]
 fn prepare_hooked(
     app: &AppHooks,
@@ -1135,8 +1238,10 @@ fn prepare_hooked(
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     // The session launches the target of a playback handoff with where it
-    // stood in its environment; a capture continues nothing.
+    // stood in its environment; a capture continues nothing, and neither does
+    // a later window the shell opens in the process.
     if args.shots.is_none()
+        && ui_core::window_door::requested_instance().is_none()
         && let Some(handoff) = process_handoff()
     {
         prepared.context.provide_handoff(handoff);
@@ -1247,10 +1352,14 @@ fn open_in_place(
     // asking view handles the event or operation that asked.
     reopener.replace_with(move |reopener| {
         let definition = (app.definition)();
-        let record = (app.launch_record)(&LaunchInput::new(&arguments, None))
+        // A record named by its uri (one of the app's documents a list
+        // offers) opens as a launch naming it does.
+        let (named, rest) = record_argument(&arguments);
+        let record = named
+            .or_else(|| (app.launch_record)(&LaunchInput::new(rest, None)))
             .unwrap_or_else(RecordId::minted);
         let (mut context, target) = reopener.prepare(definition, record)?;
-        hand_launch_to(definition, &arguments, &mut context)?;
+        hand_launch_to(definition, rest, &mut context)?;
         let component = definition.instantiate(context, target, RestoreInput::None)?;
         Ok(ui_core::application::ComponentReplacement::new(
             component, arguments,
@@ -1302,7 +1411,6 @@ fn prepare_definition(
 /// The record a launch names with a first argument
 /// `tilo-record:<id>` ([`RecordId::uri`]), as the session launches an app to
 /// run an action on one of its records, and the arguments after it.
-#[cfg(tilo_native_runner)]
 fn record_argument(arguments: &[String]) -> (Option<RecordId>, &[String]) {
     match arguments.split_first() {
         Some((first, rest)) => match RecordId::from_uri(first) {
@@ -1343,16 +1451,20 @@ fn prepare_named(
     // private windows never touch the user's profile: they run on a private
     // one removed with the process, unless a headless drive or a
     // measurement names its profile with `--data-dir`.
-    let isolated = private
-        || args.shots.is_some()
+    // A headless drive that names a scenario is a capture's window: built
+    // from that scenario's fixtures, on a profile of its own.
+    let captured = args.shots.is_some()
         || args.responsive_matrix.is_some()
+        || (args.headless.is_some() && args.scenario.is_some());
+    let isolated = private
+        || captured
         || args.native_audit
         || ((args.headless.is_some() || args.first_frame) && args.value("--data-dir").is_none());
     if isolated {
         let profile = tempfile::Builder::new()
             .prefix("tilo-capture-")
             .tempdir()
-            .map_err(operation)?;
+            .map_err(super::headless::operation)?;
         let root = profile.path().join("state");
         let profile_root = profile.path().to_path_buf();
         let content = profile_content(profile.path());
@@ -1368,16 +1480,33 @@ fn prepare_named(
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
         prepared.context.provide_content(content);
         // An audit and a headless drive certify and drive the app someone
-        // uses; only a screenshot is built from fixtures.
-        if args.shots.is_some() || args.responsive_matrix.is_some() {
-            prepared
-                .context
-                .provide_capture(Capture::new(args.scenario.clone()));
+        // uses; only a screenshot, or a drive of a named scenario, is built
+        // from fixtures.
+        if captured {
+            // A drive invokes what the scene publishes; a screenshot only
+            // photographs it.
+            let scenario = args.scenario.clone();
+            let capture = if args.headless.is_some() {
+                Capture::driven(scenario)
+            } else {
+                Capture::new(scenario)
+            };
+            prepared.context.provide_capture(capture);
+            // The theme the capture draws in is the stored choice its
+            // controls show.
+            ui_core::storage::SettingsDocument::File(super::headless::profile_settings(
+                &profile_root,
+            ))
+            .update_section(
+                ui_core::theme::APPEARANCE_SECTION,
+                ui_core::launch::capture_appearance(args),
+            )
+            .map_err(super::headless::operation)?;
         }
         if private {
             prepared.context.provide_private();
         }
-        return Ok(super::testing::in_profile(
+        return Ok(super::headless::in_profile(
             prepared,
             &profile_root,
             definition.app_id(),
@@ -1394,17 +1523,16 @@ fn prepare_named(
             |mut prepared| {
                 prepared
                     .context
-                    .provide_content(super::testing::data_dir_content(directory.as_ref()));
-                super::testing::in_profile(
+                    .provide_content(super::headless::data_dir_content(directory.as_ref()));
+                super::headless::in_profile(
                     prepared,
-                    &super::testing::data_dir_root(directory.as_ref()),
+                    &super::headless::data_dir_root(directory.as_ref()),
                     definition.app_id(),
                 )
             },
         );
     }
-    let mut native = NativeProcessHost::open(definition)?;
-    let mut prepared = native.prepare_launch(definition, named, inputs)?;
+    let mut prepared = NativeProcessHost::prepare_window(definition, named, inputs)?;
     prepared
         .context
         .provide_content(tilo_content_device::for_app());
@@ -1498,6 +1626,7 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .capture_scenario(capture::<A>)
         .shot_viewport(shot_viewport::<A>)
         .scenarios(A::scenarios())
+        .reads_host(A::READS_HOST)
         .max_positionals(A::ARGUMENTS)
         .command_handler(run_command::<A>)
         .allowed_options(&["--data-dir"])
@@ -1576,7 +1705,7 @@ pub fn run<A: ResourceApp>() {
 
     let args: Vec<String> = std::env::args().collect();
     if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
-        print_surface_report(&super::testing::surface_report::<A>());
+        print_surface_report(&super::headless::surface_report::<A>());
     }
     if let Some(code) = run_helper::<A>(&args) {
         #[allow(
@@ -1589,7 +1718,7 @@ pub fn run<A: ResourceApp>() {
 }
 
 /// The flag that makes an app's binary print its
-/// [`surface_report`](super::testing::surface_report)
+/// [`surface_report`](super::headless::surface_report)
 /// instead of running: what `tilo-app surface` and `tilo-app check` read.
 pub const SURFACE_FLAG: &str = "--surface";
 

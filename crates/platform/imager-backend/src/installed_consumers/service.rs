@@ -494,7 +494,7 @@ fn qualify_receivers(
         root.join("usr/share/tilo-apps").into(),
     ));
     let verify_browser: [OsString; 3] = [
-        root.join("usr/bin/tilo-install").into(),
+        root.join("usr/libexec/tilo/tilo-install").into(),
         "verify".into(),
         "so.tilo.browser".into(),
     ];

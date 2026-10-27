@@ -4,11 +4,8 @@
 //! A surface changed after install declares nothing.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_app_package::{BlobHash, Collection, SignedRoot};
 use tilo_identity_host::broker::PersonRecordKinds as _;
 
 use super::{InstalledApp, build_launch_command};
@@ -25,49 +22,8 @@ fn surface(kind: &str) -> String {
 /// Install `files` as the signed GUI package `id` in the user store at
 /// `root`, as an install leaves it; the app the shell launches.
 fn install(root: &Path, id: &str, files: &[(&str, &[u8])]) -> InstalledApp {
-    let manifest = crate::shell::test_support::canonical_manifest(
-        &format!("id = \"{id}\"\nversion = \"0.1.0\"\nkind = \"app\""),
-        "[entrypoint]\nbin = \"probe\"\ntype = \"gui\"\n",
-    );
-    let collection = Collection::from_entries(
-        files
-            .iter()
-            .map(|(path, bytes)| ((*path).to_string(), BlobHash::of(bytes))),
-    );
-    let collection_bytes = collection.encode();
-    let key = SigningKey::from_bytes(&[7_u8; 32]);
-    let mut signed = SignedRoot::unsigned(
-        BlobHash::of(manifest.as_bytes()),
-        BlobHash::of(&collection_bytes),
-        key.verifying_key().to_bytes(),
-    );
-    // The has-signature bit is part of the signed preimage.
-    signed.signature = Some([0; 64]);
-    signed.signature = Some(key.sign(&signed.signing_bytes()).to_bytes());
-    let signed_bytes = signed.encode().to_vec();
-    let id_hex = BlobHash::of(&signed_bytes).to_hex();
-    let payload = root.join("pkgs").join(&id_hex);
-    for (path, bytes) in files {
-        std::fs::create_dir_all(&payload).unwrap();
-        std::fs::write(payload.join(path), bytes).unwrap();
-    }
-    let meta = root.join("pkgs").join(format!("{id_hex}.pkg"));
-    std::fs::create_dir_all(&meta).unwrap();
-    std::fs::write(meta.join("signed-root"), &signed_bytes).unwrap();
-    std::fs::write(meta.join("manifest.toml"), &manifest).unwrap();
-    std::fs::write(meta.join("collection.qcl"), &collection_bytes).unwrap();
-    let registry = package_store::Layout::new(root).registry();
-    let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
-    write!(
-        rows,
-        "[[entry]]\nid = {id:?}\nversion = \"0.1.0\"\npackage_id_hex = {id_hex:?}\n\
-         payload_root = {:?}\nmanifest_path = {:?}\npublisher_key_hex = {:?}\n\n",
-        payload.display().to_string(),
-        meta.join("manifest.toml").display().to_string(),
-        hex::encode(key.verifying_key().to_bytes()),
-    )
-    .unwrap();
-    std::fs::write(&registry, rows).unwrap();
+    let (payload, manifest_path) =
+        crate::shell::test_support::install_signed_package(root, id, "0.1.0", files);
     InstalledApp {
         package_id: id.into(),
         display_name: id.into(),
@@ -75,7 +31,7 @@ fn install(root: &Path, id: &str, files: &[(&str, &[u8])]) -> InstalledApp {
         keywords: Vec::new(),
         category: None,
         version: "0.1.0".into(),
-        manifest_path: meta.join("manifest.toml"),
+        manifest_path,
         payload_root: payload,
         has_gui: true,
         opens_extensions: Vec::new(),
@@ -89,7 +45,7 @@ fn install(root: &Path, id: &str, files: &[(&str, &[u8])]) -> InstalledApp {
 fn launch(app: &InstalledApp) {
     let _ = build_launch_command(
         app,
-        Path::new("/usr/bin/tilo-launcher"),
+        Path::new("/usr/libexec/tilo/tilo-launcher"),
         Path::new("/run/user/1000/wayland-3"),
         RoomId::new(),
         None,

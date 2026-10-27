@@ -36,11 +36,6 @@ pub struct MediaFilesystemGrant {
 impl MediaFilesystemGrant {
     /// The binding is only an expectation: verify it against the held writer
     /// descriptor and this actual filesystem grant before delivering anything.
-    ///
-    /// # Errors
-    /// Returns an error if grant revalidation, descriptor attestation or partition
-    /// table reading fails, or the stable device or partition binding differs
-    /// from the expectation.
     pub fn validate_offline_media(
         &self,
         raw: &std::fs::File,
@@ -133,11 +128,6 @@ impl MediaFilesystemGrant {
         })
     }
     /// Recheck the device, pinned directory and mounted partition binding.
-    ///
-    /// # Errors
-    /// Returns an error if the device or directory changed, the filesystem is
-    /// read-only, inventory lookup fails, or the current partition binding no
-    /// longer matches the grant.
     pub fn validate(&self) -> io::Result<()> {
         crate::write::revalidate_target(&self.target)?;
         self.pin.validate_destination()?;

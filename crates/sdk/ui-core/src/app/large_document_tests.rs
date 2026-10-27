@@ -6,7 +6,7 @@
 use super::*;
 use automerge::transaction::Transactable;
 use collab_types::CommitNamed as _;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const MIB: usize = 1024 * 1024;
 
@@ -28,11 +28,9 @@ fn connected_app() -> (App, Box<dyn Fn() -> Vec<collab_types::SignedOp>>) {
     let mut app =
         App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
     app.collaboration.manager = manager;
-    let started = Instant::now();
-    while !app.collaboration.manager.is_connected() && started.elapsed() < crate::HANG_BOUND {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(app.collaboration.manager.is_connected());
+    tilo_test_env::wait_until("the capturing broker connects", || {
+        app.collaboration.manager.is_connected()
+    });
     (app, probe)
 }
 
@@ -62,14 +60,9 @@ fn received(ops: &[collab_types::SignedOp]) -> Vec<collab_types::DocumentMutatio
 fn wait_for_mutation(
     probe: &dyn Fn() -> Vec<collab_types::SignedOp>,
 ) -> collab_types::DocumentMutation {
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(30) {
-        if let Some(mutation) = received(&probe()).pop() {
-            return mutation;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("the broker never received the complete change");
+    tilo_test_env::wait_for("the broker to receive the complete change", || {
+        received(&probe()).pop()
+    })
 }
 
 #[test]
@@ -150,11 +143,14 @@ fn an_over_limit_change_is_reported_and_kept_without_disconnecting() {
         !app.pending_primary_document_delta().unwrap().0.is_empty(),
         "the refused change stays pending instead of being marked sent"
     );
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(probe().is_empty(), "no partial change reached the broker");
-
-    // Ordinary traffic still flows on the same bridge.
+    // Ordinary traffic still flows on the same bridge, and the bridge keeps
+    // order: what the broker sees first is the ordinary change, so no part
+    // of the refused one went ahead of it.
     assert!(app.collaboration.manager.send(
         crate::collaboration::CollabRequest::document_incremental(vec![1; 16])
     ));
+    tilo_test_env::wait_until("the ordinary change reaches the broker", || {
+        !probe().is_empty()
+    });
+    assert_eq!(probe().len(), 1, "no partial change reached the broker");
 }

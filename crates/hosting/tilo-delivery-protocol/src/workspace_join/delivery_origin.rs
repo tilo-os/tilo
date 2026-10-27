@@ -30,10 +30,6 @@ impl DeliveryOriginLocatorV1 {
     }
     /// Sign inert discovery bytes with the named host key. Installation is the
     /// caller's private native responsibility, not a property of this utility.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn transport_hint(
         &self,
         host: &DeviceCert,
@@ -54,10 +50,6 @@ impl DeliveryOriginLocatorV1 {
     /// Verify exact pinned certificate and signed discovery bytes. The caller
     /// must derive the pin from independently/currently verified invitation
     /// state; this does not perform current roster or revocation authorization.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn from_transport_hint(
         hint: &TransportHint,
         expected_host: &DeviceCert,

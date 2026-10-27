@@ -12,7 +12,7 @@ const REASK_HOLD: Duration = Duration::from_secs(1);
 /// How soon a child is re-asked when its host answered at once with nothing
 /// new: a host that does not hold re-asks is asked at the old cadence rather
 /// than in a loop.
-const REASK_PACE: Duration = Duration::from_millis(50);
+pub(super) const REASK_PACE: Duration = Duration::from_millis(50);
 /// While the model is still writing the turn, a wait looks at it this often.
 const TURN_PUMP: Duration = Duration::from_millis(100);
 
@@ -79,17 +79,14 @@ impl Session {
             }
             let asked: Vec<u64> = followed
                 .iter()
-                .filter_map(|following| following.reask.as_ref()?.out.map(|(id, _)| id))
+                .filter_map(|following| following.reask.out.map(|(id, _)| id))
                 .collect();
             let until = followed
                 .iter()
                 .filter(|following| following.outcome.is_none())
                 .flat_map(|following| {
-                    let paced = following
-                        .reask
-                        .as_ref()
-                        .filter(|reask| reask.out.is_none())
-                        .and_then(|reask| reask.not_before);
+                    let reask = &following.reask;
+                    let paced = reask.out.is_none().then_some(reask.not_before).flatten();
                     [Some(following.deadline), paced]
                 })
                 .flatten()
@@ -117,9 +114,7 @@ impl Session {
         following: &mut Following,
         now: Instant,
     ) -> Result<()> {
-        let Some(reask) = following.reask.as_mut() else {
-            return Ok(());
-        };
+        let reask = &mut following.reask;
         if reask.out.is_some() || reask.not_before.is_some_and(|at| now < at) {
             return Ok(());
         }
@@ -187,8 +182,10 @@ impl Session {
         Ok(answer)
     }
 
+    /// Wait for the host's receipt of report `request_id`. A report is how
+    /// the run ends, so the run's own time budget does not cut it short.
     pub(super) fn wait_for_native_report(&mut self, request_id: u64) -> Result<()> {
-        let deadline = self.task_wait_deadline(Duration::from_secs(5));
+        let deadline = ui::time::now() + Duration::from_secs(5);
         let mut deferred = Vec::new();
         while ui::time::now() < deadline {
             match self.link.recv(Duration::from_millis(50))? {
@@ -298,13 +295,11 @@ impl Session {
         action: &super::TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_actions::InvocationId> {
-        let Some(state) = self
+        let state = self
             .native_task
             .as_mut()
             .filter(|state| state.run_id == run.run_id)
-        else {
-            return Ok(tilo_actions::InvocationId::new());
-        };
+            .ok_or_else(|| anyhow::anyhow!("a step outside the run it belongs to"))?;
         let request = child_request_digest(run.run_id, state.revision, action, arguments);
         let occurrence = state.children.entry(request).or_default();
         let bytes = blake3::Hasher::new_derive_key("Tilo native task child v2")
@@ -350,18 +345,13 @@ fn take_reask_answer(
     request_id: u64,
     result: Result<(u64, tilo_actions::InvocationUpdate), String>,
 ) {
-    let Some(following) = followed.iter_mut().find(|following| {
-        following
-            .reask
-            .as_ref()
-            .and_then(|reask| reask.out)
-            .is_some_and(|(id, _)| id == request_id)
-    }) else {
+    let Some(following) = followed
+        .iter_mut()
+        .find(|following| following.reask.out.is_some_and(|(id, _)| id == request_id))
+    else {
         return;
     };
-    let Some(reask) = following.reask.as_mut() else {
-        return;
-    };
+    let reask = &mut following.reask;
     let Some((_, sent)) = reask.out.take() else {
         return;
     };

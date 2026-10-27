@@ -52,6 +52,24 @@ pub(crate) fn next(
 
 use crate::widget::Widget;
 use taffy::TaffyTree;
+
+/// Whether `widget` and what it holds stay out of the focus order: the
+/// `hidden` flag of its accessibility node, read through
+/// [`Widget::accessibility_hidden`] so traversal does not build each node
+/// (and resolve its translated name) for one flag. Debug builds build the
+/// node anyway and check that the two agree.
+pub(crate) fn hidden(widget: &dyn Widget) -> bool {
+    let hidden = widget.accessibility_hidden();
+    debug_assert_eq!(
+        hidden,
+        widget
+            .accessibility_root()
+            .is_some_and(|node| node.state.hidden),
+        "{}: Widget::accessibility_hidden disagrees with the hidden flag of its accessibility node",
+        widget.name(),
+    );
+    hidden
+}
 fn collect_focusable(
     node_id: NodeId,
     widget: &dyn Widget,
@@ -204,6 +222,110 @@ pub(crate) fn reconcile_trap(
     *active = trapped;
     change
 }
+/// Keyboard travel (Tab, Shift+Tab, directional focus) outside a trap stays
+/// inside the laid-out keyboard scope ([`Widget::scopes_keyboard_focus`]):
+/// `order` narrowed to the scope's subtree, empty when the scope holds no
+/// control (travel then moves nowhere rather than onto the chrome around
+/// it). Without a scope `order` is returned as it is.
+pub(crate) fn within_keyboard_scope(
+    order: Vec<NodeId>,
+    scopes: &[NodeId],
+    taffy: &TaffyTree<()>,
+) -> Vec<NodeId> {
+    let Some(&scope) = scopes.first() else {
+        return order;
+    };
+    order
+        .into_iter()
+        .filter(|&node| is_within(node, scope, taffy))
+        .collect()
+}
+
+/// Whether a component boundary (an app hosted in a tile, as a desktop's
+/// windows host theirs) sits below `widget`. A component's root lays out
+/// nodes that are not its boundary's widget children, so the widget walk
+/// of [`order`] cannot reach its controls: focus order then walks the
+/// admitted layout map ([`mapped_order`]) instead.
+pub(crate) fn hosts_components(widget: &dyn Widget) -> bool {
+    let mut found = false;
+    widget.for_each_child(&mut |child| {
+        found = found || child.callback_binding().is_some() || hosts_components(child);
+    });
+    found
+}
+
+/// Whether a host orders focus over its admitted layout map
+/// ([`layout_map_order`]) rather than its widget tree ([`order`]): History,
+/// embedded or the host's own, and a component hosted below the root each
+/// lay out nodes the widget walk cannot reach. The native window and the
+/// frame harness both decide here, so they never order focus apart.
+pub(crate) fn walks_layout_map(
+    root: &dyn Widget,
+    history: bool,
+    restrictions: &crate::history_mode::embedded::FocusRestrictions,
+) -> bool {
+    history || restrictions.has_surfaces() || hosts_components(root)
+}
+
+/// What the focus walk asks of one node: whether it takes focus, whether it
+/// traps it, and whether it is hidden from assistive technology (which
+/// hides its subtree from focus too). Reads the node's own `hidden` flag
+/// ([`hidden`]), never its accessibility node or the subtree a document
+/// exports.
+pub(crate) fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
+    (
+        widget.is_focusable() && widget.is_enabled(),
+        widget.traps_focus(),
+        hidden(widget),
+    )
+}
+
+/// Focus order over the admitted layout map from `root`, for the native
+/// window and the frame harness alike: embedded History's restrictions
+/// apply, while the host's History captures input only its nodes take
+/// focus, and otherwise they come after the app's. `inspect` answers
+/// [`probe`] for a mapped node (`None` when it is not mapped). Returns the
+/// order and whether something traps focus (an open History review does).
+pub(crate) fn layout_map_order(
+    root: NodeId,
+    taffy: &TaffyTree<()>,
+    restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    history: Option<&crate::history_mode::host::HistoryHost>,
+    inspect: impl Fn(NodeId) -> Option<(bool, bool, bool)>,
+) -> (Vec<NodeId>, bool) {
+    use tilo_sort::CompactSort as _;
+    // History's owned nodes, walked once for this recomputation: both the
+    // capture filter and the History-last sort ask it of every node.
+    let owned = history
+        .map(|history| history.owned_nodes(taffy))
+        .unwrap_or_default();
+    let captures = history.is_some_and(crate::history_mode::host::HistoryHost::captures_input);
+    let (mut order, trapped) = mapped_order(root, taffy, |node| {
+        let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
+        let (focusable, traps, hidden) = inspect(node).unwrap_or_default();
+        (allowed && focusable, allowed && traps, hidden)
+    });
+    if !captures {
+        order.compact_sort_by_key(|id| owned.contains(id));
+    }
+    (
+        order,
+        trapped || history.is_some_and(crate::history_mode::host::HistoryHost::review_is_open),
+    )
+}
+
+fn is_within(mut node: NodeId, scope: NodeId, taffy: &TaffyTree<()>) -> bool {
+    loop {
+        if node == scope {
+            return true;
+        }
+        match taffy.parent(node) {
+            Some(parent) => node = parent,
+            None => return false,
+        }
+    }
+}
+
 pub(crate) fn keyboard_nav_allowed(modal: Option<Rect>, trapped: bool) -> bool {
     modal.is_none() || trapped
 }
@@ -292,7 +414,6 @@ mod trap_tests {
         let ids: Vec<NodeId> = (0..4_u64).map(NodeId::from).collect();
         let [canvas, label, menu, other] = [ids[0], ids[1], ids[2], ids[3]];
         let page = [canvas, label, other];
-        // A menu opens over the canvas and closes without a choice.
         let (mut active, mut before) = (false, None);
         assert_eq!(
             reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
@@ -302,7 +423,6 @@ mod trap_tests {
             reconcile_trap(&mut active, &mut before, Some(menu), &page, false),
             Some(Some(canvas))
         );
-        // Again, and its choice focuses the label it began editing.
         assert_eq!(
             reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
             Some(Some(menu))
@@ -312,5 +432,64 @@ mod trap_tests {
             None
         );
         assert_eq!(before, None);
+    }
+}
+
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use crate::widget::command_palette::CommandPalette;
+    use crate::widget::popover::Popover;
+    use crate::widget::{Column, ContextMenu, ModalDialog, Tooltip};
+
+    /// `widget` answers [`Widget::accessibility_hidden`] as its accessibility
+    /// node's `hidden` flag says; returns the flag.
+    fn agreed(widget: &dyn Widget) -> bool {
+        let hidden = widget.accessibility_hidden();
+        assert_eq!(
+            hidden,
+            widget.accessibility().is_some_and(|node| node.state.hidden),
+            "{}",
+            widget.name()
+        );
+        hidden
+    }
+
+    #[test]
+    fn widgets_that_hide_answer_accessibility_hidden_as_their_node() {
+        assert!(agreed(&Tooltip::new("Tip")), "an unrevealed tooltip");
+
+        let mut menu = ContextMenu::new();
+        assert!(agreed(&menu), "a closed menu");
+        menu.open_at([0.0, 0.0]);
+        assert!(!agreed(&menu), "an open menu");
+
+        let mut dialog = ModalDialog::new("Title", Column::new());
+        assert!(agreed(&dialog), "a closed dialog");
+        dialog.set_open(true);
+        assert!(!agreed(&dialog), "an open dialog");
+
+        let mut palette = CommandPalette::new();
+        assert!(agreed(&palette), "a closed command palette");
+        palette.open();
+        assert!(!agreed(&palette), "an open command palette");
+
+        let mut options = Popover::new()
+            .with_label("Interval")
+            .with_items(["1 s", "2 s"]);
+        assert!(agreed(&options), "a closed options menu");
+        options.set_open(true);
+        assert!(!agreed(&options), "an open options menu");
+
+        let mut panel = Popover::with_content(Column::new()).with_label("Share");
+        assert!(agreed(&panel), "a closed labelled panel");
+        panel.set_open(true);
+        assert!(!agreed(&panel), "an open labelled panel");
+        assert!(
+            !agreed(&Popover::with_content(Column::new())),
+            "an unlabelled panel has no node of its own"
+        );
+
+        assert!(!agreed(&Column::new()), "a container is never hidden");
     }
 }

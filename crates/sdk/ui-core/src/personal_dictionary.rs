@@ -198,7 +198,7 @@ impl TestHost {
     /// # Errors
     /// A revoked owner, stale revision or failed host persistence.
     pub fn flush(&mut self) -> io::Result<()> {
-        for (section, values) in self.channel.take_outbox() {
+        for (section, values, action) in self.channel.take_outbox() {
             let result = settings_store::personal_dictionary::host::command(
                 self.source.as_ref(),
                 &self.app,
@@ -210,11 +210,16 @@ impl TestHost {
                 if handled {
                     Ok(())
                 } else {
-                    settings_store::app_scope::update_for_app(
+                    settings_store::app_scope::update_for_app_by(
                         self.source.as_ref(),
                         &self.app,
                         &section,
                         values,
+                        &settings_store::ChangeOrigin {
+                            action,
+                            principal: None,
+                            invoked_by: None,
+                        },
                     )
                 }
             });

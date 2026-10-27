@@ -3,9 +3,6 @@
     reason = "test assertions over exact values written and read back"
 )]
 
-//! The project's verbs through the door, the edits bound to the playhead,
-//! and the project as it is stored and replicated.
-
 use ui::framework::ResourceSurface;
 use ui::tilo_actions::OperationKind;
 use ui::tilo_resource::{Replica, Resource};
@@ -64,8 +61,6 @@ fn one_clip() -> (Project, Uuid) {
 fn round_trip(p: &Project) -> Project {
     Project::read(&crate::seed::document_of(p)).unwrap()
 }
-
-// ---- What the project offers -------------------------------------------
 
 #[test]
 fn the_project_publishes_its_verbs_and_the_editor_binds_the_playhead_edits() {
@@ -207,8 +202,6 @@ fn edits_bound_to_the_playhead_follow_it_and_the_markers_near_it() {
     assert_eq!(replica.state().unwrap().mark_in, Some(9.0));
 }
 
-// ---- Verbs ---------------------------------------------------------------
-
 #[test]
 fn speed_markers_titles_and_the_frame_change_through_their_verbs() {
     let (p, cid) = one_clip();
@@ -233,7 +226,7 @@ fn speed_markers_titles_and_the_frame_change_through_their_verbs() {
             .is_normal()
     );
 
-    // A marker, and its removal (which is confirmed).
+    // A marker, and its removal (undoable, so it applies at once).
     replica
         .apply(Project::PLACE_MARKER.with((12.5, "  ".to_owned())))
         .unwrap();
@@ -244,20 +237,14 @@ fn speed_markers_titles_and_the_frame_change_through_their_verbs() {
             .apply(Project::PLACE_MARKER.with((-1.0, "Before time".to_owned())))
             .is_err()
     );
-    assert!(
-        replica
-            .apply(Project::DELETE_MARKER.with(id(marker.id)))
-            .is_err(),
-        "removing waits for confirmation"
-    );
     replica
-        .apply_confirmed(Project::DELETE_MARKER.with(id(marker.id)))
-        .unwrap();
+        .apply(Project::DELETE_MARKER.with(id(marker.id)))
+        .expect("Undo takes a removed marker back, so removing asks nothing");
     assert!(replica.state().unwrap().markers.is_empty());
 
     // A title lands in the bin as a text source.
     replica
-        .apply(Project::ADD_TITLE.with("Opening\nsecond line".to_owned()))
+        .apply(Project::ADD_TITLE.with(("Opening\nsecond line".to_owned(), None, None, None)))
         .unwrap();
     let state = replica.state().unwrap();
     let title = state
@@ -345,16 +332,11 @@ fn deleting_clips_sources_and_tracks_takes_what_hangs_off_them() {
         .unwrap()
         .clone();
 
-    // A delete waits for confirmation, then leaves a gap.
+    // A delete applies at once (Undo takes it back) and leaves a gap.
     let mut replica = holding(&sample);
-    assert!(
-        replica
-            .apply(Project::REMOVE_CLIP.with(id(lone.id)))
-            .is_err()
-    );
     replica
-        .apply_confirmed(Project::REMOVE_CLIP.with(id(lone.id)))
-        .unwrap();
+        .apply(Project::REMOVE_CLIP.with(id(lone.id)))
+        .expect("Undo takes a deleted clip back, so deleting asks nothing");
     let after = replica.state().unwrap();
     assert!(after.clip(lone.id).is_none());
     assert_eq!(after.clips.len(), sample.clips.len() - 1);
@@ -802,8 +784,6 @@ fn the_mix_is_trimmed_by_what_was_measured_and_lanes_stay_in_range() {
     assert_eq!((t.gain_db, t.pan), (0.0, 0.0));
 }
 
-// ---- Replay and convergence ---------------------------------------------
-
 #[test]
 fn verbs_replay_to_the_same_document_on_a_peer() {
     let sample = crate::seed::sample_project();
@@ -825,7 +805,7 @@ fn verbs_replay_to_the_same_document_on_a_peer() {
         .apply(Project::PLACE_CLIP.with((id(media), id(track), 200.0)))
         .unwrap();
     origin
-        .apply(Project::ADD_TITLE.with("Credits".to_owned()))
+        .apply(Project::ADD_TITLE.with(("Credits".to_owned(), None, None, None)))
         .unwrap();
     origin
         .apply(Project::PLACE_MARKER.with((3.0, "Beat".to_owned())))
@@ -935,8 +915,6 @@ fn two_peers_converge_on_a_moved_clip_and_its_neighbours() {
         "clips sort by where they sit: {starts:?}"
     );
 }
-
-// ---- The project as stored ----------------------------------------------
 
 #[test]
 fn replacing_the_project_removes_what_the_new_one_lacks_and_keeps_shared_ids() {

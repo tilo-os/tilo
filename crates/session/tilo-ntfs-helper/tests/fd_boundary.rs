@@ -20,7 +20,7 @@ fn production_rejects_regular_file_and_caller_device_assertions() {
             "clean",
         ],
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_tilo-ntfs-probe"))
+        let out = Command::new(tilo_test_env::package_binary!("tilo-ntfs-probe"))
             .args(args)
             .output()
             .unwrap();

@@ -72,18 +72,12 @@ fn seed<A: ResourceApp>(
 /// Seed a record of `kind` its genesis just created, as `me` creating it on
 /// `device` without a window: the app's [`ResourceApp::seed`] with no host,
 /// applied as in a window. A kind no app registered has nothing to seed.
-///
-/// # Errors
-/// Returns why a seed action did not apply.
 pub fn seed_record(kind: &str, doc: &mut Doc, me: &str, device: &str) -> Result<(), String> {
     seed_scoped(kind, doc, me, device, None)
 }
 
 /// Seed a new room record in its host-selected creation scope, without lending
 /// ambient device services. The route supplies context, not permission.
-///
-/// # Errors
-/// Returns why a seed action did not apply.
 pub fn seed_record_in_room(
     kind: &str,
     doc: &mut Doc,

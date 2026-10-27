@@ -163,7 +163,6 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert!(clear.destructive);
         assert_eq!(clear.field, Some("cards"));
 
-        // The published tree is what the palette, agents and scripts see.
         let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
         let published_ids: Vec<_> = published
             .actions
@@ -194,7 +193,6 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         board.apply(Board::ADVANCE.with(first.clone())).unwrap();
         assert_eq!(board.state().unwrap().cards[&first].stage, Stage::Doing);
 
-        // A refusal is the app answering, and changes nothing.
         let heads = board.heads();
         let refused = board.apply(Board::ADVANCE.with(Id::from_raw("missing")));
         assert!(
@@ -224,7 +222,6 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert_eq!(first.heads(), second.heads());
         assert_eq!(second.state().unwrap(), state);
 
-        // A member that refuses refuses the whole group.
         let missing = Id::from_raw("missing");
         assert!(
             first
@@ -280,9 +277,14 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert_eq!(params, ["index"]);
         let delete = card.actions.get(2).unwrap();
         assert_eq!(
+            delete.contract.risk,
+            tilo_actions::RiskLevel::Destructive,
+            "a destructive item action still deletes"
+        );
+        assert_eq!(
             delete.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm,
-            "a destructive item action still asks"
+            tilo_actions::ConfirmationPolicy::None,
+            "but Undo takes it back, so it asks nothing"
         );
 
         // The record keeps the id-taking action for scripts and agents, but a
@@ -292,16 +294,91 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
             .iter()
             .find(|spec| spec.id == "advance")
             .unwrap();
-        assert!(on_record.is_programmatic());
+        assert!(!on_record.reaches_people());
         assert!(
-            !published
+            published
                 .actions
                 .iter()
                 .find(|spec| spec.id == "rename")
                 .unwrap()
-                .is_programmatic()
+                .reaches_people()
         );
     }
+}
+
+/// An item verb with its item bound takes the item again from a caller
+/// that passes it anyway, by its id or a longer form of its address, and
+/// refuses another item naming the one it acts on; what it publishes
+/// stays the remaining parameters.
+#[test]
+fn an_item_verb_hears_its_bound_item_passed_again_and_refuses_another() {
+    let mut board = Replica::<Board>::new();
+    board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
+    board.apply(Board::ADD_CARD.with("Ship")).unwrap();
+    let state = board.state().unwrap();
+    let published = tilo_resource::publish::<Board>("board", "Board", &state);
+    let ids = card_ids(&board);
+    let (first, second) = (ids[0].as_str(), ids[1].as_str());
+    let card = published.children.first().unwrap();
+    let move_card = card
+        .actions
+        .iter()
+        .find(|spec| spec.id == "move-card")
+        .unwrap();
+    let names: Vec<_> = move_card
+        .params()
+        .iter()
+        .map(|param| param.name.as_ref())
+        .collect();
+    assert_eq!(names, ["index"], "the published parameters stay unbound");
+    let arguments = |card: &str| {
+        serde_json::json!({"card": card, "index": 1})
+            .as_object()
+            .unwrap()
+            .clone()
+    };
+    let alone = move_card
+        .build_json(serde_json::json!({"index": 1}).as_object().unwrap())
+        .unwrap();
+    assert_ne!(
+        alone.type_id,
+        tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+    );
+    for same in [
+        first.to_owned(),
+        format!("cards/{first}"),
+        card.id.as_str().to_owned(),
+    ] {
+        assert_eq!(
+            move_card.build_json(&arguments(&same)).unwrap().type_id,
+            alone.type_id,
+            "{same}"
+        );
+        move_card.validate_json(&arguments(&same)).unwrap();
+    }
+    let refused = move_card
+        .build_json(&arguments(second))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains(&format!("`card` is `{first}` here"))
+            && refused.contains("acts on that item only"),
+        "{refused}"
+    );
+    let pairs = |card: &str| {
+        [
+            (
+                "card".to_owned(),
+                tilo_actions::ArgValue::Text(card.to_owned()),
+            ),
+            ("index".to_owned(), tilo_actions::ArgValue::Integer(1)),
+        ]
+    };
+    assert_eq!(
+        move_card.build_args(pairs(first)).unwrap().type_id,
+        alone.type_id
+    );
+    assert!(move_card.build_args(pairs(second)).is_err());
 }
 
 #[test]
@@ -338,7 +415,6 @@ fn documents_replay_converge_version_index_and_migrate() {
         assert_eq!(a, bob.state().unwrap());
         assert_eq!(a.title, "Alice's board");
         assert_eq!(a.cards.len(), 2);
-        // Alice's field edit and Bob's move of the same card both survive.
         assert_eq!(a.cards[&shared].stage, Stage::Doing);
         assert_eq!(a.cards.position(&shared), Some(1));
     }
@@ -373,7 +449,14 @@ fn documents_replay_converge_version_index_and_migrate() {
             .unwrap();
         let entries = Board::search(&board.state().unwrap());
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].text.contains("Quarterly review"));
+        // Found by its text, which is no preview of it.
+        assert!(
+            entries[0]
+                .fields
+                .iter()
+                .any(|(text, _)| text.contains("Quarterly review"))
+        );
+        assert!(entries[0].text.is_empty() && entries[0].preview.is_none());
     }
     // phase: a_record_reads_documents_written_by_an_older_schema
     {

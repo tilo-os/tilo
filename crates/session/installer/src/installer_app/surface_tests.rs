@@ -145,20 +145,14 @@ fn oauth_selected_services_reach_production_form_without_public_identity() {
     app.accounts_form.files.set(true);
     app.accounts_form.mail.set(true);
     app.accounts_form.submit(false).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    loop {
+    tilo_test_env::wait_until("the accounts to be added", || {
         app.sync_accounts();
-        if app.accounts_form.status() == AccountsStatus::Added {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        assert!(app.accounts_form.status() != AccountsStatus::Failed);
-        std::thread::yield_now();
-    }
+        let status = app.accounts_form.status();
+        assert!(status != AccountsStatus::Failed);
+        status == AccountsStatus::Added
+    });
     profile.join().unwrap();
-    let _ = urls
-        .recv_timeout(std::time::Duration::from_secs(1))
-        .unwrap();
+    let _ = tilo_test_env::recv("the authorization URL", &urls);
     let labels = local_labels(app.accounts_form.view().as_ref());
     for label in [
         "personal@example.org",
@@ -193,9 +187,7 @@ fn oauth_selected_services_reach_production_form_without_public_identity() {
     app.accounts_form.calendar.set(true);
     app.accounts_form.submit(false).unwrap();
     app.sync_accounts();
-    let fresh = urls
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap();
+    let fresh = tilo_test_env::recv("a fresh authorization URL", &urls);
     assert!(fresh.contains("calendar"));
     app.accounts_form.cancel();
     app.sync_accounts();
@@ -203,17 +195,13 @@ fn oauth_selected_services_reach_production_form_without_public_identity() {
 }
 
 fn finish_private_unlock(app: &mut InstallerApp) {
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(15))
-        .unwrap();
-    while app.windows_hints.is_pending() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "private unlock did not finish"
-        );
+    tilo_test_env::wait_until("the private unlock to finish", || {
+        if !app.windows_hints.is_pending() {
+            return true;
+        }
         app.sync_accounts();
-        std::thread::yield_now();
-    }
+        false
+    });
 }
 
 #[test]
@@ -243,6 +231,7 @@ fn prepared_media_unlock_is_private_review_and_skip_preserves_medium() {
         purpose: String::new(),
         device_label: String::new(),
         prepared_setup: None,
+        tpm_handoff: None,
         windows_preparation: Some(prepared.expectation),
         hostname: None,
         username: None,
@@ -555,7 +544,6 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
 fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
     // Phase `wizard_controls_run_the_published_actions`.
     {
-        // Selecting a disk by its row, and by its action, is one operation.
         let backend = FakeBackend::new();
         let (mut by_row, mut row_doc) = app(&backend);
         let (mut by_action, mut action_doc) = app(&backend);
@@ -583,7 +571,6 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         by_row.step = Step::Install;
         by_row.install_state = InstallState::Done;
         by_row.recovery_key = Some(KEY.into());
-        // A queued press is checked against the current published availability.
         by_row.control(op::POWER, "reboot", Value::Null).fire();
         by_row.sync(&row_doc, &automerge::ROOT);
         let reason = by_row
@@ -611,18 +598,18 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         )
         .unwrap();
         let encoded = next.build_json(&serde_json::Map::new()).unwrap();
-        let started = app
-            .start_operation(
-                &ui::host_operation::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            )
-            .unwrap();
+        let started = ui::host_operation::start_operation(
+            &mut app,
+            &ui::host_operation::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .unwrap();
         assert!(matches!(
             started,
             Some(ui::host_operation::ResourceOperationStart::Completed(_))
@@ -640,7 +627,8 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
             allocation: None,
         })
         .unwrap();
-        let refused = app.start_operation(
+        let refused = ui::host_operation::start_operation(
+            &mut app,
             &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::Effect,

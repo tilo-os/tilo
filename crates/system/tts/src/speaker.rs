@@ -152,18 +152,15 @@ mod tests {
 
     #[test]
     fn priorities_utterances_and_rates_have_documented_defaults() {
-        // Phase `priority_ordering_is_significance_ascending`.
         {
             assert!(Priority::Important > Priority::Message);
             assert!(Priority::Message > Priority::Text);
             assert!(Priority::Text > Priority::Notification);
             assert!(Priority::Notification > Priority::Progress);
         }
-        // Phase `default_priority_is_message`.
         {
             assert_eq!(Priority::default(), Priority::Message);
         }
-        // Phase `utterance_builder`.
         {
             let u = Utterance::new("hi")
                 .with_priority(Priority::Important)
@@ -172,13 +169,11 @@ mod tests {
             assert_eq!(u.priority, Priority::Important);
             assert!(!u.interrupt);
         }
-        // Phase `utterance_new_defaults_to_interrupting_message`.
         {
             let u = Utterance::new("focus changed");
             assert_eq!(u.priority, Priority::Message);
             assert!(u.interrupt);
         }
-        // Phase `rate_mapping`.
         {
             assert_eq!(rate_to_ssip(1.0), 0);
             assert_eq!(rate_to_ssip(2.0), 100);

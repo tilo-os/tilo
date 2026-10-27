@@ -77,41 +77,19 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
 }
 
 #[test]
-fn owner_revision_ignores_task_and_effect_updates_but_not_ownership() {
+fn owner_revision_ignores_effect_updates_but_not_ownership() {
     struct Membership(Workspace);
     impl tilo_identity_host::broker::WorkspaceMembership for Membership {
         fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
-            if &self.0.room == room {
+            if &self.0.room() == room {
                 read(&self.0);
             }
         }
     }
     let mut membership = Membership(Workspace::new(tilo_desktop_model::WorkspaceId(1), "Room"));
     membership.0.set_owner("owner");
-    let room = membership.0.room.to_string();
+    let room = membership.0.room().to_string();
     let revision = owner_revision(&membership, &room, "owner").unwrap();
-    membership.0.tasks.push(tilo_desktop_model::WorkspaceTask {
-        id: "task".into(),
-        title: "Import unrelated notes".into(),
-        created_by: "owner".into(),
-        assigned_agent: None,
-        route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
-        status: tilo_desktop_model::WorkspaceTaskStatus::Queued,
-        resource: None,
-        subject: None,
-        created_at: 1,
-        updated_at: 1,
-        audit: Vec::new(),
-    });
-    membership
-        .0
-        .set_task_status_at(
-            "task",
-            tilo_desktop_model::WorkspaceTaskStatus::Done,
-            "owner",
-            2,
-        )
-        .unwrap();
     membership
         .0
         .effect_receipts

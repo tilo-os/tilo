@@ -42,10 +42,6 @@ pub type Passphrase = Zeroizing<Vec<u8>>;
 
 /// 32 bytes from the kernel CSPRNG, hex-encoded so it's safe to hand to cryptsetup as a
 /// key file and to `tpm2_create -i`.
-///
-/// # Errors
-///
-/// Returns an error if the operating system's random source fails.
 pub fn new_passphrase() -> Result<Passphrase> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
@@ -55,10 +51,6 @@ pub fn new_passphrase() -> Result<Passphrase> {
 /// Does `passphrase` open `device`? Optionally restricted to one keyslot. `--test-passphrase`
 /// does the full key-derivation and digest check without activating a mapping, so it's safe
 /// on an already-open device and needs no device-mapper privileges beyond reading the header.
-///
-/// # Errors
-///
-/// Returns an error if writing the scratch key file or running `cryptsetup` fails.
 pub fn verify_passphrase(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -113,10 +105,6 @@ pub enum RecoveryCheck<'a> {
 
 /// Keyslot numbers in the header that no `tilo-rollback` token claims: the recovery key's
 /// slot and any `systemd-cryptenroll` slots. Nothing in this crate ever writes to them.
-///
-/// # Errors
-///
-/// Returns an error if reading the keyslots or tokens in use fails.
 pub fn foreign_keyslots(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> {
     let all = keyslots_in_use(runner, device)?;
     let ours: Vec<u32> = list_tokens(runner, device)?
@@ -171,11 +159,6 @@ pub fn verify_recovery_path(
 }
 
 /// Read every `tilo-rollback` token in the header, newest generation first.
-///
-/// # Errors
-///
-/// Returns an error if running `cryptsetup token export` fails to execute. A token id that
-/// simply isn't in use, or a token of a different type, is skipped rather than an error.
 pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, RollbackToken)>> {
     let mut found = Vec::new();
     // LUKS2 allows 32 tokens; no "list tokens" subcommand is stable across cryptsetup versions,
@@ -395,6 +378,105 @@ pub fn unseal(
     Ok(None)
 }
 
+/// The sealed public/private blobs a caller holds outside a LUKS2 token.
+#[derive(Debug, Clone, Copy)]
+pub struct SealedArtifact<'a> {
+    pub public: &'a [u8],
+    /// `TPM2B_PRIVATE`.
+    pub private: &'a [u8],
+    /// Diagnostics only; the authoritative digest is inside `public`.
+    pub policy_digest: &'a [u8],
+}
+
+/// Unseal an artifact sealed under a signed target boot policy with no NV
+/// counter. The predictions are tried in order, exactly like a rollback
+/// token's; `Ok(None)` means none matches this machine's live state.
+///
+/// # Errors
+///
+/// Returns an error if the mechanism fails or the policy requires a PIN, which
+/// this installer handoff never uses.
+pub fn unseal_boot(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    artifact: &SealedArtifact<'_>,
+    policy: &policy::BootPolicy<'_>,
+    predictions: &[Prediction],
+    public_key_pem: &Path,
+) -> Result<Option<Passphrase>> {
+    if policy.pin {
+        bail!(
+            "a PIN-sealed boot artifact needs the rollback token path, not the installer handoff"
+        );
+    }
+    if predictions.is_empty() {
+        bail!(
+            "refusing to unseal generation {} with no signed prediction",
+            policy.generation
+        );
+    }
+    let parent = primary(runner, ws)?;
+    let pub_file = ws.put("unseal.pub", artifact.public)?;
+    let priv_file = ws.put("unseal.priv", artifact.private)?;
+    let _ = artifact.policy_digest;
+    for pred in predictions {
+        let session = match policy::satisfy_boot(runner, ws, public_key_pem, policy, pred) {
+            Ok(Some(session)) => session,
+            Ok(None) => continue,
+            Err(error) => {
+                policy::flush(runner);
+                return Err(error);
+            }
+        };
+        let obj = ws.path("unseal.ctx");
+        require(
+            runner,
+            "tpm2_load",
+            &argv![
+                "-C",
+                parent.as_os_str(),
+                "-u",
+                pub_file.as_os_str(),
+                "-r",
+                priv_file.as_os_str(),
+                "-c",
+                obj.as_os_str(),
+            ],
+            "loading the sealed preparation secret",
+        )?;
+        let out_file = ws.path("unsealed.bin");
+        let out = invoke_unseal(
+            runner,
+            ws,
+            &obj,
+            &session.context,
+            &out_file,
+            policy.generation,
+            false,
+            None,
+        )?;
+        let _ = runner.run(
+            "tpm2_flushcontext",
+            &argv![session.context.as_os_str()],
+            None,
+        );
+        if !out.ok() {
+            let message = out.last_error_line();
+            policy::flush(runner);
+            bail!(
+                "unsealing generation {} failed: {message}",
+                policy.generation
+            );
+        }
+        let secret = std::fs::read(&out_file).context("reading the unsealed secret")?;
+        let _ = std::fs::remove_file(&out_file);
+        policy::flush(runner);
+        return Ok(Some(Zeroizing::new(secret)));
+    }
+    policy::flush(runner);
+    Ok(None)
+}
+
 /// Build tpm2-tools' compound policy-session authorization without putting a
 /// PIN in argv. Its `file:` form is read by the child after it starts.
 fn unseal_auth(session: &Path, pin_file: Option<&Path>) -> String {
@@ -565,10 +647,6 @@ pub fn parse_keyslots(dump: &str) -> Vec<u32> {
 }
 
 /// Attach a token to a keyslot.
-///
-/// # Errors
-///
-/// Returns an error if writing the scratch token file or `cryptsetup token import` fails.
 pub fn import_token(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -695,17 +773,11 @@ pub struct Enrollment<'a> {
     pub floor: crate::counter::FloorState,
     /// Signed predictions the token carries; at least one is required.
     pub predictions: &'a [Prediction],
-    /// PIN to seal with, if any.
     pub pin: Option<&'a [u8]>,
 }
 
 /// Build the whole seal + slot + token sequence for one generation. `authorising` is a
 /// secret that already opens `device`, used to add the new keyslot.
-///
-/// # Errors
-///
-/// Returns an error if `enrollment.predictions` is empty, or if sealing, adding the keyslot,
-/// or importing the token fails.
 pub fn enroll_generation(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -785,11 +857,9 @@ Digests:
 
     #[test]
     fn keyslot_dumps_parse_only_keyslots_and_secrets_stay_off_argv() {
-        // Phase `keyslots_are_parsed_from_a_real_dump`.
         {
             assert_eq!(parse_keyslots(DUMP), vec![0, 2]);
         }
-        // Phase `token_and_digest_sections_are_not_mistaken_for_keyslots`.
         {
             // The Tokens section also uses "  N: name"; the parser must stop at it.
             let ks = parse_keyslots(DUMP);
@@ -798,11 +868,9 @@ Digests:
                 "token id 1 leaked into the keyslot list: {ks:?}"
             );
         }
-        // Phase `an_empty_header_yields_no_keyslots`.
         {
             assert!(parse_keyslots("LUKS header information\nVersion: 2\n").is_empty());
         }
-        // Phase `passphrases_are_hex_and_long_enough`.
         {
             let p = new_passphrase().unwrap();
             assert_eq!(p.len(), 64);
@@ -810,7 +878,6 @@ Digests:
             // Two calls must not agree.
             assert_ne!(*p, *new_passphrase().unwrap());
         }
-        // Phase `unseal_pin_auth_references_a_file_instead_of_exposing_the_pin`.
         {
             let auth = unseal_auth(
                 Path::new("/run/work/policy.ctx"),

@@ -1030,8 +1030,6 @@ impl App {
         ))
     }
 
-    // ---- status ---------------------------------------------------------------
-
     #[expect(
         clippy::too_many_lines,
         reason = "one linear report, section by section"
@@ -1172,8 +1170,6 @@ impl App {
         Ok(outcome)
     }
 
-    // ---- doctor ---------------------------------------------------------------
-
     fn doctor(&mut self) -> Outcome {
         let facts = HostFacts::probe(&mut self.runner);
         let mut checks = doctor::host_checks(&facts);
@@ -1192,6 +1188,9 @@ impl App {
         checks.push(doctor::ownership_check(
             &doctor::root_owned_build_dirs(&build_dirs(&root), 3),
             &std::env::var("USER").unwrap_or_else(|_| "$USER".into()),
+        ));
+        checks.push(doctor::contended_build_check(
+            &doctor::contended_build_dirs(&root.join("target"), &build_dirs(&root)),
         ));
         let listing = disk::AuthHeader::new(token.as_ref())
             .and_then(|auth| disk::get(&mut self.runner, disk::VERSIONS, &auth));
@@ -1334,8 +1333,6 @@ impl App {
             ));
         }
     }
-
-    // ---- vm -------------------------------------------------------------------
 
     fn vm(&mut self, command: VmCommand) -> Result<Outcome, CliError> {
         match command {
@@ -2667,6 +2664,9 @@ impl App {
     fn vm_upgrade(&mut self, args: &UpgradeArgs) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(args.name.as_deref())?;
         let endpoint = self.endpoint(&vm)?;
+        if let Some(branch) = args.branch.as_deref() {
+            return self.vm_upgrade_branch(&vm, &endpoint, args, branch);
+        }
         let Some(from) = args.from.as_deref() else {
             if let Some(layout) = args.image.as_deref().map(Path::new)
                 && imageup::is_layout(layout)
@@ -2995,6 +2995,7 @@ impl App {
         let stage = Stage {
             transport: "oci",
             imgref: imageup::layout_imgref(),
+            pin: None,
             expected: Some(digest),
             no_reboot: args.no_reboot,
         };
@@ -3058,7 +3059,7 @@ impl App {
         }
     }
 
-    /// `--from ci:<tag>`: the dev image dev-disk.yml published for that build,
+    /// `--from ci:<tag>`: the dev image published for that build (publish-os-dev-<arch>),
     /// which the VM pulls itself; else the production image it was built FROM,
     /// pulled here so a dev image can be built on top of it.
     fn resolve_ci_upgrade(&mut self, tag: &str, target: &CiTarget) -> Result<CiUpgrade, CliError> {
@@ -3087,7 +3088,7 @@ impl App {
                     String::new()
                 })
             };
-            let vm_tags = listing("registry.tilo.so/tilo/tilo-vm")?;
+            let vm_tags = listing(ci::REF_IMAGE)?;
             let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
             let refs = imageup::ci_ref_candidates(
                 sha,
@@ -3140,6 +3141,72 @@ impl App {
         Ok(found)
     }
 
+    /// `vm upgrade --ref BRANCH`: t builds the branch's head for this device's target, reusing
+    /// every layer it built before, and publishes it signed; the device then takes it the way
+    /// it takes any update, pinned until its channel moves on.
+    fn vm_upgrade_branch(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        args: &UpgradeArgs,
+        branch: &str,
+    ) -> Result<Outcome, CliError> {
+        let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
+        let target = facts.board.clone().unwrap_or_else(|| {
+            facts
+                .arch()
+                .unwrap_or_else(|| std::env::consts::ARCH.to_owned())
+        });
+        let ls_remote =
+            CommandLine::new("git", &["ls-remote", "origin"]).arg(format!("refs/heads/{branch}"));
+        let listed = self.runner.output(&ls_remote)?;
+        let head = listed
+            .stdout
+            .split_whitespace()
+            .next()
+            .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_owned)
+            .ok_or_else(|| CliError::Unsupported {
+                what: format!("--ref {branch}: origin has no such branch"),
+                alternative: format!("push it first: git push origin HEAD:{branch}"),
+            })?;
+        if !on_path("t") {
+            return Err(CliError::ToolMissing {
+                tool: "t".into(),
+                purpose: "build and publish the branch's image (docs/t.md)".into(),
+            });
+        }
+        let check = format!("publish-os-ref-{target}");
+        let dispatch = CommandLine::new(
+            "t",
+            &["dispatch", &check, "--ref", branch, "--publish", "--human"],
+        );
+        let runner = &mut self.runner;
+        let published = self
+            .receipt
+            .phase("publish", || runner.interactive(&dispatch))?;
+        if !published {
+            return Err(CliError::CommandFailed {
+                command: dispatch.display(),
+                status: "failed".into(),
+                stderr: format!(
+                    "t's output above names the cause. A branch's build publishes only where t \
+                     gives runs of branches identity tokens for registry.tilo.so and \
+                     tilo-dev-signing (\"needs identity tokens\" above); until it does, the \
+                     temporary path builds here: tilo-vm vm upgrade {} --from local",
+                    vm.name
+                ),
+            });
+        }
+        let image = format!(
+            "{}:ref-{}-{}-{target}",
+            ci::REF_IMAGE,
+            ci::ref_slug(branch),
+            head.chars().take(7).collect::<String>()
+        );
+        self.vm_upgrade_registry(vm, endpoint, args, Some(&image))
+    }
+
     /// `vm upgrade`, `vm upgrade --image` and a published `--from ci:`: bootc
     /// pulls from a registry.
     fn vm_upgrade_registry(
@@ -3167,6 +3234,7 @@ impl App {
         let stage = Stage {
             transport,
             imgref: imgref.clone(),
+            pin: image.map(str::to_owned),
             expected: None,
             no_reboot: args.no_reboot,
         };
@@ -3378,6 +3446,10 @@ impl App {
             && facts.bootc.rollback.as_ref().map(|r| &r.digest) == stage.expected.as_ref();
         let words = if reuse {
             vec!["bootc".to_owned(), "rollback".to_owned()]
+        } else if stage.transport == "registry" {
+            // The device's own update path: the named image pinned in its channel's place,
+            // or none named, back to its channel.
+            imageup::update_command(stage.pin.as_deref())
         } else {
             imageup::stage_command(&facts.bootc, stage.transport, &stage.imgref)
         };
@@ -3457,6 +3529,7 @@ impl App {
                 stderr: format!("expected {want}, bootc staged {}", next.digest),
             });
         }
+        self.put_on_trial(vm, endpoint, Some(&next))?;
         self.keep_esp_writable(vm, endpoint)?;
         if stage.no_reboot {
             // WHPX starts a host-side kernel. A manual stop/start must use the
@@ -3531,6 +3604,59 @@ impl App {
                 held: Vec::new(),
                 dropped: Vec::new(),
                 freed_bytes: 0,
+            }),
+        }
+    }
+
+    /// Gives the deployments bootc just staged or reordered their boot loader
+    /// try counters, before anything reboots into them (see
+    /// `imageup::BOOT_ENTRIES`). `staged` is the deployment the next boot
+    /// takes; when the VM's image is too old for its own pass to see the ESP,
+    /// that one entry is counted here instead, so moving a machine off such an
+    /// image is protected too.
+    fn put_on_trial(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        staged: Option<&imageup::Deployment>,
+    ) -> Result<(), CliError> {
+        let output = self.vm_sh(vm, endpoint, imageup::BOOT_ENTRIES)?;
+        match imageup::parse_entries(&output.stdout) {
+            imageup::EntriesOutcome::Done => return Ok(()),
+            imageup::EntriesOutcome::Failed(detail) => {
+                return Err(CliError::CommandFailed {
+                    command: "tilo-deployment entries".into(),
+                    status: output.status,
+                    stderr: format!(
+                        "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one; fix this before rebooting VM {}",
+                        vm.name
+                    ),
+                });
+            }
+            imageup::EntriesOutcome::NoLayout | imageup::EntriesOutcome::Absent => {}
+        }
+        let Some(verity) = staged.and_then(|d| d.verity.as_deref()) else {
+            return Ok(());
+        };
+        let output = self.vm_sh(vm, endpoint, &imageup::count_staged_entry_script(verity))?;
+        match imageup::parse_counted(&output.stdout) {
+            imageup::Counted::Entries(0) => {
+                self.warnings.push(format!(
+                    "VM {}: no boot loader entry boots the staged deployment (composefs {}), so it has no try counter; if it fails to boot, choose the previous entry in the boot menu",
+                    vm.name,
+                    verity.get(..16).unwrap_or(verity)
+                ));
+                Ok(())
+            }
+            imageup::Counted::Entries(_) | imageup::Counted::NoBootLoader => Ok(()),
+            imageup::Counted::Failed(why) => Err(CliError::CommandFailed {
+                command: "count the staged boot entry".into(),
+                status: output.status,
+                stderr: format!(
+                    "{why}; {}\nVM {}'s image cannot give the staged deployment a boot loader try counter itself, and neither could tilo-vm",
+                    output.stderr.trim(),
+                    vm.name
+                ),
             }),
         }
     }
@@ -3877,6 +4003,7 @@ impl App {
                 stderr: output.stderr.trim().to_owned(),
             });
         }
+        self.put_on_trial(&vm, &endpoint, None)?;
         let current = facts
             .bootc
             .booted
@@ -3908,8 +4035,6 @@ impl App {
         )
         .next(&["tilo-vm status"]))
     }
-
-    // ---- slots ----------------------------------------------------------------
 
     fn slot(&mut self, command: SlotCommand) -> Result<Outcome, CliError> {
         // A typo in the set name needs no VM to be reported.
@@ -4132,8 +4257,6 @@ impl App {
             other => other,
         }
     }
-
-    // ---- swap -----------------------------------------------------------------
 
     /// Use the imported replacement's mount logic for the ordinary VM swap.
     fn handoff_daemon(
@@ -4998,8 +5121,6 @@ impl App {
         Ok(imported.hash)
     }
 
-    // ---- driving --------------------------------------------------------------
-
     fn seat(&mut self, command: SeatCommand) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(None)?;
         match command {
@@ -5367,6 +5488,9 @@ impl CiTarget {
 struct Stage {
     transport: &'static str,
     imgref: String,
+    /// The registry image named to move onto, which the device follows in place of its
+    /// channel until the channel moves on; `None` returns it to its channel.
+    pin: Option<String>,
     expected: Option<String>,
     no_reboot: bool,
 }
@@ -6080,11 +6204,13 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
             dy,
             fingers,
             duration,
+            press,
         }) => InputAction::TouchpadSwipe {
             fingers,
             dx_mm: dx,
             dy_mm: dy,
             duration_ms: duration,
+            press,
         },
         InputCommand::Touchpad(TouchpadCommand::Click) => InputAction::TouchpadClick,
     };
@@ -6228,8 +6354,12 @@ fn describe_input(action: &InputAction) -> String {
             fingers,
             dx_mm,
             dy_mm,
+            press,
             ..
-        } => format!("moved {fingers} finger(s) {dx_mm},{dy_mm} mm on the touchpad"),
+        } => format!(
+            "{} {fingers} finger(s) {dx_mm},{dy_mm} mm on the touchpad",
+            if *press { "dragged" } else { "moved" }
+        ),
         InputAction::TouchpadClick => "clicked the touchpad".to_owned(),
         InputAction::GamepadPress { combos } => format!("pressed gamepad {}", combos.join(" ")),
         InputAction::GamepadStick { stick, x, y, .. } => {
@@ -7443,7 +7573,6 @@ mod tests {
                 "{error}"
             );
             assert!(error.hint().contains("--raw"), "{}", error.hint());
-            // Reads and --raw get past the guard, to the missing VM.
             for command in [
                 ssh(false, "systemctl status tilo-vmd --no-pager"),
                 ssh(false, "tilo-vmd --version"),
@@ -7971,7 +8100,6 @@ mod tests {
                 report.next
             );
         }
-        // The same keys as a failed command's own error.
         let failed = CliError::NoVm {
             registry: "r".into(),
         }
@@ -8084,7 +8212,6 @@ mod tests {
         )
         .unwrap();
 
-        // Phase `registered_with_its_address_and_key`.
         {
             // Nothing answers on port 1: registered, but not usable yet.
             let added = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
@@ -8105,7 +8232,6 @@ mod tests {
                 added.next
             );
         }
-        // Phase `again_changes_nothing_and_bad_addresses_are_refused`.
         {
             let again = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
             assert_eq!(again.data["added"], json!(false));
@@ -8118,7 +8244,6 @@ mod tests {
                 .err()
                 .unwrap();
             assert!(error.to_string().contains("no such file"), "{error}");
-            // As root, vm add makes the device's key itself.
             let error = app
                 .vm_add(&AddArgs {
                     grant_sudo: true,
@@ -8145,7 +8270,6 @@ mod tests {
                 error.hint()
             );
         }
-        // Phase `the_device_adapter_has_no_power_control`.
         {
             let device = hypervisor::adapter("device").unwrap();
             assert!(!device.powers_on());
@@ -8161,7 +8285,6 @@ mod tests {
                 }
             );
         }
-        // Phase `removing_it_forgets_it_and_its_key_only`.
         {
             let removed = app.vm_rm("opi", false).unwrap();
             assert!(
@@ -8265,6 +8388,7 @@ mod tests {
             dy: -30,
             fingers: 2,
             duration: 300,
+            press: false,
         }))
         .unwrap();
         assert_eq!(
@@ -8273,7 +8397,8 @@ mod tests {
                 fingers: 2,
                 dx_mm: 0,
                 dy_mm: -30,
-                duration_ms: 300
+                duration_ms: 300,
+                press: false,
             }]
         );
         assert!(

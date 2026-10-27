@@ -19,6 +19,7 @@
  * See docs/architecture/web-routing.md.
  */
 import {admit} from './admission.mjs';
+import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
 import {openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
@@ -49,16 +50,29 @@ function aboutLinks(about) {
  * ("Hosted by …"); `null` on the person's own desktop. A room on the site the
  * page was opened from, or on one of its machines (`eu1.tilo.coffee` behind
  * `tilo.coffee`), is hosted by that site: the name people reached it by, not
- * the machine's. */
+ * the machine's. Ports are how a machine splits its services, not a name
+ * anyone knows a host by, so a room on another port of the page's machine
+ * (a local copy's room service beside its web entry) is that site too. */
 export function scopeHost(scope, site = globalThis.location?.host) {
   if (scope.kind !== 'room') return null;
-  let host;
+  let url;
   try {
-    host = new URL(scope.host).host;
+    url = new URL(scope.host);
   } catch {
     return null;
   }
-  return site && (host === site || host.endsWith(`.${site}`)) ? site : host;
+  const name = site ? hostname(site) : '';
+  const host = url.hostname;
+  return name && (host === name || host.endsWith(`.${name}`)) ? name : url.host;
+}
+
+/** `site`'s host name without its port (`localhost` for `localhost:8411`). */
+function hostname(site) {
+  try {
+    return new URL(`http://${site}`).hostname;
+  } catch {
+    return site;
+  }
 }
 
 /** `onStatus` that also titles the tab after the workspace in front. */
@@ -93,6 +107,16 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   return {base: base.href, ...(home ? {home} : {}),
     ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {}),
     ...(about ? {about} : {}), ...(embedder ? {embedder} : {})};
+}
+
+/** Send problem reports from the home workspace to the channel its
+ * entry names. The desktop does not wait for it: the owner's admission is
+ * a round trip of its own, and the desktop takes reports up once it is in. */
+export function configureFeedback(peer, home) {
+  const channel = home?.feedback?.channel;
+  if (!peer?.room || typeof channel !== 'string' || typeof peer.configureFeedback !== 'function') return;
+  peer.configureFeedback({room: peer.room, provider: 'record:so.tilo.chat:', channel})
+    .catch(error => console.warn('feedback:', error?.message ?? error));
 }
 
 /** The embedding site's origin, when `value` is exactly an https origin. */
@@ -191,6 +215,16 @@ export async function present({route, peer, surface, mountDesktop, diagnostics =
 }
 
 /**
+ * The desktop link that says what is in front of the person: the app's
+ * window, and the view of its resource a link opened (`{scope, app,
+ * record?, view?}`). Secrets left the address before any module ran.
+ */
+export function shownLink(target) {
+  const {scope, app, record, view} = target ?? {};
+  if (!scope || app === undefined || app === null) return {mode: 'desktop', target: {scope}};
+  return {mode: 'desktop', target: {scope, app, ...(record ? {record} : {}), ...(view ? {view} : {})}};
+}
+/**
  * Boot an entry page. `deps` supplies the page host (`loadRuntime`,
  * `mountDesktop`) and the admission doors; the page wires the real ones.
  * `onStep` hears the steps of getting in: `join` while a host's door is
@@ -202,7 +236,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // while it lasts: once in, the note is back until the desktop draws.
   const loading = status?.textContent ?? '';
   // A machine to set up is not admission: the page offers it once open.
-  const {install, ...secrets} = takeLinkSecrets(window);
+  // Nor is a Discord account to link: the desktop offers it once open.
+  const {install, link: linkOffer, ...secrets} = takeLinkSecrets(window);
   // The runtime (most of the page's download) loads while the entry is read
   // and, for a bare entry under a home workspace, while admission starts:
   // a host's door is asked, and the person and device keys opened, before
@@ -221,22 +256,32 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     say(error?.message ?? String(error));
     throw error;
   }
-  // The app in front (a home workspace's, or the link's) is what the first
-  // frame shows: its code downloads beside the runtime, not after it.
-  if (route.target.app) deps.prefetchApplication?.(route.target.app);
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which room it is getting into, under which entry, before admission.
   deps.onScope?.({scope: route.target.scope, entry});
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
+    home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
       onStep('join');
       say(event.phase === 'pairing' ? 'Asking to pair this device…'
-        : event.phase === 'waiting' ? 'Waiting for the workspace owner to let you in…'
+        : event.phase === 'waiting' ? 'Waiting for someone in the workspace to let you in…'
         : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });
+  if (peer) deps.onAdmitted?.(peer);
+  configureFeedback(peer, entry.home);
+  // The app in front (a home workspace's, or the link's) downloads once the
+  // page is in, while the desktop mounts, not when the desktop first opens
+  // it. Not before: admission is a run of small round trips to the host,
+  // and megabytes of app code on the same link held each of them up, so
+  // the desktop drew only once the app had arrived. Its window holds the
+  // app's place until then.
+  if (route.target.app) deps.prefetchApplication?.(route.target.app);
+  // The apps in the page read sites without CORS headers through the
+  // host it got into, when that host serves a fetch proxy.
+  wireFetchProxy(peer, window);
   say(loading);
   onStep('open');
   const link = await linked;
@@ -254,6 +299,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
+      ...(linkOffer ? {linkOffer} : {}),
       // The room service's spectator count, for the desktop's "watching".
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
       ...invite, ...diagnostics},
@@ -262,7 +308,10 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));
     return null;
   }
-  const router = startRouter({window, link, initial: route, navigation: shown.navigation,
+  // `show` reads the router it was given, so the address can name what a
+  // link opened once it is shown.
+  let router;
+  router = startRouter({window, link, initial: route, navigation: shown.navigation,
     show: next => {
       // Another room is another peer and another desktop (Back or Forward
       // across a switch of workspace, a hand-edited fragment): load it anew,
@@ -276,7 +325,14 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
         window.location.reload();
         return Promise.resolve();
       }
-      return openTarget({mount: shown.mount, navigation: shown.navigation, target: next.target, mode: next.mode});
+      return openTarget({mount: shown.mount, navigation: shown.navigation, target: next.target, mode: next.mode})
+        .then(() => {
+          // The resource a link opened is in front now: the address names it,
+          // as a link to that view would, until focus moves to another
+          // window (the router then writes that window instead).
+          if (!next.target.resource) return;
+          router.replace(shownLink({...next.target, view: next.target.view ?? null}));
+        });
     },
     onError: error => say(error?.message ?? String(error))});
   return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry, ...(install ? {install} : {})};

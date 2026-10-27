@@ -12,13 +12,15 @@ use std::{
 };
 
 /// The runtime host every test launches.
-const RUNTIME_BINARY: &str = env!("CARGO_BIN_EXE_tilo-runtime-mcp");
+fn runtime_binary() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-runtime-mcp")
+}
 /// The launcher's absolute bound on a daemon start (`STARTUP.cap` in
 /// `tilo_runtime::daemon`). A launcher that fails sooner exits with the reason.
 const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
 
 fn host(profile: &Path) -> Command {
-    let mut command = Command::new(RUNTIME_BINARY);
+    let mut command = Command::new(runtime_binary());
     command
         .env("TILO_RUNTIME_PROFILE", profile)
         .env_remove("TILO_SVC_COLLAB_FD")
@@ -190,13 +192,13 @@ fn live_profile_lock_fails_without_unlinking_owners_socket() {
         String::from_utf8_lossy(&first.stderr)
     );
     let before = status(profile.path());
-    let start = Instant::now();
     let competing = host(profile.path()).arg("--daemon").output().unwrap();
     assert!(!competing.status.success());
-    let elapsed = start.elapsed();
+    // It fails on the held profile lock itself, not after waiting for it.
+    let stderr = String::from_utf8_lossy(&competing.stderr);
     assert!(
-        elapsed < Duration::from_secs(5),
-        "a competing daemon took {elapsed:?} to give up on the held profile lock; it must fail at once"
+        stderr.contains("is in use"),
+        "a competing daemon must give up on the held profile lock at once: {stderr}"
     );
     assert_eq!(status(profile.path())["pid"], before["pid"]);
 }
@@ -246,7 +248,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
             .args(["--exact", TEST, "--nocapture"])
             .env("TILO_NATIVE_SDK_HELPER", id)
             .env("TILO_RUNTIME_PROFILE", profile.path())
-            .env("TILO_RUNTIME_BINARY", RUNTIME_BINARY)
+            .env("TILO_RUNTIME_BINARY", runtime_binary())
             .env_remove("TILO_SVC_COLLAB_FD")
             .env_remove("TILO_SVC_IDENTITY_FD")
             .env_remove("TILO_RUNTIME_STANDALONE")
@@ -380,7 +382,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", TEST, "--nocapture"])
         .env("TILO_SDK_FAMILY_STAGE", "parent")
-        .env("TILO_RUNTIME_BINARY", RUNTIME_BINARY)
+        .env("TILO_RUNTIME_BINARY", runtime_binary())
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))

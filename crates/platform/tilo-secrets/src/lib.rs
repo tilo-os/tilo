@@ -153,18 +153,10 @@ pub struct PutOptions {
 /// [`SecretStore::memory`], or a host's own. Every call names the app.
 pub trait SecretBackend: Send + Sync {
     fn protection(&self) -> Protection;
-    /// # Errors
-    /// The store is unavailable or refused.
     fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError>;
     /// Store `value`, replacing any secret under `key`.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
     fn put(&self, app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError>;
     /// Delete the secret under `key`; deleting a missing key succeeds.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
     fn delete(&self, app: &str, key: &str) -> Result<(), SecretError>;
     /// Whether the store answers at all on this session, without touching a
     /// secret.
@@ -218,7 +210,6 @@ impl SecretStore {
         Self::with_backend(app_id, Arc::new(MemoryBackend::default()))
     }
 
-    /// The app `app_id`'s secrets in a host's own store.
     pub fn with_backend(app_id: &str, backend: Arc<dyn SecretBackend>) -> Self {
         Self {
             app: app_id.to_owned(),
@@ -231,9 +222,6 @@ impl SecretStore {
     /// Browser retries may propose a new final key segment; the first key wins.
     /// A completed acknowledgement is consumed once, so retain it across retries
     /// of a larger transaction. Injected backends keep their persistence contract.
-    ///
-    /// # Errors
-    /// The store refused the write or the key is malformed.
     pub fn seal_blocking(
         &self,
         key: &str,
@@ -266,14 +254,6 @@ impl SecretStore {
         &self.app
     }
 
-    /// Whether this handle uses the page's built-in asynchronous custody.
-    /// Host-injected backends keep their own persistence contract, even when
-    /// they report browser-wrapped protection.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub fn is_page_store(&self) -> bool {
-        matches!(self.backend, Backend::Web)
-    }
-
     pub fn protection(&self) -> Protection {
         match &self.backend {
             Backend::Sync(backend) => backend.protection(),
@@ -283,9 +263,6 @@ impl SecretStore {
     }
 
     /// The secret under `key`, or `None`.
-    ///
-    /// # Errors
-    /// The store is unavailable, refused, or the key is malformed.
     pub async fn get(&self, key: &str) -> Result<Option<Secret>, SecretError> {
         check_key(key)?;
         match &self.backend {
@@ -299,9 +276,6 @@ impl SecretStore {
     }
 
     /// Store `value` under `key`, replacing any earlier secret.
-    ///
-    /// # Errors
-    /// The store is unavailable, refused, or the key is malformed.
     pub async fn put(
         &self,
         key: &str,
@@ -324,9 +298,6 @@ impl SecretStore {
     }
 
     /// Delete the secret under `key`. Deleting a missing key succeeds.
-    ///
-    /// # Errors
-    /// The store is unavailable, refused, or the key is malformed.
     pub async fn delete(&self, key: &str) -> Result<(), SecretError> {
         check_key(key)?;
         match &self.backend {
@@ -446,17 +417,11 @@ impl ItemSecret {
     }
 
     /// The secret, or `None` when this device has none for the item.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
     pub async fn get(&self) -> Result<Option<Secret>, SecretError> {
         self.store.get(&self.key).await
     }
 
     /// Keep `value` as the item's secret, replacing any earlier one.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
     pub async fn put(&self, value: &[u8]) -> Result<(), SecretError> {
         let options = PutOptions {
             label: Some(self.label.clone()),
@@ -465,9 +430,6 @@ impl ItemSecret {
     }
 
     /// Forget the item's secret, as when the item is deleted.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
     pub async fn delete(&self) -> Result<(), SecretError> {
         self.store.delete(&self.key).await
     }

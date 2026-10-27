@@ -12,12 +12,12 @@ if [ ! -s /var/lib/tilo/device/cert.bin ]; then
         token_file=/var/lib/tilo/enrollment-token.txt
         umask 077
         /usr/bin/busybox tr -d '[:space:]' < "$enrollment_source" > "$token_file"
-        /usr/bin/tilo-enroll join --token-file "$token_file" \
+        /usr/libexec/tilo/tilo-enroll join --token-file "$token_file" \
             --identity-root /var/lib/tilo --home-peer-output /etc/tilo/home-peer.toml \
             --label "${TILO_DEVICE_NAME:-Home server}" --timeout 270
         /usr/bin/busybox rm -f "$token_file"
     else
-        /usr/bin/tilo-enroll pair --identity-root /var/lib/tilo \
+        /usr/libexec/tilo/tilo-enroll pair --identity-root /var/lib/tilo \
             --home-peer-output /etc/tilo/home-peer.toml \
             --label "${TILO_DEVICE_NAME:-Home server}" --timeout 270
     fi
@@ -38,7 +38,7 @@ fi
 
 /usr/bin/fs replica --config /etc/tilo/home-peer.toml &
 replica_pid=$!
-/usr/bin/tilo-relay "$@" &
+/usr/libexec/tilo/tilo-relay "$@" &
 relay_pid=$!
 
 shutdown() {

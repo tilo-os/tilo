@@ -1216,13 +1216,6 @@ fn set_if_none<T>(slot: &mut Option<T>, val: T) -> bool {
     true
 }
 
-/// Guarded field-set for `ParametricBuilder`: `set` reports via its `bool`
-/// return whether the field was free to take. Posts the matching protocol
-/// error — `IncompleteSet` if the mutex is poisoned, `AlreadySet` for a
-/// consumed builder or a field already written — instead of overwriting
-/// what the client set first, mirroring the spec. Split out of the
-/// `WpImageDescriptionCreatorParamsV1` dispatch (formerly a
-/// `macro_rules!` defined inline) to keep that match short.
 #[cfg(target_os = "linux")]
 fn set_builder_field_once(
     builder: &ParametricBuilder,
@@ -1609,18 +1602,15 @@ mod tests {
             assert!(desc.hdr.is_some());
         }
 
-        // Phase `builder_returns_none_on_missing_required_fields`.
         {
             let b = ParametricBuilder::default();
             assert!(b.build().is_none());
             {
                 b.inner.lock().unwrap().primaries_named = Some(ColorPrimaries::Bt709);
             }
-            // Still missing transfer.
             assert!(b.build().is_none());
         }
 
-        // Phase `hdr_metadata_only_populated_for_hdr_transfer`.
         {
             let b = ParametricBuilder::default();
             {
@@ -1632,7 +1622,6 @@ mod tests {
             assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
         }
 
-        // Phase `compositor_descriptions_are_queryable_but_client_descriptions_are_not`.
         {
             let output =
                 ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None).snapshot();

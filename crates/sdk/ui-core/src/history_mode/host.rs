@@ -27,7 +27,6 @@ use winit::event::WindowEvent;
 /// Below this width History takes the whole window, its preview a page of
 /// its own; at or above it, History is a panel beside the content.
 const SIDE_PANEL_MIN_WIDTH: f64 = 600.0;
-/// The side panel's width.
 pub(super) const SIDE_PANEL_WIDTH: f64 = 360.0;
 
 #[derive(Clone, Copy)]
@@ -43,6 +42,9 @@ enum Command {
     PreviousPage,
     NextPage,
     Scope(usize),
+    /// A person chose a change the app takes up ([`crate::widget::EntryFace::opens`]):
+    /// return to the live app and hand it the change.
+    Open(crate::HistoryEntryId),
     /// Open the foot's name field for the selected changes.
     Name,
     Review(review::ReviewCommand),
@@ -100,7 +102,7 @@ pub struct HistoryHost {
     registration: HistoryRegistration,
     assets: media::AssetSession,
     active_scope: usize,
-    sync_status: Option<String>,
+    sync_status: Option<crate::widget::WindowStatus>,
     bar_status: crate::widget::HeaderStatus,
     restored_source: Option<HistorySourceRegistration>,
     review: Option<review::ReviewPanel>,
@@ -126,6 +128,12 @@ pub struct HistoryHost {
     open_requested: Rc<Cell<bool>>,
     /// The change to select once History next refreshes open.
     requested_entry: Option<crate::HistoryEntryId>,
+    /// A change a person chose to open in the app, handed to the live app
+    /// once History has returned to it ([`Self::deliver_opened_entry`]).
+    opened: Option<crate::widget::HistoryEntry>,
+    /// How the live window shows its record while History is open (a mode,
+    /// the open item): a past version opens as the window shows it.
+    live_presentation: Option<crate::application_view::ApplicationLocalView>,
     open: bool,
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
@@ -147,6 +155,8 @@ pub struct HistoryHost {
     /// naming is open: another selection closes it.
     name_draft: crate::LocalState<String>,
     name_draft_for: Option<Vec<crate::HistoryEntryId>>,
+    /// Descriptions of the changes, asked of the shell ([`describe`]).
+    describing: describe::Describing,
     before: PreviewCanvas,
     after: PreviewCanvas,
     side: PreviewSide,
@@ -339,6 +349,7 @@ impl HistoryHost {
             _ => "history-mode-content-unavailable",
         });
         let request = Rc::new(Cell::new(false));
+        let commands = Rc::new(RefCell::new(VecDeque::new()));
         let toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
@@ -371,12 +382,19 @@ impl HistoryHost {
             timeline: {
                 // History is read by who did what: its strip filters by person
                 // and agent.
-                let mut timeline = ActivityTimeline::new().with_preview_selection();
+                let opens = Rc::clone(&commands);
+                let mut timeline = ActivityTimeline::new()
+                    .with_preview_selection()
+                    .on_open_entry(move |entry| {
+                        opens.borrow_mut().push_back(Command::Open(*entry));
+                    });
                 timeline.set_filters_people(true);
                 timeline
             },
             open_requested: request,
             requested_entry: None,
+            opened: None,
+            live_presentation: None,
             open: false,
             open_button: true,
             fallback_bar: true,
@@ -397,10 +415,11 @@ impl HistoryHost {
             panel_rect: Rect::ZERO,
             panel_motion: crate::motion::Presence::closed(),
             motion: crate::tokens::EffectiveMotion::default(),
-            commands: Rc::new(RefCell::new(VecDeque::new())),
+            commands,
             selected: vec![],
             name_draft: crate::LocalState::new(String::new()),
             name_draft_for: None,
+            describing: describe::Describing::default(),
             before: PreviewCanvas::new(),
             after: PreviewCanvas::new(),
             side: PreviewSide::After,
@@ -466,10 +485,10 @@ impl HistoryHost {
     pub(crate) fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
         self.control_domain = Some(domain.clone());
     }
-    pub(crate) fn sync_status_matches(&self, status: Option<&str>) -> bool {
-        self.sync_status.as_deref() == status
+    pub(crate) fn sync_status_matches(&self, status: Option<&crate::widget::WindowStatus>) -> bool {
+        self.sync_status.as_ref() == status
     }
-    pub(crate) fn set_sync_status(&mut self, status: Option<String>) {
+    pub(crate) fn set_sync_status(&mut self, status: Option<crate::widget::WindowStatus>) {
         self.sync_status = status;
         self.rebuild_toolbar();
     }
@@ -481,7 +500,7 @@ impl HistoryHost {
     /// refreshes it whole ([`Self::set_sync_status`]).
     pub(crate) fn set_sync_status_in_place(
         &mut self,
-        status: Option<&str>,
+        status: Option<&crate::widget::WindowStatus>,
         live: &mut dyn Widget,
     ) -> bool {
         if self.open || self.invalid_owner || !self.app_presents_status {
@@ -490,7 +509,7 @@ impl HistoryHost {
         if !crate::widget::window_header::offer_sync_status(live, status) {
             return false;
         }
-        self.sync_status = status.map(str::to_owned);
+        self.sync_status = status.cloned();
         true
     }
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
@@ -1170,6 +1189,52 @@ impl HistoryHost {
     pub(crate) fn returning_live(&self) -> bool {
         self.returning_live
     }
+
+    /// Close History back to the live app, as its Done does.
+    fn return_to_live(&mut self) {
+        self.close_files_presentation();
+        self.review = None;
+        self.review_request = None;
+        self.assets.cancel();
+        self.selected.clear();
+        self.timeline.set_selection(None);
+        self.before.preview = None;
+        self.after.preview = None;
+        self.open = false;
+        self.activity_page = false;
+        self.returning_live = true;
+        if let Some(controller) = &mut self.controller {
+            controller.back_to_live();
+        }
+    }
+
+    /// Present the listed changes as the live app `live` says they look
+    /// ([`super::capability::PresentsHistoryEntries`]), and keep how the
+    /// window shows its record for the previews
+    /// ([`super::capability::live_presentation`]). Asked only while History
+    /// is open or opening: the walk costs nothing to a closed one.
+    pub(crate) fn present_entries_of(&mut self, live: &dyn Widget) {
+        if self.captures_input() {
+            self.timeline
+                .set_entry_presenter(super::capability::history_entry_presenter(live));
+            self.live_presentation = super::capability::live_presentation(live);
+        }
+    }
+
+    /// Hand the change a person chose to open to the live app `live`, once
+    /// History has returned to it. Runners call this after
+    /// [`Self::finish_return_to_live`], when the app's own controls run
+    /// again, so what the app does with it goes through its doors as any
+    /// gesture of the person does.
+    pub(crate) fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool {
+        if self.captures_input() {
+            return false;
+        }
+        self.opened
+            .take()
+            .is_some_and(|entry| super::capability::open_history_entry(live, &entry))
+    }
+
     fn owned_layout_roots(&self) -> [Option<NodeId>; 7] {
         [
             self.toolbar_node,
@@ -1430,20 +1495,16 @@ impl HistoryHost {
                         files.load();
                     }
                 }
-                Command::Live => {
-                    self.close_files_presentation();
-                    self.review = None;
-                    self.review_request = None;
-                    self.assets.cancel();
-                    self.selected.clear();
-                    self.timeline.set_selection(None);
-                    self.before.preview = None;
-                    self.after.preview = None;
-                    self.open = false;
-                    self.activity_page = false;
-                    self.returning_live = true;
-                    if let Some(controller) = &mut self.controller {
-                        controller.back_to_live();
+                Command::Live => self.return_to_live(),
+                Command::Open(entry) => {
+                    self.opened = self
+                        .timeline
+                        .entries()
+                        .iter()
+                        .find(|listed| listed.id == entry)
+                        .cloned();
+                    if self.opened.is_some() {
+                        self.return_to_live();
                     }
                 }
                 Command::Now => {
@@ -1550,13 +1611,13 @@ impl HistoryHost {
         } else {
             None
         };
-        if let Some(document) = document
+        if let Some(document) = &document
             && let Some(controller) = &mut self.controller
         {
-            let _ = controller.refresh(&document);
+            let _ = controller.refresh(document);
             if selected != self.selected
                 && !selected.is_empty()
-                && controller.select(&document, &selected).is_ok()
+                && controller.select(document, &selected).is_ok()
             {
                 self.review = None;
                 self.review_request = None;
@@ -1575,6 +1636,10 @@ impl HistoryHost {
             self.timeline.set_entries(controller.entries().to_vec());
             self.timeline
                 .set_named_ranges(controller.named_ranges().to_vec());
+            self.timeline.set_descriptions(describe::shown_descriptions(
+                controller.descriptions(),
+                &self.describing,
+            ));
             if opening {
                 // One line per opening, for gates and logs that keep History
                 // fast on long histories.
@@ -1597,6 +1662,9 @@ impl HistoryHost {
             {
                 self.timeline.set_selection(Some((index, index)));
             }
+        }
+        if let Some(mut document) = document {
+            self.queue_descriptions(&mut document);
         }
         self.refresh_media();
         let now_has_updates = self
@@ -1672,20 +1740,24 @@ impl HistoryHost {
                 // This bar already reserves the History control's height. Status
                 // belongs beside it, not in a new row that moves the live app
                 // when an ordinary input first discovers unsigned history.
-                if !self.app_presents_status {
-                    self.bar_status.set(self.sync_status.as_deref());
+                let mut row = Row::new().with_justify(taffy::JustifyContent::FlexEnd);
+                if !self.app_presents_status
+                    && let Some(status) = &self.sync_status
+                {
+                    self.bar_status.set(Some(&status.text));
+                    if let Some(action) = &status.action {
+                        row = row.push(Box::new(action.button()));
+                    }
                 }
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
-                    Row::new()
-                        .with_justify(taffy::JustifyContent::FlexEnd)
-                        .push(Box::new(
-                            crate::standalone_history_host::history_control_face(
-                                "history-open",
-                                crate::widget::window_header::HistoryControl::of(self.open),
-                            )
-                            .on_click(move || clicked.set(true)),
-                        )),
+                    row.push(Box::new(
+                        crate::standalone_history_host::history_control_face(
+                            "history-open",
+                            crate::widget::window_header::HistoryControl::of(self.open),
+                        )
+                        .on_click(move || clicked.set(true)),
+                    )),
                 ));
             }
             for review in self.pending_controls.review() {
@@ -1732,32 +1804,32 @@ impl HistoryHost {
                         review.status,
                         super::pending_controls::PendingControlStatus::NeedsConfirmation
                     ) {
-                        let expected = match &review.confirmation {
-                            Ok(tilo_actions::ConfirmationPolicy::Confirm) => "CONFIRM".to_owned(),
-                            Ok(tilo_actions::ConfirmationPolicy::Phrase { phrase }) => {
-                                phrase.clone()
-                            }
-                            Ok(tilo_actions::ConfirmationPolicy::None) => {
-                                I18nManager::lookup_plain("history-mode-confirmation-unavailable")
-                            }
-                            Err(reason) => reason.clone(),
-                        };
+                        // A click on Confirm confirms. Only an irreversible
+                        // action that names what it destroys (a drive, an
+                        // app) asks for that name typed, in a plain field:
+                        // never a search field, never a generic word.
                         let entered = Rc::new(RefCell::new(String::new()));
-                        let changed = entered.clone();
+                        if let Ok(tilo_actions::ConfirmationPolicy::Phrase { phrase }) =
+                            &review.confirmation
+                        {
+                            let changed = entered.clone();
+                            row = row.push(Box::new(
+                                TextInput::local_with_language("und")
+                                    .with_spellcheck(false)
+                                    .with_autocorrect(false)
+                                    .with_id(&format!("{id}-phrase"))
+                                    .with_placeholder(I18nManager::format(
+                                        "history-mode-type-to-confirm",
+                                        &[("phrase", phrase.clone().into())],
+                                    ))
+                                    .on_change(move |value| {
+                                        changed.borrow_mut().replace_range(.., value)
+                                    }),
+                            ));
+                        } else if let Err(reason) = &review.confirmation {
+                            row = row.push(Box::new(Text::new(reason)));
+                        }
                         let confirm_token = token.clone();
-                        row = row.push(Box::new(
-                            TextInput::local_with_language("und")
-                                .with_spellcheck(false)
-                                .with_autocorrect(false)
-                                .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(I18nManager::format(
-                                    "history-mode-type-to-confirm",
-                                    &[("phrase", expected.into())],
-                                ))
-                                .on_change(move |value| {
-                                    changed.borrow_mut().replace_range(.., value)
-                                }),
-                        ));
                         let typed = entered;
                         let callback = PendingControlCallback::new(move || {
                             commands.borrow_mut().push_back(
@@ -1910,9 +1982,15 @@ impl HistoryHost {
             .as_ref()
             .filter(|_| !self.app_presents_status && self.bar_status.text().is_none())
         {
-            toolbar = toolbar.push(Box::new(
-                Text::new(status).with_live(crate::a11y::Politeness::Polite),
-            ));
+            let mut row = Row::new()
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(
+                    Text::new(&status.text).with_live(crate::a11y::Politeness::Polite),
+                ));
+            if let Some(action) = &status.action {
+                row = row.push(Box::new(action.button()));
+            }
+            toolbar = toolbar.push(Box::new(row));
         }
         self.toolbar = toolbar;
         self.toolbar_dirty = false;
@@ -1996,31 +2074,42 @@ impl HistoryHost {
     /// live (closing the panel returns to the live document, as that
     /// control does), so either keeps its address.
     fn panel_header(&self) -> Row {
-        let close: Button = if self.selected.is_empty() && !self.window_presents {
+        let control: Option<Button> = if !self.selected.is_empty() {
+            let label = I18nManager::lookup_plain("history-mode-back-to-live");
+            let close = self.commands.clone();
+            Some(
+                Button::icon_only("history-back-live", crate::icons::Icon::X, &label)
+                    .on_click(move || close.borrow_mut().push_back(Command::Live)),
+            )
+        } else if self.window_presents {
+            // The window's bar holds History's control, which closes it as
+            // it opened it (and Escape does): a second one here would be
+            // two controls for one thing.
+            None
+        } else {
             // No window presents History's control: the panel holds it, on.
             let clicked = self.open_requested.clone();
-            crate::standalone_history_host::history_control_face(
-                "history-open",
-                crate::widget::window_header::HistoryControl::Open,
+            Some(
+                crate::standalone_history_host::history_control_face(
+                    "history-open",
+                    crate::widget::window_header::HistoryControl::Open,
+                )
+                .on_click(move || clicked.set(true)),
             )
-            .on_click(move || clicked.set(true))
-        } else {
-            let label = I18nManager::lookup_plain(if self.selected.is_empty() {
-                "history-panel-close"
-            } else {
-                "history-mode-back-to-live"
-            });
-            let close = self.commands.clone();
-            Button::icon_only("history-back-live", crate::icons::Icon::X, &label)
-                .on_click(move || close.borrow_mut().push_back(Command::Live))
         };
         // The panel's name is painted beside the control
         // ([`Self::draw`]): the control already carries History's name for
-        // assistive technology, and one name per thing reads once.
-        Row::new()
+        // assistive technology, and one name per thing reads once. The row
+        // keeps a control's height when it has none, so the name sits the
+        // same either way.
+        let row = Row::new()
             .with_justify(taffy::JustifyContent::FlexEnd)
             .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(close))
+            .with_min_height(crate::widget::ControlSize::Regular);
+        match control {
+            Some(control) => row.push(Box::new(control)),
+            None => row,
+        }
     }
 
     /// The panel's foot and the preview's banner for the selected change:
@@ -2039,7 +2128,7 @@ impl HistoryHost {
                     &[("count", picked.len().into())],
                 )
             } else {
-                newest.summary.clone()
+                self.timeline.summary_of(newest).to_owned()
             };
             footer = footer.push(Box::new(Text::new(&summary).strong()));
             let when = crate::widget::format_relative_time(newest.timestamp, crate::time::wall());
@@ -2176,6 +2265,8 @@ impl HistoryHost {
 mod surface;
 
 mod review;
+
+mod describe;
 
 mod media;
 

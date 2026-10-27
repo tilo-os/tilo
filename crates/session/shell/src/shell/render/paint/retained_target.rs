@@ -77,6 +77,22 @@ fn publish_pipeline_seed(gpu: &ui::gpu::DeviceHandle, cache: &wgpu::PipelineCach
     }
 }
 
+/// The GPU finishes what this target submitted before its queue can go.
+///
+/// wgpu waits on a dropped queue's last submission for at most about six
+/// seconds and then panics, as freeing resources the GPU still uses would be
+/// undefined behaviour. A software device on a loaded machine has taken longer
+/// than that, so the wait is made here, for as long as the work takes; a lost
+/// device finishes nothing and is not waited for. A GPU that never finishes is
+/// a hung main loop, which the watchdog ends.
+impl Drop for RetainedGpuTarget {
+    fn drop(&mut self) {
+        if self.loss.reason().is_none() {
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+    }
+}
+
 impl RetainedGpuTarget {
     /// Construct an offscreen target on the supplied context-owned device and queue.
     ///
@@ -138,6 +154,7 @@ impl RetainedGpuTarget {
             last_frame_full: false,
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
+            finished_frames: 0,
             last_successful_revision: None,
             owed_damage: Vec::new(),
             last_render_attempts: 0,
@@ -160,7 +177,8 @@ impl RetainedGpuTarget {
             copy_scratch: ui::scroll_copy::CopyScratch::default(),
             last_scroll_copy_work: None,
         };
-        if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+        let software = gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu;
+        if software {
             // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
             // seconds of one-at-a-time work the warm-up below would add to the first frame.
             // Extra devices come from the session's shared budget; without any, this device
@@ -174,7 +192,7 @@ impl RetainedGpuTarget {
             );
             drop(slots);
         }
-        target.warm_pipelines()?;
+        target.warm_pipelines(software)?;
         Ok(target)
     }
 
@@ -186,7 +204,7 @@ impl RetainedGpuTarget {
     ///
     /// # Errors
     /// Fails when the device cannot complete the warm-up frames within [`PIPELINE_WARMUP`].
-    fn warm_pipelines(&mut self) -> Result<(), BridgeError> {
+    fn warm_pipelines(&mut self, software: bool) -> Result<(), BridgeError> {
         use vello::kurbo::{Affine, Rect};
         use vello::peniko::{BlendMode, Fill};
 
@@ -224,8 +242,16 @@ impl RetainedGpuTarget {
             width: width.min(16),
             height: height.min(16),
         }];
+        // A GPU compiled the pipelines when the renderer built them, so its warm-up frames are
+        // GPU work alone: not finished within the bound of a GPU that still makes progress,
+        // they never will be (`ui::gpu::NOT_PROGRESSING_AFTER`).
+        let allowance = if software {
+            PIPELINE_WARMUP
+        } else {
+            ui::gpu::NOT_PROGRESSING_AFTER
+        };
         let deadline = Instant::now()
-            .checked_add(PIPELINE_WARMUP)
+            .checked_add(allowance)
             .ok_or_else(|| BridgeError::Renderer("warm-up deadline out of range".to_owned()))?;
         for damage in [
             SceneDamage {
@@ -241,9 +267,12 @@ impl RetainedGpuTarget {
         ] {
             self.render_until(&scene, damage, deadline)?;
         }
-        // The warm-up picture is not content: the first real frame renders in full.
+        // The warm-up picture is not content: the first real frame renders in full. Nor is it
+        // a frame the device finished for the desktop: a device lost before its first real one
+        // is on a GPU that cannot be brought back (`ui::gpu::recover`).
         self.invalidate();
         self.reset_attempts();
+        self.finished_frames = 0;
         Ok(())
     }
 
@@ -489,6 +518,7 @@ impl RetainedGpuTarget {
         match &result {
             Ok(()) => {
                 self.retained_target_valid = true;
+                self.finished_frames = self.finished_frames.saturating_add(1);
                 self.last_successful_revision = Some(revision);
                 if let Some(layers) = self.strip_layers.as_mut() {
                     layers.shown = Some(strip_layers::Shown::of(cache, revision));
@@ -523,7 +553,7 @@ impl RetainedGpuTarget {
     /// first frame of the next strip pan copies and composites instead of
     /// rasterising every layer. Rasterises only the layers that differ from
     /// what the textures hold, a whole one in bands
-    /// ([`strip_layers::warm_bands`]), and stops between two renders
+    /// (`strip_layers::warm_bands`), and stops between two renders
     /// as soon as `keep_going` says a frame waits, keeping what it finished.
     /// The output target is left alone. Returns the pixels rasterised, or
     /// `None` when the layers cannot present `cache`.
@@ -1127,6 +1157,7 @@ impl RetainedGpuTarget {
                 #[cfg(target_os = "linux")]
                 crate::shader_seed::after_frame();
                 self.retained_target_valid = true;
+                self.finished_frames = self.finished_frames.saturating_add(1);
                 self.last_successful_revision = damage.map(|damage| damage.revision);
             }
             // Every attempt completed and settled its counters, so the renderer is consistent

@@ -75,7 +75,7 @@ impl CapnpBrokerState {
         if parent.invocation.0.is_nil() {
             return Err(ActionHostError::NotPermitted);
         }
-        let room = destination.workspace.room.to_string();
+        let room = destination.workspace.room().to_string();
         self.check_launch_origin(caller, Some(origin), &room)?;
         let app = self
             .services
@@ -114,13 +114,14 @@ impl CapnpBrokerState {
                 "place": match place {
                     LaunchPlace::Focus => serde_json::json!({ "focus": true }),
                     LaunchPlace::Beside { app_id } => serde_json::json!({ "beside": app_id }),
+                    LaunchPlace::Aside => serde_json::json!({ "aside": true }),
                 },
             })),
         )?;
-        let workspace = self.reauthorize_launch_effect(
+        let workspace = self.reauthorize_launch_effect_as(
             (caller, Some(&child_origin), &room),
             &admitted,
-            &app.package_id,
+            (&app.package_id, super::launch_kind(parent)),
         )?;
         let result = self.launch_retained(&app.package_id, &workspace, record, place);
         let update = match &result {

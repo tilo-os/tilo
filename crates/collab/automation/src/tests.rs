@@ -1,5 +1,3 @@
-//! Shortcuts checked and run against a fake action host.
-
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Mutex;
@@ -25,8 +23,8 @@ use crate::{
     AskRequest, Binding, CatchUp, CheckErrorKind, Condition, ConfirmationRequest, NoShortcuts,
     RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
     SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, Weekday, check, run,
-    shortcut_resource_id,
+    Step, StepFailure, StepKind, StepPath, StepRecord, StepStatus, StopWatch, TimeOfDay,
+    TriggerSpec, Weekday, check, run, shortcut_resource_id,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -274,14 +272,18 @@ impl ActionHost for FakeHost {
             .map(|update| InvocationState::new(*id, update.clone()))
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::NotCancellable {
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
             reason: "finished".into(),
-        })
+        }))
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Hooks {
     confirmation: Option<Confirmation>,
     answer: Option<Value>,
@@ -340,6 +342,7 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         name: "Tidy inbox".into(),
         inputs: Vec::new(),
         steps,
+        step_timeout_secs: None,
         output: None,
         grant: notes_grant(),
         triggers: Vec::new(),
@@ -393,7 +396,7 @@ fn run_with(
 
 fn failure(report: &RunReport) -> Option<(&StepPath, &StepFailure)> {
     match &report.outcome {
-        RunOutcome::Completed => None,
+        RunOutcome::Completed | RunOutcome::Cancelled { .. } => None,
         RunOutcome::Failed { path, failure } => Some((path, failure)),
     }
 }
@@ -685,6 +688,67 @@ fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
     let started = host.started();
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
+}
+
+/// An action that needs its person attending (it opens a chooser) is never
+/// consented to in advance: an unattended run stops at it even when a rule
+/// names it, and an interactive run asks.
+#[test]
+fn an_attended_action_is_never_consented_to_in_advance() {
+    let mut host = FakeHost::new();
+    host.rows.push(row(
+        NOTES,
+        NOTE,
+        "notes.note",
+        "attach",
+        Vec::new(),
+        ActionContract {
+            tags: vec![tilo_actions::ATTENDED_TAG.to_owned()],
+            ..ActionContract::default()
+        },
+    ));
+    let mut attach = shortcut(
+        "attach",
+        vec![invoke(
+            "attach",
+            NOTES,
+            Selector::Fixed(NOTE.into()),
+            "attach",
+            &[],
+        )],
+    );
+    attach.grant.push(crate::action_rule(
+        NOTES,
+        "notes.note",
+        Some(NOTE),
+        "attach",
+        KindSet::ALL,
+        Answer::Allow,
+    ));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &attach,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(
+        matches!(
+            failure(&report),
+            Some((_, StepFailure::ConfirmationRequired))
+        ),
+        "{report:?}"
+    );
+    let declining = Hooks::default();
+    run_with(
+        &host,
+        &declining,
+        &attach,
+        RunId::new(),
+        RunMode::Interactive,
+    );
+    assert_eq!(declining.confirmations.lock().unwrap().len(), 1);
+    assert!(host.started().is_empty());
 }
 
 #[test]
@@ -1539,10 +1603,14 @@ impl ActionHost for RunningHost {
         Some(waiter)
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::NotCancellable {
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
             reason: "not in these tests".into(),
-        })
+        }))
     }
 }
 
@@ -1559,9 +1627,9 @@ fn archive_shortcut() -> Shortcut {
     )
 }
 
-fn archive_run<'a>(
+fn archive_run<'a, K: RunHooks>(
     host: &'a RunningHost,
-    hooks: &'a Hooks,
+    hooks: &'a K,
     shortcut: &'a Shortcut,
 ) -> impl Future<Output = RunReport> + 'a {
     run(
@@ -1625,6 +1693,188 @@ fn a_host_without_next_change_still_completes_via_settle() {
     // then the one that finds it finished: each after a poll interval.
     assert_eq!(host.observes(), 4);
     assert_eq!(hooks.settles.load(Ordering::Relaxed), 3);
+}
+
+/// Hooks whose runs can be stopped, at the stop `until` asks for.
+#[derive(Debug)]
+struct StoppableHooks {
+    inner: Hooks,
+    /// When a stop is reported: once the run asked `after` times, with this
+    /// reason. `None` never stops.
+    stop: Option<(usize, String)>,
+    asked: AtomicUsize,
+}
+
+impl StoppableHooks {
+    fn after(asked: usize, reason: &str) -> Self {
+        Self {
+            inner: Hooks::default(),
+            stop: Some((asked, reason.into())),
+            asked: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl RunHooks for StoppableHooks {
+    fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
+        self.inner.confirm(request)
+    }
+
+    fn ask(&self, request: AskRequest) -> Pending<Option<Value>> {
+        self.inner.ask(request)
+    }
+
+    fn settle(&self, invocation: InvocationId) -> Pending<()> {
+        self.inner.settle(invocation)
+    }
+
+    fn stopped(&self, _what: StopWatch<'_>) -> Pending<Result<(), String>> {
+        let asked = self.asked.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        Pending::ready(match &self.stop {
+            Some((after, reason)) if asked >= *after => Err(reason.clone()),
+            _ => Ok(()),
+        })
+    }
+}
+
+#[test]
+fn a_stopped_run_ends_as_cancelled_and_starts_nothing_more() {
+    // Two steps: the first archives, the second deletes. The stop is asked
+    // before the first step, so the run never invokes anything.
+    let host = RunningHost::new(true, 0);
+    let hooks = StoppableHooks::after(1, "the person stopped it");
+    let delete = Step::new(
+        "delete",
+        StepKind::Invoke {
+            action: ActionKey::new(NOTES, "notes.note", "delete"),
+            resource: Selector::Fixed(NOTE.into()),
+            args: BTreeMap::new(),
+            appearance: None,
+        },
+    );
+    let mut tidy = archive_shortcut();
+    tidy.steps.push(delete);
+    let report = block_on(archive_run(&host, &hooks, &tidy));
+    assert_eq!(
+        report.outcome,
+        RunOutcome::Cancelled {
+            at: StepPath::root().child(0)
+        },
+        "{report:?}"
+    );
+    assert_eq!(host.observes(), 0, "no step was started");
+    assert!(matches!(
+        report.steps.as_slice(),
+        [StepRecord {
+            status: StepStatus::Failed {
+                failure: StepFailure::Stopped { .. }
+            },
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn a_stop_between_steps_keeps_what_already_landed() {
+    // The first step is asked about, runs, is looked at once more once it
+    // finished, and the stop is asked before the second step.
+    let host = RunningHost::new(true, 0);
+    let hooks = StoppableHooks::after(3, "the person stopped it");
+    let mut tidy = archive_shortcut();
+    tidy.steps.push(Step::new(
+        "delete",
+        StepKind::Invoke {
+            action: ActionKey::new(NOTES, "notes.note", "delete"),
+            resource: Selector::Fixed(NOTE.into()),
+            args: BTreeMap::new(),
+            appearance: None,
+        },
+    ));
+    // The first step is accepted and stays running until the test ends it,
+    // so the stop is asked for between the two.
+    let mut running = std::pin::pin!(archive_run(&host, &hooks, &tidy));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(running.as_mut().poll(&mut cx).is_pending(), "{hooks:?}");
+    assert_eq!(hooks.asked.load(Ordering::Relaxed), 2);
+    host.finish();
+    let Poll::Ready(report) = running.as_mut().poll(&mut cx) else {
+        panic!("the finished step lets the run look at the stop");
+    };
+    assert_eq!(
+        report.outcome,
+        RunOutcome::Cancelled {
+            at: StepPath::root().child(1)
+        },
+        "{report:?}"
+    );
+    assert_eq!(
+        host.observes(),
+        2,
+        "the step before the stop ran; the one after it never started"
+    );
+    let (first, second) = match report.steps.as_slice() {
+        [first, second] => (first, second),
+        other => panic!("the step that ran and the one that stopped: {other:?}"),
+    };
+    assert!(matches!(first.status, StepStatus::Succeeded { .. }));
+    assert!(matches!(
+        second.status,
+        StepStatus::Failed {
+            failure: StepFailure::Stopped { .. }
+        }
+    ));
+}
+
+#[test]
+fn a_step_that_outstays_its_patience_stops_the_run_waiting() {
+    // A host that never answers, and a shortcut impatient with it.
+    let host = RunningHost::new(false, usize::MAX);
+    let hooks = Hooks::default();
+    let mut archive = archive_shortcut();
+    archive.step_timeout_secs = Some(0);
+    let report = block_on(archive_run(&host, &hooks, &archive));
+    assert_eq!(
+        failure(&report),
+        Some((
+            &StepPath::root().child(0),
+            &StepFailure::TimedOut { seconds: 1 }
+        )),
+        "{report:?}"
+    );
+    assert!(
+        host.observes() > 1,
+        "the run looked again at a host that cannot push changes"
+    );
+}
+
+#[test]
+fn a_run_reports_the_version_of_the_shortcut_it_ran() {
+    let archive = archive_shortcut();
+    let edit = |name: &str| {
+        let mut edited = archive.clone();
+        edited.name = name.into();
+        let bytes = crate::program::canonical_bytes(&edited).unwrap();
+        crate::program::program_hash(&bytes)
+    };
+    let host = FakeHost::new();
+    let first = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &archive,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            caused_by: None,
+        },
+    ));
+    let edited = edit("Tidy the inbox");
+    // The record of the run says which version produced it, so editing the
+    // shortcut afterwards does not make its history ambiguous.
+    assert_eq!(first.version.as_deref(), Some(edit("Tidy inbox").as_str()));
+    assert_ne!(first.version.as_deref(), Some(edited.as_str()));
 }
 
 #[test]

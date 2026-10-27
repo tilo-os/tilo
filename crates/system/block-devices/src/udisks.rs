@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 pub const SERVICE: &str = "org.freedesktop.UDisks2";
 pub const IFACE_BLOCK: &str = "org.freedesktop.UDisks2.Block";
 pub const IFACE_FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
+pub const IFACE_DRIVE: &str = "org.freedesktop.UDisks2.Drive";
 
 /// The `UDisks2` `block_devices` object path for a kernel device name (`sda1`,
 /// `/dev/nvme0n1p2`, `dm-0`). Every byte outside `[A-Za-z0-9]` becomes
@@ -54,7 +55,9 @@ mod client {
     use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::Value;
 
-    use super::{IFACE_BLOCK, IFACE_FILESYSTEM, ReadOnlyFilesystem, SERVICE, object_path};
+    use super::{
+        IFACE_BLOCK, IFACE_DRIVE, IFACE_FILESYSTEM, ReadOnlyFilesystem, SERVICE, object_path,
+    };
 
     /// Empty `a{sv}` options: `UDisks2` picks its defaults (automatic mount
     /// point, default mkfs options).
@@ -69,10 +72,6 @@ mod client {
 
     impl Udisks {
         /// Connect to the system bus.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the system bus is unreachable.
         pub fn system() -> zbus::Result<Self> {
             Connection::system().map(|connection| Self { connection })
         }
@@ -101,10 +100,6 @@ mod client {
         }
 
         /// `Filesystem.Mount`; returns where `UDisks2` mounted it.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the call fails or is not authorised.
         pub fn mount(&self, device: &str) -> zbus::Result<String> {
             self.filesystem(device)?.call("Mount", &(no_options(),))
         }
@@ -119,9 +114,6 @@ mod client {
 
         /// Mount the verified installer's FAT filesystem for encrypted setup.
         /// Permission remains with Polkit; these options never permit execution.
-        ///
-        /// # Errors
-        /// Returns an error if mounting is refused or these options are unavailable.
         pub fn mount_setup(&self, device: &str, uid: u32, gid: u32) -> zbus::Result<String> {
             let mount_options = format!("rw,nodev,nosuid,noexec,uid={uid},gid={gid},umask=0077");
             let options = HashMap::from([
@@ -134,10 +126,6 @@ mod client {
         /// Mount an explicitly selected migration source without journal replay.
         /// The caller must additionally attest the returned mount against the
         /// current kernel mount table and filesystem read-only flag.
-        ///
-        /// # Errors
-        /// Returns an error when the mount options are unsupported or Polkit
-        /// refuses permission. There is no fallback to writable/default options.
         pub fn mount_read_only(
             &self,
             device: &str,
@@ -168,18 +156,11 @@ mod client {
         }
 
         /// `Filesystem.Unmount`.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the call fails or is not authorised.
         pub fn unmount(&self, device: &str) -> zbus::Result<()> {
             self.filesystem(device)?.call("Unmount", &(no_options(),))
         }
 
         /// Obtain a read-only descriptor through the daemon's authorization.
-        ///
-        /// # Errors
-        /// Returns an error if opening the selected block device is refused.
         pub fn open_read_only(&self, device: &str) -> zbus::Result<std::fs::File> {
             let descriptor: zbus::zvariant::OwnedFd = self
                 .block(device)?
@@ -189,9 +170,6 @@ mod client {
 
         /// Format only a caller-attested new migration partition as ext4.
         /// Ownership is assigned by the daemon to its authorized caller.
-        ///
-        /// # Errors
-        /// Returns an error if formatting or ownership options are refused.
         pub fn format_migration(&self, device: &str) -> zbus::Result<()> {
             let options = HashMap::from([
                 ("label", Value::from("Tilo migration")),
@@ -206,9 +184,6 @@ mod client {
         }
 
         /// Mount encrypted migration media without execution or device access.
-        ///
-        /// # Errors
-        /// Returns an error if these controlled mount options are unavailable.
         pub fn mount_migration(&self, device: &str) -> zbus::Result<String> {
             let options = HashMap::from([
                 ("fstype", Value::from("ext4")),
@@ -218,12 +193,20 @@ mod client {
         }
 
         /// `Block.Format` with `fstype` (`ext4`, `vfat`, ...).
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the call fails or is not authorised.
         pub fn format(&self, device: &str, fstype: &str) -> zbus::Result<()> {
             self.block(device)?.call("Format", &(fstype, no_options()))
+        }
+
+        /// `Drive.PowerOff` on the drive `device` is on (its `Block.Drive`):
+        /// the drive is detached and powered down, ready to be pulled out.
+        pub fn power_off(&self, device: &str) -> zbus::Result<()> {
+            let drive: zbus::zvariant::OwnedObjectPath =
+                self.block(device)?.get_property("Drive")?;
+            if drive.as_str() == "/" {
+                return Err(zbus::Error::Failure(format!("{device} is on no drive")));
+            }
+            Proxy::new(&self.connection, SERVICE, drive, IFACE_DRIVE)?
+                .call("PowerOff", &(no_options(),))
         }
     }
 }
@@ -257,7 +240,6 @@ mod tests {
     #[test]
     fn object_paths_escape_every_byte_outside_the_plain_name_set() {
         for (case, device, want) in [
-            // Plain names pass through.
             (
                 "plain_names_pass_through",
                 "nvme0n1p2",
@@ -268,7 +250,6 @@ mod tests {
                 "/dev/sda1",
                 "/org/freedesktop/UDisks2/block_devices/sda1",
             ),
-            // Other bytes use gdbus escaping.
             (
                 "other_bytes_use_gdbus_escaping",
                 "dm-0",

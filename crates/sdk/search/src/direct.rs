@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::index::{Document, Hit, Hits, Page, Signals};
-use crate::query::{Matching, tier_sequence, typo_distance};
+use crate::query::{Matching, admitted, names_only, tier_sequence, typo_distance};
 use crate::tokenizer::{marked, words};
 use crate::typo::within;
 use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};
@@ -29,7 +29,6 @@ use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks
 /// tantivy, whose postings outpace a scan.
 pub(crate) const DIRECT_LIMIT: usize = 1024;
 
-/// One record as [`Direct`] reads it.
 #[derive(Debug)]
 struct Record {
     key: u64,
@@ -201,6 +200,8 @@ struct Typed<'a> {
     typo_words: Vec<Vec<bool>>,
     title_typo: Option<i32>,
     keyword_typo: Option<i32>,
+    /// The query is only the start of a name ([`names_only`]).
+    names_only: bool,
     _direct: std::marker::PhantomData<&'a Direct>,
 }
 
@@ -211,6 +212,7 @@ impl<'a> Typed<'a> {
         if marked_query.is_empty() {
             return None;
         }
+        let names_only = names_only(&marked_query);
         let tiers = MatchTier::FIELD
             .into_iter()
             .filter_map(|tier| {
@@ -219,7 +221,7 @@ impl<'a> Typed<'a> {
             })
             .collect();
         let chunks: Vec<&str> = query.split_whitespace().collect();
-        let spanning = (matching.spanning && chunks.len() > 1)
+        let spanning = (matching.spanning && !names_only && chunks.len() > 1)
             .then(|| {
                 chunks
                     .iter()
@@ -236,24 +238,25 @@ impl<'a> Typed<'a> {
         } else {
             Vec::new()
         };
-        let spanning_typos = (matching.spanning && matching.typos && chunks.len() > 1)
-            .then(|| {
-                let mut at = 0usize;
-                chunks
-                    .iter()
-                    .map(|chunk| {
-                        let held = words(chunk).len();
-                        let range = at..at.saturating_add(held);
-                        at = range.end;
-                        let marked: String = marked(chunk, false).into_iter().collect();
-                        (!marked.is_empty()).then_some((marked, range))
-                    })
-                    .collect::<Option<Vec<_>>>()
-                    // Chunks and words split alike, or the ranges are wrong.
-                    .filter(|_| at == typed.len())
-            })
-            .flatten()
-            .and_then(|chunks| Some((chunks, ranks(MatchTier::Typo, FieldWeight::KEYWORD)?)));
+        let spanning_typos =
+            (matching.spanning && matching.typos && !names_only && chunks.len() > 1)
+                .then(|| {
+                    let mut at = 0usize;
+                    chunks
+                        .iter()
+                        .map(|chunk| {
+                            let held = words(chunk).len();
+                            let range = at..at.saturating_add(held);
+                            at = range.end;
+                            let marked: String = marked(chunk, false).into_iter().collect();
+                            (!marked.is_empty()).then_some((marked, range))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        // Chunks and words split alike, or the ranges are wrong.
+                        .filter(|_| at == typed.len())
+                })
+                .flatten()
+                .and_then(|chunks| Some((chunks, ranks(MatchTier::Typo, FieldWeight::KEYWORD)?)));
         Some(Self {
             ranks,
             needle: marked_query.into_iter().collect(),
@@ -266,7 +269,10 @@ impl<'a> Typed<'a> {
                 direct.typo_words(&typed)
             },
             title_typo: ranks(MatchTier::Typo, FieldWeight::TITLE),
-            keyword_typo: ranks(MatchTier::Typo, FieldWeight::KEYWORD),
+            keyword_typo: admitted(names_only, MatchTier::Typo, FieldWeight::KEYWORD)
+                .then(|| ranks(MatchTier::Typo, FieldWeight::KEYWORD))
+                .flatten(),
+            names_only,
             _direct: std::marker::PhantomData,
         })
     }
@@ -286,7 +292,8 @@ impl<'a> Typed<'a> {
                     continue;
                 }
                 for (tier, sequence) in &self.tiers {
-                    if let Some(rank) = (self.ranks)(*tier, *weight)
+                    if admitted(self.names_only, *tier, *weight)
+                        && let Some(rank) = (self.ranks)(*tier, *weight)
                         && value.contains(sequence.as_str())
                     {
                         better(rank);

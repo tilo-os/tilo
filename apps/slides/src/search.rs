@@ -6,7 +6,6 @@ use ui::tilo_resource::SearchEntry;
 use crate::deck::{Deck, Element, Slide, blocks_of};
 use crate::model::ElementKind;
 
-/// The search entries of the deck as it stands.
 pub fn entries(deck: &Deck) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
     for (index, (id, slide)) in deck.slides.iter().enumerate() {

@@ -134,6 +134,9 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             cache_home: path("XDG_CACHE_HOME"),
             pipeline_seed: path("TILO_PIPELINE_SEED_DIR"),
             font_index: path("TILO_FONT_INDEX"),
+            font_catalog: path("TILO_FONT_CATALOG"),
+            font_artifact_cache: path("TILO_FONT_ASSET_CACHE"),
+            public_identity_record: path("TILO_USER_IDENTITY"),
         },
         accessibility: crate::host::AccessibilityInputs {
             screen_reader: flag(&["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"]),
@@ -157,6 +160,10 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             profile_out: path("TILO_PROFILE_OUT"),
             presentation_profile: presentation_profile_requested(
                 std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
+                std::env::var("TILO_PROFILE_LOCAL_INPUT")
+                    .ok()
+                    .as_deref()
+                    .is_some_and(|value| value == "1"),
                 std::env::var_os("TILO_NATIVE_SCENARIO").as_deref(),
             ),
             presentation_timing: presentation_timing_requested(
@@ -182,14 +189,24 @@ fn presentation_timing_requested(profile: Option<&str>) -> bool {
     profile == Some("1")
 }
 
-/// Presentation profiling needs an explicit `profile == "1"` and a native
-/// scenario to profile. Whether this platform can profile presentation at all
-/// is the renderer's decision.
+/// Presentation profiling needs an explicit `profile == "1"` and a record to
+/// profile: a native scenario, or a local-input run that has no synthetic
+/// input at all and measures the person's own typing. The two are exclusive —
+/// a local-input run rejects a scenario — so a run that asks for both gets
+/// nothing rather than a measurement of the wrong thing. Whether this platform
+/// can profile presentation at all is the renderer's decision.
 fn presentation_profile_requested(
     profile: Option<&str>,
+    local_input: bool,
     scenario: Option<&std::ffi::OsStr>,
 ) -> bool {
-    profile == Some("1") && scenario.is_some_and(|path| !path.is_empty())
+    let scenario_present = scenario.is_some_and(|path| !path.is_empty());
+    // Any scenario value at all, including an empty one, is a conflict with
+    // local input: the native scenario loader takes an empty one literally and
+    // refuses the launch.
+    profile == Some("1")
+        && !(local_input && scenario.is_some())
+        && (scenario_present || local_input)
 }
 
 /// Attach the native clipboard to the runner's Wayland display, so copies go
@@ -211,19 +228,27 @@ pub fn attach_display(
 }
 
 #[cfg(not(target_os = "android"))]
-struct SystemSpeech;
+use self::desktop_media::SystemSpeech;
 
+/// The desktop's speech and media sessions, which Android does not have: one
+/// platform boundary for both, so a reader sees a single "not here" rather than
+/// three.
 #[cfg(not(target_os = "android"))]
-impl SpeechFactory for SystemSpeech {
-    fn make(&self) -> Box<dyn tts::Speaker> {
-        tts::default_speaker()
+mod desktop_media {
+    use super::{MediaSession, MediaSessionFactory, MprisConfig, PlayerSnapshot, SpeechFactory};
+
+    pub(super) struct SystemSpeech;
+
+    impl SpeechFactory for SystemSpeech {
+        fn make(&self) -> Box<dyn tts::Speaker> {
+            tts::default_speaker()
+        }
     }
-}
 
-#[cfg(not(target_os = "android"))]
-impl MediaSessionFactory for super::mpris::DesktopMediaSessions {
-    fn start(&self, config: MprisConfig, initial: PlayerSnapshot) -> Option<MediaSession> {
-        super::mpris::start_desktop_session(config, initial)
+    impl MediaSessionFactory for super::super::mpris::DesktopMediaSessions {
+        fn start(&self, config: MprisConfig, initial: PlayerSnapshot) -> Option<MediaSession> {
+            super::super::mpris::start_desktop_session(config, initial)
+        }
     }
 }
 
@@ -244,6 +269,7 @@ mod tests {
         use std::ffi::OsStr;
         assert!(presentation_profile_requested(
             Some("1"),
+            false,
             Some(OsStr::new("scenario.json"))
         ));
         for (profile, scenario) in [
@@ -252,8 +278,28 @@ mod tests {
             (Some("1"), None),
             (Some("1"), Some(OsStr::new(""))),
         ] {
-            assert!(!presentation_profile_requested(profile, scenario));
+            assert!(!presentation_profile_requested(profile, false, scenario));
         }
+    }
+
+    #[test]
+    fn local_input_run_profiles_presentation_without_a_scenario() {
+        use std::ffi::OsStr;
+        // A launch that measures the person's own typing has no scenario to
+        // name, and its feedback must still be enabled.
+        assert!(presentation_profile_requested(Some("1"), true, None));
+        // Neither opt-in alone enables the profile.
+        assert!(!presentation_profile_requested(Some("1"), false, None));
+        assert!(!presentation_profile_requested(None, true, None));
+        assert!(!presentation_profile_requested(Some("0"), true, None));
+        // A named scenario alongside local input is refused, as the local-input
+        // observer refuses it: rather than profile the wrong input, enable
+        // nothing.
+        assert!(!presentation_profile_requested(
+            Some("1"),
+            true,
+            Some(OsStr::new("scenario.json"))
+        ));
     }
 
     #[cfg(windows)]

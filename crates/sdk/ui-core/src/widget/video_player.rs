@@ -14,6 +14,7 @@ use crate::num::f64_of_u64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
+use tilo_sort::CompactSort as _;
 
 use crate::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -23,7 +24,6 @@ use vello::peniko::{
     BlendMode, Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
@@ -268,6 +268,17 @@ pub struct VideoPlayer {
     time_label_rect: Rect,
     /// `None` means hidden.
     controls_visible_until: Option<Instant>,
+    /// The controls were shown and no frame has drawn them yet. A page
+    /// that presents a frame every few seconds would otherwise let a
+    /// reveal expire unseen: the controls stay up until one frame drew
+    /// them.
+    reveal_unpainted: bool,
+    /// The last frame drew the controls, at least half opaque: what is on
+    /// screen until the next frame, and what the semantics tree lists.
+    controls_on_screen: bool,
+    /// The played part of the progress line the last paint drew; zero
+    /// while the controls showed instead.
+    progress_line_painted: Rect,
     scrubbing: bool,
     last_cursor: Point,
     focused: bool,
@@ -392,6 +403,9 @@ impl VideoPlayer {
             fullscreen_button_rect: Rect::ZERO,
             time_label_rect: Rect::ZERO,
             controls_visible_until: None,
+            reveal_unpainted: false,
+            controls_on_screen: false,
+            progress_line_painted: Rect::ZERO,
             scrubbing: false,
             last_cursor: Point::ZERO,
             focused: false,
@@ -910,7 +924,19 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
+    /// A loaded video that is not playing keeps its controls up: nothing
+    /// moves on it, so there is nothing to hide them for.
+    fn controls_pinned(&self) -> bool {
+        self.has_media() && !self.is_playing()
+    }
+
     fn controls_visible_now(&self) -> bool {
+        self.controls_pinned() || self.reveal_unpainted || self.controls_shown_for_a_while()
+    }
+
+    /// Shown by the pointer, a key or playback starting, until the
+    /// auto-hide deadline.
+    fn controls_shown_for_a_while(&self) -> bool {
         match self.controls_visible_until {
             Some(deadline) => crate::time::now() < deadline,
             None => false,
@@ -920,7 +946,7 @@ impl VideoPlayer {
     /// Opacity for the shared control/host-overlay fade. Reduced motion keeps
     /// the exact same visibility timing but snaps between endpoints.
     pub fn controls_opacity(&self) -> f32 {
-        if self.open_menu.is_some() {
+        if self.open_menu.is_some() || self.controls_pinned() || self.reveal_unpainted {
             return 1.0;
         }
         let Some(deadline) = self.controls_visible_until else {
@@ -952,10 +978,19 @@ impl VideoPlayer {
 
     fn show_controls(&mut self) {
         self.controls_visible_until = crate::time::now().checked_add(CONTROLS_AUTO_HIDE);
+        self.reveal_unpainted = true;
     }
 
     /// The controls Panel: floating over the bottom of the picture, one
     /// `spacing.s2` in from the sides and the bottom edge.
+    /// Where the transport stands over the picture, shown or not: what an
+    /// app's panel over the picture stops above, so it never covers play
+    /// and the scrubber.
+    #[must_use]
+    pub fn transport_rect(&self, theme: &Theme) -> Rect {
+        self.controls_bar_rect(theme)
+    }
+
     fn controls_bar_rect(&self, theme: &Theme) -> Rect {
         let height = if theme.text_scale > 1.25 {
             (CONTROLS_BAR_HEIGHT * f64::from(theme.text_scale)).min(96.0)
@@ -969,6 +1004,37 @@ impl VideoPlayer {
             (y1 - height).max(self.rect.y0),
             (self.rect.x1 - inset).max(self.rect.x0 + inset),
             y1,
+        )
+    }
+
+    /// The scrub track's progress as a line along the picture's bottom
+    /// edge, as thick as the track, painted while the controls are hidden:
+    /// the played part in media ink over a scrim, so it reads on a bright
+    /// picture and a dark one alike.
+    fn paint_progress_line(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        self.progress_line_painted = Rect::ZERO;
+        if self.duration_ms == 0 || !self.has_media() || self.rect.width() <= 0.0 {
+            return;
+        }
+        let media = &theme.tokens.colors.media;
+        let line = self.progress_line_rect();
+        scene.fill(Fill::NonZero, transform, media.scrim, None, &line);
+        let played = Rect::new(
+            line.x0,
+            line.y0,
+            line.x0 + line.width() * self.playhead_fraction(),
+            line.y1,
+        );
+        scene.fill(Fill::NonZero, transform, media.ink, None, &played);
+        self.progress_line_painted = played;
+    }
+
+    fn progress_line_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            (self.rect.y1 - SCRUB_TRACK_HEIGHT).max(self.rect.y0),
+            self.rect.x1,
+            self.rect.y1,
         )
     }
 
@@ -988,12 +1054,19 @@ impl VideoPlayer {
         let last_pts = self.last_frame_pts;
         let have_frame = self.latest_frame.is_some();
         let snapshot = self.engine.as_mut().map(|engine| {
+            // In a page the renderer copies each picture from the media
+            // element on the GPU (`element_pictures`): none is read back.
+            engine.prefer_element_pictures();
             let events = engine.poll();
+            let element_picture = engine.take_element_picture();
             // Clone the (multi-megabyte) RGBA buffer only on a real pts
             // change — the scroll path re-syncs every frame, so cloning
             // unconditionally was a per-frame memcpy this guard discards.
             let cur_pts = engine.latest_frame().map(|f| f.pts_ms);
-            let frame = if cur_pts.is_some() && (last_pts != cur_pts || !have_frame) {
+            let frame = if element_picture.is_none()
+                && cur_pts.is_some()
+                && (last_pts != cur_pts || !have_frame)
+            {
                 engine
                     .latest_frame()
                     .map(|f| (f.width, f.height, f.rgba.clone(), f.pts_ms))
@@ -1006,10 +1079,11 @@ impl VideoPlayer {
                 engine.buffering_percent(),
                 engine.is_playing(),
                 frame,
+                element_picture,
                 events,
             )
         });
-        let Some((pos, dur, buffering, playing, frame, events)) = snapshot else {
+        let Some((pos, dur, buffering, playing, frame, element_picture, events)) = snapshot else {
             return;
         };
         self.record_terminal_media_events(events);
@@ -1034,6 +1108,11 @@ impl VideoPlayer {
             PlaybackState::Paused
         };
         if self.state != new_state {
+            // Playback starting shows the controls before they hide, so
+            // a video that begins on its own shows how to stop it.
+            if new_state == PlaybackState::Playing {
+                self.show_controls();
+            }
             self.state = new_state;
             self.dirty = true;
         }
@@ -1044,10 +1123,24 @@ impl VideoPlayer {
             self.latest_frame = Some(rgba_image(w, h, rgba));
             self.dirty = true;
         }
+        if let Some(picture) = element_picture {
+            self.show_element_picture(picture);
+        }
         // `publish` dedups sub-second position jitter, so this is quiet on the bus.
         if self.mpris.is_active() {
             self.publish_mpris();
         }
+    }
+
+    /// Show a picture the renderer copies from the page's media element
+    /// (`element_pictures`): an image of its own per picture, so the frame
+    /// that shows it differs from the last one exactly where it is drawn.
+    fn show_element_picture(&mut self, picture: media::ElementPicture) {
+        let image = rgba_image(picture.width, picture.height, Arc::new(Vec::new()));
+        crate::element_pictures::show(image.clone(), picture.element);
+        self.last_frame_pts = None;
+        self.latest_frame = Some(image);
+        self.dirty = true;
     }
 
     /// Keep the embedding observation channel bounded under normal playback.
@@ -1064,6 +1157,7 @@ impl VideoPlayer {
                 media::MediaEvent::Ended
                     | media::MediaEvent::Error(_)
                     | media::MediaEvent::MissingDecoder { .. }
+                    | media::MediaEvent::LimitReached
             )
         }));
     }
@@ -1147,20 +1241,19 @@ impl VideoPlayer {
         // Controls overlay, or whenever a settings menu is open (so it can't
         // vanish under the user's cursor).
         if !self.controls_visible_now() && self.open_menu.is_none() {
-            self.play_button_rect = Rect::ZERO;
-            self.scrub_track_rect = Rect::ZERO;
-            self.volume_track_rect = Rect::ZERO;
-            self.mute_button_rect = Rect::ZERO;
-            self.fullscreen_button_rect = Rect::ZERO;
-            self.gear_button_rect = Rect::ZERO;
-            self.setting_icon_rects.clear();
-            self.menu_hit_rects.clear();
+            self.forget_control_rects();
+            self.paint_progress_line(scene, transform, theme);
             return;
         }
+        self.progress_line_painted = Rect::ZERO;
         let opacity = self.controls_opacity();
         if opacity <= 0.0 {
+            // Nothing of the controls is drawn: none may be hit or read.
+            self.forget_control_rects();
             return;
         }
+        self.reveal_unpainted = false;
+        self.controls_on_screen = opacity >= 0.5;
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -1171,6 +1264,40 @@ impl VideoPlayer {
         self.paint_controls(scene, transform, text_renderer, theme);
         scene.pop_layer();
         self.paint_accessibility_focus(scene, transform, theme);
+    }
+
+    /// The controls are not drawn: none of them may be hit, nor read in the
+    /// semantics tree from where an earlier frame drew them.
+    fn forget_control_rects(&mut self) {
+        self.controls_on_screen = false;
+        self.play_button_rect = Rect::ZERO;
+        self.scrub_track_rect = Rect::ZERO;
+        self.volume_track_rect = Rect::ZERO;
+        self.mute_button_rect = Rect::ZERO;
+        self.fullscreen_button_rect = Rect::ZERO;
+        self.gear_button_rect = Rect::ZERO;
+        self.setting_icon_rects.clear();
+        self.menu_hit_rects.clear();
+    }
+
+    /// Whether the controls are there to see: the last frame drew them, at
+    /// least half opaque. That frame is what the screen shows until the
+    /// next one, which takes hidden or faded controls off the screen and
+    /// out of the tree together.
+    fn controls_seen(&self) -> bool {
+        self.controls_on_screen
+    }
+
+    /// The controls a person can see and reach now, with where they are
+    /// drawn: what the semantics tree lists, in order.
+    fn seen_controls(&self) -> Vec<(String, crate::a11y::AccessNode, Rect)> {
+        if !self.controls_seen() {
+            return Vec::new();
+        }
+        self.semantic_controls()
+            .into_iter()
+            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
     }
 
     fn paint_controls(
@@ -1566,7 +1693,7 @@ impl VideoPlayer {
             .filter(|(_, s)| s.priority >= 1)
             .map(|(i, _)| i)
             .collect();
-        prio.sort_by(|&a, &b| {
+        prio.compact_sort_by(|&a, &b| {
             let pb = self.settings.get(b).map_or(0, |s| s.priority);
             let pa = self.settings.get(a).map_or(0, |s| s.priority);
             pb.cmp(&pa).then(a.cmp(&b))
@@ -2308,10 +2435,12 @@ fn draw_fullscreen_glyph(
     color: Color,
     active: bool,
 ) {
+    // The corners, not the window's diagonal arrows: the window bar's
+    // maximize already wears those.
     let icon = if active {
-        Icon::Minimize2
+        Icon::Minimize
     } else {
-        Icon::Maximize2
+        Icon::Maximize
     };
     transport_glyph(scene, transform, r, icon, color);
 }
@@ -2501,7 +2630,9 @@ impl Widget for VideoPlayer {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.is_playing() || self.controls_visible_now()
+        // A paused player's pinned controls are still: only a deadline
+        // that ends a fade needs frames.
+        self.is_playing() || self.controls_shown_for_a_while()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2514,10 +2645,12 @@ impl Widget for VideoPlayer {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        // Hidden or faded controls leave the tree: a reader is not sent to
+        // a control nobody can see, and the keys in the description reach
+        // all of them meanwhile.
         let children = self
-            .semantic_controls()
+            .seen_controls()
             .into_iter()
-            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
             .map(|(_, node, rect)| node.with_bounds(rect))
             .collect();
         Some(
@@ -2540,9 +2673,8 @@ impl Widget for VideoPlayer {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let [index] = path else { return None };
-        self.semantic_controls()
+        self.seen_controls()
             .into_iter()
-            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
             .nth(*index)
             .map(|(_, _, rect)| rect)
     }
@@ -2550,9 +2682,8 @@ impl Widget for VideoPlayer {
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let [index] = path else { return false };
         let target = self
-            .semantic_controls()
+            .seen_controls()
             .into_iter()
-            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
             .nth(*index)
             .map(|(target, _, _)| target);
         if let Some(target) = target {
@@ -2611,1743 +2742,7 @@ impl Widget for VideoPlayer {
     }
 }
 
-impl VideoPlayer {
-    /// Route one logical keyboard input through the focused player surface.
-    ///
-    /// The application shell can use this same narrow input surface instead
-    /// of manufacturing platform-owned `winit::KeyEvent` values. Returning
-    /// `true` means the player consumed the key.
-    pub fn handle_key_input(&mut self, logical_key: &Key, state: ElementState) -> bool {
-        if !self.focused || state != ElementState::Pressed {
-            return false;
-        }
-        match logical_key {
-            Key::Named(NamedKey::Space) if self.has_media() => {
-                self.toggle_play();
-                self.show_controls();
-            }
-            Key::Named(NamedKey::ArrowLeft) if self.has_media() => {
-                let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
-                self.seek_to_ms(self.position_ms.saturating_sub(step));
-                self.show_controls();
-            }
-            Key::Named(NamedKey::ArrowRight) if self.has_media() => {
-                let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
-                self.seek_to_ms(self.position_ms.saturating_add(step));
-                self.show_controls();
-            }
-            Key::Character(c) if c.eq_ignore_ascii_case("f") => self.toggle_fullscreen(),
-            Key::Character(c) if c.eq_ignore_ascii_case("m") && self.has_media() => {
-                self.toggle_mute();
-                self.show_controls();
-            }
-            Key::Named(NamedKey::ArrowUp) if self.has_media() => {
-                self.set_volume(self.volume + 0.05);
-                self.show_controls();
-            }
-            Key::Named(NamedKey::ArrowDown) if self.has_media() => {
-                self.set_volume(self.volume - 0.05);
-                self.show_controls();
-            }
-            Key::Named(NamedKey::Home) if self.has_media() => {
-                self.seek_to_ms(0);
-                self.show_controls();
-            }
-            Key::Named(NamedKey::End) if self.has_media() => {
-                self.seek_to_ms(self.duration_ms);
-                self.show_controls();
-            }
-            Key::Named(NamedKey::Escape) if self.open_menu.is_some() => {
-                self.open_menu = None;
-                self.gear_expanded = None;
-                self.dirty = true;
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Routes a left-press at `self.last_cursor` through the settings menu,
-    /// the setting icons + gear, then the standard transport controls, in
-    /// that priority order.
-    fn press_at_cursor(&mut self) -> bool {
-        let p = self.last_cursor;
-
-        // An open menu owns the click: a row wins, a click off the menu (and
-        // off the buttons that could re-open it) dismisses it.
-        if self.open_menu.is_some() {
-            if let Some(hit) = self
-                .menu_hit_rects
-                .iter()
-                .find(|(_, r)| r.contains(p))
-                .map(|(h, _)| *h)
-            {
-                self.activate_menu_hit(hit);
-                return true;
-            }
-            let on_gear = self.gear_button_rect.width() > 0.0 && self.gear_button_rect.contains(p);
-            let on_icon = self.setting_icon_rects.iter().any(|(_, r)| r.contains(p));
-            if !on_gear && !on_icon {
-                self.open_menu = None;
-                self.gear_expanded = None;
-                self.dirty = true;
-                return true;
-            }
-        }
-
-        if self.gear_button_rect.width() > 0.0 && self.gear_button_rect.contains(p) {
-            self.open_menu = if self.open_menu == Some(OpenMenu::Gear) {
-                None
-            } else {
-                Some(OpenMenu::Gear)
-            };
-            self.gear_expanded = None;
-            self.dirty = true;
-            return true;
-        }
-
-        if let Some((idx, _)) = self
-            .setting_icon_rects
-            .iter()
-            .find(|(_, r)| r.contains(p))
-            .copied()
-        {
-            self.activate_setting_icon(idx);
-            return true;
-        }
-
-        if self.play_button_rect.contains(p) {
-            if self.has_media() {
-                self.toggle_play();
-            }
-            return true;
-        }
-        if self.fullscreen_button_rect.contains(p) {
-            self.toggle_fullscreen();
-            return true;
-        }
-        if self.volume_track_rect.width() > 0.0 && self.volume_track_rect.contains(p) {
-            let frac = ((p.x - self.volume_track_rect.x0) / self.volume_track_rect.width())
-                .clamp(0.0, 1.0);
-            // `frac` is clamped to 0.0..=1.0; `set_volume` clamps again, so
-            // the narrowing to `f32` cannot lose meaningful precision.
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "frac is clamped to 0.0..=1.0; f32 precision is sufficient for a volume fraction"
-            )]
-            self.set_volume(frac as f32);
-            return true;
-        }
-        if self.mute_button_rect.width() > 0.0 && self.mute_button_rect.contains(p) {
-            if self.has_media() {
-                self.toggle_mute();
-            }
-            return true;
-        }
-        if self.scrub_track_rect.width() > 0.0 && self.scrub_track_rect.contains(p) {
-            self.scrubbing = true;
-            self.seek_from_cursor();
-            return true;
-        }
-
-        // A plain click on the video surface toggles play/pause.
-        if self.has_media() {
-            self.toggle_play();
-        }
-        true
-    }
-
-    fn activate_menu_hit(&mut self, hit: MenuHit) {
-        match hit {
-            MenuHit::Setting(idx) => {
-                let Some(s) = self.settings.get(idx) else {
-                    return;
-                };
-                match &s.control {
-                    PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
-                    PlayerSettingControl::Button => {
-                        let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
-                            return;
-                        };
-                        self.setting_events
-                            .push(PlayerSettingEvent::Activated { id });
-                        self.open_menu = None;
-                        self.dirty = true;
-                    }
-                    PlayerSettingControl::Choice { .. } => {
-                        self.gear_expanded = if self.gear_expanded == Some(idx) {
-                            None
-                        } else {
-                            Some(idx)
-                        };
-                        self.dirty = true;
-                    }
-                }
-            }
-            MenuHit::Option(idx, oi) => self.choose_option(idx, oi),
-        }
-    }
-
-    fn activate_setting_icon(&mut self, idx: usize) {
-        let Some(s) = self.settings.get(idx) else {
-            return;
-        };
-        match &s.control {
-            PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
-            PlayerSettingControl::Button => {
-                let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
-                    return;
-                };
-                self.setting_events
-                    .push(PlayerSettingEvent::Activated { id });
-                self.dirty = true;
-            }
-            PlayerSettingControl::Choice { .. } => {
-                self.open_menu = if self.open_menu == Some(OpenMenu::Choice(idx)) {
-                    None
-                } else {
-                    Some(OpenMenu::Choice(idx))
-                };
-                self.dirty = true;
-            }
-        }
-    }
-
-    fn toggle_setting(&mut self, idx: usize) {
-        let Some(s) = self.settings.get_mut(idx) else {
-            return;
-        };
-        let PlayerSettingControl::Toggle { on } = &mut s.control else {
-            return;
-        };
-        *on = !*on;
-        let new_on = *on;
-        let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
-            return;
-        };
-        self.setting_events
-            .push(PlayerSettingEvent::Toggled { id, on: new_on });
-        self.dirty = true;
-    }
-
-    fn choose_option(&mut self, idx: usize, oi: usize) {
-        let Some(s) = self.settings.get_mut(idx) else {
-            return;
-        };
-        let PlayerSettingControl::Choice { options, selected } = &mut s.control else {
-            return;
-        };
-        if oi >= options.len() {
-            return;
-        }
-        *selected = oi;
-        let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
-            return;
-        };
-        self.setting_events
-            .push(PlayerSettingEvent::Chose { id, index: oi });
-        self.open_menu = None;
-        self.gear_expanded = None;
-        self.dirty = true;
-    }
-
-    fn seek_from_cursor(&mut self) {
-        if self.scrub_track_rect.width() <= 0.0 {
-            return;
-        }
-        let frac = ((self.last_cursor.x - self.scrub_track_rect.x0)
-            / self.scrub_track_rect.width())
-        .clamp(0.0, 1.0);
-        // `frac` is clamped to 0.0..=1.0, so the product stays within
-        // `0..=duration_ms` and is always non-negative — the `u64` cast
-        // cannot truncate or flip sign.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "frac is clamped to 0.0..=1.0, so frac * duration_ms stays within 0..=duration_ms"
-        )]
-        let target = (frac * f64_of_u64(self.duration_ms)) as u64;
-        self.seek_to_ms(target);
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the accessibility tree intentionally inventories the complete transport and settings surface in one order-matched function"
-    )]
-    fn semantic_controls(&self) -> Vec<(String, crate::a11y::AccessNode, Rect)> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let mut controls = Vec::new();
-        let focused = |target: &str| self.a11y_focus.as_deref() == Some(target);
-        let focusable = |target: &str| AccessState {
-            focusable: true,
-            focused: focused(target),
-            ..Default::default()
-        };
-
-        if self.has_media() {
-            let play_target = "transport.play-pause".to_string();
-            controls.push((
-                play_target.clone(),
-                AccessNode::new(Role::Button)
-                    .with_name(if self.is_playing() { "Pause" } else { "Play" })
-                    .with_description("Space")
-                    .with_action_target(play_target.clone())
-                    .with_state(AccessState {
-                        disabled: !self.transport_enabled,
-                        ..focusable(&play_target)
-                    }),
-                self.play_button_rect,
-            ));
-
-            let seek_target = "transport.seek".to_string();
-            controls.push((
-                seek_target.clone(),
-                AccessNode::new(Role::Slider)
-                    .with_name("Playback position")
-                    .with_value(format!(
-                        "{} of {}",
-                        format_ms(self.position_ms),
-                        format_ms(self.duration_ms)
-                    ))
-                    .with_description("Left and Right Arrow seek five seconds")
-                    .with_action_target(seek_target.clone())
-                    .with_state(AccessState {
-                        disabled: !self.transport_enabled,
-                        ..focusable(&seek_target)
-                    }),
-                self.scrub_track_rect,
-            ));
-
-            let mute_target = "audio.mute".to_string();
-            controls.push((
-                mute_target.clone(),
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(if self.muted { "Unmute" } else { "Mute" })
-                    .with_description("M")
-                    .with_action_target(mute_target.clone())
-                    .with_state(AccessState {
-                        checked: Some(self.muted),
-                        ..focusable(&mute_target)
-                    }),
-                self.mute_button_rect,
-            ));
-
-            let volume_target = "audio.volume".to_string();
-            controls.push((
-                volume_target.clone(),
-                AccessNode::new(Role::Slider)
-                    .with_name("Volume")
-                    .with_value(format!("{}%", (self.effective_volume() * 100.0).round()))
-                    .with_action_target(volume_target.clone())
-                    .with_state(focusable(&volume_target)),
-                self.volume_track_rect,
-            ));
-        }
-
-        for (idx, rect) in &self.setting_icon_rects {
-            let Some(setting) = self.settings.get(*idx) else {
-                continue;
-            };
-            let target = format!("setting:{}", setting.id);
-            let mut state = focusable(&target);
-            let (role, value) = match &setting.control {
-                PlayerSettingControl::Toggle { on } => {
-                    state.checked = Some(*on);
-                    (Role::ToggleButton, None)
-                }
-                PlayerSettingControl::Choice { options, selected } => {
-                    state.expanded = Some(self.open_menu == Some(OpenMenu::Choice(*idx)));
-                    (Role::ComboBox, options.get(*selected).cloned())
-                }
-                PlayerSettingControl::Button => (Role::Button, None),
-            };
-            controls.push((
-                target.clone(),
-                AccessNode::new(role)
-                    .with_name(setting.name.clone())
-                    .with_optional_value(value)
-                    .with_action_target(target.clone())
-                    .with_state(state),
-                *rect,
-            ));
-        }
-
-        if self.gear_button_rect.width() > 0.0 {
-            let target = "settings.menu".to_string();
-            controls.push((
-                target.clone(),
-                AccessNode::new(Role::Button)
-                    .with_name("Playback settings")
-                    .with_action_target(target.clone())
-                    .with_state(AccessState {
-                        expanded: Some(self.open_menu == Some(OpenMenu::Gear)),
-                        ..focusable(&target)
-                    }),
-                self.gear_button_rect,
-            ));
-        }
-
-        for (hit, rect) in &self.menu_hit_rects {
-            match hit {
-                MenuHit::Setting(idx) => {
-                    let Some(setting) = self.settings.get(*idx) else {
-                        continue;
-                    };
-                    let target = format!("menu-setting:{}", setting.id);
-                    let mut state = focusable(&target);
-                    let value = match &setting.control {
-                        PlayerSettingControl::Toggle { on } => {
-                            state.checked = Some(*on);
-                            Some(if *on { "On".into() } else { "Off".into() })
-                        }
-                        PlayerSettingControl::Choice { options, selected } => {
-                            state.expanded = Some(self.gear_expanded == Some(*idx));
-                            options.get(*selected).cloned()
-                        }
-                        PlayerSettingControl::Button => None,
-                    };
-                    controls.push((
-                        target.clone(),
-                        AccessNode::new(Role::MenuItem)
-                            .with_name(setting.name.clone())
-                            .with_optional_value(value)
-                            .with_action_target(target.clone())
-                            .with_state(state),
-                        *rect,
-                    ));
-                }
-                MenuHit::Option(idx, option) => {
-                    let Some(setting) = self.settings.get(*idx) else {
-                        continue;
-                    };
-                    let PlayerSettingControl::Choice { options, selected } = &setting.control
-                    else {
-                        continue;
-                    };
-                    let Some(label) = options.get(*option) else {
-                        continue;
-                    };
-                    let target = format!("setting-option:{}:{option}", setting.id);
-                    controls.push((
-                        target.clone(),
-                        AccessNode::new(Role::MenuItem)
-                            .with_name(label.clone())
-                            .with_action_target(target.clone())
-                            .with_state(AccessState {
-                                selected: *selected == *option,
-                                ..focusable(&target)
-                            }),
-                        *rect,
-                    ));
-                }
-            }
-        }
-
-        let fullscreen_target = "presentation.fullscreen".to_string();
-        controls.push((
-            fullscreen_target.clone(),
-            AccessNode::new(Role::Button)
-                .with_name(if self.fullscreen {
-                    "Exit fullscreen"
-                } else {
-                    "Enter fullscreen"
-                })
-                .with_description("F")
-                .with_action_target(fullscreen_target.clone())
-                .with_state(focusable(&fullscreen_target)),
-            self.fullscreen_button_rect,
-        ));
-        controls
-    }
-
-    fn setting_index(&self, id: &str) -> Option<usize> {
-        self.settings.iter().position(|setting| setting.id == id)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all semantic targets share one auditable dispatch table matching semantic_controls"
-    )]
-    fn activate_semantic_target(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
-        use crate::a11y::Action;
-        match target {
-            "transport.play-pause"
-                if self.has_media()
-                    && self.transport_enabled
-                    && matches!(action, Action::Activate | Action::ToggleCheck) =>
-            {
-                self.toggle_play();
-                self.show_controls();
-                true
-            }
-            "transport.seek" if self.has_media() && self.transport_enabled => match action {
-                Action::Increment => {
-                    self.seek_to_ms(self.position_ms.saturating_add(5_000));
-                    true
-                }
-                Action::Decrement => {
-                    self.seek_to_ms(self.position_ms.saturating_sub(5_000));
-                    true
-                }
-                Action::SetValue(value) => value
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-                    .is_some_and(|seconds| {
-                        let millis = crate::time::Duration::from_secs_f64(seconds).as_millis();
-                        self.seek_to_ms(u64::try_from(millis).unwrap_or(u64::MAX));
-                        true
-                    }),
-                _ => false,
-            },
-            "audio.mute"
-                if self.has_media() && matches!(action, Action::Activate | Action::ToggleCheck) =>
-            {
-                self.toggle_mute();
-                true
-            }
-            "audio.volume" if self.has_media() => match action {
-                Action::Increment => {
-                    self.set_volume(self.volume + 0.05);
-                    true
-                }
-                Action::Decrement => {
-                    self.set_volume(self.volume - 0.05);
-                    true
-                }
-                Action::SetValue(value) => {
-                    let normalized = value
-                        .trim()
-                        .strip_suffix('%')
-                        .and_then(|raw| raw.parse::<f32>().ok().map(|percent| percent / 100.0));
-                    value
-                        .parse::<f32>()
-                        .ok()
-                        .or(normalized)
-                        .is_some_and(|volume| {
-                            self.set_volume(volume);
-                            true
-                        })
-                }
-                _ => false,
-            },
-            "presentation.fullscreen" if matches!(action, Action::Activate) => {
-                self.toggle_fullscreen();
-                true
-            }
-            "settings.menu" => match action {
-                Action::Activate | Action::Expand => {
-                    self.open_menu = Some(OpenMenu::Gear);
-                    self.reveal_controls();
-                    self.dirty = true;
-                    true
-                }
-                Action::Collapse => {
-                    self.open_menu = None;
-                    self.gear_expanded = None;
-                    self.dirty = true;
-                    true
-                }
-                _ => false,
-            },
-            _ => {
-                if let Some(id) = target.strip_prefix("setting:")
-                    && let Some(index) = self.setting_index(id)
-                    && matches!(
-                        action,
-                        Action::Activate | Action::ToggleCheck | Action::Expand
-                    )
-                {
-                    self.activate_setting_icon(index);
-                    return true;
-                }
-                if let Some(id) = target.strip_prefix("menu-setting:")
-                    && let Some(index) = self.setting_index(id)
-                    && matches!(
-                        action,
-                        Action::Activate | Action::ToggleCheck | Action::Expand
-                    )
-                {
-                    self.activate_menu_hit(MenuHit::Setting(index));
-                    return true;
-                }
-                if let Some(rest) = target.strip_prefix("setting-option:")
-                    && let Some((id, option)) = rest.rsplit_once(':')
-                    && let Some(index) = self.setting_index(id)
-                    && let Ok(option) = option.parse::<usize>()
-                    && matches!(action, Action::Activate | Action::ToggleCheck)
-                {
-                    self.choose_option(index, option);
-                    return true;
-                }
-                false
-            }
-        }
-    }
-}
+mod input;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
-    use crate::theme::Theme;
-    use automerge::AutoCommit;
-
-    use crate::synthetic_input::cursor_moved;
-
-    use crate::synthetic_input::mouse_press;
-    use crate::testing::dispatch;
-
-    #[test]
-    fn an_engine_attached_when_needed_keeps_the_players_volume_and_is_built_once() {
-        let mut vp = VideoPlayer::new();
-        vp.set_volume(0.3);
-        assert!(vp.engine().is_none(), "a new player starts no engine");
-        let mut built = 0;
-        vp.ensure_engine(|| {
-            built += 1;
-            media::MediaEngine::new_synthesized()
-        });
-        assert!((vp.engine().unwrap().volume() - 0.3).abs() < 1e-6);
-        vp.ensure_engine(|| {
-            built += 1;
-            media::MediaEngine::new_synthesized()
-        });
-        assert_eq!(built, 1, "an attached engine is kept");
-
-        let mut muted = VideoPlayer::new();
-        muted.toggle_mute();
-        let engine = muted.ensure_engine(media::MediaEngine::new_synthesized);
-        assert!(
-            engine.volume().abs() < 1e-6,
-            "a muted player's engine is silent"
-        );
-    }
-
-    #[test]
-    fn transport_keys_and_surface_clicks_drive_the_engine() {
-        // Case `video_player_starts_paused`.
-        {
-            let vp = VideoPlayer::new();
-            assert_eq!(vp.state(), PlaybackState::Paused);
-            assert!(!vp.is_playing());
-        }
-
-        // Case `engine_mode_sync_pulls_a_frame_and_metadata`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            let doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            vp.sync(&doc, &root);
-            assert!(
-                vp.latest_frame().is_some(),
-                "engine frame pulled into the surface"
-            );
-            assert!(vp.duration_ms() > 0, "duration mirrored from the engine");
-        }
-
-        // Case `space_toggles_play_on_focused_engine_player`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.set_focus(true);
-            assert!(!vp.is_playing());
-            assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
-            assert!(vp.is_playing(), "Space started playback via the engine");
-            assert!(vp.handle_key_input(&Key::Named(NamedKey::Space), ElementState::Pressed));
-            assert!(!vp.is_playing(), "Space paused it again");
-        }
-
-        // Case `arrow_keys_seek_the_engine_playhead`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.set_focus(true);
-            vp.seek_to_ms(20_000);
-            assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowRight), ElementState::Pressed));
-            assert_eq!(vp.position_ms(), 25_000, "→ seeks forward 5s");
-            assert!(vp.handle_key_input(&Key::Named(NamedKey::ArrowLeft), ElementState::Pressed));
-            assert_eq!(vp.position_ms(), 20_000, "← seeks back 5s");
-            // The seek propagated to the engine, not just the widget cache.
-            assert_eq!(vp.engine().unwrap().position_ms(), 20_000);
-        }
-
-        // Case `clicking_the_video_surface_toggles_play_pause`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-            vp.reveal_controls();
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            assert!(!vp.is_playing());
-            // Top-centre: clear of the controls bar, the scrub track, every button.
-            dispatch(&mut vp, &cursor_moved(320.0, 40.0));
-            assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
-            assert!(vp.is_playing(), "surface click started playback");
-            dispatch(&mut vp, &mouse_press());
-            assert!(!vp.is_playing(), "a second surface click paused it");
-        }
-    }
-
-    #[test]
-    fn scrub_track_seeks_where_it_is_painted_and_shows_sponsor_bands() {
-        // Case `scrub_click_seeks_to_the_track_fraction`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-            vp.duration_ms = 100_000;
-            vp.reveal_controls();
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            assert!(vp.scrub_track_rect.width() > 0.0, "scrub track laid out");
-            let mid_x = vp.scrub_track_rect.x0 + vp.scrub_track_rect.width() * 0.5;
-            let mid_y = vp.scrub_track_rect.center().y;
-            dispatch(&mut vp, &cursor_moved(mid_x, mid_y));
-            let handled = dispatch(&mut vp, &mouse_press());
-            assert!(handled, "scrub press handled");
-            let pos = vp.position_ms();
-            assert!((45_000..=55_000).contains(&pos), "seeked to ~50%: {pos}ms");
-        }
-
-        // Case `dragging_the_scrub_track_seeks_continuously`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-            vp.duration_ms = 100_000;
-            vp.reveal_controls();
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let track = vp.scrub_track_rect;
-            assert!(track.width() > 0.0);
-            let y = track.center().y;
-            dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.1, y));
-            assert!(
-                dispatch(&mut vp, &mouse_press()),
-                "press on track begins a scrub"
-            );
-            assert!(vp.scrubbing, "press started a drag");
-            assert!(vp.wants_pointer_capture(), "a scrub owns the pointer");
-            let near = vp.position_ms();
-            dispatch(&mut vp, &cursor_moved(track.x0 + track.width() * 0.9, y));
-            let far = vp.position_ms();
-            assert!(
-                far > near,
-                "dragging right advanced the playhead ({near} → {far})"
-            );
-            assert!((85_000..=95_000).contains(&far), "drag to ~90%: {far}ms");
-        }
-
-        // Case `a_widened_scrub_target_still_seeks_where_the_track_is_painted`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.show_controls();
-            draw_once(&mut vp);
-            let bar = vp.controls_bar_rect(&Theme::dark());
-            let pad = f64::from(Theme::dark().tokens.spacing.s2);
-            let icon = PLAY_BUTTON_SIZE.min(bar.height() - 8.0);
-            // The painted track begins one pad after the play glyph; the hit
-            // rect must start at the same x so a click maps to the same fraction
-            // the paint shows.
-            let painted_x0 = bar.x0 + pad + icon + pad;
-            assert!(
-                (vp.scrub_track_rect.x0 - painted_x0).abs() < 1e-6,
-                "scrub hit rect x0 {} drifted from the painted track {painted_x0}",
-                vp.scrub_track_rect.x0
-            );
-            assert!(
-                vp.scrub_track_rect.height() > SCRUB_TRACK_HEIGHT,
-                "the hit rect must be taller than the 5px track it targets"
-            );
-        }
-
-        // Case `sponsor_marks_emit_bands_on_the_single_timeline`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-            vp.duration_ms = 100_000;
-            vp.reveal_controls();
-            let baseline = {
-                let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let presence = PresenceCtx::default();
-                let mut scene = Scene::new();
-                vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-                scene.encoding().draw_tags.len()
-            };
-            vp.set_sponsor_marks(vec![
-                (0.2, 0.3, Color::from_rgb8(0, 0xd4, 0)),
-                (0.6, 0.72, Color::from_rgb8(0, 0xff, 0xff)),
-            ]);
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            assert!(
-                scene.encoding().draw_tags.len() > baseline,
-                "two sponsor bands add fills to the timeline ({} vs {baseline})",
-                scene.encoding().draw_tags.len(),
-            );
-        }
-    }
-
-    #[test]
-    fn fullscreen_intent_toggles_and_requests_the_largest_output() {
-        // Case `f_key_toggles_fullscreen_intent`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.set_focus(true);
-            assert_eq!(
-                FullscreenProvider::fullscreen_intent(&vp),
-                None,
-                "no opinion until asked"
-            );
-            assert!(vp.handle_key_input(&Key::Character("f".into()), ElementState::Pressed));
-            assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(true));
-            assert!(vp.handle_key_input(&Key::Character("F".into()), ElementState::Pressed));
-            assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(false));
-        }
-
-        // Case `fullscreen_toggle_drives_a_largest_output_mirror_request`.
-        {
-            use crate::fullscreen::{FullscreenTarget, FullscreenView};
-            let mut vp = VideoPlayer::new();
-            assert_eq!(FullscreenProvider::fullscreen_intent(&vp), None);
-            assert_eq!(
-                FullscreenProvider::fullscreen_params(&vp).target,
-                FullscreenTarget::Largest
-            );
-            vp.toggle_fullscreen();
-            assert_eq!(
-                FullscreenProvider::fullscreen_intent(&vp),
-                Some(true),
-                "toggle asks the App to fullscreen"
-            );
-            let params = FullscreenProvider::fullscreen_params(&vp);
-            assert_eq!(
-                params.target,
-                FullscreenTarget::Largest,
-                "immersive video targets the big screen"
-            );
-            assert_eq!(
-                params.view,
-                FullscreenView::Mirror,
-                "video mirrors the window, not a distinct view"
-            );
-            vp.set_fullscreen_target(FullscreenTarget::Primary);
-            assert_eq!(
-                FullscreenProvider::fullscreen_params(&vp).target,
-                FullscreenTarget::Primary
-            );
-        }
-    }
-
-    #[test]
-    fn media_session_and_engine_events_reach_the_right_side_once() {
-        // Case `mpris_snapshot_reflects_metadata_and_controls_on_play`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.duration_ms = 240_000;
-            vp.set_now_playing(NowPlaying {
-                track_id: "yt:abc123".into(),
-                title: "Runaway".into(),
-                artist: "Aurora".into(),
-                art_url: "https://img/a.jpg".into(),
-            });
-            vp.play();
-            let snap = vp.mpris_snapshot();
-            assert_eq!(
-                snap.status,
-                crate::mpris::PlaybackStatus::Playing,
-                "play → Playing on the bus"
-            );
-            assert_eq!(snap.title, "Runaway");
-            assert_eq!(snap.artist, "Aurora");
-            assert_eq!(snap.art_url, "https://img/a.jpg");
-            assert_eq!(snap.length_us, 240_000_000, "duration published as µs");
-            assert!(
-                snap.can_play && snap.can_pause && snap.can_seek,
-                "transport controls advertised"
-            );
-        }
-
-        // Case `external_media_command_pause_reaches_the_player`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.play();
-            assert!(vp.is_playing());
-            vp.apply_media_command(crate::mpris::MprisCommand::Pause);
-            assert!(!vp.is_playing(), "external Pause paused playback");
-            vp.apply_media_command(crate::mpris::MprisCommand::PlayPause);
-            assert!(vp.is_playing(), "external PlayPause resumed it");
-        }
-
-        // Case `engine_lifecycle_events_are_forwarded_once_to_the_embedding_app`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.record_terminal_media_events([
-                media::MediaEvent::Ended,
-                media::MediaEvent::MissingDecoder {
-                    codec: "HEVC".into(),
-                },
-                media::MediaEvent::Error("decoder stopped".into()),
-            ]);
-            let events = vp.take_media_events();
-            assert!(
-                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::MissingDecoder { codec }, media::MediaEvent::Error(message)] if codec == "HEVC" && message == "decoder stopped")
-            );
-            assert!(
-                vp.take_media_events().is_empty(),
-                "taking events cannot replay an old terminal status"
-            );
-        }
-
-        // Case `nonterminal_engine_events_never_accumulate_for_an_unattended_embedder`.
-        {
-            let mut vp = VideoPlayer::new();
-            for position in 0..1_000 {
-                vp.record_terminal_media_events([
-                    media::MediaEvent::DurationKnown { ms: 90_000 },
-                    media::MediaEvent::Buffering { percent: 50 },
-                    media::MediaEvent::Position { ms: position },
-                ]);
-            }
-            assert!(
-                vp.media_events.is_empty(),
-                "progress is mirrored by the widget, never buffered for the app"
-            );
-        }
-    }
-
-    fn draw_once(vp: &mut VideoPlayer) {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    }
-
-    fn draw_once_with_theme(vp: &mut VideoPlayer, theme: &Theme) {
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    }
-
-    #[test]
-    fn over_media_chrome_is_legible_and_dark_in_every_theme() {
-        use crate::a11y::{contrast_ratio, relative_luminance};
-        for theme in [Theme::dark(), Theme::light()] {
-            let name = theme.name.clone();
-            // The letterbox stays the media's near-black in a light theme.
-            let letterbox = theme.tokens.colors.media.letterbox;
-            assert!(
-                relative_luminance(letterbox) < 0.02,
-                "{name}: the letterbox turned grey"
-            );
-            // Controls ink is measured against the Panel they sit on.
-            let panel = crate::chrome::panel_ground(&theme);
-            let on_panel = theme.on_ground(panel);
-            assert!(
-                contrast_ratio(on_panel.text_primary, panel) >= 4.5,
-                "{name}: controls ink on the media Panel"
-            );
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.show_controls();
-            draw_once_with_theme(&mut vp, &theme);
-            let bar = vp.controls_bar_rect(&theme);
-            let inset = f64::from(theme.tokens.spacing.s2);
-            assert!(
-                (bar.x0 - inset).abs() < 1e-9 && (vp.rect.y1 - bar.y1 - inset).abs() < 1e-9,
-                "{name}: the controls float as a Panel inside the picture"
-            );
-            assert!(
-                vp.play_button_rect.width() >= f64::from(theme.tokens.metrics.min_pointer_target),
-                "{name}: the play control is a full pointer target"
-            );
-        }
-    }
-
-    #[test]
-    fn controls_bar_lays_out_reachable_aligned_targets_at_every_size() {
-        // Case `large_text_controls_use_two_reachable_rows_while_one_x_is_unchanged`.
-        {
-            let mut regular = VideoPlayer::new();
-            regular.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-            regular.reveal_controls();
-            regular.set_setting(PlayerSetting::toggle(
-                "captions",
-                Icon::FileText,
-                "Captions",
-                2,
-                false,
-            ));
-            let one_x = Theme::dark();
-            draw_once_with_theme(&mut regular, &one_x);
-            assert_eq!(
-                regular.controls_bar_rect(&one_x).height(),
-                CONTROLS_BAR_HEIGHT
-            );
-            assert_eq!(
-                regular.scrub_track_rect.center().y,
-                regular.play_button_rect.center().y
-            );
-
-            let mut accessible = VideoPlayer::new();
-            accessible.rect = regular.rect;
-            accessible.reveal_controls();
-            accessible.set_setting(PlayerSetting::toggle(
-                "captions",
-                Icon::FileText,
-                "Captions",
-                2,
-                false,
-            ));
-            let two_x = Theme::dark().with_text_scale(2.0);
-            draw_once_with_theme(&mut accessible, &two_x);
-            let bar = accessible.controls_bar_rect(&two_x);
-            assert_eq!(bar.height(), CONTROLS_BAR_HEIGHT * 2.0);
-            assert!(accessible.scrub_track_rect.width() > 350.0);
-            assert!(accessible.scrub_track_rect.center().y < accessible.play_button_rect.y0);
-            assert!(bar.contains(accessible.play_button_rect.center()));
-            assert!(bar.contains(accessible.fullscreen_button_rect.center()));
-            assert!(bar.contains(accessible.gear_button_rect.center()));
-            assert!(accessible.setting_icon_rects.is_empty());
-            assert!(accessible.setting_in_gear("captions"));
-        }
-
-        // Case `every_bar_control_meets_the_minimum_pointer_target`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.show_controls();
-            vp.set_setting(PlayerSetting::toggle(
-                "captions",
-                Icon::FileText,
-                "Captions",
-                2,
-                false,
-            ));
-            vp.set_setting(PlayerSetting::choice(
-                "resolution",
-                Icon::Monitor,
-                "Resolution",
-                0,
-                vec!["1080p".into(), "720p".into()],
-                0,
-            ));
-            draw_once(&mut vp);
-            for (name, r) in bar_targets(&vp) {
-                assert!(
-                    r.width() >= MIN_TARGET - 1e-6 && r.height() >= MIN_TARGET - 1e-6,
-                    "{name} hit rect {r:?} is under the {MIN_TARGET}px minimum target"
-                );
-            }
-        }
-
-        // Case `bar_controls_share_one_centre_line_and_never_overlap`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.show_controls();
-            vp.set_setting(PlayerSetting::toggle(
-                "captions",
-                Icon::FileText,
-                "Captions",
-                2,
-                false,
-            ));
-            draw_once(&mut vp);
-            let bar = vp.controls_bar_rect(&Theme::dark());
-            let mid_y = bar.center().y;
-            let targets = bar_targets(&vp);
-            for (name, r) in &targets {
-                assert!(
-                    (r.center().y - mid_y).abs() < 1e-6,
-                    "{name} centre {} is off the bar's centre line {mid_y}",
-                    r.center().y
-                );
-            }
-            for (i, (a_name, a)) in targets.iter().enumerate() {
-                for (b_name, b) in targets.iter().skip(i + 1) {
-                    let overlap = a.intersect(*b);
-                    assert!(
-                        overlap.is_zero_area(),
-                        "{a_name} {a:?} and {b_name} {b:?} claim the same pixels: {overlap:?}"
-                    );
-                }
-            }
-        }
-
-        // Case `time_label_yields_to_the_scrubber_rather_than_overlapping_controls`.
-        // The time label is the one thing in the bar that is not a pointer
-        // target, and it used to be the one thing allowed to overlap them: its
-        // left edge was clamped to the play button while its right end ran
-        // under the volume control. Now it yields — position only, then
-        // nothing — so at every width and text scale the scrubber keeps its
-        // floor and no control is painted over.
-        {
-            for (width, scale) in [(300.0, 1.0), (300.0, 2.0), (960.0, 2.0), (420.0, 1.0)] {
-                let mut vp = VideoPlayer::new();
-                vp.rect = Rect::new(0.0, 0.0, width, 200.0);
-                vp.show_controls();
-                vp.duration_ms = 2 * 60 * 60 * 1000;
-                vp.position_ms = 60 * 60 * 1000 + 8000;
-                draw_at_text_scale(&mut vp, scale);
-                assert!(
-                    vp.scrub_track_rect.width() >= MIN_SCRUB_WIDTH - 1e-6,
-                    "at {width}px / {scale}x the scrubber ({:?}) lost its floor",
-                    vp.scrub_track_rect
-                );
-                let label = vp.time_label_rect;
-                for (name, r) in bar_targets(&vp) {
-                    let overlap = label.intersect(r);
-                    assert!(
-                        overlap.is_zero_area(),
-                        "at {width}px / {scale}x the time label {label:?} paints over {name} {r:?}"
-                    );
-                }
-            }
-        }
-
-        // Case `a_wide_bar_paints_the_full_time_label`.
-        // The degrade is a last resort: on a bar with room the full
-        // "m:ss / m:ss" is painted, exactly as wide as it measures.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.show_controls();
-            vp.duration_ms = 120_000;
-            vp.position_ms = 8_000;
-            draw_once(&mut vp);
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let full = format!(
-                "{} / {}",
-                format_ms(vp.position_ms),
-                format_ms(vp.duration_ms)
-            );
-            let (tw, _) = tr.measure_style(&full, None, &theme.text(TextRole::Caption));
-            assert!(
-                (vp.time_label_rect.width() - f64::from(tw)).abs() < 1e-6,
-                "label rect {:?} is not the measured full label ({tw})",
-                vp.time_label_rect
-            );
-            assert!(
-                (vp.time_label_rect.center().y - vp.controls_bar_rect(&Theme::dark()).center().y)
-                    .abs()
-                    < 1e-6,
-                "the label left the bar's centre line"
-            );
-        }
-
-        // Case `player_embeds_flush_with_no_forced_internal_padding`.
-        {
-            let mut vp = VideoPlayer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map = std::collections::HashMap::new();
-            let theme = Theme::dark();
-            let node = vp.build_layout(&mut taffy, &theme, &mut node_map);
-            let style = taffy.style(node).unwrap();
-            let default: taffy::Style = taffy::Style::default();
-            assert_eq!(
-                format!("{:?}", style.padding),
-                format!("{:?}", default.padding),
-                "no forced internal padding — embeds edge-to-edge"
-            );
-            assert_eq!(
-                format!("{:?}", style.margin),
-                format!("{:?}", default.margin),
-                "no forced margin"
-            );
-            assert_eq!(style.flex_grow, 1.0, "the player fills its slot");
-        }
-    }
-
-    #[test]
-    fn settings_surface_by_priority_and_round_trip_through_the_gear() {
-        // Case `mixed_priority_settings_surface_as_icons_and_under_the_gear`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.reveal_controls();
-            // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
-            vp.set_setting(PlayerSetting::toggle(
-                "captions",
-                Icon::FileText,
-                "Captions",
-                2,
-                false,
-            ));
-            vp.set_setting(PlayerSetting::choice(
-                "resolution",
-                Icon::Monitor,
-                "Resolution",
-                0,
-                vec!["1080p".into(), "720p".into(), "480p".into()],
-                0,
-            ));
-            draw_once(&mut vp);
-            assert!(
-                vp.setting_icon_rect("captions").is_some(),
-                "priority-2 setting surfaces as its own bar icon"
-            );
-            assert!(
-                vp.setting_in_gear("resolution"),
-                "priority-0 setting lives under the settings gear"
-            );
-            assert!(
-                !vp.setting_in_gear("captions"),
-                "the promoted icon is not also in the gear"
-            );
-        }
-
-        // Case `higher_priority_wins_limited_space_and_overflow_falls_into_the_gear`.
-        {
-            let mut vp = VideoPlayer::new();
-            // Narrow bar + many priority settings ⇒ only the top few fit as icons.
-            vp.rect = Rect::new(0.0, 0.0, 420.0, 236.0);
-            vp.reveal_controls();
-            for p in 1..=8 {
-                vp.set_setting(PlayerSetting::button(
-                    format!("act{p}"),
-                    Icon::Star,
-                    format!("Action {p}"),
-                    p,
-                ));
-            }
-            draw_once(&mut vp);
-            let icon_prios: Vec<i32> = vp
-                .setting_icon_rects
-                .iter()
-                .map(|(i, _)| vp.settings[*i].priority)
-                .collect();
-            let overflow_prios: Vec<i32> = vp
-                .gear_entries
-                .iter()
-                .map(|&i| vp.settings[i].priority)
-                .collect();
-            assert!(!icon_prios.is_empty(), "some settings fit as icons");
-            assert!(
-                !overflow_prios.is_empty(),
-                "the rest overflow into the gear at this width"
-            );
-            let min_icon = *icon_prios.iter().min().unwrap();
-            let max_overflow = *overflow_prios.iter().max().unwrap();
-            assert!(
-                min_icon >= max_overflow,
-                "every shown icon outranks every overflowed setting ({min_icon} >= {max_overflow})"
-            );
-        }
-
-        // Case `resolution_setting_round_trips_through_the_player`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.reveal_controls();
-            vp.set_setting(PlayerSetting::choice(
-                "resolution",
-                Icon::Monitor,
-                "Resolution",
-                2, // its own bar icon
-                vec!["1080p".into(), "720p".into(), "480p".into()],
-                0,
-            ));
-            draw_once(&mut vp);
-            let icon = vp
-                .setting_icon_rect("resolution")
-                .expect("resolution has a bar icon");
-            dispatch(&mut vp, &cursor_moved(icon.center().x, icon.center().y));
-            assert!(dispatch(&mut vp, &mouse_press()), "icon click handled");
-            assert!(
-                vp.menu_open(),
-                "clicking the resolution icon opened its option list"
-            );
-            draw_once(&mut vp);
-            let row = vp
-                .menu_hit_rects
-                .iter()
-                .find(|(h, _)| matches!(h, MenuHit::Option(_, 1)))
-                .map(|(_, r)| *r)
-                .expect("720p option row laid out");
-            dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
-            assert!(dispatch(&mut vp, &mouse_press()), "option click handled");
-            let events = vp.take_setting_events();
-            assert_eq!(
-                events,
-                vec![PlayerSettingEvent::Chose {
-                    id: "resolution".into(),
-                    index: 1
-                }],
-                "picking 720p emits a Chose event the host drains"
-            );
-            match &vp.setting("resolution").unwrap().control {
-                PlayerSettingControl::Choice { selected, .. } => assert_eq!(*selected, 1),
-                _ => panic!("resolution is a choice"),
-            }
-            assert!(!vp.menu_open(), "picking an option closes the popover");
-        }
-
-        // Case `gear_toggle_setting_flips_and_emits`.
-        {
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-            vp.reveal_controls();
-            // Priority 0 ⇒ under the gear.
-            vp.set_setting(PlayerSetting::toggle(
-                "autoplay",
-                Icon::Play,
-                "Autoplay",
-                0,
-                false,
-            ));
-            draw_once(&mut vp);
-            let gear = vp.gear_button_rect;
-            assert!(gear.width() > 0.0, "gear present for the tucked setting");
-            dispatch(&mut vp, &cursor_moved(gear.center().x, gear.center().y));
-            assert!(dispatch(&mut vp, &mouse_press()), "gear click handled");
-            assert!(vp.menu_open(), "gear opened the menu");
-            draw_once(&mut vp);
-            let row = vp
-                .menu_hit_rects
-                .iter()
-                .find(|(h, _)| matches!(h, MenuHit::Setting(_)))
-                .map(|(_, r)| *r)
-                .expect("autoplay row laid out under the gear");
-            dispatch(&mut vp, &cursor_moved(row.center().x, row.center().y));
-            assert!(dispatch(&mut vp, &mouse_press()), "row click handled");
-            let events = vp.take_setting_events();
-            assert_eq!(
-                events,
-                vec![PlayerSettingEvent::Toggled {
-                    id: "autoplay".into(),
-                    on: true
-                }],
-                "toggling the gear row flips it on and emits"
-            );
-        }
-    }
-
-    #[test]
-    fn accessibility_exposes_transport_state_and_truthful_controls() {
-        // Case `accessibility_reports_group_role_and_busy_while_playing`.
-        {
-            use crate::a11y::Role;
-            let mut vp = VideoPlayer::new();
-            let node = Widget::accessibility(&vp).expect("player is not presentational");
-            assert_eq!(node.role, Role::Group);
-            assert_eq!(node.name.as_deref(), Some("Video player"));
-            assert!(!node.state.busy);
-            vp.play();
-            assert!(Widget::accessibility(&vp).unwrap().state.busy);
-        }
-
-        // Case `accessibility_exposes_every_painted_transport_control_and_drives_it`.
-        {
-            use crate::a11y::{Action, Role};
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.rect = Rect::new(0.0, 0.0, 760.0, 480.0);
-            vp.reveal_controls();
-            draw_once(&mut vp);
-
-            let node = Widget::accessibility(&vp).unwrap();
-            let names: Vec<_> = node
-                .children
-                .iter()
-                .filter_map(|child| child.name.as_deref())
-                .collect();
-            assert!(names.contains(&"Play"), "{names:?}");
-            assert!(names.contains(&"Playback position"), "{names:?}");
-            assert!(names.contains(&"Mute"), "{names:?}");
-            assert!(names.contains(&"Volume"), "{names:?}");
-            assert!(names.contains(&"Enter fullscreen"), "{names:?}");
-            assert!(node.children.iter().all(|child| child.bounds.is_some()));
-            assert!(node.children.iter().any(|child| child.role == Role::Slider));
-
-            assert!(Widget::perform_semantic_action(
-                &mut vp,
-                "transport.play-pause",
-                &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert!(vp.is_playing());
-            assert!(Widget::perform_semantic_action(
-                &mut vp,
-                "audio.volume",
-                &Action::SetValue("25%".into()),
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert!((vp.volume() - 0.25).abs() < 1e-6);
-        }
-
-        // Case `follower_transport_is_truthfully_disabled_but_local_audio_still_works`.
-        {
-            let mut engine = media::MediaEngine::new_synthesized();
-            engine.open(media::Source::Remote {
-                url: "https://x/v.mp4".into(),
-            });
-            let mut vp = VideoPlayer::new().with_engine(engine);
-            vp.set_transport_enabled(false);
-            vp.toggle_play();
-            assert!(!vp.is_playing());
-            vp.seek_to_ms(30_000);
-            assert_eq!(vp.position_ms(), 0);
-            vp.set_volume(0.3);
-            assert!((vp.volume() - 0.3).abs() < 1e-6);
-        }
-    }
-
-    /// Push mode through a real encoder and decoder. Needs the `realtime`
-    /// feature of `media` (GStreamer); VP9 in software needs no GPU.
-    #[cfg(feature = "realtime-video")]
-    #[test]
-    fn push_mode_feed_encoded_updates_latest_image() {
-        let (w, h) = (64u32, 48u32);
-        let mut config = media::EncoderConfig::new(media::StreamCodec::Vp9, w, h, 30);
-        config.policy = media::realtime::RealtimePolicy::SoftwareOnly;
-        let mut enc = media::RealtimeEncoder::new(&config).expect("VP9 software encoder");
-        let rgba = vec![128u8; (w * h * 4) as usize];
-        let unit = enc
-            .encode(media::InputFrame::Packed(&rgba), std::time::Duration::ZERO)
-            .expect("encode grey frame")
-            .remove(0);
-
-        let mut vp = VideoPlayer::new();
-        assert!(
-            vp.feed_encoded(media::StreamCodec::Vp9, &unit.data),
-            "decoder consumed the frame"
-        );
-        let frame = vp.latest_frame().expect("a frame");
-        assert_eq!((frame.width, frame.height), (w, h));
-    }
-
-    #[test]
-    fn surface_paints_pushed_frames_or_a_placeholder() {
-        // Case `push_mode_ignores_empty_units`.
-        {
-            let mut vp = VideoPlayer::new();
-            assert!(!vp.feed_frame(&[]));
-            assert!(vp.latest_frame().is_none());
-        }
-
-        // Case `empty_surface_paints_a_placeholder_and_no_image`.
-        {
-            use vello_encoding::DrawTag;
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 320.0, 240.0);
-            assert!(vp.latest_frame().is_none());
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let image_count = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::IMAGE)
-                .count();
-            assert_eq!(
-                image_count, 0,
-                "no frame → no image draw in the empty state"
-            );
-            // Only the letterbox: the app's empty state or error says what is
-            // missing, and no glyph is painted under its text.
-            assert_eq!(
-                scene.encoding().draw_tags.len(),
-                1,
-                "an empty player paints its letterbox and nothing else"
-            );
-        }
-
-        // Case `paint_with_image_uses_image_draw_command`.
-        {
-            use vello_encoding::DrawTag;
-            let mut vp = VideoPlayer::new();
-            vp.rect = Rect::new(0.0, 0.0, 64.0, 48.0);
-            vp.latest_frame = Some(rgba_image(16, 16, Arc::new(vec![255u8; 4 * 16 * 16])));
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let image_count = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::IMAGE)
-                .count();
-            assert!(
-                image_count >= 1,
-                "expected an IMAGE draw, got {image_count}"
-            );
-        }
-    }
-
-    /// Every pointer target the bar exposes, named, in one place.
-    fn bar_targets(vp: &VideoPlayer) -> Vec<(String, Rect)> {
-        let mut out = vec![
-            ("play".to_string(), vp.play_button_rect),
-            ("scrub".to_string(), vp.scrub_track_rect),
-            ("volume".to_string(), vp.volume_track_rect),
-            ("mute".to_string(), vp.mute_button_rect),
-            ("fullscreen".to_string(), vp.fullscreen_button_rect),
-        ];
-        if vp.gear_button_rect.width() > 0.0 {
-            out.push(("gear".to_string(), vp.gear_button_rect));
-        }
-        for (idx, r) in &vp.setting_icon_rects {
-            out.push((format!("setting-{idx}"), *r));
-        }
-        out
-    }
-
-    /// Paint once with the renderer at `scale` (the a11y text-scale
-    /// convention the `Host` palette source uses), so the label is measured
-    /// and drawn larger than the theme's type size says.
-    fn draw_at_text_scale(vp: &mut VideoPlayer, scale: f32) {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(scale);
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    }
-
-    #[test]
-    fn controls_ink_and_edges_read_on_both_presets() {
-        // Case `controls_ink_reads_over_the_scrim_in_the_light_theme`.
-        {
-            use crate::offscreen::OffscreenRenderer;
-            let theme = Theme::light();
-            let mut vp = VideoPlayer::new();
-            let (w, h) = (320.0, 120.0);
-            vp.rect = Rect::new(0.0, 0.0, w, h);
-            vp.show_controls();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a 320x120 test surface"
-            )]
-            let rgba = OffscreenRenderer::new(w as u32, h as u32)
-                .render(&scene, theme.tokens.colors.surfaces.content);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "pixel coordinates inside a 320x120 surface"
-            )]
-            let sample = |p: Point| {
-                let idx = ((p.y as usize) * (w as usize) + p.x as usize) * 4;
-                Color::from_rgb8(rgba[idx], rgba[idx + 1], rgba[idx + 2])
-            };
-            // Inside the paused play triangle: for a glyph box of side `s` the
-            // triangle spans x ∈ [cx − 0.5s·½ … cx + 0.7s·½]; (cx − 4, cy) is
-            // well inside it at the 30px glyph.
-            let c = vp.play_button_rect.center();
-            let glyph = sample(Point::new(c.x - 4.0, c.y));
-            // A bare patch of the painted scrim: just right of the play target,
-            // above the scrub track, inside the bar.
-            let bar = vp.controls_bar_rect(&Theme::dark());
-            let scrim = sample(Point::new(vp.play_button_rect.x1 + 2.0, bar.y0 + 3.0));
-            let ratio = crate::a11y::contrast_ratio(glyph, scrim);
-            assert!(
-                ratio >= 4.5,
-                "play glyph contrast {ratio:.2}:1 against the painted scrim on the light theme \
-             (WCAG AA is 4.5:1): near-black text_primary on the dark scrim; ink must be \
-             chosen against the scrim"
-            );
-        }
-
-        // Case `ux1x_controls_bar_and_menu_edges_register_on_both_presets`.
-        // The controls bar's top hairline, its unfilled track and the open
-        // settings menu keep a **visible derived edge** at 1× on both presets
-        // (HIG §9.5). Before, all three wore `border_standard` — one fixed
-        // colour per theme, measured against neither theme's scrim, three
-        // shades from the dark raised menu — and the light theme's track was
-        // `text_dim` (near-black) on a near-black scrim.
-        //
-        // Writes `$UX1X_F4_OUT/<theme>/video_player.png` plus the harness
-        // inspection when that variable is set; asserts regardless.
-        {
-            use crate::offscreen::OffscreenRenderer;
-            const EDGE_MIN: f64 = 0.008;
-            let (w, h) = (640.0, 360.0);
-            // Evidence first, for both presets, so a failing assertion on one
-            // preset still leaves the other's PNG and inspection on disk.
-            for theme in [Theme::dark(), Theme::light()] {
-                let theme = theme.with_reduce_motion(true);
-                if let Some(png) = ux1x_out(&theme, "video_player.png") {
-                    let harness = crate::headless::FrameHarness::new_with_theme(
-                        crate::State::new(),
-                        Box::new(ux1x_fixture()),
-                        (640, 360),
-                        theme.clone(),
-                    );
-                    harness.render_png(&png);
-                    if let Ok(json) = harness.inspection_json() {
-                        std::fs::write(png.with_extension("inspection.json"), json)
-                            .expect("write inspection");
-                    }
-                }
-            }
-            for theme in [Theme::dark(), Theme::light()] {
-                let theme = theme.with_reduce_motion(true);
-                let mut vp = ux1x_fixture();
-                vp.rect = Rect::new(0.0, 0.0, w, h);
-                let mut tr = TextRenderer::new();
-                let presence = PresenceCtx::default();
-                let mut scene = Scene::new();
-                vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a 640x360 test surface"
-                )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32)
-                    .render(&scene, theme.tokens.colors.surfaces.content);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a 640x360 test surface"
-                )]
-                let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
-
-                // Controls Panel: its edge against its ground just inside it.
-                let bar = vp.controls_bar_rect(&theme);
-                let edge = lum(bar.x0, bar.center().y);
-                let ground = lum(bar.x0 + 4.0, bar.center().y);
-                assert!(
-                    (edge - ground).abs() >= EDGE_MIN,
-                    "{}: controls Panel edge {edge:.4} vs ground {ground:.4} did not register",
-                    theme.name
-                );
-
-                // Track: the unfilled end (past the 40 % buffered range) against
-                // the bare scrim beside it.
-                let hit = vp.scrub_track_rect;
-                let track = lum(hit.x1 - 3.0, hit.center().y);
-                let beside = lum(hit.x1 - 3.0, hit.center().y - 7.0);
-                assert!(
-                    (track - beside).abs() >= EDGE_MIN,
-                    "{}: unfilled track {track:.4} vs scrim {beside:.4} did not register",
-                    theme.name
-                );
-
-                // Menu: the panel edge (the row hit rects sit 3 px inside the
-                // panel) against the panel ground just inside it.
-                let first_row = vp
-                    .menu_hit_rects
-                    .first()
-                    .map(|(_, rect)| *rect)
-                    .expect("the open menu painted rows");
-                let panel_x0 = first_row.x0 - 3.0;
-                let edge = lum(panel_x0, first_row.center().y);
-                let ground = lum(panel_x0 + 2.0, first_row.center().y);
-                assert!(
-                    (edge - ground).abs() >= EDGE_MIN,
-                    "{}: menu edge {edge:.4} vs panel {ground:.4} did not register",
-                    theme.name
-                );
-            }
-        }
-    }
-
-    /// Relative luminance of the composited pixel at (`x`, `y`).
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "probe coordinates are non-negative pixel positions inside a small test surface"
-    )]
-    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
-            rgba,
-            w,
-            x.floor() as u32,
-            y.floor() as u32,
-        );
-        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
-    }
-
-    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
-    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
-        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
-            .join(theme.name.to_lowercase());
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join(name))
-    }
-
-    /// A player with the controls shown, a partly buffered track and the
-    /// settings menu open on an expanded choice — every surface the bar
-    /// paints, in one frame.
-    fn ux1x_fixture() -> VideoPlayer {
-        let mut vp = VideoPlayer::new();
-        vp.buffering = 40;
-        vp.set_setting(PlayerSetting::toggle(
-            "captions",
-            Icon::FileText,
-            "Captions",
-            0,
-            true,
-        ));
-        vp.set_setting(PlayerSetting::choice(
-            "speed",
-            Icon::Settings2,
-            "Speed",
-            0,
-            vec!["0.5×".into(), "1×".into(), "1.5×".into()],
-            1,
-        ));
-        vp.show_controls();
-        vp.open_settings_menu(Some("speed"));
-        vp
-    }
-}
+mod tests;

@@ -411,6 +411,28 @@ impl JournalLoadError {
     }
 }
 
+/// One read of the journal: its records, oldest first, and the cursor of
+/// the last one in the journal's order, where the next tail read starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Page {
+    pub entries: Vec<LogEntry>,
+    pub cursor: Option<String>,
+}
+
+/// `journalctl`'s arguments for `limit` records: the most recent ones, or,
+/// `after` a cursor, the first ones written since it.
+pub fn read_args(after: Option<&str>, limit: usize) -> Vec<String> {
+    let mut args: Vec<String> = ["-o", "json", "--no-pager", "-n"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    args.push(limit.to_string());
+    if let Some(cursor) = after {
+        args.push(format!("--after-cursor={cursor}"));
+    }
+    args
+}
+
 /// Run `journalctl -o json` and parse the most recent `limit` records.
 ///
 /// The error is intentionally classified rather than returning process
@@ -421,14 +443,30 @@ impl JournalLoadError {
 ///
 /// Returns a safe classification when `journalctl` is unavailable, denied, or
 /// otherwise fails. It never returns the command's stderr.
-pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
-    let limit_arg = limit.to_string();
+pub fn load_live(limit: usize) -> Result<Page, JournalLoadError> {
+    read(None, limit)
+}
+
+/// The records written after `cursor`, at most `limit` of them: what live
+/// tail reads each second, so a quiet journal costs an empty answer rather
+/// than the whole page parsed again.
+///
+/// # Errors
+///
+/// As [`load_live`].
+pub fn load_after(cursor: &str, limit: usize) -> Result<Page, JournalLoadError> {
+    read(Some(cursor), limit)
+}
+
+fn read(after: Option<&str>, limit: usize) -> Result<Page, JournalLoadError> {
+    let args = read_args(after, limit);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let output_limit = limit
         .saturating_mul(64 * 1024)
         .clamp(1024 * 1024, 32 * 1024 * 1024);
     let output = bounded_command::run(
         "journalctl",
-        &["-o", "json", "--no-pager", "-n", &limit_arg],
+        &args,
         None,
         output_limit,
         Duration::from_secs(5),
@@ -454,7 +492,7 @@ pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
             },
         );
     }
-    Ok(parse_json_stream(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_page(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Export a pre-filtered local cache as JSON Lines.
@@ -462,11 +500,6 @@ pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
 /// The caller must obtain `path` from the host Save portal. It never follows
 /// an app-owned default location, and returns only concise errors: exporting
 /// logs is sensitive and should stay fully scoped to that portal choice.
-///
-/// # Errors
-///
-/// Returns an error for a non-absolute target or JSON/IO failure while writing
-/// the selected entries.
 pub fn export_json_lines(entries: &[&LogEntry], path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("export path must be absolute".into());
@@ -496,14 +529,27 @@ pub fn export_json_lines(entries: &[&LogEntry], path: &Path) -> Result<(), Strin
 /// Parse a newline-delimited `journalctl -o json` stream into entries,
 /// sorted oldest → newest. Malformed lines are skipped, not fatal.
 pub fn parse_json_stream(text: &str) -> Vec<LogEntry> {
-    let mut out: Vec<LogEntry> = text
+    parse_page(text).entries
+}
+
+/// Parse a `journalctl -o json` stream into a [`Page`]: its entries sorted
+/// oldest → newest, and the cursor of the last record as journalctl wrote
+/// them.
+pub fn parse_page(text: &str) -> Page {
+    let mut cursor = None;
+    let mut entries: Vec<LogEntry> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter_map(|v| entry_from_json(&v))
+        .filter_map(|v| {
+            if let Some(at) = field(&v, "__CURSOR") {
+                cursor = Some(at);
+            }
+            entry_from_json(&v)
+        })
         .collect();
-    out.sort_by_key(|e| e.realtime_us);
-    out
+    entries.sort_by_key(|e| e.realtime_us);
+    Page { entries, cursor }
 }
 
 /// Read a journal field that may be a JSON string, an integer, or a byte
@@ -550,7 +596,7 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
         .and_then(|s| s.parse::<i64>().ok())
         .map_or(Priority::Info, Priority::from_level);
 
-    let message = field(v, "MESSAGE").unwrap_or_default();
+    let message = without_terminal_escapes(&field(v, "MESSAGE").unwrap_or_default());
     let pid = field(v, "_PID").and_then(|s| s.parse::<u32>().ok());
     let hostname = field(v, "_HOSTNAME").unwrap_or_default();
     let boot_id = field(v, "_BOOT_ID").unwrap_or_default();
@@ -580,6 +626,45 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
         transport,
         extra,
     })
+}
+
+/// `text` without the terminal's colour and cursor sequences a program
+/// wrote for a console (`ESC [ … m`, `ESC ] … BEL`) and without other
+/// control characters, which have no glyph: the words alone.
+fn without_terminal_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // A control sequence ends at its final byte, `@` to `~`.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // An operating-system command ends at BEL or `ESC \`.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' {
+                            chars.next_if_eq(&'\\');
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\t' => out.push(' '),
+            c if c.is_control() && c != '\n' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ===================================================================
@@ -662,6 +747,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_message_written_for_a_console_reads_as_its_words() {
+        assert_eq!(
+            without_terminal_escapes(
+                "\u{1b}[2m2026-10-23T08:20:00Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m shell: closed"
+            ),
+            "2026-10-23T08:20:00Z ERROR shell: closed"
+        );
+        assert_eq!(
+            without_terminal_escapes("\u{1b}]0;title\u{7}done\u{1b}]8;;x\u{1b}\\ok\u{8}"),
+            "doneok"
+        );
+        assert_eq!(without_terminal_escapes("plain\ttext"), "plain text");
+    }
+
+    #[test]
     fn sample_has_mixed_severities_and_two_boots() {
         let e = sample_entries();
         assert!(e.len() > 20, "sample journal should be substantial");
@@ -670,13 +770,11 @@ mod tests {
         assert!(e.iter().any(|x| x.priority == Priority::Crit));
         let boots: std::collections::HashSet<_> = e.iter().map(|x| x.boot_id.clone()).collect();
         assert_eq!(boots.len(), 2, "should span exactly two boots");
-        // Sorted ascending by time.
         assert!(e.windows(2).all(|w| w[0].realtime_us <= w[1].realtime_us));
     }
 
     #[test]
     fn parse_json_stream_reads_journalctl_shape_byte_messages_and_skips_malformed() {
-        // Reads the journalctl JSON shape.
         let line = r#"{"__REALTIME_TIMESTAMP":"1609459200000000","_SYSTEMD_UNIT":"x.service","PRIORITY":"3","MESSAGE":"boom","_PID":"42","_HOSTNAME":"h","_BOOT_ID":"b","_TRANSPORT":"stdout","CUSTOM":"keep"}"#;
         let parsed = parse_json_stream(line);
         assert_eq!(parsed.len(), 1);
@@ -692,11 +790,47 @@ mod tests {
         let parsed = parse_json_stream(line);
         assert_eq!(parsed[0].message, "hi");
 
-        // Malformed lines are skipped.
         let stream = "not json\n{\"MESSAGE\":\"ok\",\"__REALTIME_TIMESTAMP\":\"5\"}\n";
         let parsed = parse_json_stream(stream);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].message, "ok");
+    }
+
+    /// A tail read starts after the newest record's cursor, which a page
+    /// takes from the last record journalctl wrote.
+    #[test]
+    fn a_page_keeps_the_last_cursor_and_a_tail_read_starts_after_it() {
+        let stream = concat!(
+            r#"{"__CURSOR":"s=a;i=1","__REALTIME_TIMESTAMP":"20","MESSAGE":"one"}"#,
+            "\n",
+            r#"{"__CURSOR":"s=a;i=2","__REALTIME_TIMESTAMP":"10","MESSAGE":"two"}"#,
+            "\n",
+        );
+        let page = parse_page(stream);
+        assert_eq!(page.cursor.as_deref(), Some("s=a;i=2"), "journal order");
+        assert_eq!(page.entries[0].message, "two", "entries by time");
+        assert!(
+            page.entries
+                .iter()
+                .all(|entry| { entry.extra.iter().all(|(key, _)| key != "__CURSOR") })
+        );
+        assert_eq!(parse_page("").cursor, None);
+
+        assert_eq!(
+            read_args(None, 2000),
+            ["-o", "json", "--no-pager", "-n", "2000"]
+        );
+        assert_eq!(
+            read_args(Some("s=a;i=2"), 2000),
+            [
+                "-o",
+                "json",
+                "--no-pager",
+                "-n",
+                "2000",
+                "--after-cursor=s=a;i=2"
+            ]
+        );
     }
 
     #[test]
@@ -709,7 +843,6 @@ mod tests {
             "export path must be absolute"
         );
 
-        // Export writes JSON lines to the selected target, replacing it.
         let path = std::env::temp_dir().join(format!(
             "tilo-logs-export-{}-{}.jsonl",
             std::process::id(),

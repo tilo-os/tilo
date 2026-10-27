@@ -17,7 +17,7 @@ pub(crate) struct Navigation {
     manual_pan: Option<(StripId, GroupId)>,
     /// What started the change being laid out, until the layout showing it
     /// has run.
-    transition: Option<MotionSource>,
+    pub(crate) transition: Option<MotionSource>,
     /// What started the latest focus change, until it is framed: a reveal
     /// can wait for a layout pass that places its group.
     reveal_source: Option<MotionSource>,
@@ -117,6 +117,13 @@ impl DesktopSurface {
         self.navigation.transition = Some(source);
         self.navigation.reveal_source = Some(source);
         self.push_motion_source(source);
+    }
+
+    /// What started the change being laid out ([`Self::begin_transition`]),
+    /// until the layout that shows it has run.
+    #[must_use]
+    pub fn transition_source(&self) -> Option<MotionSource> {
+        self.navigation.transition
     }
 
     fn push_motion_source(&mut self, source: MotionSource) {
@@ -304,9 +311,14 @@ impl DesktopSurface {
             }
             if let Some(row) = self.row_mut(strip) {
                 if let Some(opened) = beside {
-                    row.scroll_groups_into_view_animated(group, opened, ui::time::now(), source);
+                    row.scroll_groups_into_view_animated(
+                        group,
+                        opened,
+                        ui::motion::frame_now(),
+                        source,
+                    );
                 } else {
-                    row.scroll_group_into_view_animated(group, ui::time::now(), source);
+                    row.scroll_group_into_view_animated(group, ui::motion::frame_now(), source);
                 }
             }
             if opened.is_some() {

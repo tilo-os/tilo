@@ -30,6 +30,10 @@ const NEW_FILE: &str = "new-file";
 const HIDDEN: &str = "hidden";
 const TERMINAL: &str = "terminal";
 const EXTRACT: &str = "extract";
+/// What the cloud account's level of the location commits: its top folder.
+const CLOUD_ROOT: &str = "tilo-files-cloud-root";
+/// What the cloud folder's own level commits: nothing, it is open.
+const CLOUD_FOLDER: &str = "tilo-files-cloud-folder";
 
 /// Everything the slots are made from that is cheap to read: the window
 /// declares them again, reading the folder's templates and completions,
@@ -47,6 +51,8 @@ pub(super) struct BarKey {
     hidden: bool,
     query: Option<String>,
     sidebar: bool,
+    /// The cloud account and folder browsed, which the bar names instead.
+    cloud: Option<(String, Option<String>)>,
 }
 
 fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> ToolbarAction {
@@ -56,6 +62,7 @@ fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> Toolba
         name,
         enabled,
         on,
+        ..ToolbarAction::default()
     }
 }
 
@@ -82,8 +89,10 @@ impl FileExplorerWidget {
             let (path_widget, actions_widget, toolbar) =
                 crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
+            // window-bar: fallback, the bar holds the folder's actions while it hosts the window
             self.nav
                 .set_content_header("", vec![Box::new(actions_widget)]);
+            // window-bar: fallback, the bar shows the path while it hosts the window
             self.nav
                 .set_content_header_leading(Some(Box::new(path_widget)));
             ui::window_toolbar::declare(None);
@@ -100,6 +109,9 @@ impl FileExplorerWidget {
 
     /// The slots this window shows in its bar.
     pub(super) fn window_toolbar(&self) -> WindowToolbar {
+        if let Some((account, folder)) = self.cloud_title() {
+            return self.cloud_window_toolbar(account, folder);
+        }
         let recent = self.is_recent_view();
         let home = self.home_path.as_deref();
         let trail = crate::breadcrumbs::breadcrumb_components(
@@ -127,6 +139,7 @@ impl FileExplorerWidget {
             }),
             location: Some(ToolbarLocation {
                 label,
+                shorter: Vec::new(),
                 value: crate::model::format_path(&self.current_path, home),
                 placeholder: t("files-path-placeholder"),
                 icon: None,
@@ -136,8 +149,39 @@ impl FileExplorerWidget {
                 segments,
                 image: None,
                 suggestions: self.bar_suggestions(),
+                choices: Vec::new(),
+                anchor: None,
+                edited: false,
+                view_only: false,
             }),
             actions,
+            ..WindowToolbar::default()
+        }
+    }
+
+    /// The slots while the window browses a cloud account: the account and
+    /// the folder open in it as the location's levels. The folder actions
+    /// act on folders on this device, so the bar offers none of them here.
+    fn cloud_window_toolbar(&self, account: String, folder: Option<String>) -> WindowToolbar {
+        let mut segments = vec![LocationSegment {
+            label: account.clone(),
+            value: CLOUD_ROOT.to_owned(),
+        }];
+        if let Some(folder) = &folder {
+            segments.push(LocationSegment {
+                label: folder.clone(),
+                value: CLOUD_FOLDER.to_owned(),
+            });
+        }
+        WindowToolbar {
+            sidebar: Some(self.nav.is_sidebar_open()),
+            location: Some(ToolbarLocation {
+                label: folder.unwrap_or(account),
+                name: t("files-location"),
+                segments,
+                ..ToolbarLocation::default()
+            }),
+            ..WindowToolbar::default()
         }
     }
 
@@ -233,6 +277,7 @@ impl FileExplorerWidget {
                 label: suggestion.label,
                 value: suggestion.value,
                 icon: suggestion.icon.map(|icon| icon.name().to_owned()),
+                detail: String::new(),
             })
             .collect()
     }
@@ -246,6 +291,7 @@ impl FileExplorerWidget {
             hidden: self.show_hidden,
             query: self.bar_query.clone(),
             sidebar: self.nav.is_sidebar_open(),
+            cloud: self.cloud_title(),
         }
     }
 
@@ -287,6 +333,15 @@ impl FileExplorerWidget {
             }
             ToolbarEvent::Back => Some(FileCommand::Back),
             ToolbarEvent::Forward => Some(FileCommand::Forward),
+            ToolbarEvent::Commit { text } if self.cloud.active => {
+                // The account's level opens its top folder.
+                (text == CLOUD_ROOT).then(|| {
+                    FileCommand::Cloud(crate::effects::FilesEffect::BrowseCloud {
+                        account: self.cloud.account.clone(),
+                        folder: None,
+                    })
+                })
+            }
             ToolbarEvent::Commit { text } => {
                 // A typed path, a chosen completion or a breadcrumb level:
                 // a folder opens in the window, a file in its app.
@@ -325,6 +380,9 @@ impl FileExplorerWidget {
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
+            | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchCover { .. }
+            | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => return,
         };
         if let Some(command) = command {

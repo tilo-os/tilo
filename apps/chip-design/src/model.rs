@@ -72,10 +72,6 @@ fn packed_bytes(elements: u64, bits: u64) -> Result<u64, String> {
 impl StorageReport {
     /// Check internal structure and arithmetic. This does not authenticate the
     /// publisher, reconstruct the config, or establish quantization quality.
-    ///
-    /// # Errors
-    /// Returns an error for oversized, malformed, unsupported or internally
-    /// inconsistent reports.
     pub fn parse(json: &str) -> Result<Self, String> {
         if json.len() > MAX_REPORT_BYTES {
             return Err("report exceeds the 1 MiB import limit".into());

@@ -551,7 +551,6 @@ fn word_headers_and_footers_survive_docx_roundtrip() {
         }
         let document = text_of(&parts, "word/document.xml");
         assert!(document.contains(r#"r:id="rId8""#) && document.contains(r#"r:id="rId9""#));
-        // The section break keeps its own header too.
         assert!(document.contains(r#"r:id="rId12""#), "{document}");
         let d2 = import(&exported);
         assert_eq!(header_texts(&d2), [HEADER_TEXT]);
@@ -608,7 +607,6 @@ fn word_headers_and_footers_survive_docx_roundtrip() {
             !rels.contains(r#"Id="rId9""#),
             "old default footer rel dropped: {rels}"
         );
-        // Unrelated parts and their relationships are carried through untouched.
         for kept in [
             r#"<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>"#,
             r#"<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>"#,

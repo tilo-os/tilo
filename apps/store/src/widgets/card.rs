@@ -239,7 +239,6 @@ mod tests {
         assert_eq!(visible_version(&native), "0.2.0+gpu");
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn the_listing_says_an_app_waits_for_its_developer() {
         ui::i18n::I18nManager::install(

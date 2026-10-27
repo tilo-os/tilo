@@ -37,19 +37,22 @@ fn lease(controller: &DeviceId, target: &DeviceId, nonce: u8, expires: u64) -> I
         allow_pointer: true,
     }
 }
-fn pressed(state: &State) -> BTreeSet<u32> {
-    state
-        .seat
-        .get_keyboard()
-        .unwrap()
-        .pressed_keys()
-        .iter()
-        .map(|key| {
-            u32::from(*key)
-                .checked_sub(8)
-                .expect("seat key must be an XKB keycode")
-        })
-        .collect()
+/// The keys down after the input `state` admitted since the last call,
+/// on top of `held`, as the event loop would deliver it.
+fn pressed(state: &mut State, held: &mut BTreeSet<u32>) -> BTreeSet<u32> {
+    for event in state.take_personal_fabric_input() {
+        if let FabricInputEvent::Key {
+            keycode, pressed, ..
+        } = event
+        {
+            if pressed {
+                held.insert(keycode);
+            } else {
+                held.remove(&keycode);
+            }
+        }
+    }
+    held.clone()
 }
 fn seed_authority(
     spatial: &mut SpatialInputState,
@@ -98,6 +101,7 @@ fn revoked_then_regranted(cause: Withdrawal) {
     let old_route = AuthenticatedPersonalRoute::for_test_epoch(controller.clone(), 7);
     let fresh_route = AuthenticatedPersonalRoute::for_test_epoch(controller.clone(), 8);
     let mut spatial = SpatialInputState::default();
+    let mut held = BTreeSet::new();
     seed_authority(&mut spatial, (&controller, &sibling), &target, &old_route);
     for event in [key(30), key(31), button(0x110)] {
         assert!(seat.apply_personal_fabric_input(&controller, event));
@@ -139,7 +143,7 @@ fn revoked_then_regranted(cause: Withdrawal) {
         dispatch_spatial_input_batch(&mut seat, batch);
     }
     assert_eq!(
-        pressed(&seat),
+        pressed(&mut seat, &mut held),
         BTreeSet::from([30, 32]),
         "old release must preserve sibling and replacement input after {cause:?}"
     );
@@ -152,12 +156,12 @@ fn revoked_then_regranted(cause: Withdrawal) {
     ));
     assert!(seat.release_personal_fabric_input(&controller));
     assert_eq!(
-        pressed(&seat),
+        pressed(&mut seat, &mut held),
         BTreeSet::from([30]),
         "only sibling remains after {cause:?}"
     );
     assert!(seat.release_personal_fabric_input(&sibling));
-    assert!(pressed(&seat).is_empty());
+    assert!(pressed(&mut seat, &mut held).is_empty());
     assert_eq!(seat.release_all_personal_fabric_input(), 0);
 }
 #[test]

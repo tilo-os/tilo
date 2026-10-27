@@ -16,6 +16,8 @@ pub use tilo_platform_caps::{Availability, availability, available};
 #[cfg(unix)]
 pub mod local_socket;
 pub mod rendezvous;
+pub mod shared_memory;
+pub mod tools;
 
 /// A capability of this crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,10 +93,6 @@ pub fn open_file_count(pid: u32) -> Option<usize> {
 /// Whether this process may read the system's process table: `Ok` where no
 /// separate table exists to fail, the read error on Linux (`/proc`), so a
 /// process list that comes back empty can be told apart from a denied one.
-///
-/// # Errors
-///
-/// The error reading the table.
 pub fn probe_process_table() -> std::io::Result<()> {
     table::probe()
 }

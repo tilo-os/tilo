@@ -5,31 +5,78 @@ use crate::{
     Preview, Receipt, ReviewText, Submission, TextOrigin,
 };
 
+#[path = "composer_report.rs"]
+mod report;
+pub use report::{ModelCheck, PickedReport, ReportWords};
+
 /// What a report is about: the window the person opened Feedback from, as
-/// the desktop names it. Only the app's public identity becomes context;
-/// window titles and app content are never read through it.
+/// the desktop names it, and the control in it they pointed at, if they did.
+/// Only the app's public identity and the control's semantic identity become
+/// context; window titles and what fields hold are never read through it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Subject {
     /// The app's id, as grants and launchers key it.
     pub app: String,
     /// The app's display name.
     pub name: String,
+    /// The control the person pointed at, as the app named it.
+    pub control: Option<Control>,
+}
+
+/// One control of the app's window: its durable semantic id, its role and
+/// its accessible name, as assistive technology reads them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Control {
+    pub id: String,
+    pub role: String,
+    pub label: Option<String>,
 }
 
 impl Subject {
-    fn context(&self) -> ReviewText {
+    /// A report about a window of `app`, called `name`.
+    pub fn of_app(app: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            app: app.into(),
+            name: name.into(),
+            control: None,
+        }
+    }
+
+    fn context(&self) -> Vec<ReviewText> {
         let text = if self.name.is_empty() || self.name == self.app {
             format!("App: {}", self.app)
         } else {
             format!("App: {} ({})", self.name, self.app)
         };
-        ReviewText {
-            node: "feedback.subject.app".into(),
-            sensitivity: DeclaredSensitivity::Public,
+        let line = |node: &str, sensitivity, text| ReviewText {
+            node: node.into(),
+            sensitivity,
             kind: None,
             origin: TextOrigin::Semantic,
             text,
+        };
+        let mut context = vec![line(
+            "feedback.subject.app",
+            DeclaredSensitivity::Public,
+            text,
+        )];
+        if let Some(control) = &self.control {
+            context.push(line(
+                "feedback.subject.control",
+                DeclaredSensitivity::Public,
+                format!("Control: {} {}", control.role, control.id),
+            ));
+            // A control's name can be what the person wrote (a row named
+            // after a message): it is reviewed as their own words.
+            if let Some(label) = &control.label {
+                context.push(line(
+                    "feedback.subject.control.label",
+                    DeclaredSensitivity::Personal,
+                    format!("Named: {label}"),
+                ));
+            }
         }
+        context
     }
 }
 
@@ -86,6 +133,8 @@ pub struct Composer {
     reviewed: Option<(String, Consent, Preview)>,
     active: Option<String>,
     subject: Option<Subject>,
+    /// The report about picked parts of the screen, while there is one.
+    picked: Option<report::Picked>,
 }
 
 impl Composer {
@@ -115,6 +164,7 @@ impl Composer {
             reviewed: None,
             active,
             subject: None,
+            picked: None,
         })
     }
 
@@ -142,12 +192,7 @@ impl Composer {
     /// Refuses a queued report, invalid review or unavailable attachment.
     pub fn review(&mut self, text: &str, consent: Consent) -> Result<(), Error> {
         self.reviewed = None;
-        if self.active.is_some() {
-            if !matches!(self.state()?, Some(DeliveryState::Sent { .. })) {
-                return Err(Error::Conflict);
-            }
-            self.active = None;
-        }
+        self.settle_sent()?;
         if text.trim().is_empty() || text.len() > 8_000 {
             return Err(Error::Invalid("feedback"));
         }
@@ -157,7 +202,7 @@ impl Composer {
                 // Context describes the window the report is about; without
                 // one there is nothing truthful to attach.
                 let subject = self.subject.as_ref().ok_or(Error::Invalid("context"))?;
-                let mut context = vec![subject.context()];
+                let mut context = subject.context();
                 context.extend(self.host.context()?);
                 context
             } else {
@@ -172,6 +217,17 @@ impl Composer {
         Ok(())
     }
 
+    /// A new report may start once the last one arrived.
+    fn settle_sent(&mut self) -> Result<(), Error> {
+        if self.active.is_some() {
+            if !matches!(self.state()?, Some(DeliveryState::Sent { .. })) {
+                return Err(Error::Conflict);
+            }
+            self.active = None;
+        }
+        Ok(())
+    }
+
     pub fn preview(&self) -> Option<&Preview> {
         self.reviewed.as_ref().map(|(_, _, preview)| preview)
     }
@@ -180,6 +236,7 @@ impl Composer {
     /// An already queued immutable report keeps its existing retry identity.
     pub fn abandon_review(&mut self) {
         self.reviewed = None;
+        self.picked = None;
     }
 
     /// Hide a reviewed span without restoring the original text.
@@ -396,6 +453,7 @@ mod tests {
         Subject {
             app: "so.tilo.notes".into(),
             name: "Notes".into(),
+            control: None,
         }
     }
 
@@ -430,6 +488,7 @@ mod tests {
         composer.about(Some(Subject {
             app: "so.tilo.files".into(),
             name: "Files".into(),
+            control: None,
         }));
         assert!(
             composer.preview().is_none(),
@@ -441,6 +500,36 @@ mod tests {
             Err(Error::NotApproved)
         ));
         assert!(calls.borrow().sent.is_empty());
+    }
+
+    #[test]
+    fn a_pointed_control_is_context_and_its_name_is_reviewed_as_personal() {
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        let mut composer = composer(Rc::new(MemoryStore::new()), calls);
+        let mut subject = notes();
+        subject.control = Some(Control {
+            id: "root~k:pages~k:page-7".into(),
+            role: "ListItem".into(),
+            label: Some("Ada's diary".into()),
+        });
+        composer.about(Some(subject));
+        let consent = Consent {
+            context: true,
+            screenshot: false,
+        };
+        composer.review("This page will not open", consent).unwrap();
+        let context = &composer.preview().unwrap().feedback().context;
+        assert_eq!(context.len(), 3, "{context:?}");
+        assert_eq!(context[1].value, "Control: ListItem root~k:pages~k:page-7");
+        assert!(
+            !context[2].value.contains("Ada"),
+            "a control's name is masked in review: {context:?}"
+        );
+        composer.about(Some(notes()));
+        assert!(
+            composer.preview().is_none(),
+            "another control of the same window needs a fresh review"
+        );
     }
 
     #[test]

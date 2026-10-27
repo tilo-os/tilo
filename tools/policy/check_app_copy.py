@@ -14,6 +14,7 @@ checked in that crate's catalogue, the one it is looked up in.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import check_app_portability as rust
@@ -27,7 +28,7 @@ RESOLVER = re.compile(r"\b(?:t|t_args|tr|tr_args)\s*\(")
 QUALIFIED = re.compile(r"\b([A-Za-z_]\w*)::i18n::(?:t|t_args|tr|tr_args)\s*\(")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALL = re.compile(
-    r"(?:\bButton::new|\bdevice_read::thread|\.(?:with_id|thread_name|name))\s*\("
+    r"(?:\bButton::new|\bdevice_read::thread|\.(?:with_id|thread_name|name|start_job))\s*\("
 )
 
 
@@ -148,11 +149,18 @@ def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
 
 TOOLKIT = "crates/sdk/ui-core"
 # Crates whose copy keys also travel through conditionals and tables.
-INDIRECT = {"apps/settings"}
+INDIRECT = {"apps/settings-core"}
 # Catalogues a crate's resolver falls back to after its own: Settings' `t`
 # resolves the shared provider administration copy it embeds
-# (apps/settings/src/i18n.rs).
-FALLBACK = {"apps/settings": ["crates/sdk/provider-settings-ui"]}
+# (apps/settings-core/src/i18n.rs).
+FALLBACK = {"apps/settings-core": ["crates/sdk/provider-settings-ui"]}
+# Crates whose copy is another crate's catalogue: Settings' panes, in the
+# app and in settings-rare, resolve settings-core's; Browser resolves
+# browser-parts'.
+SOURCES = {
+    "apps/settings-core": ["apps/settings", "apps/settings-rare"],
+    "apps/browser-parts": ["apps/browser"],
+}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:
@@ -176,7 +184,8 @@ def missing_copy(root: Path) -> list[str]:
         shared = [catalogues(root / fallback) for fallback in FALLBACK.get(name, [])]
         indirect = name in INDIRECT
         namespaces = {key.partition("-")[0] for key in own["en-US"]} if indirect else set()
-        for path in sorted((crate / "src").rglob("*.rs")):
+        sources = [crate] + [root / other for other in SOURCES.get(name, [])]
+        for path in sorted(p for source in sources for p in (source / "src").rglob("*.rs")):
             # Settings' scenarios name capture-only states, not live panes.
             if indirect and path.name == "scenarios.rs":
                 continue
@@ -201,7 +210,7 @@ def main() -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("app copy OK (every resolved key is in each shipped catalogue)")
+    print("app copy OK (every resolved key is in each shipped catalogue)", file=sys.stderr)
     return 0
 
 

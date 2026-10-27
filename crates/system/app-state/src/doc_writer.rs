@@ -19,7 +19,8 @@ use std::time::Duration;
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, ROOT};
 use durable_store::{
-    Durability, DurableStore, Lease, Revision, StorageKey, StoreError as SeamError, WriteOp,
+    Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, StorageKey,
+    StoreError as SeamError, WriteOp,
 };
 
 use crate::{
@@ -38,7 +39,7 @@ const MIN_COMPACT_BYTES: usize = 64 * 1024;
 
 /// What a writer knows is durable, and any outstanding failure. Reading it
 /// never commits document operations.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DurabilitySnapshot {
     pub durable_heads: Option<Vec<ChangeHash>>,
     pub error: Option<String>,
@@ -49,6 +50,7 @@ impl From<SeamError> for StoreError {
         match error {
             SeamError::Busy(path) => Self::WriterBusy { path: path.into() },
             SeamError::SourceChanged(path) => Self::SourceChanged { path: path.into() },
+            SeamError::Opening(key) => Self::Opening(key),
             other => Self::Io {
                 context: "durable storage".to_owned(),
                 source: io::Error::other(other),
@@ -396,6 +398,9 @@ pub struct DocWriter {
     appends: usize,
     progress: RefCell<Progress>,
     private_history: Result<crate::private_history::PrivateHistory, String>,
+    /// Who hears when what this writer reports durable changes
+    /// ([`Self::wake_on_settle`]).
+    settle_wakes: RefCell<Vec<ReadyWake>>,
 }
 
 /// What the writer knows about submitted writes. Interior so status and
@@ -446,6 +451,7 @@ impl DocWriter {
                 durable,
                 error: None,
             }),
+            settle_wakes: RefCell::default(),
         })
     }
 
@@ -475,6 +481,7 @@ impl DocWriter {
                 error: Some(reason.into()),
                 ..Progress::default()
             }),
+            settle_wakes: RefCell::default(),
         }
     }
 
@@ -666,6 +673,8 @@ impl DocWriter {
     fn refuse(&mut self, error: &StoreError) {
         tracing::error!(document = %self.document_path().display(), %error, "app state write refused");
         self.progress.get_mut().error = Some(error.to_string());
+        // The store said no here and now: who shows "Saving…" hears it.
+        self.call_settle_wakes();
     }
 
     fn send_full(
@@ -708,7 +717,61 @@ impl DocWriter {
             writer,
         });
         self.sent = heads;
+        // Settled already: the store resolved the write before it could be
+        // armed, and calls no one for it.
+        if self.arm_settle_wakes() {
+            self.call_settle_wakes();
+        }
         Ok(())
+    }
+
+    /// Call `wake` from any thread whenever what this writer reports durable
+    /// ([`Self::durability_snapshot`]) may have changed: each time the store
+    /// resolves the writes this writer submitted, a flush made what it read
+    /// durable, or the store refused a write. A window showing "Saving…"
+    /// samples again then, and only then. The same wake ([`durable_store::waiting::same_wake`]) given
+    /// again is kept once.
+    pub fn wake_on_settle(&self, wake: ReadyWake) {
+        let Some(owner) = &self.owner else {
+            // Nothing is ever written: what it reports never changes.
+            return;
+        };
+        {
+            let mut wakes = self.settle_wakes.borrow_mut();
+            if !wakes
+                .iter()
+                .any(|armed| durable_store::waiting::same_wake(armed, &wake))
+            {
+                wakes.push(ReadyWake::clone(&wake));
+            }
+        }
+        // Settled: nothing is outstanding, and the caller's next sample
+        // shows what is durable now.
+        let _ = owner.store.wake_when_settled(&owner.key, wake);
+    }
+
+    /// Hand the store every wake waiting on this writer, for what it has
+    /// outstanding now. Whether it had nothing outstanding left.
+    fn arm_settle_wakes(&self) -> bool {
+        let Some(owner) = &self.owner else {
+            return false;
+        };
+        let mut settled = false;
+        for wake in self.settle_wakes.borrow().iter() {
+            settled |= owner
+                .store
+                .wake_when_settled(&owner.key, ReadyWake::clone(wake))
+                == SettleWatch::Settled;
+        }
+        settled
+    }
+
+    /// Call every wake waiting on this writer now.
+    fn call_settle_wakes(&self) {
+        let wakes = self.settle_wakes.borrow().clone();
+        for wake in wakes {
+            wake();
+        }
     }
 
     /// The heads of the document as it was accepted, once the store has made
@@ -794,6 +857,12 @@ impl DocWriter {
 
     /// Ask the store to commit everything submitted and report the outcome.
     ///
+    /// On a thread that must not wait on storage
+    /// ([`durable_store::waiting::forbid_on_this_thread`]: the compositor's
+    /// frame loop, which runs apps in-process) it only starts the commits:
+    /// writes the store accepted are not a failure, and their outcome
+    /// arrives through [`Self::durability_snapshot`].
+    ///
     /// # Errors
     /// The outstanding failure, or writes the store could not yet commit.
     pub fn try_flush(&self) -> Result<(), String> {
@@ -805,14 +874,27 @@ impl DocWriter {
                 .clone()
                 .unwrap_or_else(|| "writer disabled".to_owned()));
         };
-        let flushed = owner.store.flush(Some(&owner.key));
+        let before = self.durability_snapshot();
+        let flushed = owner.store.flush_where_allowed(&owner.key);
+        // A flush that waited changed what is durable here and now; one that
+        // left the work to the store's thread is heard of when it is done.
+        if self.durability_snapshot() == before {
+            let _ = self.arm_settle_wakes();
+        } else {
+            self.call_settle_wakes();
+        }
         self.settle();
         let progress = self.progress.borrow();
         if let Some(error) = &progress.error {
             return Err(error.clone());
         }
-        flushed.map_err(|error| error.to_string())?;
-        if progress.inflight.is_empty() {
+        let started_only = durable_store::waiting::forbidden();
+        match flushed {
+            Ok(()) => {}
+            Err(SeamError::Pending(_)) if started_only => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if progress.inflight.is_empty() || started_only {
             if let Ok(history) = &self.private_history {
                 history.flush()?;
             }
@@ -850,7 +932,9 @@ impl Drop for DocWriter {
         let Some(owner) = &self.owner else {
             return;
         };
-        if let Err(error) = owner.store.flush(Some(&owner.key)) {
+        // The writes are the store's: it commits them on its own thread.
+        // Only a thread that may wait waits for them here.
+        if let Err(error) = owner.store.flush_where_allowed(&owner.key) {
             tracing::debug!(document = %owner.label.display(), %error, "writes outstanding at close");
         }
         owner.writer_claimed.set(false);
@@ -976,14 +1060,9 @@ mod tests {
             "opening synced a file or directory on the opening thread"
         );
 
-        let started = std::time::Instant::now();
-        while writer.durability_snapshot().durable_heads != Some(doc.get_heads()) {
-            assert!(
-                started.elapsed() < Duration::from_secs(30),
-                "the store never confirmed the opened document durable"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the store to confirm the opened document durable", || {
+            writer.durability_snapshot().durable_heads == Some(doc.get_heads())
+        });
         let sync_threads = fs.faults().sync_threads.clone();
         assert!(
             !sync_threads.is_empty() && !sync_threads.contains(&opener),
@@ -1153,6 +1232,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The compositor runs apps on its frame loop: saving, flushing and
+    /// closing a document there start the store's commits and never wait
+    /// for them, and the edits still reach the disk.
+    #[test]
+    fn a_writer_on_a_thread_that_must_not_wait_leaves_the_commit_to_the_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Rc<dyn DurableStore> =
+            Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
+        let key = StorageKey::record("so.tilo.test", "room", "on-the-loop");
+        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+        let mut doc = owner.new_document().unwrap();
+        doc.put(ROOT, "body", "typed").unwrap();
+        {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+            doc.put(ROOT, "body", "typed more").unwrap();
+            writer.save(&mut doc);
+            writer
+                .try_flush()
+                .expect("accepted writes are not a failure");
+            assert_eq!(writer.last_error(), None);
+            drop(writer);
+        }
+        store.flush(Some(&key)).unwrap();
+        drop(owner);
+        drop(store);
+        let stored = FsStore::new(tmp.path()).read(&key).unwrap().unwrap();
+        assert_eq!(
+            AutoCommit::load(&stored.bytes).unwrap().get_heads(),
+            doc.get_heads()
+        );
     }
 
     fn with_torn_tail(doc: &mut AutoCommit) -> Vec<u8> {

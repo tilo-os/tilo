@@ -1,4 +1,3 @@
-//! Opt-in real root/Btrfs qualification. Missing capabilities are failures.
 use super::*;
 use std::{
     io::{BufRead, Write},
@@ -199,7 +198,13 @@ while True:
         "ok\n1"
     );
     let epoch_wal = std::fs::read(captured.join("state.sqlite-wal")).unwrap();
-    std::thread::sleep(Duration::from_millis(30));
+    // The live database moves on past the captured epoch.
+    tilo_test_env::wait_until("the live database to move on", || {
+        query(&database, "SELECT n FROM value")
+            .parse::<u64>()
+            .unwrap()
+            > before
+    });
     broker.validate(&cancel).unwrap();
     assert_eq!(
         std::fs::read(captured.join("state.sqlite-wal")).unwrap(),

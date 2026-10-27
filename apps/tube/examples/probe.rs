@@ -39,10 +39,6 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-/// # Errors
-///
-/// Returns `Err` if a probe fails to construct its
-/// backend, fetch data, or write its output file.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -159,7 +155,7 @@ fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
 /// The rangeable Invidious proxy's stream URL and quality for `id`.
 #[cfg(all(feature = "live", feature = "media"))]
 fn resolve_proxied(id: &str) -> Option<(String, String)> {
-    ui::rt::block_on(tube::backend::proxy::resolve_rangeable(id))
+    ui::rt::block_on(tube::backend::proxy::resolve_rangeable(id, None))
         .ok()
         .flatten()
         .map(|r| (r.url, r.quality))
@@ -185,7 +181,7 @@ fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("probe-engine: constructing the yt-dlp backend…");
     let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
     let (url, quality) = backend
-        .resolve_playback_source(id)
+        .resolve_playback_source(id, None)
         .ok()
         .map(|s| (s.url, s.quality))
         .or_else(|| resolve_proxied(id))
@@ -458,7 +454,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
     // Invidious proxy for seekable, full-length playback), falling back to the
     // proxy if the direct extractor is unavailable.
     let resolved = backend
-        .resolve_playback_source(watch_id)
+        .resolve_playback_source(watch_id, None)
         .ok()
         .map(|s| (s.url, s.quality))
         .or_else(|| resolve_proxied(watch_id));
@@ -649,7 +645,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             )?;
             println!("  wrote {}", search_png.display());
 
-            // ---- Home page (same catalogue on the Home route) ----
             let mut hmodel = smodel.clone();
             hmodel.route = Route::Home;
             let home_app = tube::TubeApp::new()

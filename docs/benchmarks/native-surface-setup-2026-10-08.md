@@ -15,7 +15,7 @@ An optimized diagnostic exercises the production SDK constructors, actual Waylan
 
 Fresh-device means were 43.837 and 43.733 ms. No full-app or OS startup speedup is established by this fixture. All 48 submissions passed validation. Every sample recorded the expected checked configuration; the candidate omitted the earlier unchecked configuration. Both variants refused a deliberately nonexistent named adapter. Explicit SDK counters do not observe every upstream Vulkan query.
 
-Raw events, artifact hashes, source blobs, host load and limits are in [the JSON receipt](native-surface-setup-2026-10-08.json). Baseline source is `cec43c3558437dabe21a82ca8a01eaa18a9740f5`. The measured probe used `std::time::Instant::now`; the submitted diagnostic uses the required `tilo_ui::time::now()` wrapper, which delegates to that same native clock. Receipt source blobs describe the measured artifact. Public probe artifacts remained remote; private QA profiles, identity data and VM receipts are excluded.
+Raw events, artifact hashes, source blobs, host load and limits are in [the JSON receipt](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/native-surface-setup-2026-10-08.json). Baseline source is `cec43c3558437dabe21a82ca8a01eaa18a9740f5`. The measured probe used `std::time::Instant::now`; the submitted diagnostic uses the required `tilo_ui::time::now()` wrapper, which delegates to that same native clock. Receipt source blobs describe the measured artifact. Public probe artifacts remained remote; private QA profiles, identity data and VM receipts are excluded.
 
 ## Controls and limits
 

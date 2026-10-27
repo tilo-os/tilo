@@ -1,5 +1,5 @@
-# Tilo boot and encrypted-root unlock theme. Keep this dependency-free: it runs
-# in the initramfs before the real root filesystem is available.
+# Tilo boot, sign-in and encrypted-root unlock theme. Keep this dependency-free:
+# it runs in the initramfs before the real root filesystem is available.
 Window.SetBackgroundTopColor(0.055, 0.063, 0.090);
 Window.SetBackgroundBottomColor(0.035, 0.039, 0.060);
 
@@ -22,6 +22,15 @@ status.heading = Sprite();
 status.help = Sprite(status.help_image);
 status.heading.SetZ(30);
 status.help.SetZ(30);
+
+# Fixed text is pre-rendered into PNGs (os/dev/make-plymouth-assets.py). Only
+# what the boot cannot know in advance (a person's name, the tries left) is
+# drawn with Image.Text, through Plymouth's FreeType label plugin and the one
+# font the initramfs carries. Where that is missing, Image.Text draws nothing,
+# and every such line falls back to a pre-rendered one that says the same
+# without the detail.
+text_probe = Image.Text("Tilo", 1, 1, 1);
+can_draw_text = text_probe && text_probe.GetWidth() > 0;
 
 fun show_normal_status()
   {
@@ -67,18 +76,34 @@ fun set_dialog_opacity(opacity)
     dialog.help.SetOpacity(opacity);
     dialog.lock.SetOpacity(opacity);
     dialog.entry.SetOpacity(opacity);
+    if (global.other_ways)
+      dialog.back.SetOpacity(opacity);
+    else
+      dialog.back.SetOpacity(0);
     for (index = 0; dialog.bullet[index]; index++)
       dialog.bullet[index].SetOpacity(opacity);
   }
 
+# What the volume's prompt asks for, once tilo-boot-signin has read the
+# header (`tilo-unlock-ask:<kind>`): the password where the installer set the
+# account password as the disk's, a disk passphrase otherwise, and the
+# recovery key only where the volume has one.
+fun unlock_help_image()
+  {
+    if (global.unlock_ask != "")
+      {
+        local.image = Image("unlock-help-" + global.unlock_ask + ".png");
+        if (image)
+          return image;
+      }
+    return Image("unlock-help.png");
+  }
+
 fun setup_dialog()
   {
-    # Text is pre-rendered into these assets. Image.Text depends on fonts and
-    # Pango data that intentionally are not carried in the small initramfs and
-    # can otherwise turn an encrypted-root prompt into an invisible wait.
     global.dialog.heading_image = Image("unlock-heading.png");
     global.dialog.heading = Sprite(dialog.heading_image);
-    global.dialog.help_image = Image("unlock-help.png");
+    global.dialog.help_image = unlock_help_image();
     global.dialog.help = Sprite(dialog.help_image);
     global.dialog.retry_image = Image("unlock-retry.png");
     global.dialog.retry = Sprite(dialog.retry_image);
@@ -88,6 +113,9 @@ fun setup_dialog()
     global.dialog.lock_image = Image("lock.png");
     global.dialog.lock = Sprite(dialog.lock_image);
     global.dialog.bullet_image = Image("bullet.png");
+    global.dialog.back_image = Image("hint-go-back.png");
+    global.dialog.back = Sprite(dialog.back_image);
+    dialog.back.SetOpacity(0);
     global.dialog.ready = 1;
   }
 
@@ -100,6 +128,8 @@ fun place_dialog()
                             Window.GetY() + Window.GetHeight() * 0.535, 100);
     dialog.retry.SetPosition(center_x - dialog.retry_image.GetWidth() / 2,
                              Window.GetY() + Window.GetHeight() * 0.67, 100);
+    dialog.back.SetPosition(center_x - dialog.back_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.84, 100);
     global.dialog.entry_x = center_x - dialog.entry_image.GetWidth() / 2;
     global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
     dialog.entry.SetPosition(dialog.entry_x, dialog.entry_y, 100);
@@ -112,10 +142,487 @@ fun place_dialog()
                                        dialog.entry_y + 24, 102);
   }
 
+# ---- Sign-in ---------------------------------------------------------------
+# tilo-boot-signin (crates/system/boot-signin) drives this screen with
+# `display-message` texts `tilo-signin-<what>:<value>`. It follows the login
+# screen's layout: who is signing in, the field labelled for their secret, one
+# message line, and the other ways in below. With several people, they first
+# pick themselves from a list that ends with "Can't sign in".
+
+# ---- The login screen's look (look.json; make-plymouth-assets.py --script-look)
+look.text.red = 0.937; look.text.green = 0.949; look.text.blue = 0.965;
+look.dim.red = 0.686; look.dim.green = 0.694; look.dim.blue = 0.71;
+look.danger.red = 0.894; look.danger.green = 0.486; look.danger.blue = 0.459;
+look.ink[0].red = 0.149; look.ink[0].green = 0.086; look.ink[0].blue = 0.082;
+look.ink[1].red = 0.141; look.ink[1].green = 0.094; look.ink[1].blue = 0.059;
+look.ink[2].red = 0.145; look.ink[2].green = 0.118; look.ink[2].blue = 0.059;
+look.ink[3].red = 0.118; look.ink[3].green = 0.125; look.ink[3].blue = 0.067;
+look.ink[4].red = 0.102; look.ink[4].green = 0.153; look.ink[4].blue = 0.102;
+look.ink[5].red = 0.071; look.ink[5].green = 0.157; look.ink[5].blue = 0.133;
+look.ink[6].red = 0.059; look.ink[6].green = 0.153; look.ink[6].blue = 0.165;
+look.ink[7].red = 0.078; look.ink[7].green = 0.145; look.ink[7].blue = 0.184;
+look.ink[8].red = 0.094; look.ink[8].green = 0.122; look.ink[8].blue = 0.173;
+look.ink[9].red = 0.11; look.ink[9].green = 0.094; look.ink[9].blue = 0.149;
+look.ink[10].red = 0.129; look.ink[10].green = 0.09; look.ink[10].blue = 0.129;
+look.ink[11].red = 0.145; look.ink[11].green = 0.086; look.ink[11].blue = 0.106;
+look.faces = 12;
+look.avatar = 80;
+look.initials_size = 32;
+look.name_size = 26;
+look.label_size = 13;
+look.field_height = 40;
+# ---- End of the login screen's look
+signin.active = 0;
+signin.view = "";
+signin.count = 0;
+signin.selected = 0;
+signin.name = "";
+signin.account = "";
+signin.slot = 8;
+signin.initials = "";
+signin.kind = "password";
+signin.back = 0;
+signin.note_class = "none";
+signin.note_text = "";
+signin.checking = 0;
+signin.bullets = 0;
+
+fun index_of_colon(text)
+  {
+    for (local.i = 0; i < text.Length(); i++)
+      {
+        if (text.CharAt(i) == ":")
+          return i;
+      }
+    return -1;
+  }
+
+fun to_number(text)
+  {
+    local.value = 0;
+    local.digits = "0123456789";
+    for (local.i = 0; i < text.Length(); i++)
+      {
+        local.found = 0;
+        for (local.d = 0; d < 10; d++)
+          {
+            if (text.CharAt(i) == digits.CharAt(d))
+              {
+                value = value * 10 + d;
+                found = 1;
+              }
+          }
+        if (!found)
+          return value;
+      }
+    return value;
+  }
+
+# `size` in pixels, as the login screen's text sizes are.
+fun text_image(text, size, red, green, blue)
+  {
+    if (!can_draw_text || text == "")
+      return NULL;
+    local.image = Image.Text(text, red, green, blue, 1, "Sans " + size + "px");
+    if (!image || image.GetWidth() < 1)
+      return NULL;
+    return image;
+  }
+
+fun setup_signin()
+  {
+    global.signin.ready = 1;
+    for (local.slot = 0; slot < look.faces; slot++)
+      signin.avatar_image[slot] = Image("avatar-" + slot + ".png");
+    signin.avatar_person_image = Image("avatar-person.png");
+    signin.avatar = Sprite(signin.avatar_person_image);
+    signin.initial = Sprite();
+    signin.name_sprite = Sprite();
+    signin.account_sprite = Sprite();
+    signin.heading_image = Image("signin-heading.png");
+    signin.entry_image = Image("field.png");
+    signin.entry_invalid_image = Image("field-invalid.png");
+    signin.entry = Sprite(signin.entry_image);
+    signin.placeholder_pin = Image("placeholder-pin.png");
+    signin.placeholder_password = Image("placeholder-password.png");
+    signin.placeholder = Sprite();
+    signin.bullet_image = Image("field-bullet.png");
+    signin.note = Sprite();
+    signin.alert_image = Image("alert.png");
+    signin.alert = Sprite(signin.alert_image);
+    signin.wrong_pin_image = Image("note-wrong-pin.png");
+    signin.wrong_password_image = Image("note-wrong-password.png");
+    signin.wait_image = Image("note-wait.png");
+    signin.checking_image = Image("signing-in.png");
+    signin.hint_other_image = Image("hint-other-ways.png");
+    signin.hint_back_image = Image("hint-someone-else.png");
+    signin.hint = Sprite();
+    signin.list_heading = Sprite(Image("list-heading.png"));
+    signin.list_keys = Sprite(Image("list-keys.png"));
+    signin.row_image = Image("row.png");
+    signin.row_selected_image = Image("row-selected.png");
+    signin.other_ways_image = Image("cant-sign-in.png");
+    signin.rendered_name = "";
+    signin.rendered_account = "";
+  }
+
+fun hide_signin_field()
+  {
+    signin.avatar.SetOpacity(0);
+    signin.initial.SetOpacity(0);
+    signin.name_sprite.SetOpacity(0);
+    signin.account_sprite.SetOpacity(0);
+    signin.alert.SetOpacity(0);
+    signin.entry.SetOpacity(0);
+    signin.placeholder.SetOpacity(0);
+    signin.note.SetOpacity(0);
+    signin.hint.SetOpacity(0);
+    for (local.i = 0; signin.bullet[i]; i++)
+      signin.bullet[i].SetOpacity(0);
+  }
+
+fun hide_signin_list()
+  {
+    signin.list_heading.SetOpacity(0);
+    signin.list_keys.SetOpacity(0);
+    for (local.i = 0; signin.row_sprite[i]; i++)
+      {
+        signin.row_sprite[i].SetOpacity(0);
+        signin.row_label[i].SetOpacity(0);
+      }
+  }
+
+fun hide_signin()
+  {
+    if (!signin.ready)
+      return;
+    hide_signin_field();
+    hide_signin_list();
+  }
+
+fun place_centered(sprite, image, top, z)
+  {
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    sprite.SetImage(image);
+    sprite.SetPosition(center_x - image.GetWidth() / 2, top, z);
+    sprite.SetOpacity(1);
+  }
+
+fun place_left(sprite, image, x, top, z)
+  {
+    sprite.SetImage(image);
+    sprite.SetPosition(x, top, z);
+    sprite.SetOpacity(1);
+  }
+
+# The login screen's layout, top to bottom: the person's face, their name and
+# account, the field, and the line under it, left-aligned with the field.
+fun draw_signin_field()
+  {
+    local.top = Window.GetY();
+    local.height = Window.GetHeight();
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+
+    local.avatar_top = top + height * 0.30;
+    local.disc = signin.avatar_image[signin.slot];
+    local.ink = look.ink[signin.slot];
+    local.letters = text_image(signin.initials, look.initials_size,
+                               ink.red, ink.green, ink.blue);
+    if (disc && letters)
+      {
+        place_centered(signin.avatar, disc, avatar_top, 110);
+        signin.initial.SetImage(letters);
+        signin.initial.SetPosition(center_x - letters.GetWidth() / 2,
+                                   avatar_top + look.avatar / 2 - letters.GetHeight() / 2, 111);
+        signin.initial.SetOpacity(1);
+      }
+    else
+      {
+        place_centered(signin.avatar, signin.avatar_person_image, avatar_top, 110);
+        signin.initial.SetOpacity(0);
+      }
+
+    if (signin.rendered_name != signin.name)
+      {
+        signin.name_image = text_image(signin.name, look.name_size,
+                                       look.text.red, look.text.green, look.text.blue);
+        if (!signin.name_image)
+          signin.name_image = signin.heading_image;
+        signin.rendered_name = signin.name;
+      }
+    local.name_top = avatar_top + look.avatar + 10;
+    place_centered(signin.name_sprite, signin.name_image, name_top, 110);
+    local.below_name = name_top + signin.name_image.GetHeight();
+
+    if (signin.rendered_account != signin.account)
+      {
+        signin.account_image = text_image(signin.account, look.label_size,
+                                          look.dim.red, look.dim.green, look.dim.blue);
+        signin.rendered_account = signin.account;
+      }
+    if (signin.account_image)
+      {
+        place_centered(signin.account_sprite, signin.account_image, below_name, 110);
+        below_name += signin.account_image.GetHeight();
+      }
+    else
+      signin.account_sprite.SetOpacity(0);
+
+    local.field = signin.entry_image;
+    if (signin.note_class == "wrong" && !signin.checking)
+      field = signin.entry_invalid_image;
+    local.entry_top = below_name + 24;
+    local.entry_x = center_x - field.GetWidth() / 2;
+    place_left(signin.entry, field, entry_x, entry_top, 110);
+    if (signin.checking)
+      signin.entry.SetOpacity(0.5);
+
+    if (signin.kind == "pin")
+      signin.placeholder.SetImage(signin.placeholder_pin);
+    else
+      signin.placeholder.SetImage(signin.placeholder_password);
+    signin.placeholder.SetPosition(entry_x + 12,
+                                   entry_top + look.field_height / 2
+                                     - signin.placeholder_pin.GetHeight() / 2, 111);
+    if (signin.bullets == 0 && !signin.checking)
+      signin.placeholder.SetOpacity(1);
+    else
+      signin.placeholder.SetOpacity(0);
+
+    # Very long passphrases stay visually bounded while accepted in full.
+    local.visible = signin.bullets;
+    if (signin.checking)
+      visible = 0;
+    if (visible > 26)
+      visible = 26;
+    for (local.i = 0; signin.bullet[i] || i < visible; i++)
+      {
+        if (!signin.bullet[i])
+          signin.bullet[i] = Sprite(signin.bullet_image);
+        signin.bullet[i].SetPosition(entry_x + 14 + i * 12,
+                                     entry_top + look.field_height / 2
+                                       - signin.bullet_image.GetHeight() / 2, 112);
+        if (i < visible)
+          signin.bullet[i].SetOpacity(1);
+        else
+          signin.bullet[i].SetOpacity(0);
+      }
+
+    # The line under the field: the error after a refusal, led by the alert
+    # icon, or "Signing in…" while an entry is checked.
+    local.note_top = entry_top + look.field_height + 8;
+    local.note_image = NULL;
+    local.drawn = 0;
+    if (signin.checking)
+      note_image = signin.checking_image;
+    else if (signin.note_class != "none")
+      {
+        note_image = text_image(signin.note_text, look.label_size,
+                                look.danger.red, look.danger.green, look.danger.blue);
+        if (note_image)
+          drawn = 1;
+        else if (signin.note_class == "wait")
+          note_image = signin.wait_image;
+        else if (signin.kind == "pin")
+          note_image = signin.wrong_pin_image;
+        else
+          note_image = signin.wrong_password_image;
+      }
+    if (drawn)
+      {
+        place_left(signin.alert, signin.alert_image, entry_x,
+                   note_top + note_image.GetHeight() / 2
+                     - signin.alert_image.GetHeight() / 2, 110);
+        place_left(signin.note, note_image, entry_x + signin.alert_image.GetWidth(),
+                   note_top, 110);
+      }
+    else if (note_image)
+      {
+        signin.alert.SetOpacity(0);
+        place_left(signin.note, note_image, entry_x, note_top, 110);
+      }
+    else
+      {
+        signin.alert.SetOpacity(0);
+        signin.note.SetOpacity(0);
+      }
+
+    if (signin.back)
+      place_centered(signin.hint, signin.hint_back_image, top + height * 0.84, 110);
+    else
+      place_centered(signin.hint, signin.hint_other_image, top + height * 0.84, 110);
+  }
+
+fun draw_signin_list()
+  {
+    local.top = Window.GetY();
+    local.height = Window.GetHeight();
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    local.row_x = center_x - signin.row_image.GetWidth() / 2;
+    local.rows_top = top + height * 0.38;
+    local.step = signin.row_image.GetHeight() + 10;
+
+    place_centered(signin.list_heading, signin.list_heading.GetImage(), top + height * 0.30, 110);
+    for (local.i = 0; i <= signin.count; i++)
+      {
+        if (!signin.row_sprite[i])
+          {
+            signin.row_sprite[i] = Sprite();
+            signin.row_label[i] = Sprite();
+          }
+        if (i == signin.selected)
+          signin.row_sprite[i].SetImage(signin.row_selected_image);
+        else
+          signin.row_sprite[i].SetImage(signin.row_image);
+        signin.row_sprite[i].SetPosition(row_x, rows_top + i * step, 110);
+        signin.row_sprite[i].SetOpacity(1);
+
+        local.label = NULL;
+        if (i < signin.count)
+          {
+            label = text_image(signin.person[i], 20, 0.94, 0.94, 0.98);
+            if (!label)
+              label = Image("account-" + (i + 1) + ".png");
+          }
+        else
+          label = signin.other_ways_image;
+        if (label)
+          {
+            signin.row_label[i].SetImage(label);
+            signin.row_label[i].SetPosition(row_x + 24,
+                                            rows_top + i * step
+                                              + signin.row_image.GetHeight() / 2
+                                              - label.GetHeight() / 2, 111);
+            signin.row_label[i].SetOpacity(1);
+          }
+        else
+          signin.row_label[i].SetOpacity(0);
+      }
+    for (i = signin.count + 1; signin.row_sprite[i]; i++)
+      {
+        signin.row_sprite[i].SetOpacity(0);
+        signin.row_label[i].SetOpacity(0);
+      }
+    place_centered(signin.list_keys, signin.list_keys.GetImage(), top + height * 0.84, 110);
+  }
+
+fun draw_signin()
+  {
+    if (!signin.ready)
+      setup_signin();
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    logo.y = Window.GetY() + Window.GetHeight() * 0.17;
+    logo.sprite.SetPosition(center_x - logo.image.GetWidth() / 2,
+                            logo.y - logo.image.GetHeight() / 2, 10);
+    progress.background.SetOpacity(0);
+    progress.fill.SetOpacity(0);
+    status.heading.SetOpacity(0);
+    status.help.SetOpacity(0);
+    set_dialog_opacity(0);
+    if (dialog.ready)
+      dialog.retry.SetOpacity(0);
+    if (signin.view == "list")
+      {
+        hide_signin_field();
+        draw_signin_list();
+      }
+    else
+      {
+        hide_signin_list();
+        draw_signin_field();
+      }
+  }
+
+fun signin_message(text)
+  {
+    local.cut = index_of_colon(text);
+    local.key = text;
+    local.value = "";
+    if (cut >= 0)
+      {
+        key = text.SubString(0, cut);
+        value = text.SubString(cut + 1, text.Length());
+      }
+    if (key == "people")
+      {
+        signin.active = 1;
+        signin.count = to_number(value);
+      }
+    else if (key == "person")
+      {
+        local.at = index_of_colon(value);
+        if (at > 0)
+          signin.person[to_number(value.SubString(0, at))] = value.SubString(at + 1, value.Length());
+      }
+    else if (key == "choose")
+      {
+        signin.active = 1;
+        signin.view = "list";
+        signin.selected = to_number(value);
+      }
+    else if (key == "face")
+      {
+        # <slot>:<initials>, as tilo-face derives them for the login screen.
+        local.colon = index_of_colon(value);
+        if (colon > 0)
+          {
+            signin.slot = to_number(value.SubString(0, colon));
+            if (signin.slot >= look.faces)
+              signin.slot = 0;
+            signin.initials = value.SubString(colon + 1, value.Length());
+          }
+      }
+    else if (key == "name")
+      {
+        signin.active = 1;
+        signin.view = "field";
+        signin.name = value;
+        signin.checking = 0;
+      }
+    else if (key == "account")
+      signin.account = value;
+    else if (key == "kind")
+      signin.kind = value;
+    else if (key == "back")
+      signin.back = value == "1";
+    else if (key == "note")
+      {
+        local.split = index_of_colon(value);
+        if (split >= 0)
+          {
+            signin.note_class = value.SubString(0, split);
+            signin.note_text = value.SubString(split + 1, value.Length());
+          }
+        signin.checking = 0;
+      }
+    else if (key == "checking")
+      signin.checking = 1;
+    else if (key == "end")
+      {
+        signin.active = 0;
+        signin.view = "";
+        signin.checking = 0;
+        hide_signin();
+        display_hotplug();
+        return;
+      }
+    if (signin.active)
+      draw_signin();
+  }
+
+# ---- Plymouth callbacks ----------------------------------------------------
+
 fun display_password(prompt, bullets)
   {
     global.mode = "password";
     global.password_bullets = bullets;
+    if (signin.active)
+      {
+        signin.bullets = bullets;
+        draw_signin();
+        return;
+      }
+    hide_signin();
     place_brand(1);
     progress.background.SetOpacity(0);
     progress.fill.SetOpacity(0);
@@ -152,6 +659,14 @@ fun display_password(prompt, bullets)
 fun display_normal()
   {
     global.mode = "normal";
+    if (signin.active)
+      {
+        # Between entries (while one is checked) the sign-in screen stays up.
+        signin.bullets = 0;
+        draw_signin();
+        return;
+      }
+    hide_signin();
     if (dialog.ready)
       dialog.retry.SetOpacity(0);
     place_brand(0);
@@ -167,7 +682,9 @@ fun display_hotplug()
     # GPU driver's native mode once that loads, so the window can change size
     # and scale mid-boot. Every position derives from the window: lay the
     # current screen out again rather than keep the first framebuffer's.
-    if (global.mode == "password")
+    if (signin.active)
+      draw_signin();
+    else if (global.mode == "password")
       display_password("", global.password_bullets);
     else
       display_normal();
@@ -192,6 +709,32 @@ fun boot_progress(duration, percent)
 
 fun display_message(text)
   {
+    # After "Can't sign in", tilo-boot-signin asks the volume's questions
+    # here, and an empty answer goes back to signing in: say so under them.
+    if (text.SubString(0, 15) == "tilo-otherways:")
+      {
+        global.other_ways = (text.SubString(15, 16) == "1");
+        if (dialog.ready && global.mode == "password")
+          set_dialog_opacity(1);
+        return;
+      }
+    if (text.SubString(0, 16) == "tilo-unlock-ask:")
+      {
+        global.unlock_ask = text.SubString(16, text.Length());
+        if (dialog.ready)
+          {
+            global.dialog.help_image = unlock_help_image();
+            dialog.help.SetImage(dialog.help_image);
+            if (global.mode == "password" && !signin.active)
+              place_dialog();
+          }
+        return;
+      }
+    if (text.SubString(0, 12) == "tilo-signin-")
+      {
+        signin_message(text.SubString(12, text.Length()));
+        return;
+      }
     # Root discovery forwards a confirmed passphrase rejection. Password
     # prompt redraws alone cannot distinguish submission from backspacing.
     if (text == "tilo-unlock-retry")
@@ -209,6 +752,8 @@ fun display_message(text)
   }
 
 mode = "normal";
+other_ways = 0;
+unlock_ask = "";
 place_brand(0);
 show_normal_status();
 Plymouth.SetRefreshFunction(refresh);

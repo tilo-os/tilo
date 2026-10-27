@@ -162,10 +162,6 @@ pub struct Library {
 
 impl Library {
     /// Bind the first usable pdfium library and initialise it.
-    ///
-    /// # Errors
-    ///
-    /// When no candidate library loads.
     pub fn load() -> std::result::Result<Self, String> {
         for path in library_candidates() {
             if !path.exists() {
@@ -377,7 +373,6 @@ unsafe extern "C" fn write_block(
 }
 
 impl Engine {
-    /// An engine over a loaded library.
     #[must_use]
     pub fn new(lib: Library) -> Self {
         Self {
@@ -2309,7 +2304,6 @@ mod tests {
 
     #[test]
     fn generated_ids_are_replaced_and_source_ids_kept() {
-        // Phase `generated_ids_are_replaced_and_source_ids_kept`.
         {
             let source = b"%PDF-1.7 trailer<</ID[<AAAA><BBBB>]>>".to_vec();
             let mut out = source.clone();
@@ -2342,7 +2336,6 @@ mod tests {
             );
             let tail = &out[source.len()..];
             assert!(find(tail, b"(X/a\\)b==)", 0).is_some(), "source id kept");
-            // A generated literal string is replaced too.
             let mut literal = source.clone();
             literal.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)(zz(q)z)]>>");
             let before = literal.len();

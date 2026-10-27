@@ -41,7 +41,7 @@ helper.
 
 Generate an operator manifest from the checked-in subject ledger. `$ASSETS` is
 your chosen absolute builder-local directory on durable host storage, for example
-`/srv/rcargo/tasks/installer-public-source/target/capture-public-assets`, not a
+`/srv/tilo/tasks/installer-public-source/target/capture-public-assets`, not a
 container layer, `/tmp` or `/dev/shm`:
 
 ```sh
@@ -83,7 +83,7 @@ On the builder **host**, with `curl`, Python 3 and `unsquashfs` (the
 `squashfs-tools` package) installed, run from a current source copy:
 
 ```sh
-ASSETS=/srv/rcargo/tasks/installer-public-source/target/capture-public-assets
+ASSETS=/srv/tilo/tasks/installer-public-source/target/capture-public-assets
 python3 apps/imager/packaging/service-source-assets.py --recover "$ASSETS" \
   > "$ASSETS/source-assets.pending.json" &&
   mv "$ASSETS/source-assets.pending.json" "$ASSETS/source-assets.json"

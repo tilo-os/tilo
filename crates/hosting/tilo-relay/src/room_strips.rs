@@ -15,10 +15,6 @@ pub(crate) const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
 /// The longest strip name, the same as one a person names in the top bar.
 const STRIP_NAME_MAX: usize = 48;
 
-/// `name` trimmed, as a strip's name.
-///
-/// # Errors
-/// The name is empty or longer than a strip's name may be.
 pub(crate) fn strip_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > STRIP_NAME_MAX {
@@ -33,9 +29,6 @@ pub(crate) fn strip_name(name: &str) -> Result<String, String> {
 /// in its first workspace where none has that name yet. A room with no
 /// desktop starts one: a workspace named `shown` holding those strips.
 /// Returns whether it changed the desktop.
-///
-/// # Errors
-/// The record holds a desktop that is not one.
 pub(crate) fn settle_strips(
     doc: &mut automerge::AutoCommit,
     room: &str,

@@ -4,8 +4,8 @@
 #
 #   install-android-ndk.sh
 #
-# os/Containerfile.builder runs this at image build time; check.yml's `android`
-# job runs it again so builders published before the NDK joined the recipe
+# os/Containerfile.builder runs this at image build time; t.toml's `android`
+# check runs it again so builders published before the NDK joined the recipe
 # still work. An NDK whose recorded digest matches the pin is kept, so on a
 # current builder only the rustup target check remains. The Rust toolchain is
 # TILO_RUST_TOOLCHAIN when set, otherwise the one rust-toolchain.toml selects.

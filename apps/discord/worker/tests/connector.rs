@@ -21,7 +21,6 @@ use fake_discord::{CHANNEL_GENERAL, FakeDiscord, TOKEN, User};
 use serde_json::json;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 
-const WAIT: Duration = Duration::from_secs(15);
 const APP: &str = "so.tilo.discord";
 
 #[derive(Default)]
@@ -47,7 +46,7 @@ impl BlobAccess for Blobs {
 }
 
 async fn until<T>(mut check: impl FnMut() -> Option<T>) -> Option<T> {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     loop {
         if let Some(found) = check() {
             return Some(found);
@@ -72,7 +71,7 @@ async fn the_worker_binary_bridges_through_the_connector_host() {
     let blobs = Arc::new(Blobs::default());
     let metrics = dir.path().join("metrics.d").join("bridge.prom");
     let command = WorkerCommand {
-        program: env!("CARGO_BIN_EXE_discord-worker").into(),
+        program: tilo_test_env::package_binary!("discord-worker"),
         args: Vec::new(),
         env: vec![
             ("DISCORD_API_BASE".into(), fake.api_base()),
@@ -92,7 +91,7 @@ async fn the_worker_binary_bridges_through_the_connector_host() {
     .unwrap();
 
     assert!(
-        fake.eventually(WAIT, |f| f.connected().then_some(()))
+        fake.eventually(tilo_test_env::hang_bound(), |f| f.connected().then_some(()))
             .await
             .is_some(),
         "never connected"
@@ -107,20 +106,22 @@ async fn the_worker_binary_bridges_through_the_connector_host() {
     let posted = fake.post(CHANNEL_GENERAL, &User::new("3001", "ada"), "from Discord");
     let wanted = event_id::message_created(&posted);
     let events = process.events();
-    let mut found = None;
-    for _ in 0..(WAIT.as_millis() / 20) {
-        let log = events.lock().await;
-        found = log
-            .after(0, 0)
-            .find(|e| e.source == source::MESSAGE_CREATED && e.id == wanted)
-            .map(|e| e.payload.clone());
-        drop(log);
-        if found.is_some() {
-            break;
+    let found = tilo_test_env::within("the logged event", async {
+        loop {
+            let log = events.lock().await;
+            let found = log
+                .after(0, 0)
+                .find(|e| e.source == source::MESSAGE_CREATED && e.id == wanted)
+                .map(|e| e.payload.clone());
+            drop(log);
+            if let Some(found) = found {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(found.expect("logged event")["content"], "from Discord");
+    })
+    .await;
+    assert_eq!(found["content"], "from Discord");
 
     // The webhook token goes into the host's store, not the result.
     let created = process

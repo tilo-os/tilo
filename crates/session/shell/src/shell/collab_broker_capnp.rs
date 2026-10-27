@@ -124,7 +124,9 @@ pub mod tests {
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(71), "Directory test room");
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
@@ -150,7 +152,7 @@ pub mod tests {
             let workspace = tree.active_workspace_mut().expect("fixture active room");
             // The publisher is an ordinary editor, not the room's owner.
             workspace.admit(person, crate::shell::state::CapRole::Editor);
-            workspace.room.to_string()
+            workspace.room().to_string()
         };
         let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
@@ -309,9 +311,8 @@ pub mod tests {
             let _same_room_actor = load_directory_result(&fixture, &provider, &doc, &doc_root).await;
             assert_eq!(fixture.query_count(), 1);
 
-            // Re-querying the same root uses its room-derived actor and page;
-            // changing `ChromeState::local_user_id` must not retarget it.
-            fixture.chrome.borrow_mut().local_user_id = "unrelated-active-room-user".into();
+            // Re-querying the same root uses its room-derived actor and the
+            // page already loaded for it: no second directory query.
             let room_actor_result = only_directory_result(query_live_directory(
                 &provider,
                 &fixture.chrome,

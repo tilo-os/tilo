@@ -32,18 +32,11 @@ pub(crate) fn body(title_text: &str) -> Column {
         .push(Box::new(title(title_text)))
 }
 
-/// A page body whose first row is built by the caller (a title with a
-/// trailing control).
-pub(crate) fn body_with(header: Box<dyn Widget>) -> Column {
-    stack().with_rhythm(Rhythm::Group).push(header)
-}
-
 /// A group of related lines inside a section.
 pub(crate) fn related() -> Column {
     stack().with_rhythm(Rhythm::Related)
 }
 
-/// A form as one block of a scrolling page.
 pub(crate) fn form_block(form: Form) -> Box<dyn Widget> {
     Box::new(form)
 }
@@ -86,6 +79,7 @@ pub(crate) struct Frame {
     actions: Option<Row>,
     actions_in_body: bool,
     center_short_body: bool,
+    cursor: Option<ui::kurbo::Point>,
 }
 
 impl Frame {
@@ -98,6 +92,7 @@ impl Frame {
             actions: None,
             actions_in_body: false,
             center_short_body: false,
+            cursor: None,
         }
     }
 
@@ -123,6 +118,17 @@ impl Frame {
     #[must_use]
     pub(crate) fn offset(mut self, offset: Rc<Cell<(f32, f32)>>) -> Self {
         self.offset = Some(offset);
+        self
+    }
+
+    /// Seed the body's pointer position when the page is rebuilt between
+    /// wheel events. A wheel carries no position of its own, so a replacement
+    /// scroller without it treats the still pointer as outside its viewport
+    /// and drops every later step, leaving the rest of the page unreachable.
+    #[cfg(feature = "installation")]
+    #[must_use]
+    pub(crate) fn with_cursor(mut self, cursor: ui::kurbo::Point) -> Self {
+        self.cursor = Some(cursor);
         self
     }
 
@@ -172,6 +178,9 @@ impl Frame {
             .always_visible()
             .fill_parent_height()
             .with_focus_reveal();
+        if let Some(cursor) = self.cursor {
+            scroll = scroll.with_cursor(cursor);
+        }
         let body: Box<dyn Widget> = if self.center_short_body {
             scroll = scroll.with_content_min_viewport_height();
             Box::new(

@@ -17,9 +17,9 @@
 use crate::greetd_client::{AuthError, Denial};
 
 mod conversation;
+pub use conversation::{AuthSession, Challenge, spawn_auth, spawn_handoff};
 #[cfg(test)]
-pub(crate) use conversation::spawn_auth_updates;
-pub use conversation::{AuthSession, Challenge, spawn_auth};
+pub(crate) use conversation::{spawn_auth_updates, spawn_handoff_updates};
 
 /// Field separator for the [`AuthUpdate`] wire form. A control character
 /// that never appears in PAM prompt text or our own copy.
@@ -181,7 +181,6 @@ mod tests {
 
     #[test]
     fn auth_frames_roundtrip_and_garbage_decodes_to_none() {
-        // Phase `prompt_roundtrips`.
         {
             roundtrip(AuthUpdate::Prompt {
                 text: "Place your finger on the reader".to_string(),
@@ -192,11 +191,9 @@ mod tests {
                 is_error: true,
             });
         }
-        // Phase `every_failure_roundtrips`.
         for failure in Failure::ALL {
             roundtrip(AuthUpdate::Failed(failure));
         }
-        // Phase `prompt_text_with_separator_survives`.
         {
             // Defensive: even if a prompt contained the separator, splitn(3)
             // keeps the remainder intact so the text isn't truncated.
@@ -205,7 +202,6 @@ mod tests {
                 is_error: false,
             });
         }
-        // Phase `garbage_decodes_to_none`.
         {
             assert_eq!(AuthUpdate::decode(""), None);
             assert_eq!(AuthUpdate::decode("hello world"), None);

@@ -4,6 +4,7 @@ use automerge::{
     transaction::Transactable,
 };
 use tilo_automerge::ApplyIncoming;
+use tilo_sort::CompactSort as _;
 mod import;
 mod projection;
 pub use import::prepare_external_content_import;
@@ -231,10 +232,6 @@ impl RestoreError {
 /// Mixed structural ancestors and retained entities keep current identities.
 /// This value grants no authority: the host must check the reviewed resource,
 /// lifetime and current permission inside its exclusive record action frame.
-///
-/// # Errors
-/// Returns a typed error for pending edits, stale heads, invalid registration,
-/// unavailable target history, unsupported content, or failed validation.
 pub fn prepare_content_restore(
     doc: &AutoCommit,
     schema: &'static HistoryRestoreSchema,
@@ -363,7 +360,7 @@ fn refuse_tables(doc: &mut AutoCommit) -> Result<(), RestoreError> {
 
 fn sorted_heads(heads: &[ChangeHash]) -> Vec<ChangeHash> {
     let mut result = heads.to_vec();
-    result.sort_unstable();
+    result.compact_sort();
     result.dedup();
     result
 }

@@ -11,10 +11,11 @@
 //!
 //! Roles are presets of grants on a room ([`roles`]); membership, roles and
 //! grants change only through the room's governance actions ([`RoomPolicy`]).
-//! [`describe`] renders a grant set as sentences people and agents can talk
+//! [`describe()`] renders a grant set as sentences people and agents can talk
 //! through. [`agent_answers`] are the Allow, Ask first and Deny a person sets
 //! for one of their agents, per application, kind of resource or action.
 
+mod admission;
 pub mod agent_answers;
 pub mod bot;
 mod decide;
@@ -25,8 +26,10 @@ mod kind;
 mod path;
 pub mod roles;
 mod room;
+pub mod share;
 mod standing;
 
+pub use admission::{Admission, Asker, Invoked, Refused, admit};
 pub use decide::{Authority, Basis, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node};
 pub use grant::{Answer, Context, Grant, GrantId, Lifetime, Role, Subject};

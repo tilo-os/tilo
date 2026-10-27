@@ -36,6 +36,7 @@ video = ["ui/realtime-video"]
 [dependencies]
 fnv.workspace = true
 emoji = { path = "../../crates/text/emoji" }
+tilo-emoji-catalogue = { path = "../../crates/text/emoji-catalogue" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }
@@ -51,7 +52,6 @@ tilo-reference = { path = "../../crates/collab/reference" }
 # Reports of people and messages, which the room host's moderation agent
 # decides on; the record lives in the chat so every guest can file one.
 moderation-model = { path = "../moderation-model" }
-tilo-doc = { path = "../../crates/doc/tilo-doc" }
 # Message bodies and drafts are rich text, written in the SDK editor.
 tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
@@ -77,7 +77,7 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 [dev-dependencies]
 # Descriptor fixtures exercise the real gateway backend injected into the SDK.
-tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false, features = ["runtime-client"] }
+tilo-model-client = { path = "../../crates/agent/model-client", default-features = false, features = ["runtime-client"] }
 # Reads the signed manifest's offers to check them against what the app publishes.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

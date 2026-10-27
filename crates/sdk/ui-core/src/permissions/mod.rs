@@ -14,7 +14,6 @@
 //! The host installs both via [`PermissionContext::new`]; nothing here decides
 //! anything itself.
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -69,47 +68,10 @@ pub const LOCAL_USER: &str = "local";
 pub const LOCAL_ROOM: &str = "local";
 
 /// Which system app a presence key or a permission scope refers to.
-///
-/// This is an *identity*, not a policy: it names an app so a presence
-/// cursor can be scoped to it. The stable string [`AppKind::app_id`]
-/// returns is the same app id the compositor's portal and a
-/// `Principal::App` subject use.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum AppKind {
-    Terminal,
-    FileExplorer,
-    Browser,
-    Settings,
-    Unknown,
-}
-
-impl AppKind {
-    /// The stable app id.
-    pub fn app_id(self) -> &'static str {
-        match self {
-            AppKind::Terminal => "terminal",
-            AppKind::FileExplorer => "file-explorer",
-            AppKind::Browser => "browser",
-            AppKind::Settings => "settings",
-            AppKind::Unknown => "unknown",
-        }
-    }
-}
+pub use collab_types::presence::AppKind;
 
 /// A person's stable id, as apps and presence spell it.
-///
-/// Interchangeable with [`Principal::Person`] — see
-/// [`UserId::principal`]. Kept as a distinct newtype since presence and
-/// app code pass a bare user string around and gain nothing from a
-/// tagged enum.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct UserId(pub String);
-
-impl UserId {
-    pub fn principal(&self) -> Principal {
-        Principal::Person(self.0.clone())
-    }
-}
+pub use collab_types::presence::UserId;
 
 /// What a widget or a launch asks permission for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,7 +95,6 @@ impl PermissionScope {
         }
     }
 
-    /// An action of `kind` anywhere in the app `app_id`.
     pub fn app(app_id: impl Into<String>, kind: ActionKind) -> Self {
         Self::Action {
             node: TreePath::root().app(app_id),
@@ -404,7 +365,21 @@ impl PermissionContext {
         Self::member(LOCAL_USER, Role::Owner).acting_as(subject, grants)
     }
 
-    /// The same context with one more grant in the room's policy.
+    /// This person, as their room told them it permits `kinds` at
+    /// `relative` (a path below the room): what a share of one item gave
+    /// them, mirrored so their window lets them do what the room keeps.
+    /// The room still decides every change.
+    #[must_use]
+    pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
+        let grant = local_grant(
+            policy::Subject::Person(self.user.0.clone()),
+            relative,
+            kinds,
+            None,
+        );
+        self.with_grant(grant)
+    }
+
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
         Arc::make_mut(&mut self.standing).policy.grants.push(grant);
@@ -771,22 +746,6 @@ impl PermissionContext {
         .unwrap_or((Answer::Deny, Vec::new()))
     }
 
-    /// May the actor take this one invocation of `action` on `resource`,
-    /// carrying `json` (or the prompted `argument`)? Allowed; or asking
-    /// first when the person acts themselves, their own gesture being the
-    /// answer. Someone acting for them does not get past an ask here.
-    pub fn permits_invocation(
-        &self,
-        app_id: &str,
-        resource: &tilo_actions::Resource,
-        action: &tilo_actions::ActionSpec,
-        json: Option<&serde_json::Map<String, serde_json::Value>>,
-        argument: Option<&str>,
-    ) -> bool {
-        self.invocation_answer(app_id, resource, action, json, argument)
-            .admits(self.standing.bounds.is_empty())
-    }
-
     /// The answer for invoking `action` on `resource` with these arguments.
     /// An Ask runs only once the person confirmed it in the host.
     pub fn invocation_answer(
@@ -969,7 +928,7 @@ impl PublishedAnswers<'_> {
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
         let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
-        resource.actions.retain(|action| {
+        resource.retain_actions(|action| {
             let need = action.contract.need();
             self.action(&mut node, need.field.as_deref(), &action.id, &need) != Answer::Deny
         });
@@ -991,9 +950,7 @@ fn keep_permitted(
 ) -> Option<tilo_actions::Resource> {
     let id = resource.id.as_str().to_owned();
     let kind = resource.kind.clone();
-    resource
-        .actions
-        .retain(|action| permits(&kind, &id, action));
+    resource.retain_actions(|action| permits(&kind, &id, action));
     resource.children = resource
         .children
         .into_iter()
@@ -1034,6 +991,14 @@ impl LivePermissions {
         self.0.borrow().answer(node, kind)
     }
 
+    /// Whether anyone besides the participant belongs to the room, its owner
+    /// or a member, here now or not: what the room holds is shared with them.
+    pub fn room_has_others(&self) -> bool {
+        let context = self.0.borrow();
+        let standing = context.standing();
+        standing.policy.has_others(&standing.person)
+    }
+
     /// The permissions in force now.
     pub fn current(&self) -> PermissionContext {
         self.0.borrow().clone()
@@ -1051,6 +1016,43 @@ impl std::fmt::Debug for LivePermissions {
 mod action_authority;
 pub mod capability;
 use action_authority::ActionAuthoritySampler;
+
+/// The shared admission ([`tilo_action_policy::admit`]) as a window takes
+/// it for its own person, the decision a broker takes for a caller: an ask
+/// is theirs to confirm in the window when they act themselves (`direct`),
+/// and nobody else's here. `confirmed` is their confirmation, or the broker
+/// having admitted it.
+///
+/// # Errors
+/// Refused, or [`tilo_actions::DoorError::ConfirmationRequired`] until
+/// the person confirmed an ask.
+pub fn admit_in_window(
+    answer: tilo_action_policy::Answer,
+    action: &tilo_actions::ActionSpec,
+    direct: bool,
+    confirmed: bool,
+) -> Result<(), tilo_actions::DoorError> {
+    let admitted = tilo_action_policy::admit(
+        tilo_action_policy::Invoked {
+            answer,
+            attended: action.contract.is_attended(),
+            record: None,
+        },
+        tilo_action_policy::Asker {
+            reachable: direct,
+            // A window has no session delegate: an agent acting in it holds a
+            // bounded standing (`direct` false), so its asks already refuse.
+            delegated: false,
+        },
+    );
+    match admitted {
+        Err(_) => Err(crate::bound_dispatch::denied(action)),
+        Ok(tilo_action_policy::Admission::AsksFirst) if !confirmed => {
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        }
+        Ok(_) => Ok(()),
+    }
+}
 
 #[cfg(test)]
 mod policy_time_tests;

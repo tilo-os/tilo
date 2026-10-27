@@ -512,7 +512,6 @@ mod tests {
         assert!(line.starts_with("addr=10.0.0.5; iface="), "{line}");
         assert!(!line.contains('\n') && !line.contains("then;"), "{line}");
         assert!(line.contains("tilo-device-admin id"), "{line}");
-        // The route over the peer network, whatever the interface.
         let admin = parse_net_probe(concat!(
             "hostname=yoga\n@@admin\n",
             r#"{"device":"aa","endpoint":"bb","label":"Yoga","identity":"cc","relay":null,"home_relay":"https://relay.example/","serving":true}"#,
@@ -723,7 +722,6 @@ mod tests {
         }
     }
 
-    /// ssh's words for a lost route, as opposed to a refusal.
     #[test]
     fn a_lost_route_is_told_apart_from_a_refusal() {
         assert!(lost(

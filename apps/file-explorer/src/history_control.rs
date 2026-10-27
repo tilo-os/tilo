@@ -4,11 +4,6 @@ use std::path::Path;
 use crate::i18n::{arg, t, t_args};
 
 /// Request resolution of one exact conflict member using `strategy`.
-///
-/// # Errors
-///
-/// Returns a localized error for an unsupported strategy, an encoding or size
-/// failure, or an extended-attribute write failure.
 pub fn resolve_conflict(
     path: &Path,
     conflict_id: uuid::Uuid,

@@ -173,10 +173,6 @@ fn extend_from(bits: u8) -> Extend {
 }
 
 /// Write `encoding` and everything it references to `out`.
-///
-/// # Errors
-///
-/// Returns the writer's error.
 pub fn write(encoding: &Encoding, out: impl Write) -> io::Result<()> {
     let mut o = Out(io::BufWriter::new(out));
     o.0.write_all(MAGIC)?;
@@ -339,11 +335,7 @@ pub fn write(encoding: &Encoding, out: impl Write) -> io::Result<()> {
     o.0.flush()
 }
 
-/// Read a scene written by [`write`].
-///
-/// # Errors
-///
-/// Returns the reader's error, or `InvalidData` for anything malformed.
+/// Read a scene written by [`write()`].
 pub fn read(input: impl Read) -> io::Result<Encoding> {
     let mut i = In(io::BufReader::new(input));
     if &i.array::<8>()? != MAGIC {

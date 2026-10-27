@@ -5,6 +5,8 @@
 
 #[path = "channel_cli.rs"]
 pub mod channel_cli;
+#[path = "package_file.rs"]
+pub mod package_file;
 #[path = "registry_to_installed.rs"]
 pub mod registry_to_installed;
 #[path = "runtime_fetch.rs"]

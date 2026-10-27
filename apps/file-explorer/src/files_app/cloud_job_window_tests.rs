@@ -4,8 +4,9 @@ use super::*;
 fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
-    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -37,7 +38,7 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
             cut: false,
         },
     );
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.transfer.is_some() {
         assert!(Instant::now() < deadline);
         files.poll_cloud();

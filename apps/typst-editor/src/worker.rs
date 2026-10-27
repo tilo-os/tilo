@@ -14,7 +14,6 @@ use crate::compile::{CompileOutput, WorldParts, compile_source};
 struct Job {
     seq: u64,
     source: String,
-    ppp: f32,
 }
 
 /// A finished compile, tagged with the sequence number of the source it came
@@ -49,7 +48,7 @@ impl CompileWorker {
                         Err(TryRecvError::Disconnected) => return,
                     }
                 }
-                let output = compile_source(&parts, &job.source, job.ppp);
+                let output = compile_source(&parts, &job.source);
                 if result_tx
                     .send(CompileResult {
                         seq: job.seq,
@@ -72,10 +71,10 @@ impl CompileWorker {
     }
 
     /// Queue a compile of `source`. Returns the sequence number assigned.
-    pub fn request(&mut self, source: String, ppp: f32) -> u64 {
+    pub fn request(&mut self, source: String) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
-        let _ = self.job_tx.send(Job { seq, source, ppp });
+        let _ = self.job_tx.send(Job { seq, source });
         seq
     }
 

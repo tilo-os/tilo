@@ -1,5 +1,6 @@
 //! One single-shot model call in either provider dialect: the request body,
-//! the endpoint URL, the authentication headers and the answer text.
+//! the endpoint URL, the authentication headers and the answer text; and
+//! the provider's model list.
 //!
 //! These are pure pieces with no HTTP client, so every Tilo process that asks
 //! a provider for one answer (the per-user model gateway, a host summarising
@@ -9,7 +10,7 @@
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::{ProviderProfile, ProviderProtocol};
+use crate::{ModelDescriptor, OpenAiApi, ProviderProfile, ProviderProtocol, SignInIssuer};
 
 /// The Anthropic Messages API version every request names.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -77,11 +78,6 @@ pub fn body(protocol: ProviderProtocol, ask: &Ask<'_>) -> Value {
 /// The answer text out of a provider response no longer than `max_bytes`.
 /// A refusal or a cut-off answer is an error rather than text: the caller
 /// would otherwise validate half an answer.
-///
-/// # Errors
-///
-/// The response is unreadable, a refusal, cut off, has no text, or the text
-/// is longer than `max_bytes`.
 pub fn answer(protocol: ProviderProtocol, body: &str, max_bytes: usize) -> Result<String, String> {
     let value: Value =
         serde_json::from_str(body).map_err(|_| "provider response was unreadable".to_string())?;
@@ -180,6 +176,271 @@ pub fn headers(protocol: ProviderProtocol, secret: Option<&str>) -> Result<Vec<H
     }
 }
 
+/// Whether `profile` speaks the `OpenAI` Responses format rather than its
+/// protocol's: the `ChatGPT` backend a `ChatGPT` sign-in reaches serves only
+/// that. Decided by the sign-in, which also decides the endpoint, so a
+/// reader that predates it sees an ordinary profile it cannot use rather
+/// than a protocol it cannot read.
+pub fn speaks_responses(profile: &ProviderProfile) -> bool {
+    profile.sign_in_issuer() == Some(SignInIssuer::ChatGpt)
+}
+
+/// The `OpenAI` API an OpenAI-compatible `profile`'s agent turns take;
+/// `None` for an Anthropic one. A `ChatGPT` sign-in takes Responses, its
+/// backend's only API; otherwise the profile's own choice, or Responses at
+/// `OpenAI`'s own API and chat completions at any other endpoint. Single-shot
+/// asks ([`profile_body`]) keep the dialect of [`speaks_responses`].
+pub fn openai_api(profile: &ProviderProfile) -> Option<OpenAiApi> {
+    if profile.protocol != ProviderProtocol::OpenAiCompatible {
+        return None;
+    }
+    if speaks_responses(profile) {
+        return Some(OpenAiApi::Responses);
+    }
+    Some(profile.openai_api.unwrap_or_else(|| {
+        if is_openai_endpoint(&profile.endpoint) {
+            OpenAiApi::Responses
+        } else {
+            OpenAiApi::ChatCompletions
+        }
+    }))
+}
+
+/// Whether `endpoint` is `OpenAI`'s own API.
+fn is_openai_endpoint(endpoint: &str) -> bool {
+    endpoint
+        .trim()
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .is_some_and(|host| {
+            let host = host.strip_suffix(":443").unwrap_or(host);
+            host.eq_ignore_ascii_case("api.openai.com")
+        })
+}
+
+/// The Responses route of `profile`'s endpoint, which may already name it
+/// or name chat completions.
+pub fn responses_url(profile: &ProviderProfile) -> String {
+    let base = profile.endpoint.trim_end_matches('/');
+    let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+    if base.ends_with("/responses") {
+        base.into()
+    } else {
+        format!("{base}/responses")
+    }
+}
+
+/// The request URL for `profile`: [`url()`], or its Responses route.
+pub fn profile_url(profile: &ProviderProfile) -> String {
+    if speaks_responses(profile) {
+        responses_url(profile)
+    } else {
+        url(profile.protocol, &profile.endpoint)
+    }
+}
+
+/// The request body of `ask` for `profile`: [`body`], or a Responses
+/// request. That one always streams and is never stored, as the `ChatGPT`
+/// backend requires, and names neither a temperature nor an output limit,
+/// which its reasoning models refuse; [`profile_answer`] reads the stream
+/// and still bounds the answer.
+pub fn profile_body(profile: &ProviderProfile, ask: &Ask<'_>) -> Value {
+    if !speaks_responses(profile) {
+        return body(profile.protocol, ask);
+    }
+    json!({
+        "model": ask.model,
+        "instructions": ask.instructions,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": ask.input }]
+        }],
+        "text": { "format": { "type": "json_object" } },
+        "stream": true,
+        "store": false
+    })
+}
+
+/// The answer text of a response to [`profile_body`]; see [`answer`].
+///
+/// # Errors
+///
+/// As [`answer`].
+pub fn profile_answer(
+    profile: &ProviderProfile,
+    body: &str,
+    max_bytes: usize,
+) -> Result<String, String> {
+    if !speaks_responses(profile) {
+        return answer(profile.protocol, body, max_bytes);
+    }
+    let response = responses_result(body)?;
+    match response.get("status").and_then(Value::as_str) {
+        Some("incomplete") => return Err("the model's answer was cut off".into()),
+        Some("failed" | "cancelled") => return Err("the model's answer failed".into()),
+        _ => {}
+    }
+    let mut text = String::new();
+    for item in response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+    {
+        for part in item
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            match part.get("type").and_then(Value::as_str) {
+                Some("refusal") => return Err("the model declined the transform".into()),
+                Some("output_text") => {
+                    text.push_str(part.get("text").and_then(Value::as_str).unwrap_or_default());
+                }
+                _ => {}
+            }
+        }
+    }
+    if text.is_empty() {
+        return Err("provider response carried no answer text".into());
+    }
+    if text.len() > max_bytes {
+        return Err("the model's answer exceeds its size limit".into());
+    }
+    Ok(text)
+}
+
+/// The final response object of a Responses reply: the `response` of its
+/// terminal stream event, or the body itself when it did not stream.
+fn responses_result(body: &str) -> Result<Value, String> {
+    let unreadable = || "provider response was unreadable".to_string();
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        return Ok(value);
+    }
+    let mut last = None;
+    for line in body.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else {
+            continue;
+        };
+        if matches!(
+            event.get("type").and_then(Value::as_str),
+            Some("response.completed" | "response.incomplete" | "response.failed")
+        ) {
+            last = event.get("response").cloned();
+        }
+    }
+    last.ok_or_else(unreadable)
+}
+
+/// The URL listing `profile`'s models: `GET /v1/models` of an Anthropic
+/// endpoint, `GET /models` of the others.
+pub fn models_url(profile: &ProviderProfile) -> String {
+    let base = profile.endpoint.trim_end_matches('/');
+    let base = base
+        .strip_suffix("/chat/completions")
+        .or_else(|| base.strip_suffix("/v1/messages"))
+        .or_else(|| base.strip_suffix("/responses"))
+        .unwrap_or(base);
+    match profile.protocol {
+        ProviderProtocol::Anthropic if base.ends_with("/v1") => format!("{base}/models"),
+        ProviderProtocol::Anthropic => format!("{base}/v1/models"),
+        // The ChatGPT backend lists the models of the client version it is
+        // told; any current version lists the current models.
+        ProviderProtocol::OpenAiCompatible if speaks_responses(profile) => {
+            format!("{base}/models?client_version={CHATGPT_CLIENT_VERSION}")
+        }
+        ProviderProtocol::OpenAiCompatible => format!("{base}/models"),
+    }
+}
+
+/// At most this many models are read from one list.
+const MAX_LISTED_MODELS: usize = 512;
+
+/// The models of a model-list response: `data[].id` (`OpenAI`, Anthropic
+/// and every compatible provider) or `models[].slug` (the `ChatGPT` backend),
+/// with the provider's display name and context size when it gives them.
+/// Sorted by id; duplicates and blank ids dropped.
+pub fn parse_models(body: &str) -> Result<Vec<ModelDescriptor>, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|_| "provider model list was unreadable".to_string())?;
+    let (entries, id_key) = if let Some(data) = value.get("data").and_then(Value::as_array) {
+        (data, "id")
+    } else if let Some(models) = value.get("models").and_then(Value::as_array) {
+        (models, "slug")
+    } else {
+        return Err("provider answered with no model list".into());
+    };
+    let text = |entry: &Value, keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| entry.get(*key).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|text| {
+                !text.is_empty() && text.len() <= 256 && !text.contains(char::is_control)
+            })
+            .map(str::to_string)
+    };
+    let mut models: Vec<ModelDescriptor> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = text(entry, &[id_key, "id"])?;
+            let context = ["context_length", "context_window", "max_context_length"]
+                .iter()
+                .find_map(|key| entry.get(*key).and_then(Value::as_u64))
+                .and_then(|tokens| u32::try_from(tokens).ok());
+            Some(ModelDescriptor {
+                label: text(entry, &["display_name", "name"]).unwrap_or_else(|| id.clone()),
+                context_window: context,
+                ..ModelDescriptor::new(id)
+            })
+        })
+        .take(MAX_LISTED_MODELS)
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    Ok(models)
+}
+
+/// The `originator` a `ChatGPT` backend request names.
+const CHATGPT_ORIGINATOR: &str = "tilo";
+/// The client version a `ChatGPT` model list is asked for.
+const CHATGPT_CLIENT_VERSION: &str = "1.0.0";
+/// The editor identity GitHub Copilot's API requires of every request.
+const COPILOT_HEADERS: [(&str, &str); 4] = [
+    ("copilot-integration-id", "vscode-chat"),
+    ("editor-version", "vscode/1.107.0"),
+    ("editor-plugin-version", "copilot-chat/0.35.0"),
+    ("openai-intent", "conversation-panel"),
+];
+
+/// The `ChatGPT` account a `ChatGPT` access token is for: the
+/// `chatgpt_account_id` its `https://api.openai.com/auth` claim names. Read,
+/// not verified: the token is the backend's to verify, and the account
+/// only routes the request.
+fn chatgpt_account_id(token: &str) -> Option<String> {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    let account = claims
+        .get("https://api.openai.com/auth")?
+        .get("chatgpt_account_id")?
+        .as_str()?;
+    (!account.is_empty()
+        && account.len() <= 128
+        && account
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'))
+    .then(|| account.to_string())
+}
+
 /// Every header a request to `profile` carries: [`headers`], then the
 /// billing project of a Google sign-in. A person's own Google credentials
 /// are billed to the project of the `OAuth` client that minted them unless
@@ -194,6 +455,31 @@ pub fn profile_headers(
     secret: Option<&str>,
 ) -> Result<Vec<Header>, String> {
     let mut all = headers(profile.protocol, secret)?;
+    let constant = |name: &'static str, value: &str| Header {
+        name,
+        value: Zeroizing::new(value.into()),
+        secret: false,
+    };
+    match profile.sign_in_issuer() {
+        Some(SignInIssuer::ChatGpt) => {
+            all.push(constant("originator", CHATGPT_ORIGINATOR));
+            // The backend serves the subscription of the account the
+            // token names; a token naming none is refused there, not here.
+            if let Some(account) = secret.and_then(chatgpt_account_id) {
+                all.push(Header {
+                    name: "chatgpt-account-id",
+                    value: Zeroizing::new(account),
+                    secret: false,
+                });
+            }
+        }
+        Some(SignInIssuer::GitHubCopilot) => {
+            for (name, value) in COPILOT_HEADERS {
+                all.push(constant(name, value));
+            }
+        }
+        _ => {}
+    }
     if profile.signs_in_with_google()
         && let Some(project) = profile
             .sign_in
@@ -340,5 +626,178 @@ mod tests {
             billing_project: Some("p".into()),
         });
         assert_eq!(profile_headers(&other, Some("k")).unwrap().len(), 1);
+    }
+
+    fn jwt(claims: &Value) -> String {
+        use base64::Engine as _;
+        let encode = |value: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value);
+        format!(
+            "{}.{}.signature",
+            encode(br#"{"alg":"RS256"}"#),
+            encode(claims.to_string().as_bytes())
+        )
+    }
+
+    #[test]
+    fn a_chatgpt_sign_in_speaks_responses_to_its_account() {
+        let chatgpt = crate::presets::Preset::ChatGpt.profile();
+        assert!(speaks_responses(&chatgpt));
+        assert_eq!(
+            profile_url(&chatgpt),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        let token = jwt(&json!({
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-1_x"}
+        }));
+        let sent: Vec<_> = profile_headers(&chatgpt, Some(&token))
+            .unwrap()
+            .iter()
+            .map(|header| (header.name, header.value.to_string()))
+            .collect();
+        assert_eq!(sent[0], ("authorization", format!("Bearer {token}")));
+        assert!(sent.contains(&("chatgpt-account-id", "acct-1_x".to_string())));
+        assert!(sent.contains(&("originator", CHATGPT_ORIGINATOR.to_string())));
+        // A token naming no account, or a malformed one, adds none.
+        for token in [jwt(&json!({"sub": "x"})), "opaque".to_string()] {
+            assert!(chatgpt_account_id(&token).is_none());
+        }
+        assert!(
+            chatgpt_account_id(&jwt(&json!({
+                "https://api.openai.com/auth": {"chatgpt_account_id": "a\nb"}
+            })))
+            .is_none()
+        );
+
+        let body = profile_body(&chatgpt, &ask(Sampling::Deterministic));
+        assert_eq!(body["instructions"], "be brief");
+        assert_eq!(body["input"][0]["content"][0]["text"], "the input");
+        assert_eq!(
+            (body["stream"].clone(), body["store"].clone()),
+            (json!(true), json!(false))
+        );
+        assert!(body.get("temperature").is_none() && body.get("max_output_tokens").is_none());
+
+        let streamed = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",",
+            "\"output\":[{\"type\":\"reasoning\"},{\"type\":\"message\",\"content\":",
+            "[{\"type\":\"output_text\",\"text\":\"{\\\"a\\\":1}\"}]}]}}\n\n"
+        );
+        assert_eq!(
+            profile_answer(&chatgpt, streamed, 64).unwrap(),
+            r#"{"a":1}"#
+        );
+        assert!(profile_answer(&chatgpt, streamed, 3).is_err());
+        let cut = r#"{"status":"incomplete","output":[]}"#;
+        assert!(profile_answer(&chatgpt, cut, 64).is_err());
+        let refused = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}]}"#;
+        assert!(profile_answer(&chatgpt, refused, 64).is_err());
+        assert!(profile_answer(&chatgpt, "event: ping\n\n", 64).is_err());
+    }
+
+    #[test]
+    fn openai_s_own_api_takes_responses_and_other_endpoints_chat_unless_told() {
+        use crate::presets::Preset;
+        let openai = Preset::OpenAi.profile();
+        assert_eq!(openai_api(&openai), Some(OpenAiApi::Responses));
+        assert!(!speaks_responses(&openai));
+        assert_eq!(
+            profile_url(&openai),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            responses_url(&openai),
+            "https://api.openai.com/v1/responses"
+        );
+        let mut typed = Preset::Compatible.profile();
+        assert_eq!(typed.openai_api, None);
+        for endpoint in [
+            "https://api.openai.com/v1",
+            "https://API.openai.com:443/v1/chat/completions",
+        ] {
+            typed.endpoint = endpoint.into();
+            assert_eq!(openai_api(&typed), Some(OpenAiApi::Responses), "{endpoint}");
+            assert_eq!(responses_url(&typed).rsplit('/').next(), Some("responses"));
+        }
+        for endpoint in [
+            "http://api.openai.com/v1",
+            "https://api.openai.com.example.test/v1",
+            "http://127.0.0.1:8000/v1",
+            "https://openrouter.ai/api/v1",
+        ] {
+            typed.endpoint = endpoint.into();
+            assert_eq!(
+                openai_api(&typed),
+                Some(OpenAiApi::ChatCompletions),
+                "{endpoint}"
+            );
+        }
+        typed.endpoint = "http://127.0.0.1:8787/v1/chat/completions".into();
+        typed.openai_api = Some(OpenAiApi::Responses);
+        assert_eq!(openai_api(&typed), Some(OpenAiApi::Responses));
+        assert_eq!(responses_url(&typed), "http://127.0.0.1:8787/v1/responses");
+        let mut chat = Preset::OpenAi.profile();
+        chat.openai_api = Some(OpenAiApi::ChatCompletions);
+        assert_eq!(openai_api(&chat), Some(OpenAiApi::ChatCompletions));
+        assert_eq!(
+            openai_api(&Preset::ChatGpt.profile()),
+            Some(OpenAiApi::Responses)
+        );
+        assert_eq!(
+            openai_api(&Preset::Groq.profile()),
+            Some(OpenAiApi::ChatCompletions)
+        );
+        assert_eq!(openai_api(&Preset::Anthropic.profile()), None);
+    }
+
+    #[test]
+    fn a_copilot_sign_in_names_the_editor_its_api_requires() {
+        let copilot = crate::presets::Preset::Copilot.profile();
+        assert!(!speaks_responses(&copilot));
+        let names: Vec<_> = profile_headers(&copilot, Some("tid"))
+            .unwrap()
+            .iter()
+            .map(|header| header.name)
+            .collect();
+        assert!(names.contains(&"copilot-integration-id") && names.contains(&"editor-version"));
+        assert_eq!(
+            profile_url(&copilot),
+            "https://api.githubcopilot.com/chat/completions"
+        );
+    }
+
+    #[test]
+    fn model_lists_come_from_each_dialect() {
+        use crate::presets::Preset;
+        assert_eq!(
+            models_url(&Preset::Anthropic.profile()),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            models_url(&Preset::Groq.profile()),
+            "https://api.groq.com/openai/v1/models"
+        );
+        let mut typed = Preset::Compatible.profile();
+        typed.endpoint = "http://10.0.0.2:8000/v1/chat/completions".into();
+        assert_eq!(models_url(&typed), "http://10.0.0.2:8000/v1/models");
+        assert!(
+            models_url(&Preset::ChatGpt.profile())
+                .starts_with("https://chatgpt.com/backend-api/codex/models?client_version=")
+        );
+
+        let openai = r#"{"object":"list","data":[{"id":"gpt-b"},{"id":"gpt-a","context_length":128000},{"id":"gpt-a"},{"id":" "}]}"#;
+        let models = parse_models(openai).unwrap();
+        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-a", "gpt-b"]);
+        assert_eq!(models[0].context_window, Some(128_000));
+        assert_eq!(models[0].label, "gpt-a");
+        let anthropic = r#"{"data":[{"type":"model","id":"claude-x","display_name":"Claude X"}],"has_more":false}"#;
+        assert_eq!(parse_models(anthropic).unwrap()[0].label, "Claude X");
+        let chatgpt = r#"{"models":[{"slug":"gpt-5-codex","display_name":"GPT-5 Codex"}]}"#;
+        assert_eq!(parse_models(chatgpt).unwrap()[0].id, "gpt-5-codex");
+        assert!(parse_models(r#"{"error":"nope"}"#).is_err());
+        assert!(parse_models("<html>").is_err());
     }
 }

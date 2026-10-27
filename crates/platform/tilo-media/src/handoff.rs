@@ -584,7 +584,6 @@ mod tests {
 
     #[test]
     fn handoff_reports_expose_identity_not_uris_and_expire_when_stale() {
-        // Phase `public_session_never_exposes_source_uri`.
         {
             let source = Source::Remote {
                 url: "https://example.test/video?token=secret".into(),
@@ -609,7 +608,6 @@ mod tests {
             assert_eq!(session.title, "Streaming media");
             remove(9001);
         }
-        // Phase `app_resource_reports_stable_identity_without_decoder_url`.
         {
             let handle = AppPlaybackHandle::new();
             handle.publish(AppPlayback {
@@ -634,7 +632,6 @@ mod tests {
             ));
             assert!(!format!("{report:?}").contains("googlevideo"));
         }
-        // Phase `malformed_app_resources_are_withdrawn`.
         {
             let handle = AppPlaybackHandle::new();
             handle.publish(AppPlayback {
@@ -653,7 +650,6 @@ mod tests {
                     .all(|session| session.title != "Foreign")
             );
         }
-        // Phase `explicit_reports_win_over_discovery_for_the_same_player`.
         {
             let explicit = report("explicit", "org.mpris.MediaPlayer2.player");
             let discovered = report("discovered", "org.mpris.MediaPlayer2.player");
@@ -664,7 +660,6 @@ mod tests {
 
             assert_eq!(reports, vec![explicit, other]);
         }
-        // Phase `discovered_reports_expire_when_refresh_stalls`.
         {
             let now = Instant::now();
             assert!(system_reports_are_fresh(Some(now), now));

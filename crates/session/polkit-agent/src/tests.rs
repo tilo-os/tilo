@@ -1,5 +1,3 @@
-//! The helper conversation against a scripted helper and a scripted user.
-
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 

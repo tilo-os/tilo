@@ -48,7 +48,7 @@ fn controls_harness(vw: f64, vh: f64) -> (AbsorbHarness, Recorder, Launches) {
         qs.brightness_available = true;
         qs.brightness = 0.2;
         qs.volume_available = true;
-        qs.volume = 0.2;
+        qs.set_volume_level(0.2);
         qs.radios.wifi_available = true;
         qs.wifi = true;
         qs.bluetooth_available = true;
@@ -58,11 +58,11 @@ fn controls_harness(vw: f64, vh: f64) -> (AbsorbHarness, Recorder, Launches) {
             crate::shell::quick_settings::PowerProfile::Saver,
             crate::shell::quick_settings::PowerProfile::Balanced,
         ];
-        qs.battery = tilo_power_mgmt::BatterySnapshot {
+        qs.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,
             percent: 50,
             state: tilo_power_mgmt::BatteryState::Discharging,
-        };
+        });
         qs.vpns.push(os_actions::VpnConnectionInfo {
             name: "Office".into(),
             uuid: "office-vpn".into(),
@@ -329,4 +329,61 @@ fn quick_settings_keeps_natural_tiles_and_scrolls_in_a_640_by_400_window() {
         "a control revealed by scrolling still works: {:?}",
         actions.calls()
     );
+}
+
+#[test]
+fn a_finger_taps_and_drags_the_quick_settings_sliders() {
+    use winit::event::TouchPhase;
+    let (vw, vh) = (1280.0, 800.0);
+    let (mut h, actions, _) = controls_harness(vw, vh);
+
+    let volume = target(&h, "quick_settings_volume").expect("the volume slider is shown");
+    let y = volume.center().y;
+    assert!(
+        ui::widget::Widget::claims_raw_touch(&h.host, volume.center()),
+        "a finger on a slider is the slider's, not a scroll of the page"
+    );
+    let offset = h.host.qs_root.scroll_offset();
+    assert!(pump(
+        &mut h,
+        &touch_at(1, TouchPhase::Started, volume.x0 + volume.width() * 0.25, y)
+    ));
+    assert!(pump(
+        &mut h,
+        &touch_at(1, TouchPhase::Moved, volume.x1 - 1.0, y + 60.0)
+    ));
+    let dragged = h.chrome.borrow().quick_settings.volume_level();
+    assert!(dragged > 0.9, "the drag follows the finger: {dragged}");
+    assert!(pump(
+        &mut h,
+        &touch_at(1, TouchPhase::Ended, volume.x1 - 1.0, y + 60.0)
+    ));
+    settle(&mut h, vw, vh);
+    assert!(
+        wrote(&actions, "volume="),
+        "lifting commits: {:?}",
+        actions.calls()
+    );
+    assert_eq!(
+        h.host.qs_root.scroll_offset(),
+        offset,
+        "the page did not scroll"
+    );
+    assert!(!h.host.qs_root.drag_active(), "lifting lets go");
+
+    let brightness =
+        target(&h, "quick_settings_brightness").expect("the brightness slider is shown");
+    let at = Point::new(
+        brightness.x0 + brightness.width() * 0.75,
+        brightness.center().y,
+    );
+    assert!(pump(&mut h, &touch_at(2, TouchPhase::Started, at.x, at.y)));
+    let tapped = h.chrome.borrow().quick_settings.brightness;
+    assert!(
+        (0.6..0.9).contains(&tapped),
+        "a tap sets the slider where the finger lands: {tapped}"
+    );
+    assert!(pump(&mut h, &touch_at(2, TouchPhase::Ended, at.x, at.y)));
+    settle(&mut h, vw, vh);
+    assert!(wrote(&actions, "brightness="), "{:?}", actions.calls());
 }

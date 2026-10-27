@@ -202,22 +202,21 @@ pub enum ImagerEffect {
         drive: String,
     },
     /// Choose a mounted folder on the verified installer medium for prepared setup.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ChoosePreparedFilesystem,
     /// Retry automatic delivery to the verified installer's EFI filesystem.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     RetryPreparedDelivery,
     /// Return to the preserved guided preparation and renew changed home contents.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     ReviewChangedPreparedFiles,
     /// Deliver authenticated prepared setup to the exact verified medium.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     DeliverPreparedSetup {
         #[param(secret, "Granted mounted root of the verified installer medium")]
         mounted_root: String,
     },
     /// Cancel prepared setup delivery and wait for cleanup.
-    #[effect(device_only)]
     CancelPreparedDelivery,
 }
 
@@ -334,6 +333,7 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
     const ID: &'static str = "so.tilo.imager";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
     #[cfg(feature = "installation")]
@@ -862,7 +862,6 @@ mod tests {
             .unwrap();
         assert!(app.state().profile.enroll_local_identity);
         let enabled_document = app.read_document(|doc| doc.clone().save());
-        // The edit turning enrollment off, with its value replaced.
         let with_value = |value: serde_json::Value| {
             fn replace(json: &mut serde_json::Value, value: &serde_json::Value) {
                 match json {

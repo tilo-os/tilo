@@ -26,9 +26,6 @@ pub struct SystemWriteRequest {
 /// the lifecycle around these adapters stay in this module.
 pub trait WriteSetup {
     /// Check authorization before any target preparation.
-    ///
-    /// # Errors
-    /// Returns an error if setup policy or authenticated custody refuses the write.
     fn output_preflight(&self) -> io::Result<()>;
     /// Revalidate the migration sources independently of the target.
     ///
@@ -73,7 +70,6 @@ pub fn run_job_paths_bound(
     mut on_progress: impl FnMut(HelperProgress),
 ) -> JobResult {
     let total = total.max(1);
-    // Write phase.
     let copied = stream_copy_bound(
         src,
         dst,

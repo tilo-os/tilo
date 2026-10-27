@@ -1,5 +1,5 @@
-//! What a person has told one of their agents it may do: allowed, asks first,
-//! or not allowed, for each kind of action, scoped to an application, one kind
+//! What a person has told one of their agents, or the work on an issue, it
+//! may do: allowed, asks first, or not allowed, for each kind of action, scoped to an application, one kind
 //! of resource in it, or one action.
 //!
 //! These are ordinary grants on the room, named so that setting an answer
@@ -112,16 +112,16 @@ impl AnswerScope {
     }
 }
 
-/// The id of `agent`'s answer for `kind` at `scope`.
 #[must_use]
 pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
     GrantId(format!("{PREFIX}{agent}:{}:{kind}", scope.key()))
 }
 
-/// Whether `grant` is an answer a person set for an agent.
+/// Whether `grant` is an answer: given an agent, or the work on an issue.
 #[must_use]
 pub fn is_answer(grant: &Grant) -> bool {
-    matches!(grant.subject, Subject::Agent(_)) && grant.id.as_str().starts_with(PREFIX)
+    matches!(grant.subject, Subject::Agent(_) | Subject::Task(_))
+        && grant.id.as_str().starts_with(PREFIX)
 }
 
 /// The grant giving `agent` `answer` for actions of `kind` at `scope` in
@@ -134,9 +134,36 @@ pub fn grant(
     answer: Answer,
     granted_by: Subject,
 ) -> Grant {
-    Grant::new(
-        grant_id(agent, scope, kind).0,
+    answer_grant(
+        room,
         Subject::agent(agent),
+        (scope, kind),
+        answer,
+        granted_by,
+    )
+}
+
+/// The grant giving `delegate` (an agent, or the work on an issue,
+/// [`Subject::Task`]) `answer` for actions of `kind` at `scope` in `room`,
+/// set by `granted_by`. Given for one action, it is what "Allow for this
+/// issue" records, and lifts that action's confirmation as an agent's
+/// answer does.
+#[must_use]
+pub fn answer_grant(
+    room: &str,
+    delegate: Subject,
+    (scope, kind): (&AnswerScope, ActionKind),
+    answer: Answer,
+    granted_by: Subject,
+) -> Grant {
+    let key = match &delegate {
+        Subject::Agent(agent) => agent.clone(),
+        Subject::Task(issue) => format!("task:{issue}"),
+        other => other.to_string(),
+    };
+    Grant::new(
+        grant_id(&key, scope, kind).0,
+        delegate,
         scope.node(room),
         KindSet::of(kind),
         answer,

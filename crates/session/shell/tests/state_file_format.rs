@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use shell::shell::state::{
     Access, AppKind, CapOverride, NativeDocumentReference, PeerOrigin, RoomAuthority, RoomId,
     Scope, Strip, StripId, Subject, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, WorkspaceTask, WorkspaceTaskRoute, WorkspaceTaskStatus, WorkspaceTree,
+    WorkspaceId, WorkspaceTree,
 };
 
 const FIXTURE: &str = "tests/fixtures/state_v1.json";
@@ -26,6 +26,7 @@ fn tab(id: u64, title: &str, content: TileContent) -> Tab {
         id,
         title: title.into(),
         tile: content,
+        app_title: None,
     }
 }
 
@@ -53,8 +54,7 @@ fn saved_shortcuts() -> (
 )]
 fn populated_tree() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
-    let mut ws = Workspace::new(WorkspaceId(1), "Studio");
-    ws.set_room(room(1));
+    let mut ws = Workspace::in_room(WorkspaceId(1), room(1), "Studio");
     ws.set_owner("owner-key");
     ws.grant_sandbox(
         CapOverride::grant(
@@ -65,19 +65,6 @@ fn populated_tree() -> WorkspaceTree {
         .with_id("cap-fixed"),
     );
     ws.share_surface(7, 42);
-    ws.tasks.push(WorkspaceTask {
-        id: "task-1".into(),
-        title: "Review".into(),
-        created_by: "owner-key".into(),
-        assigned_agent: None,
-        route: WorkspaceTaskRoute::Manual,
-        status: WorkspaceTaskStatus::Queued,
-        resource: None,
-        subject: None,
-        created_at: 10,
-        updated_at: 20,
-        audit: Vec::new(),
-    });
     (ws.shortcuts, ws.schedule_claims) = saved_shortcuts();
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(WindowGroup {
@@ -123,8 +110,7 @@ fn populated_tree() -> WorkspaceTree {
     });
     ws.strips.push(strip);
     tree.desktop.workspaces.push(ws);
-    let mut joined = Workspace::new(WorkspaceId(9), "Joined");
-    joined.set_room(room(2));
+    let mut joined = Workspace::in_room(WorkspaceId(9), room(2), "Joined");
     joined.strips.push(Strip::new(StripId(10), "Shared"));
     tree.desktop.workspaces.push(joined);
 
@@ -189,5 +175,103 @@ fn state_file_fixture_is_current_and_round_trips_unchanged() {
         let tree: WorkspaceTree = serde_json::from_str(&fixture).expect("fixture loads");
         let rewritten = serde_json::to_string_pretty(&tree).expect("serialize");
         assert_eq!(canonical(&rewritten), canonical(&fixture));
+    }
+
+    // Phase `a_file_from_when_workspaces_kept_tasks_loads_without_them`.
+    {
+        let fixture = canonical(
+            &std::fs::read_to_string(fixture_path()).expect("read the state.json fixture"),
+        );
+        let mut old = fixture.clone();
+        old["workspaces"][0]["tasks"] = serde_json::json!([{
+            "id": "task-1",
+            "title": "Review",
+            "created_by": "owner-key",
+            "assigned_agent": null,
+            "route": "manual",
+            "status": "queued",
+            "resource": null,
+            "created_at": 10,
+            "updated_at": 20,
+            "audit": []
+        }]);
+        let tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
+        assert_eq!(serde_json::to_value(&tree).expect("serialize"), fixture);
+    }
+}
+
+/// A room saved before the Commenter could react held a frozen copy of the
+/// role grants without the reactions rule. Built-in roles come from the code,
+/// so a Commenter in that room reacts once the file loads, and every grant a
+/// person gave stays as it was.
+#[test]
+fn a_commenter_reacts_in_a_room_saved_before_reactions() {
+    use tilo_action_policy::{ActionKind, Answer, Authority, Context, Role, TreePath};
+
+    let mut old =
+        canonical(&std::fs::read_to_string(fixture_path()).expect("read the state.json fixture"));
+    for workspace in old["workspaces"].as_array_mut().expect("workspaces") {
+        if let Some(grants) = workspace["policy"]["grants"].as_array_mut() {
+            grants.retain(|grant| grant["id"] != "role:commenter:2");
+        }
+    }
+    let saved = old.clone();
+    let mut tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
+
+    let ws = &mut tree.desktop.workspaces[0];
+    let room = ws.policy.room.clone();
+    ws.policy
+        .members
+        .insert("commenter".into(), Role::Commenter);
+    let reactions = TreePath::room(&room)
+        .app("notes")
+        .kind("note")
+        .resource("n1")
+        .field("reactions");
+    let comments = TreePath::room(&room)
+        .app("notes")
+        .kind("note")
+        .resource("n1")
+        .field("comments");
+    let body = TreePath::room(&room)
+        .app("notes")
+        .kind("note")
+        .resource("n1")
+        .field("body");
+    let decide = |node: &TreePath| {
+        Authority::person(ws.policy.party("commenter"))
+            .decide(node, ActionKind::Undoable, &Context::at(0))
+            .answer
+    };
+    assert_eq!(decide(&reactions), Answer::Allow, "a Commenter reacts");
+    assert_eq!(decide(&comments), Answer::Allow, "a Commenter comments");
+    assert_ne!(decide(&body), Answer::Allow, "a Commenter does not edit");
+
+    // Every grant that is not a built-in role's stays exactly as saved.
+    let not_builtin = |grants: &serde_json::Value| -> Vec<serde_json::Value> {
+        grants
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|grant| {
+                !(grant["subject"].get("role").is_some()
+                    && grant["id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("role:")))
+            })
+            .cloned()
+            .collect()
+    };
+    let loaded = serde_json::to_value(&tree).expect("serialize");
+    for (before, after) in saved["workspaces"]
+        .as_array()
+        .expect("workspaces")
+        .iter()
+        .zip(loaded["workspaces"].as_array().expect("workspaces"))
+    {
+        assert_eq!(
+            not_builtin(&before["policy"]["grants"]),
+            not_builtin(&after["policy"]["grants"])
+        );
     }
 }

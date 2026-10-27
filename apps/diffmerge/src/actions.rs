@@ -12,7 +12,7 @@ use ui::prelude::Effect;
 use ui::tilo_resource;
 
 use crate::doc::HunkChoice;
-use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel};
+use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel, Resolution};
 
 /// Keep global search/contextual expansion bounded even for enormous diffs.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
@@ -23,14 +23,54 @@ pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
 #[effect(operation = "diffmerge.effects")]
 pub enum DiffmergeEffect {
     /// Open files
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
     OpenFiles {
         #[param("left file path (omit both paths to choose the files)")]
         left: Option<String>,
         #[param("right file path")]
         right: Option<String>,
     },
+    /// Open one file against nothing
+    ///
+    /// A file only one folder of a comparison has: shown against an empty
+    /// side, which reads as the whole file being added or removed.
+    #[effect(attended, job, cancellable)]
+    OpenOne {
+        #[param("the file to show")]
+        path: String,
+        #[param("which side it takes (left or right)")]
+        side: String,
+    },
+    /// Save merged result
+    ///
+    /// Writes the merged result where the person last saved it, asking for a
+    /// place the first time; `path` names one instead. A merge that cannot
+    /// be handed back is a merge that has not been done, so this is the verb
+    /// the tool exists for.
+    #[effect(attended, job, cancellable)]
+    SaveMerged {
+        #[param("where to write the merged result (omit to use the last place, or choose one)")]
+        path: Option<String>,
+    },
+    /// Save merged result as…
+    ///
+    /// Always asks for a place, even when the merged result was saved before.
+    #[effect(attended, job, cancellable)]
+    SaveMergedAs,
+    /// Compare folders
+    ///
+    /// Lists the files that differ between two folders; each one opens as an
+    /// ordinary comparison. With no paths, both folders are chosen through
+    /// the host's chooser.
+    #[effect(attended, job, cancellable)]
+    CompareFolders {
+        #[param("left folder path (omit both paths to choose the folders)")]
+        left: Option<String>,
+        #[param("right folder path")]
+        right: Option<String>,
+    },
     /// Load sample
+    #[effect(own_device)]
     LoadSample,
     /// Show two-way diff.
     #[effect(view, idempotent)]
@@ -60,50 +100,15 @@ pub enum DiffmergeEffect {
 /// Compose the merged output with `hunk`'s contribution forced to `choice`,
 /// every other hunk keeping its current resolution.
 pub fn compose_choice(model: &MergeModel, hunk: usize, choice: HunkChoice) -> String {
-    compose(model, hunk, choice_lines(model.hunks.get(hunk), choice))
+    model.merged_text_with(hunk, choice.to_resolution(), &[])
 }
 
 /// Compose the merged output with `hunk` replaced by the user's typed `text`,
 /// every other hunk keeping its current resolution. Backs the per-hunk
 /// "resolve with custom text" affordance.
 pub fn compose_custom(model: &MergeModel, hunk: usize, text: &str) -> String {
-    compose(
-        model,
-        hunk,
-        text.lines().map(std::string::ToString::to_string).collect(),
-    )
-}
-
-fn compose(model: &MergeModel, hunk: usize, replacement: Vec<String>) -> String {
-    let mut out = String::new();
-    let mut replacement = Some(replacement);
-    for (i, h) in model.hunks.iter().enumerate() {
-        let lines = if i == hunk {
-            replacement.take().unwrap_or_default()
-        } else {
-            h.resolved_lines()
-        };
-        for l in lines {
-            out.push_str(&l);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn choice_lines(h: Option<&MergeHunk>, choice: HunkChoice) -> Vec<String> {
-    let Some(h) = h else {
-        return Vec::new();
-    };
-    match choice {
-        HunkChoice::Ours => h.ours.clone(),
-        HunkChoice::Theirs => h.theirs.clone(),
-        HunkChoice::Both => {
-            let mut v = h.ours.clone();
-            v.extend(h.theirs.clone());
-            v
-        }
-    }
+    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    model.merged_text_with(hunk, Resolution::Written, &lines)
 }
 
 /// Stable digest of the exact aligned rows addressed by a change block.

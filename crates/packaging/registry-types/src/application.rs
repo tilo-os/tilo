@@ -103,7 +103,6 @@ impl StoredApplication {
         serde_json::to_vec(self).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
     }
 
-    /// The namespaces the application proved.
     #[must_use]
     pub fn namespaces(&self) -> Vec<String> {
         self.verified

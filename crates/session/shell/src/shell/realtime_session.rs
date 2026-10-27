@@ -118,10 +118,6 @@ pub struct SemanticRoomLocator {
 }
 
 impl SemanticRoomLocator {
-    /// # Errors
-    ///
-    /// Returns an error when either semantic identifier is empty, oversized,
-    /// contains control characters, or resembles a URL/bearer locator.
     pub fn new(
         provider: impl Into<String>,
         room_id: impl Into<String>,
@@ -167,10 +163,6 @@ pub enum RealtimeMediaFacet {
 }
 
 impl RealtimeMediaSet {
-    /// # Errors
-    ///
-    /// Returns an error when no media is active or share audio is requested
-    /// without a screen share to which it can belong.
     pub fn new(
         facets: impl IntoIterator<Item = RealtimeMediaFacet>,
     ) -> Result<Self, RealtimeSessionError> {
@@ -216,9 +208,6 @@ impl RealtimeMediaSet {
         self.bits
     }
 
-    /// # Errors
-    ///
-    /// Returns an error for unknown bits or an invalid facet combination.
     pub fn from_fabric_bits(bits: u8) -> Result<Self, RealtimeSessionError> {
         if bits & !0b1111 != 0 {
             return Err(RealtimeSessionError::InvalidMediaSet);
@@ -421,11 +410,6 @@ impl BrokerRealtimeFabricAdapter {
 
     /// Queue an offer only for the exact target already proposed in the
     /// source broker.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is unknown, is not awaiting the
-    /// exact target, or broker state is unavailable.
     pub fn offer_to(
         &self,
         session_id: RealtimeSessionId,
@@ -448,11 +432,6 @@ impl BrokerRealtimeFabricAdapter {
 
     /// Record target-local explicit consent and acknowledge the exact source.
     /// The broker authorization remains process-local.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the imported session/app/endpoints do not match,
-    /// capture authorization fails, or broker state is unavailable.
     pub fn accept_imported(
         &self,
         session_id: RealtimeFabricSessionId,
@@ -475,11 +454,6 @@ impl BrokerRealtimeFabricAdapter {
     /// Confirm that target-local capture streams are live, then tell only the
     /// exact source. The source remains authoritative until it replies with
     /// `StopSource`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when fresh target-local authorization is absent, the
-    /// exact session/endpoints do not match, or broker state is unavailable.
     pub fn imported_media_ready(
         &self,
         session_id: RealtimeFabricSessionId,
@@ -508,11 +482,6 @@ impl BrokerRealtimeFabricAdapter {
     }
 
     /// Roll back target-local setup and notify only the authenticated source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the exact imported session/endpoints do not
-    /// match, rollback is no longer valid, or broker state is unavailable.
     pub fn fail_imported(
         &self,
         session_id: RealtimeFabricSessionId,
@@ -717,9 +686,6 @@ pub struct RealtimeResumeIntent {
 }
 
 impl RealtimeResumeIntent {
-    /// # Errors
-    ///
-    /// Returns an error for unsafe or oversized semantic state.
     pub fn validate(&self) -> Result<(), RealtimeSessionError> {
         if self.semantic_position.as_ref().is_some_and(|position| {
             position.is_empty()
@@ -913,10 +879,6 @@ impl RealtimeSessionBroker {
     }
 
     /// Register one currently live source session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid semantic state or capacity exhaustion.
     pub fn register(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -947,10 +909,6 @@ impl RealtimeSessionBroker {
     /// Import one metadata-only offer authored by an authenticated certified
     /// source. Repeating the identical offer is idempotent; a conflicting
     /// offer with the same restart-scoped id fails closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid metadata, capacity, or binding conflicts.
     pub fn import_fabric_offer(
         &mut self,
         offer: &RealtimeFabricOffer,
@@ -1003,10 +961,6 @@ impl RealtimeSessionBroker {
 
     /// Convert a target shell's authenticated acceptance into a source-side
     /// transition without importing its local capture authorization.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a stale or mismatched target/session binding.
     pub fn remote_target_accepted(
         &mut self,
         session_id: RealtimeFabricSessionId,
@@ -1044,10 +998,6 @@ impl RealtimeSessionBroker {
 
     /// Authenticate target media readiness at the source. This is the only
     /// remote edge which returns `stop_source = true`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for replay, expiry, or binding mismatch.
     pub fn remote_media_ready(
         &mut self,
         session_id: RealtimeFabricSessionId,
@@ -1083,11 +1033,6 @@ impl RealtimeSessionBroker {
 
     /// Commit an imported target only after the source acknowledges that its
     /// endpoint stopped.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown, expired, reordered, or endpoint-
-    /// mismatched acknowledgement.
     pub fn confirm_source_stopped(
         &mut self,
         session_id: RealtimeFabricSessionId,
@@ -1121,11 +1066,6 @@ impl RealtimeSessionBroker {
 
     /// Cancel an exact in-flight fabric handoff. Imported target offers are
     /// forgotten; source-owned handoffs roll back to their still-live source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown session, mismatched endpoints, or a
-    /// session that is no longer in a cancellable transition.
     pub fn cancel_fabric_handoff(
         &mut self,
         session_id: RealtimeFabricSessionId,
@@ -1255,10 +1195,6 @@ impl RealtimeSessionBroker {
 
     /// Phase one: the exact target accepts using fresh local capture consent.
     /// Source media remains live after this call.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale/replayed consent or any binding mismatch.
     pub fn accept_target(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -1373,11 +1309,6 @@ impl RealtimeSessionBroker {
     }
 
     /// Apply a mode-compatible action from the one currently live endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a binding mismatch, non-live caller, or action not
-    /// supported by the registered media mode.
     pub fn apply_media_action(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -1727,7 +1658,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn cutover_waits_for_accept_and_media_ready_and_rolls_back_safely() {
-        // Phase `cutover_requires_accept_then_media_ready_and_keeps_source_live_until_ready`.
         {
             let now = Instant::now();
             let app = FakeCallingApp::verified("so.tilo.calls", "work");
@@ -1782,7 +1712,6 @@ mod tests {
             assert!(!broker.session(id).unwrap().source_live);
         }
 
-        // Phase `timeout_and_target_loss_roll_back_without_stopping_source`.
         {
             let now = Instant::now();
             let app = FakeCallingApp::verified("so.tilo.calls", "work");
@@ -1900,7 +1829,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_authority_is_fresh_exactly_bound_and_bounded() {
-        // Phase `capture_authorization_is_fresh_one_shot_and_exactly_bound`.
         {
             let now = Instant::now();
             let app = FakeCallingApp::verified("so.tilo.calls", "work");
@@ -1942,7 +1870,6 @@ mod tests {
             );
         }
 
-        // Phase `restart_scoped_ids_and_exact_bindings_reject_stale_or_foreign_callers`.
         {
             let now = Instant::now();
             let app = FakeCallingApp::verified("so.tilo.calls", "work");
@@ -1975,7 +1902,6 @@ mod tests {
             );
         }
 
-        // Phase `registry_is_bounded_and_ttl_forgets_without_stopping_live_source`.
         {
             let now = Instant::now();
             let app = FakeCallingApp::verified("so.tilo.calls", "work");
@@ -2020,7 +1946,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn media_actions_and_facets_follow_the_live_endpoint_and_mode() {
-        // Phase `media_actions_follow_mode_and_only_the_live_endpoint`.
         {
             let now = Instant::now();
             let app = FakeCallingApp::verified("so.tilo.calls", "work");
@@ -2068,7 +1993,6 @@ mod tests {
             );
         }
 
-        // Phase `media_facets_are_independent_and_share_audio_never_implies_microphone`.
         {
             assert_eq!(
                 RealtimeMediaSet::new([]),
@@ -2122,7 +2046,6 @@ mod tests {
             );
         }
 
-        // Phase `semantic_resume_state_rejects_urls_and_bearer_shaped_queries`.
         {
             assert_eq!(
                 SemanticRoomLocator::new("meet", "https://meet.invalid/room"),
@@ -2151,7 +2074,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn fabric_handoff_cuts_over_only_to_the_authenticated_ready_peer() {
-        // Phase `two_peer_fabric_cutover_stops_source_only_after_authenticated_ready`.
         {
             let now = Instant::now();
             let source = device("laptop");
@@ -2236,7 +2158,6 @@ mod tests {
             );
         }
 
-        // Phase `fabric_handoff_rejects_wrong_peer_reorder_and_offline_pending_offer`.
         {
             let now = Instant::now();
             let source = device("laptop");
@@ -2286,7 +2207,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn certified_adapter_routes_cancels_and_times_out_exactly() {
-        // Phase `certified_adapter_routes_two_peer_handshake_and_cutover_exactly_once`.
         {
             let now = Instant::now();
             let source = device("laptop");
@@ -2415,7 +2335,6 @@ mod tests {
             );
         }
 
-        // Phase `adapter_cancel_is_exactly_bound_and_prunes_local_authorizations`.
         {
             let now = Instant::now();
             let source = device("laptop");
@@ -2516,7 +2435,6 @@ mod tests {
             );
         }
 
-        // Phase `adapter_timeout_prunes_process_local_authorization_index`.
         {
             let now = Instant::now();
             let source = device("laptop");

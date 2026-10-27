@@ -520,11 +520,6 @@ impl RegistryEntry {
 
     /// Validate the entry's identifiers, localized metadata, package targets,
     /// and artifact bindings.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`EntryValidationError`] identifying the first invalid field
-    /// or collection encountered.
     pub fn validate(&self) -> Result<(), EntryValidationError> {
         if !crate::namespace::valid_package_id(&self.package_id) {
             return Err(EntryValidationError::InvalidPackageId);
@@ -550,8 +545,16 @@ impl RegistryEntry {
         if self.versions.is_empty() || self.versions.len() > MAX_ENTRY_VERSIONS {
             return Err(EntryValidationError::InvalidVersionTarget);
         }
+        let language_pack = crate::target::is_language_pack_package_id(&self.package_id);
         for version in &self.versions {
             match (self.kind, &version.artifact) {
+                // A language pack is data for every architecture, and only a
+                // language pack is.
+                (EntryKind::App, VersionArtifact::Tapp(tapp))
+                    if tapp.target.is_any_architecture() != language_pack =>
+                {
+                    return Err(EntryValidationError::InvalidVersionTarget);
+                }
                 (EntryKind::App, VersionArtifact::Tapp(tapp)) => validate_tapp(tapp)?,
                 (EntryKind::Bot, VersionArtifact::Bot(bot)) => validate_bot(bot)?,
                 _ => return Err(EntryValidationError::ArtifactKindMismatch),
@@ -980,7 +983,6 @@ mod tests {
         );
         assert!(version["tapp_url"].is_string());
 
-        // A bot entry signs under its own domain.
         let mut relabelled = sample_entry();
         relabelled.kind = EntryKind::Bot;
         assert_ne!(app.signing_message(), relabelled.signing_message());
@@ -1158,7 +1160,6 @@ mod tests {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             sign_entry(&mut e, &key);
             assert_eq!(e.signature_hex.len(), 128, "64-byte hex-encoded sig");
-            // Idempotent under re-sign with the same key + same payload.
             let sig1 = e.signature_hex.clone();
             sign_entry(&mut e, &key);
             assert_eq!(e.signature_hex, sig1);

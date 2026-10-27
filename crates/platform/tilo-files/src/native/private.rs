@@ -80,9 +80,6 @@ pub fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
 
 /// Restrict an existing directory to its owner (mode `0700` on Unix; a no-op
 /// on platforms without permission bits).
-///
-/// # Errors
-/// Returns the permission change's error.
 pub fn restrict_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -150,10 +147,6 @@ pub fn private_to_me(metadata: &std::fs::Metadata) -> bool {
 /// one inspected, so a rename cannot redirect the read. A file that grants
 /// access beyond its owner is narrowed to owner-only (`0600` on Unix) before
 /// it is returned. Other platforms check only the file type and length.
-///
-/// # Errors
-/// Returns filesystem errors, or rejects links, special files, foreign owners,
-/// oversized files, and a file that changed while opening.
 pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)> {
     #[cfg(unix)]
     {
@@ -214,16 +207,10 @@ pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)>
 }
 
 /// Create or restrict a user-owned private directory.
-///
-/// # Errors
-/// Returns filesystem errors or rejects a foreign owner or a directory link.
 pub fn directory(path: &Path) -> io::Result<()> {
     platform::directory(path)
 }
 /// Open a private regular file, validating the opened object's owner and access.
-///
-/// # Errors
-/// Returns filesystem errors or rejects links, foreign owners and public access.
 pub fn read(path: &Path) -> io::Result<File> {
     platform::open(path, false, false, false)
 }
@@ -252,32 +239,20 @@ pub fn read_ciphertext(path: &Path) -> io::Result<File> {
 }
 
 /// Read authenticated ciphertext using the canonical native ACL checks.
-///
-/// # Errors
-/// Returns the same errors as [`read`].
 #[cfg(not(unix))]
 pub fn read_ciphertext(path: &Path) -> io::Result<File> {
     read(path)
 }
 
 /// Exclusively create a file with user-only access from the moment of creation.
-///
-/// # Errors
-/// Returns filesystem errors, including `AlreadyExists` without overwriting.
 pub fn create_new(path: &Path) -> io::Result<File> {
     platform::open(path, true, false, true)
 }
 /// Open or create a private file for read/write access; the caller acquires locks.
-///
-/// # Errors
-/// Returns filesystem errors or rejects an existing non-private file or link.
 pub fn lock_file(path: &Path) -> io::Result<File> {
     platform::open(path, true, true, false)
 }
 /// Validate an existing file before truncating it, or create a new private file.
-///
-/// # Errors
-/// Returns validation or I/O errors. Rejected existing files are not truncated.
 pub fn rewrite(path: &Path) -> io::Result<File> {
     let file = lock_file(path)?;
     // Validate before truncating an existing file.
@@ -301,10 +276,6 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
 
 /// Atomically replace a private file using a private, exclusively created sibling.
 /// Existing destinations must pass the same checks as [`read`].
-///
-/// # Errors
-/// Returns validation, write, flush or rename errors. A failure after the final
-/// rename may mean publication succeeded but its directory flush did not.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     publish(path, bytes, true).map(|_| ())
 }
@@ -452,7 +423,6 @@ mod tests {
 
     #[test]
     fn private_files_are_created_and_replaced_atomically_without_substitution() {
-        // Phase `atomic_replacement_stays_private_and_leaves_no_temporary_files`.
         {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("key.bin");
@@ -463,7 +433,6 @@ mod tests {
             assert_eq!(bytes, b"new secret");
             assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
         }
-        // Phase `private_files_round_trip_and_creation_never_overwrites`.
         {
             let temporary = tempfile::tempdir().unwrap();
             let root = temporary.path().join("identity");
@@ -484,7 +453,6 @@ mod tests {
             rewrite(&path).unwrap().write_all(b"new").unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), b"new");
         }
-        // Phase `directories_and_files_cannot_substitute_for_one_another`.
         {
             let temporary = tempfile::tempdir().unwrap();
             let root = temporary.path().join("identity");
@@ -494,7 +462,6 @@ mod tests {
             create_new(&file).unwrap();
             assert!(directory(&file).is_err());
         }
-        // Phase `atomic_creation_never_replaces_an_existing_file`.
         {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("broker-identity");

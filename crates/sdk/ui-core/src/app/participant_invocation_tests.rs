@@ -70,13 +70,18 @@ fn tree(view: &str) -> Vec<Resource> {
 impl Widget for TwoViews {
     crate::provides!(
         dyn crate::collaboration::participants::Participants,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     crate::testing::inert_widget_methods!(leaf_layout, name = "two-views");
+}
+
+impl crate::widget::ResourceOperations for TwoViews {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[VIEW_TYPE]
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,

@@ -197,15 +197,6 @@ impl NotificationPolicy {
         crate::update_section("notifications", Self::do_not_disturb_values(on))
     }
 
-    /// [`Self::save_do_not_disturb`] against an explicit settings document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the document cannot be written.
-    pub fn save_do_not_disturb_at(path: &std::path::Path, on: bool) -> std::io::Result<()> {
-        crate::update_section_at(path, "notifications", Self::do_not_disturb_values(on))
-    }
-
     fn do_not_disturb_values(on: bool) -> serde_json::Map<String, serde_json::Value> {
         let mut values = serde_json::Map::new();
         values.insert("do_not_disturb".into(), serde_json::Value::Bool(on));
@@ -282,25 +273,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn do_not_disturb_persists_without_touching_other_notification_keys() {
-        let dir = std::env::temp_dir().join(format!("tilo-dnd-{}-{}", std::process::id(), line!()));
-        let path = dir.join("settings.json");
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut values = serde_json::Map::new();
-        values.insert("show_banners".into(), serde_json::Value::Bool(false));
-        crate::update_section_at(&path, "notifications", values).unwrap();
-        NotificationPolicy::save_do_not_disturb_at(&path, true).unwrap();
-        let policy = NotificationPolicy::load_at(&path);
-        assert!(policy.do_not_disturb);
-        assert!(!policy.show_banners);
-        NotificationPolicy::save_do_not_disturb_at(&path, false).unwrap();
-        assert!(!NotificationPolicy::load_at(&path).do_not_disturb);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn focus_priority_and_mutes_follow_user_policy() {
-        // Phase `focus_reports_when_its_period_ends`.
         {
             let f = FocusSchedule {
                 enabled: true,
@@ -316,7 +289,6 @@ mod tests {
             };
             assert_eq!(all_day.active_until(12 * 60, 0), None);
         }
-        // Phase `overnight_focus_crosses_midnight`.
         {
             let f = FocusSchedule {
                 enabled: true,
@@ -326,7 +298,6 @@ mod tests {
             assert!(f.active_at(6 * 60, 0));
             assert!(!f.active_at(12 * 60, 0));
         }
-        // Phase `app_priority_is_user_policy_not_sender_metadata`.
         {
             let mut p = NotificationPolicy {
                 focus: FocusSchedule {
@@ -347,7 +318,6 @@ mod tests {
             assert!(!p.effective_for(Some("so.tilo.chat"), 0, 500, 0).quiet);
             assert!(p.effective_for(Some("spoofed name"), 0, 500, 0).quiet);
         }
-        // Phase `temporary_mute_expires_without_a_cleanup_write`.
         {
             let mut p = NotificationPolicy::default();
             p.per_app.insert(
@@ -364,7 +334,6 @@ mod tests {
 
     #[test]
     fn breakthroughs_require_verified_identity_and_authorized_apps() {
-        // Phase `contact_only_pierces_for_a_verified_match_and_authorized_app`.
         {
             let mut p = NotificationPolicy {
                 focus: FocusSchedule {
@@ -395,7 +364,6 @@ mod tests {
                     .quiet
             );
         }
-        // Phase `cross_device_requires_verified_identity_and_honours_per_app_policy`.
         {
             let mut policy = NotificationPolicy::default();
             assert!(

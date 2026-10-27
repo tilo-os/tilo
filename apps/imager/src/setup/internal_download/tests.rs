@@ -194,7 +194,7 @@ impl Server {
                         // temporary WouldBlock is not an empty HTTP request.
                         socket.set_nonblocking(false).unwrap();
                         socket
-                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .set_read_timeout(Some(tilo_test_env::hang_bound()))
                             .unwrap();
                         let mut request = Vec::new();
                         let mut byte = [0];
@@ -229,7 +229,8 @@ impl Server {
         self.requests.lock().unwrap().clone()
     }
     pub(in crate::setup) fn transport(&self) -> InternalTransport {
-        InternalTransport::client(Url::parse(&self.url).unwrap(), Duration::from_secs(2)).unwrap()
+        InternalTransport::client(Url::parse(&self.url).unwrap(), tilo_test_env::hang_bound())
+            .unwrap()
     }
     pub(in crate::setup) fn release(&self, bytes: &[u8]) -> InternalRelease {
         InternalRelease::transport_fixture(bytes, &self.url)
@@ -262,7 +263,6 @@ fn contents(file: &mut File) -> Vec<u8> {
     file.read_to_end(&mut b).unwrap();
     b
 }
-/// Full component fetch and prefix resume.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1062,6 +1062,8 @@ fn redirects_and_stream_timeouts_are_bounded() {
     isolated("stalled_network_read_obeys_injected_timeout", || {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/manifest.json", listener.local_addr().unwrap());
+        // The body never comes until the transfer has given up.
+        let (gave_up, release) = std::sync::mpsc::channel::<()>();
         let worker = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             let mut request = [0; 4096];
@@ -1069,7 +1071,7 @@ fn redirects_and_stream_timeouts_are_bounded() {
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n")
                 .unwrap();
-            thread::sleep(Duration::from_millis(400));
+            release.recv_timeout(tilo_test_env::hang_bound()).is_ok()
         });
         let bytes = manifest();
         let selected = SelectedManifest::checked(
@@ -1082,7 +1084,6 @@ fn redirects_and_stream_timeouts_are_bounded() {
             InternalTransport::client(Url::parse(&url).unwrap(), Duration::from_millis(40))
                 .unwrap();
         let mut file = tempfile::tempfile().unwrap();
-        let start = ui::time::now();
         assert!(
             transport
                 .transfer(
@@ -1096,8 +1097,11 @@ fn redirects_and_stream_timeouts_are_bounded() {
                 )
                 .is_err()
         );
-        assert!(start.elapsed() < Duration::from_secs(2));
-        worker.join().unwrap();
+        gave_up.send(()).unwrap();
+        assert!(
+            worker.join().unwrap(),
+            "the transfer waited for the stalled body instead of its timeout"
+        );
     });
 
     isolated(
@@ -2315,7 +2319,6 @@ impl Read for ResponseReader<'_> {
         Ok(n)
     }
 }
-/// Returned request boundaries.
 #[test]
 #[cfg(unix)]
 #[allow(

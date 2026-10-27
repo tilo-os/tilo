@@ -63,7 +63,6 @@ pub const CALLOUTS: [&str; 5] = ["note", "tip", "important", "warning", "caution
 /// The stored attribute that makes a quote a callout.
 const CALLOUT_ATTR: &str = "alert";
 
-/// The callout named `name`, in any case.
 pub(crate) fn callout_named(name: &str) -> Option<&'static str> {
     // Lower-cased once, then compared exactly: a case-insensitive comparison
     // per callout is unrolled into a loop for each name.
@@ -331,7 +330,6 @@ fn is_alphanumeric(c: Option<&char>) -> bool {
     c.is_some_and(|c| c.is_alphanumeric())
 }
 
-/// `text` with its marks as Markdown.
 fn inline(text: &str, marks: &[MarkSpan]) -> String {
     let chars: Vec<char> = text.chars().collect();
     let spans = tags(marks, chars.len());
@@ -490,7 +488,6 @@ pub(crate) fn line_key(shape: &Shape, text: &str, marks: &[MarkSpan]) -> String 
     }
 }
 
-/// The fence that holds `lines` of code.
 fn fence_for(lines: &[&str]) -> String {
     let longest = lines
         .iter()
@@ -584,7 +581,6 @@ pub(crate) enum Ids<'a> {
     Discard,
 }
 
-/// One block of parsed Markdown.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Parsed {
     /// A block of the page, left as it is (`[table] ^id`).

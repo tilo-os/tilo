@@ -323,10 +323,6 @@ pub fn approve(
 /// Approve exactly the application a reviewer inspected. Proofs are checked
 /// again, and the pending snapshot is compared under the transaction lock
 /// before either the allowlist or application record changes.
-///
-/// # Errors
-/// Returns a stale-review error when the publisher replaced the application,
-/// or the existing validation/storage error. No decision is applied then.
 pub fn approve_reviewed(
     storage: &Storage,
     candidate: &StoredApplication,
@@ -388,10 +384,6 @@ pub fn reject(
 
 /// Reject exactly the pending application a reviewer inspected, retaining
 /// its feedback without overwriting a replacement application.
-///
-/// # Errors
-/// Returns a stale-review error when the application changed, or the
-/// existing validation/storage error. No decision is applied then.
 pub fn reject_reviewed(
     storage: &Storage,
     candidate: &StoredApplication,

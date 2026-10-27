@@ -165,6 +165,15 @@ pub fn register_built_in_surface(app_id: &str, bytes: Option<&'static [u8]>) {
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;
 
+/// The workspace's own emoji record, which every window opens: re-exported
+/// for the app that keeps it and for hosts that show it.
+pub use tilo_workspace_emoji;
+
+/// References to what apps keep ([`tilo_reference::ResourceRef`]), which
+/// [`framework::ViewCx::reference`] shows and opens, re-exported so an app
+/// names them without a dependency of its own.
+pub use tilo_reference;
+
 /// The package registry's vocabulary (entries, artifacts, moderation cases)
 /// that the SDK's moderation and package APIs speak, re-exported so an app
 /// names those types without a dependency of its own.
@@ -180,7 +189,7 @@ pub mod feedback_composer;
 /// would fail on the web.
 pub use tilo_files as files;
 
-/// What a hand-written [`Widget`](ui_core::widget::Widget) draws and lays
+/// What a hand-written [`Widget`] draws and lays
 /// out with: the renderer's scene and transforms, the layout tree and the
 /// windowing events. Views built from [`framework::ViewCx`] never name them.
 pub mod advanced {
@@ -199,8 +208,8 @@ pub mod prelude {
     pub use crate::framework::{
         ActionControl, Actions, Bindable, Command, Dispatcher, Each, EditsText, EffectCx,
         EffectStatus, Effected, Fixture, Form, Jobs, LaunchInput, Live, LiveRow, PersonRecord,
-        Records, ResourceApp, ResourceSelection, ResourceSurface, RunMode, SeedCx, Setting, Submit,
-        SurfaceCx, TextControl, ViewCx,
+        Query, ReadFailure, Records, ResourceApp, ResourceSelection, ResourceSurface, RunMode,
+        SeedCx, Setting, Submit, SurfaceCx, TextControl, ViewCx, WorkspaceRecord,
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, ActionKind, Atom, Collection, Counter, Delta, Demand, Edit,
@@ -215,21 +224,20 @@ pub mod prelude {
         OpenFile, PlaybackHandoff, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
+    pub use ui_core::arriving::{Arrival, Arriving};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
-    pub use ui_core::storage::{Scope, SettingsSchema};
+    pub use ui_core::storage::{DeviceClass, Scope, SettingsSchema};
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionNeed, ActionRegistry, ExecutionLocus};
     pub use ui_core::tokens::TextRole;
     pub use ui_core::vello::kurbo::{Point, Rect, Size};
     pub use ui_core::widget::data_table::{
-        ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
+        ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange,
     };
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
-    pub use ui_core::widget::virtual_list::{
-        ListModel, ListModelChange, ListRowState, VirtualList,
-    };
+    pub use ui_core::widget::virtual_list::{ListModel, ListModelChange, VirtualList};
     pub use ui_core::widget::{
         ActionEmitter, AudiencePresentationProvider, Banner, Button, Card, Checkbox, Collaborative,
         Column, CompleteContentProvider, Container, ContentKind, Continuable, ControlBindingKind,

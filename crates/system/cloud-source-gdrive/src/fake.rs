@@ -361,8 +361,6 @@ impl FakeDrive {
     }
 }
 
-// --- state ---------------------------------------------------------------
-
 impl State {
     fn next(&mut self) -> u64 {
         self.counter += 1;
@@ -573,8 +571,6 @@ impl State {
         Value::Object(map)
     }
 }
-
-// --- request handling ----------------------------------------------------
 
 struct Call<'a> {
     method: &'a str,
@@ -1286,8 +1282,6 @@ fn changes(state: &mut State, call: &Call<'_>) -> Reply {
     )
 }
 
-// --- resumable uploads ---------------------------------------------------
-
 fn open_session(state: &mut State, call: &Call<'_>, target: Option<&str>) -> Reply {
     if call.param("uploadType") != Some("resumable") {
         return error(
@@ -1497,8 +1491,6 @@ fn committed_reply(state: &State, id: &str, fields: Option<&str>) -> Reply {
     }
 }
 
-// --- fields selection ----------------------------------------------------
-
 #[derive(Debug)]
 struct Field {
     name: String,
@@ -1586,8 +1578,6 @@ fn select(value: &Value, fields: &[Field]) -> Value {
         other => other.clone(),
     }
 }
-
-// --- search queries ------------------------------------------------------
 
 #[derive(Debug)]
 enum Query {
@@ -1762,8 +1752,6 @@ fn parse_unary(tokens: &[Token], at: &mut usize) -> Result<Query, ()> {
         _ => Err(()),
     }
 }
-
-// --- helpers -------------------------------------------------------------
 
 /// `2024-05-01T12:30:45.123Z`.
 fn format_rfc3339(time: SystemTime) -> String {

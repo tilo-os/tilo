@@ -4,13 +4,13 @@
 //! size, a redraw, the pointer's shape — comes from the surface.
 
 use super::*;
+use crate::damage::{WidgetIdentity, boxes_covered_by_own_damage, changed_boxes, widget_boxes};
 use crate::profiling::InputPhase;
 
 /// What an [`App`] needs from the surface it is shown on.
 pub trait AppSurface {
     /// Physical pixels per logical pixel.
     fn scale_factor(&self) -> f64;
-    /// The surface's size in physical pixels.
     fn inner_size(&self) -> winit::dpi::PhysicalSize<u32>;
     /// Ask for another frame.
     fn request_redraw(&self);
@@ -67,11 +67,16 @@ impl App {
         event: WindowEvent,
         synthesized_touch: bool,
     ) -> bool {
+        crate::widget::context_menu::note_input(&event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows.
+        #[cfg(test)]
+        let replay_probe = crate::profiling::frame_probe::span("input.replay");
         if let Some(moved) = self.input.pointer_replay.before(&event) {
             self.dispatch_surface_input(window, moved, synthesized_touch);
         }
+        #[cfg(test)]
+        drop(replay_probe);
         let ends_press = crate::pointer_replay::PointerReplay::ends_press(&event);
         let handled = self.dispatch_surface_input(window, event, synthesized_touch);
         if ends_press {
@@ -96,7 +101,11 @@ impl App {
         self.mark_semantic_tree_stale();
         let marks = self.accessibility.semantic_tree_marks;
         let pointer_move = matches!(event, WindowEvent::CursorMoved { .. });
+        #[cfg(test)]
+        let route_probe = crate::profiling::frame_probe::span("input.route");
         let handled = self.route_surface_input(window, event, synthesized_touch);
+        #[cfg(test)]
+        drop(route_probe);
         self.drain_local_input_capture();
         let inert = pointer_move
             && !handled
@@ -123,6 +132,24 @@ impl App {
     ) -> bool {
         let _entry = self.enter_wake_scope();
         self.track_pointer_buttons(&event);
+        self.track_acting_place(&event, window.scale_factor());
+        // A tooltip goes when the person acts, or when the pointer or the
+        // keyboard leaves the window, whatever then takes the event: History's
+        // controls and the close dialog take some before the widgets do.
+        if matches!(
+            &event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::Focused(false)
+        ) && self.input.tooltip_host.dismiss()
+        {
+            window.request_redraw();
+        }
         if matches!(
             &event,
             WindowEvent::KeyboardInput {
@@ -148,6 +175,10 @@ impl App {
                 self.input.keyboard_layout.clone_from(layout)
             }
             WindowEvent::Focused(false) => self.input.keyboard_layout = None,
+            // A window that takes the keyboard hands it to the app's entry
+            // when nothing in it holds it: what is typed after it opens, or
+            // is brought forward, reaches the app.
+            WindowEvent::Focused(true) => self.hand_keyboard_to_app(),
             _ => {}
         }
         self.restore_physical_configuration();
@@ -181,7 +212,8 @@ impl App {
             None
         } else {
             match &event {
-                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
+                // The window's touch emulation switches to touch once the
+                // gesture has landed, so a touch hits what the person saw.
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. } => {
@@ -363,6 +395,14 @@ impl App {
             handled = true;
         }
 
+        // A zoom gesture (Ctrl+Plus/Minus/0, Ctrl+scroll, a pinch) goes to a
+        // widget whose content zooms by itself, a web page per site, before
+        // anything else sees it.
+        if !handled && app.offer_content_zoom(&event) {
+            handled = true;
+            window.request_redraw();
+        }
+
         if !handled
             && app
                 .input
@@ -379,14 +419,16 @@ impl App {
             } = event
         {
             let shift = app.input.modifiers.state().shift_key();
-            // Find opens the window bar's search, which acts on this app in
-            // place, ahead of any find of the app's own.
-            if c.eq_ignore_ascii_case("f")
-                && !shift
-                && !app.input.modifiers.state().alt_key()
-                && app.window_bar_takes_find()
+            // Find (and Find and Replace) opens the window bar's search,
+            // which acts on this app in place, ahead of any find of the
+            // app's own.
+            if let Some(opening) = crate::widget::window_search::search_chord(
+                &event,
+                app.input.modifiers.state(),
+                app.input.platform,
+            ) && app.window_bar_takes(opening)
             {
-                crate::window_toolbar::open_search();
+                crate::window_toolbar::open_search(opening);
                 handled = true;
             }
             match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
@@ -594,6 +636,12 @@ impl App {
             }
         }
 
+        // A zoom gesture no widget took zooms the window's content.
+        if !handled && app.zoom_unhandled(&event) {
+            handled = true;
+            window.request_redraw();
+        }
+
         // Alt+Arrow remains host directional navigation when the focused
         // widget leaves it unhandled. Running this after widget dispatch lets
         // editors consume platform word/selection shortcuts first, while
@@ -737,7 +785,7 @@ impl App {
         if handled {
             let commit = phases.start();
             if view_only_scroll && !history_handled && focus_target.is_none() {
-                app.commit_action_with_invalidation(false);
+                app.commit_view_change();
             } else {
                 app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
                 app.needs_sync = true;
@@ -785,20 +833,6 @@ impl App {
             {
                 window.request_redraw();
             }
-        }
-
-        if matches!(
-            &event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } | WindowEvent::MouseWheel { .. }
-                | WindowEvent::KeyboardInput { .. }
-                | WindowEvent::Touch(_)
-                | WindowEvent::CursorLeft { .. }
-        ) && app.input.tooltip_host.dismiss()
-        {
-            window.request_redraw();
         }
 
         if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
@@ -885,7 +919,11 @@ impl App {
         // collaboration (inbound edits, directory requests, publication),
         // invocations, idle model work and the record. A different record
         // is a different document under the same widgets.
+        #[cfg(test)]
+        let pump_probe = crate::profiling::frame_probe::span("frame.pump");
         let record_changed = self.pump_hosted_model_record_changed();
+        #[cfg(test)]
+        drop(pump_probe);
         if self.layout.root_node.is_none() {
             self.init_layout();
         }
@@ -900,7 +938,11 @@ impl App {
         // children, and its damage covers them) keeps the frame's damage: the
         // widgets' own, and every widget box that came, went or moved. Any
         // other reason to rebuild this frame disarms it.
+        #[cfg(test)]
+        let structure_probe = crate::profiling::frame_probe::span("frame.structure");
         let changed = self.take_root_structure_dirty();
+        #[cfg(test)]
+        drop(structure_probe);
         if replaced {
             self.layout.request_rebuild();
         }
@@ -908,7 +950,11 @@ impl App {
         let structure_rebuilt = self.layout.structure_dirty;
         // Every widget and its box as the last frame left them, before
         // anything is rebuilt: compared by identity only, never reached.
+        #[cfg(test)]
+        let boxes_probe = crate::profiling::frame_probe::span("frame.boxes");
         let boxes_before = widget_boxes(self.root_widget.as_ref());
+        #[cfg(test)]
+        drop(boxes_probe);
         if structure_rebuilt {
             self.rebuild_structure();
         }
@@ -916,8 +962,10 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
-        let rebuilds = self.layout.rebuilds;
-        let Some((geometry_changed, _, _)) = run_layout_pass(
+        let rebuilds = (self.layout.rebuilds, self.layout.remounts);
+        #[cfg(test)]
+        let layout_probe = crate::profiling::frame_probe::span("frame.layout");
+        let laid_out = run_layout_pass(
             self,
             root_node,
             size.width,
@@ -925,7 +973,10 @@ impl App {
             scale_factor,
             structure_rebuilt,
             None,
-        ) else {
+        );
+        #[cfg(test)]
+        drop(layout_probe);
+        let Some((geometry_changed, _, _)) = laid_out else {
             damage.repaint("no layout");
             return true;
         };
@@ -951,13 +1002,16 @@ impl App {
         // was and is: what else is there is drawn by widgets that did not
         // move, and their own damage covers any change to them.
         // A layout pass that recomposed the tree may have replaced widgets.
-        let recomposed = self.layout.rebuilds != rebuilds;
+        let recomposed = (self.layout.rebuilds, self.layout.remounts) != rebuilds;
         let described = (structure_rebuilt || recomposed) && self.layout.frame_rebuilds_described;
         let relaid = !described && !recomposed && geometry_changed && !structure_rebuilt;
+        #[cfg(test)]
+        let boxes_probe = crate::profiling::frame_probe::span("frame.boxes");
         let boxes_after = (described || relaid).then(|| widget_boxes(self.root_widget.as_ref()));
+        #[cfg(test)]
+        drop(boxes_probe);
         let moved = match &boxes_after {
-            Some(after) if described => Some(changed_boxes(&boxes_before, after)),
-            Some(after) => moved_boxes(&boxes_before, after),
+            Some(after) => Some(changed_boxes(&boxes_before, after)),
             None if recomposed => None,
             None => Some(Vec::new()),
         };
@@ -973,10 +1027,36 @@ impl App {
         ]
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
-        let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        // A host that repaints only this frame's damage from its scene is
+        // drawn only what that damage needs (`crate::draw_cull`), unless the
+        // frame repaints whole or paints what its widgets' damage does not
+        // describe.
+        let culls = damage.culls
+            && full.is_none()
+            && self.history.is_none()
+            && self.history_layout.is_none()
+            && !crate::scene_parts::is_tracked(scene);
+        let mut culling = culls.then(|| std::mem::take(&mut self.layout.cull));
+        let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
+        #[cfg(test)]
+        let draw_probe = crate::profiling::frame_probe::span("frame.draw");
+        let drawn = draw_frame_content_with(
+            self,
+            scene,
+            (size.width, size.height),
+            scale_factor,
+            None,
+            culling.as_mut().map(|culling| &mut culling.scenes),
+        );
+        #[cfg(test)]
+        drop(draw_probe);
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame built the tree, as a window of its own pays it.
+        #[cfg(test)]
+        let publish_probe = crate::profiling::frame_probe::span("frame.publish");
         self.publish_owed_action_surface();
+        #[cfg(test)]
+        drop(publish_probe);
         // Collaborators' marks over the widgets, for a host that shows the
         // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
         let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
@@ -989,7 +1069,10 @@ impl App {
                 drawn.window_rect,
                 crate::time::now(),
             );
-            scene.append(peers.layer.scene(), None);
+            // Over the widgets: a culled frame composes them first.
+            if culling.is_none() {
+                scene.append(peers.layer.scene(), None);
+            }
             PeerFrame {
                 changed,
                 marks: peer_marks(&peers.layer, &mut peers.bounds, surface_rect),
@@ -1017,10 +1100,8 @@ impl App {
                 let (before, after) = (uncovered(&boxes_before), uncovered(after));
                 if covered.is_empty() {
                     Some(moved)
-                } else if described {
-                    Some(changed_boxes(&before, &after))
                 } else {
-                    moved_boxes(&before, &after).or(Some(moved))
+                    Some(changed_boxes(&before, &after))
                 }
             }
             (moved, _) => moved,
@@ -1053,6 +1134,9 @@ impl App {
             device_extent(size.width, damage.copy_scale),
             device_extent(size.height, damage.copy_scale),
         );
+        #[cfg(test)]
+        let damage_probe = crate::profiling::frame_probe::span("frame.damage");
+        let copies_before = damage.copies.len();
         damage.frame(full, &drawn, scale, peers.as_ref(), |regions| {
             let root = self.root_widget.as_ref();
             if !copying {
@@ -1091,15 +1175,57 @@ impl App {
                 plan_size,
             )
         });
+        #[cfg(test)]
+        drop(damage_probe);
+        let copied = damage.copies.len() != copies_before;
+        if let Some(mut culling) = culling {
+            let left_out = cull_frame
+                .as_ref()
+                .is_some_and(crate::draw_cull::Frame::skipped_any);
+            let holds = cull_frame
+                .as_ref()
+                .is_none_or(|frame| frame.holds(damage.pending.as_deref()));
+            drop(cull_frame);
+            if !holds {
+                #[cfg(test)]
+                let _redraw_probe = crate::profiling::frame_probe::span("frame.redraw");
+                redraw_culled_widgets(self, &mut culling.scenes, &drawn);
+            }
+            culling.tally(left_out, !holds);
+            let secret = culling.shows_secret(self.floating.secret_on_screen, left_out && holds);
+            self.set_secret_on_screen(secret);
+            compose_culled(scene, &culling.scenes);
+            if let Some(peers) = &peer_layer {
+                scene.append(peers.layer.scene(), None);
+            }
+            culling.repainted(damage.pending.as_deref().unwrap_or_default(), copied);
+            self.layout.cull = culling;
+        } else if damage.culls {
+            self.layout
+                .cull
+                .repainted(damage.pending.as_deref().unwrap_or_default(), copied);
+        }
         if let Some(mut peers) = peer_layer {
             peers.layer.presented();
             damage.peers = Some(peers);
         }
+        #[cfg(test)]
+        let complete_probe = crate::profiling::frame_probe::span("frame.complete");
         complete_native_frame_content(self, |_| {});
+        #[cfg(test)]
+        drop(complete_probe);
         search_pending
             || self.needs_sync
             || self.layout.layout_dirty
             || self.history_needs_redraw()
+            // The palette arrives outside the app's root too: a host that
+            // repaints the app only when it asks (an embedded app) would
+            // otherwise keep its first, nearly transparent pose on screen.
+            || self
+                .actions
+                .action_palette
+                .as_ref()
+                .is_some_and(crate::action_palette::ActionPalette::is_moving)
             // History's panel moves outside the app's root (it slides in).
             || self
                 .history
@@ -1110,89 +1236,6 @@ impl App {
                 .next_wake_deadline()
                 .is_some_and(|deadline| deadline <= crate::time::now())
     }
-}
-
-/// A widget's identity within one tree walk: its address and its depth (a
-/// widget held at the start of its parent shares the parent's address).
-type WidgetIdentity = (*const (), usize);
-
-/// Every widget in tree order, by identity, with its layout box.
-fn widget_boxes(root: &dyn Widget) -> Vec<(WidgetIdentity, KurboRect)> {
-    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<(WidgetIdentity, KurboRect)>) {
-        out.push((
-            (std::ptr::from_ref(widget).cast::<()>(), depth),
-            widget.get_rect(),
-        ));
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
-    }
-    let mut out = Vec::new();
-    walk(root, 0, &mut out);
-    out
-}
-
-/// Every widget whose own damage covers a change to its box this frame
-/// ([`Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
-fn boxes_covered_by_own_damage(root: &dyn Widget) -> std::collections::HashSet<WidgetIdentity> {
-    fn walk(
-        widget: &dyn Widget,
-        depth: usize,
-        out: &mut std::collections::HashSet<WidgetIdentity>,
-    ) {
-        if widget.damage_covers_own_box() {
-            out.insert((std::ptr::from_ref(widget).cast::<()>(), depth));
-        }
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
-    }
-    let mut out = std::collections::HashSet::new();
-    walk(root, 0, &mut out);
-    out
-}
-
-/// The old and new box of every widget a relayout moved or resized, when
-/// `before` and `after` list the same widgets in the same order; `None`
-/// when they do not, and which pixels moved cannot be said.
-fn moved_boxes(
-    before: &[(WidgetIdentity, KurboRect)],
-    after: &[(WidgetIdentity, KurboRect)],
-) -> Option<Vec<KurboRect>> {
-    if before.len() != after.len() {
-        return None;
-    }
-    let mut moved = Vec::new();
-    for ((old_widget, old), (new_widget, new)) in before.iter().zip(after) {
-        if old_widget != new_widget {
-            return None;
-        }
-        if old != new {
-            moved.extend([*old, *new]);
-        }
-    }
-    Some(moved)
-}
-
-/// The old and new box of every widget that a rebuild and relayout moved,
-/// and the box of every widget that came or went, matched by identity.
-fn changed_boxes(
-    before: &[(WidgetIdentity, KurboRect)],
-    after: &[(WidgetIdentity, KurboRect)],
-) -> Vec<KurboRect> {
-    let old: std::collections::HashMap<_, _> = before.iter().copied().collect();
-    let new: std::collections::HashMap<_, _> = after.iter().copied().collect();
-    let mut changed = Vec::new();
-    for (widget, rect) in after {
-        match old.get(widget) {
-            Some(was) if was == rect => {}
-            Some(was) => changed.extend([*was, *rect]),
-            None => changed.push(*rect),
-        }
-    }
-    changed.extend(
-        before
-            .iter()
-            .filter(|(widget, _)| !new.contains_key(widget))
-            .map(|(_, rect)| *rect),
-    );
-    changed
 }
 
 /// `extent` scene pixels in device pixels at `scale` per scene pixel.
@@ -1232,9 +1275,7 @@ pub struct SurfaceDamage {
     /// The last frame painted a layer over the widgets (an overlay, history
     /// chrome, a dialog, the palette) that their damage does not describe.
     top_layer_drawn: bool,
-    /// Where the last frame's tooltip painted.
     tooltip: Option<KurboRect>,
-    /// The presence the last frame's widgets painted from.
     widgets: Option<crate::presence::WidgetPresence>,
     /// Why the last frame repainted the surface whole, if it did.
     repainted: Option<&'static str>,
@@ -1250,6 +1291,9 @@ pub struct SurfaceDamage {
     copy_scale: f64,
     /// The collaborators' layer, when the surface paints it.
     peers: Option<Box<PeerLayer>>,
+    /// Whether the host repaints only each frame's damage from that
+    /// frame's scene ([`Self::drawing_only_damage`]).
+    culls: bool,
 }
 
 impl Default for SurfaceDamage {
@@ -1264,6 +1308,7 @@ impl Default for SurfaceDamage {
             copies: Vec::new(),
             copy_scale: 1.0,
             peers: None,
+            culls: false,
         }
     }
 }
@@ -1283,6 +1328,18 @@ impl SurfaceDamage {
     /// Whether this is for a host that copies ([`Self::copying`]).
     pub fn is_copying(&self) -> bool {
         self.copying
+    }
+
+    /// For a host that copies ([`Self::copying`]), takes after every frame
+    /// and repaints what [`Self::take_copying`] returns from that frame's
+    /// scene alone, over the pixels it presented last: never more of the
+    /// scene, and never the scene again later. The scene then holds only
+    /// what that damage needs: a scroll draws the strip it exposed and what
+    /// changed, not every row in view ([`crate::draw_cull`]).
+    #[must_use]
+    pub fn drawing_only_damage(mut self) -> Self {
+        self.culls = self.copying;
+        self
     }
 
     /// Paint collaborators' pointers, names and activity over the widgets,
@@ -1498,19 +1555,23 @@ mod tests {
         let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
         let grown = KurboRect::new(0.0, 0.0, 140.0, 20.0);
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
-            Some(vec![field, grown])
+            changed_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
+            vec![field, grown]
         );
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
-            Some(Vec::new())
+            changed_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
+            Vec::<KurboRect>::new()
         );
-        // Other widgets, or more of them: which pixels moved is unknown.
+        // Two widgets that swapped places repaint where each was and is.
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
-            None
+            changed_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
+            vec![label, field, field, label]
         );
-        assert_eq!(moved_boxes(&[(a, field)], &[(a, field), (b, label)]), None);
+        // One that came into view repaints where it is.
+        assert_eq!(
+            changed_boxes(&[(a, field)], &[(a, field), (b, label)]),
+            vec![label]
+        );
     }
 
     #[test]
@@ -1529,7 +1590,6 @@ mod tests {
             ),
             vec![chip, body, lower]
         );
-        // The chip went again.
         assert_eq!(
             changed_boxes(
                 &[(a, header), (c, chip), (b, body)],
@@ -1775,6 +1835,168 @@ mod tests {
         });
     }
 
+    /// A key press of `text` with the platform's command modifier held.
+    fn command_key(app: &mut App, text: &str) -> WindowEvent {
+        use winit::keyboard::{Key, KeyCode, KeyLocation, PhysicalKey};
+        app.input.modifiers =
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        app.input.platform =
+            crate::platform::PlatformConventions::new(crate::platform::Platform::Linux);
+        crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Code(KeyCode::Equal),
+                state: ElementState::Pressed,
+            },
+            Key::Character(text.into()),
+            None,
+            KeyLocation::Standard,
+            false,
+            None,
+            Key::Character(text.into()),
+        ))
+    }
+
+    #[test]
+    fn ctrl_plus_raises_the_content_scale_and_ctrl_0_resets_it() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        let body = |app: &App| app.theme.text(crate::tokens::TextRole::Body).size;
+        let (scale, text_scale, size) = (app.theme.ui_scale, app.theme.text_scale, body(&app));
+        let gap = app.theme.tokens.spacing.s4;
+
+        let plus = command_key(&mut app, "+");
+        assert!(
+            app.surface_input(&region, plus, false),
+            "Ctrl+Plus is taken"
+        );
+        assert!(
+            region.redraw.get(),
+            "the window asks to be drawn at the new scale"
+        );
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(app.content_zoom() > 1.0, "Ctrl+Plus zoomed in");
+        assert!(app.theme.ui_scale > scale, "the content scale rose");
+        assert!(body(&app) > size, "text is set larger");
+        assert!(
+            app.theme.tokens.spacing.s4 > gap,
+            "the layout reflows larger"
+        );
+        assert!(
+            (app.theme.text_scale - text_scale).abs() < f32::EPSILON,
+            "the system text size stays on top of the zoom"
+        );
+        assert!(
+            app.accessibility.zoom.indicator_visible(crate::time::now()),
+            "the level shows"
+        );
+
+        let reset = command_key(&mut app, "0");
+        assert!(app.surface_input(&region, reset, false), "Ctrl+0 is taken");
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(
+            (app.content_zoom() - 1.0).abs() < f32::EPSILON,
+            "Ctrl+0 reset the zoom"
+        );
+        assert!((app.theme.ui_scale - scale).abs() < 1e-6);
+        assert!((body(&app) - size).abs() < 1e-3);
+
+        let minus = command_key(&mut app, "-");
+        assert!(app.surface_input(&region, minus, false));
+        assert!(app.content_zoom() < 1.0, "Ctrl+Minus zoomed out");
+    }
+
+    /// Zoom is not a keyboard-only capability: the window offers Zoom in,
+    /// Zoom out and Actual size as actions, to its palette and assistive
+    /// technology and, published, to agents and scripts, and each runs the
+    /// zoom its key does.
+    #[test]
+    fn zoom_is_an_action_of_every_window_not_only_its_keys() {
+        use crate::host_chrome::zoom::ZOOM_RESOURCE;
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        let scale = app.theme.ui_scale;
+        let address = |action: &str| tilo_actions::ActionAddress::new(ZOOM_RESOURCE, action);
+        let offered = |app: &mut App| {
+            app.publication_resources()
+                .iter()
+                .any(|resource| resource.id.as_str() == ZOOM_RESOURCE)
+        };
+        assert!(
+            !offered(&mut app),
+            "an app with no window a person sees has nothing to zoom"
+        );
+        // The window opens, taking up the zoom its app had on this device.
+        let dir = tempfile::tempdir().expect("a settings directory");
+        app.accessibility.zoom.restore_from(
+            crate::storage::Settings::for_app("so.tilo.zoom-actions")
+                .in_file(dir.path().join("settings.json")),
+        );
+
+        let local = app.history_local_resources();
+        let zoom = local
+            .iter()
+            .find(|resource| resource.id.as_str() == ZOOM_RESOURCE)
+            .expect("the window's own doors offer zoom");
+        let ids: Vec<_> = zoom
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(ids, ["zoom-in", "zoom-out", "zoom-reset"]);
+        assert_eq!(zoom.actions[0].label, "Zoom in");
+
+        assert!(
+            app.invoke_local_address(&address("zoom-in"), None),
+            "the palette's and assistive technology's door runs Zoom in"
+        );
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(app.content_zoom() > 1.0, "Zoom in zoomed in");
+        assert!(app.theme.ui_scale > scale, "the content scale rose");
+        assert!(
+            app.accessibility.zoom.indicator_visible(crate::time::now()),
+            "the level shows, as it does for the keys"
+        );
+
+        assert!(app.invoke_local_address(&address("zoom-reset"), None));
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(
+            (app.content_zoom() - 1.0).abs() < f32::EPSILON,
+            "Actual size reset the zoom"
+        );
+        assert!((app.theme.ui_scale - scale).abs() < 1e-6);
+
+        assert!(
+            offered(&mut app),
+            "agents and scripts see the window's zoom"
+        );
+        let person = app.collaboration.local_author.0.clone();
+        app.invoke_resource_action(
+            ResourceInvocation::new(&address("zoom-out"), &person).broker_admitted(true),
+        )
+        .expect("the person's own call through the broker zooms out");
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(app.content_zoom() < 1.0, "Zoom out zoomed out");
+
+        let before = app.content_zoom();
+        assert!(
+            app.invoke_resource_action(
+                ResourceInvocation::new(&address("zoom-in"), "a-collaborator")
+                    .broker_admitted(true),
+            )
+            .is_err(),
+            "a collaborator never zooms someone else's window"
+        );
+        assert!((app.content_zoom() - before).abs() < f32::EPSILON);
+    }
+
     #[test]
     fn physical_feedback_clears_when_framework_modal_takes_input() {
         let (mut app, _) = clicks_app();
@@ -1915,9 +2137,55 @@ mod tests {
         (app, clicks)
     }
 
-    /// An app embedded in a host's tree is laid out where the host places
-    /// it, takes the host's pointer input in its own coordinates whatever
-    /// the host's scale, and leaves the desktop's tab chords to the host.
+    /// The palette fades in over the app outside its widget tree: the frame
+    /// that starts it asks for the next, so a host that repaints the app
+    /// only when asked (an embedded app) draws it arriving and at rest
+    /// instead of leaving its first, nearly transparent pose on screen; once
+    /// it rests the app asks for nothing.
+    #[test]
+    fn an_arriving_palette_asks_its_host_for_frames_until_it_rests() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (480, 360),
+            redraw: Cell::new(false),
+        };
+        let settle = |app: &mut App| {
+            (0..8)
+                .find(|_| !app.surface_frame(&region, &mut Scene::new()))
+                .is_some()
+        };
+        assert!(settle(&mut app), "the app alone comes to rest");
+        // A click opens it, so it moves (a key chord would land it at once).
+        // Its frames run at fixed instants a frame apart, as a host presents
+        // them: how long the test machine takes between them is not the
+        // palette's time.
+        let opened = crate::time::now();
+        let next = opened + crate::time::Duration::from_millis(16);
+        crate::time::testing::with_monotonic_time(opened, || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            app.open_action_palette();
+            let _ = app.surface_frame(&region, &mut Scene::new());
+            assert!(
+                app.actions
+                    .action_palette
+                    .as_ref()
+                    .is_some_and(crate::action_palette::ActionPalette::is_moving),
+                "a palette a click opened arrives"
+            );
+        });
+        crate::time::testing::with_monotonic_time(next, || {
+            assert!(
+                app.surface_frame(&region, &mut Scene::new()),
+                "the arriving palette asks for the frame that draws it further in"
+            );
+        });
+        let _settled = crate::motion::testing::settled();
+        assert!(
+            settle(&mut app),
+            "a palette at rest asks for no more frames"
+        );
+    }
+
     #[test]
     fn an_embedded_app_takes_its_region_input_and_leaves_tab_chords_to_the_host() {
         let (app, clicks) = clicks_app();
@@ -2053,5 +2321,135 @@ mod tests {
         embedded.set_focus(false);
         embedded.set_focus(true);
         assert!(embedded.app().focused_control().is_some());
+    }
+
+    /// Two windows side by side, as the desktop's strip lays them out.
+    struct TwoWindows {
+        tiles: [crate::widget::TileHost; 2],
+        rect: KurboRect,
+    }
+
+    impl Widget for TwoWindows {
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            theme: &crate::theme::Theme,
+            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let mut nodes = Vec::new();
+            for tile in &mut self.tiles {
+                let node = tile.build_layout(taffy, theme, node_map);
+                let mut style = taffy.style(node).unwrap().clone();
+                style.size = taffy::Size {
+                    width: taffy::Dimension::length(400.0),
+                    height: taffy::Dimension::length(300.0),
+                };
+                style.flex_grow = 0.0;
+                style.flex_shrink = 0.0;
+                taffy.set_style(node, style).unwrap();
+                nodes.push(node);
+            }
+            taffy.parent_node(
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                },
+                &nodes,
+            )
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: Point,
+        ) {
+            let rect = crate::widget::layout_rect(taffy, node, origin);
+            self.rect = rect;
+            let children = taffy.children(node).unwrap();
+            for (tile, child) in self.tiles.iter_mut().zip(children) {
+                tile.apply_layout(taffy, child, Point::new(rect.x0, rect.y0));
+            }
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.tiles.iter().map(|tile| tile as &dyn Widget).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.tiles
+                .iter_mut()
+                .map(|tile| tile as &mut dyn Widget)
+                .collect()
+        }
+        fn get_rect(&self) -> KurboRect {
+            self.rect
+        }
+        fn name(&self) -> &'static str {
+            "TwoWindows"
+        }
+    }
+
+    /// A palette a press opens (a control that needs confirmation, clicked
+    /// in a window that does not hold the keyboard) stands over the window
+    /// pressed in, not over the window holding focus. After a key, the
+    /// window holding focus is the one that asked.
+    #[test]
+    fn a_palette_opened_by_a_press_stands_over_the_window_pressed_in() {
+        let _settled = crate::motion::testing::settled();
+        let stub = |label: &str| {
+            crate::widget::TileHost::new(crate::widget::TileContent::Stub {
+                kind: crate::widget::AppKind::Editor,
+                label: label.into(),
+            })
+        };
+        let mut app = App::new(
+            crate::State::new(),
+            Box::new(TwoWindows {
+                tiles: [stub("Chat"), stub("Contacts")],
+                rect: KurboRect::ZERO,
+            }),
+        );
+        let region = Region {
+            size: (800, 300),
+            redraw: Cell::new(false),
+        };
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        let device = winit::event::DeviceId::dummy();
+        let contacts = KurboRect::new(400.0, 0.0, 800.0, 300.0);
+        app.surface_input(
+            &region,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (600.0, 150.0).into(),
+            },
+            false,
+        );
+        app.surface_input(
+            &region,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            false,
+        );
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        app.open_action_palette();
+        assert_eq!(
+            app.actions.palette_window,
+            Some(contacts),
+            "the palette stands over the window pressed in"
+        );
+        app.close_action_palette();
+
+        app.input.pressed_at = None;
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        app.open_action_palette();
+        assert_ne!(
+            app.actions.palette_window,
+            Some(contacts),
+            "after a key, the window pressed in no longer decides"
+        );
     }
 }

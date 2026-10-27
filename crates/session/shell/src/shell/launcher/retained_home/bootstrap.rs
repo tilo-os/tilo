@@ -83,7 +83,9 @@ pub(super) fn start(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    let deadline = Instant::now() + BOOTSTRAP_TIME;
+    let deadline = Instant::now()
+        .checked_add(BOOTSTRAP_TIME)
+        .unwrap_or_else(Instant::now);
     let selection = BootstrapSelection {
         prepared,
         installed_operation: installed_operation.to_owned(),
@@ -140,6 +142,14 @@ struct CleanupObservation {
     reader: UnixStream,
     subject: runtime_collab::retained_retirement::Subject,
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered privileged bootstrap: each step checks the custody the step before established"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the dispatcher is moved into the registration the bootstrap ends in"
+)]
 fn establish(
     selection: BootstrapSelection,
     child: &mut Child,
@@ -168,7 +178,7 @@ fn establish(
         match listener.socket().accept() {
             Ok((stream, _)) => break stream,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(20))
+                std::thread::sleep(Duration::from_millis(20));
             }
             Err(error) => return Err(error),
         }
@@ -200,7 +210,7 @@ fn establish(
     let proof_binding = binding.clone();
     let proof = std::thread::Builder::new()
         .name("tilo-retained-person-proof".into())
-        .spawn(move || proof_prepared.serve_proof(proof_stream, proof_binding))?;
+        .spawn(move || proof_prepared.serve_proof(proof_stream, &proof_binding))?;
     let proof = ProofCustody {
         shutdown: proof_shutdown,
         worker: Some(proof),
@@ -268,8 +278,8 @@ fn establish(
     let read_proof = start_selected_proof(daemon_stream, move |proof_stream| {
         read_session.serve_retained_daemon_proof_checked(
             proof_stream,
-            read_binding.clone(),
-            recipient,
+            &read_binding.clone(),
+            &recipient,
             move || read_prepared.check_history_read_context(&read_binding, &context),
         )
     })?;
@@ -311,7 +321,7 @@ fn establish(
         prepared.clone(),
         installed_operation,
     );
-    dispatcher.attach_retirement(observation.clone())?;
+    dispatcher.attach_retirement(observation)?;
     Ok((
         Registration::new(prepared, binding, launcher_endpoint, root, dispatcher)?
             .with_prepared_child(ordinary),
@@ -417,12 +427,11 @@ fn supervise_observed(
     let worker = std::thread::Builder::new()
         .name("tilo-retained-root-consumer".into())
         .spawn(move || {
-            let owned = match worker_custody.lock() {
-                Ok(mut custody) => custody.take(),
-                Err(_) => {
-                    std::mem::forget(worker_custody.clone());
-                    return;
-                }
+            let owned = if let Ok(mut custody) = worker_custody.lock() {
+                custody.take()
+            } else {
+                std::mem::forget(worker_custody);
+                return;
             };
             let Some((mut child, scratch, channels)) = owned else {
                 return;
@@ -430,7 +439,7 @@ fn supervise_observed(
             loop {
                 match child.wait() {
                     Ok(_) => break,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => {
                         // An unknown wait is not a terminal receipt; preserve this
                         // exact request ancestry rather than deleting a live role.
@@ -453,7 +462,9 @@ fn supervise_observed(
                     .iter_mut()
                     .map(ProofCustody::join_cleanup)
                     .collect::<io::Result<Vec<_>>>()?;
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now()
+                    .checked_add(Duration::from_secs(10))
+                    .unwrap_or_else(Instant::now);
                 loop {
                     match observation.retired(outcomes.clone()) {
                         Err(error)
@@ -497,12 +508,11 @@ fn supervise(
     let worker = std::thread::Builder::new()
         .name("tilo-retained-root-consumer".into())
         .spawn(move || {
-            let owned = match worker_custody.lock() {
-                Ok(mut custody) => custody.take(),
-                Err(_) => {
-                    std::mem::forget(worker_custody.clone());
-                    return;
-                }
+            let owned = if let Ok(mut custody) = worker_custody.lock() {
+                custody.take()
+            } else {
+                std::mem::forget(worker_custody);
+                return;
             };
             let Some((mut child, scratch, channels)) = owned else {
                 return;
@@ -510,7 +520,7 @@ fn supervise(
             loop {
                 match child.wait() {
                     Ok(_) => break,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => {
                         // An unknown wait is not a terminal receipt; preserve this
                         // exact request ancestry rather than deleting a live role.
@@ -667,7 +677,7 @@ impl DirectoryPin for PrivateDirectory {
     }
     fn validate_destination(&self) -> io::Result<()> {
         self.validate()?;
-        let caller = unsafe { libc::geteuid() };
+        let caller = rustix::process::geteuid().as_raw();
         for edge in self.ancestry() {
             let facts = edge.file.metadata()?;
             let sticky_root = facts.uid() == 0 && facts.mode() & libc::S_ISVTX != 0;
@@ -776,7 +786,9 @@ impl AdmittedRootHelper {
     ) -> io::Result<Arc<process_binding::ExecutingPeer>> {
         self.check()?;
         let mut gate = gate.try_clone()?;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .unwrap_or_else(Instant::now);
         gate.set_read_timeout(Some(Duration::from_secs(10)))?;
         gate.set_write_timeout(Some(Duration::from_secs(10)))?;
         let _fence = IoFence::new(gate.try_clone()?, self.cancel.clone(), deadline)?;
@@ -787,7 +799,8 @@ impl AdmittedRootHelper {
         challenge[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
         gate.write_all(&process_binding::MAGIC)?;
         gate.write_all(&challenge)?;
-        let launcher = process_binding::receive(&gate, &challenge, unsafe { libc::geteuid() })?;
+        let launcher =
+            process_binding::receive(&gate, &challenge, rustix::process::geteuid().as_raw())?;
         if launcher.pid() != launcher_pid || !launcher.current() {
             return Err(refused());
         }
@@ -823,91 +836,6 @@ impl AdmittedRootHelper {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn held_request_uses_original_atomic_publication_and_refuses_replacement() {
-        let scratch = private_scratch_in(&std::env::temp_dir()).expect("private request parent");
-        let pin = PrivateDirectory::open(scratch.path()).expect("held real ancestry");
-        let (channel, listener) =
-            request_rendezvous::Rendezvous::create(scratch.path(), pin.clone())
-                .expect("actual existing request channel");
-        let wire = serde_json::to_value(&channel).expect("existing wire");
-        assert_eq!(wire["caller_pid"], std::process::id());
-        assert_eq!(wire["path"]["platform"], "Unix");
-        request_rendezvous::publish_request_bytes(pin.as_ref(), b"original", 8)
-            .expect("canonical owner-only publication");
-        assert!(request_rendezvous::publish_request_bytes(pin.as_ref(), b"changed", 8).is_err());
-        assert_eq!(
-            request_rendezvous::read_request_bytes(pin.as_ref(), unsafe { libc::geteuid() }, 8)
-                .expect("bounded held read"),
-            b"original"
-        );
-        assert!(
-            request_rendezvous::read_request_bytes(pin.as_ref(), unsafe { libc::geteuid() }, 7)
-                .is_err()
-        );
-        std::fs::set_permissions(
-            scratch.path().join("request.json"),
-            std::fs::Permissions::from_mode(0o644),
-        )
-        .expect("change actual request privacy");
-        assert!(
-            request_rendezvous::read_request_bytes(pin.as_ref(), unsafe { libc::geteuid() }, 8)
-                .is_err()
-        );
-        let relocated = scratch.path().with_extension("relocated");
-        std::fs::rename(scratch.path(), &relocated).expect("replace original name");
-        std::fs::create_dir(scratch.path()).expect("new directory at original path");
-        assert!(listener.validate().is_err());
-        assert!(
-            channel
-                .connect(scratch.path(), pin.as_ref(), unsafe { libc::geteuid() })
-                .is_err()
-        );
-        std::fs::remove_dir_all(relocated).expect("remove relocated request");
-    }
-
-    #[test]
-    fn cancellation_and_absolute_deadline_interrupt_actual_blocking_socket() {
-        for cancelled in [false, true] {
-            let (stream, mut reader) = UnixStream::pair().expect("real private socket");
-            reader
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .expect("test bound");
-            let cancel = Arc::new(AtomicBool::new(cancelled));
-            let fence = IoFence::new(stream, cancel, Instant::now() + Duration::from_millis(30))
-                .expect("actual cancellation worker");
-            let mut byte = [0];
-            assert_eq!(
-                reader
-                    .read(&mut byte)
-                    .expect("interrupted by socket shutdown"),
-                0
-            );
-            drop(fence);
-        }
-    }
-
-    #[test]
-    fn different_protected_installed_image_cannot_claim_executing_shell_role() {
-        let program = ProtectedProgram::open(Path::new("/usr/bin/true"))
-            .expect("real protected installed ELF");
-        assert!(program.check_current_image().is_err());
-        let scratch = tempfile::tempdir().expect("untrusted executable directory");
-        // Writable by anyone, so untrusted whoever runs the test, root too.
-        std::fs::set_permissions(scratch.path(), std::fs::Permissions::from_mode(0o777))
-            .expect("untrusted mode");
-        let forged = scratch.path().join("shell");
-        std::fs::write(&forged, b"\x7fELFfake").expect("wrong executable");
-        std::fs::set_permissions(&forged, std::fs::Permissions::from_mode(0o755))
-            .expect("executable mode");
-        assert!(ProtectedProgram::open(&forged).is_err());
-    }
-}
-
 pub(super) fn start_selected_proof(
     stream: UnixStream,
     serve: impl FnOnce(UnixStream) -> io::Result<()> + Send + 'static,
@@ -938,8 +866,8 @@ pub(crate) struct DelegatedDaemonRecipient {
     start: u64,
     program: ProtectedProgram,
 }
-impl DelegatedDaemonRecipient {
-    pub(crate) fn check(
+impl crate::shell::collab_broker::RetainedProofRecipient for DelegatedDaemonRecipient {
+    fn check(
         &self,
         peer: &process_binding::ExecutingPeer,
         binding: &runtime_collab::retained_person::RetainedLaunchBinding,
@@ -974,7 +902,7 @@ pub(super) fn receive_daemon_delegation(
         stream,
         root,
         request,
-        runtime_fs::external_history::daemon_control::EnrollmentControl::EnrollHistoryDaemon(
+        &runtime_fs::external_history::daemon_control::EnrollmentControl::EnrollHistoryDaemon(
             request.clone(),
         ),
     )
@@ -993,7 +921,7 @@ fn receive_history_read_daemon_delegation(
         stream,
         root,
         request,
-        runtime_fs::external_history::daemon_control::EnrollmentControl::EnrollHistoryReadDaemon(
+        &runtime_fs::external_history::daemon_control::EnrollmentControl::EnrollHistoryReadDaemon(
             request.clone(),
         ),
     )
@@ -1015,14 +943,14 @@ pub(super) fn receive_editor_read_delegation(
         stream,
         root,
         request,
-        EnrollmentControl::EnrollSelectedEditorHistoryReadDaemon(request.clone()),
+        &EnrollmentControl::EnrollSelectedEditorHistoryReadDaemon(request.clone()),
     )
 }
 fn receive_daemon_delegation_control(
     stream: &mut UnixStream,
     root: Arc<AdmittedRootHelper>,
     request: &runtime_fs::external_history::daemon_control::EnrollmentRequest,
-    control: runtime_fs::external_history::daemon_control::EnrollmentControl,
+    control: &runtime_fs::external_history::daemon_control::EnrollmentControl,
 ) -> io::Result<
     Option<(
         Arc<DelegatedDaemonRecipient>,
@@ -1068,4 +996,111 @@ fn receive_daemon_delegation_control(
         }),
         delegation.context,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_request_uses_original_atomic_publication_and_refuses_replacement() {
+        let scratch = private_scratch_in(&std::env::temp_dir()).expect("private request parent");
+        let pin = PrivateDirectory::open(scratch.path()).expect("held real ancestry");
+        let (channel, listener) =
+            request_rendezvous::Rendezvous::create(scratch.path(), pin.clone())
+                .expect("actual existing request channel");
+        let wire = serde_json::to_value(&channel).expect("existing wire");
+        assert_eq!(wire["caller_pid"], std::process::id());
+        assert_eq!(wire["path"]["platform"], "Unix");
+        request_rendezvous::publish_request_bytes(pin.as_ref(), b"original", 8)
+            .expect("canonical owner-only publication");
+        assert!(request_rendezvous::publish_request_bytes(pin.as_ref(), b"changed", 8).is_err());
+        assert_eq!(
+            request_rendezvous::read_request_bytes(
+                pin.as_ref(),
+                rustix::process::geteuid().as_raw(),
+                8
+            )
+            .expect("bounded held read"),
+            b"original"
+        );
+        assert!(
+            request_rendezvous::read_request_bytes(
+                pin.as_ref(),
+                rustix::process::geteuid().as_raw(),
+                7
+            )
+            .is_err()
+        );
+        std::fs::set_permissions(
+            scratch.path().join("request.json"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .expect("change actual request privacy");
+        assert!(
+            request_rendezvous::read_request_bytes(
+                pin.as_ref(),
+                rustix::process::geteuid().as_raw(),
+                8
+            )
+            .is_err()
+        );
+        let relocated = scratch.path().with_extension("relocated");
+        std::fs::rename(scratch.path(), &relocated).expect("replace original name");
+        std::fs::create_dir(scratch.path()).expect("new directory at original path");
+        assert!(listener.validate().is_err());
+        assert!(
+            channel
+                .connect(
+                    scratch.path(),
+                    pin.as_ref(),
+                    rustix::process::geteuid().as_raw()
+                )
+                .is_err()
+        );
+        std::fs::remove_dir_all(relocated).expect("remove relocated request");
+    }
+
+    #[test]
+    fn cancellation_and_absolute_deadline_interrupt_actual_blocking_socket() {
+        for cancelled in [false, true] {
+            let (stream, mut reader) = UnixStream::pair().expect("real private socket");
+            reader
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .expect("test bound");
+            let cancel = Arc::new(AtomicBool::new(cancelled));
+            let fence = IoFence::new(
+                stream,
+                cancel,
+                Instant::now()
+                    .checked_add(Duration::from_millis(30))
+                    .unwrap_or_else(Instant::now),
+            )
+            .expect("actual cancellation worker");
+            let mut byte = [0];
+            assert_eq!(
+                reader
+                    .read(&mut byte)
+                    .expect("interrupted by socket shutdown"),
+                0
+            );
+            drop(fence);
+        }
+    }
+
+    #[test]
+    fn different_protected_installed_image_cannot_claim_executing_shell_role() {
+        let program = ProtectedProgram::open(Path::new("/usr/bin/true"))
+            .expect("real protected installed ELF");
+        assert!(program.check_current_image().is_err());
+        let scratch = tempfile::tempdir().expect("untrusted executable directory");
+        // Writable by anyone, so untrusted whoever runs the test, root too.
+        std::fs::set_permissions(scratch.path(), std::fs::Permissions::from_mode(0o777))
+            .expect("untrusted mode");
+        let forged = scratch.path().join("shell");
+        std::fs::write(&forged, b"\x7fELFfake").expect("wrong executable");
+        std::fs::set_permissions(&forged, std::fs::Permissions::from_mode(0o755))
+            .expect("executable mode");
+        assert!(ProtectedProgram::open(&forged).is_err());
+    }
 }

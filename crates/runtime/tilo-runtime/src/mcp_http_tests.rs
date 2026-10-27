@@ -219,14 +219,26 @@ impl ActionHost for StubHost {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
+/// Run `future` on a current-thread runtime whose clock moves only when
+/// every task waits, so "time passed and nothing happened" is exact: every
+/// piece of work that could happen first has.
+fn run_paused<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
         .build()
         .unwrap()
         .block_on(future)
@@ -599,7 +611,6 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
         )
         .await;
 
-        // An HTTP session continues a run the same way.
         let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}});
         let response = endpoint
             .dispatch(
@@ -1578,8 +1589,10 @@ fn a_session_can_pin_the_full_rows_it_parses() {
 #[test]
 fn opening_a_host_application_answers_without_waiting_for_a_peer() {
     let server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
-    run(async {
-        let started = std::time::Instant::now();
+    // On the paused clock the answer takes no time unless it waits on a
+    // timer, as waiting for a peer to start would.
+    run_paused(async {
+        let started = tokio::time::Instant::now();
         let reply = tool(
             &server,
             "tilo_invoke",

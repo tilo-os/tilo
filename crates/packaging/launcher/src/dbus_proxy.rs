@@ -109,6 +109,41 @@ pub const ATSPI_FILTER_ARGS: &[&str] = &[
     "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersAsync@/org/a11y/atspi/registry/deviceeventcontroller",
 ];
 
+/// Set to `1` in a graphical app's environment, it makes the app's AT-SPI
+/// bridge (`vendor/accesskit_unix/src/read_only.rs`) serve the accessible
+/// tree read-only to every other client on the bus.
+///
+/// The proxy above limits what the app may call, but it cannot filter calls
+/// into the app, and an AT-SPI call carries no proof that a person asked for
+/// it: any process on the bus could otherwise press the app's buttons, type
+/// into its fields or confirm its dialogs with no input the compositor sees,
+/// past the launch-gesture rule and the action broker's attribution. With the
+/// variable set, `Action.DoAction`, `EditableText`, setting
+/// `Value.CurrentValue`, selecting, `Component.GrabFocus` and moving the caret
+/// are refused, while names, roles, states, text, values and events still
+/// answer. The built-in reader runs inside the app and acts through the
+/// person's own input, so it is unaffected.
+pub const ATSPI_READ_ONLY_ENV: &str = "TILO_ATSPI_READ_ONLY";
+
+/// Written only into the dev image (`os/scripts/finalize-dev-image.py`), in
+/// the sealed `/usr`.
+const IMAGE_FLAVOUR: &str = "/usr/lib/tilo/image-flavour";
+
+/// Whether apps launched here serve their AT-SPI tree read-only: always,
+/// except on the dev image, whose release gates drive apps over AT-SPI
+/// (`tools/atspi_external_client.py`). Nothing running on a release device
+/// can make its sealed `/usr` say `dev`.
+#[must_use]
+pub fn atspi_read_only() -> bool {
+    atspi_read_only_on(std::fs::read(IMAGE_FLAVOUR).ok().as_deref())
+}
+
+/// [`atspi_read_only`] for an image whose flavour file holds `flavour`.
+#[must_use]
+pub fn atspi_read_only_on(flavour: Option<&[u8]>) -> bool {
+    flavour.is_none_or(|flavour| flavour.trim_ascii() != b"dev")
+}
+
 /// Env-var override for the `xdg-dbus-proxy` binary path — used by the
 /// test suite (mock fixture) and installs that ship the binary
 /// somewhere non-standard.
@@ -228,7 +263,6 @@ pub fn host_atspi_address(session_bus: &str) -> Option<String> {
     (!address.is_empty()).then_some(address)
 }
 
-/// Errors from [`spawn_dbus_proxy`].
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
     #[error("creating proxy socket directory {path}: {source}")]
@@ -283,6 +317,22 @@ pub fn spawn_filtered_proxy(
     filter: &[&str],
 ) -> Result<DBusProxyGuard, ProxyError> {
     spawn_proxy(binary, bus_addr, socket_path, filter, PROXY_READY_TIMEOUT)
+}
+
+/// [`spawn_filtered_proxy`], waiting up to `ready_within` for the listener.
+///
+/// # Errors
+///
+/// As [`spawn_filtered_proxy`], with [`ProxyError::NotReady`] after
+/// `ready_within`.
+pub fn spawn_filtered_proxy_within(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    filter: &[&str],
+    ready_within: Duration,
+) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_proxy(binary, bus_addr, socket_path, filter, ready_within)
 }
 
 /// Maximum wait for the proxy's listener readiness notification. A launch
@@ -431,7 +481,6 @@ mod tests {
                 "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
             ]
         );
-        // A portal app adds exactly the portal names.
         assert_eq!(
             session_filter_args(true, true),
             [
@@ -495,12 +544,11 @@ mod tests {
 
     #[test]
     fn proxy_paths_env_and_binary_lookup() {
-        // Phase `proxy_socket_path_uses_uid_and_pid`.
         {
             let p = proxy_socket_path(Path::new("/run/user/1000"), 4242);
             assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
         }
-        // Phase `a_nested_session_s_proxies_stay_in_its_runtime_directory`.
+        // A nested session's proxies stay in its own runtime directory.
         {
             let nested = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -515,23 +563,19 @@ mod tests {
                 assert!(socket.starts_with(nested.path()), "{socket:?}");
             }
         }
-        // Phase `sandbox_bus_env_matches_sandbox_bus_path`.
         {
             assert_eq!(sandbox_bus_env(1000), "unix:path=/run/user/1000/bus");
             assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
         }
-        // Phase `find_proxy_binary_honours_env_override`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let bin = tmp.path().join("xdg-dbus-proxy-mock");
             std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-            // Env var wins.
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(PROXY_BIN_ENV, &bin);
             let found = find_proxy_binary().expect("env override");
             assert_eq!(found, bin);
         }
-        // Phase `find_proxy_binary_returns_none_when_env_points_at_nonexistent`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             // Empty PATH so the fallback can't find a real binary.
@@ -615,7 +659,6 @@ exit 1
 
     #[test]
     fn proxy_child_is_reaped_on_drop() {
-        // Phase `spawn_and_drop_reaps_the_child`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let mock = write_mock_proxy(tmp.path());
@@ -634,7 +677,6 @@ exit 1
             // been reaped (no zombie).
             assert!(!socket.exists(), "socket should be removed on terminate");
         }
-        // Phase `drop_terminates_when_terminate_not_called`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let mock = write_mock_proxy(tmp.path());
@@ -644,8 +686,7 @@ exit 1
                     spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
                 guard.pid().expect("proxy pid")
             };
-            // Give Drop's SIGTERM + wait a moment to propagate.
-            std::thread::sleep(Duration::from_millis(200));
+            // Drop signals and waits for the proxy before it returns.
             assert!(!socket.exists(), "socket should be removed on drop");
             // /proc/<pid> disappears once the kernel reaps the exited process; poll
             // briefly to avoid a schedule race.

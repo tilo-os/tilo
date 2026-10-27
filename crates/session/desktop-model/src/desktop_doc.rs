@@ -12,13 +12,14 @@
 //! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
-//! tasks_v1: {id → json}, effect_receipts_v1: {invocation → json},
+//! effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
-//! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
+//! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
 //! Geometry and maximization are presentation state and never written.
 
 use std::collections::HashSet;
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
+use tilo_sort::CompactSort as _;
 
 use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, transaction::Transactable,
@@ -33,7 +34,7 @@ use crate::projection::{
     ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_MEMBERS_JOINED_KEY,
     ROOM_SCHEDULE_CLAIMS_KEY,
 };
-use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::topology::{DropTarget, TabMove};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -69,7 +70,6 @@ fn map_or_create(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjI
     }
 }
 
-/// Every workspace entry with its id.
 fn workspace_entries(doc: &AutoCommit) -> Vec<(u64, ObjId)> {
     let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY) else {
         return Vec::new();
@@ -142,6 +142,9 @@ fn put_tab(doc: &mut AutoCommit, tabs: &ObjId, index: usize, tab: &Tab) -> Optio
     let entry = doc.insert_object(tabs, index, ObjType::Map).ok()?;
     doc.put(&entry, "id", ScalarValue::Uint(tab.id)).ok()?;
     doc.put(&entry, "title", tab.title.clone()).ok()?;
+    if let Some(app_title) = &tab.app_title {
+        doc.put(&entry, "app_title", app_title.clone()).ok()?;
+    }
     let blob = serde_json::to_vec(&tab.tile).ok()?;
     doc.put(&entry, "tile_json", ScalarValue::Bytes(blob))
         .ok()?;
@@ -279,6 +282,12 @@ fn sync_list<T>(
 
 fn write_tab(doc: &mut AutoCommit, entry: &ObjId, tab: &Tab) {
     let _ = doc.put_str_if_changed(entry, "title", &tab.title);
+    match &tab.app_title {
+        Some(app_title) => {
+            let _ = doc.put_str_if_changed(entry, "app_title", app_title);
+        }
+        None => delete_if_present(doc, entry, "app_title"),
+    }
     put_json_if_changed(doc, entry, "tile_json", &tab.tile);
 }
 
@@ -304,7 +313,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     let _ = doc.put_str_if_changed(entry, "name", &ws.name);
     // Room identity travels with the workspace: a reader hydrating from
     // this document must land in this room, not mint its own.
-    let _ = doc.put_str_if_changed(entry, "room", &ws.room.to_string());
+    let _ = doc.put_str_if_changed(entry, "room", &ws.room().to_string());
     match ws.owner() {
         Some(owner) => {
             let _ = doc.put_str_if_changed(entry, "owner", owner);
@@ -352,12 +361,8 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
             .iter()
             .map(|preset| (preset_key(&preset.name), preset)),
     );
-    sync_blob_map(
-        doc,
-        entry,
-        TASKS_KEY,
-        ws.tasks.iter().map(|task| (task.id.clone(), task)),
-    );
+    // Workspaces kept tasks here before the Tasks app kept them.
+    delete_if_present(doc, entry, TASKS_KEY);
     sync_blob_map(
         doc,
         entry,
@@ -474,7 +479,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
                 _ => None,
             }
         }
-        grants.sort_by(|left, right| {
+        grants.compact_sort_by(|left, right| {
             role_order(left)
                 .cmp(&role_order(right))
                 .then_with(|| role_index(left).cmp(&role_index(right)))
@@ -492,28 +497,24 @@ fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
     Some(presets)
 }
 
-fn read_tasks(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceTask> {
-    read_blob_map(doc, entry, TASKS_KEY).unwrap_or_default()
-}
-
 fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Shortcut> {
     let mut shortcuts: Vec<tilo_automation::Shortcut> =
         read_blob_map(doc, entry, ROOM_AUTOMATIONS_KEY).unwrap_or_default();
-    shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
+    shortcuts.compact_sort_by(|left, right| left.id.cmp(&right.id));
     shortcuts
 }
 
 fn read_schedule_claims(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::ScheduleClaim> {
     let mut claims: Vec<tilo_automation::ScheduleClaim> =
         read_blob_map(doc, entry, ROOM_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
-    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
+    claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
     claims
 }
 
 fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectReceipt> {
     let mut receipts: Vec<WorkspaceEffectReceipt> =
         read_blob_map(doc, entry, ROOM_EFFECT_RECEIPTS_KEY).unwrap_or_default();
-    receipts.sort_by_key(|receipt| receipt.completed_at);
+    receipts.compact_sort_by_key(|receipt| receipt.completed_at);
     receipts
 }
 
@@ -527,7 +528,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 }
 
 /// Refresh `desktop` from `doc`. The active workspace, names, rooms,
-/// ownership, members, grants, sandbox, grant sets, tasks, receipts and shortcuts come from the
+/// ownership, members, grants, sandbox, grant sets, receipts and shortcuts come from the
 /// document; `active_strip`, `active_group` and presence stay as the tree
 /// had them. Each workspace keeps its existing strips by id, then the
 /// document's topology and tabs are folded in: width and maximization stay
@@ -545,22 +546,24 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     for (id_raw, entry) in &entries {
         let name = doc.str_at(entry, "name").unwrap_or_default();
         let ws_id = WorkspaceId::from(*id_raw);
+        let room = doc
+            .str_at(entry, "room")
+            .and_then(|v| RoomId::parse(v.as_str()))
+            .filter(|r| !r.is_nil());
+        // A workspace is its room: an existing one keeps the room it has,
+        // whatever the document names, and a new one is made in the room
+        // the document names (one minted for it when it names none).
         let mut ws = match desktop.workspaces.iter().position(|w| w.id == ws_id) {
             Some(existing) => {
                 let mut existing = desktop.workspaces.remove(existing);
                 existing.name = name;
                 existing
             }
-            None => Workspace::new(ws_id, name),
+            None => match room {
+                Some(room) => Workspace::in_room(ws_id, room, name),
+                None => Workspace::new(ws_id, name),
+            },
         };
-        // Absent or unparseable keeps the tree's.
-        if let Some(room) = doc
-            .str_at(entry, "room")
-            .and_then(|v| RoomId::parse(v.as_str()))
-            .filter(|r| !r.is_nil())
-        {
-            ws.set_room(room);
-        }
         let (owner, members, grants) = read_policy(doc, entry);
         if let Some(owner) = owner {
             ws.policy.owner = Some(owner);
@@ -571,12 +574,12 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             .into_iter()
             .collect();
         if let Some(grants) = grants {
-            ws.policy.grants = grants;
+            ws.policy.grants = tilo_action_policy::roles::current_role_grants(grants);
         } else {
             // Old appended entries had no grants map. Reconstruct their
             // canonical defaults even when this tree reuses a cached room.
             ws.policy.grants =
-                RoomPolicy::unowned(ws.room.to_string(), &Subject::Role(Role::Owner)).grants;
+                RoomPolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
         }
         if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
             ws.sandbox = sandbox;
@@ -584,7 +587,6 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         if let Some(presets) = read_presets(doc, entry) {
             ws.presets = presets;
         }
-        ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
         ws.schedule_claims = read_schedule_claims(doc, entry);
@@ -631,8 +633,16 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     }
 }
 
-/// The tabs under a group entry, as `(id, title, tile_json)`.
-fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<(u64, String, Vec<u8>)> {
+/// One tab as a group entry holds it.
+struct DocTab {
+    id: u64,
+    title: String,
+    app_title: Option<String>,
+    tile_json: Vec<u8>,
+}
+
+/// The tabs under a group entry.
+fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<DocTab> {
     let Some(tabs) = obj(doc, group_entry, TABS_KEY) else {
         return Vec::new();
     };
@@ -640,20 +650,24 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<(u64, String, Vec<u8
         .filter_map(|i| {
             let entry = obj(doc, &tabs, i)?;
             let id = doc.uint_at(&entry, "id")?;
-            let title = doc.str_at(&entry, "title").unwrap_or_default();
-            let blob = doc.bytes_at(&entry, "tile_json").unwrap_or_default();
-            Some((id, title, blob))
+            Some(DocTab {
+                id,
+                title: doc.str_at(&entry, "title").unwrap_or_default(),
+                app_title: doc.str_at(&entry, "app_title"),
+                tile_json: doc.bytes_at(&entry, "tile_json").unwrap_or_default(),
+            })
         })
         .collect()
 }
 
 /// Fold a document group's tabs into `strip`'s group `group_id`, creating
 /// it with local presentation defaults when the strip does not have it.
-fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Vec<u8>)]) {
-    let hydrate = |(id, title, blob): &(u64, String, Vec<u8>)| Tab {
-        id: *id,
-        title: title.clone(),
-        tile: tile_from_blob(blob, title),
+fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
+    let hydrate = |entry: &DocTab| Tab {
+        id: entry.id,
+        title: entry.title.clone(),
+        tile: tile_from_blob(&entry.tile_json, &entry.title),
+        app_title: entry.app_title.clone(),
     };
     let Some(group) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
         let tabs: Vec<Tab> = doc_tabs.iter().map(hydrate).collect();
@@ -677,7 +691,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Ve
             group
                 .tabs
                 .iter()
-                .find(|t| t.id == entry.0)
+                .find(|t| t.id == entry.id)
                 .cloned()
                 .unwrap_or_else(|| hydrate(entry))
         })
@@ -686,7 +700,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Ve
         || group
             .tabs
             .iter()
-            .all(|t| !doc_tabs.iter().any(|(id, _, _)| *id == t.id))
+            .all(|t| !doc_tabs.iter().any(|entry| entry.id == t.id))
     {
         group.active_tab = tabs.first().map_or(0, |t| t.id);
     }
@@ -723,8 +737,7 @@ pub fn append_workspace(
     let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
     let _ = doc.put(&entry, "room", room.to_string());
-    let mut workspace = Workspace::new(workspace_id, name);
-    workspace.set_room(room);
+    let workspace = Workspace::in_room(workspace_id, room, name);
     sync_blob_map(
         doc,
         &entry,
@@ -755,13 +768,6 @@ pub fn only_sets_active(change: &automerge::Change) -> bool {
                 && matches!(op.action, OpType::Put(_))
                 && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY)
         })
-}
-
-/// Record a workspace's room. `false` when the document does not hold the
-/// workspace.
-pub fn set_room(doc: &mut AutoCommit, workspace_id: WorkspaceId, room: RoomId) -> bool {
-    workspace_entry(doc, workspace_id)
-        .is_some_and(|entry| doc.put(&entry, "room", room.to_string()).is_ok())
 }
 
 /// Record a workspace's owner.
@@ -820,7 +826,6 @@ pub fn set_member(
     upsert_blob(doc, workspace_id, MEMBERS_KEY, person, &role)
 }
 
-/// Remove a member.
 pub fn remove_member(doc: &mut AutoCommit, workspace_id: WorkspaceId, person: &str) -> bool {
     delete_blob(doc, workspace_id, MEMBERS_KEY, person)
 }
@@ -852,11 +857,6 @@ pub fn revoke_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap_id: &
 pub fn upsert_preset(doc: &mut AutoCommit, workspace_id: WorkspaceId, preset: &Preset) -> bool {
     let key = preset_key(&preset.name);
     upsert_blob(doc, workspace_id, PRESETS_KEY, &key, preset)
-}
-
-/// Record a task under its id.
-pub fn upsert_task(doc: &mut AutoCommit, workspace_id: WorkspaceId, task: &WorkspaceTask) -> bool {
-    upsert_blob(doc, workspace_id, TASKS_KEY, &task.id, task)
 }
 
 /// Record a shortcut under its id, replacing any earlier version of it.

@@ -3,7 +3,7 @@
 The production sandbox D-Bus readiness stage improved from **20.162 ms to
 1.977 ms median** across 40 real launches per version on the existing Fedora
 EPYC builder. Its nearest-rank p95 fell from **20.244 ms to 3.410 ms**.
-[Raw samples and provenance](startup-proxy-2026-10-06.json) retain every sample.
+[Raw samples and provenance](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/startup-proxy-2026-10-06.json) retain every sample.
 This measures a launch stage, not whole-app first paint or physical-device boot.
 
 ## Production change

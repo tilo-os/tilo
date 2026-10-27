@@ -52,7 +52,6 @@ use crate::paths::{encode_segment, percent_decode};
 use crate::quickxor::quick_xor_base64;
 use crate::{FRAGMENT_UNIT, OneDriveConfig, RootSelector};
 
-/// The access token the fake accepts.
 pub const TOKEN: &str = "fake-graph-access-token";
 /// Total storage the fake reports.
 pub const QUOTA_TOTAL: u64 = 5 * 1024 * 1024 * 1024;

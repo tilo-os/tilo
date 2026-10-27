@@ -19,7 +19,7 @@ pub const SETUP_ROW_ID: &str = "imager.setup";
 /// Guided setup's effects. Each answers with the setup's path-free status
 /// ([`SetupProjection`]) as it stands afterwards.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.setup", device_only)]
+#[effect(operation = "imager.setup")]
 pub enum SetupEffect {
     /// Read setup status.
     #[effect(returns, kind = "read")]
@@ -83,7 +83,7 @@ pub enum SetupEffect {
         suggestion: String,
     },
     /// Choose a folder.
-    #[effect(returns, kind = "read")]
+    #[effect(attended, returns, kind = "read")]
     ChooseFolder,
     /// Show or hide folder help.
     #[effect(returns, kind = "read")]
@@ -265,6 +265,91 @@ pub struct InternalProjection {
     pub availability: InternalAvailability,
 }
 
+/// Component-level compatibility as the semantic surface publishes it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct HardwareComponentProjection {
+    pub kind: &'static str,
+    pub name: String,
+    pub present: bool,
+    pub status: &'static str,
+    /// What the report's evidence can establish for the selected release.
+    pub applicability: &'static str,
+    /// The typed outcome; the interface localizes it.
+    pub reason: imager_backend::support_report::SupportReason,
+    pub evidence: Vec<imager_backend::support_report::Evidence>,
+    pub remedy: Option<imager_backend::support_report::Remedy>,
+    pub critical: bool,
+}
+
+/// The destination identity and its component results.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct HardwareProjection {
+    pub source: &'static str,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub variant: Option<String>,
+    pub board: Option<String>,
+    pub sku: Option<String>,
+    pub firmware: Option<String>,
+    pub kernel: Option<String>,
+    pub supported: usize,
+    pub limited: usize,
+    pub unsupported: usize,
+    pub unverified: usize,
+    pub blocking: bool,
+    pub components: Vec<HardwareComponentProjection>,
+}
+
+impl HardwareProjection {
+    #[must_use]
+    pub fn from_report(report: &imager_backend::support_report::SupportReport) -> Self {
+        use imager_backend::support_report::ReportSource;
+        let summary = report.summary();
+        Self {
+            source: match report.identity.source {
+                ReportSource::LocalScan => "local-scan",
+                ReportSource::Imported => "imported",
+                ReportSource::DeclaredModel => "declared-model",
+            },
+            manufacturer: report.identity.manufacturer.clone(),
+            model: report.identity.model.clone(),
+            variant: report.identity.variant.clone(),
+            board: report.identity.board.clone(),
+            sku: report.identity.sku.clone(),
+            firmware: report.identity.firmware.clone(),
+            kernel: report.kernel.clone(),
+            supported: summary.supported,
+            limited: summary.limited,
+            unsupported: summary.unsupported,
+            unverified: summary.unverified,
+            blocking: summary.blocking > 0,
+            components: report
+                .components
+                .iter()
+                .map(|component| HardwareComponentProjection {
+                    kind: component.kind.key(),
+                    name: component.name.clone(),
+                    present: component.present,
+                    status: component.state.key(),
+                    applicability: match component.applicability {
+                        imager_backend::support_report::Applicability::ReleaseVerified => {
+                            "release-verified"
+                        }
+                        imager_backend::support_report::Applicability::ObservationOnly => {
+                            "observation-only"
+                        }
+                        imager_backend::support_report::Applicability::Unknown => "unknown",
+                    },
+                    reason: component.reason.clone(),
+                    evidence: component.evidence.clone(),
+                    remedy: component.remedy,
+                    critical: component.kind.critical(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SetupProjection {
     pub page: &'static str,
@@ -272,6 +357,7 @@ pub struct SetupProjection {
     pub review: ReviewProjection,
     pub availability: AvailabilityProjection,
     pub internal: InternalProjection,
+    pub hardware: Option<HardwareProjection>,
     pub desktop: super::desktop_journey::DesktopProjection,
     pub methods: super::desktop_journey::MethodProjection,
 }
@@ -612,7 +698,7 @@ fn gated(spec: ActionSpec, available: bool, code: &str, reason: &str) -> ActionS
 /// `effect` bound to the row it is offered on, as `label`.
 fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
     let mut spec = effect.bound();
-    spec.label = label.into();
+    spec.type_mut().label = label.into();
     spec
 }
 
@@ -620,7 +706,7 @@ fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
 /// bound and `param` asked of the caller.
 fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) -> ActionSpec {
     let mut spec = effect.bound_asking_params(vec![param]);
-    spec.label = label.into();
+    spec.type_mut().label = label.into();
     spec
 }
 
@@ -813,6 +899,41 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
     row
 }
 
+fn hardware_row(hardware: &HardwareProjection) -> LiveRow {
+    let mut row = LiveRow::new(
+        format!("{SETUP_ROW_ID}.hardware"),
+        "imager.setup.hardware",
+        "Hardware compatibility",
+    )
+    .presentation(ResourcePresentation {
+        detail: Some(format!(
+            "{}: {} supported, {} limited, {} unsupported, {} unverified.",
+            hardware.model.as_deref().unwrap_or("Unknown model"),
+            hardware.supported,
+            hardware.limited,
+            hardware.unsupported,
+            hardware.unverified,
+        )),
+        badge: Some("Hardware".into()),
+        preview: None,
+    });
+    for component in &hardware.components {
+        row = row.row(
+            LiveRow::new(
+                format!("{SETUP_ROW_ID}.hardware.{}", component.kind),
+                "imager.setup.hardware.component",
+                format!("{}: {}", component.kind, component.status),
+            )
+            .presentation(ResourcePresentation {
+                detail: (!component.name.is_empty()).then(|| component.name.clone()),
+                badge: Some(component.status.into()),
+                preview: None,
+            }),
+        );
+    }
+    row
+}
+
 /// The setup in progress as one live row beneath the imager resource: the
 /// selection with its folders, the suggested folders, the review, what may
 /// run now, and the Full Tilo installation.
@@ -906,7 +1027,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
         badge: Some("Availability".into()),
         preview: None,
     });
-    LiveRow::new(SETUP_ROW_ID, "imager.setup", "Guided Tilo setup")
+    let mut root = LiveRow::new(SETUP_ROW_ID, "imager.setup", "Guided Tilo setup")
         .presentation(ResourcePresentation {
             detail: Some(format!(
                 "{} page, {}, {}",
@@ -935,7 +1056,11 @@ pub fn row(state: &SetupProjection) -> LiveRow {
         .row(review)
         .row(availability)
         .row(internal_row(&state.internal))
-        .row(super::desktop_journey::row(&state.desktop, &state.methods))
+        .row(super::desktop_journey::row(&state.desktop, &state.methods));
+    if let Some(hardware) = &state.hardware {
+        root = root.row(hardware_row(hardware));
+    }
+    root
 }
 
 /// A folder mode as people read it.
@@ -1086,6 +1211,7 @@ mod tests {
                 choose_folder: false,
             },
             internal,
+            hardware: None,
             desktop: crate::setup::desktop_journey::DesktopProjection::default(),
             methods: crate::setup::desktop_journey::MethodProjection::default(),
         }
@@ -1144,7 +1270,6 @@ mod tests {
             "the declared effect is gated like the row's"
         );
 
-        // Catches availability flags wired to the wrong command.
         let actions = internal_actions(&projection(InternalProjection {
             on_review: true,
             availability: InternalAvailability {

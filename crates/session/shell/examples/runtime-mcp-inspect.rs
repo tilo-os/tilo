@@ -210,7 +210,6 @@ mod tests {
 
     #[test]
     fn signed_reconstruction_and_readiness_check_the_route() {
-        // Phase `signed_reconstruction_rejects_tampering_and_wrong_route`.
         {
             let op = envelope();
             let doc = reconstruct(std::slice::from_ref(&op), "room").unwrap();
@@ -220,7 +219,6 @@ mod tests {
             altered.payload.push(0);
             assert!(reconstruct(&[altered], "room").is_err());
         }
-        // Phase `readiness_wait_is_bounded_and_checks_route`.
         {
             let dir = tempfile::tempdir().unwrap();
             assert!(wait_ready(dir.path(), "room", std::time::Duration::ZERO).is_err());

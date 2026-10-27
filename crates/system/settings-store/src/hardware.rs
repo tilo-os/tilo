@@ -14,7 +14,8 @@ use tilo_lock::MutexRecover as _;
 mod profiles;
 
 pub use profiles::{
-    AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet, MonitorHistory, same_scale,
+    AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet, MonitorHistory, MonitorLast,
+    same_scale,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -621,6 +622,10 @@ pub struct InputDeviceSnapshot {
     /// Pad buttons (libinput's numbers, from zero) that switch their mode
     /// group to its next mode rather than doing anything themselves.
     pub pad_mode_buttons: Vec<u32>,
+    /// The physical device this one is part of, as libinput groups them:
+    /// a drawing tablet's pen and its pad share it, so they are one device
+    /// to the person. Empty when the publisher didn't say.
+    pub physical_device: String,
 }
 
 /// Read-only state written atomically by the compositor in the private user
@@ -1063,11 +1068,12 @@ pub enum DisplayConfigError {
 impl DisplayConfig {
     /// Whether going from `previous` to this configuration can leave a
     /// screen dark or unusable, and so is tried before it stays: a display
-    /// turned on or off, another mode, a rotation, mirroring, HDR or a
-    /// variable refresh rate. Scale, position, the primary display, the
-    /// colour profile and SDR brightness change what a visible screen
-    /// shows and apply at once, as they do on every other desktop. A
-    /// display `previous` does not name counts as turned on.
+    /// turned on or off, another mode (resolution or refresh rate),
+    /// mirroring, HDR or a variable refresh rate. The arrangement, scale,
+    /// rotation, the primary display, the colour profile and SDR brightness
+    /// change what a visible screen shows and apply at once, as they do on
+    /// every other desktop. A display `previous` does not name counts as
+    /// turned on.
     #[must_use]
     pub fn needs_confirmation_from(&self, previous: &DisplayConfig) -> bool {
         self.outputs.iter().any(|(connector, next)| {
@@ -1077,7 +1083,6 @@ impl DisplayConfig {
             next.enabled != before.enabled
                 || (next.enabled
                     && (next.mode != before.mode
-                        || next.transform != before.transform
                         || next.mirror_of != before.mirror_of
                         || next.hdr != before.hdr
                         || next.vrr != before.vrr))
@@ -1211,7 +1216,10 @@ impl DisplayConfig {
     /// rejection/revert always resolves to the last known-good
     /// configuration. A transaction staged for other monitors never applies.
     pub fn load_effective(set: &DisplaySet) -> Self {
-        let committed = Self::load_for(set);
+        Self::effective_over(set, Self::load_for(set))
+    }
+
+    fn effective_over(set: &DisplaySet, committed: Self) -> Self {
         let Some(transaction) = DisplayTransaction::load() else {
             return committed;
         };
@@ -1843,8 +1851,7 @@ pub enum ShortcutAction {
     ToggleMaximize,
     /// Maximize the focused window group; nothing when it already is.
     MaximizeWindow,
-    /// Restore the focused window group from maximized; nothing when it
-    /// is not maximized.
+    /// Restore the focused window group from maximized; nothing when it is not maximized.
     RestoreWindow,
     DetachTab,
     AttachTabLeft,
@@ -1865,8 +1872,7 @@ pub enum ShortcutAction {
     ResizeWider,
     /// Bring back the most recently closed tab in the current workspace.
     ReopenClosedTab,
-    /// Focus the Nth window group of the current strip (Ctrl+Super+1 …
-    /// Ctrl+Super+9).
+    /// Focus the Nth window group of the current strip (Ctrl+Super+1 … Ctrl+Super+9).
     FocusGroup1,
     FocusGroup2,
     FocusGroup3,
@@ -1906,6 +1912,8 @@ pub enum ShortcutAction {
     /// Say something beside the pointer, to the people in the window
     /// under it (cursor chat), wherever the keyboard is.
     SaySomething,
+    /// Point at what is not working and report it (the feedback picker).
+    ReportProblem,
     DictationToggle,
     DictationFinish,
     DictationCancel,
@@ -2113,7 +2121,6 @@ mod quick_settings_tests {
 
     #[test]
     fn quick_settings_order_dedupes_persists_and_keeps_recovery_controls() {
-        // Phase `quick_settings_config_deduplicates_and_keeps_network_recovery`.
         {
             let config = QuickSettingsConfig {
                 controls: vec![
@@ -2127,7 +2134,6 @@ mod quick_settings_tests {
                 vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
             );
         }
-        // Phase `an_unknown_control_is_skipped_and_the_arrangement_kept`.
         {
             let config = QuickSettingsConfig::from_section(
                 serde_json::json!({"controls": ["night_light", "teleporter", "wifi"]})
@@ -2140,9 +2146,8 @@ mod quick_settings_tests {
                 vec![QuickSettingsControl::NightLight, QuickSettingsControl::Wifi]
             );
         }
-        // Phase `quick_settings_order_survives_restart_without_replacing_other_settings`.
         {
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::test_dir();
             let path = temp.path().join("tilo/settings.json");
             crate::update_section_at(
                 &path,
@@ -2424,6 +2429,7 @@ impl Default for ShortcutConfig {
             // Cursor chat from anywhere: a bare "/" opens it only where the
             // focused widget takes no text.
             (ShortcutAction::SaySomething, super_chord("/")),
+            (ShortcutAction::ReportProblem, super_chord("r")),
             // Spatial arrows are the always-visible desktop model. Alt+Tab
             // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
@@ -2743,7 +2749,7 @@ impl ShortcutConfig {
     /// default instead of leaving ambiguous client ownership.
     ///
     /// A stored chord that was once the default for its action
-    /// ([`RETIRED_DEFAULTS`]) was saved because [`Self::save`] writes the
+    /// (`RETIRED_DEFAULTS`) was saved because [`Self::save`] writes the
     /// whole table, not because the person chose it; it yields to the
     /// current default.
     #[must_use]
@@ -2851,12 +2857,12 @@ mod tests {
             "profile"
         );
         assert!(!changed(&|o| o.sdr_brightness_nits = 300), "sdr brightness");
-        assert!(changed(&|o| o.enabled = false), "turned off");
-        assert!(changed(&|o| o.mode = None), "another mode");
         assert!(
-            changed(&|o| o.transform = OutputTransform::Rotate90),
+            !changed(&|o| o.transform = OutputTransform::Rotate90),
             "rotation"
         );
+        assert!(changed(&|o| o.enabled = false), "turned off");
+        assert!(changed(&|o| o.mode = None), "another mode");
         assert!(changed(&|o| o.hdr = true), "hdr");
         assert!(changed(&|o| o.vrr = !o.vrr), "vrr");
         assert!(changed(&|o| o.mirror_of = Some("DP-1".into())), "mirroring");
@@ -2867,6 +2873,7 @@ mod tests {
             "a display turned on"
         );
         assert!(before.needs_confirmation_from(&added), "a display gone");
+        assert_eq!(DisplayTransaction::CONFIRM_TIMEOUT_MS, 15_000);
     }
 
     use super::*;
@@ -2891,7 +2898,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn display_layouts_reject_unadvertised_modes_and_invalid_mirrors() {
-        // Phase `rejects_modes_the_connector_does_not_advertise`.
         {
             let mut cfg = DisplayConfig::default();
             cfg.outputs.insert(
@@ -2910,7 +2916,6 @@ mod tests {
                 Err(DisplayConfigError::UnsupportedMode { .. })
             ));
         }
-        // Phase `legacy_unqualified_connector_never_cross_targets_qualified_duplicates`.
         {
             let first = OutputDescriptor {
                 connector: "pci:0000:01:00.0/HDMI-A-1".into(),
@@ -2954,7 +2959,6 @@ mod tests {
             assert_eq!(legacy.label(), "HDMI-A-1");
             assert_eq!(legacy.card_qualifier(), None);
         }
-        // Phase `rejects_mirror_cycles`.
         {
             let mut cfg = DisplayConfig::default();
             cfg.outputs.insert(
@@ -2976,7 +2980,6 @@ mod tests {
                 Err(DisplayConfigError::MirrorCycle { .. })
             ));
         }
-        // Phase `rejects_mirror_pair_with_different_explicit_modes`.
         {
             let mut left = display("DP-1");
             left.modes.push(OutputMode {
@@ -3006,7 +3009,6 @@ mod tests {
                 Err(DisplayConfigError::IncompatibleMirrorModes { .. })
             ));
         }
-        // Phase `mirror_pair_accepts_same_resolution_at_different_refresh_rates`.
         {
             let mut panel = display("eDP-1");
             panel.modes[0].refresh_mhz = 60_000;
@@ -3052,7 +3054,6 @@ mod tests {
 
     #[test]
     fn display_confirmations_are_precise_transitions_without_phantom_requests() {
-        // Phase `display_confirmation_expiry_is_a_precise_state_transition`.
         {
             let mut transaction = DisplayTransaction {
                 state: DisplayTransactionState::AwaitingConfirmation,
@@ -3064,7 +3065,6 @@ mod tests {
             transaction.state = DisplayTransactionState::Confirmed;
             assert!(!transaction.expired(u64::MAX));
         }
-        // Phase `missing_transaction_section_does_not_create_a_phantom_request`.
         {
             assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
         }
@@ -3185,12 +3185,10 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn shortcuts_are_normalised_conflict_free_and_reload_unchanged() {
-        // Phase `shortcut_parser_normalises_and_rejects_plain_letters`.
         {
             assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
             assert!(KeyChord::parse("k").is_err());
         }
-        // Phase `window_management_defaults_are_coherent_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
             assert_eq!(
@@ -3244,7 +3242,6 @@ mod tests {
             );
             assert!(cfg.validate().is_ok());
         }
-        // Phase `shortcut_conflicts_are_rejected_without_overwriting`.
         {
             let mut cfg = ShortcutConfig::default();
             let old = cfg.bindings[&ShortcutAction::Lock].clone();
@@ -3257,7 +3254,6 @@ mod tests {
             );
             assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
         }
-        // Phase `reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter`.
         {
             let mut cfg = ShortcutConfig::default();
             for key in ["f1", "printscreen"] {
@@ -3280,7 +3276,6 @@ mod tests {
                 Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
         }
-        // Phase `corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership`.
         {
             let mut corrupt = ShortcutConfig::default();
             corrupt.bindings.insert(
@@ -3324,7 +3319,6 @@ mod tests {
             );
             assert!(repaired.validate().is_ok());
         }
-        // Phase `a_table_saved_under_retired_defaults_takes_the_new_ones`.
         {
             let mut saved_by_an_older_release = ShortcutConfig::default();
             for action in [
@@ -3360,9 +3354,8 @@ mod tests {
             );
             assert!(repaired.validate().is_ok());
         }
-        // Phase `saved_shortcuts_reload_as_the_same_valid_effective_config`.
         {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::test_dir();
             let path = dir.path().join("tilo/settings.json");
 
             let mut saved = ShortcutConfig::default();
@@ -3375,10 +3368,9 @@ mod tests {
             assert_eq!(reloaded, saved);
             assert!(reloaded.validate().is_ok());
         }
-        // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 63);
+            assert_eq!(cfg.bindings.len(), 64);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -3466,7 +3458,7 @@ mod tests {
 
     #[test]
     fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("tilo/settings.json");
         let target = |resource: &str| ActionChordTarget {
             provider: "workspace:room".into(),
@@ -3517,7 +3509,6 @@ mod tests {
 
     #[test]
     fn input_sources_and_pointer_settings_migrate_validate_and_survive_damage() {
-        // Phase `legacy_single_keyboard_layout_migrates_into_sources`.
         {
             let section = serde_json::json!({ "keyboard_layout": "de" })
                 .as_object()
@@ -3528,7 +3519,6 @@ mod tests {
             assert_eq!(cfg.keyboard_layouts, ["de"]);
             assert_eq!(cfg.active_source_index(), 0);
         }
-        // Phase `an_unset_layout_follows_the_machine_and_a_chosen_one_wins`.
         {
             let machine = || vec!["de".to_string(), "us".to_string()];
             let unset = RichInputConfig::from_section_or(&serde_json::Map::new(), &machine);
@@ -3562,13 +3552,11 @@ mod tests {
             let engine_only = RichInputConfig::from_section_or(&engine_only, &machine);
             assert_eq!(engine_only.keyboard_layouts, ["de", "ime/rime"]);
         }
-        // Phase `scroll_defaults_match_gnome`.
         {
             let empty = RichInputConfig::from_section(&serde_json::Map::new());
             assert!(empty.touchpad_natural_scroll);
             assert!(!empty.mouse_natural_scroll);
         }
-        // Phase `keyboard_sources_are_validated_deduplicated_and_bounded`.
         {
             let section = serde_json::json!({
                 "keyboard_layout": "de:nodeadkeys",
@@ -3585,7 +3573,6 @@ mod tests {
             assert_eq!(cfg.active_source_index(), 1);
             assert_eq!(cfg.sources()[1].variant.as_deref(), Some("nodeadkeys"));
         }
-        // Phase `keyboard_options_do_not_steal_the_shell_search_shortcut`.
         {
             let mut cfg = RichInputConfig {
                 keyboard_layouts: vec!["us".into(), "de".into()],
@@ -3603,7 +3590,6 @@ mod tests {
                 "Super+Alt+Space"
             );
         }
-        // Phase `malformed_pointer_field_does_not_discard_keyboard_sources`.
         {
             let section = serde_json::json!({
                 "pointer_speed": "fast",
@@ -3642,7 +3628,7 @@ mod tests {
 
     #[test]
     fn publisher_liveness_is_its_held_lease_not_its_proc_entry() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         // No process has this PID, so /proc cannot vouch for it, as it cannot
         // for a non-dumpable compositor. Holding its lease can.
         let (pid, start_ticks) = (4_000_000, 7);

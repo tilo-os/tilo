@@ -42,7 +42,6 @@ impl Rcode {
     }
 }
 
-/// The one question of a query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
     pub id: u16,
@@ -362,7 +361,6 @@ pub fn query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
     out
 }
 
-/// The response code of a response.
 pub fn rcode(response: &[u8]) -> Option<u8> {
     header(response).and_then(|h| u8::try_from(h.flags & 0x000f).ok())
 }
@@ -440,7 +438,6 @@ pub(crate) mod tests {
                     30,
                     "2001:db8::1".parse::<Ipv6Addr>().unwrap().octets().to_vec(),
                 ),
-                // A malformed A record carries nothing.
                 (TYPE_A, 60, vec![1, 2, 3]),
             ],
         );
@@ -500,7 +497,6 @@ pub(crate) mod tests {
         let q = query(1, "a.example", TYPE_A);
         let mut resp = response(&q, &[(TYPE_A, 60, vec![192, 0, 2, 1])]);
         let at = q.len();
-        // Point the answer's owner name at itself.
         resp[at] = 0xc0;
         resp[at + 1] = u8::try_from(at).unwrap();
         assert!(answered_addresses(&resp).is_empty());

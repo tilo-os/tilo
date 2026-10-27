@@ -23,7 +23,7 @@ must hold the machine awake explicitly, and that hold must go away by itself.
   battery machine awake forever. The admin path takes a logind `sleep` lock
   that expires at a deadline and renews it on every request. tilo-vm's daemon
   holds `tilo-vm-awake` for 30 minutes after the last request, and
-  `tilo-vm vm awake NAME --for 2h` holds it longer.
+  `tilo device vm awake NAME --for 2h` holds it longer.
 - **Remote actions count as use.** An action that arrives from one of the
   person's own devices over the peer network (`actions invoke --device`)
   renews the same kind of suspend-only lease in the target session.
@@ -50,7 +50,7 @@ itself instead of the admin guessing.
   rejoin the mesh. An always-on home peer is just such a sibling. Without one,
   the request fails and names the reason (`no awake device on 10.0.0.0/24`)
   instead of hanging.
-- tilo-vm on the dev machine is one more waker: `tilo-vm vm wake NAME` sends
+- tilo-vm on the dev machine is one more waker: `tilo device vm wake NAME` sends
   the magic packet from the LAN, and a libvirt VM is woken through its
   hypervisor (`dompmwakeup`).
 
@@ -88,7 +88,7 @@ An IP address is only a hint.
   session and request to its journal. A developer's machine is certified for
   this with `tilo-enroll certify --capability admin` on the device that holds
   the identity, which also lists it among the person's devices, where Settings
-  can remove it (`tilo-vm vm enrol-admin`).
+  can remove it (`tilo device vm enrol-admin`).
 
 ## Updating what it runs
 
@@ -182,8 +182,8 @@ The owner can enroll an already-open encrypted root over the existing
 authenticated device-admin route, using its declared semantic resource:
 
 ```bash
-tilo-vm vm actions --device yoga list "disk unlock"
-tilo-vm vm actions --device yoga invoke device-unlock enroll@device-unlock --args-stdin
+tilo device vm actions --device yoga list "disk unlock"
+tilo device vm actions --device yoga invoke device-unlock enroll@device-unlock --args-stdin
 ```
 
 The adapter carries the same `actions_enumerate` and `actions_invoke` operations

@@ -21,10 +21,6 @@ pub const TEST_ENVIRONMENT: &str = "TILO_TEST_ENVIRONMENT";
 /// session's, and D-Bus addresses that are set (so nothing falls back to a
 /// login session's default bus) and do not name one. A test may still point
 /// either address at a private bus of its own.
-///
-/// # Errors
-///
-/// Returns every problem found, one per line.
 pub fn desktop_isolation() -> Result<(), String> {
     let mut problems = Vec::new();
     match var(TEST_ENVIRONMENT) {
@@ -71,10 +67,6 @@ pub fn desktop_isolation() -> Result<(), String> {
 }
 
 /// Panic unless [`desktop_isolation`] holds.
-///
-/// # Panics
-///
-/// When this process could reach the caller's desktop session.
 #[track_caller]
 #[allow(
     clippy::panic,

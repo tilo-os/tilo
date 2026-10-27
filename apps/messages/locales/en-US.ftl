@@ -1,11 +1,12 @@
 messages-empty-heading = Your people, together
 messages-empty-hint = Add people in Contacts to start a conversation.
+messages-open-contacts = Open Contacts
+messages-open-contacts-description = Add the people you message in Contacts
 messages-choose-heading = Choose a person
 messages-choose-hint = Your conversations stay separate for each service and account.
 messages-people = People
 messages-back = Back to people
 messages-route = Message using
-messages-route-placeholder = Choose a service and account
 messages-tilo = Tilo
 messages-whatsapp = WhatsApp
 messages-signal = Signal
@@ -92,7 +93,7 @@ messages-whatsapp-storage-explanation = Review private encrypted storage access 
 messages-first-tilo = Use my Tilo identity
 messages-setup-link-heading = Link an account
 messages-setup-your-accounts = Your accounts
-messages-setup-service-missing = Messaging isn't running on this device, so no account can be linked right now.
+messages-setup-service-missing = Messaging isn't running here, so no account can be linked. Linking WhatsApp, Signal or a Tilo identity needs the messaging service a Tilo computer runs; a browser has none.
 messages-first-whatsapp-hint = Scan a code with WhatsApp on your phone
 messages-first-signal-hint = Scan a code with Signal on your phone
 messages-first-tilo-hint = Message people who use Tilo, with no other account
@@ -101,6 +102,7 @@ messages-first-account-prepare = Set up a private Messages account
 messages-list-groups = List private groups
 messages-read-group-membership = Read group membership
 messages-close-groups = Close groups
+messages-groups = Private groups
 messages-refresh-group-membership = Refresh membership
 messages-account-groups = WhatsApp groups for { $account }
 messages-groups-unavailable = Group membership is unavailable for this account.
@@ -118,3 +120,10 @@ messages-group-remove = Remove reviewed member
 messages-group-leave = Leave this group
 messages-group-add-choice = Add { $person } using { $route }
 messages-group-remove-choice = Remove { $member }
+
+# History of the conversations kept in the record.
+messages-deliver-message = Delivered a message from { $from }
+messages-send-message = Queued a message to { $to }
+messages-reply = Queued a reply
+
+messages-conversation-with = Conversation with {$person}

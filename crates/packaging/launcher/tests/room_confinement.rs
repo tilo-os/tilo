@@ -98,7 +98,7 @@ fn run_in_room_with_landlock(
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce,
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
         workspace_id: room.map(str::to_string),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
@@ -154,7 +154,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             "the app must be able to write in its own directory: {wrote}"
         );
 
-        // The bytes really landed, on the host, in room A's directory.
         let host_file = data
             .path
             .join("tilo-rooms/room-a")
@@ -167,7 +166,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             host_file.display()
         );
 
-        // Same app, same in-sandbox path, room B.
         let from_b = run_in_room(&data, Some("room-b"), &["read", "/run/tilo/app/record.txt"]);
         assert_eq!(
             from_b, "ERR /run/tilo/app/record.txt ENOENT",
@@ -193,7 +191,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             "room B's directory must not contain room A's record: {listing}"
         );
 
-        // Confirm that the fixture can read what it wrote back in room A.
         let from_a = run_in_room(&data, Some("room-a"), &["read", "/run/tilo/app/record.txt"]);
         assert_eq!(
             from_a, "OK /run/tilo/app/record.txt room-A-secret",
@@ -226,7 +223,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
     {
         let data = DataHome::new();
 
-        // Stand in for another package's secrets, in the same room.
         let victim = data
             .path
             .join("tilo-rooms/room-a")
@@ -510,7 +506,7 @@ fn run_with_grants(
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: true,
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
         capabilities_path: Some(caps_file),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
@@ -610,7 +606,6 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
             );
         }
 
-        // On the host, every file is where it was, unchanged.
         assert_eq!(
             std::fs::read_to_string(&secret).expect("secret"),
             "root-identity-secret"
@@ -680,7 +675,7 @@ fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: true,
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
@@ -736,13 +731,11 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let data = DataHome::new();
     let run = |argv: &[&str]| run_as_settings(&data, argv);
 
-    // Phase `settings_is_told_where_its_document_is`.
+    // Phase `settings_is_not_told_of_a_settings_file`: it reaches the
+    // session's settings through the shell's settings service.
     assert_eq!(
         run(&["env", "TILO_SESSION_SETTINGS"]),
-        format!(
-            "ENV TILO_SESSION_SETTINGS={}",
-            appdir::SANDBOX_SESSION_SETTINGS
-        )
+        "ENV TILO_SESSION_SETTINGS=<unset>"
     );
 
     // Phase `the_trust_lists_registries_and_records_are_not_there`.
@@ -806,29 +799,20 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         r#"{"workspaces":[]}"#
     );
 
-    // Phase `the_settings_document_is_replaced_by_rename_and_the_host_sees_it`.
-    let session = format!("{config}/session");
-    assert_eq!(
-        run(&["read", appdir::SANDBOX_SESSION_SETTINGS]),
-        format!(
-            r#"OK {} {{"region":{{"units":"metric"}}}}"#,
-            appdir::SANDBOX_SESSION_SETTINGS
-        )
+    // Phase `the_settings_document_is_not_there`: Settings writes through
+    // the shell's settings service, so a write where the session keeps the
+    // document never reaches the host's.
+    let session = format!("{config}/session/settings.json");
+    let line = run(&["read", &session]);
+    assert!(
+        line.starts_with("ERR "),
+        "the session's settings document must not reach the Settings sandbox: {line}"
     );
-    let temp = format!("{session}/.settings.json.1.tmp");
-    let wrote = run(&["writeabs", &temp, r#"{"region":{"units":"imperial"}}"#]);
-    assert!(wrote.starts_with("WROTE "), "{wrote}");
-    let renamed = run(&["rename", &temp, appdir::SANDBOX_SESSION_SETTINGS]);
-    assert!(renamed.starts_with("RENAMED "), "{renamed}");
+    let _ = run(&["writeabs", &session, r#"{"region":{"units":"imperial"}}"#]);
     assert_eq!(
         std::fs::read_to_string(&settings).expect("settings"),
-        r#"{"region":{"units":"imperial"}}"#,
-        "the compositor reads the document Settings replaced"
-    );
-    assert_eq!(
-        run(&["readdir", &session]),
-        format!("OK {session} settings.json"),
-        "the session directory holds the document and nothing else of Tilo's"
+        r#"{"region":{"units":"metric"}}"#,
+        "only the shell writes the settings document"
     );
 
     // Phase `the_account_stores_stay_writable`.

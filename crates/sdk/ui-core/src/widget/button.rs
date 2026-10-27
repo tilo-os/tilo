@@ -24,6 +24,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 pub struct Button {
     id: String,
     label: String,
+    /// A labelled button that opens a menu shows a trailing chevron, so it
+    /// reads as a choice rather than an action.
+    pub(crate) opens_menu: bool,
     /// Accessible name for an icon-only button (empty visible label);
     /// left unset when the label itself serves as the accessible name.
     accessible_name: Option<String>,
@@ -52,6 +55,9 @@ pub struct Button {
     /// optional badge pill on its corner: what an extension's toolbar action
     /// shows. The glyph in `icon` remains the fallback and the layout key.
     image: Option<vello::peniko::ImageData>,
+    /// A media transport's control (previous, play/pause, next), drawn as
+    /// its [`crate::widget::TransportFace`] at that face's side.
+    transport: Option<(crate::widget::TransportControl, f64)>,
     badge: Option<String>,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
@@ -149,7 +155,7 @@ impl Button {
     /// Focus a person needs to be shown: keyboard focus, not the focus a
     /// click on the button gave it.
     fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus
+        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
 
     fn effectively_enabled(&self) -> bool {
@@ -169,10 +175,12 @@ impl Button {
             pressed_into_focus: false,
             icon: None,
             image: None,
+            transport: None,
             badge: None,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
+            opens_menu: false,
             shortcut: None,
             measured_width: None,
             control_size: ControlSize::Regular,
@@ -241,6 +249,17 @@ impl Button {
         self.on_native(tilo_actions::OperationKind::Effect, handler)
     }
 
+    /// [`Self::on_effect`] for an effect whose scope is the person's own
+    /// device and nothing shared: copying to their clipboard, applying their
+    /// own appearance, starting a draft of their own. A room's grants have
+    /// nothing to consent to, so a guest presses it as the room's owner
+    /// does ([`tilo_actions::OWN_DEVICE_SCOPE`]); a shared change it goes on
+    /// to make is decided as that change's own action.
+    #[must_use]
+    pub fn on_own_device_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
+        self.on_native_scoped(tilo_actions::OperationKind::Effect, true, handler)
+    }
+
     /// Publish a zero-argument transient presentation action. View actions are
     /// discoverable and agent-driveable but intentionally absent from document
     /// history and collaboration logs.
@@ -249,14 +268,35 @@ impl Button {
         self.on_native(tilo_actions::OperationKind::View, handler)
     }
 
+    fn on_native<F: FnMut() + 'static>(
+        self,
+        kind: tilo_actions::OperationKind,
+        handler: F,
+    ) -> Self {
+        self.on_native_scoped(kind, false, handler)
+    }
+
+    fn on_native_scoped<F: FnMut() + 'static>(
+        self,
+        kind: tilo_actions::OperationKind,
+        own_device: bool,
+        handler: F,
+    ) -> Self {
+        self.on_native_boxed(kind, own_device, Box::new(handler))
+    }
+
+    /// [`Self::on_native_scoped`] once the handler is boxed: the toolkit
+    /// compiles publishing the press once, rather than every app once for
+    /// each closure it hands a button.
     #[expect(
         clippy::expect_used,
         reason = "String serialization and lookup of the just-created action are infallible"
     )]
-    fn on_native<F: FnMut() + 'static>(
+    fn on_native_boxed(
         mut self,
         kind: tilo_actions::OperationKind,
-        handler: F,
+        own_device: bool,
+        handler: Box<dyn FnMut()>,
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
@@ -269,16 +309,26 @@ impl Button {
         } else {
             self.label.clone()
         };
-        let spec =
+        // Pressing the button is the control's own verb: how agents and
+        // scripts press what a person presses directly, never a row of its
+        // own in people's lists, where it would repeat the app's actions.
+        let mut spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
-                .expect("a control id is always JSON serializable");
+                .expect("a control id is always JSON serializable")
+                .for_audience(tilo_actions::Audience::Agents);
+        if own_device {
+            spec.type_mut()
+                .contract
+                .tags
+                .push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
+        }
         let resource =
             tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
         self.native_resource = Some(resource);
-        self.native_handler = Some(Box::new(handler));
+        self.native_handler = Some(handler);
         self
     }
 
@@ -342,6 +392,37 @@ impl Button {
             self.dirty = true;
             // A new locale re-shapes the label, and the width follows it.
             self.layout_dirty = true;
+        }
+    }
+
+    /// A media transport's control: previous, play/pause or next, drawn as
+    /// the transport draws it (play/pause the one round, prominent control)
+    /// and named for what it does now.
+    pub fn transport(id: &str, control: crate::widget::TransportControl) -> Self {
+        let mut button = Self::icon_only(id, control.icon(), control.name());
+        button.transport = Some((control, 0.0));
+        button
+    }
+
+    /// Show `control` now (play while paused, pause while playing).
+    pub fn set_transport(&mut self, control: crate::widget::TransportControl) {
+        if self.transport.map(|(shown, _)| shown) == Some(control) {
+            return;
+        }
+        let side = self.transport.map_or(0.0, |(_, side)| side);
+        self.transport = Some((control, side));
+        self.icon = Some(control.icon());
+        self.set_accessible_name(control.name());
+        self.tooltip = Some(control.name().to_owned());
+        self.dirty = true;
+    }
+
+    /// Show `icon` now, for a control whose glyph follows its state (a
+    /// speaker that is muted, a repeat that repeats one).
+    pub fn set_icon(&mut self, icon: crate::icons::Icon) {
+        if self.icon != Some(icon) {
+            self.icon = Some(icon);
+            self.dirty = true;
         }
     }
 
@@ -862,6 +943,7 @@ impl FaceSizer {
             hint: None,
             flush: false,
             filled_icon: false,
+            menu: false,
         }
         .intrinsic_width(&self.metrics, text, self.metrics.height)
     }
@@ -889,6 +971,8 @@ struct FaceContent<'a> {
     flush: bool,
     /// Draw the icon filled (a toggle that is on, with a closed glyph).
     filled_icon: bool,
+    /// A trailing chevron after a label: the face opens a menu.
+    menu: bool,
 }
 
 impl FaceContent<'_> {
@@ -910,6 +994,9 @@ impl FaceContent<'_> {
         if let Some(hint) = &self.hint {
             width += metrics.hint_gap
                 + f64::from(text.measure_style(hint, None, &metrics.label_style).0);
+        }
+        if self.menu && !self.label.is_empty() {
+            width += metrics.icon_gap + metrics.icon;
         }
         if self.flush {
             width.ceil()
@@ -997,7 +1084,12 @@ impl FaceContent<'_> {
             0.0
         };
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
-        let room = (rect.width() - 2.0 * pad - lead).max(1.0);
+        let trail = if self.menu {
+            metrics.icon_gap + icon_px
+        } else {
+            0.0
+        };
+        let room = (rect.width() - 2.0 * pad - lead - trail).max(1.0);
         let hint = self.hint.as_ref().and_then(|hint| {
             let label_w = f64::from(ctx.text.measure_style(self.label, None, style).0);
             let hint_w = f64::from(ctx.text.measure_style(hint, None, style).0);
@@ -1011,7 +1103,7 @@ impl FaceContent<'_> {
                 .elide_to_width_style(self.label, f32_of_f64(label_room.max(1.0) + 0.5), style);
         let (label_w, label_h) = ctx.text.measure_style(&label, None, style);
         let hint_w = hint.map_or(0.0, |(_, w)| metrics.hint_gap + w);
-        let cluster = lead + f64::from(label_w) + hint_w;
+        let cluster = lead + f64::from(label_w) + hint_w + trail;
         let start_x = rect.center().x - cluster / 2.0;
         if let Some(icon) = self.icon {
             let iy = rect.center().y - icon_px / 2.0;
@@ -1028,6 +1120,18 @@ impl FaceContent<'_> {
         if let Some((hint, _)) = hint {
             let hint_x = label_x + f64::from(label_w) + metrics.hint_gap;
             ctx.text(hint, style, hint_ink, Point::new(hint_x, text_y), None);
+        }
+        if self.menu {
+            let ix = label_x + f64::from(label_w) + hint_w + metrics.icon_gap;
+            let iy = rect.center().y - icon_px / 2.0;
+            crate::icons::draw_icon(
+                ctx.scene,
+                ctx.transform,
+                Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+                crate::icons::Icon::ChevronDown,
+                ink,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
     }
 }
@@ -1133,13 +1237,31 @@ impl FacePaint<'_> {
         // disabled control stay visible on a light ground.
         let outline = crate::surface::edge_outline(face_rect, radius);
         if self.interact.focused && !disabled {
+            let ring = theme.tokens.colors.intent.accent_ink;
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
                 ctx.transform,
-                theme.tokens.colors.intent.accent_ink,
+                ring,
                 None,
                 &outline,
             );
+            // Your colour on a fill of your colour (a primary face, an "on"
+            // toggle) would only make the face look larger: a line of the
+            // ground both are made to stand out from parts the two.
+            if fill.components[3] > 0.0
+                && crate::a11y::contrast_ratio(ring, fill)
+                    < crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+            {
+                let gap = f64::from(theme.tokens.metrics.chrome_rule_px);
+                let inset = FOCUS_RING_WIDTH - 0.5 + gap / 2.0;
+                ctx.scene.stroke(
+                    &vello::kurbo::Stroke::new(gap),
+                    ctx.transform,
+                    theme.tokens.colors.surfaces.content,
+                    None,
+                    &RoundedRect::from_rect(face_rect.inset(-inset), (radius - inset).max(0.0)),
+                );
+            }
         } else if let Some(edge) = edge {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(REST_BORDER_WIDTH),
@@ -1286,6 +1408,7 @@ impl<'a> ButtonFace<'a> {
             hint: self.shortcut.as_ref().map(shortcut_text),
             flush: false,
             filled_icon: false,
+            menu: false,
         }
         .intrinsic_width(&metrics, text, metrics.height)
     }
@@ -1332,6 +1455,15 @@ impl<'a> ButtonFace<'a> {
 const FOCUS_RING_WIDTH: f64 = 2.0;
 const REST_BORDER_WIDTH: f64 = 1.0;
 
+/// How far past a control's face its ink may reach under `theme`: the focus
+/// ring, the ground-coloured line that parts it from a fill of your colour,
+/// and their antialiasing. A 2 px mark stroked centred on a rect reaches no
+/// further, so a region drawn as a part of its own pads its bounds by this.
+#[must_use]
+pub fn focus_ring_reach(theme: &Theme) -> f64 {
+    FOCUS_RING_WIDTH + f64::from(theme.tokens.metrics.chrome_rule_px) + 0.5
+}
+
 /// Resolve a label key for painting, measuring or speaking. An empty key is
 /// an icon-only face and stays empty: routed through `i18n!` it would come
 /// back as the pseudo-locale's `⟦⟧` markers — a visible bracket pair beside
@@ -1371,7 +1503,10 @@ impl Button {
                 hint: face.shortcut.as_ref().map(shortcut_text),
                 // A painted face fills the rect its host gave it.
                 flush: false,
-                filled_icon: face.on && face.icon.is_some_and(fills_when_on),
+                filled_icon: face
+                    .icon
+                    .is_some_and(|icon| icon.is_brand() || (face.on && fills_when_on(icon))),
+                menu: false,
             },
             metrics: &metrics,
         }
@@ -1396,18 +1531,20 @@ impl Button {
     /// size's height and reaches the minimum target through the hit rect
     /// ([`Self::hit_rect`]); a coarse pointer grows the face to it.
     fn face_height(&self) -> f64 {
+        let height = self.transport.map_or(self.metrics.height, |(_, side)| side);
         if self.interaction.supports_hover() {
-            self.metrics.height
+            height
         } else {
-            self.metrics
-                .height
-                .max(f64::from(self.interaction.minimum_target()))
+            height.max(f64::from(self.interaction.minimum_target()))
         }
     }
 
     /// The face's width with everything shown, measured with the geometry
     /// captured in `build_layout`.
     fn intrinsic_width(&self, text: &mut TextRenderer) -> f32 {
+        if self.transport.is_some() {
+            return f32_of_f64(self.face_height());
+        }
         let (label, hint) = self.content();
         f32_of_f64(
             FaceContent {
@@ -1418,6 +1555,7 @@ impl Button {
                 label: &label,
                 hint,
                 filled_icon: false,
+                menu: self.opens_menu,
             }
             .intrinsic_width(&self.metrics, text, self.face_height()),
         )
@@ -1483,7 +1621,8 @@ impl Widget for Button {
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::widget::ResourceOperations
     );
 
     fn set_interaction_environment(
@@ -1516,6 +1655,9 @@ impl Widget for Button {
         self.observe_i18n_revision();
         self.measured_width = None;
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        if let Some((control, side)) = &mut self.transport {
+            *side = crate::widget::TransportFace::side(*control, theme);
+        }
         if metrics != self.metrics {
             // A theme scale change re-shapes the label; the cached face must
             // not survive at the old metrics. (The live App rebuilds widgets
@@ -1646,6 +1788,24 @@ impl Widget for Button {
         // theme's type; `measure` uses the copy captured in `build_layout`,
         // the same value on every taffy-driven path.
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        if let Some((control, _)) = self.transport {
+            let face = crate::widget::TransportFace::new(self.rect, control)
+                .hovered(self.is_hovered)
+                .pressed(self.press.is_held())
+                .focused(self.focus_visible())
+                .disabled(!enabled);
+            crate::widget::TransportFace::paint(&mut self.cached, Affine::IDENTITY, theme, &face);
+            self.cache_rect = self.rect;
+            self.append_cached(out_scene, out_transform);
+            crate::widget::draw_gate_and_peer_focus(
+                self,
+                out_scene,
+                out_transform,
+                theme,
+                presence,
+            );
+            return;
+        }
         let (label, hint) = self.content();
         let on = self.is_toggled();
         FacePaint {
@@ -1666,7 +1826,10 @@ impl Widget for Button {
                 badge: self.badge.as_deref(),
                 label: &label,
                 hint,
-                filled_icon: on && self.icon.is_some_and(fills_when_on),
+                filled_icon: self
+                    .icon
+                    .is_some_and(|icon| icon.is_brand() || (on && fills_when_on(icon))),
+                menu: self.opens_menu,
             },
             metrics: &metrics,
         }
@@ -1799,6 +1962,22 @@ impl Widget for Button {
         Some(self.id.as_str())
     }
 
+    /// This button as a slot in the window's bar, sent back as `id`: its
+    /// icon in the bar's row, or an entry of the bar's menu by its label
+    /// when it has no icon. `None` for a button with no name to show.
+    fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
+        let name = self.accessibility()?.name.filter(|name| !name.is_empty())?;
+        let icon = self.icon.map_or("", crate::icons::Icon::name);
+        let action = crate::window_toolbar::ToolbarAction::new(id, icon, name)
+            .enabled(self.is_enabled())
+            .on(self.toggled == Some(true));
+        Some(if self.icon.is_some() {
+            action
+        } else {
+            action.in_menu()
+        })
+    }
+
     /// Returns the raw string (a fluent key or plain text); the host
     /// resolves i18n and renders.
     fn tooltip(&self) -> Option<&str> {
@@ -1835,29 +2014,6 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.native_resource
-            .as_ref()
-            .map(|_| std::iter::once("tilo.ui.control.invoke".to_owned()).collect())
-            .unwrap_or_default()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .invoke_native_control(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-            }))
-    }
-
     /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
     /// mutation + imperative callback as a mouse click.
     fn perform_action(
@@ -1883,10 +2039,18 @@ impl Widget for Button {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let label = localized_label(&self.label);
+        // The key the name was resolved from: the app's own copy when its
+        // catalogue holds it.
+        let mut key = self.label.as_str();
         let name = if label.is_empty() {
             // Icon-only: prefer the explicit accessible name, else fall
             // back to the tooltip text so the glyph is never silent when
             // a tooltip is set.
+            key = self
+                .accessible_name
+                .as_deref()
+                .or(self.tooltip.as_deref())
+                .unwrap_or_default();
             self.accessible_name
                 .as_ref()
                 .map(|n| i18n!(n))
@@ -1895,6 +2059,7 @@ impl Widget for Button {
         } else {
             Some(label)
         };
+        let interface = name.is_some() && crate::i18n::I18nManager::has_message(key);
         let role = if self.toggled.is_some() {
             Role::ToggleButton
         } else {
@@ -1904,6 +2069,7 @@ impl Widget for Button {
             .with_semantic_key(&self.id)
             .with_bounds(self.rect)
             .with_optional_name(name)
+            .with_interface_name(interface)
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
@@ -1912,6 +2078,31 @@ impl Widget for Button {
                 ..Default::default()
             });
         Some(node)
+    }
+}
+
+impl crate::widget::ResourceOperations for Button {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.native_resource
+            .as_ref()
+            .map(|_| std::iter::once("tilo.ui.control.invoke".to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .invoke_native_control(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
     }
 }
 
@@ -2006,9 +2197,145 @@ impl Button {
 mod tests {
     use super::*;
     use crate::tokens::TextRole;
+
+    /// A button that opens a menu makes room for its chevron after the
+    /// label, so the label is never elided to fit it; an icon-only one
+    /// stays square.
+    #[test]
+    fn a_menu_button_makes_room_for_its_chevron() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let metrics = FaceMetrics::of_role(ControlSize::Small, ButtonRole::Secondary, &theme);
+        let width = |label: &str, menu: bool, text: &mut TextRenderer| {
+            FaceContent {
+                icon: None,
+                image: None,
+                badge: None,
+                label,
+                hint: None,
+                flush: false,
+                filled_icon: false,
+                menu,
+            }
+            .intrinsic_width(&metrics, text, metrics.height)
+        };
+        let label = "Administrator";
+        let plain = width(label, false, &mut text);
+        let menu = width(label, true, &mut text);
+        assert!(
+            (menu - plain - (metrics.icon_gap + metrics.icon)).abs() <= 1.0,
+            "{plain} then {menu}"
+        );
+        assert!((width("", true, &mut text) - metrics.height).abs() < 1e-9);
+        let button = Button::new("role", label).with_menu(Vec::new());
+        assert!(button.button().opens_menu);
+        assert!(!Button::new("save", "Save").opens_menu);
+    }
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An effect on the person's own device runs for a guest (an Editor) and
+    /// even a Viewer without asking anyone; a Viewer's click on one reaching
+    /// outside is refused, and the window says so. No click is dropped
+    /// unseen. (A framework app's ask is shown too: api-tester's
+    /// `a_guests_send_is_asked_in_the_window_saying_who_decides`.)
+    #[test]
+    fn own_device_effects_run_for_guests_and_refusals_are_said() {
+        use crate::permissions::{PermissionContext, Role};
+        let click = |button: Button, role: Role| {
+            let mut harness = crate::headless::FrameHarness::new_with_theme(
+                crate::State::new(),
+                fit_host(1, button),
+                (600, 200),
+                Theme::dark(),
+            );
+            harness.set_permission_ctx(PermissionContext::member("ada", role));
+            harness.relayout();
+            harness.click_named("go").unwrap();
+            harness.relayout();
+            harness
+        };
+        let ran = Arc::new(AtomicUsize::new(0));
+        let counter = || {
+            let ran = Arc::clone(&ran);
+            move || {
+                ran.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+
+        let harness = click(
+            Button::new("go", "Copy").on_own_device_effect(counter()),
+            Role::Editor,
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            1,
+            "{:?}",
+            harness.control_failures()
+        );
+        assert_eq!(
+            harness.asking(),
+            None,
+            "an effect on one's own device asks nobody"
+        );
+        assert_eq!(harness.refusal_shown(), None);
+
+        let harness = click(
+            Button::new("go", "Copy").on_own_device_effect(counter()),
+            Role::Viewer,
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "even a Viewer copies to their own clipboard: {:?}",
+            harness.control_failures()
+        );
+
+        let harness = click(Button::new("go", "Send").on_effect(counter()), Role::Editor);
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "a guest's effect the room asks about waits for the ask: {:?}",
+            harness.control_failures()
+        );
+        assert!(
+            harness.asking().is_some(),
+            "the window asks, saying who decides: {:?}",
+            harness.control_failures()
+        );
+
+        let harness = click(Button::new("go", "Send").on_effect(counter()), Role::Viewer);
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "a Viewer reaches nothing outside"
+        );
+        assert!(
+            harness.refusal_shown().is_some(),
+            "a refused click is said over the window: {:?}",
+            harness.control_failures()
+        );
+    }
+
+    /// An app rebuilds its buttons from state, and the host then refocuses
+    /// the new one: it never saw the press. The ring still follows the
+    /// input that focused it, so a clicked button stays ringless.
+    #[test]
+    fn a_button_rebuilt_after_a_click_shows_no_focus_ring() {
+        crate::focus_visible::note(&crate::synthetic_input::mouse_press());
+        let mut rebuilt = Button::new("wp.bold", "Bold");
+        rebuilt.set_focus(true);
+        assert!(!rebuilt.focus_visible(), "a click never rings the button");
+        crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
+            crate::synthetic_input::key_event(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                None,
+                winit::event::ElementState::Pressed,
+            ),
+        ));
+        assert!(rebuilt.focus_visible(), "the keyboard brings the ring back");
+    }
 
     #[test]
     fn a_shared_button_answers_through_an_ordinary_container() {
@@ -2714,6 +3041,52 @@ mod tests {
             laid_out.layout_needs_measure(),
             "a touch target may be wider"
         );
+    }
+
+    /// The keyboard focus ring reads as a ring on every face: where it meets
+    /// a fill it does not contrast with (a primary face is your colour, as
+    /// the ring is), a line of the ground parts the two.
+    #[test]
+    fn the_focus_ring_stands_apart_from_every_face() {
+        use crate::offscreen::OffscreenRenderer;
+        use crate::tokens::PresenceHue;
+        use crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        let pixel = |rgba: &[u8], y: u32| {
+            let (r, g, b, a) = OffscreenRenderer::sample(rgba, 128, 64, y);
+            vello::peniko::Color::from_rgba8(r, g, b, a)
+        };
+        // Half-pixel edges: the ring covers rows 8 and 9, the parting line
+        // row 10, and the fill starts at row 11.
+        let rect = Rect::new(8.5, 8.5, 120.5, 48.5);
+        for base in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            for hue in [PresenceHue::Blue, PresenceHue::Amber, PresenceHue::Magenta] {
+                let theme = base.clone().with_your_colour(hue);
+                for role in [ButtonRole::Primary, ButtonRole::Secondary] {
+                    let mut scene = Scene::new();
+                    let face = ButtonFace::new(rect, "Save").role(role).focused(true);
+                    Button::paint(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut TextRenderer::new(),
+                        &theme,
+                        &face,
+                    );
+                    let rgba = OffscreenRenderer::new(128, 64)
+                        .render(&scene, theme.tokens.colors.surfaces.content);
+                    let (ring, inside, fill) =
+                        (pixel(&rgba, 9), pixel(&rgba, 10), pixel(&rgba, 12));
+                    let contrast = crate::a11y::contrast_ratio;
+                    assert!(
+                        contrast(ring, inside) >= NON_TEXT_MIN_CONTRAST,
+                        "{} {hue:?} {role:?}: the ring blends into what it rings",
+                        theme.name
+                    );
+                    if inside != fill {
+                        assert!(contrast(inside, fill) >= NON_TEXT_MIN_CONTRAST);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -11,6 +11,33 @@ use vello::Scene;
 // would otherwise shadow the external `winit` crate.
 use ::winit::event::{Modifiers, WindowEvent};
 
+/// One stage of lighting an output: what each output's wake check judges
+/// (`drm::wake_check`), and what a test-control wake fault names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeStage {
+    /// The driver took the commit that lights the CRTC.
+    Commit,
+    /// A vblank followed the modeset: the link to the display is up.
+    Link,
+    /// The CRTC reads back active, showing a mode.
+    Crtc,
+    /// The built-in panel's backlight is unblanked.
+    Backlight,
+}
+
+impl WakeStage {
+    /// Its name in the flight record and the test-control fault.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Commit => "commit",
+            Self::Link => "link",
+            Self::Crtc => "crtc",
+            Self::Backlight => "backlight",
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub mod drm;
 #[cfg(not(target_os = "linux"))]
@@ -358,6 +385,10 @@ pub enum BackendEvent {
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
     /// headless `execute_planned_action` uses.
     Input(WindowEvent),
+    /// Input another of the person's devices sent, delivered as this
+    /// device's own; unlike [`Self::Input`] it does not say someone is at
+    /// this device.
+    Sibling(Box<BackendEvent>),
     /// A real libinput keyboard event, preserving its kernel `CLOCK_MONOTONIC`
     /// timestamp before translation or input-loop queueing. Synthetic input
     /// and compositor-generated repeats never use this variant.
@@ -469,6 +500,8 @@ impl BackendEvent {
             | Self::ShellGesture(..)
             | Self::Touch(_)
             | Self::TabletMode(_)
+            // The person, at another of their devices, using this one.
+            | Self::Sibling(_)
             // A key press an accessibility filter rejected was still pressed.
             | Self::VisualAlert => true,
             // Devices and outputs come and go on their own (a Bluetooth
@@ -708,6 +741,14 @@ pub trait Backend {
         false
     }
 
+    /// The presenter keeps each layer in a canvas of its own, strips in
+    /// canvas coordinates as wide as this, and wants every frame as layers
+    /// (`FrameBuilder::keep_strip_canvases`). `None` for a presenter that
+    /// gets layers only while strips pan.
+    fn strip_layer_canvas(&self) -> Option<u32> {
+        None
+    }
+
     /// The presenter keeps its target between frames and copies what a
     /// scroll in an in-process app moved within it
     /// (`FramePaint::scroll_copies`) before it repaints the damage.
@@ -897,6 +938,32 @@ pub trait Backend {
     /// arrives, so nothing else would trigger it.
     fn reset_display(&mut self) {}
 
+    /// The display woke (`reason`: `resume`, `woke`). An output that could
+    /// not be lit is lit again, and the flight record notes which input
+    /// devices the session holds and, when it comes, the first input event
+    /// after the wake. Default no-op: a hosted or headless backend has no
+    /// outputs or input of its own.
+    fn note_wake(&mut self, _reason: &'static str) {}
+
+    /// Light every output that could not be lit again (a link that did not
+    /// come up, a refused modeset): the person asked for the displays.
+    /// Whether there was one. Default: a backend without outputs of its own
+    /// has none.
+    fn retry_failed_outputs(&mut self, _reason: &'static str) -> bool {
+        false
+    }
+
+    /// Take `stage` as failed in every output's next wake, whatever it
+    /// observes: the test-control fault that proves the wake's recovery on
+    /// hardware that never fails.
+    ///
+    /// # Errors
+    ///
+    /// The backend has no outputs to wake.
+    fn inject_wake_fault(&mut self, _stage: WakeStage) -> Result<(), String> {
+        Err("this backend has no display outputs to wake".to_owned())
+    }
+
     /// Re-read the persisted input, keyboard, accessibility and tablet
     /// preferences and apply them.
     ///
@@ -932,6 +999,19 @@ pub trait Backend {
     /// waiting for the settings poll. Default no-op: only the DRM backend
     /// translates raw keycodes itself.
     fn set_keyboard_source(&mut self, _index: usize) {}
+
+    /// Translate evdev key `keycode` through this device's keyboard layout,
+    /// as a key of its own keyboard is, for input another of the person's
+    /// devices sent. Empty where keys arrive translated by a host session
+    /// (the nested backend).
+    fn translate_key(&mut self, _keycode: u32, _pressed: bool) -> Vec<BackendEvent> {
+        Vec::new()
+    }
+
+    /// Draw the pointer at scene `(x, y)` without reporting a motion: the
+    /// caller delivers the motion itself. Default no-op for backends that
+    /// own no pointer.
+    fn place_pointer(&mut self, _x: f64, _y: f64) {}
 
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.
@@ -1001,7 +1081,6 @@ mod tests {
         assert_eq!(map_tablet_position((0.0, 0.0), output), (2560.0, 0.0));
         assert_eq!(map_tablet_position((0.5, 0.5), output), (3520.0, 540.0));
         assert_eq!(map_tablet_position((1.0, 1.0), output), (4480.0, 1080.0));
-        // Out-of-range samples from the tablet edge stay on that output.
         assert_eq!(map_tablet_position((1.2, -0.1), output), (4480.0, 0.0));
     }
 

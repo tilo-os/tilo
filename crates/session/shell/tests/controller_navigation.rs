@@ -45,6 +45,7 @@ fn group(id: GroupId, tab: u64, label: &str) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -61,8 +62,9 @@ fn desk() -> Desk {
     let strip_a = StripId::new();
     let strip_b = StripId::new();
     let strip_other = StripId::new();
-    let workspace = Workspace {
-        strips: vec![
+    let workspace = {
+        let mut workspace = Workspace::new(home, "Home");
+        workspace.strips = vec![
             Strip {
                 id: strip_a,
                 name: "A".into(),
@@ -73,16 +75,17 @@ fn desk() -> Desk {
                 name: "B".into(),
                 window_groups: vec![group(G_B1, 21, "B1")],
             },
-        ],
-        ..Workspace::new(home, "Home")
+        ];
+        workspace
     };
-    let second = Workspace {
-        strips: vec![Strip {
+    let second = {
+        let mut workspace = Workspace::new(other, "Other");
+        workspace.strips = vec![Strip {
             id: strip_other,
             name: "Other".into(),
             window_groups: vec![group(G_OTHER, 31, "Other")],
-        }],
-        ..Workspace::new(other, "Other")
+        }];
+        workspace
     };
     let tree = WorkspaceTree {
         desktop: shell::shell::state::DesktopTree {

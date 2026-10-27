@@ -2,6 +2,8 @@
 //! choices and separate service histories. Transport state belongs to the
 //! privileged broker; it is never inferred from names or widget state.
 
+pub mod conversations;
+mod drafts;
 mod enrollment;
 mod groups;
 mod history;
@@ -12,24 +14,20 @@ mod setup;
 #[cfg(test)]
 mod tests;
 mod view;
+mod window_bar;
 
 use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::prelude::*;
 use ui::widget::Element;
 
-/// The mounted resource carries no external message plaintext into a workspace
-/// CRDT. Private external histories remain the broker's account-owned data,
-/// and everything Messages does is one of its effects. The record's schema
-/// version is the framework's.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Messages {}
-
-#[resource(kind = "tilo.messages", label = "Messages")]
-impl Messages {}
+/// The record holds only conversations put into it on purpose (delivered
+/// or queued, see [`conversations`]); private external histories remain the
+/// broker's account-owned data, reached through effects.
+pub use conversations::Messages;
 
 #[derive(Clone, Effect)]
-#[effect(operation = "tilo.messages.view", device_only)]
+#[effect(operation = "tilo.messages.view")]
 pub enum MessagesEffect {
     /// Inspect private service groups for one explicitly selected sender account.
     #[effect(
@@ -117,7 +115,7 @@ pub enum MessagesEffect {
     #[effect(view, idempotent)]
     SelectSetupAccount { service: String, account: String },
     /// Show the native host's short-lived private linking code.
-    #[effect(job, sensitive, cancellable, label = "messages-start-link")]
+    #[effect(attended, job, sensitive, cancellable, label = "messages-start-link")]
     BeginLink { service: String, account: String },
     /// Confirm the displayed attempt on the explicitly selected account.
     #[effect(job, sensitive, cancellable, label = "messages-finish-link")]
@@ -127,10 +125,23 @@ pub enum MessagesEffect {
         attempt: String,
     },
     /// Link a first account without manufacturing a configured account row.
-    #[effect(job, sensitive, cancellable, label = "messages-first-account-prepare")]
+    #[effect(
+        attended,
+        job,
+        sensitive,
+        cancellable,
+        label = "messages-first-account-prepare"
+    )]
     BeginFirstEnrollment { service: String },
     /// Open the host's private SIM chooser without granting modem access.
-    #[effect(job, sensitive, cancellable, idempotent, label = "messages-first-sms")]
+    #[effect(
+        attended,
+        job,
+        sensitive,
+        cancellable,
+        idempotent,
+        label = "messages-first-sms"
+    )]
     ListSmsSims,
     /// Review one opaque host choice; bus paths and SIM identifiers are not inputs.
     #[effect(job, sensitive, cancellable, label = "messages-select-sim")]
@@ -188,6 +199,27 @@ pub enum MessagesEffect {
     /// the adapter must separately verify current provider identity before I/O.
     #[effect(destructive)]
     ConfirmAccount { person: String, choice: String },
+    /// Search messages
+    ///
+    /// The messages kept in this record (delivered into it or queued in
+    /// it) holding every word of the query in their sender, recipient,
+    /// conversation or text, newest first. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    SearchMessages {
+        #[param("The words to find, in any case")]
+        query: String,
+    },
+    /// Export conversations
+    ///
+    /// Keeps the transcript of one conversation, or of every one, as
+    /// content, and answers with its content address. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportContent {
+        #[param("md (the default) or json", choices = ["md", "json"])]
+        format: Option<String>,
+        #[param("The conversation; every one when omitted")]
+        conversation: Option<String>,
+    },
     /// Send through the currently authorized broker connection. It remains
     /// unavailable until the host supplies that connection; no local append
     /// or delivery state substitutes for a transport operation.
@@ -211,6 +243,22 @@ impl std::fmt::Debug for MessagesEffect {
 }
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+
+/// The id of [`open_contacts_action`] on the app's resource.
+pub(crate) const OPEN_CONTACTS: &str = "open-contacts";
+
+/// Opening Contacts, where the people Messages lists are added: the
+/// workspace opens the app ([`ApplicationLaunch`]), so the empty state's
+/// button, search and agents all ask for the same thing.
+///
+/// [`ApplicationLaunch`]: ui::tilo_actions::remote::ApplicationLaunch
+pub(crate) fn open_contacts_action() -> ui::tilo_actions::ActionSpec {
+    ui::tilo_actions::remote::ApplicationLaunch::app("so.tilo.contacts").spec(
+        OPEN_CONTACTS,
+        &CATALOG.t("messages-open-contacts"),
+        &CATALOG.t("messages-open-contacts-description"),
+    )
+}
 
 pub struct MessagesShell;
 
@@ -251,6 +299,10 @@ impl ResourceApp for MessagesShell {
     fn view(cx: &mut ViewCx<Messages>) -> Element {
         view::build(cx)
     }
+    /// Open Contacts, where the people you message are added.
+    fn local_operations() -> Vec<ui::tilo_actions::ActionSpec> {
+        vec![open_contacts_action()]
+    }
     fn scenarios() -> &'static [&'static str] {
         &[
             "empty",
@@ -275,4 +327,27 @@ impl ResourceApp for MessagesShell {
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(MessagesShell)
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::MessagesShell::scenarios() {
+            let mut app = TestApp::<super::MessagesShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
 }

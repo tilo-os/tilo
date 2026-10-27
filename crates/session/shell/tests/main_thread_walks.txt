@@ -1,0 +1,6 @@
+# Sites where the compositor's main thread still walks a path after startup
+# (FileWalk::site: the innermost frame that is not std or libc).
+# Each is a freeze waiting for a busy disk. This list only shrinks; see
+# desktop_smoke::the_main_loop_walks_no_path_after_startup.
+tilo_files::native::bounded::read
+tilo_files::native::entry_names

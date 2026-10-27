@@ -35,6 +35,9 @@ Environment=LIBSEAT_BACKEND=logind
 # tilo-control reaches the session here (the compositor's dev-overrides
 # feature reads TILO_TEST_CONTROL).
 Environment=TILO_TEST_CONTROL=/run/tilo-vm/%i/control.sock
+# A slot's throwaway identity joins no public site: this file names none and
+# replaces both the image's and the host's community.toml.
+Environment=TILO_COMMUNITY_CONFIG=/usr/share/tilo/tilo-vm-community.toml
 RuntimeDirectory=tilo-vm/%i
 # PAM moves the process into session-N.scope, so `journalctl -u` does not
 # see its output; tilo-vm logs reads this identifier instead.

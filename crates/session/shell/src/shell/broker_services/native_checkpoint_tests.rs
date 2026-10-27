@@ -1,4 +1,3 @@
-//! The installed room service, certified broker admission, and real retained backend.
 use super::*;
 use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
 
@@ -109,7 +108,7 @@ impl CheckpointDriver {
         let mut pending = self
             .host
             .invoke(&self.caller, self.request(action, arguments, invocation));
-        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             match pending.poll_ready() {
                 PendingPoll::Ready(receipt) => {
@@ -482,7 +481,7 @@ fn assert_checkpoint_admission_refused(
 ) {
     use tilo_actions::remote::PendingPoll;
     let mut pending = host.invoke(&driver.caller, request);
-    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         match pending.poll_ready() {
             PendingPoll::Ready(receipt) => {
@@ -730,7 +729,10 @@ fn native_checkpoint_broker_rechecks_current_read_and_room_write_on_invoke_and_o
                 &fixture.certificate,
             )
             .unwrap();
-        let completion = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        let completion = job
+            .completion
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
         assert!(completion.code.is_empty(), "{}", completion.message);
         for (index, (action, arguments, invocation)) in operations.iter().enumerate() {
             if revoke_write && index >= 2 {
@@ -828,7 +830,10 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
             &fixture.certificate,
         )
         .unwrap();
-    let completion = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    let completion = job
+        .completion
+        .recv_timeout(tilo_test_env::hang_bound())
+        .unwrap();
     assert!(completion.code.is_empty(), "{}", completion.message);
     assert!(
         runtime

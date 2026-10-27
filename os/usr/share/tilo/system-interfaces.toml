@@ -21,17 +21,23 @@
 system = 1
 
 # App ↔ shell: the shell-ui connection (crates/sdk/ui-core/interface.toml).
-shell-ui = 10
+shell-ui = 17
 
 # App ↔ runtime: every service under [runtime] below
 # (crates/runtime/runtime-portal/interface.toml).
-runtime = 2
+runtime = 10
+
+# App ↔ app host: the package-management door the Store holds, and the runtime
+# and language-pack requests the Browser and Settings make, on the app-host
+# service only those three apps are handed (crates/packaging/app-host/interface.toml).
+# Its own interface, so a change to what the Store reads never versions the
+# apps that never talk to the app host.
+app-host = 3
 
 [runtime]
 # Session services handed to apps as connected sockets; each speaks the
 # runtime interface's version.
 services = [
-    "app-host",
     "collab",
     "compat",
     "identity",

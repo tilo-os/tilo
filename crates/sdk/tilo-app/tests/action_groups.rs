@@ -72,7 +72,6 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
         assert!(app.undo());
         assert_eq!(texts(&app), ["milk"]);
 
-        // A button bound to a group applies it as one action.
         let versions = app.versions().len();
         let capture = tilo_app::local_document_action::Queue::new();
         {
@@ -96,19 +95,17 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
         assert!(app.redo());
         assert_eq!(app.state().items.len(), 3);
     }
-    // phase: a_group_is_as_consequential_as_its_members
+    // phase: a_group_undo_takes_back_asks_nothing
     {
         let mut app = TestApp::<ShoppingApp>::new().unwrap();
         app.invoke(Shopping::ADD.with("milk")).unwrap();
-        // One destructive member makes the whole group ask for confirmation.
+        // A destructive member of the document alone: Undo takes the whole
+        // group back, so it applies at once.
         let tidy = Invoke::group([Shopping::ADD.with("tea"), Shopping::CLEAR.invoke()]);
-        assert!(matches!(
-            app.invoke(tidy.clone()),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ));
-        assert_eq!(texts(&app), ["milk"], "nothing applied before confirmation");
-        app.invoke_confirmed(tidy).unwrap();
+        app.invoke(tidy).unwrap();
         assert!(app.state().items.is_empty());
+        assert!(app.undo());
+        assert_eq!(texts(&app), ["milk"]);
     }
     // phase: the_group_action_is_published_for_agents_and_scripts
     {
@@ -119,6 +116,6 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == tilo_app::tilo_resource::GROUP)
             .expect("group is published");
-        assert!(group.is_programmatic(), "never a palette row");
+        assert!(!group.reaches_people(), "never a palette row");
     }
 }

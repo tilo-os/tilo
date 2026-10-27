@@ -18,7 +18,6 @@ pub const ID: &str = "media-codecs";
 /// The hardware H.264/HEVC part (freeworld Mesa VA-API drivers).
 pub const MESA_PART: &str = "tilo-codecs-mesa";
 
-/// The media codecs extension's id.
 #[must_use]
 pub fn id() -> ExtensionId {
     ExtensionId::known(ID)

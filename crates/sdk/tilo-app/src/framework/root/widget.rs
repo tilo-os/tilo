@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use ui_core::Theme;
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
+use ui_core::host_operation::ResourceOperations;
 use ui_core::presence::PresenceCtx;
 use ui_core::record::RecordSaveStatus;
 use ui_core::resources::PublishesResources;
@@ -48,8 +49,10 @@ pub(crate) trait RootModel:
         presence: &PresenceCtx,
     );
     fn needs_redraw(&self) -> bool;
-    /// The window's save status the root presents over its view.
+    /// The window's save status the root says in the window's bar.
     fn save_indicator(&self) -> &crate::framework::saves::SaveIndicator;
+    /// The save status, for a test to move its clock.
+    #[cfg(test)]
     fn save_indicator_mut(&mut self) -> &mut crate::framework::saves::SaveIndicator;
     fn resource_operation_handlers(&self) -> HashSet<String>;
     fn poll_resource_operation(
@@ -81,6 +84,8 @@ pub(crate) trait RootApp {
     fn take_save_retry(&mut self) -> bool;
     fn record_save_status(&mut self, status: RecordSaveStatus);
     fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal);
+    fn take_notices(&mut self) -> Vec<String>;
+    fn record_said(&mut self, text: &str);
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError>;
     fn restore_application_view(
         &mut self,
@@ -174,6 +179,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn SearchSource>(self);
         } else if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
+        } else if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
         } else {
             self.0.provide(request);
         }
@@ -186,6 +193,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn SearchSource>(self);
         } else if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
+        } else if request.wants::<dyn ResourceOperations>() {
+            request.provide::<dyn ResourceOperations>(self);
         } else {
             self.0.provide_mut(request);
         }
@@ -238,24 +247,16 @@ impl Decorator for RootWidget {
         self.0.needs_redraw()
     }
 
-    // The save status floats over the view: its pixels are the root's own,
-    // beside whatever the view damaged.
     fn collect_damage(&self, regions: &mut Vec<ui_core::vello::kurbo::Rect>) {
         self.0.view().collect_damage(regions);
-        let area = self.0.view().get_rect();
-        self.0
-            .save_indicator()
-            .collect_damage(area, ui_core::time::now(), regions);
     }
 
     fn mark_drawn(&mut self) {
-        self.0.save_indicator_mut().mark_drawn();
         self.0.view_mut().mark_drawn();
     }
 
     fn has_transient_feedback(&self) -> bool {
         self.0.view().has_transient_feedback()
-            || self.0.save_indicator().is_visible(ui_core::time::now())
     }
 
     // The save status's deadline is the sync's; the view serves its own.
@@ -279,46 +280,16 @@ impl Decorator for RootWidget {
         }
     }
 
-    // A press on the save status's buttons is its own; everything else is
-    // the view's.
     fn handle_event(
         &mut self,
         event: &ui_core::winit::event::WindowEvent,
         ctx: &mut ui_core::widget::EventCtx<'_>,
     ) {
-        use ui_core::winit::event::{ElementState, MouseButton, WindowEvent};
-        let save = self.0.save_indicator_mut();
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                save.pointer_moved(ui_core::vello::kurbo::Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if save.press() => {
-                *ctx.handled = true;
-                return;
-            }
-            _ => {}
-        }
         self.0.view_mut().handle_event(event, ctx);
     }
 
-    // The save status is a synthetic child of the view's node; a view that
-    // is presentational stands in a plain group while it shows.
     fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {
-        let view = self.0.view().accessibility();
-        let Some(save) = self.0.save_indicator().accessibility() else {
-            return view;
-        };
-        let mut node =
-            view.unwrap_or_else(|| ui_core::a11y::AccessNode::new(ui_core::a11y::Role::Group));
-        node.children.push(save);
-        Some(node)
+        self.0.view().accessibility()
     }
 
     fn perform_semantic_action(
@@ -328,11 +299,9 @@ impl Decorator for RootWidget {
         state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.0.save_indicator_mut().perform(target)
-            || self
-                .0
-                .view_mut()
-                .perform_semantic_action(target, action, state, path)
+        self.0
+            .view_mut()
+            .perform_semantic_action(target, action, state, path)
     }
 
     fn name(&self) -> &'static str {
@@ -344,7 +313,9 @@ impl Decorator for RootWidget {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self.0.as_any_mut())
     }
+}
 
+impl ResourceOperations for RootWidget {
     fn resource_operation_handlers(&self) -> HashSet<String> {
         self.0.resource_operation_handlers()
     }
@@ -418,6 +389,14 @@ impl AppWidget for RootWidget {
 
     fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal) {
         self.0.record_refused(refusal);
+    }
+
+    fn take_notices(&mut self) -> Vec<String> {
+        self.0.take_notices()
+    }
+
+    fn record_said(&mut self, text: &str) {
+        self.0.record_said(text);
     }
 
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {

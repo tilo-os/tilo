@@ -57,4 +57,5 @@ modules so its parse is gone by then, and only as many split modules are
 emitted at once as available memory (the cgroup limit, else MemAvailable)
 allows. The same split now fits in 7 GB.
 
-`src/main.rs` is Tilo's.
+`src/main.rs` and `src/dedupe.rs` (merging the copies of a function a module
+carries more than once) are Tilo's.

@@ -12,6 +12,19 @@ set -euo pipefail
 arch=${1:?usage: package-lane.sh amd64|arm64}
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
+# What would fail the Fedora build after hours of compiling fails here first: the app store's
+# trust root (dist/rpm/stage-app-store.sh refuses the same keys), and an RPM lint exception
+# path that no longer matches (build-rpm.sh repeats this inside each container).
+require_registry_owner() {
+  local owner=${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}
+  [[ $owner =~ ^[0-9a-fA-F]{64}$ && $owner != $(printf '0%.0s' {1..64}) ]] || {
+    printf 'TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key\n' >&2
+    return 1
+  }
+}
+require_registry_owner
+python3 dist/rpm/test-rpmlint-config.py
+
 # t runs this as a micro-VM step in the builder image, as root in a guest of its own; the
 # builder carries no container engine, so the guest installs Podman from Fedora first.
 if ! command -v docker >/dev/null && ! command -v podman >/dev/null \

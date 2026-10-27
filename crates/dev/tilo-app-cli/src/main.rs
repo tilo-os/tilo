@@ -99,6 +99,9 @@ enum Command {
     Apply(publishing::ApplyArgs),
     /// Upload packages and ask the registry to list them.
     Publish(publishing::PublishArgs),
+    /// Run a build of this app, or a bot's program, in a running room, for
+    /// everyone in it.
+    Push(tilo_app_cli::push::PushArgs),
 }
 
 #[derive(clap::Args)]
@@ -621,10 +624,21 @@ impl TargetArg {
 }
 
 #[derive(clap::Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent CLI flag (release, assertions, allow_planned, \
+              no_default_features); every combination is a build someone can ask for"
+)]
 struct TargetOptions {
     /// Optimized build.
     #[arg(long)]
     release: bool,
+    /// Web only: with `--release`, keep debug assertions and overflow checks in
+    /// the optimized bundle (the workspace's `wasm-assert` profile), so a
+    /// qualified or measured bundle is never faster for having stopped
+    /// checking.
+    #[arg(long, requires = "release")]
+    assertions: bool,
     /// Web only: which bundle to build.
     #[arg(long, value_enum, default_value = "auto")]
     bundle: tilo_app_cli::targets::WebBundle,
@@ -646,12 +660,28 @@ impl TargetOptions {
     ) -> tilo_app_cli::targets::TargetRequest {
         let mut request = tilo_app_cli::targets::TargetRequest::new(target);
         request.release = self.release;
+        request.assertions = self.assertions;
         request.allow_planned = self.allow_planned;
         request.bundle = self.bundle;
         request.features.clone_from(&self.features);
         request.no_default_features = self.no_default_features;
         request
     }
+}
+
+/// `--share` for `run` and `dev --platform web`.
+#[derive(Clone, Copy, clap::Args)]
+struct ShareArgs {
+    /// Open the app in a room other people join, each from their own
+    /// browser window as a person of their own (`--platform web`). The SDK's
+    /// room host runs on this machine and admits everyone who opens the
+    /// printed join page.
+    #[arg(long)]
+    share: bool,
+
+    /// With `--share`, start an empty room instead of reopening the last.
+    #[arg(long, requires = "share")]
+    fresh: bool,
 }
 
 /// The package platform and architecture a command builds for, the other
@@ -712,6 +742,9 @@ struct RunArgs {
     /// Address the page is served on (`--platform web`).
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
+
+    #[command(flatten)]
+    share: ShareArgs,
 
     /// The `adb` serial of the device or emulator to install on
     /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
@@ -828,6 +861,9 @@ struct DevArgs {
     /// Address the web page is served on (`--platform web`).
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
+
+    #[command(flatten)]
+    share: ShareArgs,
 
     /// The `adb` serial of the device or emulator to install on
     /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
@@ -1161,6 +1197,7 @@ fn main() -> ExitCode {
         Command::Keys(args) => publishing::run_keys(args),
         Command::Apply(args) => publishing::run_apply(args),
         Command::Publish(args) => publishing::run_publish(args),
+        Command::Push(args) => tilo_app_cli::push::run_push(args),
     };
     let code = match &result {
         Ok(_) => ExitCode::SUCCESS,
@@ -1268,6 +1305,7 @@ impl Command {
             Self::Keys(_) => "keys",
             Self::Apply(_) => "apply",
             Self::Publish(_) => "publish",
+            Self::Push(_) => "push",
         }
     }
 }
@@ -1874,7 +1912,11 @@ fn run_run(args: RunArgs) -> Result<Value> {
         if platform == tilo_app_cli::PackagePlatform::Web {
             tilo_app_cli::web::run_web(
                 &path,
-                &tilo_app_cli::web::WebDevOptions { bind: args.bind },
+                &tilo_app_cli::web::WebDevOptions {
+                    bind: args.bind,
+                    share: args.share.share,
+                    fresh: args.share.fresh,
+                },
             )?;
             return Ok(json!({"stopped": true}));
         }
@@ -1981,7 +2023,11 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         tilo_app_cli::web::dev_web(
             &path,
             &request,
-            &tilo_app_cli::web::WebDevOptions { bind: args.bind },
+            &tilo_app_cli::web::WebDevOptions {
+                bind: args.bind,
+                share: args.share.share,
+                fresh: args.share.fresh,
+            },
         )?;
     } else if platform == tilo_app_cli::PackagePlatform::Android {
         tilo_app_cli::android::dev_on_device(
@@ -2018,6 +2064,7 @@ fn web_build_request(args: BuildArgs) -> tilo_app_cli::web::WebBuildRequest {
         output: args.output,
         app_only: args.app_only,
         release: args.options.release,
+        assertions: args.options.assertions,
     }
 }
 
@@ -2052,6 +2099,9 @@ fn build_android(
 ) -> Result<Value> {
     if args.app_only || args.static_link {
         anyhow::bail!("--app-only and --static are not for --platform android");
+    }
+    if args.options.assertions {
+        anyhow::bail!("--assertions keeps a web bundle's assertions; it is for --platform web");
     }
     let build = tilo_app_cli::android::build(
         path,
@@ -2107,6 +2157,9 @@ fn build_native(
 ) -> Result<Value> {
     if args.app_only {
         anyhow::bail!("--app-only is for --platform web");
+    }
+    if args.options.assertions {
+        anyhow::bail!("--assertions keeps a web bundle's assertions; it is for --platform web");
     }
     let build = tilo_app_cli::build_native(
         path,
@@ -2634,6 +2687,10 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
         .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|dir| dir.join("Cargo.toml").is_file())
+        // An application has a manifest; a crate beside the apps without one
+        // (the Browser's parts, Settings' pane libraries) is a library an
+        // application links, certified through that application.
+        .filter(|dir| dir.join("tilo-app.toml").is_file())
         // The agent is the headless consumer being used to drive apps; its
         // broker protocol is certified by the structural contract and tests.
         .filter(|dir| dir.file_name().is_none_or(|name| name != "agent"))
@@ -3816,7 +3873,7 @@ mod tests {
 
         // Phase: a_web_build_honours_release.
         {
-            let web = |args: &[&str]| {
+            let parsed = |args: &[&str]| {
                 let cli = Cli::try_parse_from(
                     ["tilo-app", "build", "--platform", "web"]
                         .iter()
@@ -3826,10 +3883,20 @@ mod tests {
                 let Command::Build(build) = cli.command else {
                     panic!("expected build command");
                 };
-                web_build_request(build).release
+                web_build_request(build)
             };
+            let web = |args: &[&str]| parsed(args).release;
             assert!(web(&["--release"]));
             assert!(!web(&[]));
+            // `--assertions` reaches the build only beside `--release`: an
+            // unoptimised build already asserts, and a plain `--release` must
+            // not silently gain or lose them.
+            assert!(parsed(&["--release", "--assertions"]).assertions);
+            assert!(!parsed(&["--release"]).assertions);
+            assert!(
+                Cli::try_parse_from(["tilo-app", "build", "--platform", "web", "--assertions"])
+                    .is_err()
+            );
         }
 
         // Phase: every_build_command_takes_platform_and_arch.

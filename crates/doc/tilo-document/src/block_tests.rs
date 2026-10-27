@@ -830,3 +830,56 @@ fn a_viewer_cannot_reach_the_actions_the_editor_takes() {
         );
     }
 }
+
+#[test]
+fn replace_text_rewrites_the_first_occurrence_where_it_is_or_every_one() {
+    let mut replica = seeded("# Plan\nbuy **oat** milk and milk\n- milk run");
+    let answer = call(
+        &mut replica,
+        "replace-text",
+        json!({ "find": "milk", "replace": "bread" }),
+    )
+    .unwrap();
+    assert_eq!(
+        page(&replica),
+        ["# Plan", "buy **oat** bread and milk", "- milk run"],
+        "the first occurrence only, the marks around it kept"
+    );
+    assert!(
+        answer.to_string().contains(&id_of(&replica, "buy")),
+        "it answers the block it changed: {answer}"
+    );
+    call(
+        &mut replica,
+        "replace-text",
+        json!({ "find": "milk", "replace": "tea", "all": true }),
+    )
+    .unwrap();
+    assert_eq!(
+        page(&replica),
+        ["# Plan", "buy **oat** bread and tea", "- tea run"]
+    );
+}
+
+#[test]
+fn replace_text_is_refused_naming_text_the_page_lacks() {
+    let mut replica = seeded("hello world");
+    let refused = call(
+        &mut replica,
+        "replace-text",
+        json!({ "find": "goodbye", "replace": "x" }),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("`goodbye` is not in the document"),
+        "{refused}"
+    );
+    let empty = call(
+        &mut replica,
+        "replace-text",
+        json!({ "find": "", "replace": "x" }),
+    )
+    .unwrap_err();
+    assert!(empty.contains("empty"), "{empty}");
+    assert_eq!(page(&replica), ["hello world"]);
+}

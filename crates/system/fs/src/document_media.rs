@@ -49,9 +49,11 @@ use futures_util::{Stream, StreamExt as _};
 use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
 use runtime_fs::blobs::{
-    BlobBackend, BlobChunks, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, ReadOutcome,
+    BlobBackend, BlobChunks, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, PublicRead,
+    ReadOutcome,
 };
 
+use crate::public_content::PublicContent;
 use crate::store::ContentStore;
 
 mod import;
@@ -92,20 +94,95 @@ async fn record_reference_tag(store: &ContentStore, tag: String, hash: Hash) -> 
 /// The daemon side of the document-media capability.
 pub struct DocumentMedia {
     store: Arc<ContentStore>,
+    /// The public content this device keeps, where it keeps any.
+    public: Option<Arc<PublicContent>>,
+    /// The mount's write attribution leases and its mount point, which the
+    /// session reaches through `SessionBlobs.attributeWrites`.
+    attributions: Option<(
+        Arc<crate::write_attribution::WriteAttributions>,
+        std::path::PathBuf,
+    )>,
 }
 
 impl DocumentMedia {
     /// Serve `store`.
     pub fn new(store: Arc<ContentStore>) -> Arc<Self> {
-        Arc::new(Self { store })
+        Arc::new(Self {
+            store,
+            public: None,
+            attributions: None,
+        })
+    }
+
+    /// Serve `store` and the public content this device keeps in it.
+    pub fn with_public(store: Arc<ContentStore>, public: Arc<PublicContent>) -> Arc<Self> {
+        Arc::new(Self {
+            store,
+            public: Some(public),
+            attributions: None,
+        })
+    }
+
+    fn public(&self) -> Result<&Arc<PublicContent>, BlobError> {
+        self.public
+            .as_ref()
+            .ok_or_else(|| BlobError::Refused("this device keeps no public content".into()))
+    }
+
+    /// Let the session lease write attributions for the workspace mounted at
+    /// the given mount point ([`crate::write_attribution`]).
+    #[must_use]
+    pub fn with_write_attributions(
+        self: Arc<Self>,
+        attributions: (
+            Arc<crate::write_attribution::WriteAttributions>,
+            std::path::PathBuf,
+        ),
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            store: Arc::clone(&self.store),
+            public: self.public.clone(),
+            attributions: Some(attributions),
+        })
+    }
+
+    /// The session names the agent behind this device's next writes to some
+    /// absolute paths under the mount. Only the session root reaches this.
+    ///
+    /// # Errors
+    ///
+    /// Refuses when this daemon mounts no workspace, a path lies outside the
+    /// mount, or the lease is invalid.
+    pub fn lease_write_attribution(
+        &self,
+        attribution: runtime_fs::blobs::WriteAttribution,
+    ) -> Result<(), BlobError> {
+        let Some((leases, mount_point)) = &self.attributions else {
+            return Err(BlobError::Refused(
+                "this filesystem attributes no writes".into(),
+            ));
+        };
+        let paths = attribution
+            .paths
+            .iter()
+            .map(|path| crate::write_attribution::mount_relative(mount_point, path))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| BlobError::Refused("an attributed path is outside the mount".into()))?;
+        leases
+            .grant(
+                paths,
+                fs_protocol::FileAttributionV1 {
+                    actor: attribution.actor,
+                    label: attribution.label,
+                    color: attribution.color,
+                },
+                attribution.ttl,
+            )
+            .map_err(|error| BlobError::Refused(error.to_string()))
     }
 
     /// Store `bytes` for `scope`. The whole payload is always hashed and
     /// imported before answering, so timing does not reveal prior presence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error above [`MAX_BLOB_BYTES`] or when the store fails.
     pub async fn store(&self, scope: &BlobScope, bytes: Vec<u8>) -> Result<Hash, BlobError> {
         let len = bytes.len() as u64;
         if len > MAX_BLOB_BYTES {
@@ -288,6 +365,53 @@ impl BlobBackend for DocumentMedia {
                 None => None,
             }
         })
+    }
+
+    fn public_keep(
+        self: Arc<Self>,
+        scope: BlobScope,
+        name: String,
+    ) -> BlobFuture<Result<(), BlobError>> {
+        Box::pin(async move { self.public()?.keep(&name, scope.app()) })
+    }
+
+    fn public_release(
+        self: Arc<Self>,
+        scope: BlobScope,
+        name: String,
+    ) -> BlobFuture<Result<(), BlobError>> {
+        Box::pin(async move { self.public()?.release(&name, scope.app()) })
+    }
+
+    fn public_read(
+        self: Arc<Self>,
+        name: String,
+        offset: u64,
+        max_len: u32,
+    ) -> BlobFuture<Result<PublicRead, BlobError>> {
+        Box::pin(async move {
+            let public = Arc::clone(self.public()?);
+            // Reading touches the disk.
+            tokio::task::spawn_blocking(move || public.read(&name, offset, max_len))
+                .await
+                .map_err(|error| BlobError::Refused(error.to_string()))?
+        })
+    }
+
+    fn refresh_public(self: Arc<Self>) -> BlobFuture<u32> {
+        Box::pin(async move {
+            match self.public.clone() {
+                Some(public) => public.refresh().await,
+                None => 0,
+            }
+        })
+    }
+
+    fn attribute_writes(
+        &self,
+        attribution: runtime_fs::blobs::WriteAttribution,
+    ) -> Result<(), BlobError> {
+        self.lease_write_attribution(attribution)
     }
 }
 

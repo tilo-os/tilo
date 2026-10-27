@@ -14,6 +14,11 @@ pub const ROOM_KIND: &str = "tilo.room";
 /// what a commenter may do.
 pub const COMMENTS_FIELD: &str = "comments";
 
+/// The field holding reactions, wherever a model keeps them
+/// (`tilo_resource::Reactions`). Reacting is commenting's smallest form, so
+/// the Commenter preset covers it at any depth too.
+pub const REACTIONS_FIELD: &str = "reactions";
+
 /// The field node every app's moderation actions sit under (acting on other
 /// people's content: removing their message, locking a channel). One rule on
 /// it covers every app's moderation, so presets need no list of verbs.
@@ -64,13 +69,18 @@ pub mod governance {
     pub const RESUME_BOT: &str = "resume-bot";
     /// Become a bot's installer, after reviewing its grant.
     pub const ADOPT_BOT: &str = "adopt-bot";
+    /// Choose the version of an app every member of the room runs: a
+    /// registry release, or a developer's own signed build. Every member's
+    /// desktop is to run it, and changes made with another version wait
+    /// until their author runs this one.
+    pub const INSTALL_APP: &str = "install-app";
     /// Start, end, restart or moderate one of the room's calls. A call is
     /// room governance (who may speak, who is denied), so no preset below
     /// the owner's holds it: the owner, and members the room grants it, run
     /// calls, and any member joins an active one.
     pub const CALL: &str = "call";
 
-    pub const ALL: [&str; 20] = [
+    pub const ALL: [&str; 21] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -90,6 +100,7 @@ pub mod governance {
         PAUSE_BOT,
         RESUME_BOT,
         ADOPT_BOT,
+        INSTALL_APP,
         CALL,
     ];
 
@@ -97,7 +108,13 @@ pub mod governance {
     /// person's own grants must allow them: an Ask there is no authority the
     /// person's confirmation could supply. Pausing is not among them, so a
     /// moderator can stop a misbehaving bot without being able to widen it.
-    pub const PRIVILEGED: [&str; 4] = [INSTALL_BOT, UNINSTALL_BOT, SET_BOT_APPEARANCE, ADOPT_BOT];
+    pub const PRIVILEGED: [&str; 5] = [
+        INSTALL_BOT,
+        UNINSTALL_BOT,
+        SET_BOT_APPEARANCE,
+        ADOPT_BOT,
+        INSTALL_APP,
+    ];
 
     #[must_use]
     pub fn is_privileged(action: &str) -> bool {
@@ -117,7 +134,6 @@ pub fn room_resource(room: &str) -> TreePath {
     TreePath::room(room).kind(ROOM_KIND)
 }
 
-/// The node of one governance action.
 #[must_use]
 pub fn governance_action(room: &str, action: &str) -> TreePath {
     room_resource(room).action(action)
@@ -213,12 +229,47 @@ pub fn comments(room: &str) -> TreePath {
         .push(Level::Field, COMMENTS_FIELD)
 }
 
+/// Where reactions live in a room, at any depth.
+#[must_use]
+pub fn reactions(room: &str) -> TreePath {
+    TreePath::room(room)
+        .rest()
+        .push(Level::Field, REACTIONS_FIELD)
+}
+
 /// Where moderation lives in a room, at any depth.
 #[must_use]
 pub fn moderation(room: &str) -> TreePath {
     TreePath::room(room)
         .rest()
         .push(Level::Field, MODERATION_FIELD)
+}
+
+/// What one who cannot read `room`'s grants (a page) asks the room to learn
+/// its person's role, in order: may they write anywhere in it, moderate it,
+/// and govern who holds which role. [`role_answered`] reads the answers.
+#[must_use]
+pub fn telling_nodes(room: &str) -> [TreePath; 3] {
+    [
+        TreePath::room(room),
+        moderation(room).any(Level::Action),
+        governance_action(room, governance::SET_ROLE),
+    ]
+}
+
+/// The role the room's answers for [`telling_nodes`] describe. A Commenter
+/// writes nowhere they ask, so reads as a Viewer.
+#[must_use]
+pub fn role_answered([writes, moderates, governs]: [bool; 3]) -> Role {
+    if governs {
+        Role::Owner
+    } else if moderates {
+        Role::Moderator
+    } else if writes {
+        Role::Editor
+    } else {
+        Role::Viewer
+    }
 }
 
 /// The id of the grant that bans `person` from a room.
@@ -345,9 +396,6 @@ impl Preset {
         }
     }
 
-    /// # Errors
-    /// When the preset is unnamed, empty, has a rule covering no kind, or two
-    /// rules contradict on one node.
     pub fn validate(&self) -> Result<(), PresetError> {
         if self.name.trim().is_empty() {
             return Err(PresetError::Unnamed);
@@ -400,7 +448,7 @@ impl Preset {
 /// | Role | Grants on the room |
 /// |---|---|
 /// | Viewer | Read: Allow |
-/// | Commenter | Read: Allow; comments: Allow (Undoable) |
+/// | Commenter | Read: Allow; comments, reactions: Allow (Undoable) |
 /// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation: Deny |
 /// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `pause-bot`, `resume-bot`: Allow |
 /// | Owner | everything: Allow |
@@ -416,6 +464,7 @@ pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {
         Role::Commenter => vec![
             Rule::new(room_node, KindSet::READ, Answer::Allow),
             Rule::new(comments(room), KindSet::UNDOABLE, Answer::Allow),
+            Rule::new(reactions(room), KindSet::UNDOABLE, Answer::Allow),
         ],
         Role::Editor => editor_rules(room, Answer::Deny),
         Role::Moderator => {
@@ -433,7 +482,6 @@ pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {
     }
 }
 
-/// An Editor's rules, with `moderation` answering for the moderation node.
 fn editor_rules(room: &str, moderation_answer: Answer) -> Vec<Rule> {
     let room_node = TreePath::room(room);
     vec![
@@ -452,7 +500,6 @@ fn editor_rules(room: &str, moderation_answer: Answer) -> Vec<Rule> {
     ]
 }
 
-/// The preset a role stands for in `room`.
 #[must_use]
 pub fn role_preset(role: Role, room: &str) -> Preset {
     let description = match role {
@@ -477,13 +524,123 @@ pub fn room_role_grants(room: &str, granted_by: &Subject) -> Vec<Grant> {
         .into_iter()
         .flat_map(|role| {
             role_preset(role, room).assign(
-                &format!("role:{}", role.name().to_ascii_lowercase()),
+                &role_grant_prefix(role),
                 &Subject::Role(role),
                 granted_by,
                 &Lifetime::UntilRevoked,
             )
         })
         .collect()
+}
+
+/// The id prefix of `role`'s built-in grants: `role:<role>`.
+fn role_grant_prefix(role: Role) -> String {
+    format!("role:{}", role.name().to_ascii_lowercase())
+}
+
+/// Whether `grant` is one of a built-in role's grants: given to the role
+/// itself under a `role:<role>:<index>` id. Those are the code's, from
+/// [`role_rules`]; a room's own adjustments to a role are grants under other
+/// ids and custom presets assign `preset:` ids, so neither is one.
+#[must_use]
+pub fn is_role_grant(grant: &Grant) -> bool {
+    let Subject::Role(role) = grant.subject else {
+        return false;
+    };
+    grant
+        .id
+        .as_str()
+        .strip_prefix(role_grant_prefix(role).as_str())
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `grants` with each built-in role's grants as [`role_rules`] defines them
+/// now, so a role's rules have one definition and reach rooms written before
+/// they changed.
+///
+/// A role the room holds any built-in grant of gets exactly the role's
+/// current grants, on the room that grant names: a stored one the role still
+/// has is replaced by the current one in its place, keeping who gave it; one
+/// the role no longer has is dropped; one the role gained follows the role's
+/// last stored grant, given by whoever gave its first. A role the room holds
+/// none of stays absent. Every other grant stays as it is, in order. A room
+/// already current comes back unchanged.
+#[must_use]
+pub fn current_role_grants(grants: Vec<Grant>) -> Vec<Grant> {
+    struct Held {
+        role: Role,
+        current: Vec<Grant>,
+        placed: Vec<bool>,
+        last: usize,
+    }
+    let mut held: Vec<Held> = Vec::new();
+    let mut out: Vec<Option<Grant>> = Vec::with_capacity(grants.len());
+    for grant in grants {
+        if !is_role_grant(&grant) {
+            out.push(Some(grant));
+            continue;
+        }
+        let Subject::Role(role) = grant.subject else {
+            continue;
+        };
+        if !held.iter().any(|entry| entry.role == role) {
+            let Some(room) = grant.node.room_id() else {
+                out.push(Some(grant));
+                continue;
+            };
+            let current = role_preset(role, room).assign(
+                &role_grant_prefix(role),
+                &grant.subject,
+                &grant.granted_by,
+                &Lifetime::UntilRevoked,
+            );
+            held.push(Held {
+                role,
+                placed: vec![false; current.len()],
+                current,
+                last: 0,
+            });
+        }
+        let Some(entry) = held.iter_mut().find(|entry| entry.role == role) else {
+            continue;
+        };
+        entry.last = out.len();
+        let slot = entry
+            .current
+            .iter()
+            .zip(entry.placed.iter_mut())
+            .find(|(current, placed)| current.id == grant.id && !**placed);
+        match slot {
+            Some((current, placed)) => {
+                *placed = true;
+                out.push(Some(Grant {
+                    granted_by: grant.granted_by,
+                    ..current.clone()
+                }));
+            }
+            None => out.push(None),
+        }
+    }
+    let mut gained: Vec<(usize, Vec<Grant>)> = held
+        .into_iter()
+        .map(|entry| {
+            let missing = entry
+                .current
+                .into_iter()
+                .zip(entry.placed)
+                .filter(|(_, placed)| !placed)
+                .map(|(grant, _)| grant)
+                .collect();
+            (entry.last, missing)
+        })
+        .collect();
+    gained.sort_by_key(|(last, _)| std::cmp::Reverse(*last));
+    for (last, missing) in gained {
+        let at = last.saturating_add(1).min(out.len());
+        out.splice(at..at, missing.into_iter().map(Some));
+    }
+    out.into_iter().flatten().collect()
 }
 
 /// An agent's default delegation within the scope a person gives it: Read and
@@ -509,18 +666,18 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 ///
 /// An agent is an ordinary collaborator acting for one person: it never holds
 /// more than that person's role, never more than what its room admission
-/// grants it, and never more than [`ROLE_CAP`]. Every host — the relay
+/// grants it, and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the relay
 /// governing a room, every member admitting its ops, the desktop broker
-/// hosting a room itself — asks [`role`] rather than deciding on its own.
+/// hosting a room itself — asks [`role`](agent_policy::role) rather than deciding on its own.
 ///
 /// Four questions about agents are still open. Until they are decided each
 /// keeps the answer the first agent-collaborator release gave it, and each
 /// is changed here:
 ///
-/// 1. Is an agent's role capped at Editor? [`ROLE_CAP`]: yes.
-/// 2. May another person's agent join a room? [`OTHER_PEOPLES_AGENTS_JOIN`]:
+/// 1. Is an agent's role capped at Editor? [`ROLE_CAP`](agent_policy::ROLE_CAP): yes.
+/// 2. May another person's agent join a room? [`OTHER_PEOPLES_AGENTS_JOIN`](agent_policy::OTHER_PEOPLES_AGENTS_JOIN):
 ///    no; a room's governor admits only its own person's agents.
-/// 3. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`]: a
+/// 3. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`](agent_policy::WITHDRAWAL_IS_FINAL): a
 ///    withdrawn agent device is never admitted again; granting it anew
 ///    needs a new agent key.
 /// 4. Do members enforce the app scope of an agent's delegation? Not yet:
@@ -630,6 +787,12 @@ impl AgentPreset {
                 grant(
                     ":comments",
                     comments(room),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                ),
+                grant(
+                    ":reactions",
+                    reactions(room),
                     KindSet::UNDOABLE,
                     Answer::Allow,
                 ),

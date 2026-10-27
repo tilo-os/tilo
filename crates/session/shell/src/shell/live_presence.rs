@@ -24,11 +24,13 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::shell::state::RoomId;
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
-    AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveParticipant, LiveReaction, LiveRecord,
-    ParticipantKind, PresenceFrame, SealedLiveFrame, read_selection_anchors, selection_anchors,
+    AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveLayout, LiveParticipant, LivePointer,
+    LiveReaction, LiveRecord, LiveWave, ParticipantKind, PresenceFrame, SealedLiveFrame,
+    read_selection_anchors, selection_anchors,
 };
 
 /// Seal canonical live `frame` of room `cluster_id` with the content keys of
@@ -51,6 +53,19 @@ pub fn seal(
         keys.seal_content(artifact, retention, cleartext)
     })
     .ok()
+}
+
+/// Where live frames find the content keys of a room's record channel.
+pub type LiveKeys = Box<dyn Fn(RoomId, ChannelId) -> Option<ChannelContentKeys> + Send + Sync>;
+
+/// The content keys of `channel` of `room` from this session's channel
+/// encryption service, when this device is admitted.
+pub fn session_keys(room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
+    let access = crate::shell::channel_encryption::ChannelKeyProvider::session().get()?;
+    match access.access(room, channel).0 {
+        crate::shell::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
+        _ => None,
+    }
 }
 
 /// Open sealed live `frame` with its channel's keys, returning the canonical
@@ -142,7 +157,14 @@ impl Outbound {
         let room = self.room(ws, now);
         let frame = &mut room.frame;
         match &presence.payload {
-            PeerPresencePayload::Pointer { x, y } => frame.pointer = Some([*x, *y]),
+            // An app's pointer is in its own window: said over the window
+            // of its record, which every member places in their layout.
+            PeerPresencePayload::Pointer { x, y } => {
+                frame.pointer = Some(LivePointer::Window {
+                    record: focus.clone(),
+                    at: [*x, *y],
+                });
+            }
             PeerPresencePayload::Caret { pos } => {
                 frame.selection = anchors(&presence.key, *pos, *pos);
             }
@@ -196,8 +218,11 @@ impl Outbound {
         let (focus, pointer) = at;
         let room = self.room(ws, now);
         let before = room.frame.clone();
+        room.frame.pointer = Some(LivePointer::Window {
+            record: focus.clone(),
+            at: pointer,
+        });
         room.frame.focus = Some(focus);
-        room.frame.pointer = Some(pointer);
         room.frame.participant = Some(participant);
         room.frame.chat = chat;
         let frame = self.publish(ws, now);
@@ -224,8 +249,11 @@ impl Outbound {
         let room = self.room(ws, now);
         let seq = room.reactions.wrapping_add(1);
         let before = room.frame.clone();
+        room.frame.pointer = Some(LivePointer::Window {
+            record: focus.clone(),
+            at: pointer,
+        });
         room.frame.focus = Some(focus);
-        room.frame.pointer = Some(pointer);
         room.frame.participant = Some(participant);
         room.frame.chat = None;
         room.frame.reaction = Some(LiveReaction { seq, emoji });
@@ -240,6 +268,107 @@ impl Outbound {
             }
         }
         frame
+    }
+
+    /// Wave with `wave` in the room whose workspace is `ws`: the frame
+    /// carries it from now on, restated with every later frame, and
+    /// receivers show it once, by its counter. A frame that names no record
+    /// yet names `desktop` (the room's desktop), as a browser tab's does
+    /// with no window in front: a frame goes out sealed with its record's
+    /// keys. Returns the frames to publish, in order: a device the room
+    /// never heard from first says it is here, since the first presence
+    /// anyone hears from a device only sets where its waves stand.
+    pub fn wave(
+        &mut self,
+        ws: u64,
+        desktop: LiveRecord,
+        participant: LiveParticipant,
+        wave: LiveWave,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        let first = !self.rooms.contains_key(&ws);
+        let room = self.room(ws, now);
+        room.frame.participant = Some(participant);
+        room.frame.focus.get_or_insert(desktop);
+        let mut frames = Vec::new();
+        if first {
+            frames.extend(self.publish(ws, now));
+        }
+        if let Some(room) = self.rooms.get_mut(&ws) {
+            room.frame.wave = Some(wave);
+        }
+        frames.extend(self.publish(ws, now));
+        frames
+    }
+
+    /// Say where this device's windows are in the room whose workspace is
+    /// `ws` (`None` to stop saying), as [`Self::wave`] says a wave: a frame
+    /// that names no record yet names `desktop`. Returns the frames to
+    /// publish, in order; none when the layout is what the frame says
+    /// already, so an unchanged screen sends nothing until its keepalive.
+    pub fn lay_out(
+        &mut self,
+        ws: u64,
+        desktop: LiveRecord,
+        participant: LiveParticipant,
+        layout: Option<LiveLayout>,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        if self
+            .rooms
+            .get(&ws)
+            .is_some_and(|room| room.frame.layout == layout)
+            || (layout.is_none() && !self.rooms.contains_key(&ws))
+        {
+            return Vec::new();
+        }
+        let room = self.room(ws, now);
+        let before = room.frame.clone();
+        room.frame.participant = Some(participant);
+        room.frame.focus.get_or_insert(desktop);
+        room.frame.layout = layout;
+        let frame = self.publish(ws, now);
+        if frame.is_none()
+            && let Some(room) = self.rooms.get_mut(&ws)
+        {
+            room.frame = before;
+        }
+        frame.into_iter().collect()
+    }
+
+    /// Say whom this person follows in the room whose workspace is `ws`:
+    /// `following`, their live publisher in hex (`None` to stop saying),
+    /// restated with every later frame, as [`Self::lay_out`] says where the
+    /// windows are. Returns the frames to publish; none when the frame says
+    /// so already.
+    pub fn follow(
+        &mut self,
+        ws: u64,
+        desktop: LiveRecord,
+        participant: LiveParticipant,
+        following: Option<String>,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        if self
+            .rooms
+            .get(&ws)
+            .is_some_and(|room| room.frame.following == following)
+            || (following.is_none() && !self.rooms.contains_key(&ws))
+        {
+            return Vec::new();
+        }
+        let room = self.room(ws, now);
+        let before = room.frame.clone();
+        room.frame.participant = Some(participant);
+        room.frame.focus.get_or_insert(desktop);
+        room.frame.following = following;
+        let frame = self.publish(ws, now);
+        if frame.is_none()
+            && let Some(room) = self.rooms.get_mut(&ws)
+        {
+            room.frame = before;
+        }
+        frame.into_iter().collect()
     }
 
     /// Frames to repeat because they were not sent for [`KEEPALIVE`].
@@ -259,7 +388,9 @@ impl Outbound {
             if (now.saturating_duration_since(room.sent) < KEEPALIVE && !reaction_over)
                 || (room.frame.pointer.is_none()
                     && room.frame.selection.is_none()
-                    && room.frame.chat.is_none())
+                    && room.frame.chat.is_none()
+                    && room.frame.layout.is_none()
+                    && room.frame.following.is_none())
             {
                 continue;
             }
@@ -275,6 +406,28 @@ impl Outbound {
     }
 }
 
+/// What one live member said or reacted with, in one frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveChat {
+    /// The sender's session handle (`peer@<handle>` in presence).
+    pub peer: u64,
+    pub room: String,
+    /// What they are saying beside their pointer; `None` for nothing.
+    pub chat: Option<CursorChat>,
+    pub reaction: Option<LiveReaction>,
+}
+
+/// Where a live member's pointer is on the empty desktop, from one frame:
+/// beside a window or on a strip ([`LivePointer`]),
+/// or `None` once it is over a window (an app's to draw) or nowhere.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveDeskPointer {
+    /// The sender's session handle (`peer@<handle>` in presence).
+    pub peer: u64,
+    pub room: String,
+    pub pointer: Option<LivePointer>,
+}
+
 /// What one inbound live frame means to local apps.
 #[derive(Debug, Default, PartialEq)]
 pub struct Inbound {
@@ -282,15 +435,26 @@ pub struct Inbound {
     pub app_id: String,
     /// The pointer, then the caret or selection, as local presence.
     pub updates: Vec<PeerPresence>,
-    /// The name the sender asks to be drawn with.
     pub label: Option<String>,
     /// The colour the sender asks to be drawn in: the presence hue nearest
     /// its participant colour.
     pub colour: Option<ui::tokens::PresenceHue>,
     /// What the sender is saying beside its pointer, `None` for nothing.
     pub chat: Option<CursorChat>,
-    /// The sender's latest reaction.
     pub reaction: Option<LiveReaction>,
+    /// The sender's latest wave.
+    pub wave: Option<LiveWave>,
+    /// Where the sender's windows are on its screen.
+    pub layout: Option<LiveLayout>,
+    /// Whose view the sender follows: their live publisher, in hex.
+    pub following: Option<String>,
+    /// The sender's pointer when it is over the empty desktop (beside a
+    /// window, or on a strip showing none): no app's to draw, so the
+    /// desktop places it in its own layout ([`PointerLayout::place`]).
+    /// `None` while it is over a window, or nowhere.
+    ///
+    /// [`PointerLayout::place`]: tilo_relay_protocol::live::PointerLayout::place
+    pub desk_pointer: Option<LivePointer>,
 }
 
 /// Translate one live frame. Previews and malformed frames mean nothing
@@ -299,11 +463,23 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
     let LiveFrame::Presence(presence) = LiveFrame::decode(frame).ok()? else {
         return None;
     };
+    // A pointer over a window is in that app's own coordinates, which is
+    // how an app here draws it; one over the empty desktop (beside a
+    // window, or on a strip) has no place in an app's window: the desktop
+    // places it.
+    let pointer = match &presence.pointer {
+        Some(LivePointer::Window { record, at }) => Some((record, *at)),
+        Some(LivePointer::Beside { .. } | LivePointer::Strip { .. }) | None => None,
+    };
+    let desk_pointer = presence
+        .pointer
+        .clone()
+        .filter(|pointer| !matches!(pointer, LivePointer::Window { .. }));
     let mut inbound = Inbound {
-        app_id: presence
-            .focus
-            .as_ref()
-            .map(|focus| focus.app.clone())
+        app_id: pointer
+            .map(|(record, _)| record)
+            .or(presence.focus.as_ref())
+            .map(|record| record.app.clone())
             .unwrap_or_default(),
         label: presence
             .participant
@@ -311,13 +487,17 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
             .map(|participant| participant.label.clone()),
         colour: presence.participant.as_ref().and_then(|participant| {
             let [r, g, b] = participant.color;
-            ui::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+            ui::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(r, g, b))
         }),
         chat: presence.chat.clone(),
         reaction: presence.reaction.clone(),
+        wave: presence.wave.clone(),
+        layout: presence.layout.clone(),
+        following: presence.following.clone(),
+        desk_pointer,
         ..Inbound::default()
     };
-    if let Some([x, y]) = presence.pointer {
+    if let Some((_, [x, y])) = pointer {
         inbound.updates.push(PeerPresence {
             key: postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default()).ok()?,
             payload: PeerPresencePayload::Pointer { x, y },
@@ -337,7 +517,7 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
             },
         });
     }
-    if presence.pointer.is_none() && presence.selection.is_none() {
+    if pointer.is_none() && presence.selection.is_none() {
         inbound.updates.push(PeerPresence {
             key: postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default()).ok()?,
             payload: PeerPresencePayload::Left,
@@ -368,6 +548,50 @@ mod tests {
             path: vec![ui::presence::PathSegment::Field("editor".into())],
         })
         .unwrap()
+    }
+
+    /// Where this desktop's windows are rides its frame once per change and
+    /// with its keepalives, and reads back as the sender's layout.
+    #[test]
+    fn a_layout_goes_out_once_per_change_and_reads_back() {
+        let desktop = LiveRecord {
+            app: "so.tilo.desktop".into(),
+            record: "desk".into(),
+        };
+        let layout = LiveLayout::place(
+            [0.0, 0.0, 800.0, 600.0],
+            &[(desktop.clone(), [0.0, 0.0, 400.0, 600.0], true)],
+        );
+        let who = || participant("Ada".into(), ui::tokens::PresenceHue::Violet);
+        let mut outbound = Outbound::default();
+        let now = Instant::now();
+        assert!(
+            outbound
+                .lay_out(1, desktop.clone(), who(), None, now)
+                .is_empty(),
+            "nothing to say in a room never spoken in"
+        );
+        let frames = outbound.lay_out(1, desktop.clone(), who(), layout.clone(), now);
+        assert_eq!(frames.len(), 1);
+        let inbound = inbound(&frames[0]).unwrap();
+        assert_eq!(inbound.layout, layout);
+        assert_eq!(inbound.app_id, "so.tilo.desktop");
+        assert!(
+            outbound
+                .lay_out(1, desktop.clone(), who(), layout, now)
+                .is_empty(),
+            "an unchanged layout sends nothing"
+        );
+        assert_eq!(outbound.keepalives(now + KEEPALIVE).len(), 1);
+        let cleared = outbound.lay_out(1, desktop, who(), None, now);
+        assert_eq!(inbound_layout(&cleared), vec![None]);
+    }
+
+    fn inbound_layout(frames: &[Vec<u8>]) -> Vec<Option<LiveLayout>> {
+        frames
+            .iter()
+            .map(|frame| inbound(frame).unwrap().layout)
+            .collect()
     }
 
     /// A key longer than an anchor (a resource key naming a long item id)
@@ -510,6 +734,89 @@ mod tests {
         assert_eq!(inbound(&frame).unwrap().updates.len(), 2);
         assert!(outbound.keepalives(now).is_empty());
         assert_eq!(outbound.keepalives(now + KEEPALIVE).len(), 1);
+    }
+
+    /// A native app's pointer leaves said over the window of its record, and
+    /// one over another app's window reaches that app; one over a browser
+    /// desktop's empty strip has no place in a native app and is not drawn.
+    #[test]
+    fn pointers_cross_as_points_in_the_window_they_are_over() {
+        let mut outbound = Outbound::default();
+        let now = Instant::now();
+        let notes = LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "r".into(),
+        };
+        let pointer_key =
+            postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default()).unwrap();
+        let frame = outbound
+            .update(
+                7,
+                notes.clone(),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                &PeerPresence {
+                    key: pointer_key.clone(),
+                    payload: PeerPresencePayload::Pointer { x: 10.0, y: 20.0 },
+                },
+                now,
+            )
+            .unwrap();
+        let LiveFrame::Presence(decoded) = LiveFrame::decode(&frame).unwrap() else {
+            panic!("a presence frame");
+        };
+        assert_eq!(
+            decoded.pointer,
+            Some(LivePointer::Window {
+                record: notes,
+                at: [10.0, 20.0]
+            })
+        );
+
+        let over = |pointer: LivePointer| {
+            let mut frame = decoded.clone();
+            frame.focus = Some(LiveRecord {
+                app: "so.tilo.chat".into(),
+                record: String::new(),
+            });
+            frame.pointer = Some(pointer);
+            inbound(&LiveFrame::Presence(frame).encode().unwrap()).unwrap()
+        };
+        let sheets = over(LivePointer::Window {
+            record: LiveRecord {
+                app: "so.tilo.sheets".into(),
+                record: "s".into(),
+            },
+            at: [3.0, 4.0],
+        });
+        assert_eq!(
+            sheets.app_id, "so.tilo.sheets",
+            "the app it is over draws it"
+        );
+        assert_eq!(
+            sheets.updates,
+            vec![PeerPresence {
+                key: pointer_key.clone(),
+                payload: PeerPresencePayload::Pointer { x: 3.0, y: 4.0 },
+            }]
+        );
+        let desktop = over(LivePointer::Strip {
+            strip: 9,
+            at: [3.0, 4.0],
+        });
+        let left = vec![PeerPresence {
+            key: pointer_key,
+            payload: PeerPresencePayload::Left,
+        }];
+        assert_eq!(desktop.updates, left, "nothing here to draw it over");
+        let beside = over(LivePointer::Beside {
+            record: LiveRecord {
+                app: "so.tilo.sheets".into(),
+                record: "s".into(),
+            },
+            edge: [1.0, 0.5],
+            at: [40.0, 0.0],
+        });
+        assert_eq!(beside.updates, left, "outside the app's window");
     }
 
     /// What a person types beside their pointer crosses the live plane with

@@ -492,7 +492,6 @@ impl Daemon {
     }
 }
 
-/// Run `command` as the build user, when builds have one.
 fn as_user(user: Option<&BuildUser>, command: &mut Command) {
     if let Some(user) = user {
         user.apply(command);
@@ -677,7 +676,6 @@ mod tests {
 
     #[test]
     fn job_failures_are_classified_and_reported() {
-        // Phase `pull_failures_are_classified`.
         {
             assert!(matches!(
                 pull_error(
@@ -702,7 +700,6 @@ mod tests {
                 DaemonError::Job { .. }
             ));
         }
-        // Phase `job_lines_report_errors_and_bad_input`.
         {
             let mut out = Vec::new();
             let ok = run_job::<CiJob>(&b"not json"[..], &mut out, |_| {
@@ -716,7 +713,6 @@ mod tests {
 
     #[test]
     fn job_extraction_layers_and_packaging_commands() {
-        // Phase `extraction_copies_files_trees_and_links`.
         {
             let image = tempfile::tempdir().unwrap();
             let root = image.path();
@@ -753,7 +749,6 @@ mod tests {
             let missing = extract_paths(root, dest.path(), &["/usr/bin/nope".into()], "img");
             assert!(matches!(missing, Err(DaemonError::MissingInImage { .. })));
         }
-        // Phase `ci_layers_carry_ci_authority`.
         {
             let job = CiJob {
                 image: "registry.tilo.so/tilo/tilo:main-abc1234".into(),
@@ -779,7 +774,6 @@ mod tests {
                 ("ci", Some("ci"))
             );
         }
-        // Phase `app_packaging_commands`.
         {
             assert_eq!(
                 app_tool_args().join(" "),

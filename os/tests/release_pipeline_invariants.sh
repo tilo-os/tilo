@@ -19,51 +19,38 @@ fi
 desktop="$workflows/release-desktop.yml"
 apps="$workflows/release-apps.yml"
 apps_publish="$repo/tools/apps/publish-collections.sh"
-os="$workflows/build-image.yml"
+# The image's binaries are compiled outside the image build, by this script.
+compile="$repo/os/image/compile.sh"
 imager="$workflows/release-imager.yml"
 
-if grep -Fq 'resolve-rpm-snapshot.sh' "$os" \
-   && grep -Fq '[[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
-  ok 'CI and local OS builds accept the published digest-pinned RPM namespace'
+if grep -Fq '[[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
+  ok 'local OS builds accept the published digest-pinned RPM namespace'
 else
   bad 'an OS build rejects the RPM namespace published by snapshot-rpms'
 fi
 
 cache_driver_ok=1
-for workflow in build-ci-builder.yml build-image.yml build-kernel.yml release-relay.yml build-rpms.yml; do
-  file="$workflows/$workflow"
-  if grep -Fq 'cache-to: type=registry' "$file" \
-     && ! grep -Fq 'uses: ./.forgejo/actions/setup-buildx' "$file"; then
-    printf 'registry cache workflow lacks a cache-export-capable Buildx driver: %s\n' \
-      "$workflow" >&2
-    cache_driver_ok=0
-  fi
-done
 grep -Fq 'driver: docker-container' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   || cache_driver_ok=0
 if [ "$cache_driver_ok" = 1 ]; then
-  ok 'registry cache workflows select the docker-container Buildx driver'
+  ok 'the shared Buildx action selects the cache-export-capable docker-container driver'
 else
-  bad 'a registry cache workflow still uses the default docker driver'
+  bad 'the shared Buildx action uses the default docker driver'
 fi
 
 # A persistent builder keeps BuildKit state on the runner slot between jobs.
 # Its name carries the trust class, so a pull request never writes state a
 # main build reads, and publications (tags, dispatches, the OS and kernel
-# images) never opt in.
+# images) never opt in: no remaining workflow does.
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
-  case "$(basename "$file")" in
-    release-relay.yml) continue ;;
-  esac
   if grep -Eq '^ +persistent:' "$file"; then
-    printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
+    printf 'persistent BuildKit builder in a workflow: %s\n' "$(basename "$file")" >&2
     persistent_ok=0
   fi
 done
-grep -Fq "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}" "$workflows/release-relay.yml" \
-  && grep -Fq "TRUST: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
+grep -Fq "TRUST: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'name="tilo-$TRUST-$digest"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'default: "false"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   || persistent_ok=0
@@ -73,88 +60,123 @@ else
   bad 'a persistent BuildKit builder can mix trust classes or serve a publication'
 fi
 
-grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
-  && grep -Fq 'scope=kernel-{0},mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Eq 'cache-to:.*scope=kernel-.*mode=max' "$workflows/build-kernel.yml" \
-  && ok 'kernel cache export skips PRs and excludes its multi-gigabyte intermediate build tree' \
-  || bad 'kernel cache export can duplicate work or exhaust a PR runner'
+# t builds, signs and publishes the kernel, its buildroot and the CI builder (t.toml, generated
+# from tools/ci/products.toml); these are the scripts its checks run.
+t_toml="$repo/t.toml"
+publish="$repo/tools/ci/publish"
+kernel_script="$publish/kernel.sh"
+# A t check's field, one value per line (a string as itself, an array per element, a table as
+# key=value); fails when t.toml declares no such check, so a renamed check cannot pass unobserved.
+tcheck() {
+  python3 - "$t_toml" "$1" "$2" <<'PY'
+import sys, tomllib
+config = tomllib.load(open(sys.argv[1], "rb"))
+for check in config.get("check", []):
+    if check.get("name") == sys.argv[2]:
+        value = check.get(sys.argv[3], [])
+        if isinstance(value, dict):
+            value = [f"{key}={item}" for key, item in value.items()]
+        print("\n".join(map(str, value)) if isinstance(value, list) else value)
+        sys.exit(0)
+sys.exit(f"t.toml declares no check {sys.argv[2]}")
+PY
+}
+# t_has CHECK FIELD LINE: the field has LINE as one value (an array) or one line (a run script).
+t_has() {
+  local values
+  values="$(tcheck "$1" "$2")" && grep -Fxq -- "$3" <<<"$values"
+}
 
-# A registry hiccup after a completed compile must neither fail the release on
-# its best-effort cache write nor discard the build: the cache export ignores
-# errors, and a failed publication push retries the already-loaded image a
-# bounded number of times before the signing gate consumes its digest.
-grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.yml" \
-  && grep -Fq "if: \${{ steps.build.outcome == 'failure' }}" "$workflows/build-kernel.yml" \
-  && grep -Fq 'for attempt in 1 2 3; do' "$workflows/build-kernel.yml" \
-  && grep -Fq 'docker image inspect "$LOCAL_IMAGE"' "$workflows/build-kernel.yml" \
-  && grep -Fq 'ref="registry.tilo.so/tilo/tilo-kernel@${{ steps.published.outputs.digest }}"' "$workflows/build-kernel.yml" \
-  && ! grep -Fq 'tilo-kernel@${{ steps.build.outputs.digest }}' "$workflows/build-kernel.yml" \
-  && ok 'kernel publication survives cache-write failures and retries a failed push of the completed build' \
-  || bad 'a registry cache or push hiccup can fail or silently skip kernel publication'
+# A registry hiccup after a completed compile must not discard the build: the kernel is built
+# into an archive whose digest the build records, and publication pushes that archive, retrying
+# a failed copy a bounded number of times, and refuses a registry that holds any other digest.
+# A commit's tag is pushed once, so a rebuild on the same commit never moves it off a digest
+# already pinned, and the pins name the digest each receipt says the tag holds.
+t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64 'once:sha-{commit}-x86_64'" \
+  && t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'once:sha-{commit}-aarch64'" \
+  && grep -Fq 'archive_digest "$out/image.oci.tar" > "$out/digest"' "$kernel_script" \
+  && grep -Fq 'for attempt in 1 2 3 4 5; do' "$publish/oci-publish.sh" \
+  && grep -Fq '[[ sha256:$pushed == "$digest" ]] || die' "$publish/oci-publish.sh" \
+  && grep -Fq '"$dir/$arch/receipt.json")' <<<"$(sed -n '/^  pins)$/,/^    ;;$/p' "$kernel_script")" \
+  && ok 'kernel publication retries a failed push of the completed build and keeps its digest' \
+  || bad 'a registry push hiccup can fail kernel publication or publish another digest'
 
 # The browser engine is built inside the image build from the pinned CEF
 # distribution; no image build takes a separately compiled engine stage.
-! grep -Fq 'wpe-builder' "$os" && ! grep -Fq 'WPE_BUILDROOT_REF' "$os" \
-  && grep -Fq 'ARG CHROMIUM_RUNTIME_VERSION=' "$repo/os/Containerfile" \
+grep -Fq 'ARG CHROMIUM_RUNTIME_VERSION=' "$repo/os/Containerfile" \
   && ok 'OS image builds compile the browser engine runtime themselves' \
   || bad 'an OS image build still takes a separately compiled browser engine'
 
-# A cache manifest naming a blob the registry lost fails a build only when the
-# layer's content is needed. The OS build treats exactly that as a cache miss:
-# rebuild without cache-from, rewrite every cache tag, consume either digest
-# (or the rechunked image's, #4190, which is made from either).
-uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
-[ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the build toolchain/,/- name: Recognize a missing registry cache blob/' "$os"))" = 5 ] \
-  && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
-  && ! grep -Fq 'cache-from:' <<<"$uncached" \
-  && [ "$(grep -c 'ignore-error=true' <<<"$uncached")" = 1 ] \
-  && ! grep -Fq "'\${{ steps.build.outputs.digest }}'" "$os" \
-  && grep -Fq "'\${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
-  && grep -Fq "BUILD_DIGEST: \${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}" <(awk '/- name: Rechunk the image$/,/- name: Publish the dev-trust integration image/' "$os") \
-  && ok 'a missing registry cache blob degrades the OS build to an uncached rebuild' \
-  || bad 'a lost registry cache blob can still fail the OS build'
-
-if grep -Fq 'runner: runner-disk-100g-arm64' "$workflows/build-kernel.yml" \
-  && grep -Fxq '            runner: runner-disk-100g' "$workflows/build-kernel.yml" \
-  && grep -Fq 'platforms: ${{ matrix.platform }}' "$workflows/build-kernel.yml" \
-  && grep -Fq 'needs: build-and-push-kernel' "$workflows/build-kernel.yml" \
-  && grep -Fq 'promote-native-kernels:' "$workflows/build-kernel.yml" \
-  && grep -Fq 'cosign verify-attestation --key keys/cosign.pub' "$workflows/build-kernel.yml" \
-  && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$workflows/build-kernel.yml" \
-  && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$workflows/build-kernel.yml"; then
+# Both kernels are built (natively, or the aarch64 one cross-compiled on x86_64 FROM the x86_64
+# buildroot) and published together; provenance names the buildroot and the machine each was
+# built on; the pin moves both at once, only after each is verified (signature and provenance)
+# as the OS build verifies it.
+kernel_pin="$(sed -n '/^  pin)$/,/^    ;;$/p' "$kernel_script")"
+kernel_pins="$(sed -n '/^  pins)$/,/^    ;;$/p' "$kernel_script")"
+kernel_provenance="$(sed -n '/^  provenance)$/,/^    ;;$/p' "$kernel_script")"
+if t_has image-kernel-{arch} requires 'arch={arch}' \
+  && t_has image-kernel-{arch} matrix 'arch=['"'"'x86_64'"'"', '"'"'aarch64'"'"']' \
+  && grep -Fq 'x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;' "$kernel_script" \
+  && grep -Fq '*) die "the $arch kernel is built natively or on x86_64, not on $host" ;;' "$kernel_script" \
+  && grep -Fq 'x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;' "$kernel_script" \
+  && grep -Fq 'aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;' "$kernel_script" \
+  && grep -Fq 'printf '"'"'%s\n'"'"' "$buildroot" > "$out/buildroot"' "$kernel_script" \
+  && grep -Fq 'printf '"'"'%s\n'"'"' "$host" > "$out/build-architecture"' "$kernel_script" \
+  && grep -Fq '[[ $buildroot == "${!key}" ]]' <<<"$kernel_provenance" \
+  && grep -Fq '\"buildArchitecture\": \"$built_on\"' <<<"$kernel_provenance" \
+  && t_has sign-kernel needs image-kernel-x86_64 && t_has sign-kernel needs image-kernel-aarch64 \
+  && t_has sign-kernel needs provenance-kernel \
+  && t_has publish-kernel needs sign-kernel \
+  && t_has publish-kernel run 'bash tools/ci/publish/kernel.sh pins /target/publish/kernel' \
+  && grep -Fq 'for arch in x86_64 aarch64; do' <<<"$kernel_pins" \
+  && grep -Fq "key=KERNEL_RPMS_\$(printf '%s' \"\$arch\" | tr '[:lower:]' '[:upper:]')_REF" <<<"$kernel_pins" \
+  && grep -Fq 'bash os/dev/verify-kernel-provenance.sh "$ref" --architecture "$arch"' <<<"$kernel_pin" \
+  && grep -Fq '[[ $x86 != "$arm" ]] || die' <<<"$kernel_pin" \
+  && grep -Fq 'python3 os/dev/open-snapshot-pr.py pins kernel --x86-ref "$x86" --arm-ref "$arm" > os/kernel-snapshot.env' <<<"$kernel_pin" \
+  && grep -Fq 'cosign verify-attestation --key "$key" --type slsaprovenance1 "$ref"' "$repo/os/dev/verify-kernel-provenance.sh"; then
   ok 'kernel publication requires both verified native builds and atomic architecture pin promotion'
 else
   bad 'kernel publication can omit native ARM64 or bypass verified architecture pin promotion'
 fi
 
-if grep -Fq 'memory=9g' "$workflows/build-kernel.yml" \
-  && grep -Fq 'memory-swap=9g' "$workflows/build-kernel.yml" \
-  && grep -Fq '            kernel_build_jobs: 6' "$workflows/build-kernel.yml" \
-  && grep -Fq '            kernel_build_jobs: 4' "$workflows/build-kernel.yml" \
-  && test "$(grep -Fc 'KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}' "$workflows/build-kernel.yml")" -eq 2; then
-  ok 'native kernel and Secure Boot probe share explicit resource bounds and cache keys'
+# The kernel and its Secure Boot probe inputs come from one build stage with the same build
+# arguments, so they share the compilation and cannot diverge (as does the compiler cache's
+# compile: the native image, the cross build's repository and the cache take the same ones; only
+# the cross build's repackaging for the kernel's platform, which compiles nothing, does not); the
+# build has explicit bounds.
+if [ "$(grep -Fc '"${args[@]}"' "$kernel_script")" -eq 4 ] \
+  && [ "$(grep -c '^ *b build ' "$kernel_script")" -eq 5 ] \
+  && grep -Fq -- '--target publish-cross \' "$kernel_script" \
+  && grep -Fq -- '--build-arg "KERNEL_BUILD_JOBS=$(nproc)"' "$kernel_script" \
+  && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_script" \
+  && grep -q '^memory=' <<<"$(tcheck image-kernel-{arch} requirement)" \
+  && grep -q '^cores=' <<<"$(tcheck image-kernel-{arch} requirement)" \
+  && [ -n "$(tcheck image-kernel-{arch} timeout_secs)" ]; then
+  ok 'native kernel and Secure Boot probe share explicit resource bounds and build arguments'
 else
-  bad 'native kernel builds can bypass resource bounds or diverge on their compilation cache key'
+  bad 'native kernel builds can bypass resource bounds or diverge on their build arguments'
 fi
 
-if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-ci-builder.yml" \
-  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-ci-builder.yml" \
-  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-ci-builder.yml" \
-  && grep -Fq 'runner: runner-arm64' "$workflows/build-ci-builder.yml" \
-  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-ci-builder.yml" \
-  && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
+# Neither architecture's CI builder is signed or published before t's compiler cache is proven
+# to work from it (the warm canary reads back what the cold one wrote, in another job).
+builder_ok=1
+for arch in x86_64 aarch64; do
+  t_has "canary-ci-builder-cache-warm-{arch}" needs "canary-ci-builder-cache-cold-{arch}" || builder_ok=0
+  for check in sign-ci-builder sign-dev-ci-builder publish-ci-builder; do
+    t_has "$check" needs "canary-ci-builder-cache-warm-$arch" || builder_ok=0
+  done
+done
+t_has image-ci-builder-{arch} requires 'arch={arch}' || builder_ok=0
+t_has image-ci-builder needs image-ci-builder-x86_64 && t_has image-ci-builder needs image-ci-builder-aarch64 \
+  || builder_ok=0
+if [ "$builder_ok" = 1 ]; then
   ok 'native CI builder publication waits for cache acceptance on both architectures'
 else
-  bad 'native CI builder or affected-package architecture coverage is missing'
+  bad 'native CI builder publication can skip cache acceptance on an architecture'
 fi
 
 kernel_verify="$repo/os/dev/verify-kernel-provenance.sh"
-if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF" ;;' "$os" \
-   && grep -Fq 'aarch64) ref="$KERNEL_RPMS_AARCH64_REF" ;;' "$os" \
-   && grep -Fq './os/dev/verify-kernel-provenance.sh "$ref"' "$os" \
-   && ! grep -Eq 'verify-kernel-provenance\.sh "\$ref" "|binding=signed-snapshot|--arg rpms "\$RPMS_REF"' "$os" \
-   && grep -Fq 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$os" \
-   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
+if grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" \' "$repo/os/dev/build-image.sh" \
    && ! grep -Fq 'TILO_KERNEL_RPMS_BINDING' "$repo/os/dev/build-image.sh" \
    && grep -Fq '[[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$kernel_verify" \
@@ -165,19 +187,20 @@ if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF" ;;' "$os" \
    && grep -Fq 'cosign verify --key "$key" "$environment"' "$kernel_verify" \
    && grep -Fq 'BUILD_TYPE = "https://tilo.sh/buildtypes/kernel-rpm/v1"' "$repo/os/dev/kernel-build-environment.py" \
    && grep -Fq 'actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"' "$kernel_verify"; then
-  ok 'CI and local OS builds authenticate kernel digest, architecture, and provenance before consumption'
+  ok 'OS builds authenticate kernel digest, architecture, and provenance before consumption'
 else
   bad 'an OS build can consume an unpinned or unauthenticated kernel repository'
 fi
 
-kernel_workflow="$workflows/build-kernel.yml"
 kernel_containerfile="$repo/os/kernel/Containerfile"
-if grep -Fq -- '- name: Verify the signed native kernel buildroot' "$kernel_workflow" \
-   && grep -Fq '. os/kernel-buildroot-snapshot.env' "$kernel_workflow" \
-   && grep -Fq '[[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]' "$kernel_workflow" \
-   && grep -Fq 'cosign verify --key keys/cosign.pub "$ref"' "$kernel_workflow" \
-   && test "$(grep -Fc 'KERNEL_BUILDROOT_REF=' "$kernel_workflow")" -ge 3 \
-   && ! grep -Eq 'RPMS_REF|rpms-snapshot\.env|derive-rpm-package-set' "$kernel_workflow" \
+kernel_build="$(sed -n '/^  build | compile-cache)$/,$p' "$kernel_script")"
+verify_line="$(grep -nF 'cosign verify --key keys/cosign.pub "$buildroot"' <<<"$kernel_build" | head -1 | cut -d: -f1)"
+first_build_line="$(grep -nF 'b build ' <<<"$kernel_build" | head -1 | cut -d: -f1)"
+if grep -Fq '. os/kernel-buildroot-snapshot.env' <<<"$kernel_build" \
+   && grep -Fq '[[ $buildroot =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]' <<<"$kernel_build" \
+   && [ -n "$verify_line" ] && [ -n "$first_build_line" ] && [ "$verify_line" -lt "$first_build_line" ] \
+   && grep -Fq -- '--build-arg "KERNEL_BUILDROOT_REF=$buildroot"' <<<"$kernel_build" \
+   && ! grep -Eq 'RPMS_REF|rpms-snapshot\.env|derive-rpm-package-set' "$kernel_script" \
    && grep -Fq 'FROM ${KERNEL_BUILDROOT_REF} AS build-toolchain' "$kernel_containerfile" \
    && ! grep -Eq 'RPMS_REF|BASE_REF|from=rpms|dnf5? (install|download)|enablerepo' "$kernel_containerfile" \
    && grep -Fq '! find /etc/yum.repos.d -type f -print -quit' "$kernel_containerfile" \
@@ -186,12 +209,12 @@ if grep -Fq -- '- name: Verify the signed native kernel buildroot' "$kernel_work
 else
   bad 'kernel compilation can start from an unauthenticated buildroot or fall back to a package repository'
 fi
-if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
-   && grep -Fq 'apt_firmware=ovmf' "$kernel_workflow" \
-   && grep -Fq 'fedora_firmware=edk2-aarch64' "$kernel_workflow" \
-   && grep -Fq 'fedora_firmware=edk2-ovmf' "$kernel_workflow" \
-   && grep -Fq 'zstd dosfstools mtools "$apt_qemu" "$apt_firmware"' "$kernel_workflow" \
-   && grep -Fq 'zstd dosfstools mtools "$fedora_qemu" "$fedora_firmware"' "$kernel_workflow" \
+acceptance="$publish/kernel-acceptance.sh"
+if grep -Fq 'x86_64) qemu=qemu-system-x86-core firmware=edk2-ovmf ;;' "$acceptance" \
+   && grep -Fq 'aarch64) qemu="qemu-system-aarch64-core qemu-device-uefi-vars" firmware=edk2-aarch64 ;;' "$acceptance" \
+   && grep -Fq 'python3 rpm zstd dosfstools mtools podman $qemu "$firmware"' "$acceptance" \
+   && grep -Eq 'dnf install .* kmod ' "$acceptance" \
+   && grep -Fq 'bash os/kernel/tests/test-rpm.sh' "$acceptance" \
    && grep -Fq '/usr/share/edk2/ovmf /usr/share/OVMF' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq "expect_log 'TILO_SECURE_BOOT_ENROLL_PASS'" "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq 'mapfile -t runtime_files' "$repo/os/tests/secureboot_vm_probe.sh" \
@@ -206,34 +229,23 @@ if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
    && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'command -v zstd >/dev/null' "$repo/os/kernel/tests/boot-smoke.sh" \
    && grep -Fq 'kernel/drivers/net/dummy.ko.zst' "$repo/os/kernel/tests/boot-smoke.sh"; then
-  ok 'native kernel acceptance installs modinfo, firmware and EFI-image tools on apt and dnf runners'
+  ok 'native kernel acceptance installs modinfo, firmware and EFI-image tools before it runs'
 else
   bad 'native kernel acceptance can invoke missing module or Secure Boot VM dependencies'
 fi
 
-if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
-   && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
-   && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq "format('type=gha,scope=kernel-{0}', matrix.arch)" "$kernel_workflow" \
-   && grep -Fq "variable=\"KERNEL_RPMS_\$(printf '%s' '\${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF\"" "$kernel_workflow" \
-   && grep -Fq 'KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;' "$kernel_workflow" \
-   && ! grep -Fq 'variable=KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
-   && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
-   && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
-   && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$kernel_workflow" \
-   && grep -Fq 'refusing to regress' "$kernel_workflow" \
-   && grep -Fq 'git merge-base --is-ancestor "$1" "$GITHUB_SHA"' "$kernel_workflow" \
-   && grep -Fq 'superseded+=(--supersede "$candidate")' "$kernel_workflow" \
-   && ! grep -Fq 'refusing stale PR' "$kernel_workflow" \
-   && grep -Fq 'automation/kernel-snapshot-${snapshot_digest:0:16}' "$kernel_workflow" \
-   && grep -Fq 'python3 os/dev/open-snapshot-pr.py' "$kernel_workflow" \
-   && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' "$kernel_workflow" \
-   && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' "$kernel_workflow" \
-   && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' "$kernel_workflow" \
-   && ! grep -Fq 'git push origin HEAD:main' "$kernel_workflow" \
-   && grep -Fq "(github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'" "$kernel_workflow" \
-   && ! grep -Fq "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$kernel_workflow" \
-   && grep -Fq 'kernel-build-support.sh stage-modules "$(uname -m)"' "$repo/os/kernel/Containerfile" \
+# Each architecture's published reference lands in its own upper-case pin variable; the pin
+# (pin-kernel, on main, from stable's `kernel` pointer) commits only os/kernel-snapshot.env and
+# only when main would build the same kernels, so it never regresses main to older inputs.
+if t_has pin-kernel on main && [ "$(tcheck pin-kernel on)" = main ] \
+   && [ "$(tcheck pin-kernel pushes)" = os/kernel-snapshot.env ] \
+   && [ "$(tcheck pin-kernel reads_pointers)" = stable:kernel ] \
+   && t_has pin-kernel run 'bash tools/ci/publish/kernel.sh pin' \
+   && [ "$(tcheck publish-kernel on)" = stable ] && [ "$(tcheck sign-kernel on)" = stable ] \
+   && grep -Fq 'if [[ $built_from != "$(inputs_digest)" ]]; then' <<<"$kernel_pin" \
+   && grep -Fq 'built_from=$(sed -n '"'"'s/^INPUTS_SHA256=//p'"'"' <<<"$T_POINTER_KERNEL")' <<<"$kernel_pin" \
+   && grep -Fq 'printf '"'"'%s\n'"'"' "${lines[@]}" "INPUTS_SHA256=$(inputs_digest)" > "$dir/pins.env"' <<<"$kernel_pins" \
+   && grep -Fq 'kernel-build-support.sh stage-modules "$TARGET_ARCH"' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"' "$repo/os/kernel/build-support.sh" \
    && grep -Fq 'certs/system_certificates.S|*/certs/system_certificates.S|' "$repo/os/kernel/cc-wrapper.sh" \
    && grep -Fq 'python3 /work/check-signing-identity.py "$ksrc/vmlinux"' "$repo/os/kernel/build-support.sh" \
@@ -244,9 +256,13 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'x86_64) image=arch/x86/boot/bzImage' "$repo/os/kernel/build-support.sh" \
    && grep -Fq 'rpm-build make gcc clang lld bc flex bison rust cargo' "$repo/os/Containerfile.kernel-buildroot" \
    && ! grep -Fq 'TILO_BUILDER_REF' "$repo/os/kernel/Containerfile" \
-   && grep -Fq 'https://tilo.sh/buildtypes/kernel-rpm/v1' "$kernel_workflow" \
-   && grep -Fq -- '--predicate kernel-provenance.json --type slsaprovenance1' "$kernel_workflow" \
-   && grep -Fq 'cosign verify-attestation --key keys/cosign.pub' "$kernel_workflow" \
+   && grep -Fq '"buildType": "https://tilo.sh/buildtypes/kernel-rpm/v1"' "$kernel_script" \
+   && t_has sign-kernel run 'bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64' \
+   && t_has sign-kernel run 'bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64' \
+   && grep -Fq 'type=${4:-slsaprovenance1}' "$publish/oci-attest.sh" \
+   && grep -Fq 'args=(--yes --type "$type" --predicate "$predicate"' "$publish/oci-attest.sh" \
+   && grep -Fq 'cosign verify-attestation --key "$verify_key" --type "$type"' "$publish/oci-publish.sh" \
+   && grep -Fq 'verify_key=$repo_root/keys/cosign.pub' "$publish/oci-publish.sh" \
    && grep -Fq 'ExclusiveArch:  x86_64 aarch64' "$repo/os/kernel/tilo-kernel-payload.spec"; then
   ok 'kernel publication builds, signs, attests, and reports native x86-64 and ARM64 payloads'
 else
@@ -256,14 +272,18 @@ fi
 # Only kernel inputs rebuild the kernel. The OS RPM snapshot and base are not
 # kernel inputs: the kernel builds on its own signed buildroot, so an OS
 # package change never invalidates the pinned kernel.
-kernel_triggers="$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"
-if grep -Fq '"os/kernel-buildroot-snapshot.env"' <<<"$kernel_triggers" \
-   && grep -Fq '"os/kernel/**"' <<<"$kernel_triggers" \
-   && ! grep -Eq 'rpms-snapshot\.env|base-snapshot\.env|derive-rpm-package-set|kernel-snapshot\.env"|workflow_call' <<<"$kernel_triggers" \
-   && ! grep -Fq 'build-kernel.yml' "$workflows/build-rpms.yml" \
-   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/build-rpms.yml" \
+kernel_inputs="$(tcheck image-kernel-{arch} inputs)" || kernel_inputs=""
+rpms_inputs="$(tcheck image-rpms-{arch} inputs; tcheck provenance-rpms inputs)" || rpms_inputs=""
+kernel_digest="$(sed -n '/^inputs_digest() {/,/^}/p' "$kernel_script")"
+if grep -Fxq 'os/kernel-buildroot-snapshot.env' <<<"$kernel_inputs" \
+   && grep -Fxq 'os/kernel/**' <<<"$kernel_inputs" \
+   && ! grep -Eq 'rpms-snapshot\.env|base-snapshot\.env|derive-rpm-package-set|kernel-snapshot\.env' <<<"$kernel_inputs" \
+   && [ -n "$rpms_inputs" ] \
+   && ! grep -Eq '^os/kernel(/|-)' <<<"$rpms_inputs" \
+   && ! grep -Fq 'os/kernel/Containerfile' "$publish/rpms-build.sh" \
    && ! grep -Fq 'os/kernel/Containerfile' "$repo/os/dev/derive-rpm-package-set.py" \
-   && grep -Fq 'os/kernel-buildroot-snapshot.env' <<<"$(sed -n '/KERNEL_SNAPSHOT_INPUTS: |/,/^    steps:/p' "$kernel_workflow")"; then
+   && grep -Fq 'os/kernel-buildroot-snapshot.env' <<<"$kernel_digest" \
+   && ! grep -Eq 'base-snapshot\.env|kernel-snapshot\.env|rpms' <<<"$kernel_digest"; then
   ok 'only kernel inputs rebuild the kernel; OS package changes do not'
 else
   bad 'an OS package or base change can invalidate or rebuild the kernel'
@@ -271,7 +291,6 @@ fi
 
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
-  && grep -Fq 'tags: ["v*"]' "$os" \
   && ok 'desktop, app and OS component tags are disjoint' \
   || bad 'a component tag can accidentally release another component'
 
@@ -291,7 +310,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 
 # Native package lanes have neither private keys nor OIDC. A separate tag-only
 # broker job signs only successful install-tested artifacts after exact-main proof.
-desktop_signer=$(sed -n '/^  sign-rpm:$/,/^  host-session-e2e:$/p' "$desktop")
+desktop_signer=$(sed -n '/^  sign-rpm:$/,/^  publish-os-payload:$/p' "$desktop")
 desktop_validate=$(sed -n '/^  validate:$/,/^  package:$/p' "$desktop")
 desktop_package=$(sed -n '/^  package:$/,/^  sign-rpm:$/p' "$desktop")
 signing_boundary_ok=1
@@ -307,8 +326,7 @@ grep -Fq "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/d
   && ! grep -Fq 'secrets.TILO_RPM_SIGNING' <<<"$desktop_package" \
   && grep -Fq 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' <<<"$desktop_validate" \
   && grep -Fq 'needs: validate' <<<"$desktop_package" \
-  && grep -Fq 'needs: [validate, package, sign-rpm, host-session-e2e]' "$desktop" \
-  && grep -Fq "'signed-fedora-44-amd64' || 'fedora-44-amd64'" "$desktop" \
+  && grep -Fq 'needs: [validate, package, sign-rpm]' "$desktop" \
   && ! grep -Fq -- '--env TILO_RPM_SIGNING' "$repo/dist/ci/run-package-job.sh" \
   || signing_boundary_ok=0
 if [[ $signing_boundary_ok == 1 ]]; then
@@ -323,72 +341,31 @@ grep -Fq 'publish-os-payload:' "$desktop" \
   && ! grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
   && grep -Fq 'CONTINUOUS_OS_RELEASE: "0"' "$desktop" \
   && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
-  && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
-  && grep -Fq 'TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}' "$os" \
-  && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
+  && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$compile" \
   && ok 'OS composition reuses the install-tested native desktop payload' \
   || bad 'OS releases still rebuild the desktop component'
 
-grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json")' "$os" \
-  && grep -Fq 'Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor) ]]; then' "$os" \
-  && grep -Fq 'predates this commit'"'"'s desktop inputs; building the desktop from source' "$os" \
-  && grep -Fq '"source": sys.argv[3]' "$repo/dist/desktop/package-os-payload.sh" \
+grep -Fq '"source": sys.argv[3]' "$repo/dist/desktop/package-os-payload.sh" \
   && ok 'OS composition reuses the desktop payload only while no Rust or Cargo input changed since it was built' \
   || bad 'OS composition can ship a desktop payload older than its own compositor sources'
 
-grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
-  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 9 \
-  && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
+grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
-  && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
-  && grep -Fq 'CONTINUOUS_RELEASE: "0"' "$os" \
-  && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
-  && ! grep -Fq 'fetch-depth: 0' "$os" \
-  && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
-  && grep -Fq 'installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested' "$os" \
-  && grep -Fq "if: steps.release-mode.outputs.publish == 'true'" "$os" \
+  && grep -Fq 'find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$compile" \
   && ok 'ordinary OS integration checks run without release-only steps' \
   || bad 'OS branch validation still requires release-only steps'
-
-! grep -Fq 'cron:' "$os" \
-  && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
-  && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
-  && grep -Fq '$PUBLISHED_REVISION == "$TILO_IMAGE_SOURCE"' "$os" \
-  && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
-  && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
-  && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
-  && ok 'publications are manual (tags and dispatch) and skip an already published revision' \
-  || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
-
-grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
-  && grep -Fq 'with_browser=${REQUESTED_BROWSER:-1}' "$os" \
-  && ok 'every image carries the browser unless a manual run leaves it out' \
-  || bad 'an image can omit the browser without a manual request'
 
 # CI and os/dev/build-image.sh derive the Windows provider with one command, so
 # x86_64 can never drop it and ARM includes it as soon as both pins exist.
 # Every os/Containerfile build passes that derived value: the nine image and
 # builder-stage builds and the windows-compat-sysext pack.
-grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
-  && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
-  && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
-  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 10 ] \
-  && [ "$(grep -Ec 'file: os/Containerfile$' "$os")" = 10 ] \
-  && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
+grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
   && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
   && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \
   && ok 'CI and the local builder derive the Windows provider from the same pins' \
   || bad 'the Windows provider mode is chosen differently in CI and os/dev/build-image.sh'
 
-if ! grep -q '^  pull_request:' "$os" \
-  && ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$os" | grep -q '^    branches:' \
-  && ! grep -Fq '  schedule:' "$os" \
-  && grep -Fq '  workflow_dispatch:' "$os" \
-  && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
-  && grep -Fq 'native-atspi-smoke.sh quick-settings' "$os" \
-  && grep -Fq 'native-atspi-smoke.sh auth' "$os" \
-  && grep -Fq 'org.freedesktop.PolicyKit1.Authority.CheckAuthorization' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'installed-atspi-apps.sh' "$os" \
+if grep -Fq 'org.freedesktop.PolicyKit1.Authority.CheckAuthorization' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
@@ -420,8 +397,10 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
   && grep -Fq 'runner":"imager-linux-aarch64"' "$imager" \
   && ! grep -Fq 'pull_request:' "$imager" \
-  && ! grep -Fq 'branches: ["main"]' "$imager" \
-  && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
+  && awk '/^on:/ { on = 1 } on && /^  push:/ { push = 1 } push && /branches: \["main"\]/ { main = 1 }
+          main && /^    paths:/ { filtered = 1 } /^  workflow_dispatch:/ { push = 0 }
+          END { exit !(main && filtered) }' "$imager" \
+  && ok 'imager native jobs run for main pushes that touch the Installer (its signed prereleases), explicit release rehearsals and tags' \
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
@@ -463,19 +442,8 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && ok 'app collections serialize channel updates and remain durable across workflows' \
   || bad 'app releases can cancel a required channel update or cannot be consumed later'
 
-grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
-  && grep -Fq 'TILO_APP_COLLECTION_URL_AARCH64' "$os" \
-  && grep -Fq 'enable-openid-connect: true' "$os" \
-  && grep -Fq 'TILO_OS_APP_COLLECTION_AUDIENCE' "$os" \
-  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*' "$os")" -eq 2 \
-  && test "$(grep -Fc -- "--proto '=https' --proto-redir '=https'" "$os")" -eq 4 \
-  && test "$(grep -Fc 'https:\/\/code.tilo.so}' "$os")" -eq 2 \
-  && ! grep -Fq -- "--proto '=http'" "$os" \
-  && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
-  && grep -Fq 'auth="Bearer $jwt"' "$os" \
-  && grep -Fq 'TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}' "$os" \
-  && grep -Fq 'TAPP_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
-  && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \
+grep -Fq 'TAPP_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
+  && grep -Fq 'cp -a os/app-runtime/tilo-runtime "$out/prebuilt-runtime/"' "$compile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq -- '-C codegen-units=1' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
   && ! grep -Fq -- '--icf=all' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
@@ -485,15 +453,10 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
 
-grep -Fq "CARGO_BUILD_JOBS: \${{ matrix.arch == 'aarch64' && '1' || '4' }}" \
-    "$workflows/check.yml" \
-  && ok 'affected-package CI serializes memory-heavy ARM links' \
-  || bad 'affected-package CI can OOM the native ARM runner with parallel links'
-
 grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile" \
-  && grep -Fq 'sccache backend unavailable; compiling normally' "$repo/os/Containerfile" \
-  && grep -Fq 'export RUSTC_WRAPPER=' "$repo/os/Containerfile" \
+  && grep -Fq 'sccache did not start; compiling without it' "$compile" \
+  && grep -Fq 'export RUSTC_WRAPPER=' "$compile" \
   && grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile.builder" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile.builder" \
   && grep -Fq 'ripgrep time yt-dlp' "$repo/os/Containerfile.builder" \
@@ -508,10 +471,9 @@ grep -Fq "PKGEXT='.pkg.tar.zst'" "$repo/dist/arch/build-arch.sh" \
 # Joining an identity from first-boot onboarding is proven on two booted
 # disks sharing one Ethernet segment, driven over AT-SPI, including a helper
 # failure that must surface in the UI.
-grep -Fq './os/dev/test-nearby-pairing.sh "$TILO_DISK"' "$os" \
-  && grep -Fq 'lan_qemu_args' "$repo/os/dev/vm.sh" \
+grep -Fq 'lan_qemu_args' "$repo/os/dev/vm.sh" \
   && grep -Fq 'native-atspi-smoke.sh oobe-nearby' "$repo/os/dev/test-nearby-pairing.sh" \
-  && grep -Fq "chmod 2750 /var/lib/tilo/enrollment-commits" "$repo/os/dev/test-nearby-pairing.sh" \
+  && grep -Fq "chmod 3750 /var/lib/tilo/enrollment-commits" "$repo/os/dev/test-nearby-pairing.sh" \
   && grep -Fq '  oobe-nearby)' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && ok 'the OS gate pairs a first-boot device with a nearby trusted one and surfaces helper failures' \
   || bad 'nearby pairing from first-boot onboarding has no real-boot gate'
@@ -519,8 +481,7 @@ grep -Fq './os/dev/test-nearby-pairing.sh "$TILO_DISK"' "$os" \
 # Apps opened on a slow machine keep their windows: the dev gate signs in
 # again with every frame stalled as on a slow laptop and opens apps. The stall
 # is a developer override that release compositors never read.
-grep -Fq './os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130' "$os" \
-  && grep -Fq 'TILO_TEST_FRAME_STALL_MS' "$repo/os/dev/test-slow-frame-launch.sh" \
+grep -Fq 'TILO_TEST_FRAME_STALL_MS' "$repo/os/dev/test-slow-frame-launch.sh" \
   && grep -Fq '"TILO_TEST_FRAME_STALL_MS",' "$repo/crates/session/shell/src/compositor/dev_env.rs" \
   && grep -Fq 'super::dev_env::DEV_ENV_OVERRIDES' "$repo/crates/session/shell/src/compositor/frame_stall.rs" \
   && ok 'the dev gate opens apps at a slow machine'"'"'s frame times, behind the developer-override gate' \

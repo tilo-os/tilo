@@ -1,16 +1,34 @@
 // Other members' pointers over a mounted surface, from a room's live layer
 // (`peer.live`). Local pointer moves over the surface are published as the
-// presence `pointer` (surface CSS pixels); remote pointers are drawn as
-// labelled markers on a layer above the canvas.
+// presence `pointer`, relative to what is under it (`anchor`, the runtime's
+// `pointer_anchor`): a point in the window showing a record, or over the
+// empty desktop, beside the nearest window. Members' windows differ in size,
+// each scrolls a strip on their own, and in a room whose layout is personal
+// every member's strips are their own: a point in one page's surface pixels,
+// or in its strip, would land somewhere else on every other page, or nowhere.
+// Remote pointers are handed to the runtime as they came (`setPointers`),
+// which places each in this page's layout, leaves out any over a window or
+// strip this page does not show, and draws them in the frame itself: the
+// shell's arrow, a name tag in its typeface that stays on screen, and the
+// colour the person's avatar wears.
 //
 // Frames are requested only while a remote pointer may still be moving (a
-// frame arrived within the interpolation and extrapolation window), so an
-// idle room costs no animation frames.
+// frame arrived within the interpolation and extrapolation window), or a
+// chat or reaction beside it is still animating, so an idle room costs no
+// animation frames. A timer takes a pointer whose publisher went silent off
+// screen even when no frame arrives to notice it.
+
+import {PRESENCE_KEEPALIVE_MS} from './live-presence.mjs';
 
 /** Keep sampling this long after the newest remote frame. */
 export const SETTLE_MS = 250;
-
-import {colorOf} from './peer.mjs';
+/**
+ * A pointer whose publisher sent nothing for this long is no longer shown.
+ * A present member restates its presence every keepalive, so a silence past
+ * one keepalive and a second means it left (its page closed, its link
+ * dropped) before the room noticed, or it hid its page.
+ */
+export const POINTER_STALE_MS = PRESENCE_KEEPALIVE_MS + 1000;
 
 /**
  * A marker's text: the member's label, and for an agent what it is doing
@@ -19,19 +37,6 @@ import {colorOf} from './peer.mjs';
 export function markerText(publisher, participant) {
   const label = participant?.label ?? publisher.slice(0, 8);
   return participant?.kind === 'agent' && participant.activity ? `${label} · ${participant.activity}` : label;
-}
-
-/**
- * Inline style of a marker. A person's is a filled tag; an agent's is the
- * same tag in its colour with a white ring and a square pointing corner, so
- * agents read as agents at a glance. Pages restyle through
- * `.tilo-live-cursor[data-kind="agent"]`.
- */
-export function markerStyle(kind, color) {
-  const base = `position:absolute;left:0;top:0;padding:1px 6px;font:11px system-ui;color:#fff;background:${color};white-space:nowrap;will-change:transform;transition:transform 180ms ease-out`;
-  return kind === 'agent'
-    ? `${base};border-radius:0 8px 8px 8px;box-shadow:0 0 0 2px #fff,0 1px 4px rgba(0,0,0,.35);font-weight:600;max-width:320px;overflow:hidden;text-overflow:ellipsis`
-    : `${base};border-radius:0 8px 8px 8px`;
 }
 
 /** A sent cursor-chat message stays this long, then fades. */
@@ -56,172 +61,84 @@ export function chatOpacity(chat, sentAt, at) {
   return left <= 0 ? 0 : Math.min(1, left / CHAT_FADE_MS);
 }
 
-/** Inline style of a cursor-chat bubble, in the member's colour. */
-export function chatStyle(color) {
-  return `position:absolute;left:0;top:0;max-width:240px;padding:4px 10px;font:13px/18px system-ui;color:#fff;background:${color};border-radius:4px 12px 12px 12px;white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 2px 8px rgba(0,0,0,.25);will-change:transform,opacity`;
-}
-
-/** The desktop's own record, a member's focus while no window has it. */
-const DESKTOP_APP = 'so.tilo.browser-desktop';
-
-/** The shown window of the record `focus` names (`{app, record}`, as the
- * live layer names it: `''` for an app's room record). */
-function windowOf(focus, windows) {
-  return windows?.find(candidate => candidate.app === focus.app && candidate.record === focus.record);
-}
-
 /**
- * Where to draw a remote pointer, in surface pixels. A pointer with a
- * `focus` is in that record's own surface (an agent points at the control
- * it drives in the record's window): it is drawn inside the window that
- * shows the record, kept within its bounds, and not at all while no window
- * here shows it. A member focused on the desktop itself points in the
- * surface's coordinates. `windows` lists `{app, record, rect: [x0, y0, x1,
- * y1]}`; without it (a single application) every pointer is in the
- * surface's coordinates.
+ * A member's latest reaction at `at`: `{emoji, rise, opacity}` while it
+ * floats up from the pointer (decelerating, fading over the second half of
+ * its life), `null` before and after.
  */
-export function placePointer(pointer, focus, windows) {
-  if (!focus || !windows || focus.app === DESKTOP_APP) return pointer;
-  const window = windowOf(focus, windows);
-  if (!window) return null;
-  const [x0, y0, x1, y1] = window.rect;
-  const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high));
-  return [clamp(x0 + pointer[0], x0, x1 - 1), clamp(y0 + pointer[1], y0, y1 - 1)];
-}
-
-/**
- * The local pointer as presence publishes it: inside the window of the
- * record this member is focused on, relative to that window, the way
- * {@link placePointer} reads it back; in surface pixels otherwise.
- */
-export function publishedPointer(point, focus, windows) {
-  const window = focus && focus.app !== DESKTOP_APP && windowOf(focus, windows);
-  return window ? [point[0] - window.rect[0], point[1] - window.rect[1]] : point;
+export function reactionAt(reaction, at) {
+  const age = reaction ? at - reaction.at : Infinity;
+  if (!(age >= 0 && age < REACTION_MS)) return null;
+  const t = age / REACTION_MS;
+  return {emoji: reaction.emoji, rise: REACTION_RISE_PX * (1 - (1 - t) * (1 - t)), opacity: t < 0.5 ? 1 : (1 - t) * 2};
 }
 
 export function createLiveCursors({
-  layer, surface, document: doc = globalThis.document, windows = () => undefined,
-  /** The record this member is focused on (`{app, record}`), or `null`. */
-  localFocus = () => null,
+  layer, surface,
+  /** Hands the runtime the pointers to draw: `[{publisher, pointer, name?,
+   * agent?, activity?, chat?, reaction?}]` (`remote_pointers`). */
+  setPointers,
+  /** This person's pointer at surface point `(x, y)`, relative to what it
+   * is over (`pointer_anchor`), or `null` over nothing. */
+  anchor = () => null,
   now = () => performance.now(),
   requestFrame = callback => globalThis.requestAnimationFrame(callback),
   cancelFrame = handle => globalThis.cancelAnimationFrame(handle),
+  setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
+  clearTimer = handle => globalThis.clearTimeout(handle),
 }) {
-  const overlay = doc.createElement('div');
-  overlay.className = 'tilo-live-cursors';
-  overlay.setAttribute('aria-hidden', 'true');
-  overlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden';
-  surface.append(overlay);
-  const markers = new Map();
-  const bubbles = new Map();
-  const reactions = new Map();
   let frame;
+  let timer;
   let lastFrameAt = -Infinity;
   let closed = false;
+  let shownKey = '[]';
+  let shown = [];
 
-  function marker(publisher, participant) {
-    let node = markers.get(publisher);
-    if (!node) {
-      node = doc.createElement('div');
-      node.className = 'tilo-live-cursor';
-      node.dataset.publisher = publisher;
-      overlay.append(node);
-      markers.set(publisher, node);
-    }
-    const text = markerText(publisher, participant);
-    if (node.textContent !== text) node.textContent = text;
-    const kind = participant?.kind === 'agent' ? 'agent' : 'person';
-    const color = participant?.color ?? colorOf(publisher);
-    if (node.dataset.kind !== kind || node.dataset.color !== color) {
-      node.dataset.kind = kind;
-      node.dataset.color = color;
-      node.style.cssText = markerStyle(kind, color);
-    }
-    return node;
-  }
-  function drop(publisher) {
-    markers.get(publisher)?.remove();
-    markers.delete(publisher);
-    dropBubble(publisher);
-    reactions.get(publisher)?.node.remove();
-    reactions.delete(publisher);
-  }
-  function dropBubble(publisher) {
-    bubbles.get(publisher)?.remove();
-    bubbles.delete(publisher);
-  }
-  // What the member is saying, under its name tag. Returns whether it is
-  // still on screen (a sent one fades on this clock, so frames continue).
-  function bubble(publisher, remote, color, x, y, at) {
-    const opacity = chatOpacity(remote.chat, remote.chatSentAt, at);
-    if (opacity <= 0) {
-      dropBubble(publisher);
-      return false;
-    }
-    let node = bubbles.get(publisher);
-    if (!node) {
-      node = doc.createElement('div');
-      node.className = 'tilo-live-chat';
-      node.dataset.publisher = publisher;
-      overlay.append(node);
-      bubbles.set(publisher, node);
-    }
-    if (node.dataset.color !== color) {
-      node.dataset.color = color;
-      node.style.cssText = chatStyle(color);
-    }
-    if (node.textContent !== remote.chat.text) node.textContent = remote.chat.text;
-    node.style.opacity = String(opacity);
-    node.style.transform = `translate(${x + 12}px,${y + 22}px)`;
-    return remote.chat.sent;
-  }
-  // The member's latest reaction, floating up from its pointer once.
-  // Returns whether it is still rising.
-  function reaction(publisher, remote, x, y, at) {
-    const current = remote.reaction;
-    const age = current ? at - current.at : Infinity;
-    let shown = reactions.get(publisher);
-    if (!current || age >= REACTION_MS) {
-      shown?.node.remove();
-      reactions.delete(publisher);
-      return false;
-    }
-    if (!shown || shown.seq !== current.seq) {
-      shown?.node.remove();
-      const node = doc.createElement('div');
-      node.className = 'tilo-live-reaction';
-      node.style.cssText = 'position:absolute;left:0;top:0;font:28px/1 system-ui;will-change:transform,opacity';
-      node.textContent = current.emoji;
-      overlay.append(node);
-      shown = {seq: current.seq, node};
-      reactions.set(publisher, shown);
-    }
-    const t = Math.max(0, age) / REACTION_MS;
-    // Decelerating rise; fades over the second half of its life.
-    const rise = REACTION_RISE_PX * (1 - (1 - t) * (1 - t));
-    shown.node.style.transform = `translate(${x - 14}px,${y - 32 - rise}px)`;
-    shown.node.style.opacity = String(t < 0.5 ? 1 : (1 - t) * 2);
-    return true;
+  function show(pointers) {
+    const key = JSON.stringify(pointers);
+    if (key === shownKey) return;
+    shownKey = key;
+    shown = pointers;
+    setPointers(pointers);
   }
   function render() {
     frame = undefined;
     if (closed) return;
     const at = now();
-    const seen = new Set();
-    const shownWindows = windows();
+    const pointers = [];
     let animating = false;
+    // The soonest a shown pointer's publisher counts as gone.
+    let staleAt = Infinity;
     for (const remote of layer.remoteState(at)) {
       if (!remote.pointer || remote.stale) continue;
-      const placed = placePointer(remote.pointer, remote.focus, shownWindows);
-      if (!placed) continue;
-      seen.add(remote.publisher);
-      const [x, y] = placed;
-      const node = marker(remote.publisher, remote.participant);
-      node.style.transform = `translate(${x}px,${y}px)`;
-      animating = bubble(remote.publisher, remote, node.dataset.color, x, y, at) || animating;
-      animating = reaction(remote.publisher, remote, x, y, at) || animating;
+      const heard = Number.isFinite(remote.receivedAtMs) ? remote.receivedAtMs : at;
+      if (at - heard > POINTER_STALE_MS) continue;
+      staleAt = Math.min(staleAt, heard + POINTER_STALE_MS);
+      const pointer = {publisher: remote.publisher, pointer: remote.pointer};
+      const {participant} = remote;
+      // The member's own name and kind, for a runtime that does not know
+      // them yet; it names and colours each one as the room does.
+      if (participant?.label) pointer.name = participant.label;
+      if (participant?.kind === 'agent') {
+        pointer.agent = true;
+        if (participant.activity) pointer.activity = participant.activity;
+      }
+      const opacity = chatOpacity(remote.chat, remote.chatSentAt, at);
+      if (opacity > 0) {
+        pointer.chat = {text: remote.chat.text, typing: !remote.chat.sent, opacity};
+        // A sent one fades on this clock, so frames continue.
+        animating ||= remote.chat.sent;
+      }
+      const reaction = reactionAt(remote.reaction, at);
+      if (reaction) {
+        pointer.reaction = reaction;
+        animating = true;
+      }
+      pointers.push(pointer);
     }
-    for (const publisher of [...markers.keys()]) if (!seen.has(publisher)) drop(publisher);
+    show(pointers);
+    if (timer !== undefined) clearTimer(timer);
+    timer = Number.isFinite(staleAt) ? setTimer(() => { timer = undefined; schedule(); }, Math.max(0, staleAt - at) + 1) : undefined;
     if (animating || at - lastFrameAt < SETTLE_MS) schedule();
   }
   function schedule() {
@@ -229,12 +146,12 @@ export function createLiveCursors({
   }
   const unsubscribe = [
     layer.onPresence(() => { lastFrameAt = now(); schedule(); }),
-    layer.onMember(({publisher, active}) => { if (!active) drop(publisher); schedule(); }),
+    // A member who left is gone at once: its last frame is dropped with it.
+    layer.onMember(() => schedule()),
   ];
   const move = event => {
     const rect = surface.getBoundingClientRect();
-    const point = [event.clientX - rect.left, event.clientY - rect.top];
-    layer.publishPresence({pointer: publishedPointer(point, localFocus(), windows())});
+    layer.publishPresence({pointer: anchor(event.clientX - rect.left, event.clientY - rect.top)});
   };
   const leave = () => layer.publishPresence({pointer: null});
   surface.addEventListener('pointermove', move, {passive: true});
@@ -242,21 +159,21 @@ export function createLiveCursors({
   schedule();
 
   return {
-    /** Publishers whose marker is on screen. */
-    shown: () => [...markers.keys()],
-    /** Publishers whose cursor-chat bubble is on screen, with its text. */
-    chats: () => [...bubbles].map(([publisher, node]) => [publisher, node.textContent]),
+    /** Publishers whose pointer is handed to the runtime to place. */
+    shown: () => shown.map(pointer => pointer.publisher),
+    /** Publishers whose cursor-chat bubble is shown, with its text. */
+    chats: () => shown.filter(pointer => pointer.chat).map(pointer => [pointer.publisher, pointer.chat.text]),
+    /** Wake to hand the pointers over again. */
+    wake: schedule,
     close() {
       if (closed) return;
       closed = true;
       if (frame !== undefined) cancelFrame(frame);
+      if (timer !== undefined) clearTimer(timer);
       for (const stop of unsubscribe) stop();
       surface.removeEventListener('pointermove', move);
       surface.removeEventListener('pointerleave', leave);
-      overlay.remove();
-      markers.clear();
-      bubbles.clear();
-      reactions.clear();
+      show([]);
     },
   };
 }

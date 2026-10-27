@@ -317,7 +317,6 @@ impl Actor {
             )
             .map_err(|_| SendError::Revoked)?;
         credential.check()?;
-        super::first_account::ensure_contacts(apps, &identity)?;
         let authority = apps
             .native_messaging_authority(&identity, &credential, &scope)
             .map_err(|_| SendError::Revoked)?;
@@ -497,7 +496,7 @@ impl Actor {
     }
     fn review(
         &self,
-        apps: &mut super::super::InProcessApps,
+        apps: &super::super::InProcessApps,
         account: &ServiceAccount,
         name: String,
     ) -> Result<String, SendError> {
@@ -545,7 +544,7 @@ impl Actor {
     }
     fn publish(
         &self,
-        apps: &mut super::super::InProcessApps,
+        apps: &super::super::InProcessApps,
         attempt: &mut Attempt,
         name: String,
     ) -> Result<String, SendError> {
@@ -592,8 +591,6 @@ impl Actor {
         permission: super::OwnerPermission,
         credential: super::NativeMessagingCredential,
     ) -> Result<(), SendError> {
-        super::first_account::ensure_contacts(apps, &attempt.identity)?;
-        ensure_accounts(apps)?;
         let authority = apps
             .native_messaging_authority(&attempt.identity, &credential, &attempt.review.scope)
             .map_err(|_| SendError::Revoked)?;
@@ -788,22 +785,4 @@ impl Drop for Actor {
             }
         }
     }
-}
-fn ensure_accounts(apps: &mut super::super::InProcessApps) -> Result<(), SendError> {
-    use tilo_resource::Resource as _;
-    let records = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        accounts::person::ACCOUNTS_OWNER,
-        apps.author.clone(),
-    )
-    .map_err(|_| SendError::Unavailable)?;
-    records
-        .open_original_record(
-            ui::record::RecordKind::new(accounts::person::PersonAccounts::KIND),
-            |doc| {
-                accounts::person::PersonAccounts::initialize(doc).map_err(|error| error.to_string())
-            },
-        )
-        .map_err(|_| SendError::Unavailable)?;
-    records.flush().map_err(|_| SendError::Unavailable)
 }

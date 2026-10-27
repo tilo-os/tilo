@@ -118,6 +118,12 @@ impl When {
     }
 
     /// The wrapped child, shown or not.
+    #[must_use]
+    pub fn child(&self) -> &dyn Widget {
+        self.child.as_ref()
+    }
+
+    /// The wrapped child, shown or not.
     pub fn child_mut(&mut self) -> &mut dyn Widget {
         self.child.as_mut()
     }

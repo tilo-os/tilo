@@ -66,21 +66,18 @@ fn apply(doc: &mut AutoCommit, mutation: DocumentMutation) {
     }
 }
 
-/// `support::wait_for` with room for phases that move megabytes.
+/// Poll `probe` until it answers, bounded by the shared hang bound.
 async fn settle<T, F, Fut>(what: &str, mut probe: F) -> T
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<T>>,
 {
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(value) = probe().await {
             return value;
         }
-        assert!(
-            started.elapsed() < Duration::from_secs(180),
-            "timed out waiting for {what}"
-        );
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

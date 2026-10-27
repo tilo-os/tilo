@@ -109,6 +109,14 @@ pub struct WebArgs {
     /// file; then start as usual.
     #[arg(long = "install-token-file", value_name = "PATH", requires = "web")]
     pub install_token_file: Option<PathBuf>,
+    /// Serve the members' pages a fetch proxy at `/peer/v1/fetch`, so apps in
+    /// a page read sites that send no CORS headers (feeds, video directories,
+    /// calendar subscriptions) through this host. Only public addresses are
+    /// reached; requests, bytes and destinations are rate-limited, and what
+    /// each visitor and each room receives a day is budgeted
+    /// (`TILO_RELAY_FETCH_PROXY_*`, see the room service's README).
+    #[arg(long = "fetch-proxy")]
+    pub fetch_proxy: bool,
     /// The device key (hex) of the session beside this node, the shell that
     /// runs the person's apps: pages learn it on `/node` to open apps there.
     /// While the node waits for its certificate, its root certifies the
@@ -160,18 +168,26 @@ pub struct AgentArgs {
     /// How agents plan natural-language tasks: `settings` (the provider
     /// selected in Settings, through tilo-model-gateway), `scripted` (a
     /// deterministic keyword planner for tests and demos),
-    /// `openai:<base url>` (an OpenAI-compatible chat-completions endpoint)
-    /// or `cloud:<base url>` (Tilo Cloud's metered
-    /// `…/api/machines/<id>/ai/v1`, billed to the machine's AI credits). The
+    /// `openai:<base url>` (an OpenAI-compatible chat-completions endpoint),
+    /// `anthropic:<base url>` (Anthropic's Messages API, e.g.
+    /// `https://api.anthropic.com`) or `cloud:<base url>` (Tilo Cloud's
+    /// metered `…/api/machines/<id>/ai/v1`, billed to the machine's AI
+    /// credits). The
     /// key comes from `TILO_AGENT_API_KEY`, or `TILO_AGENT_API_KEY_FILE`,
     /// read before every call so a rotated token needs no restart. Default
     /// `$TILO_AGENT_MODEL`, else `settings`.
     #[arg(long = "agent-model", value_name = "MODEL")]
     pub model: Option<String>,
-    /// The model id for `openai:` (required) or `cloud:` (default
+    /// The model id for `openai:` and `anthropic:` (required) or `cloud:` (default
     /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
     #[arg(long = "agent-model-name", value_name = "ID")]
     pub model_name: Option<String>,
+    /// Without `--agents`, still serve the rooms' records to their pages:
+    /// the host runs an action of a room record for whoever the room's
+    /// policy lets ask, such as a member linking their own account on the
+    /// room's Discord from their profile card. `--agents` serves them too.
+    #[arg(long)]
+    pub room_records: bool,
 }
 
 #[cfg(feature = "agents")]
@@ -207,6 +223,7 @@ impl AgentArgs {
             state_dir,
             model,
             catalogue: None,
+            feedback_reviewer: None,
         }))
     }
 }
@@ -216,6 +233,8 @@ pub struct HostedRelay {
     pub relay: Relay,
     #[cfg(feature = "agents")]
     agents: Option<tilo_agent_participant::AgentHost>,
+    /// Its state's lock, released once it stopped.
+    _lock: tilo_relay::state_lock::StateLock,
 }
 
 impl HostedRelay {
@@ -237,7 +256,8 @@ fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
 }
 
 /// Start the relay; with `--agents`, with its agent supervisor as the
-/// app-serving plane and the agents kept under `state_root/agents`.
+/// app-serving plane and the agents kept under `state_root/agents`; with
+/// `--room-records` alone, serving the rooms' records without agents.
 ///
 /// # Errors
 /// The relay did not start, or the agent state could not be read.
@@ -246,25 +266,67 @@ fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
     allow(unused_variables, reason = "agents only")
 )]
 pub async fn start_relay(
+    cfg: tilo_relay::RelayConfig,
+    identity: RelayIdentity,
+    args: &WebArgs,
+    state_root: &Path,
+) -> anyhow::Result<HostedRelay> {
+    start_relay_lending(cfg, identity, args, state_root, Lent::default()).await
+}
+
+/// What a host lends its rooms besides serving their records.
+#[derive(Default)]
+pub struct Lent {
+    /// The model its rooms' reporters may have look over their reports.
+    #[cfg(feature = "agents")]
+    pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
+}
+
+/// [`start_relay`], lending the rooms what `lent` holds.
+///
+/// # Errors
+/// The relay did not start, or the agent state could not be read.
+#[cfg_attr(
+    not(feature = "agents"),
+    allow(unused_variables, reason = "agents only")
+)]
+pub async fn start_relay_lending(
     mut cfg: tilo_relay::RelayConfig,
     identity: RelayIdentity,
     args: &WebArgs,
     state_root: &Path,
+    lent: Lent,
 ) -> anyhow::Result<HostedRelay> {
     if let Some(max) = env_count("TILO_RELAY_MAX_ROOM_GRANTS") {
         cfg.max_room_grants = Some(max);
     }
     announce_web_entry(&mut cfg, args);
+    let lock =
+        tilo_relay::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "agents")]
     let options = args.agents.options(state_root.join("agents"))?;
     #[cfg(feature = "agents")]
-    if let Some(options) = options {
+    if let Some(mut options) = options {
+        options.feedback_reviewer = lent.feedback_reviewer;
         let (relay, agents) = tilo_relay::agents::start(cfg, identity, options)
             .await
             .context("start the relay with agents")?;
         return Ok(HostedRelay {
             relay,
             agents: Some(agents),
+            _lock: lock,
+        });
+    }
+    #[cfg(feature = "agents")]
+    if args.agents.room_records {
+        let relay =
+            tilo_relay::agents::start_serving_records(cfg, identity, None, lent.feedback_reviewer)
+                .await
+                .context("start the relay serving its rooms' records")?;
+        return Ok(HostedRelay {
+            relay,
+            agents: None,
+            _lock: lock,
         });
     }
     let relay = Relay::start(cfg, identity)
@@ -274,6 +336,7 @@ pub async fn start_relay(
         relay,
         #[cfg(feature = "agents")]
         agents: None,
+        _lock: lock,
     })
 }
 
@@ -309,6 +372,97 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
                 name,
                 proxies: args.country_proxies.clone(),
             }),
+        fetch_proxy: args.fetch_proxy.then(|| tilo_relay::web::FetchProxySetup {
+            config: fetch_proxy_config(),
+            metrics_file: Some(
+                tilo_relay_protocol::metrics::room_textfile_dir(state_root)
+                    .join("fetch-proxy.prom"),
+            ),
+        }),
+    }
+}
+
+/// The fetch proxy's bounds, its rates and budgets raised or lowered from
+/// the environment for a host whose visitors share addresses or fetch more.
+fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
+    use tilo_net::proxy::host::{Budgets, Config, Rate, RateLimits};
+    let defaults = RateLimits::default();
+    let budget_defaults = Budgets::default();
+    // A budget in MiB; 0 turns it off.
+    let budget = |name: &str, default: Option<u64>| {
+        env_count(name).map_or(default, |mib| {
+            (mib > 0).then(|| {
+                u64::try_from(mib)
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(1024 * 1024)
+            })
+        })
+    };
+    let budgets = Budgets {
+        window: env_count("TILO_RELAY_FETCH_PROXY_BUDGET_HOURS")
+            .filter(|hours| *hours > 0)
+            .map_or(budget_defaults.window, |hours| {
+                Duration::from_secs(
+                    u64::try_from(hours)
+                        .unwrap_or(u64::MAX)
+                        .saturating_mul(3600),
+                )
+            }),
+        visitor_bytes: budget(
+            "TILO_RELAY_FETCH_PROXY_VISITOR_MIB",
+            budget_defaults.visitor_bytes,
+        ),
+        room_bytes: budget(
+            "TILO_RELAY_FETCH_PROXY_ROOM_MIB",
+            budget_defaults.room_bytes,
+        ),
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "operator-set rates, far below 2^52"
+    )]
+    let rate = |name: &str, burst_of: fn(f64) -> f64, default: Rate| {
+        env_count(name).map_or(default, |per_minute| {
+            let per_minute = per_minute as f64;
+            Rate {
+                burst: burst_of(per_minute).max(1.0),
+                per_minute,
+            }
+        })
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "operator-set rates, far below 2^52"
+    )]
+    let device_bytes = env_count("TILO_RELAY_FETCH_PROXY_DEVICE_MIB_PER_HOUR").map_or(
+        defaults.device_bytes,
+        |mib_per_hour| {
+            let per_hour = mib_per_hour as f64 * 1024.0 * 1024.0;
+            Rate {
+                burst: per_hour.min(defaults.device_bytes.burst).max(1.0),
+                per_minute: per_hour / 60.0,
+            }
+        },
+    );
+    Config {
+        limits: RateLimits {
+            device_requests: rate(
+                "TILO_RELAY_FETCH_PROXY_DEVICE_PER_MIN",
+                |per_minute| per_minute,
+                defaults.device_requests,
+            ),
+            device_bytes,
+            destination_requests: rate(
+                "TILO_RELAY_FETCH_PROXY_DESTINATION_PER_MIN",
+                |per_minute| per_minute * 0.4,
+                defaults.destination_requests,
+            ),
+            device_in_flight: env_count("TILO_RELAY_FETCH_PROXY_DEVICE_IN_FLIGHT")
+                .unwrap_or(defaults.device_in_flight),
+            in_flight: env_count("TILO_RELAY_FETCH_PROXY_IN_FLIGHT").unwrap_or(defaults.in_flight),
+        },
+        budgets,
+        ..Config::default()
     }
 }
 
@@ -965,9 +1119,18 @@ async fn approve_admitted(
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
                 Some(Ok(
-                    command @ (OperatorCommand::PreAdmit { .. } | OperatorCommand::Spectate { .. }),
+                    OperatorCommand::PreAdmit { .. }
+                    | OperatorCommand::Spectate { .. }
+                    | OperatorCommand::WaitList { .. }
+                    | OperatorCommand::Unlist { .. }
+                    | OperatorCommand::Confirm { .. }
+                    | OperatorCommand::Standing { .. }
+                    | OperatorCommand::InviteMailQueued { .. }
+                    | OperatorCommand::DiscordAuthorized { .. },
                 )) => {
-                    anyhow::bail!("a short-lived room takes no {command:?}");
+                    // Not the command itself: a wait-list command carries an
+                    // email address, which no log keeps.
+                    anyhow::bail!("a short-lived room takes no command but admit and shutdown");
                 }
                 Some(Err(error)) => {
                     tracing::error!(%error, "unreadable room operator line");
@@ -1298,7 +1461,6 @@ mod tests {
         let mut admissions = Admissions::new(Duration::from_secs(60));
         let now = tokio::time::Instant::now();
         admissions.admit("123456".into(), now);
-        // The guest and a stranger whose request ground the same six digits.
         let (guest, stranger, unrelated) =
             (pending("123456"), pending("123456"), pending("654321"));
         let decisions = admissions.decide(&[guest.clone(), unrelated, stranger.clone()], &[], now);

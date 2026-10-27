@@ -613,7 +613,7 @@ impl PacingWindow {
         }
     }
 
-    /// The `FRAME-PACING` line for the window, when [`PACING_WINDOW`] has
+    /// The `FRAME-PACING` line for the window, when `PACING_WINDOW` has
     /// passed since its first frame. Starts a new window.
     pub fn take_line(
         &mut self,
@@ -673,7 +673,6 @@ mod tests {
 
     #[test]
     fn refresh_intervals_come_only_from_real_display_rates() {
-        // Phase `interval_from_millihertz_matches_the_common_modes`.
         assert_eq!(
             interval_from_millihertz(60_000),
             Some(Duration::from_nanos(16_666_666)),
@@ -699,7 +698,6 @@ mod tests {
         assert_eq!(interval_from_hz(1), None, "1 Hz is not a display mode");
         assert_eq!(interval_from_hz(100_000), None);
         assert_eq!(interval_from_hz(60), Some(Duration::from_nanos(16_666_666)));
-        // Phase `interval_from_mode_timing_recovers_the_fractional_rate`.
         {
             // A real 1920x1080@59.94 mode: 148.5 MHz clock, htotal 2200, vtotal 1125 → 148500000/(2200*1125) = 60.0 Hz exactly.
             assert_eq!(
@@ -716,7 +714,6 @@ mod tests {
             assert_eq!(interval_from_mode_timing(148_500, 0, 1125), None);
             assert_eq!(interval_from_mode_timing(0, 2200, 1125), None);
         }
-        // Phase `refresh_override_accepts_real_rates_and_rejects_the_rest`.
         assert_eq!(
             parse_refresh_override(Some("144")),
             Some(Duration::from_nanos(6_944_444))
@@ -743,7 +740,6 @@ mod tests {
                 "{bad:?} must be rejected, not obeyed"
             );
         }
-        // Phase `a_clock_built_from_a_nonsense_interval_is_clamped_not_obeyed`.
         {
             // Belt and braces for callers that bypass `interval_from_*`: a zero interval would spin the loop at 100% CPU, an hour-long one would freeze it.
             let t0 = Instant::now();
@@ -768,7 +764,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn frame_deadlines_stay_phase_locked_and_gate_presentation() {
-        // Phase `budget_is_the_remainder_of_the_interval_not_a_whole_one`.
         {
             let t0 = Instant::now();
             let mut clock = FrameClock::new(Duration::from_micros(16_667), t0);
@@ -783,7 +778,6 @@ mod tests {
                  interval after the work is what made the loop run at 45 Hz"
             );
         }
-        // Phase `budget_is_zero_once_the_deadline_has_passed`.
         {
             let t0 = Instant::now();
             let mut clock = FrameClock::new(Duration::from_micros(16_667), t0);
@@ -796,7 +790,6 @@ mod tests {
             );
             assert!(clock.due(late));
         }
-        // Phase `deadlines_stay_phase_locked_across_a_late_frame`.
         {
             // Present on time, then present 4 ms late. The next deadline must land on the original grid (2 * interval from the start), not 4 ms after the late presentation.
             let t0 = Instant::now();
@@ -816,7 +809,6 @@ mod tests {
                 "one late frame missed no deadline"
             );
         }
-        // Phase `a_frame_that_overruns_several_intervals_skips_them_instead_of_bursting`.
         {
             // A 50 ms stall on a 10 ms clock: must resume at the next future deadline and report 4 missed ones, not hand out five consecutive zero-length budgets.
             let t0 = Instant::now();
@@ -841,7 +833,6 @@ mod tests {
                  immediately due again"
             );
         }
-        // Phase `a_retirement_later_than_one_interval_is_due_at_once`.
         {
             // Virtual scanout acceptance can return ~50 ms after the frame
             // was admitted (three 60 Hz intervals: the kernel's dumb-flush
@@ -858,8 +849,6 @@ mod tests {
                 clock.due(retired),
                 "a stall longer than one interval must paint on the retirement"
             );
-            // Inside the following interval the grid stays put, same as a
-            // slightly late vblank.
             let mut locked = FrameClock::new(interval, t0);
             locked.note_blocked_retirement(t0);
             let slightly_late = t0 + interval + Duration::from_millis(4);
@@ -867,7 +856,6 @@ mod tests {
             assert_eq!(locked.next_deadline(), t0 + 2 * interval);
             assert!(!locked.due(slightly_late));
         }
-        // Phase `due_gates_presentation_between_deadlines`.
         {
             // Protocol traffic wakes the loop mid-interval; the paint gate must decline.
             let t0 = Instant::now();
@@ -880,7 +868,6 @@ mod tests {
             );
             assert!(clock.due(t0 + interval));
         }
-        // Phase `set_interval_retargets_without_skipping_or_doubling_a_frame`.
         {
             // Mode change 60 Hz → 144 Hz. The pending deadline must survive — moving it would either drop the frame in flight or present two frames back to back.
             let t0 = Instant::now();
@@ -960,13 +947,11 @@ mod tests {
         assert_eq!(clock.next_deadline(), stepped);
         assert!(clock.is_vblank_locked());
 
-        // Changing the lead moves the pending deadline with it.
         clock.set_lead(Duration::from_millis(6));
         assert_eq!(
             clock.next_deadline(),
             stepped.checked_sub(Duration::from_millis(2)).unwrap()
         );
-        // A lead of a whole interval or more is due at the vblank itself.
         clock.set_lead(Duration::from_secs(1));
         assert_eq!(clock.lead(), interval);
         clock.note_vblank(landed);
@@ -1182,12 +1167,10 @@ mod tests {
         assert!(!clock.set_adaptive(true), "no change reported twice");
         assert!(clock.is_adaptive());
 
-        // Phase `the_panel_minimum_frame_time_still_gates_a_frame`.
         clock.note_presented(t0);
         assert!(!clock.due(t0 + Duration::from_millis(5)));
         assert!(clock.due(t0 + interval));
 
-        // Phase `late_content_is_shown_at_once_and_resets_the_limit_from_there`.
         let late = t0 + Duration::from_millis(19);
         assert!(clock.due(late));
         clock.note_presented(late);
@@ -1202,7 +1185,6 @@ mod tests {
             "nothing is skipped in adaptive mode"
         );
 
-        // Phase `returning_to_the_fixed_grid_keeps_the_pending_deadline`.
         let pending = clock.next_deadline();
         assert!(clock.set_adaptive(false));
         assert_eq!(clock.next_deadline(), pending);
@@ -1212,7 +1194,6 @@ mod tests {
 
     #[test]
     fn early_wakeups_neither_push_the_deadline_nor_drift() {
-        // Phase `a_wakeup_that_does_not_paint_must_not_push_the_deadline_out`.
         {
             // Something wakes the loop at T + 2ms (on the threaded path, the render thread retiring a frame), and it declines to paint because it isn't due yet.
             let t0 = Instant::now();
@@ -1237,7 +1218,6 @@ mod tests {
                 "parking must land exactly on the pending deadline"
             );
         }
-        // Phase `park_falls_back_to_a_whole_interval_only_once_the_deadline_is_stale`.
         {
             // The other half: when the deadline has passed and nothing was presented for it (nothing to
             // show, or no room in the pipe), `budget` is zero and parking on it would spin the loop at 100% CPU — that case, and only that case, parks a whole interval.
@@ -1258,7 +1238,6 @@ mod tests {
                 "a stale deadline must park a whole interval rather than spin"
             );
         }
-        // Phase `repeated_early_wakeups_do_not_accumulate_drift`.
         {
             // Every interval gets one paint plus a spurious wakeup partway through; presentation instants must stay exactly on the grid.
             let t0 = Instant::now();
@@ -1291,7 +1270,6 @@ mod tests {
                 &gaps[..5.min(gaps.len())]
             );
         }
-        // Phase `a_steady_loop_holds_the_target_cadence_over_many_frames`.
         {
             // End-to-end on the production type: simulate 600 ticks of a 5 ms workload on a 144 Hz clock and assert presentation instants stay on the 6.944 ms grid.
             let t0 = Instant::now();

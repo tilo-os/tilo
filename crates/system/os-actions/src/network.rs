@@ -42,10 +42,6 @@ pub struct VpnConnectionInfo {
     pub kind: String,
 }
 
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the radio/device status query
-/// fails.
 pub fn get_radio_state() -> Result<RadioState, String> {
     SystemRadio.radio_state()
 }
@@ -161,9 +157,6 @@ fn device_type(interface: &std::path::Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the radio-toggle call fails.
 pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
     if enabled {
         run("nmcli", &["radio", "all", "off"])
@@ -177,22 +170,14 @@ pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
     }
 }
 
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the radio-toggle call fails.
+/// Mobile data on or off: the modem's radio and the profile that connects
+/// through it ([`crate::modem::set_mobile_data`]).
 pub fn set_mobile_broadband(enabled: bool) -> Result<(), String> {
-    run(
-        "nmcli",
-        &["radio", "wwan", if enabled { "on" } else { "off" }],
-    )
+    crate::modem::set_mobile_data(enabled)
 }
 
 /// Activate the Tilo hotspot. `NetworkManager` creates the profile and a random
 /// WPA credential on first use; Tilo never receives or logs that secret.
-///
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the underlying call fails.
 pub fn set_hotspot(enabled: bool) -> Result<(), String> {
     if enabled {
         let profiles = run_capture("nmcli", &["-t", "-f", "NAME", "connection", "show"])?;
@@ -213,9 +198,6 @@ pub fn set_hotspot(enabled: bool) -> Result<(), String> {
     )
 }
 
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
     let all = run_capture(
         "nmcli",
@@ -244,10 +226,6 @@ pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
         .collect())
 }
 
-/// # Errors
-///
-/// Returns an error message if `name` is empty or contains a NUL/newline, or `nmcli` is not
-/// installed or the command fails.
 pub fn set_vpn_connection(name: &str, enabled: bool) -> Result<(), String> {
     if name.is_empty() || name.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
         return Err("invalid VPN connection name".into());
@@ -261,11 +239,6 @@ pub fn set_vpn_connection(name: &str, enabled: bool) -> Result<(), String> {
 /// Activate/deactivate one VPN profile by `NetworkManager`'s immutable UUID.
 /// This avoids binding a security-relevant local credential association to a
 /// mutable display name.
-///
-/// # Errors
-///
-/// Returns an error when `uuid` is invalid, `nmcli` is unavailable, or
-/// `NetworkManager` rejects the requested transition.
 pub fn set_vpn_connection_uuid(uuid: &str, enabled: bool) -> Result<(), String> {
     if uuid.is_empty() || uuid.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
         return Err("invalid VPN connection UUID".into());
@@ -281,10 +254,6 @@ pub fn set_vpn_connection_uuid(uuid: &str, enabled: bool) -> Result<(), String> 
     )
 }
 
-/// # Errors
-///
-/// Returns an error message if `kind` is not `wireguard` or `openvpn`, or `nmcli` is not
-/// installed or the import fails.
 pub fn import_vpn_config(kind: &str, path: &str) -> Result<(), String> {
     if !matches!(kind, "wireguard" | "openvpn") {
         return Err("unsupported VPN type".into());
@@ -309,11 +278,6 @@ pub fn delete_vpn_connection(name: &str) -> Result<(), String> {
 }
 
 /// Remove one `NetworkManager` VPN profile by immutable UUID.
-///
-/// # Errors
-///
-/// Returns an error when `uuid` is invalid, `nmcli` is unavailable, or
-/// `NetworkManager` refuses the deletion.
 pub fn delete_vpn_connection_uuid(uuid: &str) -> Result<(), String> {
     if uuid.is_empty() || uuid.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
         return Err("invalid VPN connection UUID".into());
@@ -467,10 +431,6 @@ pub fn set_wifi(enabled: bool) -> Result<(), String> {
 
 /// Whether `radios`, read after asking for Wi-Fi `enabled`, shows that it
 /// happened; otherwise why not.
-///
-/// # Errors
-///
-/// Returns the reason the radio is not in the requested state.
 pub fn wifi_change_outcome(enabled: bool, radios: &RadioState) -> Result<(), String> {
     if radios.wifi_enabled == enabled {
         Ok(())
@@ -541,21 +501,12 @@ fn set_wifi_radio_with(host: &dyn WifiRadioHost, enabled: bool) -> Result<RadioS
 }
 
 /// Read the Wi-Fi radio state. `nmcli radio wifi` prints `enabled` or `disabled` on stdout.
-///
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed, the command fails, or its output is
-/// neither `enabled` nor `disabled`.
 pub fn get_wifi() -> Result<bool, String> {
     wifi_from_radios(&get_radio_state()?)
 }
 
 /// Whether Wi-Fi is on, read from a radio snapshot already taken — so a
 /// caller holding one does not fork `nmcli` a second time for the same answer.
-///
-/// # Errors
-///
-/// Returns an error message when the snapshot shows no Wi-Fi adapter.
 pub fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
     if !radios.wifi_available {
         return Err("no Wi-Fi adapter on this machine".into());
@@ -587,10 +538,6 @@ fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
 /// takes over 13 s on some adapters and ignores `--wait`. The connected network and the
 /// status every caller derives from this list must not depend on that. A deliberate "look
 /// again" is [`scan_wifi`] first.
-///
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     let mut networks = list_wifi_networks_via("nmcli", &[])?;
     // Which ones this machine knows: a failed read leaves them unknown,
@@ -694,7 +641,7 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
 
 /// Split a single nmcli `-t` (terse) line on unescaped `:` separators. `\:` inside a field
 /// stays a literal colon.
-fn split_terse(line: &str) -> Vec<String> {
+pub(crate) fn split_terse(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut chars = line.chars().peekable();
@@ -757,6 +704,55 @@ impl LinkStatus {
     pub fn is_online(&self) -> bool {
         !matches!(self.kind, LinkKind::Offline)
     }
+}
+
+/// Following `NetworkManager` for [`follow_network_changes`]; it stops when
+/// this is dropped.
+#[derive(Debug)]
+pub struct NetworkFollow {
+    task: tilo_rt::JoinHandle<()>,
+}
+
+impl Drop for NetworkFollow {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Call `on_change` on the app runtime each time `NetworkManager` reports a
+/// change network settings shows ([`tilo_nm::NmClient::watch_changes`]):
+/// a reader re-reads then, instead of on a timer. Nothing polls.
+///
+/// # Errors
+///
+/// When the app runtime cannot start. A system bus that cannot be reached
+/// is logged and followed no further.
+pub fn follow_network_changes(
+    on_change: impl Fn() + Send + Sync + 'static,
+) -> Result<NetworkFollow, String> {
+    // Not generic past here: the runtime holds the follower, its D-Bus
+    // connection and its tasks once, rather than every app calling it.
+    follow_network_changes_boxed(Box::new(on_change))
+}
+
+fn follow_network_changes_boxed(
+    on_change: Box<dyn Fn() + Send + Sync>,
+) -> Result<NetworkFollow, String> {
+    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
+    let task = runtime.spawn(async move {
+        let watched = async { tilo_nm::NmClient::system().await?.watch_changes().await }.await;
+        let mut changes = match watched {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::warn!(%error, "could not follow NetworkManager's changes");
+                return;
+            }
+        };
+        while changes.changed().await.is_some() {
+            on_change();
+        }
+    });
+    Ok(NetworkFollow { task })
 }
 
 /// Read the primary connection from `NetworkManager`'s state: one D-Bus read, never a scan.
@@ -852,11 +848,6 @@ fn parse_proc_net_wireless(raw: &str) -> Option<u8> {
 
 /// Connect to a Wi-Fi SSID. Passwords travel on nmcli's `--ask` stdin,
 /// never argv (which is readable through `/proc`).
-///
-/// # Errors
-///
-/// Returns an error message if `password` contains a line break, `nmcli` is not installed, or
-/// the connect attempt fails or times out.
 pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     connect_wifi_via("nmcli", &[], ssid, password)
 }
@@ -884,11 +875,6 @@ fn connect_wifi_via(
 
 /// Disconnect the exact `NetworkManager` connection used for a remote
 /// tethering grant. This does not forget the profile or affect other radios.
-///
-/// # Errors
-///
-/// Returns an error when `ssid` is invalid or `NetworkManager` rejects the
-/// targeted disconnect.
 pub fn disconnect_wifi(ssid: &str) -> Result<(), String> {
     if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
         return Err("Wi-Fi name is invalid".into());
@@ -952,11 +938,6 @@ pub fn get_connectivity() -> Result<ConnectivityState, String> {
 /// an explicit "check again" in the installer or Settings. Falls back to the last verdict when
 /// this caller may not ask for a recheck (polkit refuses that to clients outside an active
 /// session, such as a sandboxed app behind a filtered bus).
-///
-/// # Errors
-///
-/// Returns the recheck's error message if neither the recheck nor the last verdict could be
-/// read (e.g. `NetworkManager` is not running).
 pub fn check_connectivity_now() -> Result<ConnectivityState, String> {
     let check = crate::block_on(async {
         tilo_nm::check_connectivity_now()
@@ -993,12 +974,15 @@ pub fn captive_portal_uri() -> Result<String, String> {
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedNetworkProfile {
     pub name: String,
     pub uuid: String,
     pub kind: String,
     pub autoconnect: bool,
+    /// When this device last connected with it, in seconds since the Unix
+    /// epoch; `None` when it never has.
+    pub last_used: Option<u64>,
 }
 
 /// The only `NetworkManager` profile fields eligible for personal-device
@@ -1013,11 +997,6 @@ pub struct PortableWifiProfileSecret {
 /// Resolve one explicit `NetworkManager` profile into portable Wi-Fi semantics.
 /// The query allowlist excludes interface names, MAC addresses, routes, DNS,
 /// autoconnect state, and every other machine-specific property.
-///
-/// # Errors
-///
-/// Returns an error for malformed UUIDs, non-Wi-Fi/enterprise/open profiles,
-/// missing secrets, or an unavailable `NetworkManager` command.
 pub fn portable_wifi_profile_secret(uuid: &str) -> Result<PortableWifiProfileSecret, String> {
     validate_uuid(uuid)?;
     let output = Zeroizing::new(run_capture(
@@ -1089,6 +1068,10 @@ pub enum MacPolicy {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProxyConfiguration {
     pub automatic_url: Option<String>,
+    /// One proxy server for everything, `host:port`. `NetworkManager` keeps
+    /// proxies as auto-configuration only, so it is stored as the one-line
+    /// script that names it ([`manual_proxy_script`]).
+    pub manual: Option<String>,
     pub browser_only: bool,
 }
 
@@ -1108,6 +1091,13 @@ pub struct ConnectionProfileSettings {
     pub mac: Option<MacPolicy>,
     pub proxy: Option<ProxyConfiguration>,
     pub ipv4: Option<IpConfiguration>,
+    /// Which saved network wins when several are in range: higher first.
+    pub priority: Option<i32>,
+    /// A Wi-Fi network that does not broadcast its name.
+    pub hidden: Option<bool>,
+    pub ipv6: Option<crate::network_settings::Ipv6Configuration>,
+    /// Who a work or school (802.1X) network knows this device as.
+    pub enterprise: Option<crate::network_settings::EnterpriseIdentity>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1115,6 +1105,40 @@ pub struct ConnectionPolicyPatch {
     pub metered: Option<MeteredPolicy>,
     pub mac: Option<MacPolicy>,
     pub proxy: Option<ProxyConfiguration>,
+    pub priority: Option<i32>,
+    pub hidden: Option<bool>,
+}
+
+/// Writes which saved network wins when several are in range, and whether
+/// the network hides its name: the patch's `priority` and `hidden`.
+fn configure_order_and_visibility(uuid: &str, patch: &ConnectionPolicyPatch) -> Result<(), String> {
+    if let Some(priority) = patch.priority {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "modify",
+                "uuid",
+                uuid,
+                "connection.autoconnect-priority",
+                &priority.clamp(-999, 999).to_string(),
+            ],
+        )?;
+    }
+    if let Some(hidden) = patch.hidden {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "modify",
+                "uuid",
+                uuid,
+                "802-11-wireless.hidden",
+                if hidden { "yes" } else { "no" },
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// # Errors
@@ -1134,6 +1158,14 @@ pub fn configure_connection_policy_patch(
     {
         return Err("automatic proxy URL must use HTTP or HTTPS and be at most 2048 bytes".into());
     }
+    if let Some(server) = patch.proxy.as_ref().and_then(|p| p.manual.as_deref())
+        && !crate::network_settings::valid_proxy_server(server)
+    {
+        return Err(
+            "a proxy server is a host name or address and a port: proxy.example:8080".into(),
+        );
+    }
+    configure_order_and_visibility(uuid, patch)?;
     if let Some(value) = patch.metered {
         run(
             "nmcli",
@@ -1152,6 +1184,12 @@ pub fn configure_connection_policy_patch(
         )?;
     }
     if let Some(proxy) = &patch.proxy {
+        let script = proxy
+            .manual
+            .as_deref()
+            .map(crate::network_settings::manual_proxy_script)
+            .unwrap_or_default();
+        let automatic = proxy.automatic_url.is_some() || proxy.manual.is_some();
         run(
             "nmcli",
             &[
@@ -1160,13 +1198,15 @@ pub fn configure_connection_policy_patch(
                 "uuid",
                 uuid,
                 "proxy.method",
-                if proxy.automatic_url.is_some() {
-                    "auto"
-                } else {
-                    "none"
-                },
+                if automatic { "auto" } else { "none" },
                 "proxy.pac-url",
-                proxy.automatic_url.as_deref().unwrap_or(""),
+                if proxy.manual.is_some() {
+                    ""
+                } else {
+                    proxy.automatic_url.as_deref().unwrap_or("")
+                },
+                "proxy.pac-script",
+                &script,
                 "proxy.browser-only",
                 if proxy.browser_only { "yes" } else { "no" },
             ],
@@ -1192,9 +1232,6 @@ pub fn configure_connection_policy_patch(
     Ok(())
 }
 
-/// # Errors
-///
-/// Returns an error message if [`configure_connection_policy_patch`] fails.
 pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Result<(), String> {
     configure_connection_policy_patch(
         uuid,
@@ -1202,6 +1239,7 @@ pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Res
             metered: Some(policy.metered),
             mac: policy.mac,
             proxy: Some(policy.proxy.clone()),
+            ..ConnectionPolicyPatch::default()
         },
     )
 }
@@ -1314,9 +1352,6 @@ pub fn connection_diagnostics() -> Result<ConnectionDiagnostics, String> {
     Ok(out)
 }
 
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_saved_network_profiles() -> Result<Vec<SavedNetworkProfile>, String> {
     let out = run_capture(
         "nmcli",
@@ -1325,7 +1360,7 @@ pub fn list_saved_network_profiles() -> Result<Vec<SavedNetworkProfile>, String>
             "--escape",
             "yes",
             "-f",
-            "NAME,UUID,TYPE,AUTOCONNECT",
+            "NAME,UUID,TYPE,AUTOCONNECT,TIMESTAMP",
             "connection",
             "show",
         ],
@@ -1337,9 +1372,13 @@ fn parse_saved_profiles(out: &str) -> Vec<SavedNetworkProfile> {
     out.lines()
         .filter_map(|line| {
             let fields = split_terse(line);
-            let [name, uuid, kind, autoconnect] = fields.as_slice() else {
+            let [name, uuid, kind, autoconnect, rest @ ..] = fields.as_slice() else {
                 return None;
             };
+            let last_used = rest
+                .first()
+                .and_then(|stamp| stamp.trim().parse::<u64>().ok())
+                .filter(|stamp| *stamp > 0);
             matches!(
                 kind.as_str(),
                 "802-11-wireless" | "802-3-ethernet" | "gsm" | "cdma"
@@ -1349,6 +1388,7 @@ fn parse_saved_profiles(out: &str) -> Vec<SavedNetworkProfile> {
                 uuid: uuid.clone(),
                 kind: kind.clone(),
                 autoconnect: autoconnect == "yes",
+                last_used,
             })
         })
         .collect()
@@ -1360,19 +1400,11 @@ pub(crate) fn validate_uuid(uuid: &str) -> Result<(), String> {
         .ok_or_else(|| "invalid NetworkManager profile UUID".into())
 }
 
-/// # Errors
-///
-/// Returns an error message if `uuid` fails validation, or `nmcli` is not installed or the
-/// delete fails.
 pub fn forget_network_profile(uuid: &str) -> Result<(), String> {
     validate_uuid(uuid)?;
     run("nmcli", &["connection", "delete", "uuid", uuid])
 }
 
-/// # Errors
-///
-/// Returns an error message if `uuid` fails validation, or `nmcli` is not installed or the
-/// modify call fails.
 pub fn set_network_autoconnect(uuid: &str, enabled: bool) -> Result<(), String> {
     validate_uuid(uuid)?;
     run(
@@ -1396,7 +1428,7 @@ pub struct IpConfiguration {
     pub dns: Vec<String>,
 }
 
-fn valid_ip_token(value: &str) -> bool {
+pub(crate) fn valid_ip_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
@@ -1407,11 +1439,6 @@ fn valid_ip_token(value: &str) -> bool {
 /// Apply one profile's IPv4 settings through `NetworkManager`. The UUID is the
 /// stable identity; user-facing names are never used as selectors. Empty DNS
 /// means "use DHCP-provided DNS".
-///
-/// # Errors
-///
-/// Returns an error message if `uuid` fails validation, any address/gateway/DNS entry is
-/// invalid, manual mode has no address, or `nmcli` is not installed or the modify call fails.
 pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String> {
     validate_uuid(uuid)?;
     if config.addresses.len() > 16
@@ -1455,11 +1482,6 @@ pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String
 /// Read the properties Settings can safely edit from a profile. The typed
 /// `nmcli` property view is `NetworkManager`'s standard client surface and keeps
 /// this crate independent of vendor files and connection serialization.
-///
-/// # Errors
-///
-/// Returns an error message if `uuid` fails validation, `nmcli` is not installed, the query
-/// fails, or the response is unexpectedly large.
 pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettings, String> {
     validate_uuid(uuid)?;
     let out = run_capture(
@@ -1469,7 +1491,7 @@ pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettin
             "--escape",
             "yes",
             "-f",
-            "connection.metered,802-11-wireless.cloned-mac-address,proxy.method,proxy.pac-url,proxy.browser-only,ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns",
+            "connection.metered,802-11-wireless.cloned-mac-address,proxy.method,proxy.pac-url,proxy.pac-script,proxy.browser-only,ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns,connection.autoconnect-priority,802-11-wireless.hidden,ipv6.method,ipv6.addresses,ipv6.gateway,ipv6.dns,802-1x.identity,802-1x.ca-cert",
             "connection",
             "show",
             "uuid",
@@ -1477,6 +1499,40 @@ pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettin
         ],
     )?;
     parse_connection_profile_settings(&out)
+}
+
+/// The proxy a profile's `proxy.*` properties describe; `None` when they
+/// describe none this device reads.
+fn proxy_of<'v>(value: impl Fn(&str) -> &'v str) -> Option<ProxyConfiguration> {
+    let browser_only = matches!(value("proxy.browser-only"), "yes" | "true" | "1");
+    match value("proxy.method") {
+        "none" => Some(ProxyConfiguration {
+            automatic_url: None,
+            manual: None,
+            browser_only,
+        }),
+        "auto" => {
+            let url = value("proxy.pac-url");
+            let script = value("proxy.pac-script");
+            if (url.is_empty() || url == "--")
+                && let Some(server) = crate::network_settings::manual_proxy_of(script)
+            {
+                Some(ProxyConfiguration {
+                    automatic_url: None,
+                    manual: Some(server),
+                    browser_only,
+                })
+            } else {
+                ((url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 2048)
+                    .then(|| ProxyConfiguration {
+                        automatic_url: Some(url.to_string()),
+                        manual: None,
+                        browser_only,
+                    })
+            }
+        }
+        _ => None,
+    }
 }
 
 fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSettings, String> {
@@ -1508,22 +1564,7 @@ fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSetti
         "permanent" | "preserve" => Some(MacPolicy::Permanent),
         _ => None,
     };
-    let proxy = match value("proxy.method") {
-        "none" => Some(ProxyConfiguration {
-            automatic_url: None,
-            browser_only: matches!(value("proxy.browser-only"), "yes" | "true" | "1"),
-        }),
-        "auto" => {
-            let url = value("proxy.pac-url");
-            ((url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 2048).then(
-                || ProxyConfiguration {
-                    automatic_url: Some(url.to_string()),
-                    browser_only: matches!(value("proxy.browser-only"), "yes" | "true" | "1"),
-                },
-            )
-        }
-        _ => None,
-    };
+    let proxy = proxy_of(value);
     let ipv4 = match value("ipv4.method") {
         "auto" | "manual" => {
             let list = |raw: &str| {
@@ -1554,11 +1595,23 @@ fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSetti
         }
         _ => None,
     };
+    let priority = value("connection.autoconnect-priority").parse::<i32>().ok();
+    let hidden = match value("802-11-wireless.hidden") {
+        "yes" | "true" | "1" => Some(true),
+        "no" | "false" | "0" => Some(false),
+        _ => None,
+    };
+    let ipv6 = crate::network_settings::ipv6_of(value);
+    let enterprise = crate::network_settings::enterprise_identity_of(value);
     Ok(ConnectionProfileSettings {
         metered,
         mac,
         proxy,
         ipv4,
+        priority,
+        hidden,
+        ipv6,
+        enterprise,
     })
 }
 
@@ -1671,10 +1724,6 @@ pub struct HotspotClient {
     pub signal_dbm: Option<i32>,
 }
 
-/// # Errors
-///
-/// Returns an error message if `nmcli` or `iw` is not installed, or either command fails. An
-/// unrecognised or missing hotspot interface name yields an empty list rather than an error.
 pub fn list_hotspot_clients() -> Result<Vec<HotspotClient>, String> {
     let iface = run_capture(
         "nmcli",
@@ -1729,7 +1778,6 @@ mod profile_tests {
 
     #[test]
     fn networkmanager_output_parses_connectivity_profiles_hotspots_and_clients() {
-        // Phase `networkmanager_connectivity_keeps_portal_distinct_from_limited`.
         {
             use tilo_nm::NmConnectivity;
             for (raw, want) in [
@@ -1742,7 +1790,6 @@ mod profile_tests {
                 assert_eq!(ConnectivityState::from(raw), want, "{raw:?}");
             }
         }
-        // Phase `a_refused_recheck_falls_back_to_the_cached_verdict`.
         {
             let refused = || {
                 Err::<ConnectivityState, String>("Not authorized to recheck connectivity.".into())
@@ -1760,7 +1807,6 @@ mod profile_tests {
                 Err("Not authorized to recheck connectivity.".into())
             );
         }
-        // Phase `saved_profiles_preserve_escaped_colons_and_autoconnect`.
         {
             let parsed = parse_saved_profiles(
                 "Office\\: Lab:12345678-1234-1234-1234-123456789abc:802-11-wireless:yes\n",
@@ -1769,7 +1815,6 @@ mod profile_tests {
             assert_eq!(parsed[0].name, "Office: Lab");
             assert!(parsed[0].autoconnect);
         }
-        // Phase `hotspot_qr_escapes_schema_delimiters`.
         {
             let config = HotspotConfiguration {
                 ssid: "Tilo; Guest".into(),
@@ -1781,7 +1826,6 @@ mod profile_tests {
                 "WIFI:T:WPA;S:Tilo\\; Guest;P:hello\\:world;;"
             );
         }
-        // Phase `station_dump_yields_clients_without_inventing_names`.
         {
             let clients =
                 parse_hotspot_clients("Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tsignal: -51 dBm\n");
@@ -1804,12 +1848,12 @@ mod profile_tests {
             let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
             assert!(err.contains("at least one address"));
         }
-        // Phase `connection_policy_rejects_unsafe_pac_before_invoking_networkmanager`.
         {
             // This must fail during validation, before an external process can run.
             let policy = ConnectionPolicy {
                 proxy: ProxyConfiguration {
                     automatic_url: Some("file:///tmp/proxy.pac".into()),
+                    manual: None,
                     browser_only: false,
                 },
                 ..Default::default()
@@ -1819,50 +1863,6 @@ mod profile_tests {
             assert!(err.contains("HTTP or HTTPS"));
         }
     }
-}
-
-/// Create a `NetworkManager` WWAN profile without handling SIM secrets in the
-/// UI process. PIN/password flags are `not-saved`; `NetworkManager`'s registered
-/// secret agent owns prompting and custody when activation needs them.
-///
-/// # Errors
-///
-/// Returns an error message if `name` or `apn` is invalid, or `nmcli` is not installed or a
-/// step of creating/modifying the profile fails.
-pub fn create_mobile_profile(name: &str, apn: &str) -> Result<(), String> {
-    let safe = |v: &str, max: usize| {
-        !v.trim().is_empty() && v.len() <= max && !v.chars().any(char::is_control)
-    };
-    if !safe(name, 64) || !safe(apn, 100) {
-        return Err("invalid mobile profile name or APN".into());
-    }
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "add",
-            "type",
-            "gsm",
-            "ifname",
-            "*",
-            "con-name",
-            name,
-            "apn",
-            apn,
-        ],
-    )?;
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "modify",
-            name,
-            "gsm.pin-flags",
-            "2",
-            "gsm.password-flags",
-            "2",
-        ],
-    )
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2059,7 +2059,6 @@ mod tests {
 
     #[test]
     fn nmcli_profiles_radios_and_terse_fields_parse_exactly() {
-        // Phase `parses_editable_networkmanager_profile_values`.
         {
             let parsed = parse_connection_profile_settings(concat!(
                 "connection.metered:yes\n",
@@ -2081,7 +2080,6 @@ mod tests {
             );
             assert_eq!(parsed.ipv4.unwrap().addresses, ["192.0.2.10/24"]);
         }
-        // Phase `preserves_unrecognized_profile_properties`.
         {
             let parsed = parse_connection_profile_settings(concat!(
                 "connection.metered:vendor-value\n",
@@ -2092,19 +2090,16 @@ mod tests {
             .unwrap();
             assert_eq!(parsed, ConnectionProfileSettings::default());
         }
-        // Phase `parse_nmcli_radio_states`.
         {
             assert!(parse_nmcli_radio("enabled\n").unwrap());
             assert!(!parse_nmcli_radio("disabled\n").unwrap());
             assert!(parse_nmcli_radio("garbled").is_err());
         }
-        // Phase `split_terse_handles_escaped_colons`.
         {
             let line = r"*:Home\:Network:75:WPA2";
             let fields = split_terse(line);
             assert_eq!(fields, vec!["*", "Home:Network", "75", "WPA2"]);
         }
-        // Phase `signal_bucket_maps_quartiles`.
         {
             assert_eq!(signal_pct_to_bucket(0), 1);
             assert_eq!(signal_pct_to_bucket(20), 1);
@@ -2112,7 +2107,6 @@ mod tests {
             assert_eq!(signal_pct_to_bucket(60), 3);
             assert_eq!(signal_pct_to_bucket(95), 4);
         }
-        // Phase `wifi_read_is_unavailable_without_an_adapter`.
         {
             let radios = RadioState::default();
             assert_eq!(
@@ -2136,7 +2130,6 @@ mod tests {
 
     #[test]
     fn wifi_lists_dedupe_ssids_and_keep_security_modes() {
-        // Phase `parse_nmcli_wifi_list_basic`.
         {
             let stdout = "\
     *:Home_Network:80:WPA2\n\
@@ -2156,7 +2149,6 @@ mod tests {
             assert_eq!(nets[1].signal, 3);
             assert_eq!(nets[2].signal, 2);
         }
-        // Phase `wifi_security_preserves_supported_authentication_modes`.
         {
             for (nmcli, expected) in [
                 ("--", WifiSecurity::Open),
@@ -2173,7 +2165,6 @@ mod tests {
             assert!(!WifiSecurity::Enterprise.supports_portable_passphrase());
             assert!(!WifiSecurity::Owe.supports_portable_passphrase());
         }
-        // Phase `connected_bssid_supplies_security_when_ssids_are_deduplicated`.
         {
             let nets = parse_nmcli_wifi_list(":Transition:90:WPA2\n*:Transition:40:WPA3 SAE\n");
             assert_eq!(nets.len(), 1);
@@ -2181,7 +2172,6 @@ mod tests {
             assert!(nets[0].connected);
             assert_eq!(nets[0].signal, 4);
         }
-        // Phase `parse_nmcli_wifi_list_dedupes_ssids`.
         {
             let stdout = "\
     :DualBand:30:WPA2\n\
@@ -2192,7 +2182,6 @@ mod tests {
             assert_eq!(nets[0].signal, 4);
             assert!(nets[0].connected);
         }
-        // Phase `parse_nmcli_wifi_list_skips_empty_ssid`.
         {
             let stdout = ":::WPA2\n*:Real:80:WPA2\n";
             let nets = parse_nmcli_wifi_list(stdout);
@@ -2218,10 +2207,6 @@ pub struct WiredInfo {
 /// Snapshot the primary wired (ethernet) device via `nmcli`. Returns a default
 /// (`connected: false`) `WiredInfo` when no ethernet device is present, so the Settings
 /// panel renders an "unplugged" card without an error path.
-///
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed or the device-status query fails.
 pub fn get_wired() -> Result<WiredInfo, String> {
     let status = run_capture(
         "nmcli",
@@ -2257,11 +2242,6 @@ pub fn get_wired() -> Result<WiredInfo, String> {
 /// Connect or disconnect the primary Ethernet interface.  This is scoped to
 /// one device; unlike `nmcli networking off`, it cannot accidentally disable
 /// Wi-Fi, VPN, or the entire `NetworkManager` service.
-///
-/// # Errors
-///
-/// Returns an error message if `nmcli` is not installed, no wired interface is found, or the
-/// connect/disconnect call fails.
 pub fn set_wired(enabled: bool) -> Result<(), String> {
     let status = run_capture(
         "nmcli",
@@ -2363,7 +2343,6 @@ mod portable_profile_tests {
 
     #[test]
     fn portable_profiles_keep_only_personal_wifi_secrets() {
-        // Phase `portable_profile_keeps_only_ssid_mode_and_secret`.
         {
             let profile = parse_portable_wifi_profile(
                 "802-11-wireless\nHome network\nwpa-psk\ncorrect horse battery staple\n",
@@ -2373,7 +2352,6 @@ mod portable_profile_tests {
             assert_eq!(profile.security, WifiSecurity::Wpa2);
             assert_eq!(profile.password.as_str(), "correct horse battery staple");
         }
-        // Phase `enterprise_and_non_wifi_profiles_fail_closed`.
         {
             assert!(
                 parse_portable_wifi_profile("802-11-wireless\nWork\nwpa-eap\nsecret\n").is_err()
@@ -2402,7 +2380,6 @@ mod link_status_tests {
 
     #[test]
     fn link_status_follows_the_primary_connection() {
-        // Phase `a_wired_primary_reads_as_wired_with_no_bars`.
         {
             let s = link_status_from_state(
                 &primary(tilo_nm::LinkKind::Wired, "Wired connection 1"),
@@ -2412,7 +2389,6 @@ mod link_status_tests {
             assert_eq!(s.name.as_deref(), Some("Wired connection 1"));
             assert_eq!(s.signal, 0, "a cable has no signal strength to report");
         }
-        // Phase `wifi_reports_its_ssid_and_proc_quality`.
         {
             let s =
                 link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), Some(70));
@@ -2420,18 +2396,15 @@ mod link_status_tests {
             assert_eq!(s.name.as_deref(), Some("Cafe WiFi"));
             assert_eq!(s.signal, 3, "70% is bucket 3 on the shared signal scale");
         }
-        // Phase `a_radio_without_a_quality_reading_never_shows_no_signal`.
         {
             let s = link_status_from_state(&primary(tilo_nm::LinkKind::Wifi, "Cafe WiFi"), None);
             assert!(s.signal > 0, "a connected radio never reads as no-signal");
         }
-        // Phase `a_mobile_primary_is_connected_not_offline`.
         {
             let s = link_status_from_state(&primary(tilo_nm::LinkKind::Mobile, "Carrier"), None);
             assert!(s.is_online());
             assert_eq!(s.name.as_deref(), Some("Carrier"));
         }
-        // Phase `no_primary_connection_is_offline`.
         {
             let connecting = tilo_nm::NetworkState {
                 state: tilo_nm::NmState::Connecting,
@@ -2543,7 +2516,42 @@ mod wifi_deadline_tests {
 
 #[cfg(test)]
 mod radio_presence_tests {
-    use super::{has_wifi_radio_in, has_wwan_modem_in};
+    use super::{has_wifi_radio_in, has_wwan_modem_in, parse_radio_state};
+
+    /// `NetworkManager` reports its WWAN radio switch as enabled on a
+    /// machine with no modem at all (a laptop with only Wi-Fi). Only a
+    /// modem device `NetworkManager` lists makes mobile broadband
+    /// available, and airplane mode then counts Wi-Fi alone.
+    #[test]
+    fn an_enabled_wwan_switch_without_a_modem_device_is_no_modem() {
+        let wifi_only = parse_radio_state(
+            "enabled:enabled\n",
+            "wifi:connected\nloopback:connected (externally)\nwifi-p2p:disconnected\n",
+            "",
+        );
+        assert!(wifi_only.wifi_available);
+        assert!(!wifi_only.wwan_available, "no gsm or cdma device is listed");
+        assert!(!wifi_only.airplane_mode);
+
+        let wifi_off = parse_radio_state(
+            "disabled:enabled\n",
+            "wifi:unavailable\nloopback:connected (externally)\n",
+            "",
+        );
+        assert!(
+            wifi_off.airplane_mode,
+            "the WWAN switch of a missing modem keeps no radio on"
+        );
+
+        let modem = parse_radio_state(
+            "enabled:disabled\n",
+            "wifi:connected\ngsm:unavailable\n",
+            "",
+        );
+        assert!(modem.wwan_available && !modem.wwan_enabled);
+        let cdma = parse_radio_state("enabled:enabled\n", "cdma:disconnected\n", "");
+        assert!(cdma.wwan_available && cdma.wwan_enabled);
+    }
 
     /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or
     /// interface is a modem; a wired interface and an empty class are
@@ -2723,6 +2731,7 @@ mod wifi_radio_tests {
             uuid: format!("{name}-uuid"),
             kind: kind.into(),
             autoconnect: true,
+            last_used: None,
         };
         mark_known(
             &mut networks,

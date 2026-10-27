@@ -53,6 +53,23 @@ fn typing_a_word_into_a_bound_field_is_one_undo_step() {
 }
 
 #[test]
+fn typing_words_into_a_bound_field_undoes_one_word_at_a_time() {
+    let mut app = TestApp::<MixerApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("Drums and bass");
+    assert!(app.undo());
+    assert_eq!(
+        app.state().name,
+        "Drums and ",
+        "the last word, not the field"
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().name, "Drums ");
+    assert!(app.undo());
+    assert_eq!(app.state().name, "");
+}
+
+#[test]
 fn dragging_a_bound_slider_is_one_undo_step_and_the_next_drag_another() {
     let mut app = TestApp::<MixerApp>::new().unwrap();
     let slider = app.harness().targets().get("level").copied().unwrap();

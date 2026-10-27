@@ -11,9 +11,7 @@
 /// An operation on the host that no room's governance decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HostOperation {
-    /// Create one of the host's rooms.
     CreateRoom,
-    /// List the host's rooms.
     ListRooms,
     /// Admit the calling device to a room as its owner. Never a member's:
     /// that would let a member make any device the room's owner.

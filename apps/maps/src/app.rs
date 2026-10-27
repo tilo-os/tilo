@@ -44,13 +44,15 @@ use ui::widget::{FloatingSurfaceProvider, Widget};
 
 use crate::canvas::{self, MapPalette, MapView};
 use crate::draw;
+use crate::endpoint_editor::GEOCODER;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
+use crate::failure;
 use crate::geo::{self, Projection};
 use crate::map_controls::{ColumnMetrics, MapControlAction, MapControls};
 use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
-use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
+use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel, areas_refused};
 use crate::place_search::PlaceSearch;
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
@@ -80,6 +82,13 @@ const POI_MIN_ZOOM: f64 = 14.0;
 const POI_MAX: usize = 140;
 /// How many nearby POIs the Explore panel lists (the closest to the anchor).
 const NEARBY_MAX: usize = 10;
+/// The menu the map's one [`ContextMenu`] shows: the ⋯ button's utilities or
+/// the layers button's layers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapMenu {
+    More,
+    Layers,
+}
 /// A clickable hot-region recorded during draw and hit-tested on click.
 #[derive(Clone, Debug)]
 enum Hit {
@@ -98,7 +107,6 @@ enum Hit {
     /// Select a nearby POI from the Explore list: centre the map on it and open
     /// its info card, linking the list to the marker layer.
     SelectPoi(String),
-    /// Dismiss the open POI info card.
     ClosePoi,
     /// Route to the POI whose info card is open.
     PoiDirections,
@@ -114,6 +122,8 @@ enum Hit {
     Transit,
     ToggleSave,
     ClearRoute,
+    /// Look at the next route the service offered for this trip.
+    NextRoute,
     /// Fetch the device's real location (portal / `GeoClue`) and use it as origin.
     UseMyLocation,
     /// Set the Transit depart/arrive anchor.
@@ -166,6 +176,20 @@ impl NetSender {
 
 /// Run a network fetch as a task on the app runtime; its result arrives on
 /// the app's channel.
+/// What the map says while no imagery shows. It never claims to be loading
+/// what nothing is fetching, and an unreachable tile server is not blamed on
+/// being offline, which a page cannot tell apart from a blocked request.
+fn imagery_hint(can_fetch: bool, fault: Option<TileFault>) -> &'static str {
+    match fault {
+        _ if !can_fetch => "Map imagery can't be fetched here",
+        Some(TileFault::Rejected) => "The map tile server refused the request",
+        Some(TileFault::Unreachable) => {
+            "The map tile server couldn't be reached. Trying again shortly."
+        }
+        None => "Loading map…",
+    }
+}
+
 fn spawn_net(fetch: impl Future<Output = ()> + Send + 'static) {
     match ui::rt::try_app() {
         Ok(runtime) => drop(runtime.spawn(fetch)),
@@ -214,7 +238,11 @@ pub struct MapsApp {
     /// controls, the cards, the footer); the markers keep clear of them.
     chrome_rects: Vec<Rect>,
     /// Transient status (searching, routing, a download, a failure).
-    status_bubble: ui::StatusBubble,
+    /// The model's status (searching, routing, a download's progress, a
+    /// recoverable failure), said in the window's bar while it is news.
+    status_notice: ui::widget::toast::Transient<String>,
+    /// The status last said in the bar, so only a change is news.
+    status_said: String,
     /// Directions From/To fields, dropdown, focus, debounce and hit routing.
     endpoints: EndpointEditor,
     left_down: bool,
@@ -259,6 +287,10 @@ pub struct MapsApp {
     net_tx: NetSender,
     net_rx: Receiver<NetMsg>,
     pending: u32,
+    /// The places of a committed search on their way from the geocoder:
+    /// the query and when it was asked. Their placeholder rows stand under
+    /// the results until they land.
+    search_asked: Option<(String, Instant)>,
     /// Whether background network/portal work may be spawned. False for the
     /// offline `--shots`/test app so it never touches the wire or D-Bus.
     online: bool,
@@ -289,9 +321,12 @@ pub struct MapsApp {
     /// is discarded rather than drawn over the current one.
     poi_generation: u64,
 
-    // bottom-right ⋯ overflow menu (attribution / offline maps / licenses) — a
-    // shared ContextMenu so it is themed, keyboard-navigable and a11y-correct.
+    // bottom-right ⋯ overflow menu (attribution / offline maps / licenses), or
+    // the layers button's menu of layers — a shared ContextMenu so it is
+    // themed, keyboard-navigable and a11y-correct.
     overflow: ContextMenu,
+    /// Which menu `overflow` shows now: the ⋯ utilities or the map's layers.
+    menu_for: MapMenu,
     /// Attribution/licence modal. Owns state, drawing geometry, and hit-testing.
     info_sheet: MapInfoSheet,
 
@@ -338,6 +373,11 @@ impl Default for MapsApp {
         Self::new()
     }
 }
+
+/// A search result's row: the place's name, its address or kind under it.
+const RESULT_ROW: ui::widget::RowShape = ui::widget::RowShape::TITLE.with_secondary(1);
+/// How many rows a committed search reserves for the geocoder's places.
+const ARRIVING_RESULTS: usize = 3;
 
 impl MapsApp {
     /// Compact live-navigation surface for the shell floating host. The source
@@ -544,7 +584,8 @@ impl MapsApp {
             history: ui::widget::HistoryOpener::new(),
             results_anchor: None,
             chrome_rects: Vec::new(),
-            status_bubble: ui::StatusBubble::new(),
+            status_notice: ui::widget::toast::Transient::new(),
+            status_said: String::new(),
             endpoints: EndpointEditor::new(),
             left_down: false,
             dragging: false,
@@ -568,6 +609,7 @@ impl MapsApp {
             net_tx,
             net_rx,
             pending: 0,
+            search_asked: None,
             online,
             location_rx: None,
             locating: false,
@@ -581,6 +623,7 @@ impl MapsApp {
                 m.push(MenuItem::action("Licenses", || {}));
                 m
             },
+            menu_for: MapMenu::More,
             info_sheet: MapInfoSheet::default(),
             offline_panel: OfflinePanel::new(cache_bytes),
             nav_open,
@@ -604,7 +647,29 @@ impl MapsApp {
     /// Open the overflow menu at its button; the toolkit flips it up from
     /// the bottom corner.
     fn open_overflow(&mut self) {
+        self.menu_for = MapMenu::More;
+        self.overflow.set_items(vec![
+            MenuItem::action("Attribution", || {}),
+            MenuItem::action("Offline maps", || {}),
+            MenuItem::action("Licenses", || {}),
+        ]);
         self.overflow.open_anchored(self.overflow_rect(), self.rect);
+    }
+
+    /// The map's layers, each checked while it shows, under the layers
+    /// button. Traffic is the one layer the map draws over its basemap.
+    fn open_layers(&mut self) {
+        self.menu_for = MapMenu::Layers;
+        self.overflow.set_items(vec![
+            MenuItem::action("Traffic", || {}).with_checked(self.map_controls.traffic_enabled()),
+        ]);
+        self.overflow
+            .open_anchored(self.map_controls.rect(MapControlAction::Layers), self.rect);
+    }
+
+    /// Whether the menu of `which` is open.
+    fn menu_open(&self, which: MapMenu) -> bool {
+        self.overflow.is_open() && self.menu_for == which
     }
 
     /// An offline (no-worker, no-network) app that mirrors the live first-run
@@ -703,7 +768,6 @@ impl MapsApp {
         }
     }
 
-    // --- geometry helpers --------------------------------------------------
     fn view_center(&self) -> Point {
         Point::new(
             f64::midpoint(self.rect.x0, self.rect.x1),
@@ -844,8 +908,6 @@ impl MapsApp {
         GeoBounds::new(nw, se)
     }
 
-    // --- offline regions ---------------------------------------------------
-
     /// The tile ids a saved region covers — used for delete/keep set arithmetic
     /// so removing one area doesn't drop imagery another still needs.
     fn region_tile_ids(region: &crate::model::DownloadedRegion) -> Vec<TileId> {
@@ -960,7 +1022,6 @@ impl MapsApp {
         }
     }
 
-    // --- actions -----------------------------------------------------------
     /// Submit one verb or field edit of the shared map through the
     /// framework's door. Callers show its result in this window right away;
     /// the door checks, applies, records and replicates it, and the state it
@@ -1287,11 +1348,11 @@ impl MapsApp {
     }
 
     fn spawn_search(&mut self, query: String) {
-        self.pending += 1;
-        self.model.status = "Searching…".to_string();
         if !self.online {
             return;
         }
+        self.pending += 1;
+        self.search_asked = Some((query.clone(), ui::time::now()));
         let tx = self.net_tx.clone();
         spawn_net(async move {
             let results = net::geocode(&query).await;
@@ -1321,13 +1382,12 @@ impl MapsApp {
 
     fn run_endpoint_search(&mut self, endpoint: Endpoint, query: String) {
         let local_results = self.local_matches(&query);
-        self.endpoints.set_results(endpoint, local_results);
+        self.endpoints.set_results(endpoint, local_results.clone());
         if query.trim().is_empty() {
             return;
         }
-        self.pending += 1;
-        self.model.status = "Searching…".to_string();
         if self.online {
+            self.pending += 1;
             let tx = self.net_tx.clone();
             let origin = endpoint == Endpoint::Origin;
             spawn_net(async move {
@@ -1338,6 +1398,9 @@ impl MapsApp {
                     results,
                 });
             });
+        } else {
+            // Nothing asks the geocoder: what is here is all there is.
+            self.endpoints.finish_search(endpoint, local_results);
         }
     }
 
@@ -1372,7 +1435,7 @@ impl MapsApp {
             return;
         }
         self.locating = true;
-        self.model.status = "Locating…".to_string();
+        self.model.status = failure::t("maps-locating");
         if self.online {
             self.location_rx = Some(location::request_location());
         }
@@ -1443,7 +1506,7 @@ impl MapsApp {
         if self.online {
             let tx = self.net_tx.clone();
             spawn_net(async move {
-                let r = net::route(origin, dest, mode).await;
+                let r = net::routes(origin, dest, mode).await;
                 let _ = tx.send(NetMsg::Route(r));
             });
         }
@@ -1531,6 +1594,49 @@ impl MapsApp {
                 place.saved = saved;
             }
         }
+    }
+
+    /// Show the next route the service offered for this trip: the one after
+    /// the route shown, or the first again when it was the last. The choice is
+    /// a plan like any other, so it is taken in the workspace and framed.
+    fn next_route(&mut self) {
+        if self.model.route_alternatives.len() < 2 {
+            return;
+        }
+        let shown = self
+            .model
+            .route
+            .as_ref()
+            .and_then(|route| {
+                self.model.route_alternatives.iter().position(|offered| {
+                    offered.duration_s == route.duration_s && offered.distance_m == route.distance_m
+                })
+            })
+            .unwrap_or(0);
+        let next = (shown + 1) % self.model.route_alternatives.len();
+        let route = self.model.route_alternatives[next].clone();
+        self.model.route = Some(route.clone());
+        self.perform(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
+            route,
+            origin: self.model.origin,
+            origin_name: self.model.origin_name.clone(),
+            dest: self.model.dest,
+            dest_name: self.model.dest_name.clone(),
+            mode: self.model.mode,
+        }));
+        self.fit_route();
+        self.model.status = failure::t_args(
+            "maps-route-number",
+            &[
+                ("number", i64::try_from(next + 1).unwrap_or(1).into()),
+                (
+                    "count",
+                    i64::try_from(self.model.route_alternatives.len())
+                        .unwrap_or(1)
+                        .into(),
+                ),
+            ],
+        );
     }
 
     fn clear_route(&mut self) {
@@ -1688,8 +1794,6 @@ impl MapsApp {
         self.model.center = geo::world_to_lonlat(cw.0 - dx, cw.1 - dy, self.model.zoom);
         self.schedule_pois();
     }
-
-    // --- POI layer (Overpass) ----------------------------------------------
 
     /// Arm the viewport POI refetch. Debounced so a drag/zoom gesture fires one
     /// Overpass query when it settles, not per pointer event.
@@ -1907,24 +2011,46 @@ impl MapsApp {
         while let Ok(msg) = self.net_rx.try_recv() {
             self.pending = self.pending.saturating_sub(1);
             match msg {
-                NetMsg::Search { query, results } => match results {
-                    Ok(found) if !found.is_empty() => {
-                        let mut ranked = found;
-                        self.accept_places(ranked.clone());
-                        self.rank_results(&mut ranked, &query);
-                        self.results_anchor = Some(self.search_anchor());
-                        // A committed search: list the results in the panel
-                        // and centre on the top (nearest) match.
-                        if let Some(first) = ranked.first() {
-                            self.model.center = first.pos;
-                            self.model.selected = Some(first.id.clone());
-                        }
-                        self.model.results = ranked.clone();
-                        self.model.status = format!("{} results for “{}”", ranked.len(), query);
+                NetMsg::Search { query, results } => {
+                    if self
+                        .search_asked
+                        .as_ref()
+                        .is_some_and(|(asked, _)| *asked == query)
+                    {
+                        self.search_asked = None;
                     }
-                    Ok(_) => self.model.status = format!("No results for “{query}”"),
-                    Err(e) => self.model.status = format!("Search failed: {e}"),
-                },
+                    match results {
+                        Ok(found) if !found.is_empty() => {
+                            let mut ranked = found;
+                            self.accept_places(ranked.clone());
+                            self.rank_results(&mut ranked, &query);
+                            self.results_anchor = Some(self.search_anchor());
+                            // A committed search: list the results in the panel
+                            // and centre on the top (nearest) match.
+                            if let Some(first) = ranked.first() {
+                                self.model.center = first.pos;
+                                self.model.selected = Some(first.id.clone());
+                            }
+                            self.model.results = ranked.clone();
+                            self.model.status = failure::t_args(
+                                "maps-search-results",
+                                &[
+                                    ("count", i64::try_from(ranked.len()).unwrap_or(0).into()),
+                                    ("query", query.clone().into()),
+                                ],
+                            );
+                        }
+                        Ok(_) => {
+                            self.model.status = failure::t_args(
+                                "maps-search-no-results",
+                                &[("query", query.clone().into())],
+                            );
+                        }
+                        Err(e) => {
+                            self.model.status = failure::say(failure::SEARCH, &e.to_string());
+                        }
+                    }
+                }
                 NetMsg::PaletteSearch { query, results } => {
                     let mut found = results.unwrap_or_default();
                     self.rank_results(&mut found, &query);
@@ -1964,7 +2090,17 @@ impl MapsApp {
                     }
                 }
                 NetMsg::Route(r) => match r {
-                    Ok(route) => {
+                    Ok(routes) => {
+                        let Some(route) = routes.first().cloned() else {
+                            self.model.status =
+                                failure::say(failure::ROUTE, "the service offered no route");
+                            return;
+                        };
+                        // Every route the service offered, this one first: the
+                        // person can look at another without retyping the
+                        // destination.
+                        self.model.route_alternatives = routes;
+
                         self.model.route = Some(route.clone());
                         self.perform(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
                             route,
@@ -1975,10 +2111,13 @@ impl MapsApp {
                             mode: self.model.mode,
                         }));
                         self.fit_route();
-                        self.model.status = "Route updated".to_string();
+                        self.model.status = failure::t("maps-route-updated");
                     }
                     Err(e) => {
-                        self.model.status = format!("Routing failed (offline estimate shown): {e}");
+                        self.model.status = format!(
+                            "{} The offline estimate is shown.",
+                            failure::say(failure::ROUTE, &e.to_string())
+                        );
                     }
                 },
                 NetMsg::Transit(t) => match t {
@@ -1996,10 +2135,12 @@ impl MapsApp {
                         // Frame the map on the itinerary now that we have real
                         // leg geometry (the same courtesy the road route gets).
                         self.fit_current();
-                        self.model.status = "Departures updated".to_string();
+                        self.model.status = failure::t("maps-departures-updated");
                     }
-                    Ok(_) => self.model.status = "No transit options found".to_string(),
-                    Err(e) => self.model.status = format!("Transit lookup failed: {e}"),
+                    Ok(_) => self.model.status = failure::t("maps-no-transit"),
+                    Err(e) => {
+                        self.model.status = failure::say(failure::TRANSIT, &e.to_string());
+                    }
                 },
                 NetMsg::Pois { generation, pois } => {
                     // Ignore a stale reply for a viewport we've since panned off.
@@ -2009,7 +2150,6 @@ impl MapsApp {
                                 found.truncate(POI_MAX);
                                 let n = found.len();
                                 self.pois = found;
-                                // Drop the open card if its POI is gone.
                                 if let Some(sel) = &self.selected_poi
                                     && !self.pois.iter().any(|p| &p.id == sel)
                                 {
@@ -2019,7 +2159,9 @@ impl MapsApp {
                                     self.model.status = format!("{n} places nearby");
                                 }
                             }
-                            Err(e) => self.model.status = format!("Places unavailable: {e}"),
+                            Err(e) => {
+                                self.model.status = failure::say(failure::NEARBY, &e.to_string());
+                            }
                         }
                     }
                 }
@@ -2090,7 +2232,8 @@ impl MapsApp {
                 }
             }
             LocationOutcome::Unavailable(reason) => {
-                self.model.status = format!("Location unavailable — {reason}");
+                self.model.status =
+                    format!("{} — {reason}", failure::t("maps-location-unavailable"));
                 if let Some(reply) = self.location_reply.take() {
                     reply.finish(Err(reason));
                 }
@@ -2098,7 +2241,6 @@ impl MapsApp {
         }
     }
 
-    // --- click dispatch ----------------------------------------------------
     fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
         if self.info_sheet.modal_capture().is_some()
             || self.offline_panel.is_open()
@@ -2195,6 +2337,7 @@ impl MapsApp {
             Hit::Transit => self.enter_transit(),
             Hit::ToggleSave => self.toggle_save_selected(),
             Hit::ClearRoute => self.clear_route(),
+            Hit::NextRoute => self.next_route(),
             Hit::UseMyLocation => self.use_my_location(),
             Hit::TransitTimeMode(m) => {
                 let mut value = self.model.transit_time;
@@ -2219,7 +2362,7 @@ impl MapsApp {
                 self.fit_current();
             }
             Hit::ToggleOverflow => {
-                if self.overflow.is_open() {
+                if self.menu_open(MapMenu::More) {
                     self.overflow.close();
                 } else {
                     self.open_overflow();
@@ -2234,8 +2377,12 @@ impl MapsApp {
             MapControlAction::ZoomIn => self.zoom_by(1.0, self.visible_map_area().center()),
             MapControlAction::ZoomOut => self.zoom_by(-1.0, self.visible_map_area().center()),
             MapControlAction::Locate => self.use_my_location(),
-            MapControlAction::ToggleTraffic => {
-                self.set_traffic(!self.map_controls.traffic_enabled());
+            MapControlAction::Layers => {
+                if self.menu_open(MapMenu::Layers) {
+                    self.overflow.close();
+                } else {
+                    self.open_layers();
+                }
             }
         }
     }
@@ -2246,7 +2393,7 @@ impl MapsApp {
             OfflineAction::Close => self.offline_panel.close(),
             OfflineAction::ZoomDelta(delta) => self.offline_panel.adjust_zoom(delta),
             OfflineAction::Download if !self.tiles.allows_prefetch() => {
-                self.model.status = OFFLINE_AREAS_REFUSED.to_string();
+                self.model.status = areas_refused();
             }
             OfflineAction::Download => {
                 let request = self.offline_panel.download_request(
@@ -2265,9 +2412,24 @@ impl MapsApp {
                     request.name.clone(),
                 );
                 self.model.status = request.name.map_or_else(
-                    || format!("Downloading {count} tiles for offline use…"),
-                    |name| format!("Downloading {count} tiles for {name}…"),
+                    || {
+                        failure::t_args(
+                            "maps-offline-downloading",
+                            &[("count", i64::from(count).into())],
+                        )
+                    },
+                    |name| {
+                        failure::t_args(
+                            "maps-offline-downloading-named",
+                            &[("count", i64::from(count).into()), ("name", name.into())],
+                        )
+                    },
                 );
+            }
+            OfflineAction::StopDownload => {
+                if self.tiles.stop_download() {
+                    self.model.status = failure::t("maps-offline-stopped");
+                }
             }
             OfflineAction::DeleteRegion(id) => {
                 if let Err(error) = self.delete_region(&id) {
@@ -2521,7 +2683,7 @@ impl MapsApp {
     /// Chrome over the map: the places panel (docked, or a drawer over a
     /// scrim when narrow), the control column, the floating cards, the
     /// footer with the scale and the credit, the overflow menu, and the
-    /// transient status bubble and tooltip on top. Modal sheets paint in
+    /// tooltip on top. Modal sheets paint in
     /// the window's top layer (`draw_overlay`).
     fn draw_chrome(
         &mut self,
@@ -2582,7 +2744,6 @@ impl MapsApp {
         if self.overflow.is_open() {
             self.floats(self.overflow.get_rect());
         }
-        self.draw_status(scene, t, tr, theme);
         self.map_controls.draw_tooltip(scene, t, tr, theme);
     }
 
@@ -2596,7 +2757,7 @@ impl MapsApp {
         theme: &Theme,
     ) {
         let r = self.overflow_rect();
-        let open = self.overflow.is_open();
+        let open = self.menu_open(MapMenu::More);
         self.floats(r);
         self.icon_button(
             &mut PaintCtx::new(scene, t, tr, theme),
@@ -2729,26 +2890,25 @@ impl MapsApp {
         }
     }
 
-    /// The transient status (searching, routing, a download's progress, a
-    /// recoverable failure) in the status bubble, above the overflow button.
-    fn draw_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let now = ui::time::now();
-        self.status_bubble.show(&self.model.status, now);
-        let area = self.status_area(theme);
-        self.status_bubble.paint(scene, t, tr, theme, area, now);
-    }
-
-    /// Where the status bubble floats: the map beside the panel, ending just
-    /// above the footer row.
-    fn status_area(&self, theme: &Theme) -> Rect {
-        let inset = f64::from(theme.tokens.spacing.s4);
-        let bottom = self.overflow_rect().y0 - self.gap() + inset;
-        Rect::new(
-            self.map_left_edge() - inset,
-            self.rect.y0,
-            self.rect.x1 - self.margin() + inset,
-            bottom,
-        )
+    /// The model's status in the window's bar: a new line is news; one
+    /// that ends in "…" is work under way and stays while it is the status.
+    fn publish_status(&mut self) {
+        if self.model.status != self.status_said {
+            self.status_said.clone_from(&self.model.status);
+            if self.status_said.is_empty() {
+                self.status_notice.dismiss();
+            } else if self.status_said.ends_with('…') {
+                self.status_notice.show_progress(self.status_said.clone());
+            } else {
+                self.status_notice.show(self.status_said.clone());
+            }
+        }
+        self.status_notice
+            .keep_while(self.status_said.ends_with('…'));
+        self.status_notice.expire();
+        self.status_notice.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 
     /// Text over the substrate grid telling the person the imagery is
@@ -2763,11 +2923,7 @@ impl MapsApp {
         theme: &Theme,
     ) {
         let fault = self.tiles.failure().filter(|_| !self.tiles.has_inflight());
-        let msg = match fault {
-            Some(TileFault::Rejected) => "The map tile server refused the request",
-            Some(TileFault::Unreachable) => "Map imagery is unavailable offline",
-            None => "Loading map…",
-        };
+        let msg = imagery_hint(self.tiles.can_fetch(), fault);
         let area = self.visible_map_area();
         let style = theme.text(TextRole::Body);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
@@ -3398,6 +3554,56 @@ impl MapsApp {
         rect.y1
     }
 
+    /// The geocoder's places on their way: rows of a result's kind, the
+    /// first saying where they come from once they take a while, under the
+    /// results (or their header, while there are none yet).
+    fn draw_arriving_results(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        mut y: f64,
+    ) -> f64 {
+        let Some(clock) = self.search_clock() else {
+            return y;
+        };
+        if self.model.results.is_empty() {
+            y = self.draw_group_header(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                content,
+                y,
+                "Results",
+                None,
+            );
+        }
+        let step = clock.step(ui::time::now());
+        let h = RESULT_ROW.height(tr, theme);
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        for row in 0..ARRIVING_RESULTS {
+            ui::widget::ArrivalFace::at_step(
+                ui::widget::SkeletonShape::Row(RESULT_ROW),
+                step,
+                clock.source(),
+            )
+            .naming(row == 0)
+            .paint(&mut ctx, Rect::new(content.x0, y, content.x1, y + h));
+            y += h;
+        }
+        self.mark_edge(y);
+        y
+    }
+
+    /// The timing of the places a committed search waits on.
+    fn search_clock(&self) -> Option<ui::arriving::ArrivalClock> {
+        let (_, asked) = self.search_asked.as_ref()?;
+        Some(ui::arriving::ArrivalClock::new(
+            *asked,
+            ui::arriving::Source::host(GEOCODER),
+        ))
+    }
+
     /// The Explore view: the selected place, then results, nearby places,
     /// saved places and recent searches — or, with nothing to show, one
     /// sentence and the way to search. Returns the y below the content.
@@ -3529,6 +3735,9 @@ impl MapsApp {
                     Hit::SelectPlace(p.id.clone()),
                 );
             }
+        }
+        y = self.draw_arriving_results(scene, t, tr, theme, content, y);
+        if !results.is_empty() || self.search_asked.is_some() {
             y += s3;
         }
 
@@ -3671,13 +3880,13 @@ impl MapsApp {
         // To. This leaves room for the itinerary instead of a third field row.
         let small_h = ButtonFace::height(ControlSize::Small, theme);
         let (loc_label, loc_hit) = if self.locating {
-            ("Locating…", None)
+            (failure::t("maps-locating"), None)
         } else {
-            ("Use my location", Some(Hit::UseMyLocation))
+            (failure::t("maps-use-my-location"), Some(Hit::UseMyLocation))
         };
         self.text_button(
             &mut PaintCtx::new(scene, t, tr, theme),
-            ButtonFace::icon_only(loc, Icon::LocateFixed, loc_label)
+            ButtonFace::icon_only(loc, Icon::LocateFixed, &loc_label)
                 .role(ButtonRole::Plain)
                 .disabled(self.locating),
             loc,
@@ -3724,7 +3933,7 @@ impl MapsApp {
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             draw::text_clip(
                 &mut ctx,
-                "Choose a destination to see the route.",
+                &failure::t("maps-route-choose-destination"),
                 Point::new(x, y),
                 &body,
                 theme.text_dim,
@@ -3758,6 +3967,40 @@ impl MapsApp {
             clear,
             Some(Hit::ClearRoute),
         );
+        // Another route, when the service offered one: the trip's own number
+        // says which of them is shown.
+        if self.model.route_alternatives.len() > 1 {
+            let shown = self
+                .model
+                .route
+                .as_ref()
+                .and_then(|current| {
+                    self.model.route_alternatives.iter().position(|offered| {
+                        offered.duration_s == current.duration_s
+                            && offered.distance_m == current.distance_m
+                    })
+                })
+                .unwrap_or(0);
+            let label = format!(
+                "Route {} of {}",
+                shown + 1,
+                self.model.route_alternatives.len()
+            );
+            let face = ButtonFace::new(Rect::ZERO, &label)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small);
+            let width = face.intrinsic_width(tr, theme);
+            let row_y = clear_y - s2 - small_h;
+            let rect = Rect::new(right - width, row_y, right, row_y + small_h);
+            self.text_button(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                ButtonFace::new(rect, &label)
+                    .role(ButtonRole::Plain)
+                    .control_size(ControlSize::Small),
+                rect,
+                Some(Hit::NextRoute),
+            );
+        }
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         draw::text(
             &mut ctx,
@@ -4357,6 +4600,12 @@ impl MapsApp {
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
+            Hit::NextRoute => (
+                "Another route".to_string(),
+                "maps.route.another".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
             Hit::UseMyLocation => (
                 "Use my location".to_string(),
                 "maps.location".to_string(),
@@ -4405,7 +4654,7 @@ impl MapsApp {
                 Role::ToggleButton,
                 AccessState::new()
                     .focusable(true)
-                    .checked(self.overflow.is_open()),
+                    .checked(self.menu_open(MapMenu::More)),
             ),
         };
         Some(AccessibilityTarget {
@@ -4455,13 +4704,13 @@ impl MapsApp {
                 state: AccessState::new().focusable(true),
             },
             AccessibilityTarget {
-                rect: self.map_controls.rect(MapControlAction::ToggleTraffic),
-                label: "Traffic".to_string(),
-                target: "maps.control:traffic".to_string(),
-                role: Role::Switch,
+                rect: self.map_controls.rect(MapControlAction::Layers),
+                label: "Map layers".to_string(),
+                target: "maps.control:layers".to_string(),
+                role: Role::ToggleButton,
                 state: AccessState::new()
                     .focusable(true)
-                    .checked(self.map_controls.traffic_enabled()),
+                    .checked(self.menu_open(MapMenu::Layers)),
             },
         ];
         targets.retain(|target| target.rect.area() > 0.0);
@@ -4625,7 +4874,6 @@ impl Widget for MapsApp {
         self.drain_net();
         // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
-        // Send the platform search's newest place query to the geocoder.
         self.pump_place_search();
         // Refetch viewport POIs once a pan/zoom settles.
         self.tick_poi_debounce(ui::time::now());
@@ -4660,6 +4908,7 @@ impl Widget for MapsApp {
         if let Some(effect) = self.endpoints.take_due_search(ui::time::now()) {
             self.apply_endpoint_effect(effect);
         }
+        self.publish_status();
     }
 
     fn build_layout(
@@ -5149,7 +5398,7 @@ impl Widget for MapsApp {
             "maps.control:zoom-in" => Some(MapControlAction::ZoomIn),
             "maps.control:zoom-out" => Some(MapControlAction::ZoomOut),
             "maps.control:locate" => Some(MapControlAction::Locate),
-            "maps.control:traffic" => Some(MapControlAction::ToggleTraffic),
+            "maps.control:layers" => Some(MapControlAction::Layers),
             _ => None,
         };
         if let Some(control) = control {
@@ -5203,7 +5452,6 @@ impl Widget for MapsApp {
             || self.navigation_placement.is_dragging()
             || self.navigation_placement.is_handoff_animating()
             || self.map_controls.needs_frame()
-            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -5211,6 +5459,10 @@ impl Widget for MapsApp {
             self.endpoints.query_deadline(),
             self.offline_panel.query_deadline(),
             self.poi_debounce,
+            self.status_notice.deadline(),
+            self.search_clock()
+                .and_then(|clock| clock.next_step_at(ui::time::now())),
+            self.endpoints.arriving_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -5253,3 +5505,6 @@ fn host_location(outcome: LocationOutcome) -> LocationChannel {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod search_arrival_tests;

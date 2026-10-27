@@ -415,7 +415,6 @@ impl Person {
         }
     }
 
-    /// The identity root's certificate for `device`.
     fn certificate(
         &self,
         device: &SigningIdentity,

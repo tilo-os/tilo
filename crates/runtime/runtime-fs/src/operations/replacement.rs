@@ -13,6 +13,7 @@ use crate::native::{removal::RemovalCustody, xattrs::NativeAttributes};
 
 pub(super) fn stage_component(id: &OperationId, item: usize) -> Result<EntryName, FsError> {
     EntryName::new(OsString::from(format!("replace-{}-{}", id.native(), item)))
+        .map_err(FsError::from)
 }
 #[cfg(target_os = "linux")]
 fn stage_name(ctx: &Context<'_>) -> Result<EntryName, FsError> {

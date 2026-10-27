@@ -115,7 +115,6 @@ fn words(name: &str) -> String {
     name.replace('-', " ")
 }
 
-/// The inspector.
 pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let tools = tools.clone();
     cx.switch(&tools.tool.clone(), move |cx, tool| {

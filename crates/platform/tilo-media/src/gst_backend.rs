@@ -1022,7 +1022,7 @@ impl GstState {
             && let Some(frame) = frame_from_sample(&sample, self.acceptance)
         {
             self.record_caps(&sample);
-            self.store(frame);
+            self.store(in_stream_time(frame, &sample));
             true
         } else {
             false
@@ -1033,7 +1033,7 @@ impl GstState {
             while let Some(sample) = self.appsink.try_pull_sample(gst::ClockTime::ZERO) {
                 if let Some(frame) = frame_from_sample(&sample, self.acceptance) {
                     self.record_caps(&sample);
-                    self.store(frame);
+                    self.store(in_stream_time(frame, &sample));
                     got = true;
                 }
             }
@@ -1469,6 +1469,28 @@ impl Drop for GstState {
     }
 }
 
+/// `frame` with its timestamp as a position in the stream, the scale seeks
+/// and positions are given in. A buffer's own timestamp counts from wherever
+/// the container's clock started, which for a stream that does not start at
+/// zero is not where a seek to that position lands; its segment maps one to
+/// the other. A sample without a time segment keeps the buffer's timestamp.
+fn in_stream_time(mut frame: Frame, sample: &gst::Sample) -> Frame {
+    let stream_ms = sample
+        .buffer()
+        .and_then(gst::BufferRef::pts)
+        .zip(
+            sample
+                .segment()
+                .and_then(|segment| segment.downcast_ref::<gst::ClockTime>()),
+        )
+        .and_then(|(pts, segment)| segment.to_stream_time(pts))
+        .map(gst::ClockTime::mseconds);
+    if let Some(ms) = stream_ms {
+        frame.pts_ms = ms;
+    }
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1481,7 +1503,6 @@ mod tests {
 
     #[test]
     fn rgba_caps_and_seek_flags_are_requested_exactly() {
-        // Phase `rgba_acceptance_asks_only_for_system_memory_rgba`.
         {
             init();
             // The compatibility path must never negotiate a GPU buffer that its
@@ -1494,7 +1515,6 @@ mod tests {
                 "RGBA-only consumers must not be offered dmabuf: {s}"
             );
         }
-        // Phase `accurate_seek_carries_the_accurate_flag_and_keyframe_seek_does_not`.
         {
             let a = SeekMode::Accurate.flags();
             assert!(

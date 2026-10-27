@@ -48,6 +48,19 @@ pub enum ContactsEffect {
         #[param("The contact's id")]
         contact: uuid::Uuid,
     },
+    /// Export vCard content.
+    ///
+    /// Keeps every contact, or one, as vCard 4.0 in the room's content and
+    /// answers its content address. Nothing leaves the room and no file is
+    /// written, so unlike a file export it asks no one: the cards are a copy
+    /// of what every member of the room already reads.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportVcardContent {
+        #[param("The contact's id; every contact when neither it nor a name is given")]
+        contact: Option<uuid::Uuid>,
+        #[param("The contact's name, ignoring case, in place of its id")]
+        name: Option<String>,
+    },
     /// Keep existing contact.
     #[effect(row, idempotent)]
     KeepExisting {

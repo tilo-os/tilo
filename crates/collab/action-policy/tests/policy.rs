@@ -381,20 +381,13 @@ fn session_grants_live_only_in_their_session() {
 }
 
 #[test]
-fn task_grants_end_with_the_task() {
-    let grants =
-        [grant("t", mail(), KindSet::ALL, Answer::Allow)
-            .with_lifetime(Lifetime::Task("t1".into()))];
-    let open = |task: &str| task == "t1";
-    let closed = |_: &str| false;
-    let with_open = cx().with_tasks(&open);
-    let with_closed = cx().with_tasks(&closed);
+fn a_grant_that_lived_while_a_task_was_open_reads_as_expired() {
+    let mut json = serde_json::to_value(grant("t", mail(), KindSet::ALL, Answer::Allow)).unwrap();
+    json["lifetime"] = serde_json::json!({"task": "t1"});
+    let stored: Grant = serde_json::from_value(json).expect("an old room still loads");
+    assert_eq!(stored.lifetime, Lifetime::Until(0));
     assert_eq!(
-        decide(&grants, &[alice()], &send(), ActionKind::Read, &with_open).answer,
-        Answer::Allow
-    );
-    assert_eq!(
-        decide(&grants, &[alice()], &send(), ActionKind::Read, &with_closed).answer,
+        decide(&[stored], &[alice()], &send(), ActionKind::Read, &cx()).answer,
         Answer::Deny
     );
 }
@@ -1208,7 +1201,7 @@ fn grants_round_trip_through_json() {
         KindSet::READ_UNDOABLE,
         Answer::Ask,
     )
-    .with_lifetime(Lifetime::Task("t1".into()));
+    .with_lifetime(Lifetime::Until(5));
     let json = serde_json::to_value(&grant).expect("serialises");
     assert_eq!(json["node"], "room:r/app:mail/resource:*");
     assert_eq!(json["kinds"], serde_json::json!(["read", "undoable"]));
@@ -1409,25 +1402,6 @@ fn a_refused_run_spends_nothing() {
     );
 }
 
-#[test]
-fn grants_given_for_a_task_lapse_with_it() {
-    let mut room = RoomPolicy::new("r", CAROL);
-    for (id, task) in [("t1-grant", "t1"), ("t2-grant", "t2")] {
-        room.grants.push(
-            grant(id, mail(), KindSet::READ, Answer::Allow)
-                .with_lifetime(Lifetime::Task(task.into())),
-        );
-    }
-    room.grants
-        .push(grant("standing", mail(), KindSet::READ, Answer::Allow));
-    assert_eq!(
-        room.lapse_tasks(|task| task == "t2"),
-        vec![GrantId::new("t1-grant")]
-    );
-    let held: Vec<&str> = room.grants.iter().map(|grant| grant.id.as_str()).collect();
-    assert!(held.contains(&"t2-grant") && held.contains(&"standing"));
-}
-
 /// Receivers admit only what the author's grants allow outright, so the
 /// person's own grants allow it too: a privileged action is never admitted
 /// on receipt on an Ask, whatever the delegations say.
@@ -1526,6 +1500,29 @@ fn remove_message() -> TreePath {
         .resource("c1")
         .field(roles::MODERATION_FIELD)
         .action("remove-message")
+}
+
+#[test]
+fn the_rooms_answers_name_the_role_it_gave() {
+    let room = room_with(&[
+        (BOB, Role::Editor),
+        (CAROL, Role::Moderator),
+        ("v", Role::Viewer),
+        ("c", Role::Commenter),
+    ]);
+    for (person, role) in [
+        (ALICE, Role::Owner),
+        (CAROL, Role::Moderator),
+        (BOB, Role::Editor),
+        ("v", Role::Viewer),
+        ("c", Role::Viewer),
+    ] {
+        let authority = Authority::person(room.party(person));
+        let answers = roles::telling_nodes("r").map(|node| {
+            authority.decide(&node, ActionKind::Undoable, &cx()).answer == Answer::Allow
+        });
+        assert_eq!(roles::role_answered(answers), role, "{person}: {answers:?}");
+    }
 }
 
 #[test]
@@ -1747,5 +1744,96 @@ fn a_restriction_reaches_only_below_and_lifts_once() {
     assert_eq!(
         room.apply(CAROL, &carol, lift, &cx(), false),
         Err(Refusal::NotRestricted(BOB.into()))
+    );
+}
+
+#[test]
+fn built_in_roles_load_as_the_code_defines_them_and_a_room_keeps_its_own_grants() {
+    // A room written when the Commenter's rules were fewer, with a stale
+    // copy of a Viewer rule and an adjustment of its own to the Editor role.
+    let mut stored = room_with(&[(BOB, Role::Commenter)]);
+    stored
+        .grants
+        .retain(|grant| grant.id.as_str() != "role:commenter:2");
+    for grant in &mut stored.grants {
+        if grant.id.as_str() == "role:viewer:0" {
+            grant.answer = Answer::Deny;
+        }
+    }
+    let adjustment = Grant::new(
+        "editors-no-mail",
+        Subject::Role(Role::Editor),
+        mail(),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+        alice(),
+    );
+    stored.grants.insert(0, adjustment.clone());
+    let custom = Grant::new(
+        "role:editor:x",
+        Subject::Role(Role::Editor),
+        mail(),
+        KindSet::READ,
+        Answer::Allow,
+        alice(),
+    );
+    stored.grants.push(custom.clone());
+
+    let loaded: RoomPolicy =
+        serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
+    let mut expected = vec![adjustment];
+    expected.extend(roles::room_role_grants("r", &alice()));
+    expected.push(custom);
+    assert_eq!(loaded.grants, expected);
+    assert_eq!(stored.clone().with_current_roles().grants, expected);
+
+    let reactions = mail()
+        .kind("mail.message")
+        .resource("m1")
+        .field(roles::REACTIONS_FIELD);
+    let bob = Authority::person(loaded.party(BOB));
+    assert_eq!(
+        bob.decide(&reactions, ActionKind::Undoable, &cx()).answer,
+        Answer::Allow
+    );
+
+    // A room that holds none of a role's grants does not get them back.
+    let mut bare = room_with(&[]);
+    bare.grants
+        .retain(|grant| grant.subject != Subject::Role(Role::Viewer));
+    assert_eq!(bare.clone().with_current_roles(), bare);
+
+    // A room already current comes back as stored, in its own order.
+    let mut current = room_with(&[]);
+    current.grants.reverse();
+    assert_eq!(current.clone().with_current_roles(), current);
+}
+
+#[test]
+fn a_room_neither_revokes_nor_gives_a_built_in_role_grant() {
+    let room = room_with(&[]);
+    let owner = Authority::person(room.party(ALICE));
+    assert_eq!(
+        room.clone().apply(
+            ALICE,
+            &owner,
+            Change::Revoke(GrantId::new("role:commenter:1")),
+            &cx(),
+            false
+        ),
+        Err(Refusal::BuiltInRole(GrantId::new("role:commenter:1")))
+    );
+    let given = Grant::new(
+        "role:viewer:1",
+        Subject::Role(Role::Viewer),
+        mail(),
+        KindSet::UNDOABLE,
+        Answer::Allow,
+        alice(),
+    );
+    assert_eq!(
+        room.clone()
+            .apply(ALICE, &owner, Change::Grant(given), &cx(), false),
+        Err(Refusal::BuiltInRole(GrantId::new("role:viewer:1")))
     );
 }

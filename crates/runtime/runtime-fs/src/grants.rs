@@ -1,36 +1,8 @@
 //! Opaque, live filesystem authority. Paths and names never confer a grant.
 
-use std::ffi::{OsStr, OsString};
-use std::os::unix::ffi::OsStrExt;
+pub use tilo_fs_client::{EntryName, FsOwner, FsRight};
 
 use crate::native::GrantLease;
-
-/// Authenticated workspace/application identity supplied by the trusted host.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FsOwner {
-    pub workspace: String,
-    pub app_id: String,
-}
-
-/// Rights recorded at admission. In-place byte writes require explicit `Write`;
-/// named mutations are reserved for operation providers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FsRight {
-    Enumerate,
-    Read,
-    /// In-place regular-file bytes through an already-writable held descriptor.
-    Write,
-    Create,
-    Rename,
-    /// History-preserving atomic replacement of an exactly held regular-file
-    /// victim. Admission must derive a current signed edit/Author scope; this
-    /// right never admits raw Remove or permanent deletion.
-    Replace,
-    Copy,
-    Move,
-    Trash,
-    Purge,
-}
 
 /// A reference to an owned directory descriptor and its live ancestor lineage.
 #[derive(Clone, Debug)]
@@ -56,31 +28,6 @@ impl GrantedEntry {
             Self::Directory(grant) => &grant.lease,
             Self::File(grant) => &grant.lease,
         }
-    }
-}
-
-/// Exactly one native component. Lossy display labels must not be used as identity.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct EntryName(OsString);
-
-impl EntryName {
-    /// # Errors
-    /// Returns `InvalidName` for empty, dot, parent, slash or NUL components.
-    pub fn new(value: OsString) -> Result<Self, FsError> {
-        let bytes = value.as_bytes();
-        if bytes.is_empty()
-            || bytes == b"."
-            || bytes == b".."
-            || bytes.contains(&b'/')
-            || bytes.contains(&0)
-        {
-            return Err(FsError::InvalidName);
-        }
-        Ok(Self(value))
-    }
-
-    pub fn as_os_str(&self) -> &OsStr {
-        &self.0
     }
 }
 
@@ -116,6 +63,12 @@ impl std::fmt::Display for FsError {
             Self::Transport(error) => write!(f, "filesystem transport: {error}"),
             other => write!(f, "filesystem: {other:?}"),
         }
+    }
+}
+
+impl From<tilo_fs_client::InvalidEntryName> for FsError {
+    fn from(_: tilo_fs_client::InvalidEntryName) -> Self {
+        Self::InvalidName
     }
 }
 

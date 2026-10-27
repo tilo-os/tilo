@@ -4,11 +4,13 @@
 //! work runs, the same field steers it and a Stop control appears.
 //!
 //! The owner adapter (`overlay_host::agent_actions`), not this widget,
-//! resolves and admits the published agent and Task Center actions.
+//! resolves and admits the published agent and Tasks actions.
 
 use std::collections::{HashMap, HashSet};
 
-use ui::widget::{Button, ButtonRole, Column, Container, Decorator, Divider, Popover, PopoverSide};
+use ui::widget::{
+    Button, ButtonRole, Column, Container, Decorator, Divider, Dropdown, Popover, PopoverSide,
+};
 use ui::widget::{Row, Spinner, Text, TextInput, When, Widget};
 use ui::{LocalState, Theme};
 use vello::kurbo::Rect;
@@ -69,11 +71,12 @@ pub(crate) struct ComposerRequest {
     /// The selection the request is about, when the composer was opened
     /// on one ([`AgentQuickComposer::open_about`]).
     pub about: Option<super::selection_agent::SelectionSeed>,
+    /// The model the person picked for the run; the agent's own without.
+    pub model: Option<runtime_collab::TaskRunModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ComposerOutcome {
-    /// The agent answered the request itself.
     Answered(String),
     /// The request became a task, which the adapter starts and follows.
     Started {
@@ -99,7 +102,6 @@ pub(crate) struct ComposerReceipt {
 pub(crate) enum RunPhase {
     /// Queued and being started.
     Starting,
-    /// The agent is working on it.
     Working,
     /// Done, with the agent's closing words.
     Finished(Option<String>),
@@ -122,21 +124,11 @@ pub(crate) struct ComposerRun {
     pub phase: RunPhase,
 }
 
-/// What the person answered the action a run paused at, from the composer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DraftAnswer {
-    Confirm(tilo_desktop::activity::PausedDraft),
-    Decline(tilo_desktop::activity::PausedDraft),
-    /// Change it first, on the card in Task Center.
-    Edit(tilo_desktop::activity::PausedDraft),
-}
-
 /// What the person does with a text answer about their selection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AnswerUse {
     /// Put the answer where the selection is.
     Insert(String),
-    /// Keep the answer as a new note.
     SaveAsNote(String),
 }
 
@@ -174,6 +166,12 @@ struct Submission {
 #[derive(Clone)]
 struct View {
     title: LocalState<String>,
+    /// The agent the person picked, among [`AgentQuickComposer::agents`].
+    agent: LocalState<String>,
+    picks_agent: LocalState<bool>,
+    /// The model the person picked, among [`AgentQuickComposer::models`].
+    model: LocalState<String>,
+    picks_model: LocalState<bool>,
     context: LocalState<String>,
     asked: LocalState<String>,
     answer: LocalState<String>,
@@ -187,19 +185,16 @@ struct View {
     waiting: LocalState<bool>,
     running: LocalState<bool>,
     enabled: LocalState<bool>,
-    /// Whether the followed run waits for the person on an action, which
-    /// the composer then shows as the card does, with its answers.
-    paused: LocalState<bool>,
-    paused_chips: LocalState<String>,
-    paused_action: LocalState<String>,
-    paused_meta: LocalState<String>,
-    paused_fields: LocalState<String>,
 }
 
 impl Default for View {
     fn default() -> Self {
         Self {
             title: LocalState::new(t("agent-quick-accessible-name")),
+            agent: LocalState::new(String::new()),
+            picks_agent: LocalState::new(false),
+            model: LocalState::new(String::new()),
+            picks_model: LocalState::new(false),
             context: LocalState::new(String::new()),
             asked: LocalState::new(String::new()),
             answer: LocalState::new(String::new()),
@@ -212,11 +207,6 @@ impl Default for View {
             waiting: LocalState::new(false),
             running: LocalState::new(false),
             enabled: LocalState::new(false),
-            paused: LocalState::new(false),
-            paused_chips: LocalState::new(String::new()),
-            paused_action: LocalState::new(String::new()),
-            paused_meta: LocalState::new(String::new()),
-            paused_fields: LocalState::new(String::new()),
         }
     }
 }
@@ -229,9 +219,6 @@ struct Presses {
     close: LocalState<bool>,
     insert: LocalState<bool>,
     save: LocalState<bool>,
-    confirm: LocalState<bool>,
-    edit: LocalState<bool>,
-    decline: LocalState<bool>,
 }
 
 impl Default for Presses {
@@ -242,9 +229,6 @@ impl Default for Presses {
             close: LocalState::new(false),
             insert: LocalState::new(false),
             save: LocalState::new(false),
-            confirm: LocalState::new(false),
-            edit: LocalState::new(false),
-            decline: LocalState::new(false),
         }
     }
 }
@@ -255,6 +239,24 @@ fn take(flag: &LocalState<bool>) -> bool {
         flag.set(false);
     }
     pressed
+}
+
+/// Whether a picker shows the choices offered to it yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickerListing {
+    Listed,
+    Unlisted,
+}
+
+impl PickerListing {
+    /// A picker is listed once shown, and only when there is a choice.
+    fn for_choices(count: usize) -> Self {
+        if count > 1 {
+            Self::Unlisted
+        } else {
+            Self::Listed
+        }
+    }
 }
 
 pub(crate) struct AgentQuickComposer {
@@ -276,7 +278,6 @@ pub(crate) struct AgentQuickComposer {
     ended: HashSet<(String, u64)>,
     /// What the status line says until something newer happens.
     notice: Option<String>,
-    /// Whether the notice says the composer is waiting on the agent.
     notice_waits: bool,
     drafts: HashMap<ComposerOwner, Draft>,
     submissions: HashMap<u64, Submission>,
@@ -287,11 +288,18 @@ pub(crate) struct AgentQuickComposer {
     focus_reset: bool,
     /// What the composer was opened about, which a queued task carries.
     about: Option<super::selection_agent::SelectionSeed>,
-    /// What each followed run is doing now: its step, and the action it
-    /// waits for the person on.
-    glances: HashMap<ComposerOwner, tilo_desktop::activity::RunGlance>,
-    /// The person's answer to a paused action, until the adapter takes it.
-    draft_answer: Option<DraftAnswer>,
+    /// The agents the person may pick from, when opened about something.
+    agents: Vec<String>,
+    /// The agent the person picked instead, until the host takes it.
+    agent_switch: Option<String>,
+    /// Whether the picker lists [`Self::agents`] yet: it does once it is
+    /// shown.
+    agent_picker: PickerListing,
+    /// The models a run may plan with, by how the picker names them; the
+    /// first is the agent's own.
+    models: Vec<(String, Option<runtime_collab::TaskRunModel>)>,
+    /// Whether the model picker lists [`Self::models`] yet.
+    model_picker: PickerListing,
 }
 
 impl Default for AgentQuickComposer {
@@ -319,8 +327,11 @@ impl Default for AgentQuickComposer {
             pending_editor: None,
             focus_reset: false,
             about: None,
-            glances: HashMap::new(),
-            draft_answer: None,
+            agents: Vec::new(),
+            agent_switch: None,
+            agent_picker: PickerListing::Listed,
+            models: Vec::new(),
+            model_picker: PickerListing::Listed,
         };
         composer.popover = composer.controls();
         composer
@@ -338,9 +349,32 @@ impl AgentQuickComposer {
         let close = self.presses.close.clone();
         Row::new()
             .with_justify(taffy::JustifyContent::SpaceBetween)
-            .push(Box::new(
-                Text::from_state(&self.view.title, Clone::clone).with_role(ui::TextRole::Heading),
-            ))
+            .push(Box::new(When::from_state(
+                &self.view.picks_agent,
+                |picks| !*picks,
+                Box::new(
+                    Text::from_state(&self.view.title, Clone::clone)
+                        .with_role(ui::TextRole::Heading),
+                ),
+            )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_agent,
+                |picks| *picks,
+                Box::new(
+                    Dropdown::from_state(Vec::new(), &self.view.agent)
+                        .with_id(AGENT_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-agent")),
+                ),
+            )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_model,
+                |picks| *picks,
+                Box::new(
+                    Dropdown::from_state(Vec::new(), &self.view.model)
+                        .with_id(MODEL_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-model")),
+                ),
+            )))
             .push(Box::new(
                 Button::icon_only(
                     "agent-quick-close",
@@ -386,54 +420,6 @@ impl AgentQuickComposer {
                     .role(ButtonRole::Primary)
                     .enabled_from(&self.view.enabled)
                     .on_click(move || submit.set(true)),
-            ))
-    }
-
-    /// The action the followed run waits on, as the confirmation card shows
-    /// it: its status and reach, what it does and to what, its fields, and
-    /// Confirm, Edit and Decline.
-    fn paused(&self) -> Column {
-        let view = &self.view;
-        let confirm = self.presses.confirm.clone();
-        let edit = self.presses.edit.clone();
-        let decline = self.presses.decline.clone();
-        Column::new()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(wrapped(
-                Text::from_state(&view.paused_chips, Clone::clone)
-                    .with_id("agent-quick-draft-status")
-                    .with_role(ui::TextRole::Caption)
-                    .with_live(ui::a11y::Politeness::Assertive),
-            ))
-            .push(wrapped(
-                Text::from_state(&view.paused_action, Clone::clone)
-                    .with_id("agent-quick-draft-action")
-                    .with_role(ui::TextRole::Subheading),
-            ))
-            .push(wrapped(
-                Text::from_state(&view.paused_meta, Clone::clone)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ))
-            .push(wrapped(
-                Text::from_state(&view.paused_fields, Clone::clone)
-                    .with_id("agent-quick-draft-fields"),
-            ))
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("agent-quick-draft-confirm", &t("agent-quick-draft-confirm"))
-                            .role(ButtonRole::Primary)
-                            .on_click(move || confirm.set(true)),
-                    ))
-                    .push(Box::new(
-                        Button::new("agent-quick-draft-edit", &t("agent-quick-draft-edit"))
-                            .on_click(move || edit.set(true)),
-                    ))
-                    .push(Box::new(
-                        Button::new("agent-quick-draft-decline", &t("agent-quick-draft-decline"))
-                            .on_click(move || decline.set(true)),
-                    )),
             ))
     }
 
@@ -509,16 +495,6 @@ impl AgentQuickComposer {
                 Box::new(self.uses()),
             )))
             .push(Box::new(status))
-            .push(Box::new(When::from_state(
-                &view.paused,
-                |shown| *shown,
-                Box::new(Divider::horizontal()),
-            )))
-            .push(Box::new(When::from_state(
-                &view.paused,
-                |shown| *shown,
-                Box::new(self.paused()),
-            )))
             .push(Box::new(editor))
             .push(Box::new(self.footer()));
         Popover::with_content(
@@ -541,6 +517,11 @@ impl AgentQuickComposer {
     ) {
         self.save_draft();
         self.about = None;
+        self.agents.clear();
+        self.agent_switch = None;
+        self.view.picks_agent.set(false);
+        self.view.agent.set(owner.agent.clone());
+        self.offer_models(models_of());
         label.clone_into(&mut self.label);
         self.view
             .title
@@ -592,6 +573,55 @@ impl AgentQuickComposer {
     /// The selection the composer was opened about, if it was.
     pub(crate) fn about(&self) -> Option<&super::selection_agent::SelectionSeed> {
         self.about.as_ref()
+    }
+
+    /// Let the person pick which of `agents` to tell, in its header.
+    pub(crate) fn offer_agents(&mut self, agents: Vec<String>) {
+        self.view.picks_agent.set(agents.len() > 1);
+        self.agent_picker = PickerListing::for_choices(agents.len());
+        self.agents = agents;
+        self.list_agents();
+    }
+
+    fn list_agents(&mut self) {
+        if self.agent_picker == PickerListing::Unlisted
+            && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
+        {
+            self.agent_picker = PickerListing::Listed;
+        }
+        let models: Vec<String> = self.models.iter().map(|(label, _)| label.clone()).collect();
+        if self.model_picker == PickerListing::Unlisted
+            && set_picker_options(&mut self.popover, MODEL_PICKER, &models)
+        {
+            self.model_picker = PickerListing::Listed;
+        }
+    }
+
+    /// Let the person pick the model the run plans with, among `models`;
+    /// the agent's own until they do.
+    fn offer_models(&mut self, models: Vec<(String, Option<runtime_collab::TaskRunModel>)>) {
+        self.view.picks_model.set(models.len() > 1);
+        self.model_picker = PickerListing::for_choices(models.len());
+        if let Some((own, _)) = models.first() {
+            self.view.model.set(own.clone());
+        }
+        self.models = models;
+        self.list_agents();
+    }
+
+    /// The model the person picked: `None` for the agent's own.
+    fn picked_model(&self) -> Option<runtime_collab::TaskRunModel> {
+        let picked = self.view.model.get();
+        self.models
+            .iter()
+            .find(|(label, _)| *label == picked)
+            .and_then(|(_, model)| model.clone())
+    }
+
+    /// The agent the person picked instead of the composer's own. The host
+    /// opens the composer again for it, about the same thing.
+    pub(crate) fn take_agent_switch(&mut self) -> Option<String> {
+        self.agent_switch.take()
     }
 
     /// Whether the composer is open about a selection rather than beside an
@@ -706,66 +736,6 @@ impl AgentQuickComposer {
         turns.drain(..excess);
     }
 
-    /// What `owner`'s followed run is doing now, as the room's review tells
-    /// it: the step it is at, and the action it waits for the person on.
-    pub(crate) fn glance(
-        &mut self,
-        owner: &ComposerOwner,
-        glance: Option<tilo_desktop::activity::RunGlance>,
-    ) {
-        let changed = match glance {
-            Some(glance) => self.glances.insert(owner.clone(), glance.clone()) != Some(glance),
-            None => self.glances.remove(owner).is_some(),
-        };
-        if changed {
-            self.refresh();
-        }
-    }
-
-    /// The action `owner`'s followed run waits for the person on, if any.
-    fn paused_draft(&self) -> Option<&tilo_desktop::activity::PausedDraft> {
-        let owner = self.owner.as_ref()?;
-        let run = self.runs.get(owner)?;
-        self.glances
-            .get(owner)?
-            .paused
-            .as_ref()
-            .filter(|draft| draft.task_id == run.task.task_id)
-    }
-
-    /// Show the composer again where it was when it follows task
-    /// `task_id`'s run, so the action that run waits on is answered there.
-    /// Whether it does.
-    pub(crate) fn reveal_run(&mut self, task_id: &str) -> bool {
-        let Some(owner) = self.owner.as_ref() else {
-            return false;
-        };
-        if self
-            .runs
-            .get(owner)
-            .is_none_or(|run| run.task.task_id != task_id)
-        {
-            return false;
-        }
-        if !self.is_open() {
-            self.popover.set_open(true);
-            self.focus_reset = true;
-        }
-        self.refresh();
-        true
-    }
-
-    /// Whether the open composer shows an action its run waits on.
-    pub(crate) fn shows_paused_any(&self) -> bool {
-        self.paused_draft().is_some()
-    }
-
-    /// The person's answer to the paused action, for the adapter to send.
-    pub(crate) fn take_draft_answer(&mut self) -> Option<DraftAnswer> {
-        self.tick();
-        self.draft_answer.take()
-    }
-
     /// The run the open composer follows.
     pub(crate) fn followed(&self) -> Option<&ComposerRun> {
         self.owner.as_ref().and_then(|owner| self.runs.get(owner))
@@ -826,6 +796,7 @@ impl AgentQuickComposer {
             context: self.context.clone(),
             conversation: self.conversations.get(&owner).cloned().unwrap_or_default(),
             about: self.about.clone().filter(|_| !stop),
+            model: self.picked_model(),
         };
         self.refresh();
         Some(request)
@@ -1004,19 +975,8 @@ impl AgentQuickComposer {
         self.view
             .enabled
             .set(!busy && !starting && !self.draft.get().trim().is_empty());
-        let paused = self.paused_draft().cloned();
-        let step = run
-            .filter(|run| run.phase == RunPhase::Working)
-            .and_then(|_| self.glances.get(owner))
-            .and_then(|glance| glance.step.clone());
         let status = self.notice.clone().or_else(|| {
             run.map(|run| {
-                if paused.is_some() {
-                    return t("agent-quick-run-waiting");
-                }
-                if let Some(step) = &step {
-                    return step.clone();
-                }
                 let key = match run.phase {
                     RunPhase::Starting => "agent-quick-run-starting",
                     _ => "agent-quick-run-working",
@@ -1025,26 +985,10 @@ impl AgentQuickComposer {
             })
         });
         self.view.has_status.set(status.is_some());
-        self.view.waiting.set(
-            (busy && self.notice_waits) || (self.notice.is_none() && running && paused.is_none()),
-        );
+        self.view
+            .waiting
+            .set((busy && self.notice_waits) || (self.notice.is_none() && running));
         self.view.status.set(status.unwrap_or_default());
-        self.view.paused.set(paused.is_some() && !busy);
-        if let Some(draft) = &paused {
-            self.view
-                .paused_chips
-                .set(format!("{} · {}", draft.status, draft.risk));
-            self.view.paused_action.set(draft.action.clone());
-            self.view.paused_meta.set(draft.meta.clone());
-            self.view.paused_fields.set(
-                draft
-                    .fields
-                    .iter()
-                    .map(|(label, value)| format!("{label}: {value}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
-        }
     }
 
     fn placeholder_text(&self) -> String {
@@ -1063,26 +1007,21 @@ impl AgentQuickComposer {
         if take(&self.presses.close) {
             self.dismiss();
         }
+        let picked = self.view.agent.get();
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.agent != picked)
+            && self.agents.contains(&picked)
+        {
+            self.agent_switch = Some(picked);
+        }
         let answer = self.view.answer.get();
         if take(&self.presses.insert) && self.view.can_use_answer.get() {
             self.answer_use = Some(AnswerUse::Insert(answer.clone()));
         }
         if take(&self.presses.save) && self.view.can_use_answer.get() {
             self.answer_use = Some(AnswerUse::SaveAsNote(answer));
-        }
-        let confirm = take(&self.presses.confirm);
-        let edit = take(&self.presses.edit);
-        let decline = take(&self.presses.decline);
-        if let Some(draft) = self.paused_draft().cloned() {
-            self.draft_answer = if confirm {
-                Some(DraftAnswer::Confirm(draft))
-            } else if decline {
-                Some(DraftAnswer::Decline(draft))
-            } else if edit {
-                Some(DraftAnswer::Edit(draft))
-            } else {
-                self.draft_answer.take()
-            };
         }
         self.refresh();
     }
@@ -1148,6 +1087,64 @@ fn editor_state(widget: &dyn Widget) -> Option<String> {
     widget.children().into_iter().find_map(editor_state)
 }
 
+/// The test id of the composer's agent picker.
+const AGENT_PICKER: &str = "agent-quick-agent";
+
+/// The test id of the composer's model picker.
+const MODEL_PICKER: &str = "agent-quick-model";
+
+/// The models a run may plan with: the agent's own first, then those the
+/// person's providers offer, as their record of them lists them.
+fn models_of() -> Vec<(String, Option<runtime_collab::TaskRunModel>)> {
+    let offered = crate::shell::settings_records::Holder::of(&crate::shell::state::local_user_id())
+        .and_then(|records| {
+            records
+                .read::<agent_provider_config::OfferedModels, _>(|offered| offered.models.clone())
+        })
+        .unwrap_or_default();
+    let mut models = vec![(t("agent-quick-model-own"), None)];
+    models.extend(offered.into_iter().map(|offered| {
+        (
+            t_args(
+                "agent-quick-model-of",
+                &[
+                    ("model", offered.label.into()),
+                    ("provider", offered.provider.into()),
+                ],
+            ),
+            Some(runtime_collab::TaskRunModel {
+                profile: offered.profile,
+                model: offered.model,
+            }),
+        )
+    }));
+    models
+}
+
+fn set_picker_options(widget: &mut dyn Widget, id: &str, options: &[String]) -> bool {
+    if widget.test_id() == Some(id)
+        && let Some(any) = widget.as_any_mut()
+    {
+        // A picker is shown only while there is a choice, so it is reached
+        // through the `When` that shows it.
+        let picker = match any.downcast_mut::<When>() {
+            Some(when) => when
+                .child_mut()
+                .as_any_mut()
+                .and_then(|child| child.downcast_mut::<Dropdown>()),
+            None => any.downcast_mut::<Dropdown>(),
+        };
+        if let Some(picker) = picker {
+            picker.set_options(options.to_vec());
+            return true;
+        }
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| set_picker_options(child, id, options))
+}
+
 fn set_placeholder(widget: &mut dyn Widget, placeholder: &str) -> bool {
     if widget.test_id() == Some("agent-quick-editor")
         && let Some(editor) = widget
@@ -1191,6 +1188,7 @@ impl Decorator for AgentQuickComposer {
         }
         self.tick();
         self.popover.sync(state, path);
+        self.list_agents();
         self.refresh_placeholder();
         if let Some((revision, editor)) = self.pending_editor.take()
             && revision == self.draft.revision()
@@ -1204,6 +1202,7 @@ impl Decorator for AgentQuickComposer {
         }
         self.tick();
         let changed = self.popover.update(state, path);
+        self.list_agents();
         self.refresh_placeholder();
         changed
     }
@@ -1386,96 +1385,6 @@ mod tests {
             doc.get_heads(),
             heads,
             "private editor input never writes collaborative content"
-        );
-    }
-
-    /// While the followed run waits on an action, the composer says so
-    /// instead of "working", shows the action as the card does, and its
-    /// Confirm, Edit and Decline answer that exact draft; while it works,
-    /// it says the step the run is at.
-    #[test]
-    fn a_run_waiting_on_the_person_shows_its_draft_and_takes_the_answer() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        composer.project(&tide, Some(working("task:rename", RunPhase::Working)));
-        composer.glance(
-            &tide,
-            Some(tilo_desktop::activity::RunGlance {
-                step: Some("Reading Files…".into()),
-                paused: None,
-            }),
-        );
-        assert_eq!(composer.view.status.get(), "Reading Files…");
-        assert!(
-            composer.view.waiting.get(),
-            "a working run shows its spinner"
-        );
-        assert!(!shown(&mut composer, "agent-quick-draft-confirm"));
-
-        let draft = tilo_desktop::activity::PausedDraft {
-            room: "room".into(),
-            task_id: "task:rename".into(),
-            run_epoch: 3,
-            confirmation_id: "c1".into(),
-            status: "Waiting for your confirmation".into(),
-            risk: "Changes your work".into(),
-            action: "Rename an entry here".into(),
-            meta: "scribe asks first · Folder".into(),
-            fields: vec![
-                ("Entry".into(), "doc (3).txt".into()),
-                ("Name".into(), "Meeting notes.txt".into()),
-            ],
-        };
-        composer.glance(
-            &tide,
-            Some(tilo_desktop::activity::RunGlance {
-                step: Some("Editing Files…".into()),
-                paused: Some(draft.clone()),
-            }),
-        );
-        assert_eq!(composer.view.status.get(), t("agent-quick-run-waiting"));
-        assert!(
-            !composer.view.waiting.get(),
-            "waiting on the person, not working"
-        );
-        assert!(composer.shows_paused_any());
-        assert_eq!(composer.view.paused_action.get(), "Rename an entry here");
-        assert!(
-            composer
-                .view
-                .paused_fields
-                .get()
-                .contains("Name: Meeting notes.txt")
-        );
-        assert!(
-            composer
-                .view
-                .paused_chips
-                .get()
-                .contains("Changes your work")
-        );
-
-        press(&mut composer, &mut doc, "agent-quick-draft-confirm");
-        assert_eq!(
-            composer.take_draft_answer(),
-            Some(DraftAnswer::Confirm(draft.clone()))
-        );
-        assert_eq!(
-            composer.take_draft_answer(),
-            None,
-            "an answer is taken once"
-        );
-        press(&mut composer, &mut doc, "agent-quick-draft-edit");
-        assert_eq!(
-            composer.take_draft_answer(),
-            Some(DraftAnswer::Edit(draft.clone()))
-        );
-        press(&mut composer, &mut doc, "agent-quick-draft-decline");
-        assert_eq!(
-            composer.take_draft_answer(),
-            Some(DraftAnswer::Decline(draft))
         );
     }
 
@@ -1806,9 +1715,103 @@ mod tests {
     }
 
     #[test]
+    fn the_person_picks_which_agent_to_tell_and_the_host_hears_it() {
+        use super::super::selection_agent::SelectionSeed;
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        let origin = AgentQuickComposerOrigin {
+            marker: Rect::new(400.0, 200.0, 401.0, 201.0),
+            protected: Rect::new(400.0, 200.0, 401.0, 201.0),
+            context: String::new(),
+        };
+        let seed = SelectionSeed::new("so.tilo.notes", "Notes", None);
+        composer.open_about(
+            owner("tide"),
+            "tide",
+            &origin,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            seed.clone(),
+        );
+        composer.offer_agents(vec!["tide".into()]);
+        assert!(
+            !shown(&mut composer, AGENT_PICKER),
+            "one agent: nothing to pick"
+        );
+        composer.offer_agents(vec!["tide".into(), "reed".into()]);
+        assert!(shown(&mut composer, AGENT_PICKER));
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert!(action(
+            &mut composer,
+            AGENT_PICKER,
+            &ui::a11y::Action::SetValue("reed".into()),
+            &mut doc
+        ));
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert_eq!(composer.take_agent_switch(), Some("reed".into()));
+        assert_eq!(composer.take_agent_switch(), None, "heard once");
+        composer.open_about(
+            owner("reed"),
+            "reed",
+            &origin,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            seed.clone(),
+        );
+        composer.offer_agents(vec!["tide".into(), "reed".into()]);
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert_eq!(composer.take_agent_switch(), None);
+        assert_eq!(composer.about(), Some(&seed));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_model_picker_lists_what_the_persons_providers_offer() {
+        use agent_provider_config::{OfferedModel, OfferedModels};
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let held =
+            crate::shell::settings_records::Holder::of(&crate::shell::state::local_user_id())
+                .unwrap();
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        open(&mut composer, owner("tide"));
+        assert!(!shown(&mut composer, MODEL_PICKER), "only the agent's own");
+
+        held.run(|records| {
+            let record = records.shared::<OfferedModels>().unwrap();
+            record
+                .invoke(&OfferedModels::OFFER.with(vec![OfferedModel {
+                    profile: "work".into(),
+                    provider: "Work".into(),
+                    model: "m-large".into(),
+                    label: "Large".into(),
+                }]))
+                .unwrap();
+        })
+        .unwrap();
+        open(&mut composer, owner("tide"));
+        assert!(shown(&mut composer, MODEL_PICKER));
+        let large = composer.models[1].0.clone();
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert!(action(
+            &mut composer,
+            MODEL_PICKER,
+            &ui::a11y::Action::SetValue(large),
+            &mut doc
+        ));
+        edit(&mut composer, &mut doc, "Tidy the notes");
+        assert_eq!(
+            submit(&mut composer, &mut doc).model,
+            Some(runtime_collab::TaskRunModel {
+                profile: "work".into(),
+                model: "m-large".into(),
+            })
+        );
+    }
+
+    #[test]
     fn every_composer_string_is_in_every_catalogue() {
         const KEYS: &[&str] = &[
             "agent-quick-title",
+            "agent-quick-agent",
             "agent-quick-about-selection",
             "agent-quick-about-window",
             "agent-quick-accessible-name",
@@ -1828,10 +1831,6 @@ mod tests {
             "agent-quick-steer-applied",
             "agent-quick-run-starting",
             "agent-quick-run-working",
-            "agent-quick-run-waiting",
-            "agent-quick-draft-confirm",
-            "agent-quick-draft-edit",
-            "agent-quick-draft-decline",
             "agent-quick-run-done",
             "agent-quick-run-attention",
             "agent-quick-run-stopped",

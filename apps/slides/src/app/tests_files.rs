@@ -69,7 +69,10 @@ fn opening_presentations_preserves_cdata_text() {
             let name = entry.name().unwrap().into_owned();
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
-            if name.ends_with(".xml") {
+            if std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+            {
                 let xml = String::from_utf8(bytes).unwrap();
                 // The exact sentinel is text content, never an attribute.
                 bytes = xml
@@ -187,6 +190,11 @@ fn presentation_files_open_and_save_through_the_chooser() {
         let (_, answer) = through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN);
         assert!(answer.is_err(), "the caller hears the open failed");
         assert!(bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Error)))));
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.kind),
+            Some(ToastKind::Error),
+            "the window bar says the open failed"
+        );
         assert_eq!(bench.deck(), before, "a failed open changes nothing");
     }
 
@@ -416,4 +424,127 @@ fn the_slide_shown_stays_shown_when_a_collaborator_inserts_before_it() {
         assert_eq!(app.slide().map(|slide| slide.id.clone()), Some(shown));
         assert_eq!(app.cur_slide, 3);
     });
+}
+
+/// The text of `part` in the zip package at `path`.
+fn package_part(path: &std::path::Path, part: &str) -> String {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut text = String::new();
+    archive
+        .by_name(part)
+        .unwrap()
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+/// A text box whose words outgrew it is written as tall as the canvas shows
+/// it, marked to fit its text; the box's own height stays its least.
+#[test]
+fn a_saved_box_is_as_tall_as_its_words_show_it() {
+    let mut slide = Slide::new(Layout::Blank);
+    let id = slide.add(Element::text(
+        "Words enough to wrap onto several lines in a narrow box",
+        100.0,
+        100.0,
+        300.0,
+        60.0,
+        40.0,
+    ));
+    let mut bench = Bench::one_slide(slide);
+    bench.frame();
+    let shown = render::text_height(&id).expect("the box was drawn");
+    assert!(shown > 120.0, "the words outgrow the box: {shown}");
+    let directory = tempfile::tempdir().unwrap();
+
+    let pptx = directory.path().join("grown.pptx");
+    bench
+        .app
+        .effect(&SlidesEffect::SaveAs {
+            path: Some(pptx.to_string_lossy().into_owned()),
+        })
+        .expect("save-as is answered");
+    let written =
+        crate::pptx::read_pptx(&std::fs::read(&pptx).unwrap(), &ContentStore::memory()).unwrap();
+    let h = written.slides[0].elements[0].h;
+    assert!(
+        (h - shown).abs() < 1.0,
+        "PowerPoint gets the shown height {shown}, not the stored 60: {h}"
+    );
+    assert!(package_part(&pptx, "ppt/slides/slide1.xml").contains("<a:spAutoFit/>"));
+
+    let odp = directory.path().join("grown.odp");
+    bench
+        .app
+        .effect(&SlidesEffect::SaveAs {
+            path: Some(odp.to_string_lossy().into_owned()),
+        })
+        .expect("save-as is answered");
+    let content = package_part(&odp, "content.xml");
+    let (_, frame) = content.split_once("<draw:frame").unwrap();
+    let height = frame
+        .split("svg:height=\"")
+        .nth(1)
+        .and_then(|rest| rest.split("cm\"").next())
+        .and_then(|cm| cm.parse::<f64>().ok())
+        .unwrap();
+    // The page is 25.4 cm wide.
+    let per_unit = 25.4 / SLIDE_W;
+    assert!(
+        (height / per_unit - shown).abs() < 1.0,
+        "other apps get the shown height {shown}: {}",
+        height / per_unit
+    );
+    assert!(
+        frame.contains("fo:min-height="),
+        "the box grows from its own height"
+    );
+    let read =
+        crate::odp::read_odp(&std::fs::read(&odp).unwrap(), &ContentStore::memory()).unwrap();
+    assert!(
+        (read.slides[0].elements[0].h - 60.0).abs() < 1e-9,
+        "Slides reads its own height back"
+    );
+}
+
+/// Bulleted and numbered lists are written as lists, so they open as lists
+/// again here and elsewhere.
+#[test]
+fn lists_survive_saving_and_opening() {
+    use ui::widget::{BlockContent, BlockKind};
+    let item = |text: &str, kind: BlockKind| {
+        let mut block = BlockContent::paragraph("", text);
+        block.kind = kind;
+        block
+    };
+    let blocks = vec![
+        item("Plan", BlockKind::Paragraph),
+        item("Survey", BlockKind::Bullet { indent: 0 }),
+        item("Build", BlockKind::Bullet { indent: 0 }),
+        item("First", BlockKind::Numbered { indent: 0 }),
+        item("Second", BlockKind::Numbered { indent: 0 }),
+    ];
+    let mut slide = Slide::new(Layout::Blank);
+    slide.add(
+        Element::text("", 100.0, 100.0, 800.0, 400.0, 32.0).with(|e| {
+            e.set_blocks(blocks.clone());
+        }),
+    );
+    let deck = deck_of(vec![slide]);
+    let kinds = |deck: &Deck| -> Vec<BlockKind> {
+        deck.slides[0].elements[0]
+            .rich_blocks()
+            .into_iter()
+            .map(|block| block.kind)
+            .collect()
+    };
+    let expected: Vec<BlockKind> = blocks.into_iter().map(|block| block.kind).collect();
+    let content = ContentStore::memory();
+    let pptx = crate::pptx::read_pptx(&crate::pptx::write_pptx(&deck, &content).unwrap(), &content)
+        .unwrap();
+    assert_eq!(kinds(&pptx), expected, "PowerPoint keeps the lists");
+    let odp =
+        crate::odp::read_odp(&crate::odp::write_odp(&deck, &content).unwrap(), &content).unwrap();
+    assert_eq!(kinds(&odp), expected, "ODF keeps the lists");
 }

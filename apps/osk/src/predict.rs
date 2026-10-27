@@ -97,7 +97,6 @@ impl Predictor {
                 .or_default()
                 .push((w2.to_lowercase(), weight));
         }
-        // Sort each successor list by weight descending for fast top-N.
         for v in bigrams.values_mut() {
             v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         }
@@ -274,7 +273,6 @@ impl Predictor {
             }
         }
 
-        // --- bigram successors of prev_word -----------------------------
         if let Some(succ) = prev.as_deref().and_then(|p| self.bigrams.get(p)) {
             for (w2, weight) in succ {
                 if !starts_with_folded(w2, &prefix) {
@@ -424,7 +422,6 @@ mod tests {
             let p = small();
             let preds = p.predict_next(None, "");
             assert!(!preds.is_empty());
-            // Most common word in the toy dict is "the".
             assert_eq!(preds[0].0, "the");
         }
 

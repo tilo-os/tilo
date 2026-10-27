@@ -32,12 +32,18 @@ registry-types = { path = "../registry-types" }
 # enumerates installed apps from, so "available" is exactly "not in
 # there".
 package-store = { path = "../package-store" }
+# The desktop's applications that Tilo did not package (Flatpaks, the
+# system's, downloaded programs), listed beside the installed packages.
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
 # Canonical application tapp wire-size ceiling; catalogue downloads enforce
 # the same boundary as the installer rather than duplicating a number.
 tilo-app-package = { path = "../tilo-app-package" }
 clap.workspace = true
 clap_complete.workspace = true
 tilo-paths.workspace = true
+# `app open`: the desktop's applications, through the control protocol's one
+# client (shared with `tilo open` and tilo-control).
+tilo-control = { path = "../../session/control-cli" }
 hex.workspace = true
 blake3.workspace = true
 serde.workspace = true

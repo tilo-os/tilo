@@ -29,7 +29,7 @@ selected input, issues and verified stream inventory. Call state never becomes d
 microphone consent. This increment changes no media transport and has not been tested
 with two physical devices or microphones.
 
-The device-only `open-slack-channel(workspace, channel)` and
+The `open-slack-channel(workspace, channel)` and
 `open-discord-channel(server, channel)` effects validate service ids and hand an HTTPS
 link to the host URI opener on a worker. They use the existing optional `open-uri`
 capability. The service's browser app owns sign-in and channel permissions. These are
@@ -42,7 +42,7 @@ the token and the socket, and Chat still holds neither.
 
 Chat now contributes opt-in channel, thread and scroll state to the SDK's existing
 viewport presence. `share-live-context`, `stop-sharing-live-context` and
-`live-context-status` are local, device-only effects. Sharing begins off and never
+`live-context-status` are local effects. Sharing begins off and never
 survives relaunch or becomes microphone consent. The conversation header shows sharing
 or following status, with a shared Stop sharing button while publication is active. The shell's existing `presence.follow` and `presence.follow.stop`
 actions choose/release the target, with its existing visible follow chip and roster.
@@ -62,14 +62,16 @@ journey still need manual validation before release.
 A bridge mirrors a room's Chat to an outside service. It is built from the bot
 framework ([bots.md](bots.md)): a connector app holds the service's credentials and
 socket, and a bot program maps Chat's changes to the connector's verbs and back. The
-Discord bridge ([discord-bridge.md](discord-bridge.md)) is the first. Chat stays
-service-agnostic: it learns nothing about Discord, and every change below applies to
-every room's Chat, bridged or not.
+Discord bridge ([discord-bridge.md](discord-bridge.md)) is the first, and the
+Slack bridge ([slack-bridge.md](slack-bridge.md)) is built the same way against
+another service. Chat stays service-agnostic: it learns nothing about either
+service, and every change below applies to every room's Chat, bridged or not.
 
 - **Appearance.** A bot allowed `Personas` may post under another name and avatar.
-  `post`, `share-resource` and `react` read `ActionCx::appearance()` and store it:
-  `Message.appearance: Json<Option<Appearance>>` and `Reacted.persona: Option<String>`
-  (new), so two Discord users' identical reactions count as two. The author is still
+  `post` and `share-resource` read `ActionCx::appearance()` and store it
+  (`Message.appearance`), and so does the framework's `react` field edit of a
+  message's `Reactions`: the reaction records the account (`discord/<id>`) and
+  the name it shows, so two Discord users' identical reactions count as two. The author is still
   the bot. Every message author is drawn through the shared `ui::author` helper, so a
   mirrored message shows the outside name and avatar with the `BOT` label and "via
   Discord Bridge (bot, added by …)" in its details.
@@ -407,16 +409,18 @@ New `share-resource` messages can include `sourceProvider`, the existing typed
 `record:<app>:<record>` provider. The message keeps that provenance beside its
 resource address; it does not carry a host URL, bytes or access grant. Older
 messages remain readable but cannot mint a browser link without provenance.
-`read-message` exports the provider. A message carrying a resource shows
-"Copy link" and "Open resource in browser" controls in shared Buttons. Both
-invoke `share-link` on the referenced resource through the action door, so the
-resource's own app (which knows its views) asks its room's host for a fresh
-locator and renders the link grammar under the host's web entry; Chat builds no
-link itself. Agents and automations call that same `share-link` directly. Open
-hands the link to the browser, since Chat cannot show another app's view in
-place. One request runs at a time with a 30-second limit, and its outcome is
-checked against the message still carrying the same reference and provider. A
-host without a web entry refuses with its reason, which the control shows.
+`read-message` exports the provider. A message carrying a resource shows it
+as a reference chip and a "Copy link" control. The chip opens the resource
+where it lives, through the one action that opens any reference: its `open`
+in the app and record the provider names ([resources.md](resources.md) §3.5).
+"Copy link" invokes `share-link` on the referenced resource through the action
+door, so the resource's own app (which knows its views) asks its room's host
+for a fresh locator and renders the link grammar under the host's web entry;
+Chat builds no link itself. Agents and automations call that same
+`share-link` directly. One request runs at a time with a 30-second limit, and
+its outcome is checked against the message still carrying the same reference
+and provider. A host without a web entry refuses with its reason, which the
+control shows.
 
 Settings' device-local `publish-browser-identity` effect takes a canonical HTTPS
 host origin and reads the process's bound public identity. It invokes the typed

@@ -549,3 +549,30 @@ fn a_live_view_does_not_wait_for_paint_and_a_look_does() {
     let (waited, _) = view_ops::look(&mut Renderer::default(), &mut text, &state, &look).unwrap();
     assert_eq!(seen.bytes, waited.bytes);
 }
+
+/// A brush's single dab, a click without a drag, is where it was laid:
+/// what finds, lists and selects marks by where they are finds it there,
+/// not at the artwork's corner.
+#[test]
+fn a_single_dab_is_where_it_was_laid() {
+    let mut art = sheet(1200.0, 900.0);
+    apply(
+        &mut art,
+        Artwork::PAINT.with(Paint {
+            layer: None,
+            strokes: vec![NewStroke {
+                points: vec![vec![393.5, 358.2, 0.35]],
+                ..line("dab", [0.0, 0.0], [0.0, 0.0], 1.0)
+            }],
+            group: None,
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let bounds = state.mark("dab").unwrap().bounds();
+    assert!(
+        (bounds.center().x - 393.5).abs() < 1e-6 && (bounds.center().y - 358.2).abs() < 1e-6,
+        "{bounds:?}"
+    );
+    assert!((bounds.width() - 16.0).abs() < 1e-6, "{bounds:?}");
+}

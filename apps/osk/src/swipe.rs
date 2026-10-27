@@ -40,6 +40,12 @@ use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout};
 /// keeps the inner loop cheap.
 const RESAMPLE_N: usize = 32;
 
+#[cfg(test)]
+thread_local! {
+    /// Dictionary words whose shape a decode on this thread scored.
+    static SHAPES_SCORED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A decoded swipe candidate: the word plus a score in `0.0..=1.0` (higher is
 /// better).
 #[derive(Clone, Debug, PartialEq)]
@@ -281,6 +287,8 @@ impl SwipeModel for GeometricSwipeModel {
                 continue;
             }
             let ideal_rs = resample(&ideal, RESAMPLE_N);
+            #[cfg(test)]
+            SHAPES_SCORED.with(|count| count.set(count.get() + 1));
 
             // Shape distance: mean point distance, normalised by the user
             // path's bounding diagonal so longer swipes aren't penalised.
@@ -347,8 +355,6 @@ fn index_endpoints(dict: &Dictionary) -> HashMap<(char, char), Vec<usize>> {
     }
     index
 }
-
-// --- geometry helpers -----------------------------------------------------
 
 /// Map each single-letter `Char` key to the centre of its rect.
 fn letter_centres(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> HashMap<char, Point> {
@@ -762,7 +768,6 @@ mod tests {
                 Point::new(100.5, 101.0),
             ];
             assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
-            // A drag across several keys.
             let drag = vec![
                 Point::new(0.0, 100.0),
                 Point::new(200.0, 100.0),
@@ -786,23 +791,30 @@ mod tests {
     }
 
     #[test]
-    // The budget is a property of the shipping build. A debug build runs this
-    // an order of magnitude slower, so the gate there measures the compiler,
-    // not the decoder — it only ever caught the machine being busy. Decode
-    // correctness is covered by the tests above, in every build.
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "wall-clock budget only means something in a release build; run with --release"
-    )]
-    fn decode_is_fast_enough() {
-        // A full decode over the embedded dictionary against the 30 ms budget,
-        // with headroom so only a real regression trips it.
+    fn a_decode_scores_only_words_its_endpoints_allow() {
+        let (layout, geom) = qwerty_geom();
+        let model = GeometricSwipeModel::english();
+        let path = path_through("keyboard", &geom, &layout);
+        SHAPES_SCORED.with(|count| count.set(0));
+        let top = model.decode_top(&path, &geom, &layout, 8);
+        let scored = SHAPES_SCORED.with(std::cell::Cell::get);
+        assert_eq!(top.first().map(|c| c.word.as_str()), Some("keyboard"));
+        let words = model.dictionary().len();
+        assert!(
+            scored * 4 < words,
+            "the endpoint index prunes the dictionary: {scored} of {words} words scored"
+        );
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --release --ignored --nocapture"]
+    fn decode_time() {
+        // The budget is 30 ms per decode in a release build.
         let (layout, geom) = qwerty_geom();
         let model = GeometricSwipeModel::english();
         let path = path_through("keyboard", &geom, &layout);
         let t0 = ui::time::now();
         let _ = model.decode_top(&path, &geom, &layout, 8);
-        let dt = t0.elapsed();
-        assert!(dt.as_millis() < 200, "decode took {dt:?} (budget headroom)");
+        println!("swipe decode of \"keyboard\": {:?}", t0.elapsed());
     }
 }

@@ -9,7 +9,7 @@ pub(crate) mod native_ingress;
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
 /// the two devices has to update (`crate::shell::collaborator_versions`).
-fn relay_error(host: &iroh::EndpointId, error: tilo_relay_session::ClientError) -> String {
+fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError) -> String {
     if let Some(theirs) = error.peer_version() {
         crate::shell::collaborator_versions::note(host.to_string(), String::new(), theirs);
     }
@@ -49,11 +49,10 @@ static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// How often the actor retries what is missing (a topic subscription, a
-/// direct peer, a workspace host) and re-reads this device's identity
-/// material and codecs, to announce a change the tick it lands. Local work: a
-/// converged, idle desktop sends nothing on it. Armed only while there is something to retry
-/// or someone to tell ([`ActorState::needs_upkeep`]): a desktop alone with
-/// its rooms never wakes for it.
+/// direct peer, a workspace host). Armed only while something is
+/// ([`ActorState::needs_upkeep`]): a converged desktop never wakes for it.
+/// A change of this device's identity material or codecs is announced when
+/// it happens, not found by a tick.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Peer liveness, kept by the transport rather than by messages. A gossip
 /// neighbour is a member while its link is up: iroh sends a QUIC keep-alive
@@ -71,6 +70,13 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// hold with no application message sent while idle; before the transport
 /// carried liveness, both were 15 to 16 s after the last 5 s heartbeat.
 const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
+/// A neighbour's identity hello is answered with this device's own unless
+/// it announced itself on the topic this recently. A neighbour announces
+/// itself on a link it sees as new, such as after it restarted, which this
+/// side may not have seen as new and so not answered: without its answer
+/// the neighbour never learns who this device is. The bound keeps two
+/// devices from answering each other's answers.
+const IDENTITY_ANSWER_INTERVAL: Duration = Duration::from_secs(10);
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -179,7 +185,6 @@ impl SurfaceFrameBacklog {
     }
 }
 const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
-const PERSONAL_FABRIC_ALPN: &[u8] = b"tilo-personal-fabric/1";
 /// Largest byte chunk one personal-fabric transfer frame carries.
 pub const PERSONAL_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
 const MAX_ACTIVE_PERSONAL_TRANSFERS: usize = 8;
@@ -190,8 +195,10 @@ struct SurfaceWireFrame {
     message: NeighbourMsg,
 }
 
-/// Versioned private-device traffic. A separate ALPN makes support
-/// negotiation implicit and leaves the legacy Postcard enum untouched.
+/// Versioned private-device traffic. It travels on the bidirectional
+/// streams of the gossip connection two devices already share (gossip uses
+/// unidirectional streams only, [`read_personal_fabric`]), and leaves the
+/// legacy Postcard enum untouched.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PersonalFabricPayload {
     Request,
@@ -235,6 +242,12 @@ pub enum PersonalFabricPayload {
     DisplayOutputs {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+    },
+    /// Word to the device that asked ([`Self::RecordContentWant`]) that this
+    /// one keeps none of that content.
+    RecordContentLacks {
+        app_id: String,
+        hash: String,
     },
 }
 
@@ -302,6 +315,18 @@ pub enum NetCmd {
     Replay {
         ws: WorkspaceId,
     },
+    /// A neighbour on `ws` sent something this device cannot place without
+    /// the neighbour's identity: announce this device's own, which the
+    /// neighbour answers with its (`IDENTITY_ANSWER_INTERVAL`).
+    AnnounceIdentity {
+        ws: WorkspaceId,
+    },
+    /// Ask the host of the joined room on `ws` to replay what it retains:
+    /// something an app message let go earlier waited for has arrived, and
+    /// the message is decided again when it comes back.
+    NativeReplay {
+        ws: WorkspaceId,
+    },
     /// Publish one canonical live frame (presence, previews) on `ws`'s
     /// workspace hosts' live planes, where browsers and agents meet this
     /// device. Lossy.
@@ -357,6 +382,10 @@ pub enum NetCmd {
     Publish {
         ws: WorkspaceId,
         msg: NeighbourMsg,
+        /// When the message was published, which pointer pacing measures
+        /// its gap from: a command the actor reaches late still paces as the
+        /// moves happened, not as the actor got to them.
+        at: tokio::time::Instant,
     },
     /// Send one shared window's stream (its start, frames, end and control
     /// grants) to exactly the viewers named by their peer handles, over the
@@ -500,6 +529,14 @@ pub enum NetEvent {
     NotAdmitted {
         ws: WorkspaceId,
     },
+    /// A member of `ws` this device reaches through the workspace host
+    /// `host` joined (`active`) or left the host's live plane.
+    HostMember {
+        ws: WorkspaceId,
+        host: PeerId,
+        device: PeerId,
+        active: bool,
+    },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
@@ -537,6 +574,24 @@ pub enum NetEvent {
         total_bytes: u64,
         status: PersonalTransferStatus,
     },
+}
+
+impl NetEvent {
+    /// What the event is, for timing: the message kind for a message.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Live { .. } => "Live",
+            Self::NativeInput(_) => "NativeInput",
+            Self::PeerJoined { .. } => "PeerJoined",
+            Self::PeerLeft { .. } => "PeerLeft",
+            Self::NotAdmitted { .. } => "NotAdmitted",
+            Self::HostMember { .. } => "HostMember",
+            Self::HostReady { .. } => "HostReady",
+            Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } => msg.kind(),
+            Self::PersonalFabric { .. } => "PersonalFabric",
+            Self::NearbyTransferProgress { .. } => "NearbyTransferProgress",
+        }
+    }
 }
 
 /// Actor-minted identity of one endpoint's membership incarnation on one
@@ -634,6 +689,8 @@ enum InternalEvent {
         peer: EndpointId,
         connection_incarnation: u64,
     },
+    /// A file this device's identity material is read from changed.
+    IdentityMaterialChanged,
     PersonalTransferProgress {
         target: EndpointId,
         transfer_id: [u8; 16],
@@ -708,6 +765,11 @@ enum HostEvent {
         from: [u8; 32],
         frame: Vec<u8>,
     },
+    /// A member joined or left the host's live plane.
+    Member {
+        device: [u8; 32],
+        active: bool,
+    },
     Message {
         author: EndpointId,
         fingerprint: [u8; 32],
@@ -725,44 +787,26 @@ struct TopicRuntime {
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
     identity_sent: Option<[u8; 32]>,
-    /// Whether gossip has had a neighbour on the topic: a `NeighborUp`, or a
-    /// lag that may have hidden one. Until then nothing is handed to gossip
-    /// (see [`Self::broadcast`]).
-    linked: bool,
+    /// When this device last announced its identity to the topic's
+    /// neighbours ([`IDENTITY_ANSWER_INTERVAL`]).
+    identity_announced: Option<Instant>,
 }
 
 impl TopicRuntime {
+    /// Whether this device announced its identity here within
+    /// [`IDENTITY_ANSWER_INTERVAL`].
+    fn announced_identity_lately(&self) -> bool {
+        self.identity_announced
+            .is_some_and(|announced| announced.elapsed() < IDENTITY_ANSWER_INTERVAL)
+    }
+
     fn new(sender: GossipSender, pump: tokio::task::JoinHandle<()>) -> Self {
         Self {
             sender,
             pump,
             identity_sent: None,
-            linked: false,
+            identity_announced: None,
         }
-    }
-
-    /// Broadcast `bytes` to the topic's swarm, once it has had a neighbour.
-    ///
-    /// Before that gossip has nobody to send it to, and a neighbour that
-    /// comes later is never offered an older message: the shell syncs it
-    /// when it joins (`NetEvent::PeerJoined`). All a broadcast into an
-    /// empty topic would do is start the topic's cache sweep
-    /// ([`GOSSIP_CACHE_SWEEP`]), which then runs until the message expires
-    /// (`gossip_caches_drain_within`), so a desktop alone with its rooms
-    /// would wake for every local change. Only a linked topic broadcasts.
-    async fn broadcast(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
-        if !self.linked {
-            return Ok(());
-        }
-        self.sender.broadcast(bytes).await
-    }
-
-    /// [`Self::broadcast`] to the topic's direct neighbours only.
-    async fn broadcast_neighbors(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
-        if !self.linked {
-            return Ok(());
-        }
-        self.sender.broadcast_neighbors(bytes).await
     }
 }
 
@@ -788,6 +832,20 @@ impl ProtocolHandler for DeviceUnlockProtocol {
         tokio::spawn(crate::shell::device_unlock_runtime::serve_connection(
             connection,
         ));
+        Ok(())
+    }
+}
+
+/// Another of the person's devices routing through this one; the exit
+/// decides whether it may (`crate::shell::device_vpn`).
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct DeviceVpnProtocol;
+
+#[cfg(target_os = "linux")]
+impl ProtocolHandler for DeviceVpnProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        tokio::spawn(crate::shell::device_vpn::serve_connection(connection));
         Ok(())
     }
 }
@@ -833,8 +891,10 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteInput { .. }
                         | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                        | NeighbourMsg::SurfaceViewRequest { .. }
                         | NeighbourMsg::RemoteAction { .. }
                         | NeighbourMsg::RecordContentPiece { .. }
+                        | NeighbourMsg::RecordContentLacks { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -879,8 +939,10 @@ async fn enqueue_surface_event(
         InternalEvent::SurfaceFrame {
             msg: NeighbourMsg::RemoteInput { .. }
                 | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                | NeighbourMsg::SurfaceViewRequest { .. }
                 | NeighbourMsg::RemoteAction { .. }
                 | NeighbourMsg::RecordContentPiece { .. }
+                | NeighbourMsg::RecordContentLacks { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -897,74 +959,77 @@ async fn enqueue_surface_event(
     }
 }
 
-#[derive(Clone)]
-struct PersonalFabricProtocol {
-    internal_tx: mpsc::Sender<InternalEvent>,
-    next_connection_incarnation: Arc<AtomicU64>,
+/// Read the personal fabric frames each connection gossip runs brings,
+/// dialled or accepted, until gossip stops.
+fn read_personal_fabric_on_gossip_connections(
+    mut connections: mpsc::UnboundedReceiver<iroh::endpoint::Connection>,
+    tx: mpsc::Sender<InternalEvent>,
+) {
+    tokio::spawn(async move {
+        let incarnations = AtomicU64::new(1);
+        while let Some(connection) = connections.recv().await {
+            read_personal_fabric(connection, tx.clone(), &incarnations);
+        }
+    });
 }
 
-impl std::fmt::Debug for PersonalFabricProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PersonalFabricProtocol")
-    }
-}
-
-impl ProtocolHandler for PersonalFabricProtocol {
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let peer = connection.remote_id();
-        let tx = self.internal_tx.clone();
-        let connection_incarnation = self
-            .next_connection_incarnation
-            .fetch_add(1, Ordering::Relaxed)
-            .max(1);
-        tokio::spawn(async move {
-            loop {
-                let Ok(mut recv) = connection.accept_uni().await else {
-                    let _ = tx
-                        .send(InternalEvent::PersonalFabricClosed {
-                            peer,
-                            connection_incarnation,
-                        })
-                        .await;
-                    return;
-                };
-                let bytes = match recv
-                    .read_to_end(crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
-                    .await
-                {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        tracing::debug!(peer = %peer, %error, "personal fabric stream read failed");
-                        continue;
-                    }
-                };
-                let Ok((frame, remaining)) =
-                    postcard::take_from_bytes::<PersonalFabricWireFrame>(&bytes)
-                else {
-                    tracing::warn!(peer = %peer, "invalid personal fabric frame");
-                    continue;
-                };
-                if !remaining.is_empty() {
-                    tracing::warn!(peer = %peer, "personal fabric frame has trailing data");
-                    continue;
-                }
-                if tx
-                    .send(InternalEvent::PersonalFabric {
-                        ws: frame.workspace,
+/// Read the personal fabric frames `connection` brings, whichever side
+/// opened it, into the actor, until it closes. Each frame comes on a
+/// bidirectional stream of its own, which gossip never opens or accepts on
+/// the connection it shares; the return direction carries nothing.
+fn read_personal_fabric(
+    connection: iroh::endpoint::Connection,
+    tx: mpsc::Sender<InternalEvent>,
+    incarnations: &AtomicU64,
+) {
+    let peer = connection.remote_id();
+    let connection_incarnation = incarnations.fetch_add(1, Ordering::Relaxed).max(1);
+    tokio::spawn(async move {
+        loop {
+            let Ok((_, mut recv)) = connection.accept_bi().await else {
+                let _ = tx
+                    .send(InternalEvent::PersonalFabricClosed {
                         peer,
                         connection_incarnation,
-                        user_public_key: frame.user_public_key,
-                        payload: frame.payload,
                     })
-                    .await
-                    .is_err()
-                {
-                    return;
+                    .await;
+                return;
+            };
+            let bytes = match recv
+                .read_to_end(crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::debug!(peer = %peer, %error, "personal fabric stream read failed");
+                    continue;
                 }
+            };
+            let Ok((frame, remaining)) =
+                postcard::take_from_bytes::<PersonalFabricWireFrame>(&bytes)
+            else {
+                tracing::warn!(peer = %peer, "invalid personal fabric frame");
+                continue;
+            };
+            if !remaining.is_empty() {
+                tracing::warn!(peer = %peer, "personal fabric frame has trailing data");
+                continue;
             }
-        });
-        Ok(())
-    }
+            if tx
+                .send(InternalEvent::PersonalFabric {
+                    ws: frame.workspace,
+                    peer,
+                    connection_incarnation,
+                    user_public_key: frame.user_public_key,
+                    payload: frame.payload,
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
 }
 
 /// Why `command` means a remote party is involved, so this device must be
@@ -1032,7 +1097,7 @@ impl Actor {
     /// [`Self::spawn_reporting_addrs`] for an endpoint whose relays wait in
     /// `reachability` until something needs this device reachable: the
     /// actor wakes them when it dials a remote party or one reaches it
-    /// ([`remote_party_command`], [`remote_party_event`]).
+    /// (`remote_party_command`, `remote_party_event`).
     pub fn spawn_deferring_relays(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1047,6 +1112,30 @@ impl Actor {
             listen_addrs,
             HEARTBEAT_INTERVAL,
             reachability,
+            None,
+        )
+    }
+
+    /// [`Self::spawn_deferring_relays`] for a device that may govern rooms:
+    /// with `governing`, its endpoint also answers the workspace-join
+    /// exchange for them ([`super::governor_join::GoverningRooms`]), as a
+    /// relay's does.
+    pub fn spawn_governing(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        reachability: Reachability,
+        governing: Option<super::governor_join::GoverningRooms>,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_with_heartbeat(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            HEARTBEAT_INTERVAL,
+            reachability,
+            governing,
         )
     }
 
@@ -1060,6 +1149,7 @@ impl Actor {
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
         reachability: Reachability,
+        governing: Option<super::governor_join::GoverningRooms>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -1073,6 +1163,7 @@ impl Actor {
             cmd_rx,
             heartbeat,
             reachability,
+            governing,
         ));
         (cmd_tx, task)
     }
@@ -1145,7 +1236,6 @@ struct ActorState {
     /// Windows streamed to named viewers only: their frames go to exactly
     /// these devices and never fall back to the workspace's gossip topic.
     surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
-    personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     active_personal_transfers: HashMap<(EndpointId, [u8; 16]), ActivePersonalTransfer>,
     next_personal_transfer_generation: u64,
     /// Every application message peers delivered here (see [`WireTally`]).
@@ -1201,11 +1291,11 @@ struct ActivePersonalTransfer {
     cancel: tokio::sync::watch::Sender<bool>,
 }
 
-/// The exact certified device a personal-fabric stream dials, and the
-/// personal workspace and user key its frames are authenticated under.
+/// The exact certified device a personal-fabric stream goes to, the gossip
+/// connection it shares with it, and the personal workspace and user key
+/// its frames are authenticated under.
 struct PersonalStreamRoute {
-    endpoint: Endpoint,
-    addr: EndpointAddr,
+    connection: iroh::endpoint::Connection,
     target: EndpointId,
     workspace: WorkspaceId,
     user_public_key: [u8; 32],
@@ -1245,10 +1335,9 @@ struct PeerMembership {
     /// liveness check (see [`DEPARTURE_GRACE`]).
     expires: Option<Instant>,
     epoch: MembershipEpoch,
-    /// Fingerprints of the last identity and codec adverts taken from the
-    /// peer during this membership: a repeated advert changes nothing, but
-    /// one repeated after the peer was evicted and came back is new again.
-    identity_advert: Option<[u8; 32]>,
+    /// Fingerprint of the last codec advert taken from the peer during this
+    /// membership: a repeated advert changes nothing, but one repeated after
+    /// the peer was evicted and came back is new again.
     caps_advert: Option<[u8; 32]>,
 }
 
@@ -1257,7 +1346,6 @@ impl PeerMembership {
         Self {
             expires: Some(later(now, PEER_TIMEOUT)),
             epoch,
-            identity_advert: None,
             caps_advert: None,
         }
     }
@@ -1270,15 +1358,10 @@ impl PeerMembership {
         }
     }
 
-    /// Take advert `fingerprint` (identity when `identity`, codecs
-    /// otherwise), answering whether it is news from this peer.
-    fn take_advert(&mut self, identity: bool, fingerprint: [u8; 32]) -> bool {
-        let last = if identity {
-            &mut self.identity_advert
-        } else {
-            &mut self.caps_advert
-        };
-        last.replace(fingerprint) != Some(fingerprint)
+    /// Take codec advert `fingerprint`, answering whether it is news from
+    /// this peer.
+    fn take_caps_advert(&mut self, fingerprint: [u8; 32]) -> bool {
+        self.caps_advert.replace(fingerprint) != Some(fingerprint)
     }
 }
 
@@ -1453,9 +1536,6 @@ impl ActorState {
         self.peers_seen.remove(&(ws, peer));
         self.cancel_personal_transfer_route(ws, peer);
         revoke_personal_fabric_ingress(&mut self.personal_fabric_ingress, ws, epoch);
-        if let Some(connection) = self.personal_fabric_connections.remove(&peer) {
-            connection.close(0_u32.into(), b"membership departed");
-        }
         true
     }
 
@@ -1573,6 +1653,15 @@ impl ActorState {
                     }
                 }
             }
+            Some(NetCmd::AnnounceIdentity { ws }) => {
+                if self
+                    .topics
+                    .get(&ws)
+                    .is_some_and(|topic| !topic.announced_identity_lately())
+                {
+                    self.announce_identity(ws).await;
+                }
+            }
             Some(NetCmd::Replay { ws }) => {
                 for ((session_ws, _), runtime) in &self.host_sessions {
                     if *session_ws == ws && runtime.native_scope.is_none() {
@@ -1583,6 +1672,13 @@ impl ActorState {
                     }
                 }
             }
+            Some(NetCmd::NativeReplay { ws }) => {
+                if let Some(session) = native_ingress::native_session(&self.host_sessions, ws)
+                    && let Err(error) = session.resubscribe()
+                {
+                    tracing::debug!(ws, %error, "joined room replay not asked: not connected");
+                }
+            }
             Some(NetCmd::PublishLive { ws, frame }) => {
                 for ((session_ws, _), runtime) in &self.host_sessions {
                     if *session_ws == ws {
@@ -1590,7 +1686,7 @@ impl ActorState {
                     }
                 }
             }
-            Some(NetCmd::Publish { ws, msg }) => {
+            Some(NetCmd::Publish { ws, msg, at }) => {
                 self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
                 if self.native_routes.contains(ws)
@@ -1646,7 +1742,7 @@ impl ActorState {
                     }
                 } else {
                     self.hold_for_host(ws, &msg, false);
-                    self.publish_paced(ws, msg).await;
+                    self.publish_paced(ws, msg, at).await;
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
@@ -1664,6 +1760,12 @@ impl ActorState {
                 .await;
             }
             Some(NetCmd::PublishHostedTopology { ws, msg }) => {
+                if !self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
+                    tracing::debug!(
+                        ws,
+                        "no host session to publish this session's windows on yet"
+                    );
+                }
                 if matches!(msg, NeighbourMsg::SyncResp { .. }) {
                     publish(
                         &self.topics,
@@ -1930,7 +2032,7 @@ impl ActorState {
     }
 
     async fn publish_personal_fabric(
-        &mut self,
+        &self,
         ws: WorkspaceId,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
@@ -1940,7 +2042,7 @@ impl ActorState {
     }
 
     async fn publish_personal_fabric_to(
-        &mut self,
+        &self,
         ws: WorkspaceId,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
@@ -1967,44 +2069,26 @@ impl ActorState {
             );
             return;
         }
-        let targets: Vec<_> = self
-            .peers
-            .values()
-            .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
-            .filter(|addr| exact_target.is_none_or(|target| addr.id == target))
-            .cloned()
+        // Every member of the topic, on the gossip connection this device
+        // has with it (`Gossip::connection`): a member is a gossip
+        // neighbour, and gossip holds the connection before it names one, so
+        // a restarted peer's is the one it just reached this device on.
+        let targets: Vec<EndpointId> = self
+            .peers_seen
+            .keys()
+            .filter(|(topic, peer)| {
+                *topic == ws && exact_target.is_none_or(|target| *peer == target)
+            })
+            .map(|(_, peer)| *peer)
             .collect();
-        for addr in targets {
-            let peer = addr.id;
-            let connection = if let Some(connection) = self.personal_fabric_connections.get(&peer) {
-                connection.clone()
-            } else {
-                let Ok(Ok(connection)) = tokio::time::timeout(
-                    Duration::from_millis(300),
-                    self.endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
-                )
-                .await
-                else {
-                    // A device that does not answer in time is skipped; the
-                    // next snapshot tries it again.
-                    continue;
-                };
-                self.personal_fabric_connections
-                    .insert(peer, connection.clone());
-                connection
+        for peer in targets {
+            // A member whose link just went down misses the frame: when the
+            // link returns, each side asks the other for its fabric anew.
+            let Some(connection) = self.gossip.connection(peer) else {
+                tracing::debug!(ws, peer = %peer, "no gossip link to carry a personal fabric frame");
+                continue;
             };
-            let send = async {
-                let mut stream = connection.open_uni().await.map_err(|_| ())?;
-                stream.write_all(&bytes).await.map_err(|_| ())?;
-                stream.finish().map_err(|_| ())?;
-                Ok::<(), ()>(())
-            };
-            if !matches!(
-                tokio::time::timeout(Duration::from_millis(100), send).await,
-                Ok(Ok(()))
-            ) {
-                self.personal_fabric_connections.remove(&peer);
-            }
+            send_personal_fabric_frame(ws, peer, &connection, &bytes).await;
         }
     }
 
@@ -2105,7 +2189,7 @@ impl ActorState {
             failed(self);
             return;
         }
-        let Some(addr) = self.peers.get(&target).cloned() else {
+        let Some(connection) = self.gossip.connection(target) else {
             failed(self);
             return;
         };
@@ -2130,8 +2214,7 @@ impl ActorState {
             },
         );
         let route = PersonalStreamRoute {
-            endpoint: self.endpoint.clone(),
-            addr,
+            connection,
             target,
             workspace: ws,
             user_public_key,
@@ -2180,7 +2263,9 @@ impl ActorState {
     ) {
         if !matches!(
             msg,
-            NeighbourMsg::RemoteInput { .. } | NeighbourMsg::SurfaceKeyframeRequest { .. }
+            NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                | NeighbourMsg::SurfaceViewRequest { .. }
         ) {
             tracing::warn!(ws, "refused non-input workspace-control publication");
             return;
@@ -2389,7 +2474,10 @@ impl ActorState {
 
     async fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
         let RecordContentDelivery { ws, target, msg } = delivery;
-        if !matches!(msg, NeighbourMsg::RecordContentPiece { .. }) {
+        if !matches!(
+            msg,
+            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+        ) {
             tracing::warn!(
                 ws,
                 "refused a non-content message on the record-content route"
@@ -2448,7 +2536,9 @@ impl ActorState {
         // an action frame (up to a catalogue page) is worth waiting for.
         let budget = if matches!(
             msg,
-            NeighbourMsg::RemoteAction { .. } | NeighbourMsg::RecordContentPiece { .. }
+            NeighbourMsg::RemoteAction { .. }
+                | NeighbourMsg::RecordContentPiece { .. }
+                | NeighbourMsg::RecordContentLacks { .. }
         ) {
             Duration::from_secs(2)
         } else {
@@ -2691,6 +2781,9 @@ impl ActorState {
                     payload,
                 )
                 .await;
+            }
+            Some(InternalEvent::IdentityMaterialChanged) => {
+                self.identity_material_changed().await;
             }
             Some(InternalEvent::PersonalFabricClosed {
                 peer,
@@ -2956,21 +3049,33 @@ impl ActorState {
         )
     }
 
-    /// A neighbour on `ws`, traffic only a neighbour delivers, or a lag that
-    /// may have hidden one: from here on the topic broadcasts
-    /// ([`TopicRuntime::broadcast`]).
-    fn note_topic_linked(&mut self, ws: WorkspaceId, event: &GossipEvent) {
-        if !matches!(event, GossipEvent::NeighborDown(_))
-            && let Some(topic) = self.topics.get_mut(&ws)
-        {
-            topic.linked = true;
+    /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
+    /// to keep that dispatcher short.
+    /// Whether a message `peer` sent on `ws` is news. A codec advert
+    /// describes its sender rather than reporting an event: it is news when
+    /// it differs from the last one this membership took, so a peer evicted
+    /// and back is heard again though it says the same thing. An identity
+    /// hello is always news: it comes once per link or as an answer
+    /// ([`IDENTITY_ANSWER_INTERVAL`]), and the session binds the peer's
+    /// current membership to the identity each time.
+    fn is_news(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        decoded: Option<&NeighbourMsg>,
+        fingerprint: [u8; 32],
+    ) -> bool {
+        match decoded {
+            Some(NeighbourMsg::IdentityHello { .. }) => true,
+            Some(NeighbourMsg::MediaCapabilities { .. }) => self
+                .peers_seen
+                .get_mut(&(ws, peer))
+                .is_some_and(|membership| membership.take_caps_advert(fingerprint)),
+            _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
         }
     }
 
-    /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
-    /// to keep that dispatcher short.
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
-        self.note_topic_linked(ws, &event);
         if matches!(event, GossipEvent::NeighborUp(_)) {
             // Authenticate this device, and say what it can decode, as soon
             // as the link is usable: once per link, never on a timer. State
@@ -3020,25 +3125,15 @@ impl ActorState {
                     );
                 }
                 let fingerprint = message_fingerprint(&message.content);
-                // An advert describes its sender rather than reporting an
-                // event: it is news when it differs from the last one this
-                // membership took, so a peer evicted and back is heard again
-                // though it says the same thing.
-                let advert = match &decoded {
-                    Ok(NeighbourMsg::IdentityHello { .. }) => Some(true),
-                    Ok(NeighbourMsg::MediaCapabilities { .. }) => Some(false),
-                    _ => None,
-                };
-                let new = match advert {
-                    Some(identity) => self
-                        .peers_seen
-                        .get_mut(&(ws, peer))
-                        .is_some_and(|membership| membership.take_advert(identity, fingerprint)),
-                    None => {
-                        mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
-                    }
-                };
-                if !new {
+                if matches!(decoded, Ok(NeighbourMsg::IdentityHello { .. }))
+                    && self
+                        .topics
+                        .get(&ws)
+                        .is_some_and(|topic| !topic.announced_identity_lately())
+                {
+                    self.announce_identity(ws).await;
+                }
+                if !self.is_news(ws, peer, decoded.as_ref().ok(), fingerprint) {
                     // A restarted device repeats a message already seen, such
                     // as its identity hello. The payload is old but the
                     // membership is new, and without a join the peer stays
@@ -3200,6 +3295,26 @@ impl ActorState {
         }
     }
 
+    /// The host `host` of `ws` reports another member device joined
+    /// (`active`) or left its live plane; `None` for this device itself.
+    fn host_member(
+        &self,
+        ws: WorkspaceId,
+        host: EndpointId,
+        device: [u8; 32],
+        active: bool,
+    ) -> Option<NetEvent> {
+        EndpointId::from_bytes(&device)
+            .ok()
+            .filter(|device| !self.is_own_device(device))
+            .map(|device| NetEvent::HostMember {
+                ws,
+                host,
+                device,
+                active,
+            })
+    }
+
     /// [`InternalEvent::Host`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
@@ -3208,6 +3323,7 @@ impl ActorState {
             HostEvent::NativeInput(_) => "HostNativeInput",
             HostEvent::Ready => "HostReady",
             HostEvent::Live { .. } => "HostLive",
+            HostEvent::Member { .. } => "HostMember",
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
@@ -3216,6 +3332,7 @@ impl ActorState {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
+            HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::Voice(event) => {
                 let session = self
                     .host_sessions
@@ -3321,7 +3438,16 @@ impl ActorState {
     /// an agent's pointer travel alike. Carets, selections and typing pass a
     /// held pointer; anything else is broadcast after every held pointer, so
     /// an app's `Left` never overtakes its last move.
-    async fn publish_paced(&mut self, ws: WorkspaceId, msg: NeighbourMsg) {
+    ///
+    /// A pointer move is held and judged due at `at`, when it was published,
+    /// so its gap runs from when the move happened however late the actor
+    /// reaches it; a move that fell due meanwhile goes at once.
+    async fn publish_paced(
+        &mut self,
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        at: tokio::time::Instant,
+    ) {
         let pacing = slot_pacing(ws, msg.presence_slot());
         if let Pacing::Pointer(key) = pacing
             && self.topics.contains_key(&ws)
@@ -3345,10 +3471,9 @@ impl ActorState {
                 true,
             )
             .await;
-            let now = tokio::time::Instant::now();
             self.gossip_pointers
-                .hold(key, GossipPointer { ws, bytes }, now);
-            let due = self.gossip_pointers.take_due(now);
+                .hold(key, GossipPointer { ws, bytes }, at);
+            let due = self.gossip_pointers.take_due(at);
             self.broadcast_pointers(due).await;
             return;
         }
@@ -3381,7 +3506,7 @@ impl ActorState {
             let Some(topic) = self.topics.get(&ws) else {
                 continue;
             };
-            if let Err(error) = topic.broadcast(bytes).await {
+            if let Err(error) = topic.sender.broadcast(bytes).await {
                 tracing::warn!(ws, %error, "iroh gossip publish failed");
             }
         }
@@ -3419,15 +3544,21 @@ impl ActorState {
         }
     }
 
-    /// Whether [`Self::run_heartbeat_tick`] has anything to do: a peer to
-    /// keep, retry or tell about a change, a workspace host or a governed
-    /// room's relay to keep connected, a remote action held for a peer, or a
-    /// topic whose subscription failed. A desktop alone with its rooms has
-    /// none of these, so its runtime sleeps until one appears ([`run`]).
+    /// Whether [`Self::run_heartbeat_tick`] has anything to do: a direct
+    /// peer not yet seen on one of the topics, a workspace host or a
+    /// governed room's relay to keep connected, a remote action held for a
+    /// peer, or a topic whose subscription failed. A converged pair of
+    /// desktops has none of these, so its runtime sleeps until one appears
+    /// ([`run`]).
     fn needs_upkeep(&self) -> bool {
-        !self.peers.is_empty()
-            || !self.peers_seen.is_empty()
-            || !self.hosts.is_empty()
+        let local = self.endpoint.id();
+        self.peers.keys().any(|peer| {
+            *peer != local
+                && self
+                    .topics
+                    .keys()
+                    .any(|ws| !self.peers_seen.contains_key(&(*ws, *peer)))
+        }) || !self.hosts.is_empty()
             || !self.host_sessions.is_empty()
             || !self.native_routes.is_empty()
             || !self.pending_remote_actions.is_empty()
@@ -3456,9 +3587,7 @@ impl ActorState {
             "a workspace host"
         } else if !self.native_routes.is_empty() {
             "a relay-governed room"
-        } else if !self.personal_fabric_connections.is_empty()
-            || !self.active_personal_transfers.is_empty()
-        {
+        } else if !self.active_personal_transfers.is_empty() {
             "one of the person's devices"
         } else if !self.surface_connections.is_empty() || !self.surface_fanout_viewers.is_empty() {
             "a window streamed with a peer"
@@ -3474,9 +3603,8 @@ impl ActorState {
     }
 
     /// Retry any topic subscription, direct peer or workspace host not yet
-    /// connected, and announce this device's identity and codecs where they
-    /// changed.
-    /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
+    /// connected. Runs every [`HEARTBEAT_INTERVAL`] while
+    /// [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
             if self.peers_seen.contains_key(&(ws, peer)) {
@@ -3516,25 +3644,28 @@ impl ActorState {
                 }
             }
         }
-        // Neighbours heard this device's identity and codecs when their link
-        // came up; from here on they hear them again only when they change
-        // (a renewed certificate, a new revocation, an H.264-only viewer
-        // opening). A converged, idle desktop says nothing.
+    }
+
+    /// Neighbours heard this device's identity when their link came up; from
+    /// here on they hear it again only when it changes (a renewed
+    /// certificate, a new revocation), which the files it is read from say.
+    async fn identity_material_changed(&mut self) {
         let workspaces: Vec<_> = self.topics.keys().copied().collect();
         for ws in workspaces {
             self.announce_identity_if_changed(ws).await;
         }
-        self.announce_media_caps_if_changed().await;
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
-    /// for the room and the revocations that come with it.
+    /// for the room and the revocations and successions that come with it.
     fn identity_hello(&self, ws: WorkspaceId) -> Option<NeighbourMsg> {
-        let (cert, revocations) = self.host_identity.as_ref()?.material_for(ws);
+        let identity = self.host_identity.as_ref()?;
+        let (cert, revocations) = identity.material_for(ws);
         Some(NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations,
+            successions: identity.successions_for(ws),
         })
     }
 
@@ -3558,15 +3689,15 @@ impl ActorState {
             return;
         };
         topic.identity_sent = Some(message_fingerprint(&bytes));
-        if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
+        topic.identity_announced = Some(Instant::now());
+        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
     }
 
     /// Announce this device's identity on `ws` again, to its neighbours and
     /// its workspace hosts, when it changed since it was last announced
-    /// there: a new revocation reaches the room the tick it is read from
-    /// disk, as when every tick announced it.
+    /// there: a new revocation reaches the room as soon as it is on disk.
     async fn announce_identity_if_changed(&mut self, ws: WorkspaceId) {
         let Some(hello) = self.identity_hello(ws) else {
             return;
@@ -3586,7 +3717,8 @@ impl ActorState {
             return;
         }
         tracing::info!(ws, "device identity material changed; announcing it again");
-        if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
+        topic.identity_announced = Some(Instant::now());
+        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
         for ((session_ws, _), runtime) in &self.host_sessions {
@@ -3613,7 +3745,7 @@ impl ActorState {
         };
         self.caps_sent = Some(message_fingerprint(&bytes));
         if let Some(topic) = self.topics.get(&ws) {
-            let _ = topic.broadcast_neighbors(Bytes::from(bytes)).await;
+            let _ = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await;
         }
     }
 
@@ -3631,7 +3763,10 @@ impl ActorState {
             return;
         }
         for topic in self.topics.values() {
-            let _ = topic.broadcast_neighbors(Bytes::from(bytes.clone())).await;
+            let _ = topic
+                .sender
+                .broadcast_neighbors(Bytes::from(bytes.clone()))
+                .await;
         }
     }
 
@@ -3738,6 +3873,28 @@ impl ActorState {
     }
 }
 
+/// Send one personal fabric frame to `peer` on a bidirectional stream of
+/// the gossip connection it shares ([`read_personal_fabric`]).
+async fn send_personal_fabric_frame(
+    ws: WorkspaceId,
+    peer: EndpointId,
+    connection: &iroh::endpoint::Connection,
+    bytes: &[u8],
+) {
+    let send = async {
+        let (mut stream, _) = connection.open_bi().await.map_err(|_| ())?;
+        stream.write_all(bytes).await.map_err(|_| ())?;
+        stream.finish().map_err(|_| ())?;
+        Ok::<(), ()>(())
+    };
+    if !matches!(
+        tokio::time::timeout(Duration::from_millis(100), send).await,
+        Ok(Ok(()))
+    ) {
+        tracing::debug!(ws, peer = %peer, "personal fabric frame not sent");
+    }
+}
+
 async fn send_nearby_transfer_frame(
     connection: &iroh::endpoint::Connection,
     workspace: WorkspaceId,
@@ -3754,7 +3911,7 @@ async fn send_nearby_transfer_frame(
         return Err(());
     }
     let send = async {
-        let mut stream = connection.open_uni().await.map_err(|_| ())?;
+        let (mut stream, _) = connection.open_bi().await.map_err(|_| ())?;
         stream.write_all(&bytes).await.map_err(|_| ())?;
         stream.finish().map_err(|_| ())?;
         match stream.stopped().await.map_err(|_| ())? {
@@ -3778,8 +3935,7 @@ async fn stream_nearby_transfer(
     task: PersonalTransferTask,
 ) -> PersonalTransferOutcome {
     let PersonalStreamRoute {
-        endpoint,
-        addr,
+        connection,
         target,
         workspace,
         user_public_key,
@@ -3838,17 +3994,6 @@ async fn stream_nearby_transfer(
     if hasher.finalize().as_bytes() != &prefix_hash {
         return PersonalTransferOutcome::Failed;
     }
-    let connect = tokio::time::timeout(
-        Duration::from_secs(10),
-        endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
-    );
-    let connection = tokio::select! {
-        result = connect => match result {
-            Ok(Ok(connection)) => connection,
-            _ => return PersonalTransferOutcome::Failed,
-        },
-        () = personal_transfer_cancelled(&mut cancel) => return PersonalTransferOutcome::Cancelled,
-    };
     let streamed: Result<(), PersonalTransferOutcome> = async {
         let mut offset = resume_offset;
         while offset < total_bytes {
@@ -3958,13 +4103,20 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
     reachability: Reachability,
+    governing: Option<super::governor_join::GoverningRooms>,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
+    // Personal fabric frames share gossip's connections rather than open
+    // their own: two linked devices keep one connection, with one set of
+    // keep-alives and timers.
+    let (gossip_connections, shared_connections) = mpsc::unbounded_channel();
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
         .broadcast_config(broadcast_config())
+        .connections(gossip_connections)
         .spawn(endpoint.clone());
+    read_personal_fabric_on_gossip_connections(shared_connections, internal_tx.clone());
     let private_messages = super::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
@@ -3976,15 +4128,19 @@ async fn run(
                 input_tx,
             },
         )
-        .accept(
-            PERSONAL_FABRIC_ALPN,
-            PersonalFabricProtocol {
-                internal_tx: internal_tx.clone(),
-                next_connection_incarnation: Arc::new(AtomicU64::new(1)),
-            },
-        )
-        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
-        .spawn();
+        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
+    #[cfg(target_os = "linux")]
+    let router = router.accept(device_vpn::tunnel::ALPN, DeviceVpnProtocol);
+    // Answered only where this device may govern rooms; a dial elsewhere
+    // finds no such protocol, as at any device that governs none.
+    let router = match governing {
+        Some(governing) => router.accept(
+            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
+            tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(governing),
+        ),
+        None => router,
+    }
+    .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let mut state = ActorState {
         private_messages: super::private_messages::Transport::new(
@@ -4025,7 +4181,6 @@ async fn run(
         next_surface_fanout_generation: 0,
         surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
-        personal_fabric_connections: HashMap::new(),
         active_personal_transfers: HashMap::new(),
         next_personal_transfer_generation: 0,
         tally: Arc::default(),
@@ -4033,6 +4188,11 @@ async fn run(
         pending_remote_actions: PendingRemoteActions::default(),
         gossip_pointers: PointerPacer::default(),
     };
+    let _identity_watch = state
+        .host_identity
+        .as_ref()
+        .and_then(|identity| watch_identity_material(identity, state.internal_tx.clone()));
+    let mut media_caps = crate::network::media_caps::changes();
     let mut upkeep = None;
     let mut host_checkpoint = None;
     let mut reported_party = None;
@@ -4048,8 +4208,8 @@ async fn run(
         // Evict when the soonest membership lapses, not on a polling tick:
         // linked peers have no deadline at all.
         let eviction = state.next_eviction();
-        // Upkeep every `heartbeat_interval` while there is someone to keep
-        // up with; a desktop alone with its rooms never wakes for it.
+        // Upkeep every `heartbeat_interval` while something waits for a
+        // retry; a converged desktop never wakes for it.
         upkeep = next_upkeep(upkeep, state.needs_upkeep(), heartbeat_interval);
         host_checkpoint = next_upkeep(
             host_checkpoint,
@@ -4079,6 +4239,7 @@ async fn run(
             }
             () = sleep_until_due(pointer_due) => state.broadcast_due_pointers().await,
             () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
+            Ok(()) = media_caps.changed() => state.announce_media_caps_if_changed().await,
             () = sleep_until_lapse(upkeep) => {
                 upkeep = None;
                 state.run_heartbeat_tick().await;
@@ -4101,6 +4262,26 @@ async fn run(
     }
     reporting_addrs.abort();
     let _ = router.shutdown().await;
+}
+
+/// Tell the actor whenever a file `identity`'s material is read from
+/// changes. `None` for an identity kept in memory, or one that cannot be
+/// watched: it is then announced as it was when each link came up.
+fn watch_identity_material(
+    identity: &HostIdentity,
+    internal_tx: mpsc::Sender<InternalEvent>,
+) -> Option<tilo_files::native::Watched<()>> {
+    let directories = identity.material_directories();
+    if directories.is_empty() {
+        return None;
+    }
+    let watched = tilo_files::native::Watched::start("identity-material", directories, || ())
+        .inspect_err(|error| tracing::warn!(%error, "cannot watch this device's identity"))
+        .ok()?;
+    watched.on_change(move || {
+        let _ = internal_tx.blocking_send(InternalEvent::IdentityMaterialChanged);
+    });
+    Some(watched)
 }
 
 /// Sleep until `at` on the runtime's clock, or forever when nothing is due.
@@ -4139,6 +4320,9 @@ fn report_addrs(
             out.clear();
             out.push(current);
         }
+        // A new address or home relay: the network came back or moved, and
+        // a certificate renewal that failed meanwhile tries again.
+        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
     };
     report(current);
     tokio::spawn(async move {
@@ -4167,8 +4351,8 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 /// [`GOSSIP_CACHE_SWEEP`] instead, a topic with messages wakes its runtime
 /// a tenth as often. The vendored iroh-gossip (`vendor/iroh-gossip/
 /// TILO-PATCH.md`) arms it on a topic's first cached message and stops it
-/// once the caches are empty (`gossip_caches_drain_within`); a topic that
-/// never had a neighbour caches nothing ([`TopicRuntime::broadcast`]).
+/// once the caches are empty (`gossip_caches_drain_within`); a topic with
+/// no neighbour caches nothing.
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
 /// iroh-gossip's 30 s less the longer sweep, so a message is still gone
@@ -4200,7 +4384,7 @@ fn broadcast_config() -> iroh_gossip::proto::PlumtreeConfig {
 }
 
 /// The QUIC transport collaboration endpoints use: iroh's, with the
-/// connection ending after [`PEER_TIMEOUT`] without a packet from the peer
+/// connection ending after `PEER_TIMEOUT` without a packet from the peer
 /// rather than iroh's 30 s. iroh's keep-alives (one after 5 s of silence)
 /// keep a live peer's connection from ever idling; a peer that vanished
 /// misses three and its links go down. This is the liveness check the
@@ -4275,7 +4459,7 @@ async fn publish(
     }
     if broadcast_gossip {
         if let Some(topic) = topics.get(&ws) {
-            if let Err(error) = topic.broadcast(Bytes::from(bytes)).await {
+            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
                 tracing::warn!(ws, %error, "iroh gossip publish failed");
             }
         } else if host_sessions
@@ -4513,7 +4697,7 @@ impl HostRouteScheduler<'_> {
                 )
                 .await
                 .map_err(|_| "workspace host connection timed out".to_string())
-                .and_then(|result| result.map_err(|error| relay_error(&host, error)))
+                .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
                 .and_then(|client| {
                     RelayCoeditSession::join(
                         client,
@@ -4562,7 +4746,7 @@ impl HostRouteScheduler<'_> {
             })
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
-            .and_then(|result| result.map_err(|error| relay_error(&host, error)))
+            .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
             .and_then(|client| {
                 RelayCoeditSession::join(
                     client,
@@ -4786,6 +4970,7 @@ fn spawn_host_pump(
                     HostEvent::Ready
                 }
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
+                HostInbound::Member { device, active } => HostEvent::Member { device, active },
                 HostInbound::Voice(event) => HostEvent::Voice(event),
                 // The shell opens no on-demand record yet.
                 HostInbound::RecordOpened { .. } => continue,
@@ -4864,12 +5049,16 @@ fn spawn_host_pump(
     })
 }
 
-/// A piece of a record's content a workspace host handed this device from
-/// `from`; `None` for anything else.
+/// A piece of a record's content, or word that a device keeps none, a
+/// workspace host handed this device from `from`; `None` for anything else.
 fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     let author = EndpointId::from_bytes(from).ok()?;
     let msg = postcard::from_bytes(frame).ok()?;
-    matches!(msg, NeighbourMsg::RecordContentPiece { .. }).then(|| HostEvent::Message {
+    matches!(
+        msg,
+        NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+    )
+    .then(|| HostEvent::Message {
         author,
         fingerprint: message_fingerprint(frame),
         replayed: false,
@@ -5117,12 +5306,11 @@ mod tests {
         );
     }
 
-    /// A topic hands nothing to gossip until it has had a neighbour, so a
-    /// desktop alone with its rooms never arms gossip's per-topic cache
-    /// sweep, which would otherwise run for the rest of the session. Once
-    /// linked, it broadcasts and the sweep runs.
+    /// What a desktop alone with its rooms broadcasts reaches nobody, so it
+    /// never arms gossip's per-topic cache sweep, which would otherwise run
+    /// until the message expires (`gossip_caches_drain_within`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_topic_that_never_had_a_neighbour_never_arms_the_gossip_sweep() {
+    async fn a_topic_with_no_neighbour_never_arms_the_gossip_sweep() {
         const SWEEP: Duration = Duration::from_millis(20);
         let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
@@ -5142,33 +5330,23 @@ mod tests {
             .await
             .unwrap()
             .split();
-        let mut topic = TopicRuntime::new(sender, tokio::spawn(std::future::pending()));
+        let topic = TopicRuntime::new(sender, tokio::spawn(std::future::pending()));
         let timers = || gossip.metrics().actor_tick_timers.get();
 
         for _ in 0..3 {
             topic
+                .sender
                 .broadcast(Bytes::from_static(b"a local change"))
                 .await
                 .unwrap();
             topic
+                .sender
                 .broadcast_neighbors(Bytes::from_static(b"an identity"))
                 .await
                 .unwrap();
         }
         tokio::time::sleep(SWEEP.saturating_mul(10)).await;
         assert_eq!(timers(), 0, "gossip woke for a topic nobody else is on");
-
-        topic.linked = true;
-        topic
-            .broadcast(Bytes::from_static(b"a change a neighbour hears"))
-            .await
-            .unwrap();
-        tilo_test_env::within("a linked topic's cache sweep", async {
-            while timers() < 2 {
-                tokio::time::sleep(SWEEP).await;
-            }
-        })
-        .await;
         topic.pump.abort();
         endpoint.close().await;
     }
@@ -5336,21 +5514,245 @@ mod tests {
         (endpoint, lookup)
     }
 
+    /// Reads personal fabric frames on every connection it accepts, as the
+    /// actor does on each gossip connection it is handed.
+    #[derive(Debug, Clone)]
+    struct FabricReader(mpsc::Sender<InternalEvent>);
+
+    impl ProtocolHandler for FabricReader {
+        async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+            read_personal_fabric(connection, self.0.clone(), &AtomicU64::new(1));
+            Ok(())
+        }
+    }
+
+    /// Two actors on topic `ws`, the first dialling the second, once each
+    /// has seen the other join.
+    async fn linked_pair(
+        ws: WorkspaceId,
+        a: (Endpoint, MemoryLookup),
+        b: (Endpoint, MemoryLookup),
+    ) -> [(
+        mpsc::Sender<NetCmd>,
+        mpsc::Receiver<NetEvent>,
+        tokio::task::JoinHandle<()>,
+    ); 2] {
+        let (a_id, b_id) = (a.0.id(), b.0.id());
+        let b_addr = b.0.addr();
+        let mut pair = [a, b].map(|(endpoint, lookup)| {
+            let (cmd, task) = Actor::spawn(endpoint, lookup);
+            let (events, rx) = mpsc::channel(64);
+            (cmd, rx, task, events)
+        });
+        for (cmd, _, _, events) in &pair {
+            cmd.send(NetCmd::JoinWorkspace {
+                ws,
+                on_event: events.clone(),
+            })
+            .await
+            .unwrap();
+        }
+        pair[0]
+            .0
+            .send(NetCmd::Connect { addr: b_addr })
+            .await
+            .unwrap();
+        for ((_, rx, _, _), other) in pair.iter_mut().zip([b_id, a_id]) {
+            wait_for_event(
+                "the pair links",
+                rx,
+                |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == other),
+            )
+            .await;
+        }
+        pair.map(|(cmd, rx, task, _)| (cmd, rx, task))
+    }
+
+    async fn wait_for_event(
+        what: &str,
+        rx: &mut mpsc::Receiver<NetEvent>,
+        wanted: impl Fn(&NetEvent) -> bool + Send + Sync,
+    ) {
+        tilo_test_env::within(what, async {
+            loop {
+                if wanted(&rx.recv().await.expect("the actor is running")) {
+                    return;
+                }
+            }
+        })
+        .await;
+    }
+
+    fn fabric_action_from(event: &NetEvent, from: EndpointId, action: &[u8]) -> bool {
+        matches!(
+            event,
+            NetEvent::PersonalFabric {
+                peer,
+                payload: PersonalFabricPayload::Action(bytes),
+                ..
+            } if *peer == from && bytes == action
+        )
+    }
+
+    /// Connections `endpoint` holds open.
+    fn open_connections(endpoint: &Endpoint) -> u64 {
+        let socket = &endpoint.metrics().socket;
+        socket
+            .num_conns_opened
+            .get()
+            .saturating_sub(socket.num_conns_closed.get())
+    }
+
+    /// Two linked devices keep one connection between them: personal fabric
+    /// frames, both ways, share the one gossip runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_linked_pair_keeps_one_connection_for_gossip_and_personal_fabric() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let (a_id, b_id) = (a.id(), b.id());
+        let [(cmd_a, mut rx_a, _task_a), (cmd_b, mut rx_b, _task_b)] =
+            linked_pair(45, (a.clone(), lookup_a), (b.clone(), lookup_b)).await;
+
+        for (cmd, target) in [(&cmd_a, b_id), (&cmd_b, a_id)] {
+            cmd.send(NetCmd::PublishPersonalFabricTarget {
+                ws: 45,
+                user_public_key: [0xB5; 32],
+                target,
+                payload: PersonalFabricPayload::Action(vec![5, 5]),
+            })
+            .await
+            .unwrap();
+        }
+        wait_for_event("A's fabric frame at B", &mut rx_b, |event| {
+            fabric_action_from(event, a_id, &[5, 5])
+        })
+        .await;
+        wait_for_event("B's fabric frame at A", &mut rx_a, |event| {
+            fabric_action_from(event, b_id, &[5, 5])
+        })
+        .await;
+        cmd_a
+            .send(NetCmd::PublishPersonalFabric {
+                ws: 45,
+                user_public_key: [0xB5; 32],
+                payload: PersonalFabricPayload::Request,
+            })
+            .await
+            .unwrap();
+        wait_for_event("A's fabric request at B", &mut rx_b, |event| {
+            matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    payload: PersonalFabricPayload::Request,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        for (name, endpoint) in [("A", &a), ("B", &b)] {
+            assert_eq!(
+                open_connections(endpoint),
+                1,
+                "{name} holds exactly one connection to its sibling"
+            );
+            assert_eq!(
+                endpoint.metrics().socket.num_conns_opened.get(),
+                1,
+                "{name} never opened a second connection"
+            );
+        }
+    }
+
+    /// Join `ws` on the actor `cmd` drives, and hear its events.
+    async fn joined(cmd: &mpsc::Sender<NetCmd>, ws: WorkspaceId) -> mpsc::Receiver<NetEvent> {
+        let (on_event, events) = mpsc::channel(64);
+        cmd.send(NetCmd::JoinWorkspace { ws, on_event })
+            .await
+            .unwrap();
+        events
+    }
+
+    /// A device that restarts on the same key hears its sibling's fabric at
+    /// once: the sibling answers on the connection the restarted device just
+    /// reached it on, before the membership of its old run has lapsed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
+        let b_key = ed25519_dalek::SigningKey::from_bytes(&[0x5B; 32]);
+        let a = endpoint().await;
+        let a_addr = a.0.addr();
+        let a_id = a.0.id();
+        let b = identified_endpoint(&b_key).await;
+        let b_id = b.0.id();
+        let [(cmd_a, mut rx_a, _task_a), (cmd_b, _rx_b, task_b)] = linked_pair(46, a, b).await;
+        // B's first run ends: its actor stops and its endpoint closes.
+        drop(cmd_b);
+        task_b.await.unwrap();
+
+        let (b_restarted, lookup_restarted) = identified_endpoint(&b_key).await;
+        let (cmd_restarted, _task_restarted) = Actor::spawn(b_restarted, lookup_restarted);
+        let mut rx_restarted = joined(&cmd_restarted, 46).await;
+        cmd_restarted
+            .send(NetCmd::Connect { addr: a_addr })
+            .await
+            .unwrap();
+        wait_for_event(
+            "the restarted device links",
+            &mut rx_restarted,
+            |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == a_id),
+        )
+        .await;
+
+        let started = Instant::now();
+        cmd_restarted
+            .send(NetCmd::PublishPersonalFabric {
+                ws: 46,
+                user_public_key: [0xB6; 32],
+                payload: PersonalFabricPayload::Request,
+            })
+            .await
+            .unwrap();
+        wait_for_event("the restarted device's request", &mut rx_a, |event| {
+            matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    peer,
+                    payload: PersonalFabricPayload::Request,
+                    ..
+                } if *peer == b_id
+            )
+        })
+        .await;
+        cmd_a
+            .send(NetCmd::PublishPersonalFabricTarget {
+                ws: 46,
+                user_public_key: [0xB6; 32],
+                target: b_id,
+                payload: PersonalFabricPayload::Action(vec![6, 6]),
+            })
+            .await
+            .unwrap();
+        wait_for_event("the sibling's answer", &mut rx_restarted, |event| {
+            fabric_action_from(event, a_id, &[6, 6])
+        })
+        .await;
+        assert!(
+            started.elapsed() < PEER_TIMEOUT / 3,
+            "the answer took {:?}, as long as a stale connection lasts",
+            started.elapsed()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn personal_fabric_unknown_extension_preserves_following_streams() {
+        const FIXTURE_ALPN: &[u8] = b"tilo-test-fabric-reader";
         let (a, _) = endpoint().await;
         let (b, _) = endpoint().await;
         let (internal_tx, mut events) = mpsc::channel(8);
         let router = Router::builder(b.clone())
-            .accept(
-                PERSONAL_FABRIC_ALPN,
-                PersonalFabricProtocol {
-                    internal_tx,
-                    next_connection_incarnation: Arc::new(AtomicU64::new(1)),
-                },
-            )
+            .accept(FIXTURE_ALPN, FabricReader(internal_tx))
             .spawn();
-        let connection = a.connect(b.addr(), PERSONAL_FABRIC_ALPN).await.unwrap();
+        let connection = a.connect(b.addr(), FIXTURE_ALPN).await.unwrap();
         let frame = PersonalFabricWireFrame {
             workspace: 43,
             user_public_key: [0xA5; 32],
@@ -5362,7 +5764,7 @@ mod tests {
         future[33] = 9; // First unsupported tag after optional connector observations.
         assert!(postcard::from_bytes::<PersonalFabricWireFrame>(&future).is_err());
         for bytes in [&future, &valid] {
-            let mut stream = connection.open_uni().await.unwrap();
+            let (mut stream, _) = connection.open_bi().await.unwrap();
             stream.write_all(bytes).await.unwrap();
             stream.finish().unwrap();
         }
@@ -5490,6 +5892,7 @@ mod tests {
             }
             cmd_b
                 .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: 42,
                     msg: NeighbourMsg::SyncReq {
                         since: vec![],
@@ -5519,6 +5922,7 @@ mod tests {
                 DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
             cmd_a
                 .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: 42,
                     msg: NeighbourMsg::SurfaceFrame {
                         surface: 7,
@@ -5666,6 +6070,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             tick,
             Reachability::default(),
+            None,
         );
         let (events, rx) = mpsc::channel(64);
         cmd.send(NetCmd::JoinWorkspace {
@@ -5734,35 +6139,6 @@ mod tests {
                 .chain(std::iter::from_fn(|| rx_b.try_recv().ok()))
                 .all(|event| !matches!(event, NetEvent::PeerLeft { .. })),
             "a silent, linked peer stays a member"
-        );
-
-        // Phase `an_older_neighbour_that_beats_is_beaten_back`. A build that
-        // evicts a peer silent for 15 s announces itself by its timed beat;
-        // its neighbour answers at once and keeps beating for it.
-        let beats = |tally: &std::collections::BTreeMap<&'static str, u64>| {
-            tally.get("Heartbeat").copied().unwrap_or(0)
-        };
-        let answered_before = beats(&tally_of(&cmd_b).await);
-        cmd_b
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::Heartbeat {
-                    peer: 1,
-                    ts: tilo_clock::unix_now_ms(),
-                },
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("the older neighbour to be beaten back", async {
-            while beats(&tally_of(&cmd_b).await) < answered_before + 3 {
-                tokio::time::sleep(TICK).await;
-            }
-        })
-        .await;
-        assert_eq!(
-            beats(&tally_of(&cmd_a).await),
-            beats(&before_a) + 1,
-            "the answer is numbered, not timed, so it does not start the other side beating"
         );
 
         // Phase `a_departed_peer_is_dropped_within_the_departure_grace`. A
@@ -5838,50 +6214,63 @@ mod tests {
             task_b.abort();
             let _ = task_b.await;
             tokio::time::sleep(Duration::from_millis(25)).await;
-            let started = Instant::now();
-            cmd_a
-                .send(NetCmd::Publish {
-                    ws: 44,
-                    msg: NeighbourMsg::SurfaceFrame {
-                        surface: 9,
-                        source_peer,
-                        encoded_h264: vec![0, 0, 0, 1, 0x65],
-                        ts: 1,
-                        seq: 0,
-                    },
-                })
-                .await
-                .unwrap();
-            cmd_a
-                .send(NetCmd::Publish {
-                    ws: 44,
-                    msg: NeighbourMsg::SyncReq {
-                        since: vec![],
-                        room: "responsive".into(),
-                        invite_id: None,
-                        nonce: 0,
-                    },
-                })
-                .await
-                .unwrap();
-            loop {
-                let event = tilo_test_env::within(
-                    "dead media viewer stalled the collaboration actor",
-                    rx_c.recv(),
-                )
-                .await
-                .unwrap();
-                if matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SyncReq { ref room, .. },
-                        ..
-                    } if room == "responsive"
-                ) {
-                    break;
+            // A dial to the dead viewer takes up to its 300 ms timeout. Inside
+            // the actor loop every attempt would wait it out; outside it, an
+            // attempt on a loaded runner is late only now and then. Each
+            // attempt names a new surface, so each dials the viewer anew.
+            let mut fastest = Duration::MAX;
+            for attempt in 0..5_u32 {
+                let started = Instant::now();
+                cmd_a
+                    .send(NetCmd::Publish {
+                        at: tokio::time::Instant::now(),
+                        ws: 44,
+                        msg: NeighbourMsg::SurfaceFrame {
+                            surface: 9 + u64::from(attempt),
+                            source_peer,
+                            encoded_h264: vec![0, 0, 0, 1, 0x65],
+                            ts: 1,
+                            seq: 0,
+                        },
+                    })
+                    .await
+                    .unwrap();
+                cmd_a
+                    .send(NetCmd::Publish {
+                        at: tokio::time::Instant::now(),
+                        ws: 44,
+                        msg: NeighbourMsg::SyncReq {
+                            since: vec![],
+                            room: "responsive".into(),
+                            invite_id: None,
+                            nonce: u64::from(attempt),
+                        },
+                    })
+                    .await
+                    .unwrap();
+                loop {
+                    let event = tilo_test_env::within(
+                        "dead media viewer stalled the collaboration actor",
+                        rx_c.recv(),
+                    )
+                    .await
+                    .unwrap();
+                    if matches!(
+                        event,
+                        NetEvent::Msg {
+                            msg: NeighbourMsg::SyncReq { ref room, .. },
+                            ..
+                        } if room == "responsive"
+                    ) {
+                        break;
+                    }
                 }
+                fastest = fastest.min(started.elapsed());
             }
-            assert!(started.elapsed() < Duration::from_millis(250));
+            assert!(
+                fastest < Duration::from_millis(250),
+                "every attempt waited for the dead viewer's dial: {fastest:?}"
+            );
             task_a.abort();
             task_c.abort();
         }
@@ -6071,8 +6460,8 @@ mod tests {
         clippy::too_many_lines,
         reason = "the integration test verifies both receiver framing and the sender's ordered progress lifecycle"
     )]
-    async fn personal_fabric_negotiates_alpn_and_streams_verified_media() {
-        // Phase `personal_fabric_uses_its_negotiated_alpn`.
+    async fn personal_fabric_reaches_members_and_streams_verified_media() {
+        // Phase `personal_fabric_reaches_the_topics_member`.
         {
             let (a, lookup_a) = endpoint().await;
             let (b, lookup_b) = endpoint().await;
@@ -6548,6 +6937,7 @@ mod tests {
 
             cmd_a
                 .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: 42,
                     msg: NeighbourMsg::SyncReq {
                         since: vec![],
@@ -6890,6 +7280,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
             Reachability::default(),
+            None,
         );
         let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
             b,
@@ -6898,6 +7289,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
             Reachability::default(),
+            None,
         );
         let (event_a, mut rx_a) = mpsc::channel(16);
         let (event_b, mut rx_b) = mpsc::channel(16);
@@ -7002,6 +7394,7 @@ mod tests {
         collab_types::sign_op(&mut op, &signer).unwrap();
         cmd_b
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::AppDocument {
                     peer: 7,
@@ -7128,6 +7521,7 @@ mod tests {
             .unwrap();
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::MlsGovernance {
                     room: "room".into(),
@@ -7251,6 +7645,7 @@ mod tests {
             .unwrap();
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::AppDocument {
                     peer: 7,
@@ -7502,10 +7897,16 @@ mod tests {
                 place: None,
                 chat: None,
                 reaction: None,
+                wave: None,
+                layout: None,
+                following: None,
                 seq: 1,
                 sent_at_ms: 1,
                 focus: None,
-                pointer: Some([3.0, 4.0]),
+                pointer: Some(tilo_relay_protocol::live::LivePointer::Strip {
+                    strip: 1,
+                    at: [3.0, 4.0],
+                }),
                 selection: None,
                 drag: None,
                 participant: None,
@@ -7653,6 +8054,7 @@ mod tests {
 
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
@@ -7713,7 +8115,13 @@ mod tests {
 
     impl crate::shell::channel_encryption::GovernanceTransport for ActorChannelTransport {
         fn publish(&self, msg: NeighbourMsg) -> bool {
-            self.cmd.try_send(NetCmd::Publish { ws: 42, msg }).is_ok()
+            self.cmd
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws: 42,
+                    msg,
+                })
+                .is_ok()
         }
 
         fn take_inbound(&self) -> Vec<crate::shell::network::InboundChannelGovernance> {
@@ -7973,6 +8381,7 @@ mod tests {
         collab_types::sign_op(&mut op, &a_key).unwrap();
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::AppDocument {
                     peer: 1,

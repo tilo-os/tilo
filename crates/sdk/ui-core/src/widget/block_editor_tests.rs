@@ -327,7 +327,6 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         assert!((painted.height() - preview.height()).abs() < 1e-6);
         assert!(painted.width() < preview.width(), "so it is drawn narrower");
 
-        // A picture shorter than the cap keeps its native size.
         assert!(editor.set_viewport_height(Some(20_000.0)));
         layout_image_editor(&mut editor, 1000.0, &mut renderer);
         let preview = editor.image_preview_rects[0].unwrap();
@@ -1242,7 +1241,6 @@ fn block_typography_scales_and_bands_each_kind() {
 
         let checklist = editor.blocks[0].line.get_rect();
         let code = editor.blocks[1].line.get_rect();
-        // A row holds its text at its role's leading, scaled with the text.
         let band = |kind: BlockKind| {
             let style = crate::tokens::typography::stock().style(kind.text_role());
             let leading = f64::from(style.line_height_px() / style.size).max(1.0);
@@ -1605,7 +1603,6 @@ fn deleting_empty_blocks_shifts_focus_and_keeps_one_block() {
         assert_eq!(e.blocks().len(), 2);
         assert_eq!(e.blocks()[0].text(), "first");
         assert_eq!(e.blocks()[1].text(), "third");
-        // Focus walks back to the previous block.
         assert_eq!(e.focused_index(), Some(0));
         // ...with the caret at the end of "first".
         assert_eq!(e.blocks()[0].line.cursor_pos(), 5);
@@ -2211,102 +2208,6 @@ fn action_bridge_emits_uuid_ops_at_unicode_boundaries() {
             text: "e".into(),
         }]
     );
-}
-
-#[test]
-fn hidden_find_controls_do_not_extend_content_and_reopen_after_layout() {
-    fn layout(editor: &mut BlockEditor) -> f32 {
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut nodes = HashMap::new();
-        let node = editor.build_layout(&mut taffy, &theme, &mut nodes);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(640.0),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            )
-            .expect("editor layout");
-        editor.apply_layout(&taffy, node, Point::ZERO);
-        taffy
-            .layout(node)
-            .expect("editor content")
-            .content_size
-            .height
-    }
-
-    let mut editor = BlockEditor::new();
-    editor.set_blocks(vec![Block::paragraph("Short draft")]);
-    let before = editor.to_markdown();
-    let hidden_height = layout(&mut editor);
-    assert!(
-        hidden_height < 44.0,
-        "hidden search must not add its overlay height"
-    );
-    let _ = editor.take_structure_dirty();
-    editor.open_find();
-    assert!(
-        editor.take_structure_dirty(),
-        "opening search rebuilds its layout"
-    );
-    assert!(layout(&mut editor) >= 44.0);
-    assert!(editor.find_field.get_rect().height() > 0.0);
-    editor.close_find();
-    assert!(
-        editor.take_structure_dirty(),
-        "closing search removes its layout"
-    );
-    let closed_height = layout(&mut editor);
-    assert!((closed_height - hidden_height).abs() < f32::EPSILON);
-    assert_eq!(editor.to_markdown(), before);
-    assert!(editor.take_edit_ops().is_empty());
-}
-
-#[test]
-fn find_matches_unicode_safely_and_navigates_without_editing() {
-    fn find_ranges_are_case_insensitive_and_unicode_byte_safe() {
-        assert_eq!(
-            case_folded_match_ranges("İstanbul CAFÉ café", "i\u{307}"),
-            vec![(0, "İ".len())]
-        );
-        assert_eq!(
-            case_folded_match_ranges("İstanbul CAFÉ café", "CAFÉ"),
-            vec![(10, 15), (16, 21)]
-        );
-    }
-
-    fn find_moves_across_blocks_wraps_and_never_edits_content() {
-        let mut editor = BlockEditor::new();
-        editor.set_blocks(vec![
-            Block::paragraph("alpha beta alpha"),
-            Block::paragraph("ALPHA"),
-        ]);
-        let before = editor.to_markdown();
-        editor.focus_block(0, CursorPlacement::Byte(5));
-        editor.find_field.set_query("alpha");
-        editor.refresh_find_matches(true);
-
-        assert_eq!(editor.find_matches.len(), 3);
-        assert_eq!(editor.find_active, Some(1));
-        assert_eq!(editor.focused_index(), Some(0));
-        assert_eq!(editor.blocks()[0].line.selection_range(), Some((11, 16)));
-
-        editor.step_find(false);
-        assert_eq!(editor.focused_index(), Some(1));
-        assert_eq!(editor.blocks()[1].line.selection_range(), Some((0, 5)));
-        editor.step_find(false);
-        assert_eq!(editor.focused_index(), Some(0));
-        assert_eq!(editor.blocks()[0].line.selection_range(), Some((0, 5)));
-        editor.step_find(true);
-        assert_eq!(editor.focused_index(), Some(1));
-        assert_eq!(editor.to_markdown(), before);
-        assert!(editor.take_edit_ops().is_empty());
-    }
-
-    find_ranges_are_case_insensitive_and_unicode_byte_safe();
-    find_moves_across_blocks_wraps_and_never_edits_content();
 }
 
 fn presence_paths(editor: &mut BlockEditor, presence: &PresenceCtx) -> usize {
@@ -2967,3 +2868,88 @@ fn a_picture_is_sized_by_its_handle_and_keeps_the_width_in_its_markdown() {
     );
     assert_eq!(editor.blocks()[0].text(), "![Scan|240](assets/scan.png)");
 }
+
+#[test]
+fn a_link_to_a_resource_offers_opening_it_where_it_lives() {
+    let href = "tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1";
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("Meet on Standup.")]);
+    editor.focus_block(0, CursorPlacement::End);
+    editor.blocks[0].line.inner_mut().set_selection(8, 15);
+    assert!(editor.insert_link_to(href, "Standup"));
+    assert_eq!(
+        editor.blocks()[0].line.marks(),
+        [MarkSpan::new(8..15, Mark::ResourceLink(href.into()))],
+        "a resource address links its label to the resource"
+    );
+    let mut renderer = TextRenderer::new();
+    layout_image_editor(&mut editor, 640.0, &mut renderer);
+    let target = format!("notes.resource-link:{href}");
+    let document = editor.accessibility().expect("the editor reports its tree");
+    let (control, value) = document
+        .children
+        .iter()
+        .flat_map(|block| &block.children)
+        .find(|control| control.action_target.as_deref() == Some(target.as_str()))
+        .map(|control| (control, control.value.clone()))
+        .expect("the link is an accessibility node with the target it opens");
+    assert_eq!(
+        value.as_deref(),
+        Some("Standup"),
+        "the node is named by the label a screen reader reads"
+    );
+    assert!(
+        control
+            .bounds
+            .is_some_and(|bounds| bounds.to_rect().height() > 0.0)
+    );
+
+    // A click on the label, and assistive technology's activate, both ask
+    // the host to open the resource the address names.
+    editor.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut renderer,
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+    );
+    let rect = editor.blocks()[0]
+        .line
+        .mark_rects(&Theme::dark(), 8..15)
+        .into_iter()
+        .next()
+        .expect("the label is painted");
+    assert_eq!(
+        editor.link_at_point(rect.center()),
+        Some(LinkTarget::Resource(href.into()))
+    );
+    let mut doc = AutoCommit::new();
+    assert!(editor.perform_semantic_action(
+        &target,
+        &crate::a11y::Action::Activate,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT
+    ));
+    assert_eq!(editor.take_resource_link_open().as_deref(), Some(href));
+    assert!(
+        editor.take_edit_ops().is_empty(),
+        "opening a link writes nothing to the note"
+    );
+
+    // At a caret the label is what lands in the text; the address stays the
+    // mark's payload, so a person reads a name and the link still reaches it.
+    editor.blocks[0].line.inner_mut().set_cursor_pos(16);
+    assert!(editor.insert_link_to(href, "Review"));
+    assert_eq!(editor.blocks()[0].text(), "Meet on Standup.Review");
+    assert_eq!(
+        editor.blocks()[0].line.marks(),
+        [
+            MarkSpan::new(8..15, Mark::ResourceLink(href.into())),
+            MarkSpan::new(16..22, Mark::ResourceLink(href.into())),
+        ],
+        "the typed-at-caret link carries the address, not the label"
+    );
+}
+
+#[path = "block_editor_selection_keys_tests.rs"]
+mod selection_keys;

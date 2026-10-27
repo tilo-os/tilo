@@ -32,7 +32,7 @@ fn start_cost() {
 fn cold_start() {
     ui::framework::testing::perf::cold_start(
         "file-explorer",
-        std::path::Path::new(env!("CARGO_BIN_EXE_file-explorer")),
+        &tilo_test_env::package_binary!("file-explorer"),
         8,
     )
     .print();

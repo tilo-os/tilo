@@ -30,23 +30,23 @@ use ui::widget::{AppModel, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{english, t, t_args};
-use crate::prefs::NotificationPrefs;
+use crate::prefs::{MUTE_OPTIONS, NotificationPrefs, mute_shown, valid_app_id};
 use crate::widgets::{
     Item, SettingsSection, StatusTone, error_row, note, row, rows, section, semantic_status_pill,
     setting_row, value_row,
 };
 
+crate::area::pane_area!(NotificationsArea);
+
+/// The window's [`NotificationsArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NotificationsArea> {
+    app.areas().find()
+}
+
 const FOCUS_DAYS: &[(&str, u8)] = &[
     ("Every day", 0),
     ("Weekdays", 0b0001_1111),
     ("Weekends", 0b0110_0000),
-];
-
-const MUTE_OPTIONS: &[(&str, i64)] = &[
-    ("Not muted", 0),
-    ("For 1 hour", 60 * 60),
-    ("For 8 hours", 8 * 60 * 60),
-    ("For 24 hours", 24 * 60 * 60),
 ];
 
 /// The most apps the published tree lists; an app beyond it is still
@@ -57,14 +57,6 @@ const MAX_APP_ROWS: usize = 256;
 pub(crate) struct InstalledNotificationApp {
     id: String,
     name: String,
-}
-
-pub(crate) fn valid_app_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 160
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 fn installed_notification_apps(
@@ -300,7 +292,7 @@ impl NotificationsArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.apps.get().is_some()
     }
@@ -394,19 +386,6 @@ fn flip(on: bool, noun: &str) -> String {
     format!("Turn {} {noun}", if on { "on" } else { "off" })
 }
 
-fn mute_ftl(english: &str) -> &'static str {
-    match english {
-        "For 1 hour" => "notif-mute-1h",
-        "For 8 hours" => "notif-mute-8h",
-        "For 24 hours" => "notif-mute-24h",
-        _ => "notif-mute-off",
-    }
-}
-
-fn mute_shown(english: &str) -> String {
-    t(mute_ftl(english))
-}
-
 fn mute_label(deadline: Option<i64>, now: i64) -> String {
     let english = match deadline.filter(|deadline| *deadline > now) {
         None => "Not muted",
@@ -422,12 +401,6 @@ fn mute_label(deadline: Option<i64>, now: i64) -> String {
         }
     };
     mute_shown(english)
-}
-
-pub(crate) fn mute_seconds(label: &str) -> Option<i64> {
-    MUTE_OPTIONS.iter().find_map(|(english, seconds)| {
-        (*english == label || mute_shown(english) == label).then_some(*seconds)
-    })
 }
 
 /// The English name of a mute duration shown in either language.
@@ -565,14 +538,7 @@ impl NotificationsPane {
                 semantic_status_pill(&status_label, status_tone),
             ));
         }
-        content.push(
-            self.cx
-                .row(t("notif-dnd"))
-                .described(t("notif-dnd-desc"))
-                .id("notifications.dnd")
-                .of(&self.prefs, NotificationPrefs::paths().do_not_disturb)
-                .toggle(),
-        );
+        content.push(dnd(&self.cx, &self.prefs));
         // Quiet hours sit with it: the same silence, on a schedule.
         content.extend(self.focus_rows());
         section(&t("notif-dnd-title"), rows(content))
@@ -582,18 +548,8 @@ impl NotificationsPane {
         section(
             &t("notif-banners-title"),
             rows(vec![
-                self.cx
-                    .row(t("notif-show-banners"))
-                    .described(t("notif-show-banners-desc"))
-                    .id("notifications.banners")
-                    .of(&self.prefs, NotificationPrefs::paths().show_banners)
-                    .toggle(),
-                self.cx
-                    .row(t("notif-previews"))
-                    .described(t("notif-previews-desc"))
-                    .id("notifications.previews")
-                    .of(&self.prefs, NotificationPrefs::paths().show_previews)
-                    .toggle(),
+                banners(&self.cx, &self.prefs),
+                previews(&self.cx, &self.prefs),
             ]),
         )
     }
@@ -613,31 +569,10 @@ impl NotificationsPane {
                 Some(value_row(&t("notif-sounds"), &t("notif-sounds-missing")))
             }
         };
-        let mut content = vec![
-            self.cx
-                .row(t("notif-lock-screen"))
-                .described(t("notif-lock-screen-desc"))
-                .id("notifications.lock_screen")
-                .of(&self.prefs, NotificationPrefs::paths().show_on_lock_screen)
-                .toggle(),
-        ];
+        let mut content = vec![lock_screen(&self.cx, &self.prefs)];
         content.extend(sounds_row);
-        content.push(
-            self.cx
-                .row(t("notif-play-sounds"))
-                .described(t("notif-play-sounds-desc"))
-                .id("notifications.sounds")
-                .of(&self.prefs, NotificationPrefs::paths().play_sounds)
-                .toggle(),
-        );
-        content.push(
-            self.cx
-                .row(t("notif-badges"))
-                .described(t("notif-badges-desc"))
-                .id("notifications.badges")
-                .of(&self.prefs, NotificationPrefs::paths().show_badges)
-                .toggle(),
-        );
+        content.push(play_sounds(&self.cx, &self.prefs));
+        content.push(badges(&self.cx, &self.prefs));
         section(&t("notif-delivery-title"), rows(content))
     }
 
@@ -647,14 +582,7 @@ impl NotificationsPane {
         let focus = NotificationPrefs::paths().focus;
         let focus_time = |minutes: &u16| focus_time_label(*minutes).to_owned();
         let times = || FOCUS_TIMES.iter().map(|(_, minutes)| *minutes);
-        let mut content = vec![
-            self.cx
-                .row(t("notif-focus-enabled"))
-                .described(t("notif-focus-enabled-desc"))
-                .id("notifications.focus.enabled")
-                .of(&self.prefs, focus.enabled)
-                .toggle(),
-        ];
+        let mut content = vec![quiet_hours(&self.cx, &self.prefs)];
         if self.prefs().focus.enabled {
             content.extend([
                 self.cx
@@ -764,6 +692,62 @@ impl NotificationsPane {
     }
 }
 
+pub(crate) fn dnd(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-dnd"))
+        .described(t("notif-dnd-desc"))
+        .id("notifications.dnd")
+        .of(prefs, NotificationPrefs::paths().do_not_disturb)
+        .toggle()
+}
+
+pub(crate) fn banners(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-show-banners"))
+        .described(t("notif-show-banners-desc"))
+        .id("notifications.banners")
+        .of(prefs, NotificationPrefs::paths().show_banners)
+        .toggle()
+}
+
+pub(crate) fn previews(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-previews"))
+        .described(t("notif-previews-desc"))
+        .id("notifications.previews")
+        .of(prefs, NotificationPrefs::paths().show_previews)
+        .toggle()
+}
+
+pub(crate) fn lock_screen(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-lock-screen"))
+        .described(t("notif-lock-screen-desc"))
+        .id("notifications.lock_screen")
+        .of(prefs, NotificationPrefs::paths().show_on_lock_screen)
+        .toggle()
+}
+
+pub(crate) fn play_sounds(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-play-sounds"))
+        .described(t("notif-play-sounds-desc"))
+        .id("notifications.sounds")
+        .of(prefs, NotificationPrefs::paths().play_sounds)
+        .toggle()
+}
+
+pub(crate) fn badges(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-badges"))
+        .described(t("notif-badges-desc"))
+        .id("notifications.badges")
+        .of(prefs, NotificationPrefs::paths().show_badges)
+        .toggle()
+}
+
+pub(crate) fn quiet_hours(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-focus-enabled"))
+        .described(t("notif-focus-enabled-desc"))
+        .id("notifications.focus.enabled")
+        .of(prefs, NotificationPrefs::paths().focus.enabled)
+        .toggle()
+}
+
 impl Widget for NotificationsPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.prefs.refresh() {
@@ -811,7 +795,6 @@ mod tests {
         .map_err(|error| format!("{error:?}"))
     }
 
-    /// Rules enumerate system and Flatpak desktop identities.
     #[test]
     fn notification_rules_enumerate_desktop_identities() {
         {
@@ -857,13 +840,15 @@ mod tests {
     /// layer reads them; an override touches only its own field.
     #[test]
     fn notification_edits_write_the_policy() {
+        // A mute counts from when it was asked for: the clock stands still
+        // here, so the end it writes is exact.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
         edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "enabled"], true).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 20 * 60).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "weekdays"], 0b0001_1111).unwrap();
-        // An agent sets one field of a rule the app has none of yet.
         edit_rule(&mut app, "so.tilo.chat", "sounds", false).unwrap();
         edit_rule(&mut app, "so.tilo.chat", "priority", true).unwrap();
         invoke_section(
@@ -884,7 +869,7 @@ mod tests {
         assert!(chat.priority);
         assert_eq!(chat.banners, None, "only the changed fields are overrides");
         let muted = prefs.per_app["so.tilo.mail"].muted_until.unwrap();
-        assert!(muted > unix_now_i64() + 7 * 60 * 60);
+        assert_eq!(muted, unix_now_i64() + 8 * 60 * 60);
 
         assert!(
             edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 24 * 60).is_err(),
@@ -936,6 +921,7 @@ mod tests {
     /// writes nothing.
     #[test]
     fn apps_are_live_rows_offering_their_rules() {
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let settings = app.settings::<NotificationPrefs>();
         assert!(
@@ -955,19 +941,30 @@ mod tests {
             serde_json::json!({}),
         )
         .expect("the row offers muting the app for an hour");
-        assert!(
-            settings.get().per_app["so.tilo.chat"]
-                .muted_until
-                .is_some_and(|until| until > unix_now_i64())
+        assert_eq!(
+            settings.get().per_app["so.tilo.chat"].muted_until,
+            Some(unix_now_i64() + 60 * 60)
         );
-        let surface = app.agent_surface().to_string();
+        // The rows' operations are the session's actions on the section it
+        // keeps: the window offers them, and the session alone publishes.
+        let offered = ui::tilo_actions::door::survey(&app.harness().resources());
         assert!(
-            surface.contains("settings.notification-app:so.tilo.mail"),
-            "{surface}"
+            offered.iter().any(
+                |row| row.address.resource.as_str() == "settings.notification-app:so.tilo.mail"
+            ),
+            "{offered:?}"
         );
         assert!(
-            surface.contains("Turn on notification banners"),
-            "{surface}"
+            offered
+                .iter()
+                .any(|row| row.action_label == "Turn on notification banners"),
+            "{offered:?}"
+        );
+        assert!(
+            !app.agent_surface()
+                .to_string()
+                .contains("settings.notification-app:so.tilo.mail"),
+            "Settings publishes none of the session's actions"
         );
     }
 

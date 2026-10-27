@@ -13,9 +13,16 @@ use tilo_actions::{ActionAddress, ControlInvocation, DoorError, OperationKind, R
     reason = "normalize owned and borrowed error types into a refusal"
 )]
 fn refused(code: &str, reason: impl ToString) -> DoorError {
+    refusal(code, reason.to_string())
+}
+
+/// [`refused`] once its reason is text. The traversals that refuse are
+/// generic over the widget they visit, and apps compile them for the
+/// toolkit's own widgets, so building the error stays here.
+fn refusal(code: &str, reason: String) -> DoorError {
     DoorError::Unavailable {
         code: code.into(),
-        reason: reason.to_string(),
+        reason,
     }
 }
 #[derive(Clone)]
@@ -316,7 +323,7 @@ fn filter_legacy_resource(
     broker: bool,
 ) -> Option<Resource> {
     let current = current_authority(authority).ok()?;
-    resource.actions.retain(|spec| {
+    resource.retain_actions(|spec| {
         operation_allowed(&current, app, spec)
             && (spec.kind != OperationKind::Document
                 || (!broker && authorize_legacy_owner(owner, &current, author).is_ok()))
@@ -443,13 +450,18 @@ impl ResourceRequest<'_> {
                     ),
                 };
                 let op = op.with_target(routing.as_ref());
-                tile.start_operation(&op, &mut crate::widget::Edits::lend(outer), &ROOT)
-                    .map_err(DoorError::Failed)
-                    .and_then(|value| {
-                        value.ok_or_else(|| {
-                            refused("unknown_action", "Selected owner declined the operation")
-                        })
+                crate::widget::start_operation(
+                    &mut *tile,
+                    &op,
+                    &mut crate::widget::Edits::lend(outer),
+                    &ROOT,
+                )
+                .map_err(DoorError::Failed)
+                .and_then(|value| {
+                    value.ok_or_else(|| {
+                        refused("unknown_action", "Selected owner declined the operation")
                     })
+                })
             } else {
                 Err(refused("hidden_document", "Live document is hidden"))
             });

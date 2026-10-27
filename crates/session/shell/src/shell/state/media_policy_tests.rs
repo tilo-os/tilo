@@ -1,4 +1,3 @@
-//! Exercise shell admission/projection itself, including refused-batch side effects.
 use super::*;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
@@ -6,7 +5,7 @@ use tilo_peer_state::room::media;
 
 fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
     let mut host = WorkspaceTree::bootstrap_demo();
-    let room = host.desktop.workspaces[0].room;
+    let room = host.desktop.workspaces[0].room();
     let governor_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = iroh::SecretKey::from_bytes(&[92; 32]);
     let endpoint = device.public();
@@ -27,7 +26,7 @@ fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
     host.sync_room_doc(room);
     let mut guest = WorkspaceTree::bootstrap_demo();
     let workspace = guest.desktop.workspaces[0].id;
-    assert!(guest.set_room(workspace, room));
+    assert!(guest.stand_in_room(workspace, room));
     (host, guest, room, PeerOrigin::peer(&endpoint))
 }
 
@@ -147,9 +146,10 @@ fn accept_media_invite(host: &WorkspaceTree, guest: &mut WorkspaceTree, room: Ro
         3600,
     )
     .unwrap();
-    let local = guest.desktop.workspaces[0].id;
     assert_eq!(
-        crate::network::invite::accept_invite_into(guest, local, &token).unwrap(),
+        crate::network::invite::accept_invite_into(guest, &token)
+            .unwrap()
+            .1,
         room
     );
 }

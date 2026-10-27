@@ -33,7 +33,7 @@ fn room(chrome: &Chrome) -> String {
         .desktop
         .active_workspace()
         .expect("fixture has a room")
-        .room
+        .room()
         .to_string()
 }
 
@@ -335,7 +335,7 @@ fn an_agent_is_never_shown_the_decisions_on_its_own_admission() {
     let tree = state.tree();
     let workspace = tree.desktop.active_workspace().unwrap();
     let agent =
-        crate::shell::state::Actor::agent("claude-code").in_room(workspace.room.to_string());
+        crate::shell::state::Actor::agent("claude-code").in_room(workspace.room().to_string());
     let visibility = PolicyVisibility::new(workspace, agent);
     for decision in ["allow-once", "allow-session", "allow-always", "deny"] {
         assert!(!visibility.can_see(
@@ -352,7 +352,7 @@ fn relayed(client: &str, pid: u32) -> ClientFacts {
         client: client.into(),
         version: None,
         pid,
-        exe: Some(PathBuf::from("/usr/bin/tilo-runtime-mcp")),
+        exe: Some(PathBuf::from("/usr/libexec/tilo/tilo-runtime-mcp")),
         host_app: None,
     }
 }
@@ -375,6 +375,7 @@ fn prompt_for(chrome: &Chrome, client: &str) -> uuid::Uuid {
 /// repeated, stale, unknown or out-of-turn answer admits nobody, and the
 /// other client stays waiting until its own prompt is answered.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt() {
     let chrome = chrome_with_room();
     let (sender, mut consent) = channel(None, None);

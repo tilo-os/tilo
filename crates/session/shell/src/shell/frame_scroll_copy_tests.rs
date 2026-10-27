@@ -269,7 +269,6 @@ fn scroll_and_present(
             previous_revision: painted.previous_revision,
             regions: painted.damage_regions.as_deref(),
         };
-        // An unchanged frame is kept, as the DRM presenter keeps it.
         if presented.keep_unchanged(damage) {
             run.frames += 1;
             continue;

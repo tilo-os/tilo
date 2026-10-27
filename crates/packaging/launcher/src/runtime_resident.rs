@@ -82,10 +82,6 @@ pub fn registered_versions(registry: &package_store::Registry) -> BTreeSet<Strin
 /// and, transitively, each `DT_NEEDED` library the bundle's `lib/` holds.
 /// Libraries outside the bundle (none, for a complete one) are left to the
 /// system. Empty when the bundle has no runtime library.
-///
-/// # Errors
-///
-/// Returns an I/O error from reading a library's dynamic section.
 pub fn bundle_libraries(bundle: &Path) -> io::Result<Vec<PathBuf>> {
     let lib = bundle.join("lib");
     let mut seen = BTreeSet::new();
@@ -113,10 +109,6 @@ pub fn bundle_libraries(bundle: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Every file to keep resident: the libraries of each registered runtime
 /// version installed under `runtime_root`, each once.
-///
-/// # Errors
-///
-/// Returns an I/O error from reading a library's dynamic section.
 pub fn resident_files(
     versions: &BTreeSet<String>,
     runtime_root: &Path,
@@ -189,10 +181,6 @@ pub enum Unkept {
 /// once (never following a link) and kept only when `vouch` proves the open
 /// file is the one the manifest describes; its `DT_NEEDED` entries are read
 /// from that same descriptor.
-///
-/// # Errors
-///
-/// Returns an I/O error from reading a vouched library's dynamic section.
 pub fn verified_user_libraries(
     bundle: &Path,
     manifest: &runtime_bundle::BundleManifest,

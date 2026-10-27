@@ -126,7 +126,7 @@ COPY stage/tree/ /
 # ReadWritePaths=/var/lib/tilo in the units is not optional: a namespace that
 # cannot bind a path it was told to make writable refuses to start, and the unit
 # then fails for a reason that has nothing to do with rollback.
-RUN chmod 0755 /usr/bin/tilo-rollback /usr/libexec/tilo-rollback-common \
+RUN chmod 0755 /usr/libexec/tilo/tilo-rollback /usr/libexec/tilo-rollback-common \
         /usr/libexec/tilo-rollback-confirm /usr/libexec/tilo-rollback-harden \
         /usr/libexec/tilo-rollback-boot-check /usr/libexec/tilo-recovery-boot-check \
         /usr/libexec/tilo-deployment /usr/libexec/tilo-boot-health \
@@ -199,7 +199,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         systemd-ukify systemd-boot-unsigned binutils \
     && dnf clean all
 COPY uki.sh /usr/local/bin/uki.sh
-COPY stage/tree/usr/bin/tilo-crypto /usr/local/bin/tilo-crypto
+COPY stage/tree/usr/libexec/tilo/tilo-crypto /usr/local/bin/tilo-crypto
 
 FROM tools AS uki
 ARG SIGN=0

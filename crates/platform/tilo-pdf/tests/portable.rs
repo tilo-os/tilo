@@ -177,3 +177,62 @@ fn saving_edits_is_unavailable() {
         Err(Error::Unavailable(_))
     ));
 }
+
+/// A one-page PDF drawing `lines` in non-embedded Helvetica, each its own
+/// `Tj` at 12 pt: the standard font whose widths come from the engine, as an
+/// invoice generator writes it.
+fn helvetica_pdf(lines: &[&str]) -> Vec<u8> {
+    let mut stream = String::from("BT /F1 12 Tf 72 720 Td 14 TL\n");
+    for line in lines {
+        stream.push('(');
+        stream.push_str(line);
+        stream.push_str(") Tj T*\n");
+    }
+    stream.push_str("ET");
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+        format!(
+            "<< /Length {} >>\nstream\n{stream}\nendstream",
+            stream.len()
+        ),
+    ];
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (number, body) in (1..).zip(&objects) {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+    let xref = pdf.len();
+    let size = offsets.len().saturating_add(1);
+    pdf.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    pdf
+}
+
+/// A narrow digit like `1` inks under half its advance; word gaps are
+/// measured between advances, so numbers come out whole.
+#[test]
+fn narrow_digits_in_helvetica_read_without_inserted_spaces() {
+    let doc = Engine::portable()
+        .open_bytes(&helvetica_pdf(&[
+            "Total GBP 3,412.50",
+            "Ref R-2026-1187 and 1111/11",
+        ]))
+        .unwrap();
+    let layer = doc.text(0).unwrap();
+    assert_eq!(
+        squash(&layer.text_for(&layer.select_range(0..layer.len()))),
+        "Total GBP 3,412.50 Ref R-2026-1187 and 1111/11"
+    );
+}

@@ -91,12 +91,6 @@ pub fn export_portable_backup(
 /// Authenticate, decrypt, and validate a portable backup without restoring
 /// it. This is the read-back operation an OOBE must require before allowing a
 /// user to continue.
-///
-/// # Errors
-///
-/// Returns an error when the envelope is malformed, exceeds the size limit,
-/// was altered, has the wrong passphrase, or contains an invalid/non-portable
-/// identity record.
 pub fn verify_portable_backup(
     backup_path: impl AsRef<Path>,
     passphrase: &[u8],
@@ -178,12 +172,6 @@ pub fn import_portable_backup_matching(
 /// Like [`import_portable_backup`], this never returns decrypted record or key
 /// bytes. The provider is only used after envelope authentication and
 /// cryptographic identity validation succeed.
-///
-/// # Errors
-///
-/// Returns the same errors as [`import_portable_backup`], plus an error when
-/// `provider` rejects storing the recovered signing share. A failed provider
-/// import removes its staged public metadata before returning.
 pub fn import_portable_backup_with_provider(
     backup_path: impl AsRef<Path>,
     passphrase: &[u8],
@@ -317,7 +305,9 @@ fn portable_record(path: &Path) -> io::Result<(Zeroizing<Vec<u8>>, [u8; 32])> {
 /// record we are about to serialize. This duplicates public metadata and the
 /// zero-length schema-2 secret field only; the provider-held key remains in a
 /// `Zeroizing` buffer owned by the caller.
-fn record_for_validation(record: &super::ondisk::IdentityRecord) -> super::ondisk::IdentityRecord {
+pub(super) fn record_for_validation(
+    record: &super::ondisk::IdentityRecord,
+) -> super::ondisk::IdentityRecord {
     super::ondisk::IdentityRecord {
         profile_photo: record.profile_photo.clone(),
         display_name: record.display_name.clone(),

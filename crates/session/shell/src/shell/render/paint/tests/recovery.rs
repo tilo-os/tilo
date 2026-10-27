@@ -8,7 +8,6 @@ use super::*;
 fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing() {
     // Phase `gpu_target_failure_and_device_loss_hide_output_until_reconstruction`.
     {
-        // Phase `gpu_target_failure_hides_view_until_reconstruction`.
         {
             let mut target = required_target(128, 128);
             let scene = Scene::new();
@@ -18,7 +17,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 regions: None,
             };
             target
-                .render_until(&scene, damage, Instant::now() + Duration::from_secs(10))
+                .render_until(&scene, damage, tilo_test_env::hang_deadline())
                 .expect("seed");
             assert!(target.completed_view().is_some());
             let result = target.render_until(&scene, damage, Instant::now());
@@ -30,7 +29,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             assert_eq!(target.last_render_attempts, 0);
         }
 
-        // Phase `gpu_target_counter_failures_and_device_loss_hide_output`.
         {
             for error in [
                 vello::BumpBudgetError::MapFailed,
@@ -56,7 +54,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 .render_until(
                     &Scene::new(),
                     version(1, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             target.device.destroy();
@@ -66,14 +64,13 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 target.render_until(
                     &Scene::new(),
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10)
+                    tilo_test_env::hang_deadline()
                 ),
                 Err(BridgeError::DeviceLost(_))
             ));
             assert_eq!(target.last_render_attempts, 0);
         }
 
-        // Phase `gpu_target_device_loss_at_marker_hides_output`.
         {
             let mut target = required_target(128, 128);
             let mut test = completion_clock();
@@ -92,7 +89,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
 
     // Phase `gpu_target_aborted_or_poisoned_frames_submit_and_publish_nothing`.
     {
-        // Phase `gpu_target_encoded_dense_and_sparse_abort_before_submission`.
         {
             for sparse in [false, true] {
                 let mut target = required_target(128, 128);
@@ -146,7 +142,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             }
         }
 
-        // Phase `gpu_target_expiry_after_encoding_submits_no_render_or_marker`.
         {
             for sparse in [false, true] {
                 let mut target = required_target(128, 128);
@@ -154,7 +149,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                     .render_until(
                         &Scene::new(),
                         version(1, None, None),
-                        Instant::now() + Duration::from_secs(10),
+                        tilo_test_env::hang_deadline(),
                     )
                     .unwrap();
                 let mut test = completion_clock();
@@ -179,7 +174,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             }
         }
 
-        // Phase `gpu_target_aborted_encoding_does_not_publish_timestamps`.
         {
             let mut target = required_target_with_env("VELLO_GPU_TIMESTAMPS", "1", 128, 128);
             let mut test = completion_clock();
@@ -199,7 +193,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             assert!(target.completed_view().is_none());
         }
 
-        // Phase `gpu_target_late_counter_callback_cannot_publish_replacement`.
         {
             let mut context = RenderContext::new();
             let id = context.device(None).block_on().expect("real GPU adapter");
@@ -225,7 +218,7 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             gpu.device
                 .poll(wgpu::PollType::Wait {
                     submission_index: None,
-                    timeout: Some(Duration::from_secs(1)),
+                    timeout: Some(tilo_test_env::hang_bound()),
                 })
                 .unwrap();
             assert!(matches!(
@@ -244,14 +237,13 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                 .render_until(
                     &Scene::new(),
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert!(replacement.completed_view().is_some());
             assert!(old.completed_view().is_none());
         }
 
-        // Phase `gpu_target_poisoned_shared_coarse_diagnostic_rejects_before_encoding`.
         {
             assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
                 bridge
@@ -271,7 +263,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             });
         }
 
-        // Phase `gpu_target_poisoned_geometry_diagnostic_rejects_before_encoding`.
         {
             assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
                 bridge
@@ -291,7 +282,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             });
         }
 
-        // Phase `gpu_target_poisoned_segment_replay_rejects_before_encoding`.
         {
             assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
                 let input = vello::SegmentOrderReplayInput {
@@ -517,6 +507,102 @@ fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
     );
 }
 
+/// What the presenter does with a lost device, on the production path ([`retire_lost_bridge`]):
+/// a GPU that was reset is opened again; a GPU whose next device is lost before its first frame
+/// (the Yoga whose GPU firmware died: every new device was born lost, for ever, and nothing was
+/// shown again) is given up for software, and the person is told once. One test, because the
+/// software fallback is the process's.
+#[cfg(target_os = "linux")]
+#[test]
+fn gpu_target_a_reset_gpu_is_reopened_and_a_dead_one_gives_way_to_software() {
+    const SIZE: u32 = 64;
+    let pitch = SIZE as usize * 4;
+    let scene = rect_scene(SIZE, SIZE, Color::WHITE);
+    let mut scanout = vec![0x11; pitch * SIZE as usize];
+    ui::gpu::reset_software_fallback_for_test();
+    let _ = crate::shell::graphics_notice::drain();
+    let lose = |bridge: &VelloDrmBridge| {
+        // SAFETY: the hal device is only flagged; no raw handle leaves this block.
+        unsafe { bridge.target.device.as_hal::<wgpu::hal::api::Vulkan>() }
+            .expect("the compositor renders through Vulkan")
+            .simulate_device_loss();
+    };
+
+    // A reset after frames were shown: the same GPU, nobody bothered.
+    let mut paint = Some(required_bridge(SIZE, SIZE));
+    let bridge = paint.as_mut().expect("bridge");
+    bridge
+        .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+        .expect("the frame before the reset");
+    assert!(
+        retire_lost_bridge(&mut paint).is_none(),
+        "a working device is kept"
+    );
+    assert!(paint.is_some());
+    lose(paint.as_ref().expect("bridge"));
+    let result = paint.as_mut().expect("bridge").paint_damage_into_xrgb8888(
+        &scene,
+        version(2, None, None),
+        &mut scanout,
+        pitch,
+    );
+    assert!(
+        matches!(result, Err(BridgeError::DeviceLost(_))),
+        "{result:?}"
+    );
+    assert!(retire_lost_bridge(&mut paint).is_some());
+    assert!(
+        paint.is_none(),
+        "the lost bridge is dropped without waiting for its GPU"
+    );
+    assert!(
+        ui::gpu::software_fallback().is_none(),
+        "a device that showed frames was reset: its GPU is opened again"
+    );
+    assert!(crate::shell::graphics_notice::drain().is_empty());
+
+    // The replacement is lost before its first frame: the GPU cannot be brought back.
+    let mut paint = Some(required_bridge(SIZE, SIZE));
+    lose(paint.as_ref().expect("bridge"));
+    let result = paint.as_mut().expect("bridge").paint_damage_into_xrgb8888(
+        &scene,
+        version(1, None, None),
+        &mut scanout,
+        pitch,
+    );
+    assert!(
+        matches!(result, Err(BridgeError::DeviceLost(_))),
+        "{result:?}"
+    );
+    assert!(retire_lost_bridge(&mut paint).is_some());
+    assert!(
+        ui::gpu::software_fallback().is_some(),
+        "a device lost before its first frame gives the GPU up"
+    );
+    let notices = crate::shell::graphics_notice::drain();
+    assert_eq!(notices.len(), 1, "the person is told once: {notices:?}");
+
+    // The next renderer draws in software and shows the scene.
+    scanout.fill(0x11);
+    let mut software = required_bridge(SIZE, SIZE);
+    assert_eq!(software.adapter().device_type, wgpu::DeviceType::Cpu);
+    software
+        .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+        .expect("the software renderer paints");
+    assert!(
+        scanout
+            .chunks_exact(4)
+            .all(|pixel| pixel.get(..3) == Some(&[0xFF, 0xFF, 0xFF][..])),
+        "the software renderer repaints the whole scene"
+    );
+    assert!(software.device_lost().is_none());
+    assert!(
+        crate::shell::graphics_notice::drain().is_empty(),
+        "giving the GPU up is told once, not per renderer"
+    );
+    ui::gpu::reset_software_fallback_for_test();
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -525,7 +611,6 @@ fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
 fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
     // Phase `gpu_target_recovery_stays_within_attempt_phase_and_deadline_budgets`.
     {
-        // Phase `gpu_target_overflow_uses_four_attempt_budget`.
         {
             let mut target = required_target(384, 256);
             let region = vello::FineDamageRect {
@@ -538,7 +623,7 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &Scene::new(),
                     version(1, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             let scene = opaque_rect_stack_in_rect_scene(region);
@@ -546,7 +631,7 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &scene,
                     version(2, Some(1), Some(&[region])),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert_eq!(outcome.sparse_attempts, 1);
@@ -566,7 +651,7 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &scene,
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert_eq!(actual, target_pixels(&oracle));
@@ -596,7 +681,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
             assert_eq!(target_pixels(&target), target_pixels(&oracle));
         }
 
-        // Phase `gpu_target_linux_phase_limits_survive_recovery`.
         {
             let mut bridge = required_bridge(128, 128);
             let mut test = completion_clock();
@@ -677,7 +761,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
             assert!(exhausted.target.completed_view().is_none());
         }
 
-        // Phase `gpu_target_linux_phase_failures_abort_without_recovery`.
         {
             // Every individual Linux phase failure aborts immediately; no completed overflow may
             // turn a failed fence/callback/counter observation into another attempt.
@@ -732,7 +815,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
             }
         }
 
-        // Phase `gpu_target_absolute_deadline_spans_recovery`.
         {
             let mut target = required_target(128, 128);
             let mut test = completion_clock();
@@ -783,7 +865,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
 
     // Phase `gpu_target_always_waits_on_a_completion_marker`.
     {
-        // Phase `gpu_target_disabled_measurement_still_waits_for_completion`.
         {
             let mut target = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
             assert_eq!(
@@ -810,14 +891,13 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
                 .render_until(
                     &Scene::new(),
                     version(2, None, None),
-                    Instant::now() + Duration::from_secs(10),
+                    tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
             assert_eq!(stats.completion_markers, stats.render_attempts);
             assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
         }
 
-        // Phase `gpu_target_post_render_is_covered_by_existing_completion_marker`.
         {
             let mut target = required_target(8, 4);
             let output = target.device.create_texture(&wgpu::TextureDescriptor {
@@ -904,7 +984,7 @@ fn assert_poisoned_diagnostic_rejected(
         .device
         .poll(wgpu::PollType::Wait {
             submission_index: None,
-            timeout: Some(Duration::from_secs(1)),
+            timeout: Some(tilo_test_env::hang_bound()),
         })
         .expect("bounded test-only drain before device destruction");
     bridge.target.device.destroy();

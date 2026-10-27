@@ -21,7 +21,7 @@
 //!
 //! `Identity::attestations` is a *cache* of what the local device has
 //! observed, not authoritative — fresh attestations may arrive later.
-//! Callers must re-query the issuer (or the channel's role table) before
+//! Callers must re-query the issuer (or the channel's live grants) before
 //! making a security decision.
 
 use serde::{Deserialize, Serialize};
@@ -107,10 +107,6 @@ pub struct Attestation {
 impl Attestation {
     /// Canonical bytes the issuer signs to mint this attestation; omits
     /// `signature` so signing is well-defined.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if canonicalising the view fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         // Postcard is structural, so build a struct-shaped tuple mirroring
         // `Attestation`'s field order minus `signature` — a named helper

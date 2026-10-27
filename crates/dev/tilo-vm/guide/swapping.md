@@ -92,7 +92,9 @@ compiler cache, and the owner's own `cargo` and sccache keep working beside
 it. Before the first such build the daemon gives back root-owned files earlier
 daemons left and stops a root sccache server; `tilo-vm doctor` lists any
 worktree `target/` or compiler cache that still holds root-owned files, with
-the `chown` that fixes it.
+the `chown` that fixes it. It also fails if another worktree of this
+repository writes into this one's `target/`: one target directory serves one
+worktree, and two cargo runs filling it hand each other's binary back.
 
 `--builder host` builds with this host's cargo (or `TILO_VM_CARGO`, any cargo
 drop-in, such as one that builds on another machine) and uploads the layer. It
@@ -365,9 +367,8 @@ use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
 
 Without a remote builder (CI, or a host whose architecture has none) the same
-cohort comes from CI: dispatch vm-acceptance with `ref=<branch>
-swap=apps+runtime prebuilt_cohort=true`. CI builds the branch's launcher,
-install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
+cohort comes from CI: `t dispatch vm-acceptance-cohort --ref <branch>`. CI
+builds the branch's launcher, install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
 installs them in that order through the daemon's normal signed-cohort checks,
 from a checkout at exactly the producing commit
 (`scripts/vm-acceptance/README.md`, `docs/layer-artifacts.md`). `--builder host`

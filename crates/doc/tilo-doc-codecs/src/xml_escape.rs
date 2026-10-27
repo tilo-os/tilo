@@ -69,7 +69,6 @@ mod tests {
 
     #[test]
     fn xml_escapers_escape_exactly_their_contexts_specials() {
-        // Phase `text_leaves_quotes_alone`.
         {
             assert_eq!(escape_text(ALL), r#"a&amp;b&lt;c&gt;d"e'f"#);
             let mut out = String::new();
@@ -78,19 +77,15 @@ mod tests {
             }
             assert_eq!(out, escape_text(ALL));
         }
-        // Phase `attr_escapes_the_double_quote_only`.
         {
             assert_eq!(escape_attr(ALL), r"a&amp;b&lt;c&gt;d&quot;e'f");
         }
-        // Phase `attr_quotes_escape_both_quotes_as_xml_entities`.
         {
             assert_eq!(escape_attr_quotes(ALL), "a&amp;b&lt;c&gt;d&quot;e&apos;f");
         }
-        // Phase `html_attr_uses_a_numeric_apostrophe`.
         {
             assert_eq!(escape_html_attr(ALL), "a&amp;b&lt;c&gt;d&quot;e&#39;f");
         }
-        // Phase `non_ascii_and_existing_entities_pass_through_escaped_once`.
         {
             assert_eq!(escape_text("é &amp; 😀"), "é &amp;amp; 😀");
             assert_eq!(escape_attr(""), "");

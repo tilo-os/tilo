@@ -88,6 +88,10 @@ pub struct HomeSource {
     captured: Option<captured::Captured>,
     granted_path: Option<std::path::PathBuf>,
     original_roots: Option<Arc<super::GrantedHomeRoots>>,
+    /// Nested subtrees the person excluded from this source. The inventory is
+    /// built and revalidated with these applied, so the sealed archive and the
+    /// installed import both honour them.
+    exclusions: Vec<std::path::PathBuf>,
 }
 impl HomeSource {
     /// Recover source-bound permission candidates from this Home review refusal.
@@ -130,19 +134,37 @@ impl HomeSource {
     /// Capture when the approved source provides native immutable epochs.
     /// Unsupported filesystems retain the strict live-source export contract.
     pub fn review_for_preparation(home: &Path, cancel: &AtomicBool) -> io::Result<Arc<Self>> {
-        Self::review_preparation(home, cancel, None)
+        Self::review_preparation(home, &[], cancel, None)
+    }
+    /// Review with the person's nested source exclusions. The canonical Home
+    /// producer applies them to the inventory, which is what the sealed archive,
+    /// its verification and the installed import consume.
+    ///
+    /// # Errors
+    /// Refuses unsafe grants, changed sources and exclusions outside the Home.
+    pub fn review_selected(
+        home: &Path,
+        exclusions: &[std::path::PathBuf],
+        cancel: &AtomicBool,
+    ) -> io::Result<Arc<Self>> {
+        Self::review_preparation(home, exclusions, cancel, None)
     }
     fn review_preparation(
         home: &Path,
+        exclusions: &[std::path::PathBuf],
         cancel: &AtomicBool,
         storage: Option<&dyn Fn() -> io::Result<Arc<super::migration_review::InventoryScratch>>>,
     ) -> io::Result<Arc<Self>> {
         let pin = PinnedDirectory::open_absolute(home)?;
+        super::source_tree::validate_exclusions_under(&pin.file, exclusions)?;
         #[cfg(target_os = "linux")]
         super::migration_review::MountedHomeLocations::discover(&pin, home, cancel)?
             .require_single_root(cancel)?;
-        if let Some(captured) =
-            captured::Captured::review(home, cancel).map_err(source_unavailable)?
+        // An immutable whole-home epoch cannot honour nested exclusions, so a
+        // selected review uses the live inventory that can.
+        if exclusions.is_empty()
+            && let Some(captured) =
+                captured::Captured::review(home, cancel).map_err(source_unavailable)?
         {
             pin.validate()?;
             return Ok(Arc::new(Self {
@@ -152,33 +174,63 @@ impl HomeSource {
                 captured: Some(captured),
                 granted_path: Some(home.to_path_buf()),
                 original_roots: None,
+                exclusions: Vec::new(),
             }));
         }
         check_cancel(cancel)?;
         match storage {
-            Some(storage) => Self::review_live_with_working_storage(home, storage()?, cancel),
-            None => Self::review_with_cancel(home, cancel),
+            Some(storage) => Self::review_live_with_working_storage_selected(
+                home,
+                exclusions,
+                storage()?,
+                cancel,
+            ),
+            None => Self::review_with_cancel_selected(home, exclusions, cancel),
         }
     }
     /// Media preparation may retain permission for a source that will only be
     /// inventoried after boot under its authenticated read-only projection.
     pub fn review_for_media_preparation(home: &Path, cancel: &AtomicBool) -> io::Result<Arc<Self>> {
-        Self::review_media_preparation(home, cancel, None)
+        Self::review_media_preparation(home, &[], cancel, None)
+    }
+    /// The same media review with nested exclusions carried into the plan.
+    ///
+    /// # Errors
+    /// Refuses unsafe grants, changed sources and exclusions outside the Home.
+    pub fn review_selected_for_media_preparation(
+        home: &Path,
+        exclusions: &[std::path::PathBuf],
+        cancel: &AtomicBool,
+    ) -> io::Result<Arc<Self>> {
+        Self::review_media_preparation(home, exclusions, cancel, None)
     }
     pub fn review_media_with_working_storage(
         home: &Path,
         cancel: &AtomicBool,
         storage: &dyn Fn() -> io::Result<Arc<super::migration_review::InventoryScratch>>,
     ) -> io::Result<Arc<Self>> {
-        Self::review_media_preparation(home, cancel, Some(storage))
+        Self::review_media_preparation(home, &[], cancel, Some(storage))
+    }
+    /// # Errors
+    /// Refuses unsafe grants, unavailable working storage and exclusions
+    /// outside the Home.
+    pub fn review_selected_media_with_working_storage(
+        home: &Path,
+        exclusions: &[std::path::PathBuf],
+        cancel: &AtomicBool,
+        storage: &dyn Fn() -> io::Result<Arc<super::migration_review::InventoryScratch>>,
+    ) -> io::Result<Arc<Self>> {
+        Self::review_media_preparation(home, exclusions, cancel, Some(storage))
     }
     fn review_media_preparation(
         home: &Path,
+        exclusions: &[std::path::PathBuf],
         cancel: &AtomicBool,
         storage: Option<&dyn Fn() -> io::Result<Arc<super::migration_review::InventoryScratch>>>,
     ) -> io::Result<Arc<Self>> {
         check_cancel(cancel)?;
         let pin = PinnedDirectory::open_absolute(home)?;
+        super::source_tree::validate_exclusions_under(&pin.file, exclusions)?;
         #[cfg(target_os = "linux")]
         super::migration_review::MountedHomeLocations::discover(&pin, home, cancel)?
             .require_single_root(cancel)?;
@@ -205,12 +257,13 @@ impl HomeSource {
                     captured: None,
                     granted_path: Some(home.into()),
                     original_roots: None,
+                    exclusions: exclusions.to_vec(),
                 }));
             }
         }
         // Native immutable Btrfs capture remains the existing copy route.
         pin.validate()?;
-        Self::review_preparation(home, cancel, storage)
+        Self::review_preparation(home, exclusions, cancel, storage)
     }
     /// All mounted grants come from the shared platform permission generation.
     /// This retains source scope only; no contents, export or Ready is invented.
@@ -220,6 +273,14 @@ impl HomeSource {
     pub fn review_granted_original_roots(
         home: &Path,
         roots: Arc<super::GrantedHomeRoots>,
+        cancel: &AtomicBool,
+    ) -> io::Result<Arc<Self>> {
+        Self::review_granted_original_roots_selected(home, roots, &[], cancel)
+    }
+    pub fn review_granted_original_roots_selected(
+        home: &Path,
+        roots: Arc<super::GrantedHomeRoots>,
+        exclusions: &[std::path::PathBuf],
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
         let pin = PinnedDirectory::open_absolute(home)?;
@@ -245,6 +306,7 @@ impl HomeSource {
             captured: None,
             granted_path: Some(home.into()),
             original_roots: Some(roots),
+            exclusions: exclusions.to_vec(),
         });
         source.validate_original_roots(cancel)?;
         Ok(source)
@@ -317,6 +379,11 @@ impl HomeSource {
         self.captured.is_some()
     }
 
+    /// The nested subtrees this review excludes, if any.
+    pub fn exclusions(&self) -> &[std::path::PathBuf] {
+        &self.exclusions
+    }
+
     pub fn capture_status(&self) -> &'static str {
         if self.original_only {
             return "awaiting-original-boot";
@@ -360,6 +427,7 @@ impl HomeSource {
             captured: None,
             granted_path: None,
             original_roots: None,
+            exclusions: Vec::new(),
         });
         source.validate_with_cancel(cancel)?;
         Ok(source)
@@ -375,6 +443,7 @@ impl HomeSource {
     ) -> io::Result<Arc<Self>> {
         let roots = authority.validate_reader(&pin.file)?;
         check_cancel(cancel)?;
+        let exclusions = authority.exclusion_paths()?;
         let inventory = if let Some(roots) = roots {
             SourceInventory::capture_projected_original_home_with_scratch(
                 &pin,
@@ -391,6 +460,7 @@ impl HomeSource {
                 cancel,
             )?
         };
+        let inventory = inventory.with_exclusions(&pin, &exclusions)?;
         portable_transfer::validate_home_metadata(&pin, &inventory, cancel)?;
         if inventory.summary()?.special_files != 0 {
             return Err(changed(
@@ -404,6 +474,7 @@ impl HomeSource {
             captured: None,
             granted_path: None,
             original_roots: None,
+            exclusions,
         });
         source.validate_with_cancel(cancel)?;
         authority.validate_reader(&source.pin.file)?;
@@ -416,12 +487,21 @@ impl HomeSource {
     }
     /// The preparation worker owns and passes this live cancellation token.
     pub fn review_with_cancel(home: &Path, cancel: &AtomicBool) -> io::Result<Arc<Self>> {
+        Self::review_with_cancel_selected(home, &[], cancel)
+    }
+    pub fn review_with_cancel_selected(
+        home: &Path,
+        exclusions: &[std::path::PathBuf],
+        cancel: &AtomicBool,
+    ) -> io::Result<Arc<Self>> {
         check_cancel(cancel)?;
         let pin = PinnedDirectory::open_absolute(home)?;
+        super::source_tree::validate_exclusions_under(&pin.file, exclusions)?;
         #[cfg(target_os = "linux")]
         super::migration_review::MountedHomeLocations::discover(&pin, home, cancel)?
             .require_single_root(cancel)?;
-        let inventory = SourceInventory::capture_portable_home(&pin, home)?;
+        let inventory = SourceInventory::capture_portable_home(&pin, home)?
+            .with_exclusions(&pin, exclusions)?;
         portable_transfer::validate_home_metadata(&pin, &inventory, cancel)?;
         if inventory.summary()?.special_files != 0 {
             return Err(changed(
@@ -435,6 +515,7 @@ impl HomeSource {
             captured: None,
             granted_path: Some(home.to_path_buf()),
             original_roots: None,
+            exclusions: exclusions.to_vec(),
         }))
     }
     /// An explicitly admitted working namespace is retained with the inventory.
@@ -446,12 +527,22 @@ impl HomeSource {
         scratch: Arc<super::migration_review::InventoryScratch>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
+        Self::review_live_with_working_storage_selected(home, &[], scratch, cancel)
+    }
+    pub fn review_live_with_working_storage_selected(
+        home: &Path,
+        exclusions: &[std::path::PathBuf],
+        scratch: Arc<super::migration_review::InventoryScratch>,
+        cancel: &AtomicBool,
+    ) -> io::Result<Arc<Self>> {
         check_cancel(cancel)?;
         let pin = PinnedDirectory::open_absolute(home)?;
+        super::source_tree::validate_exclusions_under(&pin.file, exclusions)?;
         super::migration_review::MountedHomeLocations::discover(&pin, home, cancel)?
             .require_single_root(cancel)?;
         let inventory =
-            SourceInventory::capture_portable_home_with_storage(&pin, home, scratch, cancel)?;
+            SourceInventory::capture_portable_home_with_storage(&pin, home, scratch, cancel)?
+                .with_exclusions(&pin, exclusions)?;
         portable_transfer::validate_home_metadata(&pin, &inventory, cancel)?;
         if inventory.summary()?.special_files != 0 {
             return Err(changed(
@@ -465,6 +556,7 @@ impl HomeSource {
             captured: None,
             granted_path: Some(home.into()),
             original_roots: None,
+            exclusions: exclusions.to_vec(),
         }))
     }
     /// Renew contents under the original folder grant. A captured source may
@@ -482,12 +574,18 @@ impl HomeSource {
             .and_then(SourceInventory::working_storage);
         #[cfg(target_os = "linux")]
         let latest = match storage {
-            Some(storage) => Self::review_live_with_working_storage(path, storage, cancel),
-            None => Self::review_for_preparation(path, cancel),
+            Some(storage) => Self::review_live_with_working_storage_selected(
+                path,
+                &self.exclusions,
+                storage,
+                cancel,
+            ),
+            None => Self::review_preparation(path, &self.exclusions, cancel, None),
         }
         .map_err(source_unavailable)?;
         #[cfg(not(target_os = "linux"))]
-        let latest = Self::review_for_preparation(path, cancel).map_err(source_unavailable)?;
+        let latest = Self::review_preparation(path, &self.exclusions, cancel, None)
+            .map_err(source_unavailable)?;
         self.validate_original_grant()?;
         latest.validate_original_grant()?;
         if !super::nofollow::same_directory_identity(&self.pin.identity, &latest.pin.identity)
@@ -1264,7 +1362,6 @@ mod original_budget_tests {
         assert!(!media.join("home-bounded.sealed").exists());
         assert_eq!(std::fs::read_dir(&media).unwrap().count(), 0);
         assert_eq!(std::fs::read(source.join("document")).unwrap(), document);
-        // The same production sink succeeds with sufficient admitted budget.
         let grant = MediaGrant::open(&media)
             .unwrap()
             .limit_original_reservation(2 * 1024 * 1024)

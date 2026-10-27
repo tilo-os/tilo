@@ -84,11 +84,18 @@ fn selected(host: &Host) -> TestApp<MessagesShell> {
     app
 }
 
+/// Whether any accessible node `names` `text`.
+///
+/// One conversation line is one list item whose spoken name is who said it,
+/// when, whether it arrived, and what it says — the substrate's shape
+/// (`ui::widget::conversation::ConversationList`). So a body is found in the
+/// item that names it rather than as a node of its own, and a plaintext that
+/// must not be shown is checked for anywhere in that name.
 fn has_text(app: &mut TestApp<MessagesShell>, text: &str) -> bool {
     app.harness()
         .a11y_nodes()
         .iter()
-        .any(|(_, node)| node.label() == Some(text))
+        .any(|(_, node)| node.label().is_some_and(|label| label.contains(text)))
 }
 
 #[test]
@@ -98,8 +105,9 @@ fn host_history_is_transient_and_submission_is_never_delivered() {
     app.effect(&MessagesEffect::ReadHistory { choice: choice() })
         .expect("authorized history job");
     assert!(has_text(&mut app, PRIVATE));
+    // The transport's answer is in the shared vocabulary.
     assert!(has_text(&mut app, "Submitted"));
-    assert!(!has_text(&mut app, "Delivered to recipient"));
+    assert!(!has_text(&mut app, "Delivered"));
     assert!(!app.harness().dump_json().contains(PRIVATE));
     assert!(
         app.effect(&MessagesEffect::Send {
@@ -156,7 +164,7 @@ fn late_history_cannot_reappear_after_navigation_or_contact_revocation() {
         host.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .job_updates(invocation)
                         .iter()
@@ -282,7 +290,7 @@ fn late_send_failure_preserves_the_selected_service_history_and_reports_failure(
             pending.release();
             assert!(
                 app.harness()
-                    .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                    .wait_until(tilo_test_env::hang_bound(), |harness| {
                         harness
                             .job_updates(invocation)
                             .iter()
@@ -500,7 +508,7 @@ fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
     pending.release();
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .job_updates(invocation)
                     .iter()
@@ -545,7 +553,6 @@ fn sending_text_is_secret_and_history_is_device_bound_read_only() {
         text: PRIVATE.into(),
     };
     assert!(!format!("{private:?}").contains(PRIVATE));
-    assert!(history.device_only);
     assert_eq!(history.action_kind, ui::tilo_actions::ActionKind::Read);
 }
 
@@ -565,11 +572,11 @@ fn capture_only_history_is_readable_in_narrow_wide_and_os_themes() {
         for label in [
             "Are you nearby?",
             "On my way. See you in ten minutes!",
-            "Delivered to recipient",
+            "Delivered",
         ] {
             let node = nodes
                 .iter()
-                .find(|(_, node)| node.label() == Some(label))
+                .find(|(_, node)| node.label().is_some_and(|spoken| spoken.contains(label)))
                 .expect("visible history text");
             let bounds = node.1.bounds().expect("history geometry");
             assert!(
@@ -672,4 +679,33 @@ fn another_personas_host_capability_is_unavailable_before_any_read() {
     );
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
     assert!(!has_text(&mut app, PRIVATE));
+}
+
+/// The transport's five answers land on the shared vocabulary — the same
+/// words, glyphs and tones Chat shows — rather than on five labels of this
+/// app's own.
+#[test]
+fn every_transport_state_speaks_the_shared_delivery_vocabulary() {
+    use tilo_messaging::Delivery;
+    assert_eq!(
+        crate::history::delivery_key(Delivery::Submitted),
+        "conversation-delivery-submitted"
+    );
+    assert_eq!(
+        crate::history::delivery_key(Delivery::ServerAcknowledged),
+        "conversation-delivery-sent"
+    );
+    assert_eq!(
+        crate::history::delivery_key(Delivery::RecipientDelivered),
+        "conversation-delivery-delivered"
+    );
+    assert_eq!(
+        crate::history::delivery_key(Delivery::RecipientRead),
+        "conversation-delivery-read"
+    );
+    // "We cannot say" is a state somebody can read, not silence.
+    assert_eq!(
+        crate::history::delivery_key(Delivery::Uncertain),
+        "conversation-delivery-uncertain"
+    );
 }

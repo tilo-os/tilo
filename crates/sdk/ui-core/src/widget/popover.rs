@@ -1319,12 +1319,27 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
+    /// The content is laid out open or closed (so reopening finds its
+    /// nodes), so the layout walk reaches it either way.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if self.options.is_none() {
+            visitor(&self.content);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.open && self.options.is_none() {
             vec![&mut self.content]
         } else {
             Vec::new()
         }
+    }
+
+    // An options menu, and a labelled panel, have a node of their own; a
+    // closed one is hidden.
+    fn accessibility_hidden(&self) -> bool {
+        !self.open && (self.options.is_some() || self.label.is_some())
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1336,7 +1351,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 AccessNode::new(Role::Group)
                     .with_name(label.clone())
                     .with_state(AccessState {
-                        hidden: !self.open,
+                        hidden: self.accessibility_hidden(),
                         ..Default::default()
                     })
             });
@@ -1363,7 +1378,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 .with_optional_name(self.label.clone())
                 .with_state(AccessState {
                     expanded: Some(self.open),
-                    hidden: !self.open,
+                    hidden: self.accessibility_hidden(),
                     ..Default::default()
                 })
                 .with_children(children),
@@ -1413,6 +1428,11 @@ impl<C: Widget + 'static> PopoverButton<C> {
 
     pub fn popover(&self) -> &Popover<C> {
         &self.popover
+    }
+
+    /// The popover, to change what it shows.
+    pub fn popover_mut(&mut self) -> &mut Popover<C> {
+        &mut self.popover
     }
 
     pub fn button_mut(&mut self) -> &mut crate::widget::Button {

@@ -26,6 +26,8 @@ use crate::record::{SavedConnection, Workspace as Record, id_of, uuid_of};
 use crate::resource::DbEffect;
 use crate::session::{MainTab, RunStatus, Session};
 use crate::workspace::Workspace;
+use ui::icons::Icon;
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews};
 
 /// What a saved connection's keyring entry holds.
 const PASSWORD_PURPOSE: &str = "password";
@@ -102,11 +104,17 @@ pub struct DbClientApp {
     /// The caller of a running "Run SQL" effect, answered when the query
     /// settles.
     effect_reply: Option<EffectReply>,
+    /// A copy whose outcome the clipboard reports after it returned: a paste
+    /// that fails later is said, not confirmed.
+    copy: ui::CopyWatch,
+    /// The result row the person chose, and the result generation it belongs
+    /// to: a fresh result starts with nothing chosen.
+    selected_row: Option<usize>,
+    selected_generation: usize,
     /// The record as last presented.
     record: Rc<Record>,
     export_rx: Option<ui::portal::PortalChannel>,
     export_snapshot: Option<crate::model::QueryResult>,
-    /// The dialog over the window, if any.
     dialog: Option<Dialog>,
     /// Potentially destructive SQL awaiting an explicit second confirmation.
     pending_query_confirmation: Option<String>,
@@ -138,15 +146,14 @@ impl DbClientApp {
 
     fn build(session: Session) -> Self {
         let link = Link::new();
-        let search = ui::search::search_button(ui::search::SearchRequest::this_app());
-        let actions: Vec<ui::widget::Element> = vec![Box::new(search)];
+        // The window bar's search narrows the tables (the navigator's
+        // filterable section); its views are the workspace's tabs.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Document)
             .with_id("db-client")
+            .with_window_toolbar()
             .sidebar(Box::new(Navigator::new(&link)))
-            .with_filter(ui::widget::SearchField::filter().with_placeholder("Filter tables"))
-            .content(Box::new(Workspace::new(&link)))
-            .content_header("", actions);
+            .content(Box::new(Workspace::new(&link)));
         let mut app = Self {
             shell,
             link,
@@ -155,6 +162,9 @@ impl DbClientApp {
             secrets: None,
             pending_connect_id: None,
             effect_reply: None,
+            copy: ui::CopyWatch::default(),
+            selected_row: None,
+            selected_generation: 0,
             record: Rc::default(),
             export_rx: None,
             export_snapshot: None,
@@ -239,7 +249,6 @@ impl DbClientApp {
         self.session.drain();
     }
 
-    /// Open the new-connection dialog.
     pub fn open_connect_dialog(&mut self) {
         self.dialog = Some(Dialog::Connect);
     }
@@ -275,6 +284,45 @@ impl DbClientApp {
         // The toolbar runs the very effect the palette and agents invoke.
         if let Err(error) = self.execute_effect(DbEffect::Query { sql }) {
             self.session.status = RunStatus::Error(error);
+        }
+    }
+
+    /// Copy the row selected in the result table, as tab-separated text.
+    fn copy_row(&mut self) {
+        let (result, row) = self
+            .link
+            .read(|model| (model.query.clone(), model.selected_row));
+        let text = result
+            .as_ref()
+            .zip(row)
+            .and_then(|(result, row)| result.row_text(row));
+        match text {
+            Some(text) => self.copy_to_clipboard(text, "db-copied-row"),
+            None => {
+                self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
+            }
+        }
+    }
+
+    /// Copy the whole result, header line first, as tab-separated text.
+    fn copy_result(&mut self) {
+        let result = self.link.read(|model| model.query.clone());
+        match result {
+            Some(result) => self.copy_to_clipboard(result.text(), "db-copied-result"),
+            None => {
+                self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
+            }
+        }
+    }
+
+    /// Put `text` on the clipboard and say so — or say it did not take. A
+    /// copy can fail after it returns, so it is watched and the failure it
+    /// reports later replaces the confirmation.
+    fn copy_to_clipboard(&mut self, text: String, done: &str) {
+        if self.copy.watch(ui::try_clipboard_copy(&text)) {
+            self.session.status = RunStatus::Ok(crate::i18n::t(done));
+        } else {
+            self.session.status = RunStatus::Error(crate::i18n::t("db-copy-failed"));
         }
     }
 
@@ -323,6 +371,22 @@ impl DbClientApp {
                 }
             }
             Intent::DismissStatus => self.session.status = RunStatus::Idle,
+            Intent::Cancel => {
+                // The engine stops the exact query it is running; the reply
+                // that follows reports the cancellation honestly.
+                if !self.session.cancel_in_flight_query() {
+                    // Nothing was running: say that, rather than blaming a
+                    // query that is not there.
+                    self.session.status = RunStatus::Ok(crate::i18n::t("db-cancel-finished"));
+                }
+            }
+            Intent::CopyRow => self.copy_row(),
+            Intent::SelectRow(row) => {
+                let generation = self.link.read(|model| model.query_generation);
+                self.selected_row = row;
+                self.selected_generation = generation;
+            }
+            Intent::CopyResult => self.copy_result(),
             Intent::PreviousPage => self.session.prev_data_page(),
             Intent::NextPage => self.session.next_data_page(),
         }
@@ -330,6 +394,12 @@ impl DbClientApp {
 
     /// Describe the session to the views.
     fn publish(&mut self) {
+        // A fresh result is a different set of rows: the chosen one does not
+        // carry over to it.
+        if self.selected_generation != self.session.query_gen {
+            self.selected_row = None;
+            self.selected_generation = self.session.query_gen;
+        }
         let session = &self.session;
         let signature = schema_signature(&session.schema);
         if self.published.schema.as_ref().map(|(s, _)| *s) != Some(signature) {
@@ -398,6 +468,7 @@ impl DbClientApp {
                 .active_connection()
                 .map(|profile| profile.name.clone())
                 .unwrap_or_default(),
+            selected_row: self.selected_row,
         };
         self.link.publish(model);
     }
@@ -883,6 +954,9 @@ impl ui::widget::Decorator for DbClientApp {
         // remote query land on screen without further user input.
         self.session.drain();
         self.settle_effect();
+        if self.copy.failed() {
+            self.session.status = RunStatus::Error(crate::i18n::t("db-copy-failed"));
+        }
         if self.export_rx.is_some() {
             self.drain_export_portal();
         }
@@ -901,8 +975,7 @@ impl ui::widget::Decorator for DbClientApp {
         }
 
         self.publish();
-        let title = self.link.read(|model| model.active_name.clone());
-        self.shell.set_content_title(title);
+        self.run_window_toolbar();
         Widget::sync(&mut self.shell, state, path);
     }
 
@@ -916,6 +989,25 @@ impl ui::widget::Decorator for DbClientApp {
                 Intent::Run(self.link.sql())
             };
             self.link.ask(intent);
+            *ctx.handled = true;
+            return;
+        }
+        // Escape is the way out of a statement that will not come back.
+        if self.dialog.is_none()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+            && self.link.read(|model| model.busy)
+        {
+            self.link.ask(Intent::Cancel);
             *ctx.handled = true;
             return;
         }
@@ -941,7 +1033,118 @@ impl ui::widget::Decorator for DbClientApp {
     }
 }
 
-impl DbClientApp {}
+/// The window bar's action that runs the query in the editor.
+pub(crate) const RUN_QUERY: &str = "db.query.run";
+/// The window bar's action that stops the query in flight.
+pub(crate) const CANCEL_QUERY: &str = "db.query.cancel";
+/// The window bar's action that copies the selected row.
+pub(crate) const COPY_ROW: &str = "db.result.copy-row";
+/// The window bar's action that copies the whole result.
+pub(crate) const COPY_RESULT: &str = "db.result.copy-result";
+
+impl DbClientApp {
+    /// Run what the person did in the window's bar, then declare its slots:
+    /// the shell's own, the open connection as the location, and the
+    /// workspace's tabs as the views once there is a connection.
+    fn run_window_toolbar(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = &event
+                && let Some(tab) = MainTab::all().into_iter().find(|tab| tab.view_id() == id)
+            {
+                self.apply(Intent::SelectTab(tab));
+                self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && id == RUN_QUERY
+                && self.link.read(|model| model.connected && !model.busy)
+            {
+                self.apply(Intent::Run(self.link.sql()));
+                self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && id == CANCEL_QUERY
+                && self.link.read(|model| model.busy)
+            {
+                self.apply(Intent::Cancel);
+                self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && (id == COPY_ROW || id == COPY_RESULT)
+            {
+                self.apply(if id == COPY_ROW {
+                    Intent::CopyRow
+                } else {
+                    Intent::CopyResult
+                });
+                self.publish();
+            }
+        }
+        let (name, connected, tab, can_run, busy, has_result) = self.link.read(|model| {
+            (
+                model.active_name.clone(),
+                !model.connections.is_empty(),
+                model.tab,
+                model.connected && !model.busy,
+                model.busy,
+                model.query.as_ref().is_some_and(|query| query.is_select),
+            )
+        });
+        let mut toolbar = self.shell.window_toolbar();
+        // Run stands in the bar while the query is in front; Cancel takes its
+        // place while a statement runs, because a disabled Run with no way
+        // out is how a long query used to end.
+        if tab == MainTab::Query && connected {
+            let mut actions = Vec::new();
+            if busy {
+                actions.push(ToolbarAction::new(
+                    CANCEL_QUERY,
+                    Icon::X.name(),
+                    crate::i18n::t("db-cancel-query"),
+                ));
+            } else {
+                actions.push(
+                    ToolbarAction::new(
+                        RUN_QUERY,
+                        Icon::Play.name(),
+                        crate::i18n::t("db-run-query"),
+                    )
+                    .enabled(can_run),
+                );
+            }
+            if has_result {
+                actions.push(
+                    ToolbarAction::new(COPY_ROW, Icon::Copy.name(), crate::i18n::t("db-copy-row"))
+                        .in_menu(),
+                );
+                actions.push(
+                    ToolbarAction::new(
+                        COPY_RESULT,
+                        Icon::ClipboardPaste.name(),
+                        crate::i18n::t("db-copy-result"),
+                    )
+                    .in_menu(),
+                );
+            }
+            ui::widget::NavShell::push_window_actions(&mut toolbar, actions);
+        }
+        toolbar.location = (!name.is_empty()).then(|| ToolbarLocation {
+            label: name,
+            ..ToolbarLocation::default()
+        });
+        toolbar.views = connected.then(|| ToolbarViews {
+            name: crate::i18n::t("db-view-switcher"),
+            choices: MainTab::all()
+                .into_iter()
+                .map(|tab| ToolbarView {
+                    id: tab.view_id().to_owned(),
+                    label: tab.label().to_owned(),
+                })
+                .collect(),
+            chosen: tab.view_id().to_owned(),
+        });
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+}
 
 /// A workspace document whose SQL buffer holds the starter query, as a
 /// capture stages it: what the tests show beside a sampled client.
@@ -1091,8 +1294,6 @@ mod editor_sql_tests {
         assert_eq!(sql(&app), "WITH 1 AS t;");
     }
 
-    /// Choosing a starter query replaces the editor's text with it, as one
-    /// edit of the SQL child.
     #[test]
     fn choosing_a_starter_query_loads_it_into_the_editor() {
         let mut app = workspace();
@@ -1334,7 +1535,6 @@ mod tests {
         harness.set_modifiers(&[]);
     }
 
-    /// The app starts empty with a new-connection action opening the dialog.
     #[test]
     fn start_state_is_empty_with_a_new_connection_action() {
         // --- phase: live_app_starts_empty ---
@@ -1398,6 +1598,52 @@ mod tests {
         assert!(inspection.contains("No connections yet"), "{inspection}");
     }
 
+    /// The window bar's views are the workspace's tabs and its location
+    /// the open connection; its search narrows the tables. The window
+    /// draws no tabs, header row or filter field of its own.
+    #[test]
+    fn the_connection_its_views_and_the_table_filter_are_in_the_window_bar() {
+        use ui::widget::{FindOptions, InPlace, SearchDriver};
+        let mut harness = mounted(DbClientApp::sampled());
+        harness.present_in_window_bar();
+        harness.relayout();
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let name = app(&harness).link.read(|model| model.active_name.clone());
+        assert!(!name.is_empty(), "the sample is connected");
+        assert_eq!(bar.location.map(|location| location.label), Some(name));
+        let views = bar.views.expect("the tabs are the bar's views");
+        let labels: Vec<&str> = views
+            .choices
+            .iter()
+            .map(|view| view.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Query", "Data", "Structure"]);
+        assert_eq!(views.chosen, MainTab::Query.view_id());
+        let targets = harness.targets();
+        assert!(!targets.contains_key("db.tabs"), "no tabs of its own");
+        assert!(
+            harness.root::<DbClientApp>().shell.filter().is_none(),
+            "no filter field of its own"
+        );
+
+        let root = harness.root_mut::<DbClientApp>();
+        assert_eq!(
+            InPlace::of(root),
+            InPlace::List,
+            "the search narrows a list"
+        );
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::List);
+        driver.drive(root, "album", FindOptions::default(), None, false);
+        let mut count = None;
+        assert!(ui::widget::with_filterable(root, &mut |list| count = list.filter_count()));
+        let count = count.expect("the tables say how many match");
+        assert!(
+            count.shown >= 1 && count.shown < count.total,
+            "the tables narrow to what the bar's search names: {count:?}"
+        );
+    }
+
     /// The tabs show their view, a table opened from the sidebar shows its rows, and the structure follows the selected table.
     #[test]
     fn tabs_and_the_sidebar_choose_what_is_shown() {
@@ -1405,11 +1651,11 @@ mod tests {
         harness.relayout();
         assert_eq!(app(&harness).session.tab, MainTab::Query);
 
-        // --- phase: a_tab_click_shows_that_tab ---
+        // --- phase: choosing_a_view_in_the_bar_shows_that_tab ---
         {
-            let rect = harness.targets()["db.tabs"];
-            // The strip is split equally; the second of three segments is Data.
-            harness.click_at(rect.x0 + rect.width() / 2.0, rect.center().y);
+            harness.press_window_slot(ToolbarEvent::Action {
+                id: MainTab::Data.view_id().to_owned(),
+            });
             harness.relayout();
             assert_eq!(app(&harness).session.tab, MainTab::Data);
             assert!(
@@ -1493,6 +1739,62 @@ mod tests {
         }
     }
 
+    /// A statement that will not come back can be stopped from the window
+    /// bar: while one runs the bar offers Cancel in Run's place, and taking
+    /// it ends the query instead of leaving a disabled Run and no way out.
+    #[test]
+    fn a_running_statement_is_cancelled_from_the_window_bar() {
+        let mut harness = mounted(DbClientApp::sampled());
+        harness.relayout();
+        // A statement that takes long enough to be caught in flight: a
+        // billion rows counted one at a time. It runs through the same
+        // session path the Run action uses.
+        harness.root_mut::<DbClientApp>().session.run_query(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
+             SELECT sum(x) FROM n",
+        );
+        harness.relayout();
+        assert!(
+            harness.wait_until(tilo_test_env::hang_bound(), |harness| {
+                app(harness).session.busy()
+            }),
+            "the statement is in flight"
+        );
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert!(
+            bar.actions.iter().any(|action| action.id == CANCEL_QUERY),
+            "Cancel takes Run's place while a statement runs: {:?}",
+            bar.actions
+        );
+        assert!(
+            !bar.actions
+                .iter()
+                .any(|action| action.id == RUN_QUERY && action.enabled),
+            "no disabled Run is left beside it: {:?}",
+            bar.actions
+        );
+
+        harness.press_window_slot(ToolbarEvent::Action {
+            id: CANCEL_QUERY.into(),
+        });
+        harness.relayout();
+        assert!(
+            harness.wait_until(tilo_test_env::hang_bound(), |harness| {
+                !app(harness).session.busy()
+            }),
+            "the cancellation is answered, so the app is no longer busy"
+        );
+        assert!(
+            app(&harness)
+                .session
+                .status_message()
+                .to_lowercase()
+                .contains("cancel"),
+            "the status says the query was cancelled: {:?}",
+            app(&harness).session.status_message()
+        );
+    }
+
     /// Running a query writes nothing to the document, and a statement that changes data asks first.
     #[test]
     fn running_asks_before_changing_data_and_never_writes_the_document() {
@@ -1517,9 +1819,21 @@ mod tests {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
             write_sql(&mut harness, "SELECT 42 AS answer");
-            harness
-                .click_named("db.query.run")
-                .expect("Run is on the toolbar");
+            let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+            assert!(
+                bar.actions
+                    .iter()
+                    .any(|action| action.id == RUN_QUERY && action.enabled),
+                "Run is a window bar action: {:?}",
+                bar.actions
+            );
+            assert!(
+                !harness.targets().contains_key("db.query.run"),
+                "the editor draws no Run of its own"
+            );
+            harness.press_window_slot(ToolbarEvent::Action {
+                id: RUN_QUERY.into(),
+            });
             harness.relayout();
             harness.root_mut::<DbClientApp>().session.block_until_idle();
             harness.relayout();
@@ -1550,7 +1864,6 @@ mod tests {
             assert!(!root.session.busy());
             assert!(harness.targets().contains_key("db.confirm-dialog"));
 
-            // Escape declines.
             harness.key("Escape");
             harness.relayout();
             let root = app(&harness);
@@ -1712,7 +2025,6 @@ mod tests {
         );
         drop(harness);
 
-        // Hosted, the saved profile opens and runs SQL.
         let mut profile = ConnectionProfile::new("Local files", Engine::Sqlite);
         profile.file_path = database.to_str().unwrap().into();
         let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();

@@ -72,7 +72,7 @@ fn inspect_session_reports_production_open_failed_and_no_runtime_without_output(
             backend.reader = Box::new(Reader(receiver.take().expect("one open")));
             Ok(backend)
         });
-        app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
             .expect("terminal surface");
         app.settle();
         let before = *opens.borrow();
@@ -135,7 +135,7 @@ fn host_tab(
         log.borrow_mut().push((target.clone(), by));
         answer(target).map(|()| crate::inner::TerminalBackend::for_test())
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
     opened
@@ -149,7 +149,7 @@ fn recorded(app: &App) -> Option<SessionTarget> {
 /// Drive the hosted terminal.
 fn on_tab<T>(app: &mut App, visit: impl FnOnce(&mut TerminalWidget) -> T) -> T {
     let out = app
-        .with_surface(visit)
+        .with_surface(|view: &mut crate::TerminalView| visit(view))
         .expect("the terminal surface is hosted");
     app.settle();
     out
@@ -555,7 +555,7 @@ fn attach_with(
         seen.borrow_mut().push(attach.map(str::to_owned));
         answer(target, attach)
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
 }
@@ -631,8 +631,14 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     widget.open_target_menu();
     let labels = widget.target_menu_labels().unwrap();
     let here = crate::i18n::t("terminal-run-on-this-device");
-    assert!(labels.contains(&format!("✓ {run_on} {here}")), "{labels:?}");
-    assert!(labels.contains(&format!("{run_on} Home")), "{labels:?}");
+    let checked = widget.target_menu_checked().unwrap();
+    let row = |label: String| labels.iter().position(|l| *l == label);
+    let this_device = row(format!("{run_on} {here}")).expect("run on this device");
+    let home = row(format!("{run_on} Home")).expect("run on the relay");
+    assert!(
+        checked[this_device] && !checked[home],
+        "where it runs carries the menu's check, not a glyph: {labels:?}"
+    );
 
     // An agent names the relay with the environment.
     let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
@@ -783,6 +789,54 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
     );
 }
 
+/// A refused device shell is not the tab's record: restored at the next
+/// login, the tab opens where a new one would and asks nothing. A Terminal
+/// left on the refused shell put the same prompt up at every login.
+#[test]
+fn a_refused_device_shell_is_not_where_the_next_session_opens() {
+    let refuse_host = |target: &SessionTarget| {
+        if target.is_host() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    };
+    let mut app = App::new().unwrap();
+    host_tab(&mut app, RecentTarget::none(), refuse_host);
+    on_tab(&mut app, |widget| {
+        widget.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
+        app.harness().take_host_intent()
+    else {
+        panic!("expected the person to be asked");
+    };
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    app.settle();
+    assert!(matches!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Failed(_)
+    ));
+    assert_eq!(
+        recorded(&app),
+        Some(SessionTarget::default_environment()),
+        "the refusal hands the record back to where a new tab opens"
+    );
+
+    let mut app = app.reopen().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), refuse_host);
+    assert_eq!(
+        opened.borrow().as_slice(),
+        &[(SessionTarget::default_environment(), Requester::Person)]
+    );
+    assert!(
+        app.harness().take_host_intent().is_none(),
+        "the next login asks nothing"
+    );
+}
+
 #[test]
 fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relabeling() {
     let mut app = App::new().unwrap();
@@ -822,7 +876,7 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     let gate = allowed.clone();
     let sessions = owner_fixture_sessions(gate);
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .unwrap();
     app.settle();
     let mounted = mounted_device_shell_operation(&mut app, &O::Inspect);
@@ -853,7 +907,7 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
             ui::tilo_actions::ActionInvoker::actor("agent:helper"),
         );
         let result = app
-            .with_surface(|terminal: &mut TerminalWidget| {
+            .with_surface(|terminal: &mut crate::TerminalView| {
                 terminal.perform(crate::resource::TerminalEffect::Send {
                     text: "printf forbidden".into(),
                 })
@@ -931,7 +985,7 @@ fn mounted_device_shell_operation(
 
 fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
     use ui::floating_surface::DeviceShellOperation as O;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         let observed = if ended {
@@ -999,17 +1053,17 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
             .map_err(|error| OpenError::Failed(error.to_string()))
     });
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .unwrap();
     app.settle();
     let inspected = app.effect(&TerminalEffect::InspectSession).unwrap();
     let session = inspected.value.unwrap()["session"].clone();
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         terminal.try_write_input(b"printf 'TILO_%s\\n' OWNED_PTY_OUTPUT\r")
     })
     .unwrap()
     .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     let mut observed = false;
     while std::time::Instant::now() < deadline {
         app.settle();
@@ -1026,7 +1080,7 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
             && lines[index + 1..].contains(&"[Default fixture]$")
         {
             let local = app
-                .with_surface(|terminal: &mut TerminalWidget| terminal.grid_text())
+                .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_text())
                 .unwrap();
             assert!(local.lines().any(|line| line == "TILO_OWNED_PTY_OUTPUT"));
             observed = true;
@@ -1034,11 +1088,393 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.try_write_input(b"exit\r"))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.try_write_input(b"exit\r"))
         .unwrap()
         .unwrap();
     wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
     assert!(observed, "canonical retained PTY output/prompt absent");
+}
+
+/// A tab whose sessions run an interactive bash on a real PTY.
+fn bash_sessions() -> Sessions {
+    Sessions::scripted(RecentTarget::none(), |_, _, _| {
+        crate::inner::TerminalBackend::with_command(interactive_bash())
+            .map_err(|error| OpenError::Failed(error.to_string()))
+    })
+}
+
+/// Settle `app` until `done`, within the hang bound.
+fn settle_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> bool) {
+    let deadline = tilo_test_env::hang_deadline();
+    while !done(app) {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
+    // A tab the shell shows in its own process, through the window it lent.
+    let window = ui::hosted_window::HostedWindow::new();
+    let mut app = App::new().unwrap();
+    let lent = window.clone();
+    app.with_surface(|terminal: &mut crate::TerminalView| {
+        terminal.show_in_window(Some(lent));
+        terminal.set_sessions(bash_sessions());
+    })
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Open
+    );
+    assert!(!window.take_close(), "a running shell keeps its window");
+
+    on_tab(&mut app, |widget| widget.try_write_input(b"exit\r")).unwrap();
+    settle_until(&mut app, "the exited shell closes its window", |_| {
+        window.take_close()
+    });
+    app.settle();
+    on_tab(&mut app, |widget| {
+        assert!(widget.shell_exited());
+        assert_eq!(widget.lifecycle_banner(), None, "no ended-session banner");
+        let tree = widget.accessibility().unwrap();
+        assert!(
+            !tree.children.iter().any(|node| node
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains("Session ended"))),
+            "nothing says the session ended: the window is closing"
+        );
+    });
+
+    // A window in a process of its own closes its tab through the desktop.
+    let _ = ui::shell_tabs::take_requests();
+    let mut app = App::new().unwrap();
+    app.with_surface(|terminal: &mut crate::TerminalView| {
+        terminal.show_in_window(None);
+        terminal.set_sessions(bash_sessions());
+    })
+    .unwrap();
+    app.settle();
+    on_tab(&mut app, |widget| widget.try_write_input(b"exit\r")).unwrap();
+    let mut asked = Vec::new();
+    settle_until(&mut app, "the exited shell closes its tab", |_| {
+        asked.extend(ui::shell_tabs::take_requests());
+        asked.contains(&ui::shell_tabs::TabRequest::CloseThis)
+    });
+}
+
+#[test]
+fn a_session_the_tab_replaced_or_dropped_closes_nothing() {
+    let window = ui::hosted_window::HostedWindow::new();
+    let (mut widget, _) = tab(RecentTarget::none(), |_| Ok(()));
+    widget.show_in_window(Some(window.clone()));
+    let replaced = widget.next_session_exit();
+    let current = widget.next_session_exit();
+    replaced.exited();
+    assert!(
+        !window.take_close(),
+        "the shell of a replaced session ended"
+    );
+    current.exited();
+    assert!(window.take_close(), "the shell the tab shows exited");
+
+    let dropped = widget.next_session_exit();
+    drop(widget);
+    dropped.exited();
+    assert!(
+        !window.take_close(),
+        "a closed tab's shell ending closes nothing"
+    );
+}
+
+#[test]
+fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
+    let window = ui::hosted_window::HostedWindow::new();
+    let mut app = App::new().unwrap();
+    let lent = window.clone();
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.show_in_window(Some(lent)))
+        .unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
+
+    // The window's title in its bar is where the shell runs.
+    let (_, toolbar) = window.toolbar_since(None).expect("the slots are declared");
+    let location = toolbar
+        .and_then(|toolbar| toolbar.location)
+        .expect("the window bar names the target");
+    assert_eq!(location.label, crate::i18n::t("terminal-target-default"));
+    assert!(!location.editable, "a target is picked, not typed");
+    let labels: Vec<&str> = location.choices.iter().map(|c| c.label.as_str()).collect();
+    let host = crate::i18n::t("terminal-target-host");
+    let manage = crate::i18n::t("terminal-target-manage");
+    assert!(labels.contains(&host.as_str()), "{labels:?}");
+    assert_eq!(
+        labels.last(),
+        Some(&manage.as_str()),
+        "a new one is made there"
+    );
+    assert_eq!(
+        location
+            .choices
+            .iter()
+            .filter(|choice| choice.current)
+            .map(|choice| choice.label.as_str())
+            .collect::<Vec<_>>(),
+        vec![location.label.as_str()],
+        "the picker marks the current target"
+    );
+
+    // The content holds only the terminal: no chip, no header above the grid.
+    on_tab(&mut app, |widget| {
+        assert!(
+            widget.content_top_inset().abs() < f64::EPSILON,
+            "no band above the grid: {}",
+            widget.content_top_inset()
+        );
+        let tree = widget.accessibility().unwrap();
+        assert!(
+            !tree
+                .children
+                .iter()
+                .any(|node| node.role == ui::a11y::Role::Button
+                    && node.name.as_deref() == Some(location.label.as_str())),
+            "the content draws no target picker of its own"
+        );
+    });
+
+    // Choosing the device's shell in the bar's picker moves the session there.
+    let choice = location
+        .choices
+        .iter()
+        .find(|choice| choice.label == host)
+        .expect("the device's shell is offered");
+    window.deliver(ui::window_toolbar::ToolbarEvent::Commit {
+        text: choice.value.clone(),
+    });
+    app.settle();
+    app.settle();
+    assert_eq!(
+        opened.borrow().last(),
+        Some(&(SessionTarget::Host, Requester::Person))
+    );
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+    let (_, toolbar) = window.toolbar_since(None).expect("the slots");
+    assert_eq!(
+        toolbar
+            .and_then(|toolbar| toolbar.location)
+            .map(|l| l.label),
+        Some(host),
+        "the title follows the session"
+    );
+}
+
+#[test]
+fn a_shell_that_could_not_start_says_so_in_the_window_with_a_retry() {
+    let attempts = Rc::new(std::cell::Cell::new(0));
+    let count = attempts.clone();
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), move |_| {
+        count.set(count.get() + 1);
+        if count.get() == 1 {
+            Err(OpenError::Failed("the relay cannot be reached".into()))
+        } else {
+            Ok(())
+        }
+    });
+    let retry = on_tab(&mut app, |widget| {
+        assert_eq!(widget.start_failure(), Some("the relay cannot be reached"));
+        assert_eq!(widget.lifecycle_banner(), None, "the reason is said once");
+        let tree = widget.accessibility().unwrap();
+        let failure = tree
+            .children
+            .iter()
+            .find(|node| node.description.as_deref() == Some("the relay cannot be reached"))
+            .expect("the window says why plainly");
+        let retry = failure
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Button)
+            .expect("with a retry");
+        assert_eq!(
+            retry.name.as_deref(),
+            Some(crate::i18n::t("terminal-start-retry").as_str())
+        );
+        retry.action_target.clone().unwrap()
+    });
+    assert!(on_tab(&mut app, |widget| widget.perform_semantic_action(
+        &retry,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &ROOT,
+    )));
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Open
+    );
+    assert_eq!(attempts.get(), 2);
+    let opened = opened.borrow();
+    assert_eq!(opened[0], opened[1], "the retry opens the same target");
+}
+
+/// A remote shell's session the supervisor handed over, as the supervisor
+/// holds it: the far end of its terminal output, and of its lease.
+#[cfg(unix)]
+type Handed = Rc<
+    RefCell<
+        Vec<(
+            std::os::unix::net::UnixStream,
+            std::os::unix::net::UnixStream,
+        )>,
+    >,
+>;
+
+/// End the newest handed-over session the way the supervisor does: say how
+/// it ended on its lease, then close it and the terminal.
+#[cfg(unix)]
+fn end_remote(handed: &Handed, report: &str) {
+    use std::io::Write;
+    let (output, lease) = handed
+        .borrow_mut()
+        .pop()
+        .expect("a session was handed over");
+    (&lease).write_all(report.as_bytes()).unwrap();
+    lease.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(output);
+}
+
+// An ending connection to a remote shell is not the shell exiting: the
+// window says it is reconnecting, reconnects (automatically, and on Try
+// again), and only the remote shell's exit closes it.
+#[cfg(unix)]
+#[test]
+fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_window() {
+    let session = "0123456789abcdef0123456789abcdef";
+    let handed: Handed = Rc::default();
+    let reachable = Rc::new(std::cell::Cell::new(true));
+    let attaches: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+    let window = ui::hosted_window::HostedWindow::new();
+    let mut app = App::new().unwrap();
+    let lent = window.clone();
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.show_in_window(Some(lent)))
+        .unwrap();
+    let keep = handed.clone();
+    let up = reachable.clone();
+    attach_with(&mut app, &attaches, move |target, _| {
+        if target.location().is_some_and(|l| !l.is_this_device()) && !up.get() {
+            return Err(OpenError::Failed("the relay cannot be reached".into()));
+        }
+        let (output, supervisor_output) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (lease, supervisor_lease) = std::os::unix::net::UnixStream::pair().unwrap();
+        keep.borrow_mut()
+            .push((supervisor_output, supervisor_lease));
+        Ok(crate::inner::TerminalBackend::for_test_remote(
+            output, lease, session,
+        ))
+    });
+    on_tab(&mut app, |tab| {
+        tab.switch_target(&on_relay("work"), Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(
+        on_tab(&mut app, |tab| tab.session_state().clone()),
+        OpenState::Open
+    );
+
+    // The connection to the relay is lost, and the relay stays out of reach.
+    reachable.set(false);
+    end_remote(
+        &handed,
+        "{\"ended\":\"lost\",\"reason\":\"the relay went quiet\"}\n",
+    );
+    settle_until(&mut app, "the tab notices the lost connection", |app| {
+        on_tab(app, |tab| tab.reconnecting().is_some())
+    });
+    assert!(!window.take_close(), "a lost connection keeps the window");
+    let retry = on_tab(&mut app, |tab| {
+        assert_eq!(
+            tab.reconnect_banner(),
+            Some(crate::i18n::t("terminal-reconnecting")),
+            "the window says, quietly, that it is reconnecting"
+        );
+        assert_eq!(
+            tab.lifecycle_banner(),
+            None,
+            "and nothing about a session ending"
+        );
+        assert_eq!(tab.start_failure(), None, "and no failure");
+        let tree = tab.accessibility().unwrap();
+        let group = tree
+            .children
+            .iter()
+            .find(|node| {
+                node.name.as_deref() == Some(crate::i18n::t("terminal-reconnecting").as_str())
+            })
+            .expect("reconnecting reaches assistive technology");
+        group.children[0].action_target.clone().unwrap()
+    });
+    let activate = |app: &mut App, target: &str| {
+        assert!(on_tab(app, |tab| tab.perform_semantic_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &ROOT,
+        )));
+    };
+
+    // Try again while the relay is out of reach: still reconnecting, to the
+    // same session.
+    let before = attaches.borrow().len();
+    activate(&mut app, &retry);
+    assert_eq!(
+        attaches.borrow().get(before).cloned(),
+        Some(Some(session.to_owned())),
+        "it re-attaches to the session it lost"
+    );
+    assert!(on_tab(&mut app, |tab| tab.reconnecting().is_some()));
+    assert!(!window.take_close());
+    assert_eq!(app.state().relay(), Some(session), "the session is kept");
+
+    // The relay is back: Try again re-attaches.
+    reachable.set(true);
+    activate(&mut app, &retry);
+    assert_eq!(
+        on_tab(&mut app, |tab| tab.session_state().clone()),
+        OpenState::Open
+    );
+    assert!(on_tab(&mut app, |tab| tab.reconnecting().is_none()));
+    assert_eq!(attaches.borrow().last(), Some(&Some(session.to_owned())));
+
+    // The remote shell exits: its window closes.
+    end_remote(&handed, "{\"ended\":\"exited\"}\n");
+    settle_until(
+        &mut app,
+        "the remote shell's exit closes its window",
+        |_| window.take_close(),
+    );
+}
+
+#[test]
+fn a_supervisors_report_names_how_a_remote_session_ended() {
+    use crate::inner::SessionEnd;
+    assert_eq!(
+        SessionEnd::from_report(br#"{"ended":"exited"}"#),
+        SessionEnd::Exited
+    );
+    assert_eq!(
+        SessionEnd::from_report(br#"{"ended":"lost","reason":"quiet"}"#),
+        SessionEnd::Lost("quiet".into())
+    );
+    assert_eq!(
+        SessionEnd::from_report(br#"{"ended":"superseded"}"#),
+        SessionEnd::Superseded
+    );
+    assert_eq!(
+        SessionEnd::from_report(b"not a report"),
+        SessionEnd::Exited,
+        "a lease closing is the shell exiting"
+    );
 }
 
 #[cfg(unix)]

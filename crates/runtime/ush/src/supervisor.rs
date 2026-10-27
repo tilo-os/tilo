@@ -312,6 +312,7 @@ impl Session {
         Ok(GuestPlan {
             shell,
             runs,
+            shell_rc: false,
             images,
             host_root: self.opts.host_root.clone(),
             session_dir,
@@ -342,10 +343,6 @@ impl Session {
     /// The guest's network: a namespace of its own and egress for the
     /// record's `NetHost` grants. Fails closed — a policy that cannot be
     /// enforced is an error, never an open network.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the namespace or its egress could not be set up.
     pub fn network(&self, resolved: &Resolved) -> anyhow::Result<(Netns, Egress)> {
         let netns = Netns::create()
             .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: its network namespace: {e}"))?;
@@ -411,6 +408,7 @@ impl Session {
             BrokerState {
                 session_id: self.session_id.clone(),
                 environment: EnvironmentHandle {
+                    var_dir: self.store.environment_var(&resolved.key),
                     records: self.records(),
                     key: resolved.key.clone(),
                     built_from: resolved.environment.clone(),
@@ -435,6 +433,9 @@ impl Session {
             None
         };
         plan.editor = editor.as_ref().map(|prepared| prepared.guest.clone());
+        if self.opts.command.is_empty() {
+            plan.write_shell_rc()?;
+        }
 
         if self.opts.verbose {
             let argv = crate::guest::build_argv(&plan, None);
@@ -449,7 +450,6 @@ impl Session {
 
         // The guest's first process is this binary again, so it can install Landlock
         // inside the namespace — using the paths the guest itself will use.
-        let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
         let mut command = plan.helper_runtime.as_ref().map_or_else(
             || vec![format!("{}/tilo-ush", crate::GUEST_BIN_DIR)],
@@ -457,14 +457,12 @@ impl Session {
         );
         command.extend(["guest-init".into(), "--".into()]);
         if user_command.is_empty() {
-            command.push(shell.to_string_lossy().into_owned());
-            if plan.editor.is_some() {
-                command.extend([
-                    "--rcfile".into(),
-                    format!("{}/rc", crate::editor::GUEST_DIR),
-                ]);
-            }
-            command.push("-i".into());
+            // The session's login shell, started as the Host's is.
+            command.extend(
+                plan.shell_argv()
+                    .into_iter()
+                    .map(|arg| arg.to_string_lossy().into_owned()),
+            );
         } else {
             command.extend(user_command);
         }
@@ -501,7 +499,6 @@ impl Session {
     }
 }
 
-/// A policy in words, for `-v`.
 fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
     match policy {
         tilo_egress::EgressPolicy::Any => "unrestricted (a * grant)".into(),
@@ -569,6 +566,12 @@ pub enum ServeRequest {
         /// Explicit opt-in; existing clients continue to receive exactly one FD.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
+        /// Explicit opt-in: before a relay session's lease closes, tell the
+        /// app on it how the session ended (`EndReport`): its shell exited,
+        /// the connection to the relay was lost, or another terminal took
+        /// it over. Existing clients get a lease that only closes.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        end_report: bool,
     },
     /// The environments there are, for Terminal's picker and its
     /// environments panel.
@@ -598,7 +601,6 @@ pub enum ServeRequest {
 pub struct EnvironmentEntry {
     pub key: String,
     pub name: String,
-    /// The packages its tools provide.
     pub tools: Vec<String>,
     /// Granted directories, `(path, writable)`.
     pub grants: Vec<(String, bool)>,
@@ -743,6 +745,7 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
         tilo_files::native::private::bind_socket(socket)?
     };
     tracing::info!(socket = %socket.display(), "ush: serving guests");
+    crate::runtime_import::start(store);
 
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
@@ -1052,7 +1055,7 @@ fn open_environment(
         master,
         child,
         editor.map(|(app, _)| app),
-        || {},
+        || None,
     )?;
     Ok(Served::Done)
 }
@@ -1084,7 +1087,7 @@ fn hand_off_session(
     master: std::fs::File,
     child: std::process::Child,
     editor: Option<runtime_portal::editor::Socket>,
-    on_started: impl FnOnce(),
+    on_started: impl FnOnce() -> Option<RelayWatch>,
 ) -> anyhow::Result<()> {
     use std::os::fd::AsFd;
     #[derive(serde::Serialize)]
@@ -1141,8 +1144,12 @@ fn hand_off_session(
         }
         drop(editor);
         drop(master);
-        on_started();
-        let termination = finish_session(transport.stream, child.transfer()?);
+        // The legacy lease carries no report: it only closes.
+        let watch = on_started().map(|watch| RelayWatch {
+            report: false,
+            ..watch
+        });
+        let termination = finish_session(transport.stream, child.transfer()?, watch);
         AuditLog::at(audit_dir).append(
             &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
         );
@@ -1165,12 +1172,12 @@ fn hand_off_session(
     drop(editor);
     drop(master);
     drop(terminal_lease);
-    on_started();
+    let watch = on_started();
     let active = transport.active.clone();
     let child = child.transfer()?;
     active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     std::thread::spawn(move || {
-        let termination = finish_session(&supervisor_lease, child);
+        let termination = finish_session(&supervisor_lease, child, watch);
         AuditLog::at(audit_dir).append(
             &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
         );
@@ -1386,34 +1393,31 @@ fn serve_host(
         "open-session",
         true,
     ));
-    let runs = runs
+    // The interactive shell starts as a guest's does (crate::shell_start).
+    let interactive_bash = command.is_empty() && crate::runs::is_bash(&account.shell);
+    let key = runs
         .as_deref()
-        .filter(|key| {
-            command.is_empty()
-                && crate::runs::valid_key(key)
-                && crate::runs::is_bash(&account.shell)
-        })
-        .and_then(|key| {
-            let rc = store.session_dir(&id).join("runs.bash");
+        .filter(|key| interactive_bash && crate::runs::valid_key(key));
+    let rc = interactive_bash
+        .then(|| {
+            let rc = store.session_dir(&id).join("shell.bash");
             std::fs::create_dir_all(store.session_dir(&id)).ok()?;
-            std::fs::write(&rc, crate::runs::bash_rc(true)).ok()?;
-            Some((key, rc))
-        });
+            std::fs::write(&rc, crate::shell_start::bash_rc("", key.is_some())).ok()?;
+            Some(rc)
+        })
+        .flatten();
+    let runs = key.filter(|_| rc.is_some());
     let label = command.first().map_or_else(
         || runtime_portal::jobs::program_label(account.shell.as_os_str()),
         |program| runtime_portal::jobs::program_label(program.as_ref()),
     );
     let child = spawn_on_pty(
-        crate::host::host_command(
-            &account,
-            term,
-            command,
-            runs.as_ref().map(|(k, rc)| (*k, rc.as_path())),
-        ),
+        crate::host::host_command(&account, term, command, rc.as_deref(), runs),
         &slave,
         session_job(transport, &label),
     )?;
     drop(slave);
+    mark_terminal_session(transport.stream, child.id(), &id);
     hand_off_session(
         transport,
         writer,
@@ -1428,9 +1432,56 @@ fn serve_host(
         master,
         child,
         None,
-        || {},
+        || None,
     )?;
     Ok(Served::Done)
+}
+
+/// Record which Terminal launch asked for the Host session led by `leader`
+/// (the process on the other end of `stream`), so the desktop can serve
+/// what is typed in it with that Terminal's workspace scope. Without the
+/// record the session still opens; the desktop then serves it nothing.
+fn mark_terminal_session(stream: &UnixStream, leader: u32, session: &str) {
+    let Some(requester) = peer_pid(stream) else {
+        tracing::warn!("ush: the terminal asking for a host session could not be identified");
+        return;
+    };
+    let Some(dir) = crate::terminal_sessions::dir(std::env::var_os("XDG_RUNTIME_DIR")) else {
+        return;
+    };
+    if let Err(error) = crate::terminal_sessions::mark(&dir, leader, requester, session) {
+        tracing::warn!(%error, "ush: could not record the host session's terminal");
+    }
+}
+
+/// The pid the kernel names for the other end of `stream`.
+#[cfg(not(target_os = "linux"))]
+fn peer_pid(_stream: &UnixStream) -> Option<u32> {
+    None
+}
+
+/// The pid the kernel names for the other end of `stream`.
+#[cfg(target_os = "linux")]
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY: `cred` and `len` are live, correctly sized out-parameters.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &raw mut len,
+        )
+    };
+    (rc == 0).then_some(())?;
+    u32::try_from(cred.pid).ok().filter(|pid| *pid != 0)
 }
 
 /// The relay session a terminal asks for: re-attaching to `relay_session`,
@@ -1481,6 +1532,7 @@ fn serve_relay(
         rows,
         term,
         relay_session,
+        end_report,
         ..
     } = req
     else {
@@ -1550,7 +1602,12 @@ fn serve_relay(
         master,
         child,
         None,
-        || adopt_relay_tools(status, store.records_root().to_path_buf()),
+        || {
+            Some(RelayWatch {
+                bridge: watch_relay_bridge(status, store.records_root().to_path_buf()),
+                report: *end_report,
+            })
+        },
     )?;
     Ok(Served::Done)
 }
@@ -1643,27 +1700,92 @@ fn start_relay_bridge(
     }
 }
 
-/// Tools the relay builds for a session become the record's, as a `pkg
-/// install` on this device would.
-fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathBuf) {
+/// How a relay session's bridge ended, as it said on its status channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RelayEnd {
+    Exited,
+    /// The connection to the relay was lost; the session may still run
+    /// there, and the tab re-attaches to it.
+    Lost(String),
+    /// Another terminal took the session over; it runs on there.
+    Superseded,
+}
+
+impl RelayEnd {
+    /// The end a bridge's last status line names; a bridge that stopped
+    /// without saying lost its connection, as far as the tab can tell.
+    fn of(status: Option<crate::relay::BridgeStatus>) -> Self {
+        match status {
+            Some(crate::relay::BridgeStatus::Ended { code: Some(_), .. }) => Self::Exited,
+            Some(crate::relay::BridgeStatus::Ended {
+                superseded: true, ..
+            }) => Self::Superseded,
+            Some(crate::relay::BridgeStatus::Ended {
+                reason: Some(reason),
+                ..
+            }) => Self::Lost(reason),
+            _ => Self::Lost("the connection to the relay ended".into()),
+        }
+    }
+}
+
+/// What an app that asked (`end_report`) reads on its lease just before it
+/// closes: one JSON line.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "ended", rename_all = "kebab-case")]
+enum EndReport<'a> {
+    Exited,
+    Lost { reason: &'a str },
+    Superseded,
+}
+
+impl<'a> From<&'a RelayEnd> for EndReport<'a> {
+    fn from(end: &'a RelayEnd) -> Self {
+        match end {
+            RelayEnd::Exited => Self::Exited,
+            RelayEnd::Lost(reason) => Self::Lost { reason },
+            RelayEnd::Superseded => Self::Superseded,
+        }
+    }
+}
+
+/// A relay session's bridge, watched: how it ended, and whether the app
+/// asked to be told.
+pub(crate) struct RelayWatch {
+    bridge: std::thread::JoinHandle<RelayEnd>,
+    report: bool,
+}
+
+/// Read a relay session's status channel to its end: the tools the relay
+/// builds for it become the record's, as a `pkg install` on this device
+/// would, and its last line says how it ended.
+fn watch_relay_bridge(
+    mut status: crate::relay::StatusReader,
+    records_root: PathBuf,
+) -> std::thread::JoinHandle<RelayEnd> {
     std::thread::spawn(move || {
         let records = Records::at(records_root);
+        let mut ended = None;
         while let Some(line) = status.next(None) {
-            if let crate::relay::BridgeStatus::ToolBuilt {
-                record,
-                packages,
-                images,
-            } = line
-            {
-                for (arch, image) in images {
-                    let _ = records.apply(
-                        &record,
-                        Environment::ADD_TOOL.with((packages.clone(), arch, image)),
-                    );
+            match line {
+                crate::relay::BridgeStatus::ToolBuilt {
+                    record,
+                    packages,
+                    images,
+                } => {
+                    for (arch, image) in images {
+                        let _ = records.apply(
+                            &record,
+                            Environment::ADD_TOOL.with((packages.clone(), arch, image)),
+                        );
+                    }
                 }
+                line @ crate::relay::BridgeStatus::Ended { .. } => ended = Some(line),
+                crate::relay::BridgeStatus::Session { .. } => {}
             }
         }
-    });
+        RelayEnd::of(ended)
+    })
 }
 
 /// Wait for whichever side of a served session ends first and tear the
@@ -1676,10 +1798,29 @@ fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathB
 /// child exits first, it is reaped at once and the connection closed, which
 /// is how Terminal tells a finished session from the hand-off window in which
 /// its PTY master also reports `EIO`.
-fn finish_session(stream: &UnixStream, mut child: std::process::Child) -> String {
+fn finish_session(
+    stream: &UnixStream,
+    mut child: std::process::Child,
+    relay: Option<RelayWatch>,
+) -> String {
     match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
+            // A relay session's bridge said how it ended: a terminal that
+            // asked reads it before the lease closes, and tells a shell that
+            // exited from a connection that was lost.
+            if let Some(relay) = relay {
+                let end = relay
+                    .bridge
+                    .join()
+                    .unwrap_or_else(|_| RelayEnd::Lost("the relay bridge failed".into()));
+                if relay.report
+                    && let Ok(mut line) = serde_json::to_vec(&EndReport::from(&end))
+                {
+                    line.push(b'\n');
+                    let _ = (&*stream).write_all(&line);
+                }
+            }
             let _ = stream.shutdown(std::net::Shutdown::Both);
             match status {
                 Ok(status) => format!("exit {}", status.code().unwrap_or(-1)),
@@ -1928,8 +2069,74 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use tilo_environment::{DEFAULT_RECORD, PackageId};
+
+    /// A Host session's marked `bash` is the person's interactive login
+    /// shell on a real pty: it reads their `~/.bash_profile`, and Tab
+    /// completes a unique path prefix.
+    #[test]
+    fn a_marked_host_shell_is_a_login_shell_and_tab_completes() {
+        use std::io::{Read as _, Write as _};
+        let bash = std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|dir| dir.join("bash"))
+            .find(|path| path.is_file())
+            .expect("bash, the shell whose completion is under test");
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(".bash_profile"),
+            "export FROM_PROFILE=login\n",
+        )
+        .unwrap();
+        std::fs::create_dir(home.path().join("fixture-unique-directory")).unwrap();
+        let session = tempfile::tempdir().unwrap();
+        let rc = session.path().join("shell.bash");
+        std::fs::write(&rc, crate::shell_start::bash_rc("", true)).unwrap();
+        let account = crate::host::LoginAccount {
+            user: "you".into(),
+            home: home.path().to_path_buf(),
+            shell: bash,
+        };
+        let mut cmd = crate::host::host_command(
+            &account,
+            "xterm-256color",
+            &[],
+            Some(&rc),
+            Some("k3y0fth1ss3ss10n"),
+        );
+        cmd.env("HISTFILE", home.path().join("history"));
+        cmd.env("INPUTRC", "/dev/null");
+        let (mut master, slave) = open_pty(80, 24).unwrap();
+        let mut child = spawn_on_pty(cmd, &slave, None).unwrap();
+        drop(slave);
+        let mut reader = master.try_clone().unwrap();
+        let (seen_tx, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(n) = reader.read(&mut buffer) {
+                if n == 0 || seen_tx.send(buffer[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        master
+            .write_all(b"echo \"[$FROM_PROFILE]\" fixture-uni\t\n")
+            .unwrap();
+        let mut output = Vec::new();
+        let expected = "[login] fixture-unique-directory/";
+        tilo_test_env::wait_for("the completed line's output", || {
+            while let Ok(chunk) = seen.try_recv() {
+                output.extend(chunk);
+            }
+            String::from_utf8_lossy(&output)
+                .contains(expected)
+                .then_some(())
+        });
+        master.write_all(b"exit\n").unwrap();
+        child.wait().unwrap();
+    }
 
     #[test]
     fn guest_exit_and_failed_handoff_reap_the_exact_child() {
@@ -1970,7 +2177,7 @@ mod tests {
                 master,
                 child,
                 None,
-                || {},
+                || None,
             );
             if fails {
                 assert!(handed.is_err());
@@ -1980,7 +2187,7 @@ mod tests {
                 assert_eq!(rights.len(), 2);
                 let mut lease = UnixStream::from(rights.pop().unwrap());
                 lease
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 assert_eq!(
                     lease.read(&mut [0u8; 1]).unwrap(),
@@ -1992,13 +2199,9 @@ mod tests {
                 server.read_exact(&mut bytes).unwrap();
                 assert_eq!(&bytes, b"control");
             }
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while active.load(std::sync::atomic::Ordering::Acquire) != 0
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+            tilo_test_env::wait_until("the session to be reaped", || {
+                active.load(std::sync::atomic::Ordering::Acquire) == 0
+            });
             assert!(
                 !Path::new(&format!("/proc/{pid}")).exists(),
                 "the exact child must be reaped"
@@ -2013,7 +2216,7 @@ mod tests {
         store.ensure().unwrap();
         let (client, mut server) = UnixStream::pair().unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let transport = SessionTransport {
@@ -2042,7 +2245,7 @@ mod tests {
                 master,
                 child,
                 None,
-                || {},
+                || None,
             )
             .unwrap();
             let (bytes, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
@@ -2062,13 +2265,9 @@ mod tests {
             // SAFETY: terminal is an owned live PTY descriptor. isatty reads no user memory.
             assert_eq!(unsafe { libc::isatty(terminal.as_raw_fd()) }, 1);
             drop(lease);
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while active.load(std::sync::atomic::Ordering::Acquire) != 0
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+            tilo_test_env::wait_until("the session to be reaped", || {
+                active.load(std::sync::atomic::Ordering::Acquire) == 0
+            });
             assert!(
                 !Path::new(&format!("/proc/{pid}")).exists(),
                 "session child must be reaped"
@@ -2092,10 +2291,10 @@ mod tests {
         store.ensure().unwrap();
         let (mut client, server) = UnixStream::pair().unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         client
-            .set_write_timeout(Some(Duration::from_secs(2)))
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let worker = std::thread::spawn(move || serve_one(&server, &store, Path::new("/")));
         client
@@ -2172,6 +2371,71 @@ mod tests {
         }
     }
 
+    // A relay session's lease tells a terminal that asked whether its shell
+    // exited or its connection was lost: only an exit closes its window.
+    #[test]
+    fn a_relay_sessions_lease_says_whether_its_shell_exited_or_the_connection_was_lost() {
+        use crate::relay::BridgeStatus;
+        let ended = |code: Option<i32>, reason: Option<&str>, superseded: bool| {
+            Some(BridgeStatus::Ended {
+                code,
+                reason: reason.map(str::to_owned),
+                superseded,
+            })
+        };
+        assert_eq!(RelayEnd::of(ended(Some(0), None, false)), RelayEnd::Exited);
+        assert_eq!(RelayEnd::of(ended(Some(3), None, false)), RelayEnd::Exited);
+        assert_eq!(
+            RelayEnd::of(ended(None, Some("relay unreachable"), false)),
+            RelayEnd::Lost("relay unreachable".into())
+        );
+        assert_eq!(
+            RelayEnd::of(ended(None, Some("attached on another terminal"), true)),
+            RelayEnd::Superseded
+        );
+        assert!(
+            matches!(RelayEnd::of(None), RelayEnd::Lost(_)),
+            "a bridge that stopped without a word did not see the shell exit"
+        );
+
+        for (end, line, report) in [
+            (RelayEnd::Exited, Some(r#"{"ended":"exited"}"#), true),
+            (
+                RelayEnd::Lost("relay unreachable".into()),
+                Some(r#"{"ended":"lost","reason":"relay unreachable"}"#),
+                true,
+            ),
+            (
+                RelayEnd::Superseded,
+                Some(r#"{"ended":"superseded"}"#),
+                true,
+            ),
+            (RelayEnd::Exited, None, false),
+        ] {
+            let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+            let child = std::process::Command::new("true")
+                .spawn()
+                .expect("spawn the bridge");
+            let watch = RelayWatch {
+                bridge: std::thread::spawn(move || end),
+                report,
+            };
+            let termination = finish_session(&supervisor, child, Some(watch));
+            assert!(termination.starts_with("exit"), "{termination}");
+            let mut read = String::new();
+            (&terminal)
+                .read_to_string(&mut read)
+                .expect("the lease closes after the report");
+            match line {
+                Some(line) => assert_eq!(read.trim_end(), line),
+                None => assert!(
+                    read.is_empty(),
+                    "a terminal that did not ask is told nothing"
+                ),
+            }
+        }
+    }
+
     #[test]
     fn cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open() {
         let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
@@ -2184,7 +2448,7 @@ mod tests {
         terminal
             .shutdown(std::net::Shutdown::Both)
             .expect("cancel pending or accepted session");
-        let termination = finish_session(&supervisor, child);
+        let termination = finish_session(&supervisor, child, None);
         assert!(
             termination.starts_with("terminal closed; exit"),
             "{termination}"
@@ -2275,6 +2539,7 @@ mod tests {
             relay_session: None,
             runs: None,
             editor_protocol: None,
+            end_report: false,
         }
     }
 

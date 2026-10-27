@@ -299,12 +299,12 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
             );
             let _ = done_tx.send(inspected.map(|inspection| inspection.payload_bytes));
         });
-        let under_lock = done_rx
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("inspecting a stored thin package under the registry lock returns");
+        let under_lock = tilo_test_env::recv(
+            "inspecting a stored thin package under the registry lock to return",
+            &done_rx,
+        );
         assert_eq!(under_lock.unwrap(), inspection.payload_bytes);
 
-        // Approval keeps the thin form for installers.
         storage
             .save_payload_blobs(&std::fs::read(published.objects.join("package.tapp")).unwrap())
             .unwrap();
@@ -377,9 +377,12 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
                 .to_string();
             assert!(error.contains(&absent.to_hex()), "{error}");
         });
-        while !install.is_finished() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        tilo_test_env::within("the install to finish", async {
+            while !install.is_finished() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
         install.join().unwrap();
     }
     // phase: a_tampered_chunk_or_missing_object_fails_review_and_publishes_no_list

@@ -1,4 +1,3 @@
-//! Explicit temporary canonical records and controlled runner fonts.
 #[path = "canonical.rs"]
 pub mod canonical;
 pub use canonical::NotebookFixture;
@@ -95,7 +94,6 @@ pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
         text_renderer: renderer(),
     }
 }
-/// Write the fixture's notebook into its record.
 pub fn notebook(f: &NotebookFixture) -> ui::record::RecordCheckout {
     f.write_notebook()
 }
@@ -354,7 +352,6 @@ pub fn duplicate(doc: &mut automerge::AutoCommit, page: notes::PageId) -> notes:
         .id
 }
 
-/// Replace the whole text of `block`.
 pub fn replace_block_text(
     doc: &mut automerge::AutoCommit,
     page: notes::PageId,
@@ -379,7 +376,6 @@ pub fn replace_block_text(
     );
 }
 
-/// Remove `block` from `page`.
 pub fn remove_block(doc: &mut automerge::AutoCommit, page: notes::PageId, block: &str) {
     edit_body(
         doc,

@@ -11,7 +11,7 @@ A follow-up of [the #4003 receipt](os-image-size-2026-10-09.md), whose
 over the production-layout `tilo-ci` images Build / OS dev published (LTO
 off). "Before" is main's newest image of each architecture when the change
 was measured; "after" is the pull request's image, built on main `e6fe675280`.
-The raw output is in `os-image-size-2026-10-10.json`.
+The raw output is in [`os-image-size-2026-10-10.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/os-image-size-2026-10-10.json).
 
 | image | revision | layers | compressed | payload | unique content | redundant payload |
 |---|---|---:|---:|---:|---:|---:|

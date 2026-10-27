@@ -36,7 +36,6 @@ use ui_core::history_source::steps::{self, Checkpoint, Scope};
 pub(crate) const EDIT_TYPE: &str = "tilo.app.history-edit";
 /// The type of a history verb on one part of a chain ([`PartEdit`]).
 pub(crate) const PART_EDIT_TYPE: &str = "tilo.app.part-history-edit";
-/// The operation type of the history views.
 pub(crate) const VIEW_TYPE: &str = "tilo.app.history";
 
 /// The most steps one undo or redo takes.
@@ -137,8 +136,17 @@ pub(crate) struct ResourceHistoryEdit<R> {
 
 impl<R> std::fmt::Debug for ResourceHistoryEdit<R> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.edit.fmt(formatter)
+        fmt_history_edit(&self.edit, formatter)
     }
+}
+
+/// `edit` as `Debug` writes it, by one function for every resource.
+#[inline(never)]
+fn fmt_history_edit(
+    edit: &HistoryEdit,
+    formatter: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    std::fmt::Debug::fmt(edit, formatter)
 }
 
 impl<'de, R> Deserialize<'de> for ResourceHistoryEdit<R> {
@@ -173,7 +181,6 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
     }
 }
 
-/// A history view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 enum HistoryView {
@@ -233,7 +240,7 @@ fn edit(
             Err(reason) => invalid(&reason),
         },
     )
-    .reversible()
+    .of_kind(tilo_actions::ActionKind::Undoable)
     .with_description(description);
     spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
@@ -331,7 +338,6 @@ impl PartEdit {
         }
     }
 
-    /// The edit as the part's history records it.
     pub(crate) fn encoded(&self) -> Result<EncodedAction, String> {
         Ok(EncodedAction {
             type_id: EDIT_TYPE.to_owned(),
@@ -380,8 +386,11 @@ fn part_edit(
             }
         },
     )
-    .reversible()
-    .with_description(description);
+    .of_kind(tilo_actions::ActionKind::Undoable)
+    .with_description(description)
+    // A part is named by its number, which only history shows: agents and
+    // scripts take it from there. A person undoes in the app itself.
+    .for_audience(tilo_actions::Audience::Agents);
     spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
@@ -589,7 +598,6 @@ fn sentence(version: &Version) -> String {
         .unwrap_or_default()
 }
 
-/// One version as `history` lists it.
 pub(crate) fn entry(
     version: &Version,
     undone: &HashSet<String>,
@@ -639,15 +647,11 @@ pub struct HistoryVersion {
     pub time_ms: i64,
     /// Taken back by an undo.
     pub undone: bool,
-    /// The names of the checkpoints at this version.
     pub checkpoints: Vec<String>,
     /// Housekeeping about the document (naming a checkpoint), not a change
     /// to what it holds.
     pub housekeeping: bool,
 }
-
-/// The kind of work unit an agent's run groups its actions under.
-const AGENT_RUN: &str = "agent-run";
 
 /// The last `last` versions, oldest first, as [`HistoryVersion`]s.
 pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
@@ -663,7 +667,7 @@ pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
             let context = version.context.as_ref();
             let run = context
                 .and_then(|context| context.group.as_ref())
-                .filter(|group| group.kind == AGENT_RUN);
+                .filter(|group| steps::names_a_run(&group.kind));
             HistoryVersion {
                 change: steps::short(&version.hash),
                 action: sentence(version),
@@ -810,9 +814,6 @@ pub(crate) fn history(doc: &AutoCommit, last: usize) -> Value {
 }
 
 /// Answer a history view.
-///
-/// # Errors
-/// Returns a malformed request or an unknown version.
 pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
     let view: HistoryView = tilo_actions::decode_json(payload)
         .map_err(|error| format!("not a history view: {error}"))?;

@@ -1,6 +1,3 @@
-//! A steward kept in memory and exported, as a browser keeps it, signing
-//! through a key that answers later.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -229,7 +226,6 @@ fn every_point_a_change_can_stop_at_reopens_whole() {
             channel,
             &browser,
         );
-        // The journal keeps genesis and its head.
         let recorded = step >= 2;
         assert_eq!(
             reopened.journal().frames().len(),

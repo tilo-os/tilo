@@ -27,6 +27,7 @@ use crate::num::{f32_of_f64, f64_of_u64, f64_of_usize, usize_of_f64};
 use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
+use tilo_sort::CompactSort as _;
 
 use serde::Serialize;
 use vello::Scene;
@@ -119,6 +120,9 @@ pub enum InputPhase {
 
 impl InputPhaseClock {
     pub fn new(enabled: bool) -> Self {
+        // A test probing what a frame costs sees the input's phases too.
+        #[cfg(test)]
+        let enabled = enabled || frame_probe::enabled();
         Self {
             enabled,
             phases: InputPhases::default(),
@@ -138,6 +142,17 @@ impl InputPhaseClock {
             return;
         };
         let elapsed = start.elapsed();
+        #[cfg(test)]
+        frame_probe::record(
+            match phase {
+                InputPhase::Dispatch => "input.dispatch",
+                InputPhase::HitTest => "input.hit_test",
+                InputPhase::Resources => "input.resources",
+                InputPhase::Publication => "input.publication",
+                InputPhase::Commit => "input.commit",
+            },
+            elapsed.as_nanos(),
+        );
         let slot = match phase {
             InputPhase::Dispatch => &mut self.phases.dispatch,
             InputPhase::HitTest => &mut self.phases.hit_test,
@@ -745,7 +760,7 @@ impl FrameProfiler {
         // normal frame to an invisible sliver. Frames above the ceiling
         // clip to a full-height bar, already painted red as over-budget.
         let mut totals: Vec<u64> = self.history.iter().map(|f| f.total_us).collect();
-        totals.sort_unstable();
+        totals.compact_sort();
         let p95 = percentile(&totals, 95.0);
         let scale_top = f64_of_u64((FRAME_BUDGET_US * 2).max(p95));
         let y_of = |us: u64| gy1 - (f64_of_u64(us) / scale_top).min(1.0) * layout.graph_h;
@@ -772,7 +787,7 @@ impl FrameProfiler {
             let color = if f.over_budget() {
                 Color::from_rgba8(230, 70, 70, 255)
             } else {
-                theme.tokens.colors.intent.neutral_fill
+                theme.tokens.colors.intent.value_fill
             };
             scene.fill(Fill::NonZero, transform, color, None, &bar);
         }
@@ -802,7 +817,7 @@ impl StatSummary {
             return Self::default();
         }
         let mut v = values.to_vec();
-        v.sort_unstable();
+        v.compact_sort();
         let count = v.len();
         let sum: u128 = v.iter().map(|&x| u128::from(x)).sum();
         let mean_us = saturating_u64(sum.checked_div(count as u128).unwrap_or(0));
@@ -1074,7 +1089,6 @@ mod tests {
 
     #[test]
     fn stats_summaries_use_nearest_rank_and_handle_empty_input() {
-        // Case `percentile_is_nearest_rank`.
         {
             let v: Vec<u64> = (1..=100).collect();
             assert_eq!(percentile(&v, 50.0), 50);
@@ -1083,7 +1097,6 @@ mod tests {
             assert_eq!(percentile(&v, 100.0), 100);
         }
 
-        // Case `stat_summary_captures_spread`.
         {
             let s = StatSummary::of(&[10, 20, 30, 40, 50]);
             assert_eq!(s.count, 5);
@@ -1093,7 +1106,6 @@ mod tests {
             assert_eq!(s.max_us, 50);
         }
 
-        // Case `empty_stats_are_zero_not_a_panic`.
         {
             let s = StatSummary::of(&[]);
             assert_eq!(s.count, 0);
@@ -1103,7 +1115,6 @@ mod tests {
 
     #[test]
     fn profiler_records_passes_commits_and_over_budget_frames() {
-        // Case `profiler_records_passes_and_commits`.
         {
             let mut p = FrameProfiler::for_capture();
             p.record(Pass::Sync, Duration::from_micros(100));
@@ -1125,7 +1136,6 @@ mod tests {
             assert!(!f.over_budget());
         }
 
-        // Case `diagnostic_passes_accumulate_serialize_and_reset`.
         {
             let mut profiler = FrameProfiler::for_capture();
             profiler.record(Pass::ResourceAvailability, Duration::from_micros(11));
@@ -1167,7 +1177,6 @@ mod tests {
             assert_eq!(lines.count(), 1, "one header, two frames");
         }
 
-        // Case `live_input_banks_event_count_maximum_and_phases_per_frame`.
         {
             let mut profiler = FrameProfiler::for_capture();
             let started = crate::time::now();
@@ -1232,7 +1241,6 @@ mod tests {
             assert_eq!(clock.phases().dispatch, Duration::ZERO);
         }
 
-        // Case `over_budget_frames_are_counted_in_the_report`.
         {
             let mk = |total: u64| FrameTiming {
                 total_us: total,
@@ -1246,7 +1254,6 @@ mod tests {
             assert_eq!(r.draw.max_us, 30_000);
         }
 
-        // Case `scenario_named_click_reaches_the_real_control`.
         {
             let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = clicks.clone();
@@ -1265,9 +1272,6 @@ mod tests {
             assert!(report.frames >= 2);
         }
 
-        // Case `scenario_cannot_report_success_after_a_missing_click`: the run
-        // panics naming the control it could not click (formerly
-        // `#[should_panic(expected = "missing-control")]`).
         {
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut driver = crate::headless::FrameHarness::new(

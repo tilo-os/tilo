@@ -8,7 +8,8 @@
 use serde::{Deserialize, Serialize};
 pub use tilo_action_policy::ActionKind;
 
-use crate::action::OperationKind;
+use crate::action::{OperationKind, undo_takes_back};
+use crate::context::ChangeKind;
 
 /// Whether an action can be invoked in the resource's current state.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +64,20 @@ impl RiskLevel {
         matches!(self, Self::Destructive | Self::Privileged | Self::Sensitive)
     }
 
+    /// Whether a change of this class that `can_be_undone` must be
+    /// confirmed before it runs. Undo is a system service: a deletion Undo
+    /// takes back runs at once and offers Undo, and is never asked about.
+    /// What Undo cannot take back is still asked: an irreversible deletion,
+    /// a crossing of a security boundary, an export of private data.
+    #[must_use]
+    pub fn requires_confirmation_when(self, can_be_undone: bool) -> bool {
+        match self {
+            Self::Destructive => !can_be_undone,
+            Self::Privileged | Self::Sensitive => true,
+            Self::None | Self::Low => false,
+        }
+    }
+
     /// The level's name, as it is written outside a typed message (a
     /// question a host relays, an activity facet).
     #[must_use]
@@ -98,10 +113,60 @@ impl RiskLevel {
 /// it may do; its answer goes back to the asking device alone.
 pub const MEMBER_OWN_TAG: &str = "host:member-own";
 
-/// [`ActionContract::tags`] entry of an action offered only to programmatic
-/// callers — agents, scripts and the controls or surfaces that submit it —
-/// and never listed for a person to pick (the action palette, menus).
-pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
+/// [`ActionContract::tags`] entry of an effect a host answers in a render
+/// service of its own rather than in the record's confined app worker:
+/// rendering a timeline to video needs a GPU and a media stack, which a
+/// confined worker has neither of. A host without such a service leaves the
+/// effect out of what its agents are offered.
+pub const HOST_RENDER_TAG: &str = "host:render";
+
+/// [`ActionContract::tags`] entry of an action for [`Audience::Agents`].
+pub const AGENTS_AUDIENCE_TAG: &str = "audience:agents";
+
+/// [`ActionContract::tags`] entry of an action for [`Audience::People`].
+pub const PEOPLE_AUDIENCE_TAG: &str = "audience:people";
+
+/// Who an action is listed for. The app declares it. Most actions are for
+/// [`Everyone`](Self::Everyone), which is the default. An action outside a
+/// listing's audience stays published, resolvable and invocable by address,
+/// under the same permission, confirmation and history rules as any other.
+/// It just isn't offered there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Audience {
+    #[default]
+    Everyone,
+    /// Listed for people only: an action whose point is what a person sees
+    /// or does next, such as copying a link to the clipboard. Agent listings
+    /// leave it out.
+    People,
+    /// Listed for agents, scripts and the controls that submit it, never for
+    /// a person to pick (the palette, menus). Examples: reading a message's
+    /// content, revealing a text range by offsets, an edit addressed by an
+    /// internal part number.
+    Agents,
+}
+
+impl Audience {
+    /// Whether people's listings (the palette, menus) offer it.
+    pub const fn reaches_people(self) -> bool {
+        !matches!(self, Self::Agents)
+    }
+
+    /// Whether agents' listings offer it.
+    pub const fn reaches_agents(self) -> bool {
+        !matches!(self, Self::People)
+    }
+
+    /// The contract tag recording it, `None` for everyone.
+    pub const fn tag(self) -> Option<&'static str> {
+        match self {
+            Self::Everyone => None,
+            Self::People => Some(PEOPLE_AUDIENCE_TAG),
+            Self::Agents => Some(AGENTS_AUDIENCE_TAG),
+        }
+    }
+}
 
 /// [`ActionContract::tags`] entry of an action whose result carries content
 /// from outside the user's own data (a web page's text, its logs): data for
@@ -176,6 +241,12 @@ pub const INCOMING_MESSAGE_TAG: &str = "trigger:incoming-message";
 /// not that it sends something away.
 pub const COMPENSATED_UNDO_TAG: &str = "undo:compensated";
 
+/// [`ActionContract::tags`] entry of an action whose document change Undo
+/// reverts but which also loses something Undo cannot bring back (an
+/// account's secret every device forgets): it cannot be taken back, so a
+/// destructive one is confirmed through every door.
+pub const IRREVERSIBLE_TAG: &str = "undo:irreversible";
+
 /// Contract tag on the declaration of a housekeeping verb: a change about the
 /// record rather than to it (`#[action(housekeeping)]`, such as marking a
 /// channel read). An app does these on its own, so nobody is asked to review
@@ -241,6 +312,17 @@ impl ActionNeed {
         }
     }
 
+    /// An undoable change of reactions, wherever they are: what someone who
+    /// may only comment may do too.
+    #[must_use]
+    pub fn reactions() -> Self {
+        Self {
+            kind: ActionKind::Undoable,
+            field: Some(tilo_action_policy::roles::REACTIONS_FIELD.to_owned()),
+            privileged: false,
+        }
+    }
+
     /// An undoable change under the resource's `moderation` node: acting on
     /// other people's content, which Moderators and the owner may do.
     #[must_use]
@@ -272,6 +354,41 @@ pub enum ConfirmationPolicy {
 
 read_through_json_value!(ConfirmationPolicy);
 
+/// Words that confirm without naming anything: typing one proves only that
+/// the person can read the prompt.
+const GENERIC_CONFIRMATION_WORDS: &[&str] = &[
+    "confirm",
+    "confirmed",
+    "yes",
+    "ok",
+    "okay",
+    "sure",
+    "agree",
+    "i agree",
+    "continue",
+    "proceed",
+    "accept",
+    "delete",
+    "remove",
+    "erase",
+    "wipe",
+    "reset",
+    "destroy",
+];
+
+/// Whether a typed confirmation `phrase` names what the action destroys
+/// (a drive's name, an app's name), rather than a generic word such as
+/// "CONFIRM". A typed phrase is for irreversible, high-risk actions, and
+/// its point is that the person reads what they are about to lose.
+#[must_use]
+pub fn phrase_is_meaningful(phrase: &str) -> bool {
+    let phrase = phrase.trim();
+    !phrase.is_empty()
+        && !GENERIC_CONFIRMATION_WORDS
+            .iter()
+            .any(|word| phrase.eq_ignore_ascii_case(word))
+}
+
 /// What a caller may safely do after losing the completion response.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -300,9 +417,40 @@ pub enum ExecutionMode {
         cancellable: bool,
         item_schema: serde_json::Value,
     },
+    /// A read that stays current: each item, checked against
+    /// `item_schema`, is the whole result as it is now, sent again whenever
+    /// the provider's answer changes. It ends only when the caller cancels
+    /// it, its permission is withdrawn, or the provider fails.
+    Live { item_schema: serde_json::Value },
 }
 
 read_through_json_value!(ExecutionMode);
+
+impl ExecutionMode {
+    /// Whether a caller may cancel a running invocation.
+    #[must_use]
+    pub const fn cancellable(&self) -> bool {
+        matches!(
+            self,
+            Self::Background { cancellable: true }
+                | Self::Streaming {
+                    cancellable: true,
+                    ..
+                }
+                | Self::Live { .. }
+        )
+    }
+
+    /// What each item of a streaming or live invocation must match; `None`
+    /// for a mode that sends no items.
+    #[must_use]
+    pub const fn item_schema(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Streaming { item_schema, .. } | Self::Live { item_schema } => Some(item_schema),
+            Self::Immediate | Self::Background { .. } => None,
+        }
+    }
+}
 
 /// Shape of a successful result. Schemas use JSON Schema so non-Rust callers
 /// do not need a parallel Tilo-only type system.
@@ -324,11 +472,6 @@ read_through_json_value!(ResultSpec);
 
 impl ResultSpec {
     /// Check that a completed action returned the shape it advertised.
-    ///
-    /// # Errors
-    ///
-    /// Returns a human-readable contract violation when `output` does not
-    /// match this result specification.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
         match self {
             // An action with no result may still name what it created.
@@ -363,10 +506,28 @@ impl ResultSpec {
     }
 }
 
-/// The contract tag of an action that reaches files, hardware or services
-/// of the device it runs on: the door runs it only for the person at that
-/// device, never for a collaborator or a remote participant.
-pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
+/// The contract tag of an action that needs its person attending: it opens
+/// a chooser for them, asks them for a credential or a sign-in, or shows
+/// something only they may see. Whoever acts for a person (an agent, a bot,
+/// an app) is always asked first, and no answer allows it unasked, not even
+/// one given for that very action. The person's own click needs no room's
+/// consent: the chooser, the sign-in or the reveal in front of them is
+/// their decision, so like an effect of [`OWN_DEVICE_SCOPE`] it needs only
+/// what reading needs and runs only on the device of whoever starts it.
+pub const ATTENDED_TAG: &str = "tilo.attended";
+
+/// The contract tag of an effect whose whole scope is the invoking
+/// person's own device: it touches nothing a room shares and no one else
+/// (their clipboard, their own appearance, a network test from their own
+/// browser, a draft of their own). A room's grants have nothing to consent
+/// to, so it needs only what reading needs ([`ActionContract::need`]), and
+/// a guest presses it as the room's owner does. Whatever shared it goes on
+/// to change goes through that change's own action and is decided there.
+/// Being the invoker's own device, it runs only for the person at the
+/// device it acts on and those acting for them. An effect that reaches
+/// other people (a direct message, a call, a shared live context) is not of
+/// this scope.
+pub const OWN_DEVICE_SCOPE: &str = "tilo.scope.own-device";
 
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,8 +550,6 @@ pub struct ActionContract {
     pub confirmation: ConfirmationPolicy,
     #[serde(default)]
     pub retry: RetryPolicy,
-    #[serde(default)]
-    pub reversible: bool,
     #[serde(default)]
     pub execution: ExecutionMode,
     #[serde(default)]
@@ -437,7 +596,6 @@ pub struct Offload {
     /// Whether it needs a GPU.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gpu: bool,
-    /// CPU time ceiling, in milliseconds.
     pub cpu_time_ms: u64,
     /// Memory ceiling, in bytes. The inputs count against it.
     pub memory_bytes: u64,
@@ -486,7 +644,6 @@ impl Default for ActionContract {
             risk: RiskLevel::Low,
             confirmation: ConfirmationPolicy::None,
             retry: RetryPolicy::AtMostOnce,
-            reversible: false,
             execution: ExecutionMode::Immediate,
             result: ResultSpec::None,
             tags: Vec::new(),
@@ -500,7 +657,14 @@ impl ActionContract {
     #[must_use]
     pub fn need(&self) -> ActionNeed {
         ActionNeed {
-            kind: self.kind,
+            // An outside effect on the person's own device reaches nothing
+            // a room's grants govern ([`OWN_DEVICE_SCOPE`]), and one they
+            // attend is their own decision ([`ATTENDED_TAG`]).
+            kind: if self.kind == ActionKind::Outside && self.runs_on_invokers_device() {
+                ActionKind::Read
+            } else {
+                self.kind
+            },
             field: self.field.clone(),
             privileged: self.risk == RiskLevel::Privileged,
         }
@@ -514,6 +678,21 @@ impl ActionContract {
             retry: RetryPolicy::Idempotent,
             ..Self::default()
         }
+    }
+
+    /// A view whose result stays current ([`ExecutionMode::Live`]), each
+    /// item matching `item_schema`.
+    pub fn live_view(item_schema: serde_json::Value) -> Self {
+        Self {
+            execution: ExecutionMode::Live { item_schema },
+            ..Self::view()
+        }
+    }
+
+    /// Whether the action's result stays current ([`ExecutionMode::Live`]).
+    #[must_use]
+    pub const fn is_live(&self) -> bool {
+        matches!(self.execution, ExecutionMode::Live { .. })
     }
 
     /// The defaults for an operation of `operation`'s kind: a view reads, a
@@ -530,10 +709,53 @@ impl ActionContract {
         }
     }
 
-    /// Whether the action is offered only to programmatic callers. See
-    /// [`PROGRAMMATIC_TAG`].
-    pub fn is_programmatic(&self) -> bool {
-        self.tags.iter().any(|tag| tag == PROGRAMMATIC_TAG)
+    /// Whether the effect's scope is the invoking person's own device and
+    /// nothing shared. See [`OWN_DEVICE_SCOPE`].
+    pub fn is_own_device(&self) -> bool {
+        self.tags.iter().any(|tag| tag == OWN_DEVICE_SCOPE)
+    }
+
+    /// Whether the action needs its person attending. See [`ATTENDED_TAG`].
+    pub fn is_attended(&self) -> bool {
+        self.tags.iter().any(|tag| tag == ATTENDED_TAG)
+    }
+
+    /// Whether the action acts on the device of whoever invokes it, so only
+    /// the person at that device (and those acting for them) runs it: an
+    /// effect of [`OWN_DEVICE_SCOPE`] or one its person attends
+    /// ([`ATTENDED_TAG`]).
+    pub fn runs_on_invokers_device(&self) -> bool {
+        self.is_own_device() || self.is_attended()
+    }
+
+    /// Who the action is listed for, as its tags record it. See [`Audience`].
+    pub fn audience(&self) -> Audience {
+        if self.tags.iter().any(|tag| tag == AGENTS_AUDIENCE_TAG) {
+            Audience::Agents
+        } else if self.tags.iter().any(|tag| tag == PEOPLE_AUDIENCE_TAG) {
+            Audience::People
+        } else {
+            Audience::Everyone
+        }
+    }
+
+    /// Record `audience` in the tags, replacing any audience before it.
+    pub fn set_audience(&mut self, audience: Audience) {
+        self.tags
+            .retain(|tag| tag != AGENTS_AUDIENCE_TAG && tag != PEOPLE_AUDIENCE_TAG);
+        if let Some(tag) = audience.tag() {
+            self.tags.push(tag.to_owned());
+        }
+    }
+
+    /// Whether people's listings offer it. See [`Audience::reaches_people`].
+    pub fn reaches_people(&self) -> bool {
+        self.audience().reaches_people()
+    }
+
+    /// Whether agents' listings offer it. See [`Audience::reaches_agents`].
+    pub fn reaches_agents(&self) -> bool {
+        self.audience().reaches_agents()
     }
 
     /// Whether the action reads the open document's first page. See
@@ -564,10 +786,81 @@ impl ActionContract {
     }
 
     /// Whether the action, once taken, can be undone: the host's undo
-    /// reverts a document change, and an outside one declared with its
-    /// compensation ([`COMPENSATED_UNDO_TAG`]) is undone by queueing it.
+    /// reverts an [`Undoable`](ActionKind::Undoable) change, and an outside
+    /// one declared with its compensation ([`COMPENSATED_UNDO_TAG`]) is
+    /// undone by queueing it. One that also loses what Undo cannot bring
+    /// back ([`IRREVERSIBLE_TAG`]) cannot.
     pub fn can_be_undone(&self) -> bool {
-        self.reversible || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG)
+        (self.kind == ActionKind::Undoable
+            || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG))
+            && !self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG)
+    }
+
+    /// Whether an invocation of this action must be confirmed before it
+    /// runs: its risk asks for it and Undo cannot take it back
+    /// ([`RiskLevel::requires_confirmation_when`]).
+    #[must_use]
+    pub fn requires_confirmation(&self) -> bool {
+        self.risk.requires_confirmation_when(self.can_be_undone())
+    }
+
+    /// Bring the declared policy in line with the risk and whether Undo
+    /// takes the action back: a deletion Undo takes back asks nothing, one
+    /// it cannot asks with a click. An explicit typed phrase, and the policy
+    /// of any other risk, stay as declared. Every builder that changes the
+    /// risk, the undo or the tags calls this, so the order they are called
+    /// in never decides whether a person is asked.
+    ///
+    /// The kind is read through
+    /// [`settled_kind`](Self::settled_kind), so a deletion built before the
+    /// kind that makes it undoable still ends up asking nothing, and one a
+    /// declaration says reaches outside still asks.
+    pub fn settle_confirmation(&mut self) {
+        if self.risk != RiskLevel::Destructive {
+            return;
+        }
+        let undoable = undo_takes_back(
+            self.settled_kind(),
+            ChangeKind::Content,
+            self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG),
+        );
+        match (&self.confirmation, undoable) {
+            (ConfirmationPolicy::Confirm, true) => self.confirmation = ConfirmationPolicy::None,
+            (ConfirmationPolicy::None, false) => self.confirmation = ConfirmationPolicy::Confirm,
+            _ => {}
+        }
+    }
+
+    /// The kind this contract says the action is, where [`kind`](Self::kind)
+    /// cannot say it alone: a change to its own document is undoable unless
+    /// it keeps something Undo cannot bring back ([`IRREVERSIBLE_TAG`]), or
+    /// unless it reaches outside and queues its compensation
+    /// ([`COMPENSATED_UNDO_TAG`]).
+    #[must_use]
+    pub fn settled_kind(&self) -> ActionKind {
+        let irreversible = self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG);
+        let undoable = self.kind == ActionKind::Undoable
+            || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG);
+        if undoable && !irreversible {
+            return ActionKind::Undoable;
+        }
+        if self.kind == ActionKind::Undoable {
+            return ActionKind::Outside;
+        }
+        self.kind
+    }
+
+    /// The kind of a deletion, which has to say which it is: what its kind
+    /// settles to, less where Undo cannot take the change back at all.
+    #[must_use]
+    pub fn deletion_kind(&self) -> ActionKind {
+        let irreversible = self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG);
+        let kind = self.settled_kind();
+        if undo_takes_back(kind, ChangeKind::Content, irreversible) {
+            kind
+        } else {
+            ActionKind::Outside
+        }
     }
 
     /// Whether confirmation depends on the invocation's arguments. See
@@ -583,12 +876,25 @@ impl ActionContract {
     /// host, which can classify, asks
     /// [`ActionSpec::confirmation_for_json`](crate::ActionSpec::confirmation_for_json).
     pub fn advertised_confirmation(&self) -> ConfirmationPolicy {
-        if self.confirmation == ConfirmationPolicy::None && self.confirmation_depends_on_arguments()
+        // An action whose risk depends on its arguments is a generic edit or
+        // a verb that may delete: what Undo takes back asks nothing,
+        // whichever value it carries.
+        if self.confirmation == ConfirmationPolicy::None
+            && self.confirmation_depends_on_arguments()
+            && !self.can_be_undone()
         {
             ConfirmationPolicy::Confirm
         } else {
             self.confirmation.clone()
         }
+    }
+
+    /// Whether an invocation with `argument` asks the person an agent acts
+    /// for, whatever their broader answers allow: it needs a confirmation
+    /// ([`Self::confirmation_for_argument`]) or its person attending
+    /// ([`Self::is_attended`]).
+    pub fn asks_for_argument(&self, argument: Option<&str>) -> bool {
+        self.is_attended() || self.confirmation_for_argument(argument) != ConfirmationPolicy::None
     }
 
     /// The confirmation an invocation with `argument` (the wire argument:
@@ -611,13 +917,49 @@ impl ActionContract {
             .and_then(|text| text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX))
             .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
             .and_then(|arguments| arguments.get(FIELD_EDIT_PARAM).cloned());
-        let quiet: Vec<&str> = self
-            .tags
-            .iter()
-            .filter_map(|tag| tag.strip_prefix(tilo_action_policy::edits::QUIET_REMOVAL_TAG))
+        let tagged = |prefix: &str| -> Vec<&str> {
+            self.tags
+                .iter()
+                .filter_map(|tag| tag.strip_prefix(prefix))
+                .collect()
+        };
+        let quiet = tagged(tilo_action_policy::edits::QUIET_REMOVAL_TAG);
+        let guarded = tagged(tilo_action_policy::edits::GUARDED_FIELD_TAG);
+        let weakening: Vec<_> = tagged(tilo_action_policy::edits::WEAKENING_FIELD_TAG)
+            .into_iter()
+            .filter_map(tilo_action_policy::edits::WeakeningField::parse)
             .collect();
+        let value = edit
+            .as_ref()
+            .and_then(|edit| edit.get("value"))
+            .map(serde_json::Value::to_string);
+        // Whatever a generic edit of an undoable record removes, Undo puts
+        // back: only a field that exposes the person or weakens their
+        // security still asks.
+        let undoable = self.can_be_undone();
+        let asks = |op: &str, path: &[tilo_action_policy::edits::EditStep<'_>]| {
+            if undoable {
+                tilo_action_policy::edits::guarded_at(path, &guarded)
+            } else {
+                tilo_action_policy::edits::field_edit_asks(op, path, &quiet, &guarded)
+            }
+        };
         match edit.as_ref().and_then(edit_parts) {
-            Some((op, path)) if !tilo_action_policy::edits::field_edit_asks(op, &path, &quiet) => {
+            Some((op, path))
+                if !asks(op, &path)
+                    && !tilo_action_policy::edits::weakening_edit(
+                        op,
+                        &path,
+                        value.as_deref(),
+                        &weakening,
+                    ) =>
+            {
+                ConfirmationPolicy::None
+            }
+            // An edit nobody can read asks, unless the record has no field
+            // that exposes the person or weakens their security and Undo
+            // takes back whatever it changes.
+            None if undoable && guarded.is_empty() && weakening.is_empty() => {
                 ConfirmationPolicy::None
             }
             _ => ConfirmationPolicy::Confirm,
@@ -634,15 +976,22 @@ impl ActionContract {
         {
             errors.push("unavailable action needs a code and reason".into());
         }
-        if self.risk.requires_confirmation()
-            && matches!(self.confirmation, ConfirmationPolicy::None)
-        {
+        if self.requires_confirmation() && matches!(self.confirmation, ConfirmationPolicy::None) {
             errors.push("consequential action requires confirmation".into());
         }
-        if let ConfirmationPolicy::Phrase { phrase } = &self.confirmation
-            && phrase.trim().is_empty()
-        {
-            errors.push("confirmation phrase must not be empty".into());
+        if let ConfirmationPolicy::Phrase { phrase } = &self.confirmation {
+            if phrase.trim().is_empty() {
+                errors.push("confirmation phrase must not be empty".into());
+            } else if !phrase_is_meaningful(phrase) {
+                errors.push(format!(
+                    "confirmation phrase \"{phrase}\" says nothing about what is lost; name it (the drive, the app, the item)"
+                ));
+            }
+            if self.can_be_undone() {
+                errors.push(
+                    "an action Undo takes back is never confirmed by typing; it runs at once and offers Undo".into(),
+                );
+            }
         }
         if matches!(self.retry, RetryPolicy::RetryWithInvocationId) {
             errors.push(
@@ -659,10 +1008,13 @@ impl ActionContract {
         {
             errors.push("immediate action cannot declare a background job result".into());
         }
-        if let ExecutionMode::Streaming { item_schema, .. } = &self.execution
+        if let Some(item_schema) = self.execution.item_schema()
             && let Err(reason) = crate::params::validate_schema_definition(item_schema)
         {
             errors.push(format!("invalid streaming item {reason}"));
+        }
+        if self.is_live() && self.kind != ActionKind::Read {
+            errors.push("a live result must be a read".into());
         }
         if let ResultSpec::Json { schema } = &self.result
             && let Err(reason) = crate::params::validate_schema_definition(schema)
@@ -682,9 +1034,6 @@ impl ActionContract {
             if self.kind != ActionKind::Read {
                 errors.push("an offloadable action must be a read".into());
             }
-            if self.tags.iter().any(|tag| tag == LOCAL_DEVICE_ONLY) {
-                errors.push("a local-device-only action cannot be offloaded".into());
-            }
         }
         errors
     }
@@ -693,6 +1042,154 @@ impl ActionContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An outside effect the person attends (their chooser, a sign-in) or
+    /// one on their own device needs only what reading needs, so a room's
+    /// guest starts it with no workspace consent; it runs on the device of
+    /// whoever starts it. Any other outside effect still reaches outside.
+    #[test]
+    fn an_attended_or_own_device_effect_needs_no_room_consent() {
+        let outside = ActionContract::for_operation(OperationKind::Effect);
+        assert_eq!(outside.need().kind, ActionKind::Outside);
+        assert!(!outside.runs_on_invokers_device());
+        for tag in [ATTENDED_TAG, OWN_DEVICE_SCOPE] {
+            let mut contract = outside.clone();
+            contract.tags.push(tag.to_owned());
+            assert_eq!(contract.need().kind, ActionKind::Read, "{tag}");
+            assert!(contract.runs_on_invokers_device(), "{tag}");
+        }
+    }
+
+    /// Undoable actions run at once and offer Undo, with no confirmation.
+    /// A typed confirmation is for irreversible, high-risk actions only, and
+    /// its word names what is lost (the item's name), never a generic word.
+    #[test]
+    fn undoable_deletes_ask_nothing_and_typed_phrases_name_what_is_lost() {
+        // A deletion Undo takes back asks nothing, whichever order the
+        // contract learned it was a deletion and that Undo takes it back.
+        let mut contract = ActionContract {
+            risk: RiskLevel::Destructive,
+            ..ActionContract::default()
+        };
+        contract.settle_confirmation();
+        assert_eq!(contract.confirmation, ConfirmationPolicy::None);
+        assert!(!contract.requires_confirmation());
+        assert!(contract.validate_declaration().is_empty());
+        let mut compensated = ActionContract {
+            risk: RiskLevel::Destructive,
+            confirmation: ConfirmationPolicy::Confirm,
+            tags: vec![COMPENSATED_UNDO_TAG.to_owned()],
+            ..ActionContract::default()
+        };
+        compensated.settle_confirmation();
+        assert_eq!(compensated.confirmation, ConfirmationPolicy::None);
+
+        // One Undo cannot take back still asks, with a click: an effect
+        // reaches outside the state its resource owns, so nothing brings
+        // back what it did, and the declaration says as much by naming it.
+        let mut irreversible = ActionContract {
+            kind: ActionKind::Outside,
+            risk: RiskLevel::Destructive,
+            ..ActionContract::default()
+        };
+        irreversible.settle_confirmation();
+        assert_eq!(irreversible.confirmation, ConfirmationPolicy::Confirm);
+        assert!(irreversible.requires_confirmation());
+        // Nor can it take back what the document change lost outside it (a
+        // secret every device forgot), however the change itself reverts.
+        let mut forgets = ActionContract {
+            kind: ActionKind::Outside,
+            risk: RiskLevel::Destructive,
+            tags: vec![IRREVERSIBLE_TAG.to_owned()],
+            ..ActionContract::default()
+        };
+        forgets.settle_confirmation();
+        assert_eq!(forgets.confirmation, ConfirmationPolicy::Confirm);
+        // Crossing a security boundary or exporting private data asks even
+        // when Undo would take the change back.
+        assert!(RiskLevel::Privileged.requires_confirmation_when(true));
+        assert!(RiskLevel::Sensitive.requires_confirmation_when(true));
+
+        // A generic edit of an undoable record asks nothing for any value.
+        let edit = ActionContract {
+            tags: vec![
+                ARGUMENT_RISK_TAG.to_owned(),
+                tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),
+            ],
+            ..ActionContract::default()
+        };
+        assert_eq!(edit.advertised_confirmation(), ConfirmationPolicy::None);
+        assert_eq!(
+            edit.confirmation_for_argument(None),
+            ConfirmationPolicy::None
+        );
+
+        // A typed phrase is refused on an undoable action, and when it names
+        // nothing.
+        let phrase = |phrase: &str, kind: ActionKind| ActionContract {
+            risk: RiskLevel::Destructive,
+            kind,
+            confirmation: ConfirmationPolicy::Phrase {
+                phrase: phrase.into(),
+            },
+            ..ActionContract::default()
+        };
+        assert!(
+            phrase("Hacker News", ActionKind::Undoable)
+                .validate_declaration()
+                .iter()
+                .any(|error| error.contains("Undo takes back"))
+        );
+        for generic in ["CONFIRM", "yes", "Delete"] {
+            assert!(
+                phrase(generic, ActionKind::Outside)
+                    .validate_declaration()
+                    .iter()
+                    .any(|error| error.contains("says nothing")),
+                "{generic}"
+            );
+        }
+        assert!(
+            phrase("nvme0n1", ActionKind::Outside)
+                .validate_declaration()
+                .is_empty()
+        );
+        assert!(phrase_is_meaningful("Windows 11"));
+        assert!(!phrase_is_meaningful(" confirm "));
+    }
+
+    /// An action is for everyone unless the app says otherwise, and the
+    /// audience it says replaces the one before: people's listings leave out
+    /// what is for agents, agents' leave out what is for people.
+    #[test]
+    fn an_actions_audience_decides_whose_listings_offer_it() {
+        let mut contract = ActionContract::default();
+        assert_eq!(contract.audience(), Audience::Everyone);
+        assert!(contract.reaches_people() && contract.reaches_agents());
+        contract.set_audience(Audience::Agents);
+        assert_eq!(contract.audience(), Audience::Agents);
+        assert!(!contract.reaches_people() && contract.reaches_agents());
+        contract.set_audience(Audience::People);
+        assert_eq!(contract.audience(), Audience::People);
+        assert!(contract.reaches_people() && !contract.reaches_agents());
+        assert_eq!(
+            contract
+                .tags
+                .iter()
+                .filter(|tag| tag.starts_with("audience:"))
+                .count(),
+            1,
+            "one audience at a time: {:?}",
+            contract.tags
+        );
+        contract.set_audience(Audience::Everyone);
+        assert!(
+            contract
+                .tags
+                .iter()
+                .all(|tag| !tag.starts_with("audience:"))
+        );
+    }
 
     /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a
     /// second application result.
@@ -801,21 +1298,12 @@ mod tests {
         };
         assert_eq!(unbounded.validate_declaration().len(), 4);
         let writes = ActionContract {
-            offload: Some(offload.clone()),
+            offload: Some(offload),
             ..ActionContract::default()
         };
         assert_eq!(
             writes.validate_declaration(),
             vec!["an offloadable action must be a read".to_string()]
-        );
-        let pinned = ActionContract {
-            offload: Some(offload),
-            tags: vec![LOCAL_DEVICE_ONLY.into()],
-            ..ActionContract::view()
-        };
-        assert_eq!(
-            pinned.validate_declaration(),
-            vec!["a local-device-only action cannot be offloaded".to_string()]
         );
     }
 }

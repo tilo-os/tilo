@@ -29,13 +29,16 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
-use crate::compute::{ComputeContentStore, ComputeJobSpec, MAX_COMPUTE_OUTPUT_BYTES};
+use crate::compute::{
+    ComputeContentStore, ComputeJobPhase, ComputeJobSpec, MAX_COMPUTE_OUTPUT_BYTES,
+};
 use crate::compute_content::{
     ContentFetchError, answer_content, answer_proof, fetch_job_content, refuse, refuse_proof,
 };
 use crate::compute_transport::{
-    COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
-    MAX_COMPUTE_FRAME_BYTES, WORKER_LOST, WORKER_NOT_ADMITTED, WORKER_REVOKED,
+    COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome,
+    ComputeTransportError, MAX_COMPUTE_FRAME_BYTES, WORKER_LOST, WORKER_NOT_ADMITTED,
+    WORKER_REVOKED,
 };
 use crate::environment_host::{EnvironmentStreamError, read_message};
 use crate::frame::{read_frame, write_frame};
@@ -606,13 +609,13 @@ async fn dispatch_compute(
                 )?;
                 return Ok(None);
             }
-            ComputeEnvelope::Request { spec } => compute.accept_request(
-                peer.device_public_key,
-                workspace_id,
-                unix_now_ms(),
-                store,
-                spec,
-            )?,
+            ComputeEnvelope::Request { spec } => {
+                match accept_or_refuse(compute, store, peer.device_public_key, workspace_id, spec)?
+                {
+                    Ok(outcome) => outcome,
+                    Err(refusal) => return Ok(Some(refusal)),
+                }
+            }
             ComputeEnvelope::Cancel { binding } => {
                 compute.accept_cancel(peer.device_public_key, store, binding)?
             }
@@ -645,6 +648,44 @@ async fn dispatch_compute(
     }
     drop(workspace);
     Ok(None)
+}
+
+/// Claim `spec` for its worker, or the refusal its requester is told on the
+/// stream it asked on: a job the relay will not run ends now, the session
+/// goes on, and nothing waits for a job that never began. A forged route or
+/// a store failure is an error of the session instead.
+fn accept_or_refuse(
+    compute: &crate::compute_transport::ComputeTransportState,
+    store: &crate::store::WorkspaceStore,
+    requester: [u8; 32],
+    workspace_id: u64,
+    spec: &ComputeJobSpec,
+) -> Result<Result<ComputeRouteOutcome, ComputeEnvelope>, ComputeSessionError> {
+    match compute.accept_request(requester, workspace_id, unix_now_ms(), store, spec) {
+        Ok(outcome) => Ok(Ok(outcome)),
+        Err(error) => match error.refusal_code() {
+            Some(code) => Ok(Err(refused_job(spec, code))),
+            None => Err(error.into()),
+        },
+    }
+}
+
+/// The terminal result of a job the relay refused before it began: failed
+/// with `code`, one step after the pending it never left.
+fn refused_job(spec: &ComputeJobSpec, code: &str) -> ComputeEnvelope {
+    ComputeEnvelope::Result {
+        result: ComputeResultUpdate {
+            binding: ComputeJobBinding {
+                workspace_id: spec.workspace_id,
+                job_id: spec.job_id,
+                requester: spec.requester,
+                worker: spec.worker,
+            },
+            sequence: 1,
+            phase: ComputeJobPhase::Failed { code: code.into() },
+            log_tail: Vec::new(),
+        },
+    }
 }
 
 fn is_server_only(envelope: &ComputeEnvelope) -> bool {
@@ -790,11 +831,6 @@ pub struct ComputeDelivery {
 
 impl ComputeClient {
     /// Connect and mutually authenticate to an exact same-owner relay.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when dialing, framing, or certified-device
-    /// authentication fails, including a mismatched pinned relay device.
     pub async fn connect(
         endpoint: Endpoint,
         relay_address: EndpointAddr,
@@ -946,10 +982,6 @@ impl ComputeClient {
     }
 
     /// Send one bounded typed compute envelope.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when encoding or writing the frame fails.
     pub async fn send(&mut self, envelope: &ComputeEnvelope) -> Result<(), ComputeSessionError> {
         write_compute(&mut self.send, envelope).await
     }
@@ -958,11 +990,6 @@ impl ComputeClient {
     ///
     /// Cancel-safe: the control stream is read by a task of the client's
     /// own, so a `receive` dropped in a `select!` or a timeout loses nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on EOF, an oversize frame, or invalid encoding, and
-    /// once the stream has ended.
     pub async fn receive(&mut self) -> Result<ComputeDelivery, ComputeSessionError> {
         let envelope = self.deliveries.recv().await.ok_or_else(|| {
             ComputeSessionError::Connection("the compute control stream has ended".into())
@@ -994,6 +1021,12 @@ impl ComputeClient {
                 sequence: Some(sequence),
                 envelope: *message,
             });
+        }
+        // A job the relay refused ends with a result told directly.
+        if let ComputeEnvelope::Result { result } = &envelope
+            && result.binding.requester == self.own_device
+        {
+            self.submitted.lock_recover().remove(&result.binding.job_id);
         }
         Ok(ComputeDelivery {
             workspace_id: envelope.workspace_id(),

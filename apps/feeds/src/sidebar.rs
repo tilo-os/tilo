@@ -10,11 +10,12 @@
 use std::rc::Rc;
 
 use ui::icons::Icon;
-use ui::widget::{NavAction, NavItem, NavList, NavSection, Widget};
+use ui::widget::{NavAction, NavItem, NavList, NavSection, RowStatus, Widget};
 use vello::kurbo::Point;
 
 use crate::app::{Core, Request, Requests, Shared};
 use crate::model::{FeedKind, Filter, Id, TagKey};
+use crate::search::feed_icon;
 
 /// The sidebar item id of a place.
 pub(crate) fn nav_id(filter: &Filter) -> String {
@@ -63,16 +64,12 @@ impl Counted for NavItem {
     }
 }
 
-fn feed_icon(kind: FeedKind) -> Icon {
-    match kind {
-        // A Gemini capsule is a page of gemtext.
-        FeedKind::Gemini => Icon::FileText,
-        _ => Icon::Rss,
-    }
-}
+/// The sidebar's section of subscriptions and folders.
+const FEEDS_SECTION: &str = "feeds";
+/// Its heading's action, which opens the New folder dialog.
+const NEW_FOLDER: &str = "new-folder";
 
 impl Core {
-    /// The sidebar's sections, from the library.
     pub(crate) fn nav_sections(&self) -> Vec<NavSection> {
         let store = &self.store;
         let smart = vec![
@@ -92,9 +89,19 @@ impl Core {
         let mut sections = vec![NavSection::untitled("library", smart)];
 
         let feed_item = |id: &Id, title: &str, kind: FeedKind| {
-            NavItem::new(nav_id(&Filter::Feed(id.clone())), title)
+            let item = NavItem::new(nav_id(&Filter::Feed(id.clone())), title)
                 .icon(feed_icon(kind))
-                .counted(store.unread_for_feed(id))
+                .counted(store.unread_for_feed(id));
+            // A subscription whose last refresh failed keeps looking healthy
+            // otherwise: it holds its old articles and never updates. Its row
+            // takes the shared error status, and says why in the caption line
+            // under its name — the same reason assistive technology hears.
+            match self.feed_failures.get(id) {
+                Some(reason) => item
+                    .status(RowStatus::Error)
+                    .secondary(crate::i18n::failure_sentence(*reason)),
+                None => item,
+            }
         };
         let mut feeds: Vec<NavItem> = store
             .folders_sorted()
@@ -126,9 +133,15 @@ impl Core {
                 .into_iter()
                 .map(|f| feed_item(f.id, &f.shown_title(), f.kind)),
         );
-        if !feeds.is_empty() {
-            sections.push(NavSection::new("feeds", "Feeds", feeds));
-        }
+        // The subscriptions are always a section: its heading holds New
+        // folder, before there is anything to file too.
+        sections.push(
+            NavSection::new(FEEDS_SECTION, "Feeds", feeds).trailing_action(NavAction::new(
+                NEW_FOLDER,
+                Icon::FolderPlus,
+                "New folder",
+            )),
+        );
 
         let tags: Vec<NavItem> = store
             .tags_limited(crate::resource::MAX_TAG_PLACES)
@@ -161,9 +174,18 @@ impl SidebarNav {
             let menu = Rc::clone(requests);
             let fold = Rc::clone(requests);
             let follow = Rc::clone(core);
+            let section_action = Rc::clone(requests);
             NavList::new(Vec::new())
                 .with_id("feeds.sidebar")
                 .with_accessible_name("Subscriptions")
+                // Headings and a New folder are what a growing library
+                // needs: the sidebar is a list from the start, never a rail.
+                .with_headings()
+                .on_section_action(move |section, action| {
+                    if section == FEEDS_SECTION && action == NEW_FOLDER {
+                        section_action.borrow_mut().push(Request::NewFolder);
+                    }
+                })
                 .on_select(move |id| {
                     if let Some(filter) = filter_of(&id) {
                         show.borrow_mut().push(Request::Show(filter));

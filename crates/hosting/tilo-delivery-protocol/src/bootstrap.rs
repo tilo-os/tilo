@@ -68,10 +68,6 @@ pub struct BootstrapResponse {
 }
 impl BootstrapRequest {
     /// Validate structural bounds only.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != 1 {
             return Err(WireError::Invalid);
@@ -105,10 +101,6 @@ impl BootstrapRequest {
 }
 impl BootstrapResponse {
     /// Validate structural bounds only.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WireError` if the value fails validation or verification.
     pub fn validate(&self) -> Result<(), WireError> {
         self.request.validate()?;
         if self.version != 1
@@ -187,10 +179,6 @@ macro_rules! codec {
                 Ok(out)
             }
             /// Reject outer size before parsing, bounded fields before copies, and noncanonical tails.
-            ///
-            /// # Errors
-            ///
-            /// Returns `WireError` if the input is not a canonical encoding within this type's bounds.
             pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
                 if bytes.is_empty() || bytes.len() > $cap {
                     return Err(WireError::Codec);
@@ -208,10 +196,6 @@ codec!(BootstrapRequest, MAX_BOOTSTRAP_REQUEST_BYTES);
 codec!(BootstrapResponse, MAX_BOOTSTRAP_RESPONSE_BYTES);
 /// Generate an ephemeral nonce using the existing secure entropy provider.
 /// This creates no signing identity and conveys no authority.
-///
-/// # Errors
-///
-/// Returns `WireError` if the inputs violate this operation's bounds or invariants.
 pub fn fresh_nonce() -> Result<[u8; 32], WireError> {
     let mut nonce = [0; 32];
     getrandom::fill(&mut nonce).map_err(|_| WireError::Entropy)?;

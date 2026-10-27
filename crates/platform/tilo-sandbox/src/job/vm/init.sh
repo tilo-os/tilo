@@ -30,10 +30,13 @@ by_serial() {
 	return 1
 }
 
-# Report $1 as the status and stop the machine.
+# Report $1 as the status and stop the machine. Only the output disk is flushed, outputs and
+# status alike (dd's fsync of the device): nothing else outlives the machine. A global sync
+# also syncs every filesystem shared with the step over virtio-fs, which the host serves by
+# syncing its own filesystem as a whole: on a busy node that waited behind all its writeback
+# for longer than t lets a step make no progress, and a step that had passed was ended as hung.
 finish() {
-	out_disk=$(by_serial output) && printf 'T-VM-STATUS %s\n' "$1" | dd of="$out_disk" conv=notrunc 2>/dev/null
-	sync
+	out_disk=$(by_serial output) && printf 'T-VM-STATUS %s\n' "$1" | dd of="$out_disk" conv=notrunc,fsync 2>/dev/null
 	reboot -f
 	sleep 5
 }
@@ -56,8 +59,12 @@ if [ "$1" != stage2 ]; then
 	mount -o ro "$root" /lower || die "cannot mount the step's image"
 	mount -t ext4 -o noinit_itable "$scratch" /scratch || die "cannot mount the scratch disk"
 	mkdir -p /scratch/root/upper /scratch/root/work
-	mount -t overlay overlay -o lowerdir=/lower,upperdir=/scratch/root/upper,workdir=/scratch/root/work /newroot \
-		|| die "cannot assemble the root"
+	# Every change copies up in full: what a step changed is read back as the upper directory
+	# (a check's setup becomes a layer of it), and with redirect_dir a moved directory or with
+	# metacopy a chmod would leave its change in overlay xattrs that reading it doesn't keep.
+	mount -t overlay overlay \
+		-o lowerdir=/lower,upperdir=/scratch/root/upper,workdir=/scratch/root/work,redirect_dir=off,metacopy=off \
+		/newroot || die "cannot assemble the root"
 	mkdir -p /newroot/run /newroot/dev /newroot/proc /newroot/sys /newroot/tmp
 	mount -t tmpfs -o mode=755 run /newroot/run
 	mkdir -p /newroot$T/scratch /newroot$T/lower

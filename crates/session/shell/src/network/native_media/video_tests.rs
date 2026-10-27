@@ -1,9 +1,3 @@
-//! A call's pictures end to end on this machine: two participants, each
-//! with the moving test picture as their camera, over a loopback relay. Each
-//! captures through `GStreamer`, encodes the layer the other shows with the
-//! machine's encoder (hardware first), sends it through the relay, and the
-//! other decodes it back into a picture with the test picture's colours.
-//! Each also sees its own camera, encoded on the device for its own tile.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -13,7 +7,10 @@
     reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
 )]
 
-use super::video::{CameraChoice, Publisher};
+use super::call_seal::{self, Sealing};
+use super::video::{CameraChoice, Publisher, screen_share};
+use channel_crypto::ChannelContentKeys;
+use collab_types::ChannelId;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
@@ -44,13 +41,15 @@ impl SessionAuthorization for Permit {
     }
 }
 
-/// Ana publishes `b` and hears `c`; Ben publishes `c` and hears `b`.
+/// Ana publishes `b` and hears `c`; Ben publishes `c` and hears `b`; Cid
+/// publishes `d` and hears `b`.
 struct Roles;
 impl RelayAuthority for Roles {
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let (publish, subscribe) = match proof {
             b"ana" => (name('b'), vec![name('c')]),
             b"ben" => (name('c'), vec![name('b')]),
+            b"cid" => (name('d'), vec![name('b')]),
             _ => return Err(Denied),
         };
         Ok(Arc::new(Permit { publish, subscribe }))
@@ -84,13 +83,37 @@ fn join(relay: &LoopbackRelay, proof: &[u8], publication: char) -> Arc<Client> {
     )
 }
 
+fn keys_of(channel: ChannelId, key: u8) -> ChannelContentKeys {
+    let wire = (1_u8, channel, 1_u64, vec![(1_u64, [key; 32])]);
+    ChannelContentKeys::from_bytes(&postcard::to_stdvec(&wire).unwrap()).unwrap()
+}
+
 /// Decode `client`'s received pictures until one comes out.
-async fn decoded_picture(client: &Client, what: &str) -> (VideoObject, media::Frame) {
+async fn decoded_picture(
+    client: &Client,
+    (keys, channel): (&ChannelContentKeys, ChannelId),
+    what: &str,
+) -> (VideoObject, media::Frame) {
+    let stranger = keys_of(channel, 9);
     let mut decoder = None;
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             while let Some(received) = client.try_recv_picture() {
-                let object = received.object;
+                let namespace = &received.publisher.namespace;
+                assert!(
+                    call_seal::open(
+                        &stranger,
+                        channel,
+                        namespace,
+                        received.source,
+                        received.object.clone()
+                    )
+                    .is_none(),
+                    "other keys open nothing"
+                );
+                let object =
+                    call_seal::open(keys, channel, namespace, received.source, received.object)
+                        .expect("the call's keys open each picture");
                 if decoder.is_none() {
                     if !object.keyframe {
                         continue;
@@ -99,13 +122,13 @@ async fn decoded_picture(client: &Client, what: &str) -> (VideoObject, media::Fr
                     config.output = media::DecodeOutput::Rgba;
                     decoder = Some(media::RealtimeDecoder::new(config).expect("an H.264 decoder"));
                 }
-                let decoded = decoder
+                let frame = decoder
                     .as_mut()
                     .unwrap()
                     .decode(&object.payload, Some(object.keyframe))
                     .expect("the picture decodes");
-                if let Some(decoded) = decoded {
-                    return (object, decoded.frame);
+                if let Some(frame) = frame {
+                    return (object, frame.frame);
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -143,16 +166,24 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
     .await
     .expect("both carriers live");
 
-    let ana_carrier = ana.clone();
+    let channel = collab_types::document_channel_id("so.tilo.chat", "room", "general");
+    let keys = keys_of(channel, 7);
+    let sealing = |publication: char| {
+        Some(Sealing {
+            keys: keys.clone(),
+            publication: name(publication),
+        })
+    };
+    let (ana_carrier, ana_sealing) = (ana.clone(), sealing('b'));
     let ana_camera = Publisher::camera(
         &CameraChoice::TestPattern,
-        Arc::new(move || Some(ana_carrier.clone())),
+        Arc::new(move || Some((ana_carrier.clone(), ana_sealing.clone()))),
     )
     .expect("Ana's camera starts");
-    let ben_carrier = ben.clone();
+    let (ben_carrier, ben_sealing) = (ben.clone(), sealing('c'));
     let ben_camera = Publisher::camera(
         &CameraChoice::TestPattern,
-        Arc::new(move || Some(ben_carrier.clone())),
+        Arc::new(move || Some((ben_carrier.clone(), ben_sealing.clone()))),
     )
     .expect("Ben's camera starts");
     // Ana sees herself in her own tile.
@@ -162,7 +193,7 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
     ben.show(&name('b'), &[(Source::Camera, Layer::Mid)]);
     ana.show(&name('c'), &[(Source::Camera, Layer::Low)]);
 
-    let (object, frame) = decoded_picture(&ben, "Ben sees Ana").await;
+    let (object, frame) = decoded_picture(&ben, (&keys, channel), "Ben sees Ana").await;
     assert_eq!(object.layer, Layer::Mid);
     assert_eq!((object.width, object.height), (640, 360));
     assert_eq!((frame.width, frame.height), (640, 360));
@@ -172,7 +203,7 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
         "Ana's picture arrives with the test picture's colours"
     );
 
-    let (object, frame) = decoded_picture(&ana, "Ana sees Ben").await;
+    let (object, frame) = decoded_picture(&ana, (&keys, channel), "Ana sees Ben").await;
     assert_eq!(object.layer, Layer::Low);
     assert_eq!((frame.width, frame.height), (320, 180));
     assert!(shows_colour_bars(
@@ -185,11 +216,21 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
     assert_eq!(ana.wanted_pictures(), [(Source::Camera, Layer::Mid)]);
     assert_eq!(ben.wanted_pictures(), [(Source::Camera, Layer::Low)]);
 
-    // Ana's own picture, for her own tile, starts at a keyframe.
+    // Ana's own picture, for her own tile, starts at a keyframe. A test
+    // starved past the preview's queue sees the gap the queue reports, as
+    // the tile's decoder does, and the keyframe it then waits for.
     let own = tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        let mut dropped = false;
         loop {
-            let (objects, _) = ana_camera.preview().take();
-            if let Some(first) = objects.into_iter().next() {
+            let (objects, gap) = ana_camera.preview().take();
+            dropped |= gap;
+            let mut objects = objects.into_iter();
+            let first = if dropped {
+                objects.find(|object| object.keyframe)
+            } else {
+                objects.next()
+            };
+            if let Some(first) = first {
                 return first;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -210,4 +251,72 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
         "no picture after the camera stopped"
     );
     drop(ana_camera);
+}
+
+async fn live(clients: &[&Client]) {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        while clients.iter().any(|client| client.status() != Status::Live) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("every carrier live");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_still_screen_is_encoded_once_and_each_new_viewer_starts_at_its_standing_keyframe() {
+    let relay = LoopbackRelay::start(Arc::new(Roles)).unwrap();
+    let ana = join(&relay, b"ana", 'b');
+    let ben = join(&relay, b"ben", 'c');
+    live(&[&ana, &ben]).await;
+
+    let channel = collab_types::document_channel_id("so.tilo.chat", "room", "general");
+    let keys = keys_of(channel, 7);
+    let sealing = Sealing {
+        keys: keys.clone(),
+        publication: name('b'),
+    };
+    let carrier = ana.clone();
+    let screen = Arc::new(
+        Publisher::screen(Arc::new(move || {
+            Some((carrier.clone(), Some(sealing.clone())))
+        }))
+        .expect("Ana's screen share starts"),
+    );
+    screen.preview().set(Some(Layer::Low));
+    let ticking = {
+        let (ana, screen) = (ana.clone(), screen.clone());
+        tokio::spawn(async move {
+            loop {
+                if ana.wants_picture_keyframe(Source::Screen) {
+                    screen.ask_keyframe();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+    };
+    let rgba: Arc<[u8]> = [200_u8, 40, 40, 255].repeat(640 * 360).into();
+    screen_share().publish_rgba(640, 360, rgba);
+    let encoded = || screen.preview().take().0.len();
+
+    ben.show(&name('b'), &[(Source::Screen, Layer::Low)]);
+    let (first, _) = decoded_picture(&ben, (&keys, channel), "Ben sees Ana's screen").await;
+    assert!(first.keyframe);
+
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        ben.try_recv_picture().is_none(),
+        "a still screen sends nothing while nobody new shows it"
+    );
+    assert_eq!(encoded(), 1, "the still screen was encoded once");
+
+    let cid = join(&relay, b"cid", 'd');
+    live(&[&cid]).await;
+    cid.show(&name('b'), &[(Source::Screen, Layer::Low)]);
+    let (late, _) = decoded_picture(&cid, (&keys, channel), "Cid sees Ana's screen").await;
+    assert!(late.keyframe);
+    assert_eq!(late.sequence, first.sequence);
+    assert_eq!(encoded(), 0, "a new viewer costs no encode");
+
+    ticking.abort();
 }

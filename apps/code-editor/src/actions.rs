@@ -30,9 +30,6 @@ fn edit(edit: Edit<Project>) -> Action {
 }
 
 /// The wire form of `action`, for applying it to a document directly.
-///
-/// # Errors
-/// Returns the serialization error of `action`.
 pub fn encode(action: &Action) -> Result<EncodedAction, tilo_actions::ActionError> {
     ui::tilo_resource::encode::<Project>(action)
 }
@@ -134,7 +131,6 @@ pub(crate) fn replace_text_action(file: impl Into<String>, text: impl Into<Strin
     )
 }
 
-/// Set the language of `file` to the one labelled `language`.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn set_language_action(file: &str, language: impl Into<String>) -> Action {
@@ -161,7 +157,6 @@ pub fn new_file_action(
     }))
 }
 
-/// A new folder named `name` in `folder`.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn new_folder_action(name: impl Into<String>, folder: Option<&str>) -> Action {

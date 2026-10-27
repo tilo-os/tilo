@@ -818,7 +818,6 @@ mod retained_request_tests {
             OriginalRequest::new(temp.path(), plan, channel).is_err(),
             "retained purpose cannot enter readonly copy registration"
         );
-        // Existing bounded private publisher uses the same canonical request path.
         let held = publish_retained_request(temp.path(), &request).unwrap();
         assert_eq!(held.metadata().unwrap().len(), request_bytes.len() as u64);
         let parsed: DispatchRequest = serde_json::from_slice(

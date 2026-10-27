@@ -24,18 +24,6 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
 }
 
 #[test]
-fn agent_draft_keys_keep_the_existing_route_encoding() {
-    assert_eq!(
-        ConversationKey::Agent {
-            workspace: "room".into(),
-            route: "task:review:7".into(),
-        }
-        .draft_key(),
-        "agent:4:room:13:task:review:7"
-    );
-}
-
-#[test]
 fn accepted_person_send_cannot_clear_a_newer_editor_revision() {
     let mut room = AutoCommit::new();
     let before = room.get_heads();
@@ -67,7 +55,7 @@ fn private_person_typing_never_mutates_the_room_document() {
 }
 
 #[test]
-fn person_workspace_and_agent_routes_retain_distinct_private_editors() {
+fn person_workspaces_retain_distinct_private_editors() {
     let mut room = AutoCommit::new();
     let mut composer = DraftComposer::shared();
     let first = person("one", "same-key");
@@ -77,8 +65,6 @@ fn person_workspace_and_agent_routes_retain_distinct_private_editors() {
         "First person draft",
     );
     composer.set_conversation_draft(&person("two", "same-key"));
-    assert_eq!(composer.private_plain().as_deref(), Some(""));
-    composer.set_agent_draft("one", "same-key");
     assert_eq!(composer.private_plain().as_deref(), Some(""));
     composer.set_conversation_draft(&first);
     assert_eq!(

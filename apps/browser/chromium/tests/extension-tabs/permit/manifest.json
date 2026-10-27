@@ -1,0 +1,6 @@
+{"manifest_version": 3, "name": "Permit", "version": "1.0",
+ "action": {"default_popup": "popup.html"},
+ "background": {"service_worker": "worker.js"},
+ "permissions": ["storage", "scripting"],
+ "optional_permissions": ["tabs"],
+ "optional_host_permissions": ["http://127.0.0.1/*"]}

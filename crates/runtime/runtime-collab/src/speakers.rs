@@ -92,6 +92,13 @@ pub enum SpeakerCommand {
     DismissCalibration {
         group: String,
     },
+    /// Make a group this device's output: everything it plays plays on the
+    /// group, as on any output chosen in Sound.
+    UseAsOutput {
+        group: String,
+    },
+    /// This device's sound goes back to its own outputs.
+    StopUsingAsOutput,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,7 +207,6 @@ impl MicrophoneStatus {
 pub struct CalibrationMicrophoneInfo {
     pub device: String,
     pub device_label: String,
-    /// The microphone's own label on that device.
     pub label: String,
     pub local: bool,
     pub status: MicrophoneStatus,
@@ -220,6 +226,9 @@ pub struct SpeakerGroupInfo {
     /// Microphones that can calibrate this group, one per device; only for
     /// groups led here.
     pub microphones: Vec<CalibrationMicrophoneInfo>,
+    /// The group is this device's output: everything it plays plays there.
+    #[serde(default)]
+    pub output_here: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -359,7 +368,7 @@ impl SpeakerCommand {
     #[must_use]
     pub fn valid(&self) -> bool {
         match self {
-            Self::Snapshot => true,
+            Self::Snapshot | Self::StopUsingAsOutput => true,
             Self::Create { name, members } => valid_name(name) && valid_members(members),
             Self::Update {
                 group,
@@ -370,7 +379,8 @@ impl SpeakerCommand {
             | Self::CancelCalibration { group }
             | Self::ApplyCalibration { group }
             | Self::RevertCalibration { group }
-            | Self::DismissCalibration { group } => valid_hex16(group),
+            | Self::DismissCalibration { group }
+            | Self::UseAsOutput { group } => valid_hex16(group),
             Self::Identify { device, output } => valid_id(device) && valid_hex16(output),
             Self::StartCalibration {
                 group,
@@ -426,6 +436,27 @@ impl SpeakerReply {
             Self::Done { group } => group.as_deref().is_none_or(valid_hex16),
             Self::Rejected { reason } => !reason.is_empty() && valid_label(reason),
         }
+    }
+}
+
+#[cfg(feature = "client")]
+impl crate::ChannelHandle {
+    /// Wait until what a speaker snapshot would show may have changed since
+    /// `after` (0 at first, then what the previous call returned), and
+    /// return the value to wait from next. The answer names nothing: the
+    /// caller asks for a fresh snapshot through the speaker command. The
+    /// call stays pending, without traffic, while nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`](runtime_portal::NotAvailable) when this route may not manage speaker
+    /// groups, the host has none (an older broker answers unimplemented),
+    /// or the broker is unavailable.
+    pub async fn speaker_changed(&self, after: u64) -> Result<u64, runtime_portal::NotAvailable> {
+        let mut request = self.inner.speaker_changed_request();
+        request.get().set_after(after);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_change())
     }
 }
 
@@ -523,6 +554,7 @@ mod tests {
                     local: false,
                     status: MicrophoneStatus::AwaitingConsent,
                 }],
+                output_here: false,
             }],
             calibrations: vec![CalibrationInfo {
                 group: "0f".repeat(16),

@@ -57,7 +57,7 @@ fn documents() -> (Value, Value, String) {
                                "firmwareManifestSha256": "d".repeat(64)},
         "resolvedDependencies": [{"uri": format!("git+ssh://code.tilo.so/tilo/tilo@{}", source())},
                                  {"uri": format!("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64))}]},
-        "runDetails": {"builder": {"id": "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
+        "runDetails": {"builder": {"id": "https://code.tilo.so/tilo/t/os-release-v1"},
                        "byproducts": [{"name": "independent-rebuild",
                                        "uri": "urn:tilo:verification:manifest-digest-equal"}]}});
     let freshness = json!({"schema": FRESHNESS, "repository": REPOSITORY,
@@ -328,11 +328,22 @@ fn child_output_deadline_and_failure_are_real_bounded_refusals() {
 #[test]
 fn a_timed_out_child_is_killed() {
     let work = tempfile::tempdir().unwrap();
-    let marker = work.path().join("survived");
-    let script = format!("sleep 1; touch {}", marker.display());
+    let pid_file = work.path().join("pid");
+    // The verifier would run for an hour unless the deadline ends it.
+    let script = format!("echo $$ > {}; exec sleep 3600", pid_file.display());
     assert!(sh(&script, Duration::from_millis(50), MAX_OUTPUT).is_err());
-    std::thread::sleep(Duration::from_millis(1500));
-    assert!(!marker.exists(), "the verifier outlived its deadline");
+    // A verifier the deadline caught before it wrote its pid never ran.
+    if let Some(pid) = fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse::<u32>().ok())
+    {
+        tilo_test_env::wait_until("the timed-out verifier to die", || {
+            fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+                stat.rsplit_once(") ")
+                    .is_some_and(|(_, rest)| rest.starts_with('Z'))
+            })
+        });
+    }
 }
 
 #[test]
@@ -387,7 +398,6 @@ fn existing_bootc_auth_precedence_private_snapshot_and_cleanup() {
                 .to_string_lossy()
                 .starts_with("tilo-board-verifier-")
         );
-        // The commands see exactly this snapshot.
         let seen = registry
             .run(&[
                 "/bin/sh",
@@ -519,9 +529,9 @@ fn the_updater_runs_the_compiled_selector() {
 
 #[test]
 fn the_command_line_is_one_argument() {
-    let binary = env!("CARGO_BIN_EXE_tilo-board-successor");
+    let binary = tilo_test_env::package_binary!("tilo-board-successor");
     for args in [&[][..], &["applicable", "extra"][..]] {
-        let output = Command::new(binary).args(args).output().unwrap();
+        let output = Command::new(&binary).args(args).output().unwrap();
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),

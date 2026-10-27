@@ -545,7 +545,6 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         mpsc,
     };
-    use std::time::Duration;
 
     #[derive(Default)]
     struct State {
@@ -627,7 +626,7 @@ mod tests {
             session(),
             Some(wake),
         );
-        receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        tilo_test_env::recv("the restart to wake its owner", &receive);
         // Joining is only test/teardown work; the production poll never waits.
         restart.handle.take().unwrap().join().unwrap();
         let (engine, profile) = restart.poll().unwrap().unwrap();
@@ -701,7 +700,7 @@ mod tests {
             .unwrap();
         assert!(!opening.request_close());
         release.send(()).unwrap();
-        receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        tilo_test_env::recv("the restart to wake its owner", &receive);
         opening.finish_close().unwrap();
         assert!(closed.load(Ordering::Acquire));
         assert!(opening.close_complete());
@@ -723,7 +722,7 @@ mod tests {
             wake,
         )
         .unwrap_or_else(|_| panic!("worker start"));
-        receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        tilo_test_env::recv("the restart to wake its owner", &receive);
         assert!(forget.poll().unwrap().is_ok());
         assert!(done.load(Ordering::Acquire));
         assert_eq!(*state.events.lock().unwrap(), ["shutdown", "cleanup"]);

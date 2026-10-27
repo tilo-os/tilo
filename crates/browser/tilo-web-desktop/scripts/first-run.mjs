@@ -102,7 +102,7 @@ try {
   // 2. Open an app.
   check(await press('Open an app'), '"Open an app" is a control');
   check(await until(async () => (await state())?.searchOpen), '"Open an app" opens search');
-  check((await nodes()).some(n => n.name === 'Open Notes'), 'search lists the apps');
+  check((await nodes()).some(n => n.name === 'Notes'), 'search lists the apps');
   await shot('open-app');
   await key('Escape', 'Escape', 27);
   check(await until(async () => !(await state())?.searchOpen), 'Escape closes search');

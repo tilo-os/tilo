@@ -7,12 +7,17 @@ struct InitialHistoryProbe(
 impl crate::widget::Widget for InitialHistoryProbe {
     crate::provides!(
         dyn crate::resources::PublishesResources,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ResourceOperations
     );
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "initial-history-probe");
+}
+
+impl crate::widget::ResourceOperations for InitialHistoryProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["initial-history.probe"]
     }
+
     fn start_operation(
         &mut self,
         _: &crate::widget::ResourceOperation<'_>,
@@ -289,6 +294,64 @@ fn initial_history_no_committed_read_peer_preserves_actual_public_dispatch() {
         } if *actual == invocation)));
 }
 
+/// A window a person sees publishes Zoom in, Zoom out and Actual size with
+/// the rest of its surface, and a call the broker delivers runs them. The
+/// surface check must know the zoom operation's handler: without it every
+/// shown window would withdraw its whole published surface, which no test
+/// without a window can notice.
+#[cfg(feature = "native")]
+#[test]
+fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
+    use crate::host_chrome::zoom::ZOOM_RESOURCE;
+    let (mut app, calls) = initial_history_app();
+    let requests = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+    app.collaboration.manager = CollaborationManager::with_peer_transport(NoCommittedReadPeer {
+        requests: requests.clone(),
+        directories: std::rc::Rc::new(std::cell::Cell::new(0)),
+    });
+    // The window opens, taking up the zoom its app had on this device.
+    let dir = tempfile::tempdir().expect("a settings directory");
+    app.accessibility.zoom.restore_from(
+        crate::storage::Settings::for_app("so.tilo.zoom-publication")
+            .in_file(dir.path().join("settings.json")),
+    );
+    app.publish_action_surface();
+    let published = app
+        .actions
+        .last_published_actions
+        .clone()
+        .expect("the shown window's surface is published, not withdrawn");
+    let mut zoom: Vec<_> = published
+        .iter()
+        .filter(|descriptor| descriptor.address.resource == ZOOM_RESOURCE)
+        .map(|descriptor| descriptor.address.action.as_str())
+        .collect();
+    zoom.sort_unstable();
+    assert_eq!(zoom, ["zoom-in", "zoom-out", "zoom-reset"]);
+    assert!(
+        published
+            .iter()
+            .any(|descriptor| descriptor.address.resource == "initial-probe"),
+        "offering zoom keeps the app's own actions published"
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        81,
+        invocation,
+        ZOOM_RESOURCE.into(),
+        "zoom-in".into(),
+        None,
+        "fixture-user",
+        None,
+    );
+    assert!(app.content_zoom() > 1.0, "the delivered Zoom in zoomed in");
+    assert_eq!(calls.get(), 0, "no other handler ran");
+    assert!(requests.borrow().iter().any(|request| matches!(request,
+        crate::collaboration::CollabRequest::UpdateInvocation {
+            update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
+        } if *actual == invocation)));
+}
+
 #[test]
 fn initial_history_public_directory_requires_every_actual_live_record_owner() {
     let mut fixture = RoutedOwners::new();
@@ -420,7 +483,7 @@ fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
     release.send(()).unwrap();
     // No owner polling, yield loop or synthetic event supplies this notification.
     wakes
-        .recv_timeout(crate::time::Duration::from_secs(3))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("worker readiness transition must wake the parked owner");
     assert!(
         rechecks() > 0,
@@ -555,9 +618,9 @@ fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_
         std::thread::yield_now();
     }
     // The exact stable job10 has crossed the original socket. Its capture
-    // remains parked before the worker recheck, with the original owner live.
-    let observe_until = crate::time::now() + crate::time::Duration::from_millis(60);
-    while crate::time::now() < observe_until {
+    // remains parked before the worker recheck, with the original owner live,
+    // for as many pumps as the owner takes while the capture is held.
+    for _ in 0..64 {
         app.pump_collab_presence();
         assert!(
             app.collaboration.manager.is_connected(),

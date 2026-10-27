@@ -162,7 +162,6 @@ impl HeaderRowFace {
         face
     }
 
-    /// The row's height for `theme`.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
         HeaderRowMetrics::resolve(theme).height
@@ -287,7 +286,6 @@ impl HeaderRowFace {
         (title, actions)
     }
 
-    /// Paint the rule under the row on `theme`'s ground.
     pub fn paint_rule(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if self.rule.width() <= 0.0 {
             return;
@@ -322,7 +320,6 @@ impl HeaderRowFace {
     }
 }
 
-/// The hairline rect under a row.
 fn rule_under(row: Rect) -> Rect {
     if row.width() <= 0.0 || row.height() <= 0.0 {
         return Rect::ZERO;
@@ -330,7 +327,6 @@ fn rule_under(row: Rect) -> Rect {
     Rect::new(row.x0, row.y1, row.x1, row.y1)
 }
 
-/// The style of a header row's title.
 pub(crate) fn title_style(theme: &Theme) -> crate::text_render::TextStyle {
     theme.text(TextRole::Heading)
 }

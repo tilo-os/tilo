@@ -5,7 +5,10 @@
 //! It runs when something changed — after every `tilo-install install`,
 //! `update` and `uninstall`, and on `tilo-install gc` — never on a timer.
 //! What a running app has mounted stays ([`package_store::mounts`]), and so
-//! does what the user keeps: pinned packages, and pinned runtimes.
+//! does what the user keeps: pinned packages, and pinned runtimes. The size
+//! cap never evicts an app a launch is opening, nor the apps the change it
+//! follows just wrote ([`Request::keep`]): the person installed it to open
+//! it, and until it opens nothing else marks it as wanted.
 //!
 //! A runtime is needed while any installed package names it: as its
 //! `runtime`, or among its manifest's `optional-runtimes`. Both the user's
@@ -29,7 +32,7 @@ use runtime_bundle::gc::{BundleRoot, Collected, Holds, Options};
 pub const SANDBOX_RUNTIME_ROOT: &str = "/run/tilo-runtime";
 
 /// One collection's settings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     /// The store's size cap; `0` evicts nothing for size.
     pub max_store_bytes: u64,
@@ -39,6 +42,8 @@ pub struct Request {
     pub now: u64,
     /// Report the runtimes that would go; touch nothing.
     pub dry_run: bool,
+    /// Apps the size cap never evicts: what the change just installed.
+    pub keep: Vec<String>,
 }
 
 impl Request {
@@ -51,8 +56,34 @@ impl Request {
             grace_secs: runtime_bundle::gc::DEFAULT_GRACE_SECS,
             now: tilo_clock::unix_now(),
             dry_run: false,
+            keep: Vec::new(),
         }
     }
+
+    /// This request, never evicting the apps `keep` names for size.
+    #[must_use]
+    pub fn keeping(mut self, keep: impl IntoIterator<Item = String>) -> Self {
+        self.keep.extend(keep);
+        self
+    }
+}
+
+/// The apps in `store` a change installed or updated at or after `since`
+/// (Unix seconds): what a collection after that change keeps.
+///
+/// # Errors
+///
+/// When the registry cannot be read.
+pub fn written_since(store: &PackageStore, since: u64) -> Result<Vec<String>, String> {
+    let registry = store
+        .registry()
+        .map_err(|error| format!("registry: {error}"))?;
+    Ok(registry
+        .entries()
+        .iter()
+        .filter(|row| row.installed_at >= since)
+        .map(|row| row.id.clone())
+        .collect())
 }
 
 /// What one collection did.
@@ -93,12 +124,20 @@ pub fn collect(
     runtimes: &BundleRoot,
     request: Request,
 ) -> Result<Report, String> {
+    let Request {
+        max_store_bytes,
+        grace_secs,
+        now,
+        dry_run,
+        keep,
+    } = request;
     let mut report = Report::default();
     // A device with no app store yet has no payloads; collecting must not
     // create one.
-    if !request.dry_run && store.layout().registry().is_file() {
+    if !dry_run && store.layout().registry().is_file() {
+        let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
         report.evicted = store
-            .sweep(request.max_store_bytes)
+            .sweep_keeping(max_store_bytes, &keep)
             .map_err(|error| format!("size sweep: {error}"))?;
         report.orphans = store
             .collect_orphans(&InUse::now())
@@ -120,9 +159,9 @@ pub fn collect(
             &references,
             &in_use_now,
             Options {
-                grace_secs: request.grace_secs,
-                now: request.now,
-                dry_run: request.dry_run,
+                grace_secs,
+                now,
+                dry_run,
             },
         )
         .map_err(|error| format!("runtime bundles: {error}"))?;
@@ -130,10 +169,6 @@ pub fn collect(
 }
 
 /// The runtime versions `rows` run on or may mount.
-///
-/// # Errors
-///
-/// Returns the error reading or parsing a row's manifest.
 pub fn referenced_runtimes<'a>(
     rows: impl IntoIterator<Item = &'a InstalledPackage>,
 ) -> io::Result<BTreeSet<String>> {
@@ -160,10 +195,6 @@ pub fn referenced_runtimes<'a>(
 /// The runtime versions the package records still under `packages`
 /// (`<store>/pkgs`) name, rows or not. Run after the orphan collection, the
 /// records without a row are the trees a launch or a running app holds.
-///
-/// # Errors
-///
-/// Returns the error listing `packages` or reading or parsing a manifest.
 pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
     let mut versions = BTreeSet::new();
     let entries = match std::fs::read_dir(packages) {
@@ -306,6 +337,7 @@ mod tests {
                 grace_secs: 0,
                 now: tilo_clock::unix_now(),
                 dry_run: false,
+                keep: Vec::new(),
             },
         )
         .unwrap();

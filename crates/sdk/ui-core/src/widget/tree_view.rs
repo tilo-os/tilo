@@ -12,6 +12,7 @@ use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+use tilo_sort::CompactSort as _;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, Size, Style, TaffyTree};
@@ -23,9 +24,11 @@ use winit::event::{
 };
 use winit::keyboard::{Key, NamedKey};
 
+use crate::arriving::Arrival;
 use crate::collection_transition::{KeyedRowSnapshot, KeyedTransitionSet, RowGeometry};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
+use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::text_render::TextRenderer;
@@ -39,17 +42,51 @@ use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::data_table::{
     RowType, centered_text_top, row_estimate, text_band, type_line_height,
 };
-use crate::widget::{Element, TaffyTreeExt, Widget};
+use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
+
+/// The shape of a tree row's placeholder: one line where its label goes.
+const ARRIVING_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 1 };
+
+/// Paint slot `slot`'s arrival over `face_rect` at `now`: its placeholder, or
+/// the step a node that landed in it fades out of. `None` when the
+/// placeholder is all the row shows, else the opacity the landed node draws
+/// at. Not generic over the tree, so the toolkit builds it once.
+fn paint_arriving_slot(
+    arrivals: &crate::widget::ArrivingRows<TreeSlot>,
+    slot: &TreeSlot,
+    ctx: &mut PaintCtx<'_>,
+    face_rect: Rect,
+    now: Instant,
+) -> Option<f32> {
+    if let Some(face) = arrivals.face(slot, ARRIVING_SHAPE, now) {
+        face.paint(ctx, face_rect);
+        return None;
+    }
+    if let Some((face, fading)) = arrivals.outgoing_face(slot, ARRIVING_SHAPE, now) {
+        ctx.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            fading,
+            ctx.transform,
+            &face_rect,
+        );
+        face.paint(ctx, face_rect);
+        ctx.scene.pop_layer();
+    }
+    Some(arrivals.fade(slot, now).map_or(1.0, |fade| fade.incoming))
+}
 
 mod access_rows;
 mod affordances;
 mod editing;
 #[cfg(test)]
 mod editing_tests;
+mod erased;
 mod nav;
 
 pub use affordances::{TreeHeadingAction, TreeRowAction};
 pub use editing::TreeMove;
+pub use erased::{AnyTreeModel, DynTreeModel, TreeView};
 pub(crate) use nav::{NavItemSpec, NavPresentation, NavRowSpec, NavStatus};
 
 pub type NodeId = u64;
@@ -62,26 +99,13 @@ pub struct TreeSlot {
     pub index: usize,
 }
 
-/// State returned for a logical child slot. A model can publish its total
-/// child count before all child ids are resident, allowing the tree to retain
-/// correct scrollbar geometry while requesting only visible pages.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TreeChildState<'a> {
-    Ready(NodeId),
-    Loading,
-    Error { message: Option<&'a str> },
-}
-
-/// Non-resident row state passed to [`TreeView::with_slot_delegate`].
-///
-/// The slot retains a stable identity while this state changes, so a delegate
-/// can render localized progress, retry, or diagnostic controls without
-/// inventing a placeholder node id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TreeSlotState<'a> {
-    Loading,
-    Error { message: Option<&'a str> },
-}
+/// Where a logical child slot stands: its node, on its way (saying where it
+/// comes from), or failed (with the reason, when the model has one). A model
+/// can publish its total child count before all child ids are resident, so
+/// the tree keeps correct scrollbar geometry while requesting only visible
+/// pages; a slot on its way keeps its row, with the tree's placeholder in it
+/// ([`crate::widget::ArrivingRows`]).
+pub type TreeChildState<'a> = Arrival<NodeId, Option<&'a str>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeLoadReason {
@@ -283,16 +307,11 @@ pub trait TreeModel {
     fn child_id(&self, parent: NodeId, index: usize) -> Option<NodeId>;
 
     /// Resolve a logical child slot. Paged models override this to return
-    /// [`TreeChildState::Loading`] or [`TreeChildState::Error`] for
-    /// non-resident rows; existing fully-resident models need only implement
-    /// [`Self::child_id`].
+    /// [`Arrival::Pending`] or [`Arrival::Failed`] for non-resident rows;
+    /// fully-resident models need only implement [`Self::child_id`].
     fn child_state(&self, parent: NodeId, index: usize) -> TreeChildState<'_> {
-        self.child_id(parent, index).map_or(
-            TreeChildState::Error {
-                message: Some("Row unavailable"),
-            },
-            TreeChildState::Ready,
-        )
+        self.child_id(parent, index)
+            .map_or(Arrival::Failed(Some("Row unavailable")), Arrival::Ready)
     }
 
     /// Start or deduplicate work for one visible/retried child slot. Return
@@ -602,7 +621,7 @@ impl SparseTreeIndex {
             }
         }
         for children in grouped.values_mut() {
-            children.sort_unstable_by_key(|(position, _)| *position);
+            children.compact_sort_by_key(|(position, _)| *position);
             children.dedup_by_key(|(position, _)| *position);
         }
         let root = if root_hidden && !expanded.contains(&root_id) {
@@ -687,13 +706,11 @@ impl SparseTreeIndex {
             if remaining < plain {
                 let child_index = child_cursor.saturating_add(remaining);
                 let key = match model.child_state(node.id, child_index) {
-                    TreeChildState::Ready(id) => TreeRowKey::Node(id),
-                    TreeChildState::Loading | TreeChildState::Error { .. } => {
-                        TreeRowKey::Slot(TreeSlot {
-                            parent: node.id,
-                            index: child_index,
-                        })
-                    }
+                    Arrival::Ready(id) => TreeRowKey::Node(id),
+                    Arrival::Pending { .. } | Arrival::Failed(_) => TreeRowKey::Slot(TreeSlot {
+                        parent: node.id,
+                        index: child_index,
+                    }),
                 };
                 return Some((key, depth.saturating_add(1)));
             }
@@ -712,13 +729,11 @@ impl SparseTreeIndex {
         let child = child_cursor.saturating_add(remaining);
         (child < node.direct_children).then(|| {
             let key = match model.child_state(node.id, child) {
-                TreeChildState::Ready(id) => TreeRowKey::Node(id),
-                TreeChildState::Loading | TreeChildState::Error { .. } => {
-                    TreeRowKey::Slot(TreeSlot {
-                        parent: node.id,
-                        index: child,
-                    })
-                }
+                Arrival::Ready(id) => TreeRowKey::Node(id),
+                Arrival::Pending { .. } | Arrival::Failed(_) => TreeRowKey::Slot(TreeSlot {
+                    parent: node.id,
+                    index: child,
+                }),
             };
             (key, depth.saturating_add(1))
         })
@@ -782,7 +797,7 @@ impl SparseTreeIndex {
             TreeRowKey::Slot(slot) => {
                 if matches!(
                     model.child_state(slot.parent, slot.index),
-                    TreeChildState::Ready(_)
+                    Arrival::Ready(_)
                 ) {
                     return None;
                 }
@@ -817,11 +832,15 @@ impl SparseTreeIndex {
     }
 }
 
+/// The tree itself, generic over its model: what [`TreeView`] runs once in
+/// the toolkit for every app's model, and what a toolkit widget with a
+/// concrete model holds directly.
+#[doc(hidden)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent focus, selection, and retained-delegate invalidation states"
 )]
-pub struct TreeView<T, M = TreeNode<T>> {
+pub struct TreeImpl<T, M = TreeNode<T>> {
     test_id: Option<String>,
     model: M,
     data: PhantomData<fn() -> T>,
@@ -864,6 +883,14 @@ pub struct TreeView<T, M = TreeNode<T>> {
     reorder_commit: Option<TreeReorderCommit<M>>,
     drag_scroll: DragScroller,
     momentum: ScrollMomentum,
+    /// The motion toward a row [`Self::reveal`] was asked to show.
+    scroll_to: crate::motion::ScrollTo,
+    /// Device pixels per logical pixel where the tree last handled input.
+    device_scale: f64,
+    /// The tree's opacity in the latest draw and in the frame on screen:
+    /// below 1 while rows fade in after a long reveal.
+    fade_drawn: f32,
+    fade_shown: f32,
     last_tick: Option<Instant>,
     transition_snapshot: Vec<KeyedRowSnapshot<TreeRowKey, TreeTransitionPayload>>,
     transitions: KeyedTransitionSet<TreeRowKey, TreeTransitionPayload>,
@@ -888,11 +915,17 @@ pub struct TreeView<T, M = TreeNode<T>> {
     indent_px: f64,
     requested_slots: HashSet<TreeSlot>,
     row_delegate: Option<TreeRowDelegate<M>>,
-    slot_delegate: Option<TreeSlotDelegate<M>>,
+    /// The placeholders of child slots on their way.
+    arrivals: crate::widget::ArrivingRows<TreeSlot>,
+    /// The slot each node that landed in one came from, while it fades in.
+    landed: HashMap<NodeId, TreeSlot>,
+    /// The motion of the theme last laid out with: how landed rows fade in.
+    arrival_motion: Option<crate::tokens::EffectiveMotion>,
     mounted_rows: Vec<MountedTreeRow>,
     delegate_structure_dirty: bool,
     delegate_layout_dirty: bool,
     accessible_name: Option<String>,
+    semantic_key: Option<String>,
     rect: Rect,
     is_focused: bool,
     last_cursor: Option<Point>,
@@ -941,17 +974,22 @@ pub struct TreeView<T, M = TreeNode<T>> {
     /// Set by changes the view signature cannot see (model content, layout,
     /// input the tree acted on); cleared once the tree is drawn.
     paint_dirty: bool,
+    /// The checkboxes its rows paint, filling as a click checks them.
+    faces: crate::widget::FaceMotions,
     layout_theme: Option<Theme>,
     /// [`Self::paint_signature`] as of the last completed draw.
     drawn_signature: Option<u64>,
-    /// The last draw's rows, so a change damages the rows it touched.
-    paint_damage: crate::widget::paint_damage::PaintDamage,
+    /// The frame being drawn and the one on screen, row by row, so a
+    /// change damages the rows it touched and a scroll copies the rest.
+    shown: crate::scroll_copy::PaintedFrames,
     /// Where the rename field painted in the last draw.
     rename_paint: Option<Rect>,
-    /// [`Self::rename_paint`] as the last drawn frame painted it.
-    drawn_rename_paint: Option<Rect>,
     /// Set by `NavList`: rows paint as navigation rows.
     nav: Option<NavPresentation<M>>,
+    /// Counts the changes to what a navigation row is read from beyond its
+    /// own inputs: the model, the presentation and the checks it shows
+    /// ([`Self::changed_nav_presentation`]).
+    nav_revision: u64,
     /// The tree has been laid out at least once. Until then it has no rows
     /// on screen to move from, so model changes do not animate.
     laid_out: bool,
@@ -1011,8 +1049,6 @@ fn paint_disclosure(
 
 type TreeRowDelegate<M> = Box<dyn FnMut(&M, NodeId, usize) -> Element>;
 type TreeRowDecorator<M> = Box<dyn FnMut(&M, TreeRowInfo, &Theme) -> TreeRowDecoration>;
-type TreeSlotDelegate<M> =
-    Box<dyn for<'a> FnMut(&M, TreeSlot, usize, TreeSlotState<'a>) -> Element>;
 type TreeReorderValidator<M> = Box<dyn FnMut(&M, NodeId, &DropTarget<NodeId>) -> bool>;
 type TreeReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<NodeId>) -> bool>;
 type TreeContextMenu<M> = Box<dyn FnMut(&M, Option<NodeId>) -> Vec<MenuItem>>;
@@ -1042,7 +1078,7 @@ struct TreeTransitionPayload {
     tone: TransitionTextTone,
 }
 
-impl<T> TreeView<T, TreeNode<T>> {
+impl<T> TreeImpl<T, TreeNode<T>> {
     pub fn new(root: TreeNode<T>) -> Self {
         Self::from_source(root)
     }
@@ -1051,8 +1087,7 @@ impl<T> TreeView<T, TreeNode<T>> {
     pub fn update_model<R>(&mut self, update: impl FnOnce(&mut TreeNode<T>) -> R) -> R {
         let anchor = self.capture_view_anchor();
         let result = update(&mut self.model);
-        self.invalidate_all_delegates();
-        self.reconcile_model_state(anchor.as_ref());
+        self.end_model_update(anchor.as_ref());
         result
     }
 
@@ -1070,7 +1105,7 @@ impl<T> TreeView<T, TreeNode<T>> {
     }
 }
 
-impl<M: TreeModel> TreeView<(), M> {
+impl<M: TreeModel> TreeImpl<(), M> {
     /// Build a view over an app-owned, database-backed, or asynchronous model.
     /// Call [`Self::notify_model_changes`] after the source applies a batch.
     pub fn from_model(model: M) -> Self {
@@ -1078,7 +1113,7 @@ impl<M: TreeModel> TreeView<(), M> {
     }
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     fn from_source(model: M) -> Self {
         let expanded = HashSet::new();
         let index = SparseTreeIndex::build(&model, &expanded, false);
@@ -1116,6 +1151,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
             reorder_commit: None,
             drag_scroll: DragScroller::new(),
             momentum: ScrollMomentum::new(),
+            scroll_to: crate::motion::ScrollTo::new(),
+            device_scale: 1.0,
+            fade_drawn: 1.0,
+            fade_shown: 1.0,
             last_tick: None,
             transition_snapshot: Vec::new(),
             transitions: KeyedTransitionSet::new(),
@@ -1127,11 +1166,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
             indent_px: DEFAULT_INDENT,
             requested_slots: HashSet::new(),
             row_delegate: None,
-            slot_delegate: None,
+            arrivals: crate::widget::ArrivingRows::new(),
+            landed: HashMap::new(),
+            arrival_motion: None,
             mounted_rows: Vec::new(),
             delegate_structure_dirty: false,
             delegate_layout_dirty: false,
             accessible_name: None,
+            semantic_key: None,
             rect: Rect::ZERO,
             is_focused: false,
             last_cursor: None,
@@ -1163,12 +1205,13 @@ impl<T, M: TreeModel> TreeView<T, M> {
             indent_guides: false,
             pending_reveal: None,
             paint_dirty: true,
+            faces: crate::widget::FaceMotions::default(),
             layout_theme: None,
             drawn_signature: None,
-            paint_damage: crate::widget::paint_damage::PaintDamage::default(),
+            shown: crate::scroll_copy::PaintedFrames::default(),
             rename_paint: None,
-            drawn_rename_paint: None,
             nav: None,
+            nav_revision: 0,
             laid_out: false,
             staged_drag: None,
             access_rows: std::cell::RefCell::default(),
@@ -1362,12 +1405,57 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return;
         }
         self.pending_reveal = None;
-        if let Some(index) = self.visible_index_of(id) {
-            self.viewport
-                .scroll_to_index(index, ScrollAlignment::Nearest);
+        let Some(index) = self.visible_index_of(id) else {
+            return;
+        };
+        let now = crate::motion::frame_now();
+        let drawn = self.viewport.offset();
+        if let Some(target) = self.scroll_to.target() {
+            self.viewport.set_offset(target.y);
+        }
+        self.viewport
+            .scroll_to_index(index, ScrollAlignment::Nearest);
+        let target = self.viewport.offset();
+        self.viewport.set_offset(drawn);
+        self.momentum.stop();
+        // A reveal the person just asked for moves there; one nobody asked
+        // for (a restored view, a sync) lands ([`crate::motion::ScrollTo`]).
+        let jump = self.scroll_to.go(
+            vello::kurbo::Vec2::new(0.0, drawn),
+            vello::kurbo::Vec2::new(0.0, target),
+            vello::kurbo::Vec2::new(self.rect.width(), self.viewport.viewport()),
+            self.transition_motion,
+            now,
+        );
+        if jump == crate::motion::ScrollJump::Glide {
+            self.follow_scroll_to(now);
+        } else {
+            self.viewport.set_offset(target);
             self.mark_delegate_window_dirty();
             self.refresh_anchor();
         }
+    }
+
+    /// Follow a reveal in progress to where it is drawn at `now`.
+    fn follow_scroll_to(&mut self, now: crate::time::Instant) {
+        if let Some(at) = self
+            .scroll_to
+            .offset_in_device_pixels(now, self.device_scale)
+        {
+            if at.y.to_bits() != self.viewport.offset().to_bits() {
+                self.set_scroll_offset(at.y);
+            }
+            let _ = self.scroll_to.arrived(now);
+        }
+    }
+
+    /// A reveal still moves, its rows still fade in, or the frame on screen
+    /// shows them faded.
+    fn reveal_in_progress(&self) -> bool {
+        self.scroll_to.target().is_some()
+            || self.scroll_to.is_moving(crate::motion::frame_now())
+            || self.fade_drawn < 1.0
+            || self.fade_shown < 1.0
     }
 
     /// Author the row height at the default text scale (the estimate
@@ -1431,24 +1519,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self
     }
 
-    /// Replace built-in loading and error text with retained widget subtrees.
-    ///
-    /// The delegate is mounted only for unresolved slots in the virtual paint
-    /// window. `TreeView` continues to own stable row identity, busy/invalid
-    /// semantics, focus, activation-to-retry, measurement, and request
-    /// deduplication. This lets apps localize placeholders or add ordinary
-    /// progress and retry controls without turning them into model nodes.
-    #[must_use]
-    pub fn with_slot_delegate<F>(mut self, delegate: F) -> Self
-    where
-        F: for<'a> FnMut(&M, TreeSlot, usize, TreeSlotState<'a>) -> Element + 'static,
-    {
-        self.slot_delegate = Some(Box::new(delegate));
-        self.delegate_structure_dirty = true;
-        self.delegate_layout_dirty = true;
-        self
-    }
-
     /// Rebuild delegated widgets for model nodes whose displayed data changed.
     pub fn invalidate_row_delegates(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         let ids = ids.into_iter().collect::<HashSet<_>>();
@@ -1458,6 +1528,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if self.mounted_rows.len() != before {
             self.delegate_structure_dirty = true;
         }
+    }
+
+    /// What follows any edit of the model in place: everything shown is
+    /// read again, keeping `anchor` in view.
+    fn end_model_update(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
+        self.changed_nav_presentation();
+        self.invalidate_all_delegates();
+        self.reconcile_model_state(anchor);
     }
 
     fn invalidate_all_delegates(&mut self) {
@@ -1512,6 +1590,15 @@ impl<T, M: TreeModel> TreeView<T, M> {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// The tree's stable identity for assistive technology and the browser's
+    /// accessibility mirror, so its node stays the same one across frames and
+    /// layout changes rather than being known by its place in the layout.
+    #[must_use]
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.semantic_key = Some(key.into());
         self
     }
 
@@ -1659,10 +1746,35 @@ impl<T, M: TreeModel> TreeView<T, M> {
         changes: &[TreeModelChange],
         update: impl FnOnce(&mut M) -> R,
     ) -> R {
+        let staged = self.begin_source_update(changes);
+        let result = update(&mut self.model);
+        self.end_source_update(changes, staged);
+        result
+    }
+
+    /// [`Self::update_source`] before the update: whether `changes` move
+    /// rows, and the row to keep in view if they do.
+    fn begin_source_update(
+        &mut self,
+        changes: &[TreeModelChange],
+    ) -> (bool, Option<SparseAnchor<TreeRowKey>>) {
         self.invalidate_changed_slots(changes);
         let reconcile = Self::changes_require_reconcile(changes);
-        let anchor = reconcile.then(|| self.capture_view_anchor()).flatten();
-        let result = update(&mut self.model);
+        let anchor = if reconcile {
+            self.capture_view_anchor()
+        } else {
+            None
+        };
+        (reconcile, anchor)
+    }
+
+    /// [`Self::update_source`] after the update.
+    fn end_source_update(
+        &mut self,
+        changes: &[TreeModelChange],
+        (reconcile, anchor): (bool, Option<SparseAnchor<TreeRowKey>>),
+    ) {
+        self.changed_nav_presentation();
         self.affordance_focus_valid = false;
         self.paint_dirty = true;
         self.invalidate_changed_delegates(changes);
@@ -1670,7 +1782,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if reconcile {
             self.reconcile_model_state(anchor.as_ref());
         }
-        result
     }
 
     /// Reconcile a batch already applied to the model. Label-only changes keep
@@ -1679,6 +1790,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub fn notify_model_changes(&mut self, changes: &[TreeModelChange]) {
         if !changes.is_empty() {
             self.affordance_focus_valid = false;
+            self.changed_nav_presentation();
         }
         self.paint_dirty = true;
         self.invalidate_changed_slots(changes);
@@ -1739,10 +1851,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 continue;
             };
             for slot in slots {
-                let TreeChildState::Ready(id) = self.model.child_state(slot.parent, slot.index)
-                else {
+                let Arrival::Ready(id) = self.model.child_state(slot.parent, slot.index) else {
                     continue;
                 };
+                if self.arrivals.contains(slot) {
+                    self.landed.insert(id, *slot);
+                }
                 let old = TreeRowKey::Slot(*slot);
                 let new = TreeRowKey::Node(id);
                 self.viewport.remap_key(&old, new);
@@ -1765,8 +1879,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return anchor;
         };
         match self.model.child_state(slot.parent, slot.index) {
-            TreeChildState::Ready(id) => anchor.with_key(TreeRowKey::Node(id)),
-            TreeChildState::Loading | TreeChildState::Error { .. } => anchor,
+            Arrival::Ready(id) => anchor.with_key(TreeRowKey::Node(id)),
+            Arrival::Pending { .. } | Arrival::Failed(_) => anchor,
         }
     }
 
@@ -1824,19 +1938,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
                         TransitionTextTone::Primary,
                     ),
                     TreeRowKey::Slot(slot) => match self.model.child_state(slot.parent, slot.index) {
-                        TreeChildState::Ready(_) => return None,
-                        TreeChildState::Loading | TreeChildState::Error { .. }
-                            if self.slot_delegate.is_some() =>
-                        {
-                            return None;
-                        }
-                        TreeChildState::Loading => (
-                            "Loading…".to_owned(),
+                        Arrival::Ready(_) => return None,
+                        Arrival::Pending { .. } => (
+                            crate::i18n::I18nManager::lookup_plain("arriving-loading"),
                             false,
                             false,
                             TransitionTextTone::Dim,
                         ),
-                        TreeChildState::Error { message } => (
+                        Arrival::Failed(message) => (
                             message
                                 .unwrap_or("Could not load. Activate to retry")
                                 .to_owned(),
@@ -1903,7 +2012,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     fn mark_delegate_window_dirty(&mut self) {
-        if self.row_delegate.is_some() || self.slot_delegate.is_some() {
+        if self.row_delegate.is_some() {
             self.delegate_structure_dirty = true;
             self.delegate_layout_dirty = true;
         }
@@ -2003,10 +2112,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .filter_map(|index| self.index.row_at(&self.model, index))
             .filter_map(|(key, _)| match key {
                 TreeRowKey::Slot(slot)
-                    if matches!(
-                        self.model.child_state(slot.parent, slot.index),
-                        TreeChildState::Loading
-                    ) =>
+                    if self.model.child_state(slot.parent, slot.index).is_pending() =>
                 {
                     Some(slot)
                 }
@@ -2391,9 +2497,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             }
             TreeRowKey::Slot(slot) => {
                 let reason = match self.model.child_state(slot.parent, slot.index) {
-                    TreeChildState::Loading => Some(TreeLoadReason::Visible),
-                    TreeChildState::Error { .. } => Some(TreeLoadReason::Retry),
-                    TreeChildState::Ready(_) => None,
+                    Arrival::Pending { .. } => Some(TreeLoadReason::Visible),
+                    Arrival::Failed(_) => Some(TreeLoadReason::Retry),
+                    Arrival::Ready(_) => None,
                 };
                 if let Some(reason) = reason {
                     self.request_slot(slot, reason);
@@ -2473,9 +2579,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             WheelStep::Scroll(dy) => {
                 let before = self.viewport.offset();
                 self.set_scroll_offset(before + dy);
-                let moved = self.viewport.offset().to_bits() != before.to_bits();
-                self.momentum.wheel_applied(dy, moved);
-                moved
+                self.momentum
+                    .wheel_applied(dy, self.viewport.offset() - before)
             }
             WheelStep::Fling => true,
             WheelStep::Ignored => false,
@@ -2667,9 +2772,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             }
             TreeRowKey::Slot(slot) => {
                 let reason = match self.model.child_state(slot.parent, slot.index) {
-                    TreeChildState::Loading => TreeLoadReason::Visible,
-                    TreeChildState::Error { .. } => TreeLoadReason::Retry,
-                    TreeChildState::Ready(_) => return false,
+                    Arrival::Pending { .. } => TreeLoadReason::Visible,
+                    Arrival::Failed(_) => TreeLoadReason::Retry,
+                    Arrival::Ready(_) => return false,
                 };
                 self.request_slot(slot, reason)
             }
@@ -2750,9 +2855,33 @@ impl<T, M: TreeModel> TreeView<T, M> {
         true
     }
 
+    /// Look at where the visible slots' data stands at `now`: a slot on its
+    /// way starts its placeholder timing, and one that landed shows its
+    /// node once due, fading in.
+    fn observe_arrivals(&mut self, now: Instant) {
+        let motion = self.arrival_motion;
+        let mut seen = HashSet::new();
+        let slots = self
+            .visible_row_range()
+            .filter_map(|index| match self.index.row_at(&self.model, index)? {
+                (TreeRowKey::Slot(slot), _) => Some(slot),
+                (TreeRowKey::Node(_), _) => None,
+            })
+            .chain(self.landed.values().copied())
+            .collect::<Vec<_>>();
+        for slot in slots {
+            let state = self.model.child_state(slot.parent, slot.index);
+            self.arrivals.observe(&slot, &state, motion, now);
+            seen.insert(slot);
+        }
+        self.arrivals.retain(now, |slot| seen.contains(slot));
+        let arrivals = &self.arrivals;
+        self.landed.retain(|_, slot| arrivals.contains(slot));
+    }
+
     fn reconcile_mounted_rows(&mut self) {
         let interaction = self.interaction;
-        if self.row_delegate.is_none() && self.slot_delegate.is_none() {
+        if self.row_delegate.is_none() {
             if !self.mounted_rows.is_empty() {
                 self.mounted_rows.clear();
                 self.delegate_structure_dirty = true;
@@ -2785,25 +2914,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
             let mut row = if let Some(row) = old.remove(&key) {
                 row
             } else {
-                let widget = match key {
-                    TreeRowKey::Node(id) => {
-                        let Some(delegate) = &mut self.row_delegate else {
-                            continue;
-                        };
-                        delegate(&self.model, id, depth)
-                    }
-                    TreeRowKey::Slot(slot) => {
-                        let Some(delegate) = &mut self.slot_delegate else {
-                            continue;
-                        };
-                        let state = match self.model.child_state(slot.parent, slot.index) {
-                            TreeChildState::Loading => TreeSlotState::Loading,
-                            TreeChildState::Error { message } => TreeSlotState::Error { message },
-                            TreeChildState::Ready(_) => continue,
-                        };
-                        delegate(&self.model, slot, depth, state)
-                    }
+                // A slot on its way, or failed, is the tree's own to paint.
+                let TreeRowKey::Node(id) = key else {
+                    continue;
                 };
+                let Some(delegate) = &mut self.row_delegate else {
+                    continue;
+                };
+                let widget = delegate(&self.model, id, depth);
                 MountedTreeRow {
                     key,
                     depth,
@@ -2825,7 +2943,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 }
 
-impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
+impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -2862,6 +2980,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .replace(now)
             .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
         let mut changed = received_changes;
+        // A row whose content landed shows once its skeleton stood its
+        // minimum: that wake repaints it.
+        if self.arrivals.reveal_due(crate::motion::frame_now()) {
+            self.observe_arrivals(crate::motion::frame_now());
+            self.paint_dirty = true;
+        }
         // A glide moves only the viewport, which the frame it asks for lays
         // out: no change of the model, so it does not report one (as
         // `Scrollable::update`).
@@ -2873,6 +2997,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 self.momentum.stop();
             }
         }
+        // A reveal in progress, like a glide, moves only the viewport.
+        self.follow_scroll_to(crate::motion::frame_now());
         if self.reorder.is_active() {
             let motion = self.reorder.tick(self.rect, elapsed, now);
             if motion.scroll_delta != 0.0 {
@@ -2909,8 +3035,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             self.layout_theme = Some(theme.clone());
             self.paint_dirty = true;
         }
+        self.arrival_motion = Some(theme.motion());
         self.transition_motion = theme.motion();
         self.reduce_motion = theme.reduce_motion;
+        self.momentum.set_view(
+            self.viewport.viewport(),
+            self.viewport.max_offset() > 0.0,
+            theme.motion(),
+        );
         if self.reduce_motion {
             self.transitions.clear();
             self.momentum.stop();
@@ -3014,6 +3146,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     ) {
         let incoming = std::mem::take(scene);
         self.request_visible_rows();
+        self.observe_arrivals(crate::motion::frame_now());
+        self.arrivals.mark_drawn(crate::motion::frame_now());
         let tokens = &theme.tokens;
         let text_style = tokens.typography.style(LABEL_ROLE);
         self.transitions.settle(crate::time::now());
@@ -3023,7 +3157,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         // The indent and disclosure column hit-testing uses, resolved from
         // this theme at layout.
         let indent_px = self.indent_px;
-        // Drop and insertion marks are the person's own colour.
         let insertion = tokens.colors.intent.accent_ink;
         let now = crate::time::now();
         // The tree stands on the ground its container handed it (the
@@ -3098,7 +3231,29 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             && !self.reorder.is_tracking()
             && !self.menu.is_open();
         let mut row_parts = tracks_rows.then(Vec::new);
+        let mut fixed = Vec::new();
         let mut unproven = false;
+        // A tracked tree draws each row where it stands in the rows, as if
+        // unscrolled, and lands it scrolled: a row a scroll only moved
+        // encodes the same, and a host copies it
+        // ([`crate::scroll_copy::PaintedFrames`]).
+        let shift = if tracks_rows {
+            self.viewport.offset()
+        } else {
+            0.0
+        };
+        // Past an end, fingers pull the rows through the rubber band: they
+        // land that much further, drawn as they are.
+        let give = if tracks_rows {
+            self.momentum.give(crate::motion::frame_now())
+        } else {
+            0.0
+        };
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+        )]
+        let scrolled = transform * Affine::translate((0.0, -shift - give)) * transform.inverse();
         // What the tree drew before its body; a tracked tree opens the body's
         // clip when it puts its parts together, so each scene it keeps opens
         // and closes its own layers.
@@ -3132,11 +3287,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     }
                     TreeRowKey::Slot(slot) => match self.model.child_state(slot.parent, slot.index)
                     {
-                        TreeChildState::Ready(_) => break 'row,
-                        TreeChildState::Loading => {
-                            ("Loading\u{2026}", tokens.colors.text_dim, false)
-                        }
-                        TreeChildState::Error { message } => (
+                        Arrival::Ready(_) => break 'row,
+                        // Its placeholder paints in its place.
+                        Arrival::Pending { .. } => ("", tokens.colors.text_dim, false),
+                        Arrival::Failed(message) => (
                             message.unwrap_or("Could not load. Activate to retry"),
                             tokens.colors.semantic.danger,
                             false,
@@ -3163,15 +3317,39 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 let body_top = self.rect.y0 + self.heading_h;
                 let body_bottom = body_top + self.body_height();
                 let y0 = body_top + visual.geometry.top;
-                let y1 = (y0 + row_height).min(body_bottom);
+                let y1 = y0 + row_height;
                 if y1 <= body_top {
                     break 'row;
                 }
                 if y0 >= body_bottom {
                     break 'rows;
                 }
+                row_paint = Some(Rect::new(self.rect.x0, y0 - give, self.rect.x1, y1 - give));
+                // Painted where the row stands in the rows, unscrolled; the
+                // body's clip trims a row the edge cuts.
+                let (y0, y1) = (y0 + shift, y1 + shift);
                 let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
-                row_paint = Some(row_rect);
+                // A slot on its way paints its placeholder where its label
+                // goes; the node that lands in it fades in over it.
+                let arriving = match key {
+                    TreeRowKey::Slot(slot) => Some(slot),
+                    TreeRowKey::Node(id) => self.landed.get(&id).copied(),
+                };
+                let mut opacity = opacity;
+                if let Some(slot) = arriving {
+                    let label_x0 = self.rect.x0
+                        + self.row_inset
+                        + f64_of_usize(depth) * indent_px
+                        + self.disclosure_w;
+                    let face_rect = Rect::new(label_x0, y0, self.rect.x1 - self.row_inset, y1);
+                    let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+                    let Some(incoming) =
+                        paint_arriving_slot(&self.arrivals, &slot, &mut ctx, face_rect, now)
+                    else {
+                        break 'row;
+                    };
+                    opacity *= incoming;
+                }
                 if let TreeRowKey::Node(id) = key
                     && self.is_nav()
                 {
@@ -3263,7 +3441,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     depth,
                     guide_color.with_alpha_factor(opacity),
                 );
-                if self.is_focused && self.focused == Some(key) {
+                if self.is_focused && self.focused == Some(key) && crate::focus_visible::shown() {
                     let width = 2.0 * hairline;
                     let radius = f64::from(tokens.radii.item).min(lift_rect.height() / 2.0);
                     scene.stroke(
@@ -3366,9 +3544,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                         field.input.set_text_role(LABEL_ROLE);
                         field.input.apply_layout_external(Rect::new(
                             label_x,
-                            y0,
+                            y0 - shift - give,
                             (self.rect.x1 - gap).max(label_x),
-                            y0 + row_height,
+                            y0 - shift - give + row_height,
                         ));
                         break 'row;
                     }
@@ -3392,14 +3570,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             }
             if let Some(parts) = row_parts.as_mut() {
                 let drawn = std::mem::take(scene);
-                rows_scene.append(&drawn, None);
+                rows_scene.append(&drawn, Some(scrolled));
                 match row_paint {
-                    Some(rect) => parts.push(crate::widget::paint_damage::PaintPart::new(
-                        i.to_string(),
+                    Some(rect) => parts.push(crate::scroll_copy::Piece {
+                        key: crate::scroll_copy::piece_key(i),
                         rect,
-                        drawn,
-                        vec![rect],
-                    )),
+                        paint: crate::scroll_copy::Painted(drawn),
+                    }),
                     // Paint with no row bounds: nothing proves where it changed.
                     None if drawn.encoding().is_empty() => {}
                     None => unproven = true,
@@ -3422,7 +3599,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 clippy::arithmetic_side_effects,
                 reason = "kurbo Affine composition is finite screen-space matrix math"
             )]
-            let row_transform = transform * Affine::translate((0.0, delta));
+            let row_transform = transform * Affine::translate((0.0, delta - give));
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -3515,20 +3692,16 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let ring = rect.inflate(reach, reach);
             self.rename_paint = Some(field.input.overhang().map_or(ring, |chip| ring.union(chip)));
         }
-        if let (Some(outer), Some(parts)) = (outer, row_parts.as_mut()) {
-            // The field is a part whether or not it is open, so opening and
+        if let Some(outer) = outer {
+            // The field is a piece whether or not it is open, so opening and
             // closing it damage where it is and was, not the tree.
             let drawn = std::mem::replace(scene, outer);
             rows_scene.append(&drawn, None);
-            parts.push(crate::widget::paint_damage::PaintPart::new(
-                "rename".into(),
-                self.rect,
-                drawn,
-                [self.rename_paint, self.drawn_rename_paint]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-            ));
+            fixed.push(crate::scroll_copy::Piece {
+                key: crate::scroll_copy::piece_key("rename"),
+                rect: self.rename_paint.unwrap_or(Rect::ZERO),
+                paint: crate::scroll_copy::Painted(drawn),
+            });
         }
         if self.is_focused
             && self.affordance_focus_valid
@@ -3570,8 +3743,34 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         if !tracks_rows {
             scene.pop_layer();
         }
-        self.paint_edge_fades(scene, transform, ground);
-        self.paint_scroll_thumb(scene, transform, theme);
+        // What stands over the rows while they scroll: the edge fades and
+        // the thumb, each a part of its own for a tracked tree, painted last
+        // and kept out of what the tree compares as unchanged around them.
+        let mut over_scene = Scene::new();
+        if tracks_rows {
+            let mut over = Vec::new();
+            for (key, band, edge) in self.edge_fade_bands() {
+                let mut fade = Scene::new();
+                crate::surface::content_edge_fade(&mut fade, transform, body, edge, ground);
+                over.push((key, band, fade));
+            }
+            let mut thumb = Scene::new();
+            self.paint_scroll_thumb(&mut thumb, transform, theme);
+            if let Some(track) = self.scroll_thumb_track(theme) {
+                over.push(("thumb", track, thumb));
+            }
+            for (key, band, drawn) in over {
+                over_scene.append(&drawn, None);
+                fixed.push(crate::scroll_copy::Piece {
+                    key: crate::scroll_copy::piece_key(key),
+                    rect: band,
+                    paint: crate::scroll_copy::Painted(drawn),
+                });
+            }
+        } else {
+            self.paint_edge_fades(scene, transform, ground);
+            self.paint_scroll_thumb(scene, transform, theme);
+        }
         if let (Some(prefix), Some(inner)) = (prefix, inner) {
             let outer = std::mem::take(scene);
             let mut complete = prefix.clone();
@@ -3586,26 +3785,47 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             complete.append(&inner, None);
             complete.pop_layer();
             complete.append(&outer, None);
+            complete.append(&over_scene, None);
             *scene = complete;
-            let frame = row_parts.filter(|_| !unproven).map(|parts| {
+            let frame = row_parts.filter(|_| !unproven).and_then(|pieces| {
                 // Everything but the rows, for telling whether it changed.
                 let mut outside = prefix;
                 outside.append(&inner, None);
                 outside.append(&outer, None);
-                crate::widget::paint_damage::PaintFrame::new(
-                    vec![self.rect, body],
-                    transform,
-                    theme,
-                    outside,
-                    parts,
+                crate::scroll_copy::Showing::painted(
+                    vello::kurbo::Vec2::new(0.0, shift + give),
+                    body,
+                    crate::scroll_copy::on_screen(transform),
+                    crate::scroll_copy::Around {
+                        bounds: self.rect,
+                        outside: crate::scroll_copy::Painted(outside),
+                    },
+                    pieces,
+                    fixed,
                 )
             });
-            self.paint_damage.record(self.rect, frame);
+            if let Some(frame) = frame {
+                self.shown.note(frame);
+            }
         } else {
-            self.paint_damage.record(self.rect, None);
+            scene.append(&over_scene, None);
         }
         let own = std::mem::replace(scene, incoming);
-        scene.append(&own, None);
+        // After a long reveal the rows fade in where they landed.
+        self.fade_drawn = self.scroll_to.opacity(crate::motion::frame_now());
+        if self.fade_drawn < 1.0 {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                self.fade_drawn,
+                transform,
+                &self.rect,
+            );
+            scene.append(&own, None);
+            scene.pop_layer();
+        } else {
+            scene.append(&own, None);
+        }
     }
 
     /// The open context menu is a floating Panel in the window's top layer,
@@ -3693,8 +3913,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
 
     fn needs_redraw(&self) -> bool {
         self.paint_dirty
+            || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self.drawn_signature != Some(self.paint_signature())
+            || self.faces.needs_redraw(crate::motion::frame_now())
             || self.momentum.is_active()
+            || self.momentum.give_needs_frame(crate::motion::frame_now())
+            || self.fade_drawn < 1.0
+            || self.fade_shown < 1.0
             || self.reorder.is_active()
             || self.transitions.is_active(crate::time::now())
             || self.menu.is_open() && self.menu.needs_redraw()
@@ -3709,13 +3934,17 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.needs_redraw() || self.paint_damage.is_recorded() {
-            self.paint_damage.collect(self.rect, regions);
+        if self.fade_drawn < 1.0 || self.fade_shown < 1.0 {
+            regions.push(self.rect);
+            return;
+        }
+        if self.needs_redraw() || self.shown.drawing().is_some() {
+            self.shown.damage_within(self, self.rect, regions);
         }
     }
 
     fn release_scene_cache(&mut self) {
-        self.paint_damage.release_scene_cache();
+        self.shown.forget();
         for row in &mut self.mounted_rows {
             row.widget.release_scene_cache();
         }
@@ -3723,11 +3952,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
 
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
+        self.fade_shown = self.fade_drawn;
         self.drawn_signature = Some(self.paint_signature());
-        if self.paint_damage.is_recorded() {
-            self.drawn_rename_paint = self.rename_paint;
-        }
-        self.paint_damage.mark_drawn();
+        self.shown.present();
         if let Some(field) = self.rename.as_mut() {
             field.input.mark_drawn();
         }
@@ -3740,13 +3967,18 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        // Painted checkboxes ask the motion clock for their own frames
+        // (`FaceMotions`); the host reads it.
         self.bar_fade
             .get()
             .fading_at(crate::motion::frame_now(), self.bar_held.get())
             || self.momentum.is_active()
+            || self.momentum.give_needs_frame(crate::motion::frame_now())
+            || self.reveal_in_progress()
             || self.model.needs_poll()
             || self.reorder.is_active()
             || self.transitions.is_active(crate::time::now())
+            || self.arrivals.is_moving(crate::motion::frame_now())
             || self
                 .mounted_rows
                 .iter()
@@ -3758,6 +3990,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .bar_fade
             .get()
             .fade_deadline_at(crate::motion::frame_now(), self.bar_held.get());
+        if let Some(deadline) = self.arrivals.next_wake_deadline(crate::time::now()) {
+            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+        }
         for row in &self.mounted_rows {
             if let Some(deadline) = row.widget.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -3827,38 +4062,17 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         false
     }
 
+    /// The tree's own node, without building its rows.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        Some(self.access_root())
+    }
+
     /// The tree, its rows shared with the last walk where nothing they are
-    /// built from changed ([`Self::access_rows`]): a walk while the tree
+    /// built from changed (`Self::access_rows`): a walk while the tree
     /// is unchanged (a keystroke in the editor beside it) builds no row.
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
         use std::sync::Arc;
-        // Labels are runtime strings supplied by the host, not FTL keys.
-        let value = self
-            .selected()
-            .and_then(|id| self.model.label(id))
-            .map(str::to_owned);
-        let mut node = AccessNode::new(Role::Tree)
-            .with_optional_name(
-                self.accessible_name
-                    .as_deref()
-                    .map(crate::i18n::I18nManager::lookup_plain)
-                    .or_else(|| self.heading.clone()),
-            )
-            .with_optional_value(value)
-            .with_state(
-                AccessState::new()
-                    .focusable(self.is_focusable())
-                    .focused(self.is_focused())
-                    .disabled(!self.is_enabled()),
-            );
-        if let Some(sel) = self.selected()
-            && let Some(idx) = self.visible_index_of(sel)
-            && let Some((TreeRowKey::Node(_), depth)) = self.index.row_at(&self.model, idx)
-        {
-            node = node.with_position(idx.saturating_add(1), self.index.len());
-            node = node.with_level(depth.saturating_add(1));
-        }
+        let node = self.access_root();
         // Keep the semantic tree bounded exactly like painting. Absolute
         // positions retain useful "N of M" announcements even though rows
         // outside the viewport have no synthetic node this frame.
@@ -4001,13 +4215,28 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 }
 
-impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
+impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
     #[allow(
         clippy::too_many_lines,
         reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
     )]
     fn route_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let scale_factor = ctx.scale_factor;
+        self.momentum.set_device_scale(scale_factor);
+        self.device_scale = scale_factor;
+        // The hand takes over a reveal in progress from where it is drawn.
+        if matches!(
+            event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                }
+        ) {
+            self.scroll_to.take_over(crate::motion::frame_now());
+        }
         let modifiers = ctx.modifiers;
         let state = &mut ctx.state;
         let path = ctx.path;
@@ -4224,7 +4453,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             WindowEvent::MouseWheel { delta, phase, .. }
                 if self
                     .last_cursor
-                    .is_some_and(|point| self.rect.contains(point)) =>
+                    .is_some_and(|point| self.rect.contains(point))
+                    && !crate::content_zoom::is_zoom_scroll(event, modifiers) =>
             {
                 self.drag_scroll.cancel();
                 *handled = self.on_wheel(delta, *phase);
@@ -4473,7 +4703,6 @@ mod tests {
 
     #[test]
     fn owned_tree_reorder_moves_subtrees_rejects_invalid_targets_and_commits_drops() {
-        // Case `owned_tree_reorder_moves_complete_subtrees_across_parents`.
         {
             let mut tree = reorder_tree();
             assert!(tree.reorder(&ReorderDrop {
@@ -4497,7 +4726,6 @@ mod tests {
             assert_eq!(tree.find(3).map(|node| node.data), Some("first-data"));
         }
 
-        // Case `owned_tree_reorder_rejects_cycles_invalid_targets_and_noops`.
         {
             let mut tree = reorder_tree();
             let original = tree.children.iter().map(|node| node.id).collect::<Vec<_>>();
@@ -4536,14 +4764,12 @@ mod tests {
             assert_eq!(tree.parent_id(5), Some(4));
         }
 
-        // Case `owned_tree_reorderable_installs_safe_default_controller`.
         {
             let view = TreeView::new(reorder_tree()).reorderable();
             assert!(view.reorder_validator.is_some());
             assert!(view.reorder_commit.is_some());
         }
 
-        // Case `owned_tree_reorderable_commits_the_pointer_drop_without_app_bookkeeping`.
         {
             let mut view = TreeView::new(sample_tree())
                 .with_expanded([1])
@@ -4808,24 +5034,15 @@ mod tests {
 
         fn child_state(&self, parent: NodeId, index: usize) -> TreeChildState<'_> {
             if parent != 1 {
-                return TreeChildState::Error {
-                    message: Some("Unknown parent"),
-                };
+                return Arrival::Failed(Some("Unknown parent"));
             }
             match self.state(index) {
-                Some(PagedSlotState::Loading) => TreeChildState::Loading,
-                Some(PagedSlotState::Error) => TreeChildState::Error {
-                    message: Some("Network unavailable"),
-                },
-                Some(PagedSlotState::Ready) => Self::id(index).map_or(
-                    TreeChildState::Error {
-                        message: Some("Invalid row id"),
-                    },
-                    TreeChildState::Ready,
-                ),
-                None => TreeChildState::Error {
-                    message: Some("Row out of bounds"),
-                },
+                Some(PagedSlotState::Loading) => Arrival::local(),
+                Some(PagedSlotState::Error) => Arrival::Failed(Some("Network unavailable")),
+                Some(PagedSlotState::Ready) => {
+                    Self::id(index).map_or(Arrival::Failed(Some("Invalid row id")), Arrival::Ready)
+                }
+                None => Arrival::Failed(Some("Row out of bounds")),
             }
         }
 
@@ -5150,7 +5367,6 @@ mod tests {
             layout(&mut view, &theme);
             let before = paint(&mut view, &theme, &mut text);
             view.mark_drawn();
-            // The open item's row is set in the heavier weight.
             view.set_current(Some(3));
             layout(&mut view, &theme);
             let after = paint(&mut view, &theme, &mut text);
@@ -5254,7 +5470,6 @@ mod tests {
             );
         }
 
-        // Case `tree_view_expand_node_shows_children`.
         {
             let mut view = TreeView::new(sample_tree());
             let rows = view.visible_rows();
@@ -5275,7 +5490,6 @@ mod tests {
             assert_eq!(rows.len(), 3);
         }
 
-        // Case `tree_view_arrow_right_expands_focused_node`.
         {
             let mut view = TreeView::new(sample_tree());
             view.set_focus(true);
@@ -5290,7 +5504,6 @@ mod tests {
             );
         }
 
-        // Case `empty_branch_remains_expandable_for_lazy_population`.
         {
             let mut view = TreeView::new(TreeNode::branch(1, "loading", (), Vec::new()));
             view.toggle_expand(1);
@@ -5299,7 +5512,6 @@ mod tests {
             assert_eq!(node.children[0].state.expanded, Some(true));
         }
 
-        // Case `expansion_has_a_persistable_builder_and_change_callback`.
         {
             let changes = Rc::new(RefCell::new(Vec::new()));
             let sink = changes.clone();
@@ -5319,7 +5531,6 @@ mod tests {
             );
         }
 
-        // Case `restoring_expansion_does_not_echo_to_the_host`.
         {
             let echoed = Rc::new(Cell::new(0));
             let count = Rc::clone(&echoed);
@@ -5334,7 +5545,6 @@ mod tests {
             assert_eq!(echoed.get(), 1, "a user change still reports");
         }
 
-        // Case `the_disclosure_toggles_without_activating`.
         {
             let (view, activated, _) = logged(
                 TreeView::new(navigator_tree())
@@ -5358,7 +5568,6 @@ mod tests {
 
     #[test]
     fn selection_reports_callbacks_and_multiselect_by_stable_id() {
-        // Case `tree_view_select_node_calls_on_select`.
         {
             let captured: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
             let captured_clone = captured.clone();
@@ -5414,7 +5623,6 @@ mod tests {
             assert_eq!(view.selected(), Some(2));
         }
 
-        // Case `multiselect_uses_stable_ids_and_survives_collapse_and_move`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
@@ -5446,7 +5654,6 @@ mod tests {
             assert!(view.selection().is_selected(&20));
         }
 
-        // Case `multiselect_supports_visible_ranges_and_constant_space_select_all`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
@@ -5472,9 +5679,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "Typing in a focused list jumps to
-    // matches." Letters typed into a focused list move to the first row whose
-    // name begins with them; the same letter again steps to the next one.
     #[test]
     fn typing_in_a_focused_list_jumps_to_the_row_it_names() {
         let names = ["Apple", "apricot", "Banana", "berry", "Cherry"];
@@ -5501,7 +5705,6 @@ mod tests {
 
     #[test]
     fn keyboard_navigation_moves_focus_and_separates_selection_from_activation() {
-        // Case `tree_view_arrow_down_moves_focus_to_next_visible_row`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5519,7 +5722,6 @@ mod tests {
             );
         }
 
-        // Case `keyboard_navigation_reveals_focus_and_follows_tree_parents`.
         {
             let children = (2_u64..=20)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5539,7 +5741,6 @@ mod tests {
             assert_eq!(view.scroll_y(), 0.0, "revealing the root returns to top");
         }
 
-        // Case `enter_activates_while_space_and_arrows_only_select`.
         {
             let (view, activated, selected) = logged(
                 TreeView::new(navigator_tree())
@@ -5566,7 +5767,6 @@ mod tests {
             assert!(selected.borrow().contains(&5));
         }
 
-        // Case `arrows_do_not_select_unless_selection_follows_focus`.
         {
             let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             view.set_focus(true);
@@ -5577,7 +5777,6 @@ mod tests {
             assert!(activated.borrow().is_empty());
         }
 
-        // Case `an_unfocused_tree_leaves_keys_to_its_siblings`.
         {
             let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             view.focused = Some(TreeRowKey::Node(2));
@@ -5590,7 +5789,6 @@ mod tests {
 
     #[test]
     fn accessibility_reports_tree_role_value_focus_and_row_state() {
-        // Case `accessibility_reports_tree_role_and_no_value_when_unselected`.
         {
             use crate::a11y::Role;
             let view = TreeView::new(sample_tree());
@@ -5603,13 +5801,11 @@ mod tests {
             assert!(!node.state.focused);
         }
 
-        // Case `tree_view_exposes_an_explicit_stable_id`.
         {
             let view = TreeView::new(sample_tree()).with_id("workspace-tree");
             assert_eq!(Widget::test_id(&view), Some("workspace-tree"));
         }
 
-        // Case `accessibility_value_is_selected_row_label`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5622,7 +5818,6 @@ mod tests {
             );
         }
 
-        // Case `accessibility_reflects_focus_state`.
         {
             let mut view = TreeView::new(sample_tree());
             view.set_focus(true);
@@ -5633,7 +5828,6 @@ mod tests {
             );
         }
 
-        // Case `tree_items_publish_level_expansion_selection_and_focus`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5651,7 +5845,6 @@ mod tests {
             assert_eq!(node.children[1].name.as_deref(), Some("child1"));
         }
 
-        // Case `decorations_see_row_state_and_describe_rows`.
         {
             let seen = Rc::new(RefCell::new(Vec::new()));
             let log = Rc::clone(&seen);
@@ -5702,7 +5895,6 @@ mod tests {
 
     #[test]
     fn bounded_viewport_windows_paint_and_semantics_around_a_stable_anchor() {
-        // Case `tree_viewport_builder_enables_the_bounded_internal_window`.
         {
             let children = (2_u64..102)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5715,7 +5907,6 @@ mod tests {
             assert!(view.visible_row_range().len() < view.visible_len());
         }
 
-        // Case `large_tree_bounds_paint_and_accessibility_windows`.
         {
             let children = (2_u64..=100_001)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5723,7 +5914,8 @@ mod tests {
             let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
             view.toggle_expand(1);
             view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
-            view.set_scroll_y(view.max_scroll_y() / 2.0);
+            let middle = view.max_scroll_y() / 2.0;
+            view.set_scroll_y(middle);
 
             let visible = view.visible_row_range();
             assert!(visible.len() <= 12, "bounded geometry window: {visible:?}");
@@ -5735,7 +5927,6 @@ mod tests {
             assert!(first.pos_in_set.expect("absolute position") > 49_000);
         }
 
-        // Case `semantic_tree_rows_publish_scrolled_viewport_geometry`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5751,7 +5942,6 @@ mod tests {
             );
         }
 
-        // Case `expanding_above_viewport_preserves_the_stable_row_anchor`.
         {
             let root = TreeNode::branch(
                 1,
@@ -5787,7 +5977,6 @@ mod tests {
 
     #[test]
     fn external_model_changes_reconcile_state_and_keep_anchors() {
-        // Case `batched_model_updates_reconcile_lazy_children_and_deleted_selection`.
         {
             let mut view =
                 TreeView::new(TreeNode::branch(1, "root", (), Vec::new())).with_expanded([1]);
@@ -5810,7 +5999,6 @@ mod tests {
             assert!(view.is_expanded(1), "the surviving lazy branch stays open");
         }
 
-        // Case `external_model_queries_only_expanded_branches_and_preserves_insert_anchor`.
         {
             let mut view = TreeView::from_model(external_model());
             assert_eq!(
@@ -5856,7 +6044,6 @@ mod tests {
             assert_eq!(view.viewport.item_view_top(anchor), before);
         }
 
-        // Case `post_mutation_notification_uses_the_cached_stable_anchor`.
         {
             let children = Rc::new(RefCell::new(vec![2, 3, 4]));
             let mut view = TreeView::from_model(SharedOrderModel {
@@ -5880,7 +6067,6 @@ mod tests {
             assert_eq!(view.viewport.item_view_top(anchor), before);
         }
 
-        // Case `granular_external_changes_refresh_data_and_reconcile_removed_state`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1])
@@ -5918,7 +6104,6 @@ mod tests {
             assert_eq!(view.visible_index_of(3), None);
         }
 
-        // Case `external_move_keeps_measurements_attached_to_node_ids`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
             let old_index = view.visible_index_of(3).unwrap();
@@ -5946,7 +6131,6 @@ mod tests {
 
     #[test]
     fn scroll_input_pages_wheels_and_drags_over_sparse_rows() {
-        // Case `page_navigation_and_accelerated_wheel_share_sparse_row_geometry`.
         {
             let children = (2_u64..=101)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5975,7 +6159,6 @@ mod tests {
             assert!(view.scroll_y() > immediate, "momentum advances after input");
         }
 
-        // Case `body_drag_scrolls_tree_without_selecting_but_click_still_selects`.
         {
             let children = (2_u64..=101)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -6004,7 +6187,6 @@ mod tests {
             );
         }
 
-        // Case `reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay`.
         {
             let children = (2_u64..102)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -6021,8 +6203,8 @@ mod tests {
             let now = crate::time::now();
             let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
             let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
-            view.drag_scroll
-                .begin(50.0, f64::from(view.scroll_y()), started);
+            let offset = f64::from(view.scroll_y());
+            view.drag_scroll.begin(50.0, offset, started);
             assert!(view.drag_scroll.update(10.0, moved).is_some());
             dispatch(&mut view, &mouse_release());
             assert!(!view.momentum.is_active());
@@ -6032,7 +6214,6 @@ mod tests {
 
     #[test]
     fn paged_tree_demands_visible_slots_and_recovers_from_errors() {
-        // Case `paged_tree_demands_only_the_visible_window_once`.
         {
             let requests = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&requests);
@@ -6065,7 +6246,6 @@ mod tests {
             assert_eq!(view.visible_len(), 100_000_001);
         }
 
-        // Case `model_owned_paged_tree_drains_slot_completions_during_update`.
         {
             let mut view = TreeView::from_model(PagedModel {
                 count: 4,
@@ -6099,7 +6279,6 @@ mod tests {
             assert_eq!(view.request_visible_rows(), 0);
         }
 
-        // Case `paged_error_is_keyboard_retryable_and_ready_row_inherits_focus_and_anchor`.
         {
             let states = Rc::new(RefCell::new(HashMap::from([(0, PagedSlotState::Error)])));
             let requests = Rc::new(RefCell::new(Vec::new()));
@@ -6164,8 +6343,11 @@ mod tests {
             assert!(loaded.state.focused);
         }
 
-        // Case `paged_slot_delegate_localizes_measures_and_rebuilds_changed_placeholders`.
-        {
+        // A slot on its way is the tree's to paint: no delegate is built
+        // for it, its placeholder starts with the ground, and it reads as
+        // busy; a failed slot names why.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            let t0 = crate::time::now();
             let states = Rc::new(RefCell::new(HashMap::from([
                 (0, PagedSlotState::Loading),
                 (1, PagedSlotState::Error),
@@ -6180,81 +6362,57 @@ mod tests {
                 changes: Vec::new(),
             })
             .with_expanded([1])
-            .with_slot_delegate(move |_, slot, _, state| {
+            .with_row_delegate(move |_, _, _| {
                 captured.set(captured.get().saturating_add(1));
-                let (label, height) = match state {
-                    TreeSlotState::Loading => (format!("Chargement {}", slot.index), 34.0),
-                    TreeSlotState::Error { message } => (
-                        format!("Réessayer {} — {}", slot.index, message.unwrap_or("Erreur")),
-                        48.0,
-                    ),
-                };
                 Box::new(DelegateProbe::new(
-                    label,
-                    height,
+                    "row",
+                    34.0,
                     false,
                     Rc::new(Cell::new(0)),
                 ))
             });
             view.set_viewport(120.0, f32_of_f64(ROW_HEIGHT));
             let _ = lay_out_tree(&mut view, 360.0);
+            view.observe_arrivals(t0);
 
-            assert_eq!(builds.get(), 2);
-            assert_eq!(view.viewport.item_height(1), Some(34.0));
-            assert_eq!(view.viewport.item_height(2), Some(48.0));
+            assert_eq!(builds.get(), 1, "only the resident root is built");
+            let pending = TreeSlot {
+                parent: 1,
+                index: 0,
+            };
+            assert_eq!(
+                view.arrivals
+                    .face(&pending, SkeletonShape::Text { lines: 1 }, t0)
+                    .map(|face| face.step()),
+                Some(crate::arriving::Step::Ground)
+            );
+            assert_eq!(
+                Widget::next_wake_deadline(&view),
+                Some(t0 + crate::arriving::GRACE),
+                "its placeholder's next step is a deadline"
+            );
             let semantics = Widget::accessibility(&view).unwrap();
             let loading = semantics
                 .children
                 .iter()
                 .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
-                .expect("localized loading slot semantics");
-            assert_eq!(loading.name.as_deref(), Some("Chargement 0"));
+                .expect("loading slot semantics");
             assert!(loading.state.busy);
-            assert_eq!(
-                loading
-                    .children
-                    .first()
-                    .expect("delegated child semantics")
-                    .role,
-                crate::a11y::Role::Button
-            );
             let error = semantics
                 .children
                 .iter()
                 .find(|row| row.action_target.as_deref() == Some("slot:1:1"))
-                .expect("localized error slot semantics");
+                .expect("error slot semantics");
             assert_eq!(
                 error.name.as_deref(),
-                Some("Réessayer 1 — Network unavailable")
+                Some("Network unavailable. Activate to retry")
             );
             assert!(error.state.invalid);
-
-            states.borrow_mut().insert(0, PagedSlotState::Error);
-            view.notify_model_changes(&[TreeModelChange::SlotsChanged {
-                slots: vec![TreeSlot {
-                    parent: 1,
-                    index: 0,
-                }],
-            }]);
-            let _ = lay_out_tree(&mut view, 360.0);
-            assert_eq!(builds.get(), 3, "only the changed slot is rebuilt");
-            let changed = Widget::accessibility(&view)
-                .unwrap()
-                .children
-                .into_iter()
-                .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
-                .expect("changed slot semantics");
-            assert_eq!(
-                changed.name.as_deref(),
-                Some("Réessayer 0 — Network unavailable")
-            );
-            assert!(changed.state.invalid);
-        }
+        });
     }
 
     #[test]
     fn hundred_million_child_trees_stay_sparse_end_to_end() {
-        // Case `sparse_tree_index_resolves_a_hundred_million_children`.
         {
             let model = HugeModel {
                 child_id_queries: Cell::new(0),
@@ -6291,7 +6449,6 @@ mod tests {
             );
         }
 
-        // Case `tree_view_virtualizes_a_hundred_million_child_model_end_to_end`.
         {
             let model = HugeModel {
                 child_id_queries: Cell::new(0),
@@ -6315,7 +6472,6 @@ mod tests {
             );
         }
 
-        // Case `delegated_tree_mounts_only_the_hundred_million_row_window`.
         {
             let builds = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&builds);
@@ -6345,7 +6501,6 @@ mod tests {
 
     #[test]
     fn delegated_rows_mount_measure_and_handle_input_before_selection() {
-        // Case `interactive_tree_delegate_wins_before_row_selection_and_nests_semantics`.
         {
             let presses = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&presses);
@@ -6375,7 +6530,6 @@ mod tests {
             );
         }
 
-        // Case `delegated_tree_measures_variable_rows_and_invalidates_only_changed_ids`.
         {
             let builds = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&builds);
@@ -6476,7 +6630,6 @@ mod tests {
         }
         tree_reorder_previews_and_commits_a_valid_sibling_drop();
 
-        // Case `tree_reorder_rejects_a_drop_into_its_own_descendant`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
@@ -6492,7 +6645,6 @@ mod tests {
             assert_eq!(view.model().nodes.get(&1).unwrap().children, vec![2, 3, 4]);
         }
 
-        // Case `tree_reorder_hover_expands_a_collapsed_inside_target`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1])
@@ -6519,7 +6671,6 @@ mod tests {
 
     #[test]
     fn structural_transitions_animate_keyed_rows_unless_motion_is_reduced() {
-        // Case `keyed_tree_transitions_move_survivors_and_retain_departing_rows`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
             view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
@@ -6562,7 +6713,6 @@ mod tests {
             );
         }
 
-        // Case `reduced_motion_snaps_tree_structure_without_transition_state`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
             view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
@@ -6587,8 +6737,6 @@ mod tests {
             );
         }
     }
-
-    // --- activation, navigator configuration, decoration -------------------
 
     pub(super) fn navigator_tree() -> TreeNode<()> {
         TreeNode::branch(
@@ -6655,7 +6803,6 @@ mod tests {
 
     #[test]
     fn activation_follows_click_mode_and_semantic_activate() {
-        // Case `single_click_activation_opens_on_one_click`.
         {
             let (view, activated, _) = logged(
                 TreeView::new(navigator_tree())
@@ -6669,7 +6816,6 @@ mod tests {
             assert_eq!(view.selected(), Some(5));
         }
 
-        // Case `double_click_activation_needs_a_second_click`.
         {
             let (view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             let mut view = view;
@@ -6681,7 +6827,6 @@ mod tests {
             assert_eq!(*activated.borrow(), [5], "the second click activates");
         }
 
-        // Case `semantic_activate_selects_and_activates`.
         {
             let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             let mut doc = AutoCommit::new();
@@ -6699,7 +6844,6 @@ mod tests {
 
     #[test]
     fn layout_places_heading_hidden_root_and_viewport() {
-        // Case `a_hidden_root_puts_its_children_at_the_top_level`.
         {
             let mut view = TreeView::new(navigator_tree()).hide_root();
             assert_eq!(
@@ -6728,7 +6872,6 @@ mod tests {
             );
         }
 
-        // Case `the_heading_sits_above_the_rows_and_names_the_tree`.
         {
             let mut view = TreeView::new(navigator_tree())
                 .hide_root()
@@ -6763,7 +6906,6 @@ mod tests {
             assert_eq!(semantics.name.as_deref(), Some("Explorer"));
         }
 
-        // Case `place_at_moves_paint_hit_testing_and_a_filling_viewport`.
         {
             let children = (2_u64..=40)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))

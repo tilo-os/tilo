@@ -122,7 +122,6 @@ mod tests {
 
     #[test]
     fn main_stages_record_named_bounds_or_stay_explicitly_missing() {
-        // Case `main_stages_keep_chronological_named_bounds_and_frame_identity`.
         {
             let mut stages = Some(MainStages::default());
             for (index, stage) in [
@@ -156,14 +155,12 @@ mod tests {
             assert_eq!(decoded.as_object().unwrap().len(), 18);
         }
 
-        // Case `disabled_main_stages_read_no_clock`.
         {
             record_main_stage_with(&mut None, MainStage::BeforeProfilerCommit, || {
                 panic!("disabled stage read a clock")
             });
         }
 
-        // Case `incomplete_main_stages_remain_explicitly_missing`.
         {
             let mut stages = Some(MainStages::default());
             record_main_stage_with(&mut stages, MainStage::BeforeProfilerCommit, || None);
@@ -181,7 +178,6 @@ mod tests {
             assert!(row["cpu_frame_id"].is_null());
         }
 
-        // Case `unavailable_clock_bounds_are_not_fabricated`.
         {
             let (result, bounds) = around_with(true, || None, || 23);
             assert_eq!(result, 23);
@@ -197,7 +193,6 @@ mod tests {
 
     #[test]
     fn timed_operations_are_bracketed_once_and_keep_their_result() {
-        // Case `operation_is_bracketed_once_and_error_result_is_preserved`.
         {
             let calls = RefCell::new(Vec::new());
             let mut times = [
@@ -240,7 +235,6 @@ mod tests {
             assert!(times.next().is_none());
         }
 
-        // Case `disabled_path_executes_operation_without_reading_clock`.
         {
             let (result, bounds) = around_with(false, || panic!("disabled clock read"), || 17);
             assert_eq!(result, 17);

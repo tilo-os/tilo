@@ -87,7 +87,6 @@ struct Placement {
 
 type OperatorInput = Box<dyn AsyncWrite + Send + Unpin>;
 
-/// The `--state` of a room's relay, under the room's directory.
 pub(crate) fn relay_state(directory: &Path) -> PathBuf {
     directory.join("state")
 }
@@ -254,6 +253,9 @@ impl Room {
                 port.saturating_add(crate::config::LOCAL_PLAIN_OFFSET)
             ));
         }
+        if config.fetch_proxy {
+            command.arg("--fetch-proxy");
+        }
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -361,14 +363,25 @@ impl Room {
                 pairing_code,
                 reason,
             }) => self.settle(&pairing_code, Err(reason)),
-            // A short-lived room never pre-admits, spectates or removes.
+            // A short-lived room never pre-admits, spectates, removes or
+            // keeps a wait list.
             Ok(
                 event @ (RoomEvent::PreAdmitted { .. }
                 | RoomEvent::PreAdmitRefused { .. }
                 | RoomEvent::SpectatorCertified { .. }
                 | RoomEvent::SpectateRefused { .. }
-                | RoomEvent::MemberRemoved { .. }),
+                | RoomEvent::MemberRemoved { .. }
+                | RoomEvent::WaitListRefused { .. }),
             ) => bail!("a short-lived room relay reported {event:?}"),
+            // Not the event itself: one names an address, or carries a link.
+            Ok(
+                RoomEvent::WaitListed { .. }
+                | RoomEvent::Unlisted { .. }
+                | RoomEvent::WaitListFailed { .. }
+                | RoomEvent::Confirmed { .. }
+                | RoomEvent::Standing { .. }
+                | RoomEvent::InviteMail { .. },
+            ) => bail!("a short-lived room relay reported a wait-list event"),
         }
         Ok(())
     }
@@ -567,11 +580,11 @@ pub(crate) mod testing {
         }
 
         pub(crate) async fn command(&mut self) -> OperatorCommand {
-            let line = tokio::time::timeout(Duration::from_secs(5), self.commands.next_line())
-                .await
-                .expect("the service sent no command")
-                .unwrap()
-                .expect("the service closed stdin");
+            let line =
+                tilo_test_env::within("a command from the service", self.commands.next_line())
+                    .await
+                    .unwrap()
+                    .expect("the service closed stdin");
             OperatorCommand::from_line(&line).unwrap()
         }
     }
@@ -829,9 +842,8 @@ mod tests {
                 reason: RefusalReason::NoMatchingRequest,
             })
             .await;
-        let refused = tokio::time::timeout(Duration::from_secs(5), admitting)
+        let refused = tilo_test_env::within("the refusal to reach its admission", admitting)
             .await
-            .expect("the refusal did not reach its admission")
             .unwrap()
             .expect_err("an earlier certificate of the same code answered this admission");
         assert_eq!(
@@ -850,9 +862,8 @@ mod tests {
         });
         relay.command().await;
         drop(relay);
-        let ended = tokio::time::timeout(Duration::from_secs(5), admitting)
+        let ended = tilo_test_env::within("the admission to end with its relay", admitting)
             .await
-            .expect("the admission outlived its relay")
             .unwrap()
             .unwrap_err();
         assert_eq!(ended.to_string(), "the room ended");
@@ -868,8 +879,6 @@ mod tests {
                 room_operator::LINE_PREFIX
             ))
             .await;
-        tokio::time::timeout(Duration::from_secs(5), room.broken())
-            .await
-            .expect("the room kept going after a malformed protocol line");
+        tilo_test_env::within("a malformed protocol line to break the room", room.broken()).await;
     }
 }

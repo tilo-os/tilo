@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 /// Opaque application-owned local presentation; never document bytes.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationLocalView {
     pub app_id: String,
     pub version: u32,
@@ -120,7 +120,10 @@ pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
     Ok(())
 }
 fn storage_error(error: StoreError) -> ThawError {
-    ThawError::Io(std::io::Error::other(error))
+    match error {
+        StoreError::Opening(_) => ThawError::Opening,
+        error => ThawError::Io(std::io::Error::other(error)),
+    }
 }
 impl InstanceViewStore {
     /// Views stored under a local profile directory.
@@ -263,9 +266,18 @@ impl InstanceViewStore {
     /// and reports a replacement the store failed to commit. A store waiting
     /// on its host to commit is not a failure.
     pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
+        self.save_landing(instance).map(drop)
+    }
+
+    /// [`Self::save`], and the write a durable store is committing: `None`
+    /// where nothing waits on a commit (an ephemeral or portable View).
+    pub(crate) fn save_landing(
+        &self,
+        instance: &SavedInstanceView,
+    ) -> Result<Option<crate::record::transfer::Landing>, ThawError> {
         self.validate(instance, instance.instance_id)?;
         if self.ephemeral {
-            return Ok(());
+            return Ok(None);
         }
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
         if let Some(cache) = &self.portable {
@@ -273,15 +285,39 @@ impl InstanceViewStore {
             return cache
                 .put(key.clone(), bytes, None)
                 .and_then(|()| cache.flush(&key))
+                .map(|()| None)
                 .map_err(|e| ThawError::Io(std::io::Error::other(e)));
         }
         let key = self.key(instance.instance_id);
-        self.store
+        let revision = self
+            .store
             .write(&key, WriteOp::Replace(bytes), None)
             .map_err(storage_error)?;
-        match self.store.flush(Some(&key)) {
-            Ok(()) | Err(StoreError::Pending(_)) => Ok(()),
+        // Never waits on the frame loop: there the store commits on its own
+        // thread, and a later read already sees the saved View.
+        match self.store.flush_where_allowed(&key) {
+            Ok(()) | Err(StoreError::Pending(_)) => {
+                Ok(Some(crate::record::transfer::Landing::new(key, revision)))
+            }
             Err(error) => Err(storage_error(error)),
+        }
+    }
+}
+
+impl crate::launch::LaunchError {
+    /// Whether the launch stopped only because the store's own thread is
+    /// still opening a document for a thread that may not wait on the disk
+    /// ([`crate::record::RecordOpenError::Opening`]): asked again once the
+    /// store wakes the caller, it goes on. Not a failure to show.
+    #[must_use]
+    pub fn is_opening(&self) -> bool {
+        match self {
+            Self::Record(crate::record::RecordOpenError::Opening)
+            | Self::Restore(crate::view::ThawError::Opening) => true,
+            Self::ComponentSetup { source, .. } | Self::ComponentCapture { source, .. } => {
+                source.is_opening()
+            }
+            _ => false,
         }
     }
 }

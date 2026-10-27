@@ -180,10 +180,6 @@ impl MemberApproval {
 
     /// Check the signature, and that it was signed within the allowed skew
     /// of `now_ns`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the approval is refused.
     pub fn verify(&self, now_ns: u64) -> Result<(), &'static str> {
         if self.issued_at_ns.abs_diff(now_ns) > MEMBER_APPROVAL_SKEW_NS {
             return Err("the approval is too old or from the future");
@@ -222,10 +218,8 @@ pub enum ApproverRequest {
     Decide {
         /// [`PendingCertification::request_digest`] of the request.
         request_digest: [u8; 32],
-        /// The decision.
         decision: ApproverDecision,
     },
-    /// Read the proposals of every pending delegate request.
     DelegateProposals,
     /// Read every question an agent is waiting on.
     Confirmations,
@@ -248,7 +242,6 @@ pub struct PendingConfirmation {
     pub agent_id: String,
     /// The agent's display name.
     pub agent_label: String,
-    /// What the action does, as the record that offers it says.
     pub action_label: String,
     /// What it acts on, as the record that offers it says.
     pub resource_label: String,
@@ -294,7 +287,6 @@ pub enum ApproverReply {
         /// Human-readable reason.
         reason: String,
     },
-    /// Every pending delegate request's proposal.
     DelegateProposals(Vec<PendingDelegate>),
     /// Every question an agent is waiting on.
     Confirmations(Vec<PendingConfirmation>),

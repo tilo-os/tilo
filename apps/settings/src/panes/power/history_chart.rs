@@ -531,8 +531,6 @@ mod tests {
         assert_eq!(week.points.len(), 5);
     }
 
-    /// The day's ticks fall on every sixth local hour, the week's on local
-    /// midnights, each inside the span.
     #[test]
     fn the_time_axis_ticks_fall_on_local_hours_and_midnights() {
         // 2026-03-20 13:05 UTC, in a zone two hours ahead.

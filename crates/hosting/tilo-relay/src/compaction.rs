@@ -7,7 +7,7 @@
 //! keeps thousands of changes. Retained growth on a channel schedules its
 //! upkeep here once the channel has been quiet for [`QUIET`]:
 //!
-//! - **Cleartext entries** the host folds itself ([`fold`]). It verifies
+//! - **Cleartext entries** the host folds itself (`fold`). It verifies
 //!   each frame the way a receiving device does, merges every unit it can
 //!   read into one Automerge document and signs that snapshot as the host
 //!   device, framed exactly as a device publishes one. Only entries whose
@@ -22,7 +22,7 @@
 //!
 //! Admission authenticates the device that sent a delta, not the document
 //! signature inside it, so compaction verifies every entry it relies on
-//! itself, once per process for the same bytes ([`verified`] holds the
+//! itself, once per process for the same bytes (`verified` holds the
 //! trust argument).
 //!
 //! The host's snapshot is retained, never fanned out: connected devices
@@ -188,6 +188,12 @@ struct Inner {
     /// The record channels this host stewards, whose sealed history it
     /// folds itself.
     steward: std::sync::OnceLock<Arc<dyn StewardedKeys>>,
+    /// The route of each channel found stewarded: only ever folded sealed
+    /// once `resealing`.
+    stewarded: Mutex<HashMap<ChannelKey, Route>>,
+    /// Whether what stewarded channels retain in the clear is sealed: only
+    /// once the host's operator decided it ([`crate::reseal`]).
+    resealing: std::sync::atomic::AtomicBool,
 }
 
 /// Opens a sealed document frame, or refuses it.
@@ -265,6 +271,8 @@ impl Compactor {
             forced: Mutex::default(),
             signatures: Mutex::default(),
             steward: std::sync::OnceLock::new(),
+            stewarded: Mutex::default(),
+            resealing: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
@@ -273,6 +281,28 @@ impl Compactor {
     #[cfg(any(feature = "agents", feature = "web"))]
     pub(crate) fn steward_with(&self, keys: Arc<dyn StewardedKeys>) {
         let _ = self.0.steward.set(keys);
+    }
+
+    /// Seal what the channels this host stewards retain in the clear, from
+    /// now on: the operator decided it ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    pub(crate) fn reseal_existing(&self) {
+        self.0
+            .resealing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn resealing(&self) -> bool {
+        self.0.resealing.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Stop: wait for the round under way, and start none after it, so
+    /// the relay's state no longer changes once its relay stopped.
+    pub(crate) async fn stop(&self) {
+        if let Ok(round) = self.0.jobs.acquire().await {
+            self.0.jobs.close();
+            drop(round);
+        }
     }
 
     /// Compactions finished so far (host folds and accepted statements).
@@ -392,6 +422,21 @@ impl Compactor {
         if store.shell_binding().is_some() {
             return Ok(());
         }
+        let resealing = self.resealing();
+        let stewarded = resealing
+            .then(|| {
+                lock(&self.0.stewarded)
+                    .get(&(workspace_id, channel))
+                    .cloned()
+            })
+            .flatten();
+        if let Some(route) = stewarded
+            && self
+                .fold_as_steward(workspace, workspace_id, channel, &route, min_tail)
+                .await?
+        {
+            return Ok(());
+        }
         let known = lock(&self.0.member_snapshots)
             .get(&(workspace_id, channel))
             .cloned()
@@ -422,6 +467,20 @@ impl Compactor {
         .map_err(|error| error.to_string())?;
         lock(&self.0.signatures).insert((workspace_id, channel), signatures);
         let (sealed, plan) = planned.map_err(|error| error.to_string())?;
+        // Once resealing, a channel this host stewards is folded sealed,
+        // never into a snapshot in the clear.
+        let route = plan
+            .as_ref()
+            .map(|(folded, _)| &folded.route)
+            .or(sealed.as_ref())
+            .filter(|_| resealing);
+        if let Some(route) = route
+            && self
+                .fold_as_steward(workspace, workspace_id, channel, route, min_tail)
+                .await?
+        {
+            return Ok(());
+        }
         if let Some((folded, frames)) = plan {
             self.0
                 .folding
@@ -434,9 +493,10 @@ impl Compactor {
                 .await?;
         }
         if let Some(route) = sealed {
-            if self
-                .fold_as_steward(workspace, workspace_id, channel, &route, min_tail)
-                .await?
+            if !resealing
+                && self
+                    .fold_as_steward(workspace, workspace_id, channel, &route, min_tail)
+                    .await?
             {
                 return Ok(());
             }
@@ -466,12 +526,14 @@ impl Compactor {
         let Some(keys) = steward.keys(route).await else {
             return Ok(false);
         };
+        lock(&self.0.stewarded).insert((workspace_id, channel), route.clone());
         let store = workspace.lock().await.store.clone();
         let mut signatures = lock(&self.0.signatures)
             .remove(&(workspace_id, channel))
             .unwrap_or_else(|| Signatures::with_payloads(self.0.payloads.clone()));
         let key = self.0.key.clone();
         let payloads = self.0.payloads.clone();
+        let resealing = self.resealing();
         let (signatures, planned) = tokio::task::spawn_blocking(move || {
             let planned = on_cpu(|| {
                 let entries = store.channel_entries(&channel)?;
@@ -488,7 +550,7 @@ impl Compactor {
                         &mut signatures,
                         &HashSet::new(),
                         min_tail,
-                        Some(&open),
+                        (Some(&open), resealing),
                         |route, snapshot| {
                             sealed_document_frames(
                                 &*payloads,
@@ -550,6 +612,35 @@ impl Compactor {
             "host compacted a document channel"
         );
         Ok(())
+    }
+
+    /// Seal what `channel` of `workspace_id`, the channel of `route` this
+    /// host stewards, retains in the clear: writes made before its channel
+    /// was opened. Their history goes into the sealed snapshot whole, every
+    /// change with its author, and they are removed only once it is durable.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn reseal(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        channel: [u8; 32],
+        route: &Route,
+    ) -> Result<(), String> {
+        let Ok(_job) = self.0.jobs.acquire().await else {
+            return Ok(());
+        };
+        if workspace.lock().await.store.shell_binding().is_some() {
+            return Ok(());
+        }
+        self.fold_as_steward(
+            workspace,
+            workspace_id,
+            channel,
+            route,
+            COMPACT_TAIL_ENTRIES,
+        )
+        .await
+        .map(drop)
     }
 
     /// `device` answers requests for `workspace_id` while subscribed.
@@ -760,7 +851,7 @@ impl Compactor {
 
 /// Run `operation` on the workspace's persistence owner, serialized with
 /// every other retained write.
-async fn owner_run<T: Send + 'static>(
+pub(crate) async fn owner_run<T: Send + 'static>(
     workspace: &SharedWorkspace,
     operation: impl FnOnce(&crate::store::WorkspaceStore) -> Result<T, crate::store::StoreError>
     + Send
@@ -821,17 +912,18 @@ fn plan(
     min_tail: usize,
     sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
 ) -> Plan {
-    plan_opening(entries, signatures, known, min_tail, None, sign)
+    plan_opening(entries, signatures, known, min_tail, (None, false), sign)
 }
 
 /// [`plan`], reading sealed entries `open` opens (the host stewards their
-/// channel) like cleartext ones.
+/// channel) like cleartext ones; `reseal` seals what it retains in the
+/// clear.
 fn plan_opening(
     entries: &[ChannelEntry],
     signatures: &mut Signatures,
     known: &HashSet<[u8; 32]>,
     min_tail: usize,
-    open: Option<&Opener<'_>>,
+    (open, reseal): (Option<&Opener<'_>>, bool),
     sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
 ) -> Plan {
     let checked: Vec<Checked<'_>> = entries
@@ -840,21 +932,92 @@ fn plan_opening(
         .collect();
     signatures.end_round();
     let sealed = sealed_tail(&checked, known);
+    // A channel its steward reads holds nothing in the clear: what was
+    // written before its channel was opened is sealed into its snapshot,
+    // history and authors whole, however short.
+    let reseal = reseal && open.is_some() && checked.iter().any(Checked::is_cleartext);
     let readable = units(checked);
-    let folded = compaction_due(entries, &readable, min_tail)
-        .then(|| fold(entries, &readable))
+    let folded = compaction_due(entries, &readable, min_tail, reseal)
+        .then(|| fold(entries, &readable, if reseal { 1 } else { 2 }))
         .flatten()
         .and_then(|folded| {
             let signed = sign(&folded.route, &folded.snapshot)?;
             Some((folded, signed))
         });
+    if reseal && folded.is_none() {
+        tracing::warn!(
+            route = ?readable.route,
+            "a stewarded channel keeps writes made in the clear: they do not fold"
+        );
+    }
     (sealed, folded)
+}
+
+/// What a document channel retains, as a reader holding `open` reads it.
+#[cfg(feature = "agents")]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Retained {
+    /// Entries written in the clear that hold a change.
+    pub cleartext: usize,
+    /// Every change it reads, by actor and sequence.
+    pub changes: std::collections::BTreeSet<(Vec<u8>, u64)>,
+}
+
+/// Read `entries` of one channel as a reader holding `open` does: each
+/// verified as compaction verifies it, then merged.
+#[cfg(feature = "agents")]
+pub(crate) fn retained(
+    payloads: Arc<dyn ShellPayloads>,
+    entries: &[ChannelEntry],
+    open: Option<&Opener<'_>>,
+) -> Retained {
+    let mut signatures = Signatures::with_payloads(payloads);
+    let checked: Vec<Checked<'_>> = entries
+        .iter()
+        .map(|entry| signatures.check_opening(entry, open))
+        .collect();
+    let clear: HashSet<usize> = checked
+        .iter()
+        .enumerate()
+        .filter(|(_, checked)| checked.is_cleartext())
+        .map(|(at, _)| at)
+        .collect();
+    let readable = units(checked);
+    let mut doc = AutoCommit::new();
+    let mut cleartext = 0usize;
+    for unit in &readable.units {
+        let holds = match &unit.mutation {
+            None => false,
+            Some(DocumentMutation::Snapshot(bytes)) => {
+                AutoCommit::load(bytes).ok().is_some_and(|mut other| {
+                    let holds = !other.get_heads().is_empty();
+                    let _ = doc.merge_incoming(&mut other);
+                    holds
+                })
+            }
+            Some(DocumentMutation::Incremental(bytes)) => {
+                let _ = doc.load_incoming(bytes);
+                !bytes.is_empty()
+            }
+        };
+        if holds {
+            cleartext = cleartext
+                .saturating_add(unit.entries.iter().filter(|at| clear.contains(at)).count());
+        }
+    }
+    Retained {
+        cleartext,
+        changes: doc
+            .get_changes(&[])
+            .iter()
+            .map(|change| (change.actor_id().to_bytes().to_vec(), change.seq()))
+            .collect(),
+    }
 }
 
 /// A channel's content in units the host can reason about: a whole
 /// mutation, a complete segmented transfer, or something it cannot read.
 struct Unit {
-    /// Indexes of the entries that hold it.
     entries: Vec<usize>,
     /// The mutation, or `None` for content the host cannot read.
     mutation: Option<DocumentMutation>,
@@ -996,8 +1159,14 @@ fn unit_bytes(entries: &[ChannelEntry], unit: &Unit) -> usize {
 
 /// Whether the readable part of a channel outgrew its snapshots, within
 /// what the host folds: `min_tail` entries, or [`COMPACT_TAIL_BYTES`] that
-/// are at least half the snapshots' size.
-fn compaction_due(entries: &[ChannelEntry], readable: &Readable, min_tail: usize) -> bool {
+/// are at least half the snapshots' size. Within that bound, `reseal`
+/// folds it whatever its size.
+fn compaction_due(
+    entries: &[ChannelEntry],
+    readable: &Readable,
+    min_tail: usize,
+    reseal: bool,
+) -> bool {
     let units = &readable.units;
     let (mut snapshot, mut tail, mut tail_entries) = (0usize, 0usize, 0usize);
     for unit in units.iter().filter(|unit| unit.mutation.is_some()) {
@@ -1014,7 +1183,8 @@ fn compaction_due(entries: &[ChannelEntry], readable: &Readable, min_tail: usize
         .filter(|unit| matches!(unit.mutation, Some(DocumentMutation::Snapshot(_))))
         .count();
     snapshot.saturating_add(tail) <= MAX_COMPACTED_BYTES
-        && (tail_entries >= min_tail
+        && (reseal
+            || tail_entries >= min_tail
             || (tail >= COMPACT_TAIL_BYTES && tail.saturating_mul(2) >= snapshot)
             || readable_snapshots > 2)
 }
@@ -1047,10 +1217,11 @@ pub(crate) struct Folded {
     removed: Vec<[u8; 32]>,
 }
 
-/// Fold every readable unit of `entries` into one document. Units that
-/// depend on content the host cannot read stay out of it, and only entries
-/// whose every unit the document contains, by change hash, are removed.
-fn fold(entries: &[ChannelEntry], readable: &Readable) -> Option<Folded> {
+/// Fold every readable unit of `entries` into one document, when it
+/// removes at least `minimum` entries. Units that depend on content the
+/// host cannot read stay out of it, and only entries whose every unit the
+/// document contains, by change hash, are removed.
+fn fold(entries: &[ChannelEntry], readable: &Readable, minimum: usize) -> Option<Folded> {
     let units = &readable.units;
     let route = readable.route.clone()?;
     let mut snapshots: Vec<&Vec<u8>> = Vec::new();
@@ -1106,7 +1277,7 @@ fn fold(entries: &[ChannelEntry], readable: &Readable) -> Option<Folded> {
         .filter(|(_, folded)| *folded)
         .filter_map(|(at, _)| entries.get(at).map(|entry| entry.digest))
         .collect();
-    if removed.len() < 2 {
+    if removed.len() < minimum {
         return None;
     }
     Some(Folded {
@@ -1120,10 +1291,6 @@ fn fold(entries: &[ChannelEntry], readable: &Readable) -> Option<Folded> {
 /// publishes it (`payloads` frames each body): one retained envelope per
 /// document frame, the first as the checkpoint. The publisher is the host's own handle, which a native shell
 /// requires of every document it accepts.
-///
-/// # Errors
-///
-/// Returns a description when the snapshot is too large or encoding fails.
 pub(crate) fn document_frames(
     payloads: &dyn ShellPayloads,
     key: &ed25519_dalek::SigningKey,

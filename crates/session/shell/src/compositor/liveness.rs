@@ -19,6 +19,10 @@
 //!   working is slow, not stuck, and is not interrupted. The same report goes
 //!   to stderr.
 //! * `{"op":"threads"}` answers `{"threads":[...]}` whatever the loop is doing.
+//! * `{"op":"forbid_main_thread_files"}` has the main loop arm the audit of
+//!   every path its thread walks from then on (`main_thread_files`), and
+//!   answers `{"armed":null}` once it has; `{"op":"main_thread_files"}`
+//!   answers `{"main_thread_files":[...]}`, what it walked since.
 //!
 //! A heartbeat costs the loop one wake when somebody asks. Nothing runs, and
 //! the idle loop is not woken, while no client is connected.
@@ -33,22 +37,20 @@
 //! # Backtraces of other threads
 //!
 //! A thread cannot be unwound from outside. Each one is sent a real-time
-//! signal whose handler captures its own backtrace; the answering thread
-//! symbolizes them. Capturing allocates, which a signal handler may not do in
-//! general: a thread interrupted inside the allocator waits on itself, for
-//! ever, on the allocator lock it already holds, and every other thread that
-//! allocates from that arena joins it.
+//! signal whose handler records its own return addresses into a slot of its
+//! own ([`capture`]), allocating nothing and taking no lock; the answering
+//! thread symbolizes them. Every answer is kept, and a thread that did not
+//! answer is reported as such.
 //!
-//! That is not hypothetical. The heartbeat once dumped on every wake over its
-//! budget, and on a loaded machine a main loop merely busy for half a second
-//! is usually allocating: interrupted there, the probe froze the desktop it
-//! was measuring. So only a thread blocked inside a system call is
-//! interrupted (`/proc/<tid>/syscall` names one), and not one inside the
-//! memory system calls the allocator makes while it holds its lock. A thread
-//! that is running, faulting in a page, or allocating is reported by its state
-//! and wait channel alone, and the heartbeat does not dump at all while the
-//! main thread is still working. A thread that does not answer within
-//! [`DUMP_WAIT`] is reported as such rather than waited for. A main thread
+//! Only a thread blocked inside a system call is interrupted
+//! (`/proc/<tid>/syscall` names one), and not one inside the memory system
+//! calls the allocator and the loader make while they hold their locks: the
+//! unwinder reads the loader's list of objects under the loader's lock, and a
+//! thread stopped holding a lock the rest of the process needs freezes the
+//! desktop being measured. A thread that is running, faulting in a page, or
+//! allocating is reported by its state and wait channel alone, and the
+//! heartbeat does not dump at all while the main thread is still working. A thread that does not answer within
+//! `DUMP_WAIT` is reported as such rather than waited for. A main thread
 //! initially observed running is sampled again within that same deadline:
 //! reporting its later epoll wait without the stack would hide which loop it
 //! entered. Development heartbeat failures also snapshot a fixed-size wake
@@ -67,12 +69,23 @@ use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{self, LoopHandle};
 
+mod capture;
+mod main_thread_files;
 mod wake_trace;
+
+pub use main_thread_files::{FileWalk, STORAGE_WAIT};
 
 pub(super) use wake_trace::record as trace_wake;
 
 use super::native::UnlinkOnDrop;
 use super::state::State;
+
+/// Record every storage wait the main loop is still asked for (see
+/// [`durable_store::waiting`]) in the main-thread audit, beside the paths it
+/// walks: each is the loop asleep until another thread's fsync finishes.
+pub(super) fn audit_storage_waits() {
+    let _ = durable_store::waiting::observe(main_thread_files::record_storage_wait);
+}
 
 /// The suffix that turns the control socket's path into the liveness socket's.
 pub const SOCKET_SUFFIX: &str = ".live";
@@ -103,6 +116,8 @@ enum Request {
         budget_ms: Option<u64>,
     },
     Threads,
+    ForbidMainThreadFiles,
+    MainThreadFiles,
 }
 
 /// One thread of the compositor process.
@@ -129,6 +144,11 @@ pub enum Answer {
         ticks: u64,
         /// How long it took this one.
         latency_ms: f64,
+        /// The main thread halfway through the budget, when it had not
+        /// acknowledged by then and had used almost no CPU: a loop that
+        /// blocked for a while and came back, with where it waited.
+        #[serde(default)]
+        halfway: Option<ThreadReport>,
     },
     Stalled {
         /// What the request allowed.
@@ -146,32 +166,87 @@ pub enum Answer {
         /// scheduler statistics.
         #[serde(default)]
         main_thread_starved_ms: u64,
+        /// The main thread was runnable (state `R`) when the budget ran out,
+        /// and halfway through it if it was sampled, without using CPU: it
+        /// waits in the run queue. The kernel adds that wait to
+        /// `main_thread_starved_ms` only once the thread runs again, so a
+        /// thread starved for the whole budget would otherwise read as
+        /// blocked.
+        #[serde(default)]
+        main_thread_queued: bool,
+        /// Major page faults the main thread took while the heartbeat waited,
+        /// counted until its thread report was written so a fault still
+        /// being served at the end of the budget is included: code or a
+        /// mapped file read back from disk after memory pressure evicted it.
+        /// A loop blocked in those is paging, not reading a file, which a
+        /// `read` would be and does not count here.
+        #[serde(default)]
+        main_thread_major_faults: u64,
         threads: Vec<ThreadReport>,
+        /// The main thread halfway through the budget, while it was still
+        /// not acknowledging and had used almost no CPU: where a blocked loop
+        /// waits. The dump in `threads` comes after the budget, by when a
+        /// loop that was blocked for a while may be back in its poll.
+        #[serde(default)]
+        halfway: Option<ThreadReport>,
     },
     Threads(Vec<ThreadReport>),
+    /// The main-thread file audit is armed.
+    Armed,
+    /// Every path the main thread walked since the audit was armed.
+    MainThreadFiles(Vec<FileWalk>),
     Err(String),
 }
 
 impl Answer {
     /// A stall in which the main thread was still making or about to make
-    /// progress: it used CPU, or waited for one, for a quarter of the budget.
-    /// Slow, not hung: only a thread that neither ran nor waited to run is
-    /// blocked.
+    /// progress: it used CPU, or waited for one, for a quarter of the budget,
+    /// sat in the run queue throughout, or was paging its code or a mapped
+    /// file back in from disk. Slow, not hung: only a thread that did none of
+    /// these is blocked.
     #[must_use]
     pub fn stalled_but_working(&self) -> bool {
-        match self {
-            Self::Stalled {
-                budget_ms,
-                main_thread_cpu_ms,
-                main_thread_starved_ms,
-                ..
-            } => {
-                let quarter = budget_ms / 4;
-                *main_thread_cpu_ms >= quarter || *main_thread_starved_ms >= quarter
-            }
-            _ => false,
-        }
+        !matches!(self.stall_kind(), None | Some(StallKind::Blocked))
     }
+
+    fn stall_kind(&self) -> Option<StallKind> {
+        let Self::Stalled {
+            budget_ms,
+            main_thread_cpu_ms,
+            main_thread_starved_ms,
+            main_thread_queued,
+            main_thread_major_faults,
+            halfway,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let quarter = budget_ms / 4;
+        Some(if *main_thread_cpu_ms >= quarter {
+            StallKind::Busy
+        } else if *main_thread_starved_ms >= quarter || *main_thread_queued {
+            StallKind::Starved
+        } else if *main_thread_major_faults > 0
+            // Thrashing, it alternates between waiting for a page (`D`) and
+            // the core it needs to take the next fault (`R`). Asleep (`S`)
+            // it waits on something else: a lock, a descriptor, a child.
+            && halfway.as_ref().is_none_or(|thread| thread.state != "S")
+        {
+            StallKind::Paging
+        } else {
+            StallKind::Blocked
+        })
+    }
+}
+
+/// What a main thread that missed its heartbeat was doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallKind {
+    Busy,
+    Starved,
+    Paging,
+    Blocked,
 }
 
 /// What the main loop and the answering threads share.
@@ -185,11 +260,19 @@ struct Beat {
     /// thread waits on it.
     acked: Mutex<u64>,
     wake: Condvar,
+    /// A connection asked the loop to arm the main-thread file audit; the
+    /// loop arms it at its next acknowledgement, on its own thread.
+    arm_requested: std::sync::atomic::AtomicBool,
 }
 
 impl Beat {
     /// Runs on the main loop: acknowledges every heartbeat asked for so far.
     fn acknowledge(&self) {
+        if self.arm_requested.swap(false, Ordering::SeqCst)
+            && let Err(error) = main_thread_files::arm()
+        {
+            eprintln!("tilo compositor: main-thread file audit: {error}");
+        }
         let upto = self.requested.load(Ordering::SeqCst);
         {
             let mut acked = self.acked.lock();
@@ -199,8 +282,15 @@ impl Beat {
         self.wake.notify_all();
     }
 
-    /// Ask the loop to acknowledge and wait up to `budget` for it.
-    fn heartbeat(&self, ping: &calloop::ping::Ping, budget: Duration) -> Option<Duration> {
+    /// Ask the loop to acknowledge and wait up to `budget` for it. `halfway`
+    /// runs once, without the lock held, if it has not acknowledged by half
+    /// the budget.
+    fn heartbeat(
+        &self,
+        ping: &calloop::ping::Ping,
+        budget: Duration,
+        mut halfway: impl FnMut(),
+    ) -> Option<Duration> {
         let started = Instant::now();
         let want = self
             .requested
@@ -211,9 +301,18 @@ impl Beat {
         self.sent.fetch_max(want, Ordering::SeqCst);
         trace_wake("ping-returned", want);
         let deadline = started.checked_add(budget)?;
+        let mut half = budget
+            .checked_div(2)
+            .and_then(|half| started.checked_add(half));
         let mut acked = self.acked.lock();
         while *acked < want {
-            if self.wake.wait_until(&mut acked, deadline).timed_out() && *acked < want {
+            let until = half.unwrap_or(deadline);
+            if self.wake.wait_until(&mut acked, until).timed_out() && *acked < want {
+                if half.take().is_some() {
+                    trace_wake("heartbeat-halfway", want);
+                    parking_lot::MutexGuard::unlocked(&mut acked, &mut halfway);
+                    continue;
+                }
                 trace_wake("heartbeat-timeout", want);
                 return None;
             }
@@ -265,6 +364,7 @@ pub fn serve(control: &Path, handle: &LoopHandle<'static, State>) -> Option<Serv
         sent: AtomicU64::new(0),
         acked: Mutex::new(0),
         wake: Condvar::new(),
+        arm_requested: std::sync::atomic::AtomicBool::new(false),
     });
     let on_loop = LoopBeat(Arc::clone(&beat));
     if let Err(error) = handle.insert_source(source, move |(), (), _| on_loop.acknowledge()) {
@@ -315,6 +415,23 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
                 heartbeat_answer(beat, ping, budget)
             }
             Ok(Request::Threads) => Answer::Threads(dump_threads()),
+            Ok(Request::ForbidMainThreadFiles) => {
+                beat.arm_requested.store(true, Ordering::SeqCst);
+                // The loop arms the audit before it acknowledges this beat.
+                match beat.heartbeat(ping, MAX_BUDGET, || {}) {
+                    Some(_) => match main_thread_files::report() {
+                        Ok(_) => Answer::Armed,
+                        Err(error) => Answer::Err(error),
+                    },
+                    None => Answer::Err(
+                        "the main loop did not arm the file audit within the budget".into(),
+                    ),
+                }
+            }
+            Ok(Request::MainThreadFiles) => match main_thread_files::report() {
+                Ok(walks) => Answer::MainThreadFiles(walks),
+                Err(error) => Answer::Err(error),
+            },
             Err(error) => Answer::Err(format!("bad liveness request: {error}")),
         };
         let Ok(mut encoded) = serde_json::to_vec(&answer) else {
@@ -331,15 +448,39 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
 fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -> Answer {
     let cpu_before = main_thread_cpu_ms();
     let starved_before = main_thread_starved_ms();
-    if let Some(latency) = beat.heartbeat(ping, budget) {
-        return Answer::Alive {
+    let faults_before = main_thread_major_faults();
+    let mut halfway = None;
+    let sample_halfway = || {
+        // A loop that computed through half the budget is slow, not
+        // blocked, and may be inside the allocator: leave it alone.
+        let computed = main_thread_cpu_ms().saturating_sub(cpu_before);
+        let quarter_of_half = u64::try_from(budget.as_millis() / 8).unwrap_or(u64::MAX);
+        if computed < quarter_of_half {
+            halfway = Some(sample_main_thread());
+        }
+    };
+    if let Some(latency) = beat.heartbeat(ping, budget, sample_halfway) {
+        let answer = Answer::Alive {
             ticks: beat.ticks(),
             latency_ms: latency.as_secs_f64() * 1000.0,
+            halfway,
         };
+        if let Answer::Alive {
+            halfway: Some(_), ..
+        } = &answer
+        {
+            eprintln!(
+                "tilo compositor: main loop came back late\n{}",
+                render(&answer)
+            );
+        }
+        return answer;
     }
     // Before the dump: it takes time of its own.
     let main_thread_cpu_ms = main_thread_cpu_ms().saturating_sub(cpu_before);
     let main_thread_starved_ms = main_thread_starved_ms().saturating_sub(starved_before);
+    let main_thread_queued =
+        main_thread_state() == "R" && halfway.as_ref().is_none_or(|thread| thread.state == "R");
     // Snapshot before dumping: capture signals themselves can wake epoll and
     // must not overwrite the sequence that led to the failed heartbeat.
     let wake_trace = wake_trace::render();
@@ -348,7 +489,10 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
         ticks: beat.ticks(),
         main_thread_cpu_ms,
         main_thread_starved_ms,
+        main_thread_queued,
+        main_thread_major_faults: main_thread_major_faults().saturating_sub(faults_before),
         threads: Vec::new(),
+        halfway,
     };
     // A loop still working is slow and will be asked again; interrupting it
     // could stop it inside the allocator for good (see the module docs).
@@ -358,10 +502,15 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
         dump_threads()
     };
     if let Answer::Stalled {
-        threads: listed, ..
+        threads: listed,
+        main_thread_major_faults: faults,
+        ..
     } = &mut answer
     {
         *listed = threads;
+        // A fault in progress at the deadline is counted once it is served,
+        // which the report gave it time for.
+        *faults = main_thread_major_faults().saturating_sub(faults_before);
     }
     eprintln!(
         "tilo compositor: main loop stalled\n{}\n{}",
@@ -380,29 +529,77 @@ pub fn render(answer: &Answer) -> String {
             ticks,
             main_thread_cpu_ms,
             main_thread_starved_ms,
+            main_thread_queued,
+            main_thread_major_faults,
             threads,
+            halfway: _,
         } => (
             format!(
                 "main loop did not acknowledge a wake within {budget_ms} ms (acknowledged {ticks} \
-                 before); the main thread used {main_thread_cpu_ms} ms of CPU and waited \
-                 {main_thread_starved_ms} ms for a core meanwhile: {}",
-                if *main_thread_cpu_ms >= budget_ms / 4 {
-                    "it is busy"
-                } else if *main_thread_starved_ms >= budget_ms / 4 {
-                    "it is starved of CPU"
+                 before); the main thread used {main_thread_cpu_ms} ms of CPU, waited \
+                 {main_thread_starved_ms} ms for a core{} and took {main_thread_major_faults} \
+                 major page fault(s) meanwhile: {}",
+                if *main_thread_queued {
+                    " (and was still queued for one)"
                 } else {
-                    "it is blocked"
+                    ""
+                },
+                match answer.stall_kind() {
+                    Some(StallKind::Busy) => "it is busy",
+                    Some(StallKind::Starved) => "it is starved of CPU",
+                    Some(StallKind::Paging) =>
+                        "it is paging: code or a mapped file is read back from disk, not a file \
+                         the loop opened",
+                    _ => "it is blocked",
                 }
             ),
             threads,
         ),
         Answer::Threads(threads) => ("threads".to_string(), threads),
-        Answer::Alive { ticks, latency_ms } => {
-            return format!("main loop alive: {ticks} ticks, last wake took {latency_ms:.1} ms");
+        Answer::Alive {
+            ticks,
+            latency_ms,
+            halfway,
+        } => {
+            let mut out =
+                format!("main loop alive: {ticks} ticks, last wake took {latency_ms:.1} ms");
+            if let Some(thread) = halfway {
+                let _ = write!(
+                    out,
+                    "; halfway through the budget the main thread {} \"{}\" was in state {} \
+                     waiting in {}\n{}",
+                    thread.tid, thread.name, thread.state, thread.wait, thread.backtrace
+                );
+            }
+            return out;
         }
         Answer::Err(message) => return message.clone(),
+        Answer::Armed => return "main-thread file audit armed".to_string(),
+        Answer::MainThreadFiles(walks) => {
+            let mut out = format!("the main thread walked {} path(s)", walks.len());
+            for walk in walks {
+                let _ = write!(
+                    out,
+                    "\n\n{} {} ({}x)\n{}",
+                    walk.syscall, walk.path, walk.count, walk.backtrace
+                );
+            }
+            return out;
+        }
     };
     let mut out = head;
+    if let Answer::Stalled {
+        halfway: Some(thread),
+        ..
+    } = answer
+    {
+        let _ = write!(
+            out,
+            "\n\nhalfway through the budget, the main thread {} \"{}\" was in state {} \
+             waiting in {}\n{}",
+            thread.tid, thread.name, thread.state, thread.wait, thread.backtrace
+        );
+    }
     for thread in threads {
         let _ = write!(
             out,
@@ -418,9 +615,7 @@ fn capture_signal() -> libc::c_int {
     libc::SIGRTMIN().saturating_add(4)
 }
 
-/// Backtraces the handler left, by thread. Reserved before the signals are
-/// sent so the handler never grows it.
-static CAPTURED: Mutex<Vec<(i32, Backtrace)>> = Mutex::new(Vec::new());
+/// One dump at a time: a thread answers the dump that asks it now.
 static ONE_DUMP_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 pub(super) fn gettid() -> i32 {
@@ -428,24 +623,15 @@ pub(super) fn gettid() -> i32 {
     i32::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap_or(-1)
 }
 
-extern "C" fn capture_backtrace(_signal: libc::c_int) {
-    let tid = gettid();
-    let backtrace = Backtrace::force_capture();
-    if let Some(mut captured) = CAPTURED.try_lock()
-        && captured.len() < captured.capacity()
-    {
-        captured.push((tid, backtrace));
-    }
-}
-
 pub(super) fn install_capture_handler() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        capture::warm_up();
         // SAFETY: a zeroed `sigaction` is valid; the handler is an
         // `extern "C" fn(c_int)` and stays valid for the process's life.
         let status = unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = capture_backtrace as extern "C" fn(libc::c_int) as usize;
+            action.sa_sigaction = capture::answer as extern "C" fn(libc::c_int) as usize;
             action.sa_flags = libc::SA_RESTART;
             libc::sigemptyset(&raw mut action.sa_mask);
             libc::sigaction(capture_signal(), &raw const action, std::ptr::null_mut())
@@ -469,6 +655,34 @@ fn main_thread_starved_ms() -> u64 {
         .ok()
         .and_then(|stat| stat.split_whitespace().nth(1)?.parse::<u64>().ok())
         .map_or(0, |wait_ns| wait_ns / 1_000_000)
+}
+
+/// The main thread's scheduler state letter, `?` when unreadable.
+fn main_thread_state() -> String {
+    main_thread_stat_fields()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "?".into())
+}
+
+/// Major page faults the main thread has taken (`majflt` in its `stat`).
+fn main_thread_major_faults() -> u64 {
+    main_thread_stat_fields()
+        .get(9)
+        .and_then(|field| field.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The main thread's `stat` fields after its parenthesised name: the state is
+/// field 0.
+fn main_thread_stat_fields() -> Vec<String> {
+    // SAFETY: `getpid` takes no arguments and cannot fail.
+    let pid = unsafe { libc::getpid() };
+    std::fs::read_to_string(format!("/proc/self/task/{pid}/stat"))
+        .unwrap_or_default()
+        .rsplit_once(')')
+        .map(|(_, rest)| rest.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// CPU time the main thread (the thread whose id is the process id) has used,
@@ -521,12 +735,32 @@ fn not_interruptible(syscall: &str) -> Option<String> {
     }
 }
 
+/// Why thread `tid` of this process may not be interrupted, or `None` when it
+/// may: [`not_interruptible`] from its system call, or
+/// [`not_interruptible_waiting_in`] from its wait channel when the system call
+/// cannot be read. A process that holds key material makes itself
+/// undumpable, which hands its `/proc` entries to root: `syscall` (0400) can
+/// no longer be read, `wchan` (0444) still can.
+fn why_not_interruptible(tid: i32) -> Option<String> {
+    match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
+        Ok(syscall) => not_interruptible(&syscall),
+        Err(_) => not_interruptible_waiting_in(
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan"))
+                .unwrap_or_default()
+                .trim(),
+        ),
+    }
+}
+
 /// [`not_interruptible`] for a thread whose system call cannot be read,
 /// from the kernel function it sleeps in (`/proc/<tid>/wchan`): only the
 /// waits a blocked thread makes on a lock, a condvar, its event loop, a timer,
 /// a pipe or a socket, none of which the allocator makes with its lock held.
+/// Kernels rename these functions: newer ones sleep a futex waiter in
+/// `__futex_wait` and a pipe reader in `anon_pipe_read`, so both spellings
+/// are listed.
 fn not_interruptible_waiting_in(wchan: &str) -> Option<String> {
-    const BLOCKING_WAITS: [&str; 14] = [
+    const BLOCKING_WAITS: [&str; 15] = [
         "do_epoll_wait",
         "ep_poll",
         "do_sys_poll",
@@ -536,13 +770,14 @@ fn not_interruptible_waiting_in(wchan: &str) -> Option<String> {
         "do_nanosleep",
         "hrtimer_nanosleep",
         "pipe_read",
+        "anon_pipe_read",
         "pipe_wait_readable",
         "wait_woken",
         "unix_stream_data_wait",
         "unix_stream_read_generic",
         "skb_wait_for_more_packets",
     ];
-    if wchan.starts_with("futex_") || BLOCKING_WAITS.contains(&wchan) {
+    if wchan.trim_start_matches('_').starts_with("futex_") || BLOCKING_WAITS.contains(&wchan) {
         None
     } else if wchan.is_empty() || wchan == "0" {
         Some("it was running, and its system call state is unreadable".into())
@@ -603,143 +838,137 @@ fn report(tid: i32, backtrace: String) -> ThreadReport {
 /// for each one blocked where interrupting it is safe ([`not_interruptible`]),
 /// its backtrace.
 pub(super) fn dump_threads() -> Vec<ThreadReport> {
-    // One dump at a time: they share the capture slot.
     let _one = ONE_DUMP_AT_A_TIME.lock();
 
     // SAFETY: `getpid` takes no arguments and cannot fail.
     let pid = unsafe { libc::getpid() };
     let me = gettid();
     let tids = thread_ids();
-
-    {
-        let mut captured = CAPTURED.lock();
-        captured.clear();
-        captured.reserve(tids.len().saturating_add(8));
-    }
-    let mut signalled = 0usize;
+    let others: Vec<i32> = tids.iter().copied().filter(|&tid| tid != me).collect();
+    let ask = capture::Ask::new(&others);
+    let mut signalled = Vec::with_capacity(others.len());
+    let mut exited = Vec::new();
     let mut left_alone: Vec<(i32, String)> = Vec::new();
-    for &tid in tids.iter().filter(|&&tid| tid != me) {
-        // A process that holds key material makes itself undumpable, which
-        // hands its `/proc` entries to root: `syscall` (0400) can no longer
-        // be read, `wchan` (0444) still can.
-        let why = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
-            Ok(syscall) => not_interruptible(&syscall),
-            Err(_) => not_interruptible_waiting_in(
-                std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan"))
-                    .unwrap_or_default()
-                    .trim(),
-            ),
-        };
-        if let Some(why) = why {
+    for &tid in &others {
+        if let Some(why) = why_not_interruptible(tid) {
             left_alone.push((tid, why));
             continue;
         }
-        // SAFETY: `tgkill` on a thread id of this process; the thread may have
-        // exited since the listing, which fails harmlessly.
-        let sent = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, capture_signal()) };
-        if sent == 0 {
-            signalled = signalled.saturating_add(1);
+        if signal_capture(&ask, tid) {
+            signalled.push(tid);
+        } else {
+            exited.push(tid);
         }
     }
-    let own = Backtrace::force_capture();
+    let own = Backtrace::force_capture().to_string();
     let deadline = Instant::now()
         .checked_add(DUMP_WAIT)
         .unwrap_or_else(Instant::now);
-    wait_for_captures(pid, &mut signalled, &mut left_alone, deadline);
-    let captured = std::mem::take(&mut *CAPTURED.lock());
+    wait_for_captures(&ask, pid, &mut signalled, &mut left_alone, deadline);
     let mut own = Some(own);
 
     tids.iter()
         .map(|&tid| {
             let backtrace = if tid == me {
-                own.take().map(|bt| frames_of(&bt))
+                own.take().unwrap_or_default()
             } else if let Some((_, why)) = left_alone.iter().find(|(alone, _)| *alone == tid) {
-                Some(format!("not interrupted: {why}"))
+                format!("not interrupted: {why}")
+            } else if exited.contains(&tid) {
+                "no backtrace: the thread had exited".into()
+            } else if let Some(frames) = ask.frames(tid) {
+                frames
             } else {
-                captured
-                    .iter()
-                    .find(|(captured_tid, _)| *captured_tid == tid)
-                    .map(|(_, bt)| frames_of(bt))
+                unanswered()
             };
-            report(
-                tid,
-                backtrace.unwrap_or_else(|| {
-                    "no backtrace: the thread did not answer the capture signal, so it was \
-                     inside the allocator or loader, or had exited"
-                        .into()
-                }),
-            )
+            report(tid, backtrace)
         })
         .collect()
 }
 
-/// Revisit a main thread initially observed running while other threads were
-/// being signalled. It can already be asleep by the time their stacks arrive.
-/// Keep the same allocator exclusions and the existing overall dump deadline.
+/// Send `tid` the capture signal for `ask`; `false` when it could not be
+/// sent (the thread has exited) or `ask` has no slot for it.
+fn signal_capture(ask: &capture::Ask, tid: i32) -> bool {
+    if !ask.has_room_for(tid) {
+        return false;
+    }
+    // SAFETY: `tgkill` on a thread id of this process; the thread may have
+    // exited since the listing, which fails harmlessly. The handler is
+    // installed before any dump.
+    unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), tid, capture_signal()) == 0 }
+}
+
+/// What a signalled thread that never answered is reported as.
+fn unanswered() -> String {
+    format!(
+        "no backtrace: the thread did not answer the capture signal within {} ms, so it was \
+         inside the allocator or loader",
+        DUMP_WAIT.as_millis()
+    )
+}
+
+/// The backtrace of thread `tid` of this process, blocked in a system call
+/// the caller knows is safe to interrupt (one a seccomp listener holds), or
+/// `None` when it does not answer within [`DUMP_WAIT`].
+fn capture_thread(tid: i32) -> Option<String> {
+    let _one = ONE_DUMP_AT_A_TIME.lock();
+    let ask = capture::Ask::new(&[tid]);
+    if !signal_capture(&ask, tid) {
+        return None;
+    }
+    let deadline = Instant::now()
+        .checked_add(DUMP_WAIT)
+        .unwrap_or_else(Instant::now);
+    ask.wait(&[tid], deadline);
+    ask.frames(tid)
+}
+
+/// The main thread's state and, where it may be interrupted
+/// ([`not_interruptible`]), its backtrace, under the system call it is in.
+fn sample_main_thread() -> ThreadReport {
+    // SAFETY: `getpid` takes no arguments and cannot fail.
+    let main = unsafe { libc::getpid() };
+    let frames = match why_not_interruptible(main) {
+        Some(why) => format!("not interrupted: {why}"),
+        None => capture_thread(main).unwrap_or_else(|| {
+            "no backtrace: the main thread did not answer the capture signal".into()
+        }),
+    };
+    let syscall = std::fs::read_to_string(format!("/proc/self/task/{main}/syscall"))
+        .map_or_else(|_| "unreadable".to_string(), |line| line.trim().to_string());
+    report(main, format!("system call: {syscall}\n{frames}"))
+}
+
+/// Wait until every thread in `signalled` has answered `ask` or `deadline`
+/// passes. A main thread initially left alone because it was running is
+/// revisited meanwhile: it can already be asleep by the time the others'
+/// stacks arrive, under the same allocator exclusions and deadline.
 fn wait_for_captures(
+    ask: &capture::Ask,
     main: i32,
-    signalled: &mut usize,
+    signalled: &mut Vec<i32>,
     left_alone: &mut Vec<(i32, String)>,
     deadline: Instant,
 ) {
     while Instant::now() < deadline {
         if let Some(index) = left_alone.iter().position(|(tid, _)| *tid == main) {
-            let why = match std::fs::read_to_string(format!("/proc/self/task/{main}/syscall")) {
-                Ok(syscall) => not_interruptible(&syscall),
-                Err(_) => not_interruptible_waiting_in(
-                    std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
-                        .unwrap_or_default()
-                        .trim(),
-                ),
-            };
-            if let Some(why) = why {
-                left_alone[index].1 =
-                    format!("initial capture deferred; latest observation: {why}");
+            if let Some(why) = why_not_interruptible(main) {
+                if let Some((_, note)) = left_alone.get_mut(index) {
+                    *note = format!("initial capture deferred; latest observation: {why}");
+                }
             } else {
-                // SAFETY: this thread belongs to our process; an exited thread
-                // simply makes tgkill fail. The handler was installed before dumping.
-                let sent = unsafe {
-                    libc::syscall(libc::SYS_tgkill, libc::getpid(), main, capture_signal())
-                };
                 left_alone.remove(index);
-                if sent == 0 {
-                    *signalled += 1;
+                if signal_capture(ask, main) {
+                    signalled.push(main);
                 }
             }
         }
-        if CAPTURED.lock().len() >= *signalled && !left_alone.iter().any(|(tid, _)| *tid == main) {
+        if signalled.iter().all(|&tid| ask.answered(tid))
+            && !left_alone.iter().any(|(tid, _)| *tid == main)
+        {
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(1));
     }
-}
-
-/// The frames of a captured backtrace below the signal handler: the capture's
-/// own frames and the kernel's signal trampoline say nothing about the thread.
-fn frames_of(backtrace: &Backtrace) -> String {
-    let text = backtrace.to_string();
-    let lines: Vec<&str> = text.lines().collect();
-    let skip = lines
-        .iter()
-        .rposition(|line| {
-            line.contains("__restore_rt")
-                || line.contains("sigreturn")
-                || line.contains(": <unknown>")
-        })
-        .map_or(0, |index| index.saturating_add(1));
-    // A frame is `  N: symbol` possibly followed by an `at file:line` line;
-    // start at the first whole frame after the trampoline.
-    let start = lines
-        .iter()
-        .enumerate()
-        .skip(skip)
-        .find(|(_, line)| {
-            line.trim_start()
-                .split_once(':')
-                .is_some_and(|(number, _)| number.trim().parse::<u32>().is_ok())
-        })
-        .map_or_else(|| skip.min(lines.len()), |(index, _)| index);
-    lines.get(start..).unwrap_or_default().join("\n")
 }
 
 #[cfg(test)]
@@ -752,8 +981,54 @@ mod tests {
             ticks: 1,
             main_thread_cpu_ms: cpu,
             main_thread_starved_ms: starved,
+            main_thread_queued: false,
+            main_thread_major_faults: 0,
             threads: Vec::new(),
+            halfway: None,
         }
+    }
+
+    fn main_thread_at_halfway(state: &str, wait: &str) -> ThreadReport {
+        ThreadReport {
+            tid: 1,
+            name: "shell".into(),
+            state: state.into(),
+            wait: wait.into(),
+            backtrace: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_blocked_loop_is_sampled_halfway_through_the_budget() {
+        install_capture_handler();
+        // Nothing acknowledges: the loop is as blocked as it can be. The
+        // process's main thread meanwhile waits for this test, in a system
+        // call it may be interrupted in.
+        let beat = Beat {
+            requested: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
+            acked: Mutex::new(0),
+            wake: Condvar::new(),
+            arm_requested: std::sync::atomic::AtomicBool::new(false),
+        };
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let answer = heartbeat_answer(&beat, &ping, Duration::from_millis(200));
+        let Answer::Stalled {
+            halfway: Some(halfway),
+            ..
+        } = &answer
+        else {
+            panic!("a stall without its halfway sample: {answer:?}");
+        };
+        // SAFETY: `getpid` takes no arguments and cannot fail.
+        assert_eq!(halfway.tid, unsafe { libc::getpid() });
+        assert!(
+            halfway.backtrace.starts_with("system call: ")
+                && !halfway.backtrace.contains("not interrupted")
+                && !halfway.backtrace.contains("no backtrace"),
+            "the waiting main thread's stack: {halfway:#?}"
+        );
+        assert!(render(&answer).contains("halfway through the budget"));
     }
 
     #[test]
@@ -770,6 +1045,60 @@ mod tests {
         );
         assert!(render(&stalled(0, 400)).contains("starved"));
         assert!(render(&stalled(0, 0)).contains("blocked"));
+    }
+
+    #[test]
+    fn a_loop_queued_for_a_core_throughout_is_starved_though_the_kernel_has_not_counted_it() {
+        let mut answer = stalled(0, 0);
+        if let Answer::Stalled {
+            main_thread_queued,
+            halfway,
+            ..
+        } = &mut answer
+        {
+            *main_thread_queued = true;
+            *halfway = Some(main_thread_at_halfway("R", "0"));
+        }
+        assert!(answer.stalled_but_working());
+        assert!(render(&answer).contains("starved"));
+    }
+
+    #[test]
+    fn a_loop_asleep_in_a_page_fault_is_paging_and_one_asleep_in_a_read_is_blocked() {
+        let waiting_for_a_page = |faults| {
+            let mut answer = stalled(0, 0);
+            if let Answer::Stalled {
+                main_thread_major_faults,
+                halfway,
+                ..
+            } = &mut answer
+            {
+                *main_thread_major_faults = faults;
+                *halfway = Some(main_thread_at_halfway("D", "folio_wait_bit_common"));
+            }
+            answer
+        };
+        let paging = waiting_for_a_page(3);
+        assert!(paging.stalled_but_working());
+        assert!(render(&paging).contains("paging"));
+        // The same wait without a major fault is the page cache serving a
+        // `read` the loop made: a file read on the main thread.
+        let reading = waiting_for_a_page(0);
+        assert!(!reading.stalled_but_working());
+        assert!(render(&reading).contains("blocked"));
+        // Thrashing, the thread is as often runnable, between two faults.
+        let mut thrashing = waiting_for_a_page(1083);
+        if let Answer::Stalled { halfway, .. } = &mut thrashing {
+            *halfway = Some(main_thread_at_halfway("R", "0"));
+        }
+        assert!(thrashing.stalled_but_working());
+        assert!(render(&thrashing).contains("paging"));
+        // Asleep with a fault behind it, it waits on something else.
+        let mut asleep = waiting_for_a_page(1);
+        if let Answer::Stalled { halfway, .. } = &mut asleep {
+            *halfway = Some(main_thread_at_halfway("S", "futex_wait_queue"));
+        }
+        assert!(!asleep.stalled_but_working());
     }
 
     #[test]
@@ -820,6 +1149,8 @@ mod tests {
         for wait in [
             "futex_do_wait",
             "futex_wait_queue",
+            "__futex_wait",
+            "anon_pipe_read",
             "do_epoll_wait",
             "do_nanosleep",
         ] {
@@ -876,6 +1207,7 @@ mod tests {
             sent: AtomicU64::new(0),
             acked: Mutex::new(0),
             wake: Condvar::new(),
+            arm_requested: std::sync::atomic::AtomicBool::new(false),
         });
         let (ping, source) = calloop::ping::make_ping().unwrap();
         let (acked_tx, acked_rx) = std::sync::mpsc::channel();
@@ -890,36 +1222,31 @@ mod tests {
                     if *first {
                         *first = false;
                         acked_tx.send(()).unwrap();
-                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        tilo_test_env::recv("the test to release the first callback", &release_rx);
                     }
                 })
                 .unwrap();
             let mut first = true;
             event_loop
-                .dispatch(Duration::from_secs(5), &mut first)
+                .dispatch(tilo_test_env::hang_bound(), &mut first)
                 .unwrap();
             event_loop
-                .dispatch(Duration::from_secs(5), &mut first)
+                .dispatch(tilo_test_env::hang_bound(), &mut first)
                 .unwrap();
         });
         let request = |beat: Arc<Beat>, ping: calloop::ping::Ping| {
-            std::thread::spawn(move || beat.heartbeat(&ping, DEFAULT_BUDGET))
+            std::thread::spawn(move || beat.heartbeat(&ping, DEFAULT_BUDGET, || {}))
         };
         let first = request(Arc::clone(&beat), ping.clone());
-        acked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        tilo_test_env::recv("the first heartbeat's acknowledgement", &acked_rx);
         assert!(first.join().unwrap().is_some());
         // The source has drained request 1, but its callback has not returned.
         // Request 2 must remain readable for the next dispatch, not disappear
         // when request 1's callback/dispatch finishes.
         let second = request(Arc::clone(&beat), ping);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while beat.sent.load(Ordering::SeqCst) < 2 {
-            assert!(
-                Instant::now() < deadline,
-                "second ping write never returned"
-            );
-            std::thread::yield_now();
-        }
+        tilo_test_env::wait_until("the second ping write to return", || {
+            beat.sent.load(Ordering::SeqCst) >= 2
+        });
         release_tx.send(()).unwrap();
         assert!(second.join().unwrap().is_some());
         event_loop.join().unwrap();
@@ -931,11 +1258,6 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         install_capture_handler();
         let _one = ONE_DUMP_AT_A_TIME.lock();
-        {
-            let mut captured = CAPTURED.lock();
-            captured.clear();
-            captured.reserve(8);
-        }
         let park = Arc::new(AtomicBool::new(false));
         let worker_park = Arc::clone(&park);
         let (ready_tx, ready) = std::sync::mpsc::channel();
@@ -947,18 +1269,19 @@ mod tests {
             }
             let _ = release.recv();
         });
-        let tid = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let tid = tilo_test_env::recv("the worker's thread id", &ready);
         // Sending readiness can itself still be finishing a futex wake. Observe
         // the spin rather than assuming the channel handoff proves it. As in
         // production, undumpable processes use the wait channel fallback.
-        let deadline = Instant::now() + DUMP_WAIT;
+        let deadline = tilo_test_env::hang_deadline();
         let initially_running = loop {
-            let running = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
-                Ok(syscall) => syscall.trim() == "running",
-                Err(_) => {
-                    let observed = report(tid, String::new());
-                    observed.state == "R" && not_interruptible_waiting_in(&observed.wait).is_some()
-                }
+            let running = if let Ok(syscall) =
+                std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
+            {
+                syscall.trim() == "running"
+            } else {
+                let observed = report(tid, String::new());
+                observed.state == "R" && not_interruptible_waiting_in(&observed.wait).is_some()
             };
             if running {
                 break true;
@@ -968,20 +1291,18 @@ mod tests {
             }
             std::thread::yield_now();
         };
+        let ask = capture::Ask::new(&[tid]);
         let mut left_alone = vec![(tid, "it was running".into())];
-        let mut signalled = 0;
+        let mut signalled = Vec::new();
         park.store(true, Ordering::Release);
         wait_for_captures(
+            &ask,
             tid,
             &mut signalled,
             &mut left_alone,
-            Instant::now() + DUMP_WAIT,
+            tilo_test_env::hang_deadline(),
         );
-        let frames = CAPTURED
-            .lock()
-            .iter()
-            .find(|(id, _)| *id == tid)
-            .map(|(_, backtrace)| frames_of(backtrace));
+        let frames = ask.frames(tid);
         drop(release_tx);
         worker.join().unwrap();
         assert!(
@@ -1016,6 +1337,115 @@ mod tests {
         );
     }
 
+    /// Threads parked in a `recv` until released, each named `name-N`.
+    fn parked_threads(
+        name: &str,
+        count: usize,
+        before_parking: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> (
+        Vec<i32>,
+        Vec<std::sync::mpsc::Sender<()>>,
+        Vec<std::thread::JoinHandle<()>>,
+    ) {
+        let (ready_tx, ready) = std::sync::mpsc::channel::<i32>();
+        let mut releases = Vec::new();
+        let mut workers = Vec::new();
+        for index in 0..count {
+            let (release_tx, release) = std::sync::mpsc::channel::<()>();
+            let ready_tx = ready_tx.clone();
+            let before_parking = before_parking.clone();
+            workers.push(
+                std::thread::Builder::new()
+                    .name(format!("{name}-{index}"))
+                    .spawn(move || {
+                        before_parking();
+                        ready_tx.send(gettid()).unwrap();
+                        let _ = release.recv();
+                    })
+                    .unwrap(),
+            );
+            releases.push(release_tx);
+        }
+        let tids: Vec<i32> = (0..count)
+            .map(|_| tilo_test_env::recv("a parked thread's id", &ready))
+            .collect();
+        for &tid in &tids {
+            tilo_test_env::wait_until("the thread to block in its recv", || {
+                why_not_interruptible(tid).is_none()
+            });
+        }
+        (tids, releases, workers)
+    }
+
+    /// Every answer is kept while another thread's answer is still being
+    /// written: one thread stops mid-write, the others answer only once it
+    /// has, and it goes on after they have had time to.
+    #[test]
+    fn answers_arriving_while_another_is_being_written_are_all_kept() {
+        install_capture_handler();
+        let (tids, releases, workers) = parked_threads("liveness-many", 16, || {});
+        let held = capture::HeldWriter::hold(*tids.first().expect("parked threads"));
+        let release_later = std::thread::spawn(move || {
+            held.wait_until_writing();
+            // The window the other answers arrive in; what is kept does not
+            // depend on its length.
+            std::thread::sleep(Duration::from_millis(300));
+            held.release();
+        });
+        let threads = dump_threads();
+        release_later.join().unwrap();
+        drop(releases);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        for tid in tids {
+            let thread = threads
+                .iter()
+                .find(|thread| thread.tid == tid)
+                .expect("every parked thread is listed");
+            assert!(
+                thread.backtrace.contains("recv"),
+                "thread {tid} answered with where it waits:\n{}",
+                thread.backtrace
+            );
+        }
+    }
+
+    #[test]
+    fn a_thread_that_does_not_answer_is_told_apart_from_one_that_did() {
+        install_capture_handler();
+        let block_capture = || {
+            // SAFETY: a zeroed set with one signal added, masked on this
+            // thread alone.
+            unsafe {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&raw mut set);
+                libc::sigaddset(&raw mut set, capture_signal());
+                libc::pthread_sigmask(libc::SIG_BLOCK, &raw const set, std::ptr::null_mut());
+            }
+        };
+        let (deaf, deaf_releases, deaf_workers) = parked_threads("liveness-deaf", 1, block_capture);
+        let (heard, releases, workers) = parked_threads("liveness-heard", 8, || {});
+        let threads = dump_threads();
+        drop((deaf_releases, releases));
+        for worker in deaf_workers.into_iter().chain(workers) {
+            worker.join().unwrap();
+        }
+        let report = |tid: i32| {
+            threads
+                .iter()
+                .find(|thread| thread.tid == tid)
+                .map(|thread| thread.backtrace.clone())
+                .expect("listed")
+        };
+        for tid in deaf {
+            assert_eq!(report(tid), unanswered(), "the masked thread never answers");
+        }
+        for tid in heard {
+            assert!(report(tid).contains("recv"), "{}", report(tid));
+        }
+    }
+
     #[test]
     fn another_threads_stack_is_captured_through_the_signal() {
         install_capture_handler();
@@ -1031,18 +1461,9 @@ mod tests {
         let tid = ready.recv().unwrap();
         // Only a thread blocked in a system call is interrupted: wait until
         // the worker is asleep in its `recv`, not still on its way there.
-        let asleep = Instant::now();
-        while not_interruptible(
-            &std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")).unwrap_or_default(),
-        )
-        .is_some()
-        {
-            assert!(
-                asleep.elapsed() < Duration::from_secs(10),
-                "the worker never blocked in its recv"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the worker to block in its recv", || {
+            why_not_interruptible(tid).is_none()
+        });
         let threads = dump_threads();
         drop(parked);
         worker.join().unwrap();

@@ -172,15 +172,47 @@ fn a_space_ends_the_typed_word_it_follows() {
     assert_eq!(breaks, [4], "`hey ` then `you`: undo leaves `hey `");
 }
 
+/// A text field bound to a record replaces the whole text on every keystroke.
+/// Those replacements still undo a word at a time, like splices: a space
+/// ends the word it follows, erasing runs on, and a paste is its own step.
 #[test]
-fn a_nullary_destructive_verb_asks_first() {
+fn whole_text_replacements_undo_a_word_at_a_time() {
+    let title = Board::paths().title;
+    let texts = [
+        "h",
+        "he",
+        "hey",
+        "hey ",
+        "hey y",
+        "hey yo",
+        "hey you",
+        "hey yo",
+        "hey y",
+        "hey yesterday",
+        "hey yesterday!",
+    ];
+    let edits: Vec<_> = texts.iter().map(|text| title.replace(*text)).collect();
+    let breaks: Vec<usize> = edits
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| !pair[0].coalesces(&pair[1]))
+        .map(|(at, _)| at + 1)
+        .collect();
+    assert_eq!(
+        breaks,
+        [4, 9],
+        "`hey ` is one step, `you` erased back to `y` another, the pasted \
+         `esterday` a third, typed on by `!`"
+    );
+}
+
+/// A destructive verb of the record is undoable, so it applies at once:
+/// nobody is asked first.
+#[test]
+fn a_nullary_destructive_verb_applies_at_once() {
     let mut board = Replica::<Board>::new();
     board.apply(Board::ADD_CARD.with(())).unwrap();
-    assert!(matches!(
-        board.apply(Board::CLEAR.with(())),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    board.apply_confirmed(Board::CLEAR.with(())).unwrap();
+    board.apply(Board::CLEAR.with(())).unwrap();
     assert_eq!(board.state().unwrap().cards, 0);
 }
 
@@ -196,8 +228,10 @@ fn a_replicas_author_is_the_invoker_its_verbs_see() {
     assert_eq!(Id::default().as_str(), "");
 }
 
+/// A field edit changes only the record: removing an item, of any
+/// collection, is undoable and asks nothing.
 #[test]
-fn removing_an_item_by_field_edit_asks_unless_the_collection_is_quiet() {
+fn removing_an_item_by_field_edit_asks_nothing() {
     let mut board = Replica::<Board>::new();
     let paths = Board::paths();
     let note = Id::from_raw("n");
@@ -207,19 +241,15 @@ fn removing_an_item_by_field_edit_asks_unless_the_collection_is_quiet() {
     board
         .apply(paths.drafts.insert_as(&note, 0, &"draft".to_owned()))
         .unwrap();
-    assert!(matches!(
-        board.apply(paths.notes.remove(&note)),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    board.apply_confirmed(paths.notes.remove(&note)).unwrap();
+    board.apply(paths.notes.remove(&note)).unwrap();
     board.apply(paths.drafts.remove(&note)).unwrap();
     let state = board.state().unwrap();
     assert!(state.notes.is_empty() && state.drafts.is_empty());
 }
 
 /// A door without the app's code — the broker, a relay — decides from the
-/// published field edit alone, and as the app does: only removing an item of
-/// a collection not marked quiet asks.
+/// published field edit alone, and as the app does: the record's edits are
+/// undoable, so none asks, whatever it removes.
 #[test]
 fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
     use tilo_actions::ConfirmationPolicy;
@@ -240,10 +270,7 @@ fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
         );
         spec.contract.confirmation_for_argument(Some(&argument))
     };
-    assert_eq!(
-        door(&paths.notes.remove(&note)),
-        ConfirmationPolicy::Confirm
-    );
+    assert_eq!(door(&paths.notes.remove(&note)), ConfirmationPolicy::None);
     assert_eq!(door(&paths.drafts.remove(&note)), ConfirmationPolicy::None);
     assert_eq!(
         door(&paths.title.set("Plan".to_owned())),
@@ -251,9 +278,289 @@ fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
     );
     assert_eq!(
         spec.contract.confirmation_for_argument(Some("not an edit")),
-        ConfirmationPolicy::Confirm,
-        "an argument nobody can read asks"
+        ConfirmationPolicy::None,
+        "an argument nobody can read builds nothing; Undo covers whatever does"
     );
+}
+
+/// A lock whose delay can weaken security and whose shown name can expose
+/// its owner.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Lock {
+    #[model(trust = "weakening")]
+    pub minutes: u32,
+    #[model(trust = "sensitive")]
+    pub shown_name: String,
+    pub label: String,
+}
+
+#[resource(kind = "test.lock", label = "Lock")]
+impl Lock {}
+
+/// A field's trust decides its every edit, in the app and at any door that
+/// reads only the published contract: a weakening one asks and is
+/// privileged, a sensitive one asks, an ordinary one neither.
+#[test]
+fn a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged() {
+    use tilo_actions::{ConfirmationPolicy, RiskLevel};
+    let paths = Lock::paths();
+    assert_eq!(paths.minutes.set(10).risk(), RiskLevel::Privileged);
+    assert_eq!(
+        paths.shown_name.set("Ada".to_owned()).risk(),
+        RiskLevel::Destructive
+    );
+    assert_eq!(paths.label.set("Desk".to_owned()).risk(), RiskLevel::Low);
+
+    let mut lock = Replica::<Lock>::new();
+    assert!(matches!(
+        lock.apply(paths.minutes.set(0)),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert!(matches!(
+        lock.apply(paths.shown_name.set("Ada".to_owned())),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    lock.apply(paths.label.set("Desk".to_owned())).unwrap();
+    lock.apply_confirmed(paths.minutes.set(0)).unwrap();
+    assert_eq!(lock.state().unwrap().minutes, 0);
+
+    let published = lock.published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let door = |edit: &dyn erased_edit::Encode| {
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "edit": edit.encode() })
+        );
+        spec.contract.confirmation_for_argument(Some(&argument))
+    };
+    assert_eq!(door(&paths.minutes.set(5)), ConfirmationPolicy::Confirm);
+    assert_eq!(
+        door(&paths.shown_name.set(String::new())),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.label.set(String::new())),
+        ConfirmationPolicy::None
+    );
+    let need = |edit: &dyn erased_edit::Encode| {
+        let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
+            panic!("an object");
+        };
+        spec.need_for(Some(&json), None)
+    };
+    assert!(
+        need(&paths.minutes.set(5)).privileged,
+        "a weakening edit needs the person's own grant"
+    );
+    assert!(!need(&paths.shown_name.set(String::new())).privileged);
+    assert!(!need(&paths.label.set(String::new())).privileged);
+}
+
+/// The field edit setting `value` at the fields `path`, as a caller sends
+/// it.
+fn set_at<R: tilo_resource::Resource>(path: &[&str], value: &str) -> Invoke<R> {
+    let path = path
+        .iter()
+        .map(|key| tilo_resource::Segment::Field((*key).to_owned()))
+        .collect();
+    let op = tilo_resource::EditOp::Set {
+        value: serde_json::json!(value),
+    };
+    Invoke::edit(&tilo_resource::Edit::new(path, op)).unwrap()
+}
+
+/// A record read that nests its fields under the record's name is written
+/// back as `board.title`: a path starting at the record's own name (the
+/// last part of its kind, or its label) edits the field after it, through
+/// the published field edit and when built from JSON alike.
+#[test]
+fn a_field_edit_may_start_at_the_record_s_own_name() {
+    let mut board = Replica::<Board>::new();
+    board.apply(set_at(&["board", "title"], "Plan")).unwrap();
+    board.apply(set_at(&["Board", "author"], "Ada")).unwrap();
+    let state = board.state().unwrap();
+    assert_eq!(
+        (state.title.as_str(), state.author.as_str()),
+        ("Plan", "Ada")
+    );
+
+    let built = tilo_resource::build_action::<Board>(
+        tilo_resource::FIELD_EDIT,
+        &serde_json::Map::from_iter([(
+            "edit".to_owned(),
+            serde_json::json!({ "path": [{ "field": "board" }, { "field": "title" }], "op": "set", "value": "Sprint" }),
+        )]),
+        0,
+    );
+    assert!(built.is_ok(), "{built:?}");
+}
+
+/// A field edit naming no field, nor the record, still says which fields
+/// there are; one naming the record alone says to start at a field.
+#[test]
+fn a_field_edit_naming_neither_a_field_nor_the_record_lists_the_fields() {
+    let mut board = Replica::<Board>::new();
+    let unknown = format!(
+        "{:?}",
+        board.apply(set_at(&["deck", "title"], "Plan")).unwrap_err()
+    );
+    assert!(
+        unknown.contains("no field `deck`; the fields here are layer, title, author"),
+        "{unknown}"
+    );
+    let below = format!(
+        "{:?}",
+        board.apply(set_at(&["board", "deck"], "Plan")).unwrap_err()
+    );
+    assert!(
+        below.contains("no field `deck`; the fields here are"),
+        "the field after the record's name is the one refused: {below}"
+    );
+    let bare = format!("{:?}", board.apply(set_at(&["board"], "Plan")).unwrap_err());
+    assert!(
+        bare.contains("`board` is the record itself") && bare.contains("title"),
+        "{bare}"
+    );
+    assert_eq!(board.state().unwrap().title, "");
+}
+
+/// A door decides an edit's confirmation from the path as sent: a guarded
+/// field under the record's name is not edited, but sent again from the
+/// root, where the door sees which field it is.
+#[test]
+fn a_guarded_field_under_the_record_s_name_is_sent_again_from_the_root() {
+    let mut lock = Replica::<Lock>::new();
+    for field in ["minutes", "shown_name"] {
+        let refused = format!(
+            "{:?}",
+            lock.apply_confirmed(set_at(&["lock", field], "5"))
+                .unwrap_err()
+        );
+        assert!(
+            refused.contains(&format!("start the path at `{field}`")),
+            "{refused}"
+        );
+    }
+    lock.apply(set_at(&["lock", "label"], "Desk")).unwrap();
+    let state = lock.state().unwrap();
+    assert_eq!((state.minutes, state.label.as_str()), (0, "Desk"));
+}
+
+/// A screen whose lock delay weakens when longer (`0` is never) and whose
+/// notifications on the lock screen weaken it when shown.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Screen {
+    #[model(weaker = "higher", weakest = 0)]
+    pub lock_minutes: u32,
+    #[model(weaker = true)]
+    pub notifications_when_locked: bool,
+    #[model(weaker = ["strict", "normal", "off"])]
+    pub guard: String,
+}
+
+#[resource(kind = "test.screen", label = "Screen")]
+impl Screen {}
+
+/// A field that weakens one way asks, and needs the person's own grant,
+/// only for a change that way from what it holds now: in the app and at any
+/// door that reads only the published contract.
+#[test]
+fn only_a_change_making_a_field_weaker_asks_and_is_privileged() {
+    use tilo_actions::{ConfirmationPolicy, RiskLevel};
+    let paths = Screen::paths();
+    assert_eq!(
+        paths.lock_minutes.set(1).risk(),
+        RiskLevel::Privileged,
+        "without the value now, any change counts as weakening"
+    );
+
+    let mut screen = Replica::<Screen>::new();
+    screen
+        .apply(paths.lock_minutes.set(10))
+        .expect("from never, a delay is stricter");
+    screen
+        .apply(paths.lock_minutes.set(5))
+        .expect("sooner is stricter");
+    screen
+        .apply(paths.lock_minutes.set(5))
+        .expect("the same is no weaker");
+    for weaker in [15, 0] {
+        assert!(matches!(
+            screen.apply(paths.lock_minutes.set(weaker)),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+    }
+    assert!(matches!(
+        screen.apply(paths.notifications_when_locked.set(true)),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    screen.apply(paths.guard.set("strict".to_owned())).unwrap();
+    assert!(matches!(
+        screen.apply(paths.guard.set("off".to_owned())),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    screen
+        .apply_confirmed(paths.notifications_when_locked.set(true))
+        .unwrap();
+    screen
+        .apply(paths.notifications_when_locked.set(false))
+        .expect("hiding them is stricter");
+    assert_eq!(screen.state().unwrap().lock_minutes, 5);
+
+    let published = screen.published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let door = |edit: &dyn erased_edit::Encode| {
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "edit": edit.encode() })
+        );
+        spec.contract.confirmation_for_argument(Some(&argument))
+    };
+    assert_eq!(door(&paths.lock_minutes.set(1)), ConfirmationPolicy::None);
+    assert_eq!(
+        door(&paths.lock_minutes.set(30)),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.lock_minutes.set(0)),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.notifications_when_locked.set(true)),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.guard.set("strict".to_owned())),
+        ConfirmationPolicy::None
+    );
+    assert_eq!(
+        door(&paths.guard.set("normal".to_owned())),
+        ConfirmationPolicy::Confirm
+    );
+
+    // An agent acting for the person needs their own grant only to weaken.
+    let need = |edit: &dyn erased_edit::Encode| {
+        let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
+            panic!("an object");
+        };
+        spec.need_for(Some(&json), None)
+    };
+    assert!(need(&paths.lock_minutes.set(30)).privileged);
+    assert!(need(&paths.lock_minutes.set(0)).privileged);
+    assert!(need(&paths.notifications_when_locked.set(true)).privileged);
+    assert!(!need(&paths.lock_minutes.set(1)).privileged);
+    assert!(!need(&paths.lock_minutes.set(5)).privileged);
+    assert!(!need(&paths.notifications_when_locked.set(false)).privileged);
 }
 
 /// The JSON form of an edit, whatever record it is of.
@@ -443,7 +750,7 @@ fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
     assert!(title.contains("`title`: set, splice, replace"), "{title}");
     assert!(title.contains("(string)"), "{title}");
     let (notes, _) = described(&schema, "notes");
-    assert!(notes.contains("asks for confirmation"), "{notes}");
+    assert!(notes.contains("Undo takes it back"), "{notes}");
     let (drafts, _) = described(&schema, "drafts");
     assert!(drafts.contains("asks nothing"), "{drafts}");
 
@@ -667,6 +974,35 @@ fn a_group_is_checked_once_at_its_end() {
     );
     let state = pair.state().unwrap();
     assert_eq!((state.left, state.right), (2, 2));
+}
+
+/// A control whose gesture is sometimes several actions is bound to a
+/// group; when it is one, it records that action alone, so an edit in it
+/// continues the undo step of the edit before as the edit itself would.
+#[test]
+fn a_group_of_one_is_that_action() {
+    let mut pair = Replica::<Pair>::new();
+    let paths = Pair::paths();
+    let alone = pair
+        .apply(Pair::MOVE_LEFT.with(0))
+        .expect("a verb")
+        .action
+        .clone();
+    let grouped = pair
+        .apply(Invoke::group([Pair::MOVE_LEFT.with(0)]))
+        .expect("a group of one verb")
+        .action
+        .clone();
+    assert_eq!(grouped.type_id, alone.type_id);
+    let pair_of = pair
+        .apply(Invoke::group([
+            paths.left.set(0).into(),
+            paths.right.set(0).into(),
+        ]))
+        .expect("a group of two")
+        .action
+        .clone();
+    assert_ne!(pair_of.type_id, alone.type_id, "two actions stay a group");
 }
 
 #[test]

@@ -74,9 +74,6 @@ impl From<rustix::io::Errno> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// `require(ok, message)`: refuses with `message` unless `ok`.
-///
-/// # Errors
-/// `message`, when `ok` is false.
 pub fn require(ok: bool, message: &str) -> Result<()> {
     if ok { Ok(()) } else { Err(Error::new(message)) }
 }

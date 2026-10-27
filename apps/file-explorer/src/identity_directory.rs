@@ -124,10 +124,6 @@ impl TrustedHumanDirectory {
     }
 
     /// Convert and validate a legacy human-only projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid keys, labels, bounds, or duplicate humans.
     pub fn from_projection(projection: TrustedIdentityProjectionV1) -> Result<Self, String> {
         projection
             .validate()
@@ -164,10 +160,6 @@ impl TrustedHumanDirectory {
     }
 
     /// Convert and validate a governed human/device projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the governed projection fails validation.
     pub fn from_projection_v2(projection: TrustedIdentityProjectionV2) -> Result<Self, String> {
         Self::from_projection_v2_at(projection, try_unix_now_ns().unwrap_or(u64::MAX))
     }
@@ -508,7 +500,7 @@ mod tests {
 
         let authors = directory.history_authors();
         let by_agent = authors.resolve_file_actor(&person, &scribe_key).unwrap();
-        assert_eq!(by_agent.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(by_agent.name, "Scribe · Software, for Ada Lovelace");
         assert_eq!(by_agent.rgb(), (10, 20, 30));
         let attribution = by_agent.attribution.unwrap();
         assert_eq!(attribution.actor, "agent:scribe");

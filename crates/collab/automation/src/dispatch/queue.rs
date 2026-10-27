@@ -14,6 +14,9 @@ use crate::run::{RunOutcome, RunReport, StepFailure, StepStatus};
 pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(600);
 pub const MAX_ATTEMPTS: u32 = 8;
+/// Runs of a firing whose changes the room refused, the first included:
+/// each later one starts from the room's records as they now stand.
+pub const MAX_REFUSED_ATTEMPTS: u32 = 3;
 /// The reason a firing dropped for overflow is dead-lettered with.
 pub const FELL_BEHIND: &str = "fell behind";
 
@@ -176,6 +179,32 @@ impl FiringQueue {
             })
     }
 
+    /// Settle the head when the room refused what its run changed: the
+    /// changes before the refused one stand and those after it were
+    /// dropped, so the run is half done. It runs again with backoff, from
+    /// the room's records as they now stand, so a bot that plans from the
+    /// state it reads (an import that resumes where it stopped) finishes
+    /// the job; once [`MAX_REFUSED_ATTEMPTS`] are spent it is dead-lettered
+    /// with `reason`, so a change the room will never take holds up the
+    /// firings behind it only briefly.
+    pub fn refused(&mut self, reason: &str, now_ms: i64) -> Finished {
+        let Some(head) = self.queued.front_mut() else {
+            return Finished::Done;
+        };
+        head.attempts = head.attempts.saturating_add(1);
+        if head.attempts < MAX_REFUSED_ATTEMPTS {
+            let wait = i64::try_from(backoff(head.attempts).as_millis()).unwrap_or(i64::MAX);
+            head.not_before_ms = now_ms.saturating_add(wait);
+            return Finished::Retry {
+                at_ms: head.not_before_ms,
+            };
+        }
+        self.dead_letter_head(reason, now_ms)
+            .map_or(Finished::Done, |dead| {
+                Finished::DeadLettered(Box::new(dead))
+            })
+    }
+
     /// Drop the head into a dead letter with `reason`.
     pub fn dead_letter_head(&mut self, reason: &str, now_ms: i64) -> Option<DeadLetter> {
         self.queued.pop_front().map(|queued| DeadLetter {
@@ -223,6 +252,7 @@ mod tests {
         RunReport {
             run,
             shortcut: "s".into(),
+            version: None,
             trigger: "t".into(),
             mode: RunMode::Unattended,
             steps: vec![],
@@ -415,5 +445,37 @@ mod tests {
         let text = serde_json::to_string(&queue).unwrap();
         let back: FiringQueue = serde_json::from_str(&text).unwrap();
         assert_eq!(back.next_due(0).unwrap().firing, firing(1));
+    }
+
+    #[test]
+    fn a_refused_run_goes_again_with_backoff_then_is_dead_lettered() {
+        let mut queue = FiringQueue::default();
+        queue.push(firing(1), 0);
+        queue.push(firing(2), 0);
+        let mut at = 0;
+        for attempt in 1..MAX_REFUSED_ATTEMPTS {
+            let Finished::Retry { at_ms } = queue.refused("refused", at) else {
+                panic!("attempt {attempt} goes again");
+            };
+            assert_eq!(
+                at_ms - at,
+                i64::try_from(backoff(attempt).as_millis()).unwrap()
+            );
+            assert!(
+                queue.next_due(at_ms - 1).is_none(),
+                "not before its backoff"
+            );
+            assert_eq!(queue.next_due(at_ms).unwrap().firing, firing(1));
+            at = at_ms;
+        }
+        let Finished::DeadLettered(dead) = queue.refused("refused", at) else {
+            panic!("its runs are spent");
+        };
+        assert_eq!((dead.firing, dead.reason.as_str()), (firing(1), "refused"));
+        assert_eq!(
+            queue.next_due(at).unwrap().firing,
+            firing(2),
+            "the next firing runs"
+        );
     }
 }

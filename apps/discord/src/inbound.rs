@@ -4,7 +4,7 @@
 //! output and plans nothing, and so does anything by a blocked persona.
 
 use discord_wire::event::{
-    Author, Command, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated,
+    Author, Authorized, Command, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated,
     ReactionChanged, UserName,
 };
 use discord_wire::op::{FetchAssetOp, InAttachment, MemberRolesOp};
@@ -33,6 +33,9 @@ pub struct Appearance {
 pub struct Persona {
     pub service: String,
     pub account: String,
+    /// The Tilo person the account is linked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
 }
 
 /// Copy an avatar, then `remember-avatar(hash, result.blob)`, then plan again.
@@ -72,14 +75,16 @@ pub struct EditItem {
     pub text: String,
 }
 
-/// A Chat `remove-message` by the bot for a linked moderator.
+/// A Chat `remove-message` by the bot: a Tilo message deleted in Discord.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RemoveItem {
     pub message: String,
     pub reason: String,
 }
 
-/// A Chat `react` or `unreact` with an appearance.
+/// A reaction the bot adds or takes back on a Chat message for a Discord
+/// member: the `react` or `unreact` field edit of the message's reactions,
+/// with the member's appearance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReactItem {
     pub message: String,
@@ -87,38 +92,94 @@ pub struct ReactItem {
     pub appearance: Appearance,
 }
 
-/// `complete-link`.
+/// `offer-link` or `offer-sign-in`: a Discord account Discord vouched for,
+/// offered to whoever holds the token whose check this is. Empty fields
+/// are none; `interaction` is `/link`'s, `state_sha256` a sign-in's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CompleteLinkItem {
+pub struct OfferItem {
+    pub check: String,
     pub discord_user: String,
-    pub person: String,
-    pub code_sha256: String,
     pub user_name: String,
-    /// Empty when the account shows its username.
     pub display_name: String,
+    pub avatar: String,
+    pub interaction: String,
+    pub state_sha256: String,
 }
 
-/// `rename-link`: a linked account seen under newer names.
+/// `rename-link`: a linked account seen under newer names or avatar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RenameItem {
     pub discord_user: String,
     pub user_name: String,
     /// Empty when the account shows its username.
     pub display_name: String,
+    /// The avatar hash it was seen with, empty for none.
+    pub avatar: String,
 }
 
-/// A `rename-link` for `user` seen as `names`, when they are not what the
-/// link holds; nothing for an account nobody linked.
-fn rename(guild: &Guild, user: &str, names: Option<&UserName>) -> Option<RenameItem> {
+/// A `rename-link` for `user` seen as `names` with `avatar`, when they are
+/// not what the link holds; nothing for an account nobody linked.
+fn rename(
+    guild: &Guild,
+    user: &str,
+    names: Option<&UserName>,
+    avatar: Option<&str>,
+) -> Option<RenameItem> {
     let names = names?;
     let link = guild.links.iter().find(|link| link.discord_user == user)?;
-    (link.user_name != names.user_name || link.display_name != names.display_name).then(|| {
-        RenameItem {
+    (link.user_name != names.user_name
+        || link.display_name != names.display_name
+        || link.avatar.as_deref() != avatar)
+        .then(|| RenameItem {
             discord_user: user.to_owned(),
             user_name: names.user_name.clone(),
             display_name: names.display_name.clone().unwrap_or_default(),
-        }
-    })
+            avatar: avatar.unwrap_or_default().to_owned(),
+        })
+}
+
+/// The largest picture a linked account's avatar is kept as: base64 of it
+/// fits a profile's photo.
+pub const MAX_LINK_PHOTO_BYTES: u64 = 32 * 1024;
+
+/// Fetch a linked account's avatar small and inline, then `set-link-photo`
+/// with it: the person's Tilo picture until they upload their own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PhotoFetch {
+    pub discord_user: String,
+    pub avatar: String,
+    pub op: FetchAssetOp,
+}
+
+/// The fetch of `discord_user`'s avatar `hash` as their link's photo.
+#[must_use]
+pub fn link_photo(discord_user: &str, hash: &str) -> PhotoFetch {
+    PhotoFetch {
+        discord_user: discord_user.to_owned(),
+        avatar: hash.to_owned(),
+        op: FetchAssetOp {
+            // The still picture of an animated avatar too: a profile
+            // takes no GIF.
+            url: format!("avatars/{discord_user}/{hash}.png?size=64"),
+            max_bytes: MAX_LINK_PHOTO_BYTES,
+            attachment: None,
+            inline: true,
+        },
+    }
+}
+
+/// The photo fetches of the links whose photo is not of their avatar.
+#[must_use]
+pub fn plan_link_photos(guild: &Guild) -> Vec<PhotoFetch> {
+    guild
+        .links
+        .iter()
+        .filter_map(|link| {
+            let hash = link.avatar.as_deref()?;
+            (link.photo_avatar.as_deref() != Some(hash))
+                .then(|| link_photo(&link.discord_user, hash))
+        })
+        .collect()
 }
 
 /// Everything one Discord event does in Tilo, each list one verb.
@@ -133,25 +194,31 @@ pub struct InboundPlan {
     pub deletes: Vec<String>,
     /// Chat `remove-message`, then `unmap`.
     pub removes: Vec<RemoveItem>,
-    /// `unmap`, then send the Tilo message again (outbound `plan-post`).
-    pub resends: Vec<String>,
     pub reacts: Vec<ReactItem>,
     pub unreacts: Vec<ReactItem>,
     /// `block-persona`.
     pub blocks: Vec<String>,
     /// `set-member-roles`.
     pub member_roles: Vec<MemberRolesOp>,
-    pub complete_links: Vec<CompleteLinkItem>,
+    /// `offer-link`: accounts that ran `/link`.
+    pub offers: Vec<OfferItem>,
+    /// `offer-sign-in`: accounts signed in with from Tilo.
+    pub sign_in_offers: Vec<OfferItem>,
+    /// `answer-interaction`.
+    pub answers: Vec<AnswerItem>,
     /// `unlink`.
     pub unlinks: Vec<String>,
     /// `rename-link`.
     pub renames: Vec<RenameItem>,
+    /// `fetch-asset`, then `set-link-photo`; after the renames.
+    pub photos: Vec<PhotoFetch>,
 }
 
 fn persona(user: &str) -> Persona {
     Persona {
         service: "discord".into(),
         account: user.into(),
+        linked: None,
     }
 }
 
@@ -163,8 +230,35 @@ pub fn ignored(guild: &Guild, user: &str, webhook: Option<&str>) -> bool {
         || guild.blocked_personas.contains(&user.to_owned())
 }
 
-/// The appearance of `author`, or the avatar to fetch first.
-fn appearance(guild: &Guild, author: &Author) -> Result<Appearance, Box<AvatarFetch>> {
+/// The appearance of `author`, or the avatar to fetch first. A linked
+/// account speaks as its Tilo person: their name and picture as `chat`
+/// knows them, so their Discord messages read as theirs in Chat. The
+/// persona stays the Discord account, which says where it was written.
+fn appearance(
+    guild: &Guild,
+    chat: &serde_json::Value,
+    author: &Author,
+) -> Result<Appearance, Box<AvatarFetch>> {
+    let linked = guild
+        .links
+        .iter()
+        .find(|link| link.discord_user == author.id)
+        .and_then(|link| Some((link, tilo::person(chat, &link.person)?)))
+        .filter(|(_, person)| !person.name.trim().is_empty());
+    // A linked person with no picture of their own in Tilo shows their
+    // Discord one, so they look the same on both sides.
+    if let Some((link, person)) = &linked
+        && person.avatar.is_some()
+    {
+        return Ok(Appearance {
+            name: person.name.clone(),
+            avatar: person.avatar.clone(),
+            persona: Persona {
+                linked: Some(link.person.clone()),
+                ..persona(&author.id)
+            },
+        });
+    }
     let avatar = match (&author.avatar, &author.avatar_url) {
         (Some(hash), Some(url)) => match guild.avatars.get(hash) {
             Some(blob) => Some(blob.clone()),
@@ -174,6 +268,7 @@ fn appearance(guild: &Guild, author: &Author) -> Result<Appearance, Box<AvatarFe
                         url: url.clone(),
                         max_bytes: MAX_AVATAR_BYTES,
                         attachment: None,
+                        inline: false,
                     },
                     hash: hash.clone(),
                 }));
@@ -181,10 +276,20 @@ fn appearance(guild: &Guild, author: &Author) -> Result<Appearance, Box<AvatarFe
         },
         _ => None,
     };
-    Ok(Appearance {
-        name: author.name.clone(),
-        avatar,
-        persona: persona(&author.id),
+    Ok(match linked {
+        Some((link, person)) => Appearance {
+            name: person.name,
+            avatar,
+            persona: Persona {
+                linked: Some(link.person.clone()),
+                ..persona(&author.id)
+            },
+        },
+        None => Appearance {
+            name: author.name.clone(),
+            avatar,
+            persona: persona(&author.id),
+        },
     })
 }
 
@@ -233,9 +338,13 @@ fn place(
     }
 }
 
-/// `message-created`.
+/// `message-created`, in the room whose Chat record reads as `chat`.
 #[must_use]
-pub fn plan_created(guild: &Guild, event: &MessageCreated) -> InboundPlan {
+pub fn plan_created(
+    guild: &Guild,
+    chat: &serde_json::Value,
+    event: &MessageCreated,
+) -> InboundPlan {
     let mut plan = InboundPlan::default();
     if ignored(guild, &event.author.id, event.author.webhook_id.as_deref())
         || guild
@@ -247,7 +356,7 @@ pub fn plan_created(guild: &Guild, event: &MessageCreated) -> InboundPlan {
     let Some((channel, parent, quote)) = place(guild, event) else {
         return plan;
     };
-    let appearance = match appearance(guild, &event.author) {
+    let appearance = match appearance(guild, chat, &event.author) {
         Ok(appearance) => appearance,
         Err(fetch) => {
             plan.avatars.push(*fetch);
@@ -255,8 +364,11 @@ pub fn plan_created(guild: &Guild, event: &MessageCreated) -> InboundPlan {
         }
     };
     let mut text = match quote {
-        Some(quote) => format!("{quote}\n{}", event.content),
-        None => event.content.clone(),
+        Some(quote) => format!(
+            "{quote}\n{}",
+            crate::emoji::from_discord_text(&event.content)
+        ),
+        None => crate::emoji::from_discord_text(&event.content),
     };
     let mut files = Vec::new();
     for file in &event.attachments {
@@ -307,6 +419,7 @@ pub fn plan_created(guild: &Guild, event: &MessageCreated) -> InboundPlan {
                     height: file.height,
                     size: file.size,
                 }),
+                inline: false,
             },
             post: post(text.take().unwrap_or_default()),
         });
@@ -326,19 +439,17 @@ pub fn plan_updated(guild: &Guild, event: &MessageUpdated) -> InboundPlan {
     {
         plan.edits.push(EditItem {
             message: mapped.tilo.clone(),
-            text: event.content.clone(),
+            text: crate::emoji::from_discord_text(&event.content),
         });
     }
     plan
 }
 
-/// `message-deleted`. `room` is the `tilo.room` read, for the executor's role.
+/// `message-deleted`. A message deleted in Discord goes in Tilo too,
+/// whoever deleted it there: its author, a server moderator or an admin.
+/// Only the bridge's own deletes (a Tilo delete reaching Discord) do nothing.
 #[must_use]
-pub fn plan_deleted(
-    guild: &Guild,
-    event: &MessageDeleted,
-    room: &serde_json::Value,
-) -> InboundPlan {
+pub fn plan_deleted(guild: &Guild, event: &MessageDeleted) -> InboundPlan {
     let mut plan = InboundPlan::default();
     let Some(mapped) = guild.by_discord(MappedKind::Message, &event.message_id) else {
         return plan;
@@ -357,37 +468,34 @@ pub fn plan_deleted(
                 })
                 .map(|m| m.tilo.clone()),
         ),
+        Origin::Tilo if event.executor.as_deref() == Some(guild.bot_user.as_str()) => {}
         Origin::Tilo => {
-            let moderator = event
+            let by = event
                 .executor
                 .as_ref()
-                .filter(|executor| **executor != guild.bot_user)
-                .and_then(|executor| guild.links.iter().find(|l| l.discord_user == *executor))
-                .filter(|link| {
-                    matches!(
-                        tilo::room_role(room, &link.person).as_deref(),
-                        Some("moderator" | "owner")
-                    )
-                });
-            match moderator {
-                Some(link) => plan.removes.push(RemoveItem {
-                    message: mapped.tilo.clone(),
-                    reason: format!("removed in Discord by the linked moderator {}", link.person),
-                }),
-                // A Discord-only permission must not remove a Tilo person's message.
-                None if event.executor.as_deref() != Some(guild.bot_user.as_str()) => {
-                    plan.resends.push(mapped.tilo.clone());
-                }
-                None => {}
-            }
+                .and_then(|executor| guild.links.iter().find(|l| l.discord_user == *executor));
+            plan.removes.push(RemoveItem {
+                message: mapped.tilo.clone(),
+                reason: by.map_or_else(
+                    || "deleted in Discord".to_owned(),
+                    |link| format!("deleted in Discord by {}", link.person),
+                ),
+            });
         }
     }
     plan
 }
 
-/// `reaction-added` (`added`) and `reaction-removed`.
+/// `reaction-added` (`added`) and `reaction-removed`: the Discord member's
+/// own reaction in Tilo, under their name, with the emoji as Tilo writes it
+/// ([`crate::emoji::to_tilo`]; `chat` is the read of the reacted message).
 #[must_use]
-pub fn plan_reaction(guild: &Guild, event: &ReactionChanged, added: bool) -> InboundPlan {
+pub fn plan_reaction(
+    guild: &Guild,
+    event: &ReactionChanged,
+    chat: &serde_json::Value,
+    added: bool,
+) -> InboundPlan {
     let mut plan = InboundPlan::default();
     if ignored(guild, &event.user_id, None) {
         return plan;
@@ -395,6 +503,14 @@ pub fn plan_reaction(guild: &Guild, event: &ReactionChanged, added: bool) -> Inb
     let Some(mapped) = guild.by_discord(MappedKind::Message, &event.message_id) else {
         return plan;
     };
+    // A custom emoji whose name Tilo cannot write (Discord's own rule is
+    // the same, so only a malformed event) is no reaction Tilo can show.
+    if event.emoji_id.is_some() && tilo_resource::custom_emoji_name(&event.emoji).is_none() {
+        return plan;
+    }
+    let held = tilo::message(chat, &mapped.tilo)
+        .map(|message| message.reactions)
+        .unwrap_or_default();
     let avatar = event.user_avatar_url.as_ref().and_then(|url| {
         guild
             .avatars
@@ -402,11 +518,23 @@ pub fn plan_reaction(guild: &Guild, event: &ReactionChanged, added: bool) -> Inb
             .find(|(hash, _)| url.contains(hash.as_str()))
             .map(|(_, blob)| blob.clone())
     });
+    // Discord names who took a reaction off by id alone: they show under
+    // the name their reaction was given, else their id.
+    let name = if event.user_name.is_empty() {
+        let account = format!("discord/{}", event.user_id);
+        held.iter()
+            .find(|reaction| reaction.persona.as_deref() == Some(account.as_str()))
+            .and_then(|reaction| reaction.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| event.user_id.clone())
+    } else {
+        event.user_name.clone()
+    };
     let item = ReactItem {
         message: mapped.tilo.clone(),
-        emoji: event.emoji.clone(),
+        emoji: crate::emoji::to_tilo(&event.emoji, &held),
         appearance: Appearance {
-            name: event.user_name.clone(),
+            name,
             avatar,
             persona: persona(&event.user_id),
         },
@@ -445,31 +573,55 @@ pub fn plan_member(guild: &Guild, event: &MemberChanged, room: &serde_json::Valu
             Some(&event.roles),
         ));
     }
-    plan.renames
-        .extend(rename(guild, &event.user_id, event.user.as_ref()));
+    if let Some(renamed) = rename(
+        guild,
+        &event.user_id,
+        event.user.as_ref(),
+        event.avatar.as_deref(),
+    ) {
+        if let Some(hash) = event.avatar.as_deref()
+            && guild
+                .links
+                .iter()
+                .any(|l| l.discord_user == event.user_id && l.photo_avatar.as_deref() != Some(hash))
+        {
+            plan.photos.push(link_photo(&event.user_id, hash));
+        }
+        plan.renames.push(renamed);
+    }
     plan
 }
 
-/// `command`: `/link` and `/unlink`. A `/link` always reaches
-/// `complete-link`, which counts a wrong code as a failure.
+/// What a reply to a slash command is edited to: the outcome, in words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AnswerItem {
+    pub interaction: String,
+    pub content: String,
+}
+
+/// The reply to `/link` once the account is linked to `name`.
 #[must_use]
-pub fn plan_command(guild: &Guild, event: &Command) -> InboundPlan {
+pub fn linked_reply(name: &str) -> String {
+    format!("Linked to {name}. What you write here now shows as you in Tilo.")
+}
+
+/// The reply to `/link` once its button ran out unused.
+pub const EXPIRED_REPLY: &str = "That link expired. Run /link again to get a new one.";
+
+/// `command`: `/link` offers the account to whoever holds the token in its
+/// reply's button; `/unlink` unlinks it, and its reply says what came of
+/// it. `chat` names the Tilo person.
+#[must_use]
+pub fn plan_command(guild: &Guild, chat: &serde_json::Value, event: &Command) -> InboundPlan {
     let mut plan = InboundPlan::default();
     match event.name.as_str() {
         "link" => {
-            let Some(hash) = &event.code_sha256 else {
+            let Some(check) = &event.link_check else {
                 return plan;
             };
-            let person = guild
-                .pending_links
-                .iter()
-                .find(|p| p.code_sha256 == *hash)
-                .map(|p| p.person.clone())
-                .unwrap_or_default();
-            plan.complete_links.push(CompleteLinkItem {
+            plan.offers.push(OfferItem {
+                check: check.clone(),
                 discord_user: event.user_id.clone(),
-                person,
-                code_sha256: hash.clone(),
                 user_name: event
                     .user
                     .as_ref()
@@ -480,12 +632,85 @@ pub fn plan_command(guild: &Guild, event: &Command) -> InboundPlan {
                     .as_ref()
                     .and_then(|user| user.display_name.clone())
                     .unwrap_or_default(),
+                avatar: event.avatar.clone().unwrap_or_default(),
+                interaction: event.interaction.clone(),
+                state_sha256: String::new(),
             });
         }
-        "unlink" if guild.links.iter().any(|l| l.discord_user == event.user_id) => {
-            plan.unlinks.push(event.user_id.clone());
+        "unlink" => {
+            let link = guild.links.iter().find(|l| l.discord_user == event.user_id);
+            let content = match link {
+                Some(link) => {
+                    plan.unlinks.push(event.user_id.clone());
+                    let name = tilo::person(chat, &link.person)
+                        .map(|person| person.name)
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or_else(|| "your Tilo account".to_owned());
+                    format!("Unlinked from {name}. What you write here shows under your Discord name again.")
+                }
+                None => "This Discord account isn't linked to a Tilo account, so there was nothing to unlink.".to_owned(),
+            };
+            if !event.interaction.is_empty() {
+                plan.answers.push(AnswerItem {
+                    interaction: event.interaction.clone(),
+                    content,
+                });
+            }
         }
         _ => {}
+    }
+    plan
+}
+
+/// `authorized`: someone signed in with Discord on the room's host; the
+/// account is offered to the person who started it, and to them alone.
+#[must_use]
+pub fn plan_authorized(event: &Authorized) -> InboundPlan {
+    InboundPlan {
+        sign_in_offers: vec![OfferItem {
+            check: event.link_check.clone(),
+            discord_user: event.user_id.clone(),
+            user_name: event
+                .user
+                .as_ref()
+                .map(|user| user.user_name.clone())
+                .unwrap_or_default(),
+            display_name: event
+                .user
+                .as_ref()
+                .and_then(|user| user.display_name.clone())
+                .unwrap_or_default(),
+            avatar: event.avatar.clone().unwrap_or_default(),
+            interaction: String::new(),
+            state_sha256: event.state_sha256.clone(),
+        }],
+        ..InboundPlan::default()
+    }
+}
+
+/// A person took a link offer (`complete-link`): the `/link` it answered
+/// says so, and the account's Discord picture is brought in while they
+/// have none of their own in Tilo.
+#[must_use]
+pub fn plan_linked(guild: &Guild, chat: &serde_json::Value, person: &str) -> InboundPlan {
+    let mut plan = InboundPlan::default();
+    let Some(link) = guild.links.iter().find(|link| link.person == person) else {
+        return plan;
+    };
+    let tilo = tilo::person(chat, person);
+    if let Some(interaction) = &link.interaction {
+        let name = tilo
+            .as_ref()
+            .map(|person| person.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "your Tilo account".to_owned());
+        plan.answers.push(AnswerItem {
+            interaction: interaction.clone(),
+            content: linked_reply(&name),
+        });
+    }
+    if let Some(hash) = &link.avatar {
+        plan.photos.push(link_photo(&link.discord_user, hash));
     }
     plan
 }

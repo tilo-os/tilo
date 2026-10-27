@@ -1,4 +1,5 @@
 use super::PresenceCtx;
+use super::caret_tag::{CaretTag, LabeledCaret};
 use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
@@ -6,6 +7,7 @@ use crate::permissions::UserId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use tilo_sort::CompactSort as _;
 use vello::{
     Scene,
     kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
@@ -189,14 +191,38 @@ impl PresenceCtx {
         name: &str,
         caret_rect: Rect,
     ) {
+        self.draw_peer_caret_labeled_in(
+            scene,
+            theme,
+            text_renderer,
+            transform,
+            user,
+            name,
+            LabeledCaret::new(caret_rect),
+        );
+    }
+
+    /// [`Self::draw_peer_caret_labeled`] for text with content above its
+    /// first line (a note's title and dates over its body): a chip that
+    /// would rise above [`LabeledCaret::top`] hangs below the caret instead,
+    /// so a caret on the first line never covers what is above the text.
+    pub fn draw_peer_caret_labeled_in(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        user: &UserId,
+        name: &str,
+        caret: LabeledCaret,
+    ) {
+        let caret_rect = caret.rect;
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
 
         let is_agent = self.is_agent(user);
         let (chip_w, chip_h) = peer_pill_size_for(text_renderer, theme, name, is_agent);
-        let cx = caret_rect.x0;
-        let cy = caret_rect.y0 - chip_h - 2.0;
-        let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
+        let chip_rect = caret.chip_rect(chip_w, chip_h);
         draw_peer_pill_kind(
             scene,
             transform,
@@ -207,6 +233,10 @@ impl PresenceCtx {
             color,
             is_agent,
         );
+        self.note_caret_tag(CaretTag {
+            label: name.to_owned(),
+            rect: transform.transform_rect_bbox(chip_rect),
+        });
     }
 
     /// Outline `rect` in the peer's colour — "this peer has *this object*
@@ -521,7 +551,11 @@ const CARET_ROOM: f32 = 12.0;
 
 /// The size of the name tag of `peer`, or of the bubble carrying its message
 /// under its name while it talks.
-fn peer_tag_size(text_renderer: &mut TextRenderer, theme: &Theme, peer: &PeerCursor) -> (f64, f64) {
+pub(super) fn peer_tag_size(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    peer: &PeerCursor,
+) -> (f64, f64) {
     let Some(chat) = &peer.chat else {
         return peer_pill_size_for(text_renderer, theme, &peer.label, peer.is_agent);
     };
@@ -579,7 +613,7 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
     // Carries each request's original index alongside itself, so the sort
     // below never needs to index back into `pills`.
     let mut order: Vec<(usize, PillRequest)> = pills.iter().copied().enumerate().collect();
-    order.sort_by(|&(a, pa), &(b, pb)| {
+    order.compact_sort_by(|&(a, pa), &(b, pb)| {
         pa.at
             .1
             .total_cmp(&pb.at.1)
@@ -943,7 +977,16 @@ pub fn paint_reaction(
     reaction: &super::ReactionFloat,
 ) -> Rect {
     let style = reaction_style(theme);
-    let (w, h) = text_renderer.measure_style(&reaction.emoji, None, &style);
+    // A workspace emoji floats its picture, a square as tall as an emoji
+    // of the reaction's type would stand.
+    let picture = tilo_resource::custom_emoji_name(&reaction.emoji)
+        .and_then(|name| crate::workspace_emoji::emoji().image(name));
+    let (w, h) = if picture.is_some() {
+        let side = style.size * crate::richtext::inline_emoji::SIDE_EM;
+        (side, side)
+    } else {
+        text_renderer.measure_style(&reaction.emoji, None, &style)
+    };
     let (w, h) = (f64::from(w), f64::from(h));
     let rect = Rect::new(
         at.x - w / 2.0,
@@ -953,6 +996,10 @@ pub fn paint_reaction(
     );
     let bounds = rect.inflate(FADE_EDGE, FADE_EDGE);
     faded(scene, transform, reaction.opacity, bounds, |scene| {
+        if let Some(picture) = &picture {
+            crate::image_store::paint_image_contain(scene, transform, rect, picture, 0.0);
+            return;
+        }
         text_renderer.draw_style(
             scene,
             &reaction.emoji,
@@ -1017,7 +1064,7 @@ fn faded(
 
 /// The outline of a person's pointer: an arrow with its tip at the origin,
 /// the shape everyone reads as "someone is pointing here".
-fn arrow_path() -> vello::kurbo::BezPath {
+pub(crate) fn arrow_path() -> vello::kurbo::BezPath {
     let mut path = vello::kurbo::BezPath::new();
     path.move_to((0.0, 0.0));
     path.line_to((0.0, 16.0));
@@ -1326,9 +1373,6 @@ fn draw_name_chip(ctx: &mut PaintCtx<'_>, color: Color, name: &str, anchor: Poin
     );
 }
 
-/// Black or white ink for text on `bg`, by luma — a fixed white label is
-/// unreadable on over half the peer palette (11 of 24 entries under 2:1,
-/// palest 1.24:1 against white).
 /// The ring a speaking participant's tile wears over its picture: their
 /// colour, as strong as their voice is now (`level`, 0 to 1), a chrome rule
 /// thick on each side of the tile's edge.
@@ -1355,6 +1399,51 @@ pub fn paint_speaking_ring(
     );
 }
 
+/// The frame round the work while following someone: their colour, a
+/// chrome rule either side of `area`'s edge at the tile radius, as present
+/// as the follow is (`openness`, 0 to 1).
+pub fn paint_follow_frame(
+    scene: &mut Scene,
+    transform: Affine,
+    area: Rect,
+    colour: Color,
+    openness: f32,
+    theme: &Theme,
+) {
+    if openness <= 0.0 {
+        return;
+    }
+    let rule = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
+    scene.stroke(
+        &Stroke::new(rule),
+        transform,
+        colour.multiply_alpha(openness),
+        None,
+        &RoundedRect::from_rect(area.inset(-rule / 2.0), f64::from(theme.tokens.radii.tile)),
+    );
+}
+
+/// The ring round the pointer of the person being followed, in their
+/// colour; it stays within [`FOLLOWED_POINTER_REACH`] of the pointer.
+pub fn paint_followed_pointer(scene: &mut Scene, transform: Affine, point: Point, colour: Color) {
+    scene.stroke(
+        &Stroke::new(FOLLOWED_RING_STROKE),
+        transform,
+        colour,
+        None,
+        &vello::kurbo::Circle::new(point, FOLLOWED_RING_RADIUS),
+    );
+}
+
+/// The followed pointer's ring: its radius and stroke.
+const FOLLOWED_RING_RADIUS: f64 = 13.0;
+const FOLLOWED_RING_STROKE: f64 = 2.5;
+/// How far from the pointer its ring reaches, antialiased edge included.
+pub const FOLLOWED_POINTER_REACH: f64 = FOLLOWED_RING_RADIUS + FOLLOWED_RING_STROKE;
+
+/// Black or white ink for text on `bg`, by luma — a fixed white label is
+/// unreadable on over half the peer palette (11 of 24 entries under 2:1,
+/// palest 1.24:1 against white).
 pub fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.
@@ -1767,7 +1856,6 @@ mod tests {
                 );
                 let mut r = OffscreenRenderer::new(120, 120);
                 let rgba = r.render(&scene, Color::BLACK);
-                // Inside the arrow, just under its tip.
                 OffscreenRenderer::sample(&rgba, 120, at[0] as u32 + 3, at[1] as u32 + 8)
             };
 
@@ -1976,14 +2064,12 @@ mod tests {
             let mut r = OffscreenRenderer::new(120, 120);
             let rgba = r.render(&scene, Color::BLACK);
 
-            // The ring, on the left edge at mid-height.
             let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 120, 20, 50);
             assert!(
                 eg > er && eg > eb && eg > 100,
                 "the outline edge should be charlie's emerald, got ({er},{eg},{eb})"
             );
 
-            // The wash, in the middle, well away from any edge.
             let (wr, wg, wb, _a) = OffscreenRenderer::sample(&rgba, 120, 60, 50);
             assert!(
                 wg > wr && wg > wb && wg > 0,
@@ -2028,7 +2114,6 @@ mod tests {
                 "the chip should be the peer's emerald, got ({cr},{cg},{cb})"
             );
 
-            // And the object is still outlined underneath it.
             let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 140, 30, 60);
             assert!(
                 eg > er && eg > eb && eg > 100,
@@ -2109,7 +2194,6 @@ mod tests {
             let mut r = OffscreenRenderer::new(200, 140);
             let rgba = r.render(&scene, Color::BLACK);
 
-            // Above the object's top edge, at its left.
             let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 200, 12, 52);
             assert!(ca > 0, "expected the chip above the object");
             assert!(
@@ -2313,7 +2397,6 @@ mod tests {
             let mut ctx = PresenceCtx::empty();
             ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
             let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
-            // A point on the right-edge band.
             assert_eq!(
                 ctx.hit_test_offscreen_mist(viewport, Point::new(98.0, 50.0)),
                 Some("bob".to_string())
@@ -2505,13 +2588,11 @@ mod tests {
             let mut r = OffscreenRenderer::new(200, 200);
             let rgba = r.render(&scene, Color::WHITE);
 
-            // The arrow itself, just under its tip.
             let (dr, dg, db, _) = OffscreenRenderer::sample(&rgba, 200, 63, 68);
             assert!(
                 dr > 180 && dg > 80 && dg < 160 && db < 90,
                 "expected bob's orange at the pointer, got ({dr},{dg},{db})"
             );
-            // The pill, below-right of the pointer.
             let (pr, pg, pb, pa) = OffscreenRenderer::sample(&rgba, 200, 80, 78);
             assert!(pa > 0, "expected an opaque pill below-right of the pointer");
             assert!(
@@ -2617,7 +2698,6 @@ mod tests {
         // See [`marker_pigment`].
         {
             let theme = Theme::default();
-            // Paper, as the word processor draws it in *either* palette.
             let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
             let paper_rgb = (0xfa, 0xfa, 0xf8);
 
@@ -2699,7 +2779,7 @@ mod tests {
                 // change cannot reorder them.
                 let order = |c: &vello::peniko::color::Rgba8| {
                     let mut v = [(c.r, 0u8), (c.g, 1), (c.b, 2)];
-                    v.sort_by_key(|(x, _)| *x);
+                    v.compact_sort_by_key(|(x, _)| *x);
                     [v[0].1, v[1].1, v[2].1]
                 };
                 assert_eq!(
@@ -3091,5 +3171,50 @@ mod tests {
         );
         let bubble = painted.iter().copied().reduce(|a, b| a.union(b)).unwrap();
         assert!(bubble.width() > 150.0, "the message is in it: {bubble:?}");
+    }
+
+    /// A reaction of a workspace emoji floats its picture, in a square; one the
+    /// window's workspace lacks floats its `:name:`.
+    #[test]
+    fn a_workspace_emoji_reaction_floats_its_picture() {
+        use crate::richtext::inline_emoji::tests::{Fixed, workspace};
+        let float = |emoji: &str| {
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let reaction = crate::presence::ReactionFloat {
+                emoji: emoji.to_owned(),
+                rise: 0.0,
+                opacity: 1.0,
+            };
+            let at = Point::new(200.0, 200.0);
+            let painted = paint_reaction(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                at,
+                &reaction,
+            );
+            let picture = scene
+                .encoding()
+                .draw_tags
+                .contains(&vello_encoding::DrawTag::IMAGE);
+            (picture, painted)
+        };
+        assert!(!float(":tilo:").0, "no window: text");
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        crate::workspace_emoji::register(
+            &scope.handle(),
+            std::rc::Rc::new(Fixed::new(workspace())),
+        );
+        let (picture, painted) = float(":tilo:");
+        assert!(picture);
+        assert!(
+            (painted.width() - painted.height()).abs() < 1e-6,
+            "a square: {painted:?}"
+        );
+        assert!(!float(":missing:").0);
     }
 }

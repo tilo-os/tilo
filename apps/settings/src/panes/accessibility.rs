@@ -7,8 +7,8 @@
 //! - the **vision comforts** a low-vision user reaches for first — high
 //!   contrast, reduced motion, and text size — which live in
 //!   [`crate::prefs::AppearancePrefs`] (the single source of truth the whole
-//!   system themes against, also editable from the Appearance pane, through
-//!   the same [`AppearanceEffect`]s); and
+//!   system themes against). They are edited here and nowhere else: the
+//!   Appearance pane links to this pane rather than repeating them; and
 //! - the **pointer, typing, hearing, and screen-reader** assists in
 //!   [`AccessibilitySettings`], read by the compositor's input + accessibility
 //!   layer, each set by an [`AccessibilityEffect`].
@@ -25,12 +25,28 @@ use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::panes::appearance::{TEXT_SIZES, text_size_label};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::row::SettingRow;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, SettingsSection, error_row, note, rows, section, value_row};
+
+crate::effects::effect_family!(AccessibilityEffect => answer);
+
+crate::area::pane_area! {
+    Software;
+    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        statuses(self.speech.is_some())
+    }
+}
+
+/// The assistive software the window found installed.
+pub(crate) fn software(app: &crate::settings_app::SettingsApp) -> Software {
+    app.areas()
+        .find::<Software>()
+        .copied()
+        .unwrap_or(Software { speech: None })
+}
 
 fn executable_available(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
@@ -49,6 +65,37 @@ pub(crate) fn tts_capability() -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// The offered text sizes as `(display label, scale factor)`. The factor is
+/// what [`AppearancePrefs::text_scale`] persists.
+pub const TEXT_SIZES: &[(&str, f64)] = &[
+    ("Small", 0.85),
+    ("Default", 1.0),
+    ("Large", 1.15),
+    ("Larger", 1.30),
+];
+
+fn text_size_ftl(english: &str) -> &'static str {
+    match english {
+        "Small" => "settings-appearance-text-small",
+        "Large" => "settings-appearance-text-large",
+        "Larger" => "settings-appearance-text-larger",
+        _ => "settings-appearance-text-default",
+    }
+}
+
+/// Map a text-scale factor to the closest offered label (defaults to
+/// "Default").
+pub fn text_size_label(scale: f64) -> String {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to Default
+    // rather than panic the pane.
+    let english = TEXT_SIZES
+        .iter()
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
+        .map_or("Default", |(label, _)| *label);
+    t(text_size_ftl(english))
 }
 
 /// The automatic scan intervals switch control offers, and their periods.
@@ -252,51 +299,20 @@ impl AccessibilityPane {
         id: &str,
         path: tilo_resource::Path<AccessibilitySettings, V>,
     ) -> SettingRow<'_, AccessibilitySettings, V> {
-        self.cx
-            .row(t(label))
-            .described(t(&format!("{label}-desc")))
-            .id(id)
-            .of(&self.access, path)
+        assist(&self.cx, &self.access, label, id, path)
     }
 
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> SettingsSection {
-        let appearance = AppearancePrefs::paths();
         let access = AccessibilitySettings::paths();
         section(
             &t("a11y-vision-title"),
             rows(vec![
-                self.cx
-                    .row(t("a11y-high-contrast"))
-                    .described(t("a11y-high-contrast-desc"))
-                    .id("a11y.high_contrast")
-                    .of(&self.appearance, appearance.high_contrast)
-                    .toggle(),
-                self.cx
-                    .row(t("a11y-reduce-motion"))
-                    .described(t("a11y-reduce-motion-desc"))
-                    .id("a11y.reduce_motion")
-                    .of(&self.appearance, appearance.reduce_motion)
-                    .toggle(),
-                self.cx
-                    .row(t("a11y-text-size"))
-                    .id("a11y.text_size")
-                    .of(&self.appearance, appearance.text_scale)
-                    .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
-                        text_size_label(*scale)
-                    }),
-                self.cx
-                    .row(t("a11y-colour-filter"))
-                    .id("a11y.color_filter")
-                    .of(&self.access, access.color_filter)
-                    .choose(),
-                self.cx
-                    .row(t("a11y-magnifier"))
-                    .id("a11y.magnifier")
-                    .of(&self.access, access.magnifier_zoom)
-                    .among(magnifier::zoom_levels(), |zoom: &u8| {
-                        magnifier::zoom_label(*zoom).to_owned()
-                    }),
+                high_contrast(&self.cx, &self.appearance),
+                reduce_motion(&self.cx, &self.appearance),
+                text_size(&self.cx, &self.appearance),
+                colour_filter(&self.cx, &self.access),
+                magnifier_zoom(&self.cx, &self.access),
                 self.cx
                     .row(t("a11y-magnifier-view"))
                     .id("a11y.magnifier_view")
@@ -312,22 +328,10 @@ impl AccessibilityPane {
         section(
             &t("a11y-pointer-title"),
             rows(vec![
-                self.assist("a11y-mouse-keys", "a11y.mouse_keys", access.mouse_keys)
-                    .toggle(),
+                mouse_keys(&self.cx, &self.access),
                 note(&t("a11y-mouse-keys-caption")),
-                self.assist(
-                    "a11y-large-cursor",
-                    "a11y.large_cursor",
-                    access.large_cursor,
-                )
-                .toggle(),
-                self.cx
-                    .row(t("a11y-cursor-size"))
-                    .id("a11y.cursor_size")
-                    .of(&self.access, access.cursor_size)
-                    .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
-                        AccessibilitySettings::cursor_size_label(*size).to_owned()
-                    }),
+                large_cursor(&self.cx, &self.access),
+                cursor_size(&self.cx, &self.access),
                 self.assist(
                     "a11y-pointer-crosshair",
                     "a11y.cursor_crosshair",
@@ -350,12 +354,9 @@ impl AccessibilityPane {
         section(
             &t("a11y-typing-title"),
             rows(vec![
-                self.assist("a11y-sticky-keys", "a11y.sticky_keys", access.sticky_keys)
-                    .toggle(),
-                self.assist("a11y-slow-keys", "a11y.slow_keys", access.slow_keys)
-                    .toggle(),
-                self.assist("a11y-bounce-keys", "a11y.bounce_keys", access.bounce_keys)
-                    .toggle(),
+                sticky_keys(&self.cx, &self.access),
+                slow_keys(&self.cx, &self.access),
+                bounce_keys(&self.cx, &self.access),
                 self.cx
                     .row(t("a11y-bounce-delay"))
                     .id("a11y.bounce_delay")
@@ -369,18 +370,8 @@ impl AccessibilityPane {
                     access.bounce_keys_alert,
                 )
                 .toggle(),
-                self.assist(
-                    "a11y-osk",
-                    "a11y.on_screen_keyboard",
-                    access.on_screen_keyboard,
-                )
-                .choose(),
-                self.assist(
-                    "a11y-switch-control",
-                    "a11y.switch_control",
-                    access.switch_control,
-                )
-                .toggle(),
+                on_screen_keyboard(&self.cx, &self.access),
+                switch_control(&self.cx, &self.access),
                 self.cx
                     .row(t("a11y-switch-keys"))
                     .id("a11y.switch_keys")
@@ -461,12 +452,7 @@ impl AccessibilityPane {
                             access.dictation_literal,
                         )
                         .toggle(),
-                        self.assist(
-                            "a11y-visual-alerts",
-                            "a11y.visual_alerts",
-                            access.visual_alerts,
-                        )
-                        .toggle(),
+                        visual_alerts(&self.cx, &self.access),
                         value_row(
                             &t("a11y-focus-highlight"),
                             &t("a11y-focus-highlight-status"),
@@ -515,6 +501,161 @@ impl AccessibilityPane {
     }
 }
 
+/// The row of the assist at `path` of `access`, labelled by `label` and its
+/// `-desc` line, its control `id`.
+fn assist<'a, V>(
+    cx: &'a PaneCx,
+    access: &'a Followed<AccessibilitySettings>,
+    label: &str,
+    id: &str,
+    path: tilo_resource::Path<AccessibilitySettings, V>,
+) -> SettingRow<'a, AccessibilitySettings, V> {
+    cx.row(t(label))
+        .described(t(&format!("{label}-desc")))
+        .id(id)
+        .of(access, path)
+}
+
+/// What the accessibility settings found by search that their pane draws
+/// its own way are set to, as stored.
+pub(crate) mod values {
+    use ui::LocalState;
+
+    use super::{AccessibilityEffect, AccessibilitySettings};
+    use crate::effects::effect;
+    use crate::host::PaneCx;
+    use crate::i18n::t;
+    use crate::setting::{Follows, Read, on_off};
+    use crate::settings_app::SettingsApp;
+    use crate::widgets::Item;
+
+    /// The screen reader, a switch where there is a speech engine for it.
+    pub(crate) fn screen_reader(app: &SettingsApp, follows: &Follows) -> Read {
+        let on = follows
+            .get::<AccessibilitySettings>(app.host())
+            .screen_reader;
+        if super::software(app).speech.is_some() {
+            Read::Switch(on)
+        } else {
+            Read::Value(Some(on_off(on)))
+        }
+    }
+
+    pub(crate) fn screen_reader_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("a11y-screen-reader"))
+            .described(t("a11y-screen-reader-desc"))
+            .id("a11y.screen_reader")
+            .toggle_effect(
+                &LocalState::new(on),
+                effect(AccessibilityEffect::SET_SCREEN_READER),
+            )
+    }
+
+    pub(crate) fn dictation_language(app: &SettingsApp, follows: &Follows) -> String {
+        let language = follows
+            .get::<AccessibilitySettings>(app.host())
+            .dictation_language;
+        crate::i18n::t(&language.label_key())
+    }
+}
+
+pub(crate) fn high_contrast(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
+    cx.row(t("a11y-high-contrast"))
+        .described(t("a11y-high-contrast-desc"))
+        .id("a11y.high_contrast")
+        .of(appearance, AppearancePrefs::paths().high_contrast)
+        .toggle()
+}
+
+pub(crate) fn reduce_motion(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
+    cx.row(t("a11y-reduce-motion"))
+        .described(t("a11y-reduce-motion-desc"))
+        .id("a11y.reduce_motion")
+        .of(appearance, AppearancePrefs::paths().reduce_motion)
+        .toggle()
+}
+
+pub(crate) fn text_size(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
+    cx.row(t("a11y-text-size"))
+        .id("a11y.text_size")
+        .of(appearance, AppearancePrefs::paths().text_scale)
+        .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
+            text_size_label(*scale)
+        })
+}
+
+pub(crate) fn colour_filter(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    cx.row(t("a11y-colour-filter"))
+        .id("a11y.color_filter")
+        .of(access, AccessibilitySettings::paths().color_filter)
+        .choose()
+}
+
+pub(crate) fn magnifier_zoom(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    cx.row(t("a11y-magnifier"))
+        .id("a11y.magnifier")
+        .of(access, AccessibilitySettings::paths().magnifier_zoom)
+        .among(magnifier::zoom_levels(), |zoom: &u8| {
+            magnifier::zoom_label(*zoom).to_owned()
+        })
+}
+
+pub(crate) fn mouse_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().mouse_keys;
+    assist(cx, access, "a11y-mouse-keys", "a11y.mouse_keys", path).toggle()
+}
+
+pub(crate) fn large_cursor(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().large_cursor;
+    assist(cx, access, "a11y-large-cursor", "a11y.large_cursor", path).toggle()
+}
+
+pub(crate) fn cursor_size(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    cx.row(t("a11y-cursor-size"))
+        .id("a11y.cursor_size")
+        .of(access, AccessibilitySettings::paths().cursor_size)
+        .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
+            AccessibilitySettings::cursor_size_label(*size).to_owned()
+        })
+}
+
+pub(crate) fn sticky_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().sticky_keys;
+    assist(cx, access, "a11y-sticky-keys", "a11y.sticky_keys", path).toggle()
+}
+
+pub(crate) fn slow_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().slow_keys;
+    assist(cx, access, "a11y-slow-keys", "a11y.slow_keys", path).toggle()
+}
+
+pub(crate) fn bounce_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().bounce_keys;
+    assist(cx, access, "a11y-bounce-keys", "a11y.bounce_keys", path).toggle()
+}
+
+pub(crate) fn on_screen_keyboard(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().on_screen_keyboard;
+    assist(cx, access, "a11y-osk", "a11y.on_screen_keyboard", path).choose()
+}
+
+pub(crate) fn switch_control(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().switch_control;
+    assist(
+        cx,
+        access,
+        "a11y-switch-control",
+        "a11y.switch_control",
+        path,
+    )
+    .toggle()
+}
+
+pub(crate) fn visual_alerts(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().visual_alerts;
+    assist(cx, access, "a11y-visual-alerts", "a11y.visual_alerts", path).toggle()
+}
+
 impl Widget for AccessibilityPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // Controls follow the stored values; the composition itself does not
@@ -524,7 +665,7 @@ impl Widget for AccessibilityPane {
         self.composed.sync(state, root);
     }
 
-    crate::panes::composed_pane!();
+    crate::panes::composed_pane!(kept);
 
     fn name(&self) -> &'static str {
         "AccessibilityPane"
@@ -710,10 +851,13 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
         let access = AccessibilitySettings::paths();
-        // The rows' own states, which a field shown as text shares.
-        let zoom = pane.access.shown(&access.magnifier_zoom, |_| String::new());
+        let zoom = pane.access.shown(&access.magnifier_zoom, |zoom| {
+            magnifier::zoom_label(*zoom).to_owned()
+        });
         assert_eq!(zoom.get(), "5×");
-        let cursor = pane.access.shown(&access.cursor_size, |_| String::new());
+        let cursor = pane.access.shown(&access.cursor_size, |size| {
+            AccessibilitySettings::cursor_size_label(*size).to_owned()
+        });
         assert_eq!(cursor.get(), "Largest");
 
         cx.settings::<AppearancePrefs>()
@@ -739,5 +883,96 @@ mod tests {
         assert!(statuses(true).is_empty());
         let statuses = statuses(false);
         assert_eq!(statuses.len(), 3);
+    }
+
+    fn access_nodes(app: &mut TestApp<SettingsShell>) -> Vec<ui::a11y::AccessNode> {
+        fn flatten(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
+            let children = node.children.clone();
+            out.push(node);
+            for child in children {
+                flatten(child, out);
+            }
+        }
+        let mut nodes = Vec::new();
+        for node in app.harness().focus_access_nodes() {
+            flatten(node, &mut nodes);
+        }
+        nodes
+    }
+
+    fn settle(app: &mut TestApp<SettingsShell>) {
+        for _ in 0..10 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+    }
+
+    #[test]
+    fn a_click_on_text_size_and_high_contrast_writes_the_appearance_section() {
+        click_and_check(TestApp::<SettingsShell>::new().unwrap());
+    }
+
+    #[test]
+    fn a_click_writes_the_appearance_section_kept_in_the_persons_records() {
+        click_and_check(TestApp::<SettingsShell>::for_person(&"ad".repeat(32)).unwrap());
+    }
+
+    /// Where text size segment `index` is drawn, as its accessibility node says.
+    fn segment_rect(app: &mut TestApp<SettingsShell>, index: usize) -> vello::kurbo::Rect {
+        let target = format!("a11y.text_size:segment:{index}");
+        access_nodes(app)
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+            .unwrap_or_else(|| panic!("the text size strip publishes {target}"))
+            .bounds
+            .expect("the segment publishes its bounds")
+            .to_rect()
+    }
+
+    fn click_and_check(mut app: TestApp<SettingsShell>) {
+        ui::i18n::I18nManager::init("en-US");
+        app.harness().resize((1400, 2400)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Accessibility);
+        settle(&mut app);
+        let large = segment_rect(&mut app, 2);
+        app.harness().click_at(large.center().x, large.center().y);
+        settle(&mut app);
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().text_scale,
+            1.15,
+            "a click on Large writes"
+        );
+        // The click focused the strip: the next segment by key writes too.
+        app.harness().send(&ui::synthetic_input::named_key(
+            ui::winit::keyboard::NamedKey::ArrowRight,
+        ));
+        settle(&mut app);
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().text_scale,
+            1.30,
+            "ArrowRight to Larger writes"
+        );
+        let toggle = ui::widget::find_test_id(app.harness().root_widget(), "a11y.high_contrast")
+            .expect("toggle")
+            .get_rect();
+        app.harness().click_at(toggle.center().x, toggle.center().y);
+        settle(&mut app);
+        assert!(
+            app.settings::<AppearancePrefs>().get().high_contrast,
+            "a click on the toggle writes"
+        );
+        // And a tap on Small (last: a touch leaves the window without hover).
+        let small = segment_rect(&mut app, 0);
+        let (x, y) = (small.center().x, small.center().y);
+        app.harness()
+            .touch(1, ui::winit::event::TouchPhase::Started, x, y);
+        app.harness()
+            .touch(1, ui::winit::event::TouchPhase::Ended, x, y);
+        settle(&mut app);
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().text_scale,
+            0.85,
+            "a tap on Small writes"
+        );
     }
 }

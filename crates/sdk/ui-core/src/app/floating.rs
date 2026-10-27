@@ -5,6 +5,21 @@ use crate::floating_surface::{
 };
 use crate::vello::kurbo::Vec2;
 
+/// What the shell was last told on this connection, where telling it
+/// nothing yet differs from telling it "none".
+pub enum Told<T> {
+    Nothing,
+    Was(T),
+}
+
+// Only the native event-loop runner tells the shell anything.
+#[cfg(feature = "native")]
+impl<T: PartialEq> Told<T> {
+    fn was(&self, value: &T) -> bool {
+        matches!(self, Self::Was(told) if told == value)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct AuxiliaryCaptureFrames {
     painting: bool,
@@ -72,6 +87,8 @@ pub(super) struct FloatingRuntime {
     pub paint_capable_sent: bool,
     /// The shell was told this app answers selection requests.
     pub selection_capable_sent: bool,
+    /// The window resource last told the shell on this connection.
+    pub window_resource_sent: Told<Option<tilo_actions::ActionResource>>,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
     /// The [`crate::window_toolbar::revision`] of the slots last sent to
@@ -80,6 +97,23 @@ pub(super) struct FloatingRuntime {
     /// The window bar's search and History control for this app
     /// ([`window_bar`]).
     pub window_bar: window_bar::WindowBarRuntime,
+    /// The record this window shows, as its route names it, and the kind of
+    /// resource it keeps: what the desktop lists it under for sharing.
+    pub window_record: Option<(String, String)>,
+    /// What of [`crate::window_share`] the shell was told on this
+    /// connection.
+    pub window_share_sent: WindowShareSent,
+}
+
+/// What of a window's live sharing the shell was told on one connection.
+#[derive(Default)]
+pub struct WindowShareSent {
+    /// The revision of the embeds last sent (0: none declared).
+    pub embeds: u64,
+    /// The revision of the shares last sent (0: none).
+    pub shared: u64,
+    /// The window's record was sent.
+    pub record: bool,
 }
 
 impl FloatingRuntime {
@@ -133,9 +167,12 @@ impl FloatingRuntime {
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
             selection_capable_sent: false,
+            window_resource_sent: Told::Nothing,
             close_window_requested: false,
             toolbar_sent: None,
             window_bar: window_bar::WindowBarRuntime::default(),
+            window_record: None,
+            window_share_sent: WindowShareSent::default(),
         }
     }
 }
@@ -423,10 +460,9 @@ impl App {
             self.apply_unhosted_tab_request(request);
             changed = true;
         }
-        // No desktop bar to show the app's slots: it keeps its own toolbar.
-        changed |= crate::window_toolbar::set_hosted(false);
-        let _ = crate::window_toolbar::take_edit_request();
-        let _ = crate::window_toolbar::take_search_request();
+        // No desktop bar: the runner's own row is the window's bar, hosting
+        // the app's slots and serving its search and location requests
+        // (`native_runner::slot_bar`).
         // No desktop agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
         crate::shared_selection::set_agent_host_available(false);
@@ -531,7 +567,7 @@ impl App {
         if self.floating.toolbar_sent != Some(toolbar) {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::Toolbar {
-                    toolbar: crate::window_toolbar::declared(),
+                    toolbar: crate::window_toolbar::shown(),
                     instance,
                 },
             )?;
@@ -557,11 +593,27 @@ impl App {
                 },
             )?;
         }
-        if crate::window_toolbar::take_search_request() {
+        if let Some(opening) = crate::window_toolbar::take_search_request() {
             client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::OpenSearch { instance },
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
+                    instance,
+                    opening,
+                },
             )?;
             *changed = true;
+        }
+        // History's changes are described by the shell's model, never the
+        // app's; what it answered is written once no edit is open.
+        self.write_history_descriptions();
+        let changes = self
+            .history
+            .as_mut()
+            .map(|history| history.take_describe_request())
+            .unwrap_or_default();
+        if !changes.is_empty() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::DescribeHistory { changes },
+            )?;
         }
         if !self.floating.selection_capable_sent {
             client
@@ -569,11 +621,20 @@ impl App {
             self.floating.selection_capable_sent = true;
             crate::shared_selection::set_agent_host_available(true);
         }
-        for selection in crate::shared_selection::take_agent_requests() {
-            let selection = self.selection_for_agent(selection);
-            let bounds = selection
-                .as_ref()
-                .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
+        // What this window shows, so the desktop's own menus for it (its
+        // window menu) attach it as the apps' menus do.
+        let window = self.window_resource();
+        if !self.floating.window_resource_sent.was(&window) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::WindowResource {
+                    resource: window.clone(),
+                },
+            )?;
+            self.floating.window_resource_sent = Told::Was(window);
+        }
+        self.send_window_share(client, instance)?;
+        for request in crate::shared_selection::take_agent_requests() {
+            let (selection, bounds) = self.agent_reference(request);
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
                     selection,
@@ -609,6 +670,61 @@ impl App {
             )?;
         }
         Ok(())
+    }
+
+    /// Tell the shell what changed of this window's live sharing
+    /// ([`crate::window_share`]): its record once, its embeds and what it
+    /// shares whenever they change.
+    #[cfg(feature = "native")]
+    fn send_window_share(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+        instance: Option<u64>,
+    ) -> Result<(), String> {
+        let sent = &mut self.floating.window_share_sent;
+        if !sent.record
+            && let Some((record, kind)) = self.floating.window_record.clone()
+        {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::WindowRecord {
+                    record,
+                    kind,
+                    instance,
+                },
+            )?;
+            sent.record = true;
+        }
+        if let Some((revision, embeds)) = crate::window_share::own_embeds_since(sent.embeds) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Embeds {
+                    embeds: embeds
+                        .iter()
+                        .map(crate::window_share::DeclaredEmbed::from)
+                        .collect(),
+                    instance,
+                },
+            )?;
+            sent.embeds = revision;
+        }
+        if let Some((revision, shared)) = crate::window_share::shared_since(sent.shared) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::SharedWindows {
+                    shared: shared
+                        .into_iter()
+                        .take(crate::window_share::MAX_SHARED)
+                        .collect(),
+                },
+            )?;
+            sent.shared = revision;
+        }
+        Ok(())
+    }
+
+    /// What the desktop said of windows shared live changed what the app
+    /// shows: it syncs and lays out again.
+    fn window_share_changed(&mut self) {
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
     }
 
     #[cfg(feature = "native")]
@@ -893,19 +1009,51 @@ impl App {
                 }
                 FloatingSurfaceHostMessage::ToolbarEvent { event } => {
                     // The bar's search and History act here; the app's own
-                    // slots are the app's to read.
-                    // Any host message already asks for a new frame.
+                    // slots are the app's to read, on its sync pass
+                    // (`window_toolbar::take_events`). A host message asks
+                    // for a new frame, but a frame syncs only when something
+                    // asked for it: without this, what the person typed or
+                    // committed in the bar waited, unread, for whatever made
+                    // the app sync next (Enter in the address opened nothing).
                     if self.apply_window_bar_event(event).is_none() {
-                        crate::window_toolbar::deliver(event.clone());
+                        self.deliver_app_slot_event(event.clone());
+                        self.needs_sync = true;
+                    }
+                }
+                FloatingSurfaceHostMessage::HistoryDescriptions { described } => {
+                    if let Some(history) = self.history.as_mut() {
+                        history.receive_descriptions(described.clone());
+                    }
+                    self.write_history_descriptions();
+                }
+                FloatingSurfaceHostMessage::PointAt { request, point } => {
+                    self.refresh_semantic_tree();
+                    let control = self
+                        .semantic_tree()
+                        .pointed_at(vello::kurbo::Point::new(point[0], point[1]));
+                    if let Some(client) = &mut self.floating.client {
+                        let _ = client.send(
+                            &crate::floating_surface::FloatingSurfaceClientMessage::Pointed {
+                                request: *request,
+                                control,
+                            },
+                        );
+                    }
+                }
+                FloatingSurfaceHostMessage::Pick { request, query } => {
+                    let answer = crate::pick_wire::answer(self.root_widget.as_ref(), query);
+                    if let Some(client) = &mut self.floating.client {
+                        let _ = client.send(
+                            &crate::floating_surface::FloatingSurfaceClientMessage::PickAnswered {
+                                request: *request,
+                                answer,
+                            },
+                        );
                     }
                 }
                 FloatingSurfaceHostMessage::ShareSelection => {
-                    let selection = self.selection_for_agent(
-                        crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
-                    );
-                    let bounds = selection
-                        .as_ref()
-                        .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
+                    let (selection, bounds) =
+                        self.agent_reference(crate::shared_selection::AgentRequest::default());
                     if let Some(client) = &mut self.floating.client {
                         let _ = client.send(
                             &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
@@ -914,6 +1062,32 @@ impl App {
                             },
                         );
                     }
+                }
+                // What the desktop says of windows shared live reaches the
+                // app's next sync, where it reads them
+                // (`crate::window_share`).
+                FloatingSurfaceHostMessage::DrawsEmbeds => {
+                    crate::window_share::set_drawn(true);
+                    self.window_share_changed();
+                }
+                FloatingSurfaceHostMessage::EmbedStates { states } => {
+                    if crate::window_share::set_own_states(states.clone()) {
+                        self.window_share_changed();
+                    }
+                }
+                FloatingSurfaceHostMessage::OpenWindows { windows } => {
+                    let windows = windows
+                        .iter()
+                        .take(crate::window_share::MAX_WINDOWS)
+                        .map(crate::window_share::OpenWindow::bounded)
+                        .collect();
+                    if crate::window_share::publish_windows(windows) {
+                        self.window_share_changed();
+                    }
+                }
+                FloatingSurfaceHostMessage::WindowShareAsk { ask } => {
+                    crate::window_share::deliver_ask(ask.bounded());
+                    self.window_share_changed();
                 }
                 FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
@@ -931,13 +1105,28 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        // A window still waiting for the shell's first word never gets
+        // it: what its room holds says it cannot arrive.
+        if crate::room_sync::shell_lost() {
+            self.layout.layout_dirty = true;
+            self.layout.request_rebuild();
+        }
         // The bar that showed the app's slots is gone with the shell; a new
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;
+        self.floating.window_resource_sent = Told::Nothing;
+        // Nothing draws the embeds or lists the windows any more; a new
+        // shell is told the embeds, the shares and the record afresh.
+        crate::window_share::host_lost();
+        self.floating.window_share_sent = WindowShareSent::default();
+        self.window_share_changed();
         // Nothing presents the app's search and History any more: it shows
         // its own again.
         self.floating.window_bar.disconnected();
+        if let Some(history) = self.history.as_mut() {
+            history.describing_disconnected();
+        }
         if self.floating.window_bar.presents() {
             self.set_window_presents_history(false);
         }
@@ -1044,21 +1233,20 @@ fn tab_request_message(
 }
 
 impl App {
-    /// `selection` in the resource this app publishes, when the widget that
-    /// holds it did not name one.
+    /// What `request` is about, as the shell is told: a typed reference
+    /// and where in this window it is drawn.
     #[cfg(feature = "native")]
-    fn selection_for_agent(
+    fn agent_reference(
         &self,
-        selection: Option<crate::shared_selection::SharedSelection>,
-    ) -> Option<crate::shared_selection::SharedSelection> {
-        let mut selection = selection?;
-        if selection.resource.is_none() {
-            selection.resolve_resource(&crate::resources::resources(
-                self.root_widget.as_ref(),
-                &self.state.doc,
-            ));
-        }
-        Some(selection)
+        request: crate::shared_selection::AgentRequest,
+    ) -> (
+        Option<crate::shared_selection::SharedSelection>,
+        Option<[f64; 4]>,
+    ) {
+        request.resolve(
+            crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
+            &self.collect_resources(),
+        )
     }
 
     /// Without a desktop tab model, another instance is another window of
@@ -1118,6 +1306,71 @@ fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
 #[cfg(feature = "native")]
 mod host_shell_allow_tests {
     use super::*;
+
+    /// The shell asks what is at a point of the window; the app names the
+    /// control there by its durable id, role and name, and nothing where
+    /// nothing is.
+    #[cfg(unix)]
+    #[test]
+    fn a_point_of_the_window_is_answered_with_the_control_drawn_there() {
+        use crate::floating_surface::{FloatingSurfaceClientMessage, PointedControl};
+        use crate::widget::{Button, Column};
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        shell_side.set_nonblocking(true).unwrap();
+        let root = Column::new()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(Button::new("save", "Save")))
+            .push(Box::new(Button::new("cancel", "Cancel")));
+        let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
+        app.init_layout();
+        app.layout.layout_dirty = true;
+        let root_node = app.layout.root_node.unwrap();
+        crate::app::run_layout_pass(&mut app, root_node, 800, 600, 1.0, false, None).unwrap();
+        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        app.refresh_semantic_tree();
+        let cancel = app
+            .semantic_tree()
+            .find_by_name("Cancel")
+            .and_then(|node| node.bounds)
+            .expect("the Cancel button is laid out");
+
+        let below = cancel.y1 + 400.0;
+        for (request, point) in [
+            (1, [cancel.center().x, cancel.center().y]),
+            (2, [cancel.center().x, below]),
+        ] {
+            let mut wire =
+                serde_json::to_vec(&FloatingSurfaceHostMessage::PointAt { request, point })
+                    .unwrap();
+            wire.push(b'\n');
+            shell_side.write_all(&wire).unwrap();
+        }
+        app.pump_floating_surface_service();
+        let mut received = Vec::new();
+        assert_eq!(
+            shell_side.read_to_end(&mut received).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let answers: Vec<(u64, Option<PointedControl>)> = received
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| match serde_json::from_slice(line).unwrap() {
+                FloatingSurfaceClientMessage::Pointed { request, control } => {
+                    Some((request, control))
+                }
+                _ => None,
+            })
+            .collect();
+        let [(1, Some(control)), (2, None)] = answers.as_slice() else {
+            panic!("one answer per request: {answers:?}");
+        };
+        assert_eq!(control.role, "Button");
+        assert_eq!(control.label.as_deref(), Some("Cancel"));
+        assert!(control.id.contains("cancel"), "{}", control.id);
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn network_status_follows_the_real_service_pump_and_discards_disconnected_host() {

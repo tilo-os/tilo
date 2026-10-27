@@ -46,7 +46,7 @@ const MAX_LABEL_CHARS: usize = 80;
 const VIEWER_PREFIX: &str = "/viewer/invitations";
 
 /// Where to listen and which bearer token callers must present.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     pub address: SocketAddr,
     pub token: Option<String>,
@@ -114,6 +114,23 @@ impl Config {
         Ok(())
     }
 }
+
+/// The config as a log line may repeat it: where, and whether a credential
+/// is held — never the credential. Callers print this endpoint at startup
+/// into session and tool logs, so the derive that would print the token in
+/// clear is deliberately not given to the struct.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("address", &self.address)
+            .field("token", &self.token.as_ref().map(|_| REDACTED))
+            .field("room", &self.room)
+            .finish()
+    }
+}
+
+/// What a credential reads as wherever a log or a diagnostic names it.
+const REDACTED: &str = "[redacted]";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -523,7 +540,6 @@ enum ViewerCall {
     Renew(String),
 }
 
-/// The agent run an MCP session is.
 fn agent_run_id(session: &str) -> String {
     format!("mcp:{session}")
 }

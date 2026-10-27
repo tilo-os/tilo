@@ -41,12 +41,35 @@ impl EntrySource {
     }
 }
 
+/// What kind of app an entry is, as people tell apps apart: the one answer
+/// the person's app list, search and `tilo app list` all give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryKind {
+    Flatpak,
+    AppImage,
+    /// A program the person downloaded or put in their own applications
+    /// directory.
+    Program,
+    /// One of the operating system's.
+    System,
+}
+
 /// An extra launch verb declared by a `[Desktop Action <name>]` group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopAction {
     pub id: String,
     pub name: String,
     pub exec: Option<String>,
+}
+
+/// How many main windows an app opens (`SingleMainWindow=`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MainWindows {
+    /// Opened again, it opens another window: the spec's default.
+    #[default]
+    Many,
+    /// `SingleMainWindow=true`: opened again, it raises the window it has.
+    One,
 }
 
 /// A parsed `[Desktop Entry]`.
@@ -83,6 +106,9 @@ pub struct DesktopEntry {
     /// system file of the same id.
     pub hidden: bool,
     pub terminal: bool,
+    /// `SingleMainWindow=`: whether the app opens a second main window or,
+    /// opened again, only raises the one it has.
+    pub main_windows: MainWindows,
     /// `X-GNOME-Autostart-enabled`, `None` when absent: `Some(false)` switches an
     /// autostart entry off without deleting it.
     pub autostart_enabled: Option<bool>,
@@ -90,9 +116,31 @@ pub struct DesktopEntry {
     pub not_show_in: Vec<String>,
     pub source: EntrySource,
     pub actions: Vec<DesktopAction>,
+    /// Set for the entry of a downloaded program ([`crate::downloaded`]):
+    /// the file it starts, and whether that file is there.
+    pub downloaded: Option<crate::downloaded::DownloadedProgram>,
 }
 
 impl DesktopEntry {
+    /// What kind of app this is. `person_applications` is the person's own
+    /// applications directory: an entry of theirs there is a program of
+    /// theirs, not the system's.
+    pub fn kind(&self, person_applications: Option<&Path>) -> EntryKind {
+        if matches!(self.source, EntrySource::Flatpak { .. }) {
+            return EntryKind::Flatpak;
+        }
+        if let Some(downloaded) = &self.downloaded {
+            return match downloaded.kind {
+                crate::downloaded::ProgramKind::AppImage => EntryKind::AppImage,
+                crate::downloaded::ProgramKind::Program => EntryKind::Program,
+            };
+        }
+        if person_applications.is_some_and(|dir| self.path.starts_with(dir)) {
+            return EntryKind::Program;
+        }
+        EntryKind::System
+    }
+
     /// Whether this entry should be offered in a menu of `desktop`. Four independent reasons to
     /// say no, all from the spec: wrong `Type`, `Hidden`, `NoDisplay`, and the
     /// `OnlyShowIn`/`NotShowIn` filter. `TryExec` is checked separately by the scanner, which can
@@ -225,11 +273,22 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         no_display: boolean(raw("NoDisplay")),
         hidden: boolean(raw("Hidden")),
         terminal: boolean(raw("Terminal")),
+        main_windows: if boolean(raw("SingleMainWindow")) {
+            MainWindows::One
+        } else {
+            MainWindows::Many
+        },
         autostart_enabled: raw("X-GNOME-Autostart-enabled").map(|value| boolean(Some(value))),
         only_show_in: string_list(raw("OnlyShowIn")),
         not_show_in: string_list(raw("NotShowIn")),
         source,
         actions: parse_actions(&groups, locales),
+        downloaded: crate::downloaded::DownloadedProgram::from_keys(
+            raw(crate::downloaded::KEY_PROGRAM),
+            raw(crate::downloaded::KEY_KIND),
+            raw(crate::downloaded::KEY_FILE),
+            raw(crate::downloaded::KEY_LOCATIONS),
+        ),
     })
 }
 
@@ -362,7 +421,7 @@ fn boolean(raw: Option<&str>) -> bool {
 
 /// A `;`-separated list value. `\;` is a literal semicolon; a customary trailing `;`
 /// produces no empty final element.
-fn string_list(raw: Option<&str>) -> Vec<String> {
+pub(crate) fn string_list(raw: Option<&str>) -> Vec<String> {
     let Some(raw) = raw else {
         return Vec::new();
     };
@@ -444,6 +503,38 @@ X-Flatpak=com.spotify.Client
 
     fn parse_str(s: &str, id: &str) -> DesktopEntry {
         parse(s, id, Path::new("/tmp/x.desktop"), &[]).expect("parses")
+    }
+
+    #[test]
+    fn an_entry_is_a_flatpak_an_appimage_a_program_or_the_systems() {
+        let mine = Path::new("/home/ana/.local/share/applications");
+        let at = |path: &str, contents: &str| {
+            parse(contents, "x", Path::new(path), &[]).expect("parses")
+        };
+        let plain = "[Desktop Entry]\nType=Application\nName=Editor\nExec=editor\n";
+        assert_eq!(
+            at("/usr/share/applications/x.desktop", SPOTIFY).kind(Some(mine)),
+            EntryKind::Flatpak
+        );
+        assert_eq!(
+            at("/usr/share/applications/x.desktop", plain).kind(Some(mine)),
+            EntryKind::System
+        );
+        assert_eq!(
+            at("/home/ana/.local/share/applications/x.desktop", plain).kind(Some(mine)),
+            EntryKind::Program
+        );
+        let appimage = format!(
+            "{plain}X-Tilo-Downloaded-Program=/home/ana/Downloads/Editor.AppImage\nX-Tilo-Downloaded-Kind=AppImage\n"
+        );
+        assert_eq!(
+            at(
+                "/home/ana/.local/share/applications/tilo-downloaded/x.desktop",
+                &appimage
+            )
+            .kind(Some(mine)),
+            EntryKind::AppImage
+        );
     }
 
     #[test]

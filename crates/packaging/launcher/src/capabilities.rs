@@ -784,14 +784,12 @@ mod tests {
 
     #[test]
     fn path_capabilities_plan_only_live_grants_for_this_app() {
-        // Phase `no_capabilities_plans_nothing`.
         {
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &[], Some(1000), fake_device_paths);
             assert_eq!(plan, CapabilityPlan::empty());
             assert!(plan.is_empty());
         }
-        // Phase `read_capability_plans_a_read_only_path_only`.
         {
             let caps = vec![fs_grant(
                 "so.tilo.books",
@@ -806,7 +804,6 @@ mod tests {
                 "a Read grant must never plan a writable bind: {plan:?}"
             );
         }
-        // Phase `write_capability_plans_a_read_write_path`.
         {
             let caps = vec![fs_grant(
                 "so.tilo.books",
@@ -818,7 +815,6 @@ mod tests {
             assert_eq!(plan.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
             assert!(plan.ro_paths.is_empty());
         }
-        // Phase `another_apps_capability_is_not_planned`.
         {
             let caps = vec![fs_grant(
                 "so.tilo.other",
@@ -833,7 +829,6 @@ mod tests {
                 "a grant addressed to another app id must not reach this app: {plan:?}"
             );
         }
-        // Phase `expired_capability_is_not_planned`.
         {
             let caps = vec![
                 fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
@@ -848,7 +843,6 @@ mod tests {
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(499), fake_device_paths);
             assert_eq!(live.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
         }
-        // Phase `restriction_makes_a_granted_path_read_only`.
         {
             let caps = vec![
                 fs_grant("so.tilo.books", "/var/workspace/books", Access::Write),
@@ -871,7 +865,6 @@ mod tests {
 
     #[test]
     fn device_and_network_capabilities_plan_their_own_resources() {
-        // Phase `camera_capability_plans_device_nodes_and_absence_plans_none`.
         {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.meet"),
@@ -890,7 +883,6 @@ mod tests {
                 "no camera capability means no device node at all: {without:?}"
             );
         }
-        // Phase `screencast_capability_binds_nothing`.
         {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.meet"),
@@ -905,7 +897,6 @@ mod tests {
                 "screencast is portal-brokered, not a mount: {plan:?}"
             );
         }
-        // Phase `net_host_capability_opens_the_namespace_and_records_the_host`.
         {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
@@ -924,7 +915,6 @@ mod tests {
                 "without a network capability the namespace stays isolated"
             );
         }
-        // Phase `domain_grants_survive_the_plan_and_address_grants_do_not`.
         {
             let grant = |host: &str| {
                 CapOverride::grant(
@@ -950,7 +940,6 @@ mod tests {
 
     #[test]
     fn capability_files_fail_closed_and_round_trip() {
-        // Phase `relative_root_and_lexical_escape_paths_are_refused`.
         {
             let caps = vec![
                 fs_grant("so.tilo.books", "relative/path", Access::Write),
@@ -967,7 +956,6 @@ mod tests {
                 "root aliases and traversal must never become bind/Landlock grants: {plan:?}"
             );
         }
-        // Phase `missing_or_malformed_capability_file_grants_nothing`.
         {
             let dir = tempfile::tempdir().unwrap();
             let missing = dir.path().join("absent.json");
@@ -981,7 +969,6 @@ mod tests {
             std::fs::write(&wrong_shape, br#"{"subject":"nope"}"#).unwrap();
             assert!(load_capability_file(&wrong_shape).is_empty());
         }
-        // Phase `well_formed_capability_file_round_trips`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -1039,7 +1026,6 @@ mod tests {
     fn grants_covering_the_private_store_mask_it_and_pin_the_way_there() {
         let home = Fixture::new();
         let config = home.home.join(".config");
-        // Phase `a_writable_home_grant_masks_the_store_and_pins_its_parent`.
         {
             let plan = home.plan(&[(home.path(""), Access::Write)]);
             assert_eq!(plan.rw_paths, vec![home.home.clone()]);
@@ -1050,7 +1036,6 @@ mod tests {
                 "~/.config must be a mount point, or the app could move the store aside"
             );
         }
-        // Phase `a_read_only_grant_masks_without_pinning`.
         {
             let plan = home.plan(&[(home.path(""), Access::Read)]);
             assert_eq!(plan.ro_paths, vec![home.home.clone()]);
@@ -1080,13 +1065,11 @@ mod tests {
                 "~/.config is a grant mount already; a writable pin would widen it: {plan:?}"
             );
         }
-        // Phase `a_documents_grant_is_untouched`.
         {
             let plan = home.plan(&[(home.path("Documents"), Access::Write)]);
             assert_eq!(plan.rw_paths, vec![home.home.join("Documents")]);
             assert!(plan.masked_dirs.is_empty() && plan.pinned_dirs.is_empty());
         }
-        // Phase `grants_at_or_inside_the_store_are_refused`.
         {
             for inside in [
                 ".config/tilo",
@@ -1111,7 +1094,6 @@ mod tests {
 
     #[test]
     fn a_missing_or_symlinked_store_still_cannot_be_reached() {
-        // Phase `a_missing_store_is_created_private_before_it_is_masked`.
         {
             use std::os::unix::fs::PermissionsExt as _;
 
@@ -1137,7 +1119,6 @@ mod tests {
             );
             assert_eq!(plan.masked_dirs, vec![store]);
         }
-        // Phase `no_grant_creates_nothing`.
         {
             let dir = tempfile::tempdir().unwrap();
             let store = dir.path().join("home/.config/tilo");

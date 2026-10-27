@@ -25,6 +25,7 @@ exclude = [
     "vendor/wayland-backend",
     "vendor/pulldown-cmark",
     "vendor/regex-syntax",
+    "vendor/serde_json",
     # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
     "vendor/zlink-macros",
     "vendor/web-transport-quinn",
@@ -35,6 +36,13 @@ exclude = [
     "vendor/iroh",
     "vendor/iroh-gossip",
     "vendor/netwatch",
+    "vendor/accesskit_unix",
+    "vendor/atspi",
+    "vendor/atspi-common",
+    "vendor/atspi-proxies",
+    "vendor/rustypipe",
+    "vendor/miracast",
+    "vendor/davey",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -52,9 +60,11 @@ default-members = [
 members = [
     "crates/lang/tilolang",
     "crates/lang/tilolang-cli",
+    "apps/poker",
     "crates/browser/browser-continuity",
     "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
+    "crates/platform/tilo-handoff",
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
@@ -78,10 +88,12 @@ members = [
     "crates/sdk/ui-core",
 
     # Applications
+    "apps/activity",
     "apps/agent",
     "apps/api-tester",
     "apps/backups",
     "apps/browser",
+    "apps/browser-parts",
     "apps/calculator",
     "apps/calendar",
     "apps/camera",
@@ -124,6 +136,8 @@ members = [
     "apps/scratchpad",
     "apps/speed-test",
     "apps/settings",
+    "apps/settings-core",
+    "apps/settings-rare",
     "apps/sheets",
     "apps/slides",
     "apps/shortcuts",
@@ -134,12 +148,12 @@ members = [
     "apps/themes",
     "apps/thumbnails",
     "apps/tilolang",
+    "apps/tasks",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",
     "apps/video-editor",
     "apps/video-player",
-    "apps/vpn",
     "apps/weather",
     "apps/web-search",
     "apps/windows",
@@ -149,6 +163,7 @@ members = [
     "crates/agent/agent-participant",
     "crates/agent/connector",
     "crates/agent/local-model-service",
+    "crates/agent/model-client",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
 
@@ -164,6 +179,9 @@ members = [
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-rich-text",
+    "crates/sdk/tilo-page-raster",
+    "crates/sdk/ui-paint",
+    "crates/sdk/canvas",
     "crates/sdk/winit-x11",
     "crates/sdk/search",
 
@@ -182,13 +200,16 @@ members = [
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-governor",
     "crates/collab/tilo-joined-room",
+    "crates/collab/tilo-lan-discovery",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
     "crates/collab/workspace-join",
 
     # Dev
     "crates/dev/collab-link",
+    "crates/dev/workspace-unify",
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
     "crates/dev/room-load",
@@ -235,6 +256,7 @@ members = [
     "crates/media/ocr",
     "crates/media/segment",
     "crates/media/thumbnail",
+    "crates/media/video-render",
     "crates/media/vision",
     "crates/media/wet-media",
 
@@ -283,11 +305,16 @@ members = [
     "crates/platform/tilo-clock",
     "crates/platform/tilolang-tilo",
     "crates/platform/tilo-lock",
+    "crates/platform/tilo-sort",
+    "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
+    "crates/platform/tilo-agent-models",
     "crates/platform/tilo-contact-directory",
+    "crates/platform/tilo-workspace-emoji",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
+    "crates/platform/tilo-archive",
     "crates/platform/tilo-cloud-files",
     "crates/platform/tilo-location",
     "crates/platform/tilo-image-codec",
@@ -298,8 +325,10 @@ members = [
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-browser-sessions",
     "crates/platform/tilo-invidious",
+    "crates/platform/tilo-innertube",
     "crates/platform/tilo-web-search",
     "crates/platform/tilo-net",
+    "crates/platform/tilo-net-p2p",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
     "crates/platform/tilo-paths",
@@ -313,6 +342,7 @@ members = [
     "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
+    "crates/platform/tilo-unicode-emoji",
     "crates/platform/tilo-wallpapers",
     "crates/platform/zone-globe",
 
@@ -335,6 +365,7 @@ members = [
     "crates/runtime/engines/fuse",
     "crates/runtime/engines/highlight",
     "crates/runtime/engines/mail",
+    "crates/runtime/engines/archive",
     "crates/runtime/engines/paint",
     "crates/runtime/engines/pdf",
     "crates/runtime/engines/settings",
@@ -343,8 +374,10 @@ members = [
     "crates/runtime/engines/typst",
     "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
+    "crates/runtime/tilo-fs-client",
     "crates/runtime/runtime-fs-fuse",
     "crates/runtime/runtime-identity",
+    "crates/runtime/tilo-identity-client",
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
@@ -378,9 +411,11 @@ members = [
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",
+    "crates/system/ask-password",
     "crates/system/block-devices",
     "crates/system/board-successor",
     "crates/system/boot-order",
+    "crates/system/boot-signin",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
@@ -390,6 +425,7 @@ members = [
     "crates/system/cloud-source-icloud",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
+    "crates/system/documents",
     "crates/system/content",
     "crates/system/content-device",
     "crates/system/content-types",
@@ -411,14 +447,18 @@ members = [
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/net-answers",
+    "crates/system/device-vpn",
     "crates/system/ntfs-mount",
     "crates/system/os-actions",
+    "crates/system/pam-tilo",
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
     "crates/system/secret-service",
+    "crates/system/seat-peer",
     "crates/system/secret-vault",
     "crates/system/settings-store",
+    "crates/system/settings-sections",
     "crates/system/ssh-agent-client",
     "crates/system/staging-reclaim",
     "crates/system/swipe",
@@ -430,6 +470,7 @@ members = [
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
     "crates/system/tilo-nm",
+    "crates/system/tilo-auth",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
     "crates/system/tilo-sibling-unlock",
@@ -440,6 +481,7 @@ members = [
 
     # Text
     "crates/text/emoji",
+    "crates/text/emoji-catalogue",
     "crates/text/highlight",
     "crates/text/highlight-grammars",
     "crates/text/pim-lines",
@@ -464,8 +506,9 @@ repository = "https://code.tilo.so/tilo/tilo"
 homepage = "https://tilo.so"
 
 # workspace-hack is never named in code: it only unifies third-party features.
+# tilo-winit-x11 has no items: depending on it turns on winit's X11 backend.
 [workspace.metadata.cargo-machete]
-ignored = ["workspace-hack"]
+ignored = ["workspace-hack", "tilo-winit-x11"]
 
 [workspace.lints.rust]
 # `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
@@ -475,6 +518,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
+# Boilerplate `# Errors` / `# Panics` sections; see AGENTS.md "Comments".
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 # `nursery` is unstable and includes documented false positives, so its lints
 # are enabled individually below where they catch correctness defects.
 
@@ -575,12 +621,13 @@ cosmic-text = { version = "0.19.0", default-features = false }
 # ---------------------------------------------------------------------------
 # Async runtime and networking
 # ---------------------------------------------------------------------------
-tokio = "1.52.3"
+tokio = "1.53.3"
 tilo-rt = { version = "0.1.0", path = "crates/platform/tilo-rt" }
 tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
+tilo-documents = { version = "0.1.0", path = "crates/system/documents" }
 tilo-notify = { version = "0.1.0", path = "crates/platform/tilo-notify" }
 tilo-location = { version = "0.1.0", path = "crates/platform/tilo-location" }
 tilo-secrets = { version = "0.1.0", path = "crates/platform/tilo-secrets" }
@@ -595,7 +642,7 @@ futures-util = "0.3"
 # clients through `tilo_net::http`, which installs the ring provider this
 # configuration requires.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-zstd = "0.13"
+zstd = "0.14.3"
 crc32fast = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"
@@ -642,6 +689,7 @@ tar = "0.4"
 # `CryptoRng` is required).
 # ---------------------------------------------------------------------------
 ed25519-dalek = "3"
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 rand = "0.10"
 rand_core = "0.10"
 rand_chacha = "0.10"
@@ -673,7 +721,6 @@ iroh-gossip = "0.101.0"
 bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
 irpc = { version = "0.17.0", default-features = false }
 ref-cast = "1.0.24"
-iroh-mdns-address-lookup = "0.5.0"
 # Content-defined chunking for the native data plane (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
 # Embedded metadata database of the storage daemon (already in the graph
@@ -699,9 +746,13 @@ rquickjs = "0.9"
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
-# Miracast (Wi-Fi Display) source for tilo-projector, a standalone crate in
-# its own repository until it is published.
-miracast = { git = "https://code.tilo.so/tilo/miracast.git", rev = "c37c8cdfcdf7959a1daa38925f0e13d217c083c0", default-features = false }
+# Miracast (Wi-Fi Display) source for tilo-projector: Tilo's own standalone
+# crate, kept in vendor/miracast until it is published (see its PROVENANCE.md).
+miracast = { path = "vendor/miracast", default-features = false }
+# Discord's DAVE end-to-end encryption for the Discord connector's voice:
+# davey 0.1.5 moved to the openmls generation the workspace builds (see
+# vendor/davey/TILO-PATCH.md).
+davey = { path = "vendor/davey" }
 # FFT for acoustic calibration: deconvolving a recorded sweep into the
 # speaker's impulse response and reading its magnitude response.
 rustfft = "6.2"
@@ -730,6 +781,10 @@ rustix = "1.1.4"
 # ---------------------------------------------------------------------------
 # Diagnostics and utilities
 # ---------------------------------------------------------------------------
+# Another thread's stack, recorded by its own signal handler as bare return
+# addresses (nothing a handler may not do) and symbolized afterwards; std
+# symbolizes only the backtraces it captured itself.
+backtrace = "0.3.76"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1.0.102"
@@ -768,6 +823,57 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# Keep the renderer's math, scene encoding and GPU command processing optimised
+# even when application code is unoptimised. These run for every interactive
+# frame, including each password character on the lock screen. Package overrides
+# preserve debug assertions, overflow checks and line tables; GPU validation is
+# unchanged. Mirror test so build and test can reuse the same dependencies.
+[profile.dev.package.tilo-vello]
+opt-level = 3
+[profile.test.package.tilo-vello]
+opt-level = 3
+[profile.dev.package.tilo-vello-encoding]
+opt-level = 3
+[profile.test.package.tilo-vello-encoding]
+opt-level = 3
+[profile.dev.package.kurbo]
+opt-level = 3
+[profile.test.package.kurbo]
+opt-level = 3
+[profile.dev.package.peniko]
+opt-level = 3
+[profile.test.package.peniko]
+opt-level = 3
+[profile.dev.package.wgpu]
+opt-level = 3
+[profile.test.package.wgpu]
+opt-level = 3
+[profile.dev.package.wgpu-core]
+opt-level = 3
+[profile.test.package.wgpu-core]
+opt-level = 3
+[profile.dev.package.wgpu-hal]
+opt-level = 3
+[profile.test.package.wgpu-hal]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.test.package.taffy]
+opt-level = 3
+
+# The compositor monomorphises UI traversal and search/serialization code that
+# dependency-only optimisation cannot speed up. Keep a development build of it
+# lightly optimised with full debugger information, assertions and overflow
+# checks, so the desktop stays interactive. Application and toolkit code remain
+# unoptimised; this is not the release profile. Its tests build it as the test
+# profile builds every crate: optimised with debug information it took five
+# times as long to compile and link for each test run.
+[profile.dev.package.shell]
+opt-level = 1
+debug = 2
+debug-assertions = true
+overflow-checks = true
 
 # Optimise the CRDT dependencies in development and test builds; their generic
 # data structures are otherwise disproportionately slow in workspace tests.
@@ -832,6 +938,18 @@ opt-level = 3
 [profile.dev.package.read-fonts]
 opt-level = 3
 [profile.dev.package.swash]
+opt-level = 3
+# Password sealing derives its key with Argon2 at its production cost: an
+# unoptimised build takes tens of seconds per seal, so a journey that saves
+# connections behind a password (Imager's checkpoint) outran its test's wait
+# on a loaded builder.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.test.package.argon2]
+opt-level = 3
+[profile.test.package.blake2]
 opt-level = 3
 [profile.test.package.sha2]
 opt-level = 3
@@ -972,6 +1090,16 @@ overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
+# The early-boot helpers are copied into the initramfs, which every update
+# reseals into the UKI: their symbol tables were 12 MB of each UKI, and no crash
+# log reads them there.
+[profile.release.package.tilo-rollback]
+strip = "symbols"
+[profile.release.package.tilo-sibling-unlock]
+strip = "symbols"
+[profile.release.package.tilo-boot-signin]
+strip = "symbols"
+
 # The browser bundles' release build (`build.sh --profile release`), measured
 # in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO and one codegen unit
 # come from `release`. `panic = "abort"` is the only panic
@@ -1004,6 +1132,25 @@ strip = "symbols"
 # writes are stripped.
 [profile.wasm-split]
 inherits = "wasm-release"
+strip = "none"
+
+# `wasm-release` with the assertions the qualification surface is behind. A
+# measured release-speed bundle must still refuse what a dev build refuses
+# (`debug_assertions`, `cfg!(debug_assertions)` and the diagnostics that read
+# it, overflow checks), so qualification runs on this profile rather than on a
+# plain `release` that drops them. Debug information and the symbol table stay
+# out: a page streams this module.
+[profile.wasm-assert]
+inherits = "wasm-release"
+debug-assertions = true
+overflow-checks = true
+
+# `wasm-assert` with the symbol table kept, for the same reason `wasm-split`
+# keeps it: the desktop bundle is split into a start module and per-app
+# modules, and the splitter reads the linked module's function names and
+# relocations. The modules it writes are stripped.
+[profile.wasm-assert-split]
+inherits = "wasm-assert"
 strip = "none"
 
 # The browser bundles' quick development build (`build.sh --profile quick`).
@@ -1128,6 +1275,12 @@ pulldown-cmark = { path = "vendor/pulldown-cmark" }
 # app process (regex is in the shared runtime). Generated by
 # tools/regex-syntax-tables.py; see vendor/regex-syntax/TILO-PATCH.md.
 regex-syntax = { path = "vendor/regex-syntax" }
+# A crate that reads, clones or extends a `serde_json::Value` compiles that
+# code once, in serde_json, instead of its own copy: the string parser a raw
+# value is read back with, the map's insertion, cloning and comparing, and
+# `Value`'s `Clone` and `PartialEq`. Every thin app carried all of them beside
+# the shared runtime's. See vendor/serde_json/TILO-PATCH.md.
+serde_json = { path = "vendor/serde_json" }
 # An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
 # the relay map is empty, no wall-clock poll on Linux (a timerfd that the
 # kernel cancels on resume or a clock step replaces it), and no gossip cache
@@ -1138,27 +1291,18 @@ netwatch = { path = "vendor/netwatch" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }
-# Git forks on code.tilo.so, public so apps outside this repository fetch
-# them too (see `vendor/PATCHES.md`); upstream contributions are prepared in
-# tilo/upstream-contribs. Drop the entries once upstream
-# releases the changes.
-#
 # accesskit_unix and atspi enable zbus's async-io backend unconditionally, so
 # the tokio-only accessibility stack also built a second async runtime
-# (async-executor, async-io, async-process, blocking, ...). These forks make
-# the backend follow the crates' `async-io`/`tokio` features.
-#
-# The accesskit crates the fork's accesskit_unix depends on by path come from
-# the same revision (identical to their crates.io releases), so each resolves
-# to one copy.
-accesskit = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_atspi_common = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_consumer = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-accesskit_unix = { git = "https://code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
-atspi = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-atspi-common = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-atspi-proxies = { git = "https://code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
-# rustypipe 0.11.4 uses reqwest 0.12, which kept reqwest 0.12, its QUIC stack
-# (quinn) and fancy-regex 0.14 in the lock. The fork ports 0.11.4 to reqwest
-# 0.13 and fancy-regex 0.16.
-rustypipe = { git = "https://code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" }
+# (async-executor, async-io, async-process, blocking, ...). The vendored
+# releases make the backend follow the crates' `async-io`/`tokio` features;
+# accesskit, accesskit_consumer and accesskit_atspi_common stay the crates.io
+# releases. rustypipe 0.11.4 used reqwest 0.12, which kept reqwest 0.12, its
+# QUIC stack (quinn) and fancy-regex 0.14 in the lock; the vendored release is
+# ported to reqwest 0.13 and fancy-regex 0.16. Each change is a manifest edit,
+# described in the crate's PROVENANCE.md and vendor/PATCHES.md. Drop an entry
+# once upstream releases its change.
+accesskit_unix = { path = "vendor/accesskit_unix" }
+atspi = { path = "vendor/atspi" }
+atspi-common = { path = "vendor/atspi-common" }
+atspi-proxies = { path = "vendor/atspi-proxies" }
+rustypipe = { path = "vendor/rustypipe" }

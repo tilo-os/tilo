@@ -137,7 +137,6 @@ fn supported_origin(origin: &str, development: bool, profile: &str) -> bool {
     }
 }
 
-/// The repository a target of `profile` is pinned in.
 #[must_use]
 pub fn repository(profile: &str) -> Option<&'static str> {
     match profile {

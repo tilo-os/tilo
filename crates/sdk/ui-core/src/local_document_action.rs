@@ -4,12 +4,15 @@
 //! pinned to the directory revision actually published for that route. Background
 //! work and delivered broker invocations must not inherit a local-input scope.
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionContext, ActionError, EncodedAction};
 
 const CAPACITY: usize = 128;
 const BYTE_BUDGET: usize = 4 * 1024 * 1024;
+/// The longest text a report field may carry.
+const MAX_REPORT_FIELD: usize = 4096;
 
 /// Original published invocation, before building or wrapping its typed action.
 #[derive(Clone)]
@@ -43,6 +46,20 @@ impl CapturedAction {
     /// Refuses captures without an original published invocation.
     pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
         self.clone().into_report()?.bound_invocation()
+    }
+
+    /// Report this change against the published surface `revision`: a
+    /// change made while the surface moved under its input, or one the
+    /// person retries, is reported against the surface published since.
+    /// The revision is part of the content-bound identity, so the
+    /// invocation is bound again.
+    /// # Errors
+    /// Refuses an invalid revision or a capture without a published invocation.
+    pub(crate) fn report_against(&mut self, revision: &str) -> Result<(), String> {
+        validate_report_field(revision)?;
+        revision.clone_into(&mut self.revision);
+        self.invocation = self.bound_invocation()?;
+        Ok(())
     }
 
     pub(crate) fn into_report(self) -> Result<runtime_collab::LocalDocumentActionReport, String> {
@@ -112,6 +129,9 @@ struct Active {
     custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     queue: Queue,
     revision: String,
+    /// The input's surface moved under it: its actions get their revision
+    /// once a surface they can be reported against is published.
+    revision_pending: bool,
     aliases: Option<Rc<std::collections::HashMap<String, String>>>,
     pin: Option<Rc<dyn std::any::Any>>,
 }
@@ -123,7 +143,13 @@ pub(crate) struct InputRoute {
     pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub owner: Option<uuid::Uuid>,
     pub queue: Queue,
+    /// Empty when no published surface could be pinned for this input.
     pub revision: String,
+    /// The surface moved under this input: its actions are admitted and
+    /// reported once a later surface can be pinned. Otherwise an input with
+    /// no revision reports nothing: its actions still edit, and the queue
+    /// records the gap.
+    pub revision_pending: bool,
     pub aliases: Rc<std::collections::HashMap<String, String>>,
     pub pin: Option<Rc<dyn std::any::Any>>,
 }
@@ -181,6 +207,7 @@ pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
                 custody: None,
                 queue: Queue::new(),
                 revision: String::new(),
+                revision_pending: false,
                 aliases: None,
                 pin: None,
             })
@@ -227,6 +254,7 @@ impl Queue {
                 custody: None,
                 queue: self.clone(),
                 revision,
+                revision_pending: false,
                 aliases: None,
                 pin: None,
             }))
@@ -340,7 +368,9 @@ pub fn has_invocation() -> bool {
     PUBLISHED.with(|published| published.borrow().is_some())
 }
 
-/// Reserve before mutation: saturation refuses without speculative writes.
+/// Reserve before mutation. A saturated queue reserves nothing: the edit runs
+/// unreported and the queue records the refusal, so no report is ever lost
+/// silently and no keystroke is ever refused for want of report capacity.
 pub(crate) fn reserve(
     encoded: &EncodedAction,
     context: Option<&ActionContext>,
@@ -365,6 +395,7 @@ pub(crate) fn reserve(
                     custody: route.custody.clone(),
                     queue: route.queue.clone(),
                     revision: route.revision.clone(),
+                    revision_pending: route.revision.is_empty() && route.revision_pending,
                     aliases: Some(route.aliases.clone()),
                     pin: route.pin.clone(),
                 })
@@ -416,14 +447,17 @@ pub(crate) fn reserve(
         }
     };
     let mut pending = active.queue.0.borrow_mut();
-    if active.revision.is_empty()
+    if (active.revision.is_empty() && !active.revision_pending)
         || pending.reserved >= CAPACITY
         || bytes > BYTE_BUDGET.saturating_sub(pending.bytes)
     {
+        // The person's edit never waits on the history. While every report
+        // the queue may hold is still on its way (or no surface can be held
+        // for this one), the edit lands unreported and the gap is shown, as
+        // for an action with no published address. The bound stays a bound
+        // on reports, never on typing.
         pending.refused = true;
-        return Err(ActionError::Refused(
-            "local action observation queue is full".into(),
-        ));
+        return Ok(None);
     }
     pending.reserved += 1;
     pending.bytes += bytes;
@@ -465,14 +499,14 @@ impl Reservation {
             ));
         }
         let mut original_heads = before.iter().map(|hash| hash.0).collect::<Vec<_>>();
-        original_heads.sort_unstable();
+        original_heads.compact_sort();
         original_heads.dedup();
         let mut mutation_hashes = doc
             .get_changes(before)
             .iter()
             .map(|change| change.hash().0)
             .collect::<Vec<_>>();
-        mutation_hashes.sort_unstable();
+        mutation_hashes.compact_sort();
         mutation_hashes.dedup();
         let mut action = CapturedAction {
             custody: self.active.custody.clone(),
@@ -607,7 +641,7 @@ impl std::io::Write for ReportCounter {
 }
 
 fn validate_report_field(field: &str) -> Result<(), String> {
-    if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
+    if field.is_empty() || field.len() > MAX_REPORT_FIELD || field.chars().any(char::is_control) {
         return Err("invalid local document report field".into());
     }
     Ok(())
@@ -625,15 +659,16 @@ fn report_budget(
     if before.len() > 256 {
         return Err("local action exceeds head budget".into());
     }
-    for field in [
-        revision,
-        published.resource.as_str(),
-        published.action.as_str(),
-    ] {
+    // A change whose surface moved under its input has no revision yet:
+    // budget the longest one it can be given.
+    let pending_revision = revision.is_empty();
+    if !pending_revision {
+        validate_report_field(revision)?;
+    }
+    for field in [published.resource.as_str(), published.action.as_str()] {
         validate_report_field(field)?;
     }
     validate_report_field(&encoded.type_id)?;
-    // Validate without constructing a second JSON tree for the typed payload.
     serde_json::from_slice::<serde::de::IgnoredAny>(&encoded.payload)
         .map_err(|error| error.to_string())?;
     let group = context.and_then(|cx| cx.group.as_ref());
@@ -666,6 +701,12 @@ fn report_budget(
     .map_err(|error| error.to_string())?;
     // A worst-case decimal hash occupies 129 bytes, plus its separator.
     // Replace the empty arrays with bounded hash lists, without allocating them.
+    if pending_revision {
+        // Every character may need escaping in the JSON string.
+        counter
+            .add(2 * MAX_REPORT_FIELD)
+            .map_err(|error| error.to_string())?;
+    }
     let hashes = [before.len(), 256]
         .into_iter()
         .filter(|count| *count != 0)

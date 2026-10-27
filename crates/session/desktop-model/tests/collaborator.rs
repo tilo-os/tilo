@@ -1,5 +1,3 @@
-//! The collaborator row and its persisted shape.
-
 use tilo_desktop_model::Collaborator;
 
 #[test]
@@ -18,7 +16,6 @@ fn collaborator_builders_set_each_concept_field() {
     {
         let c = Collaborator::with_active_tab("bob", "Bob", 42);
         assert_eq!(c.active_tab, Some(42));
-        // Other concept fields stay at their defaults.
         assert_eq!(c.cursor_color, None);
         assert_eq!(c.avatar, None);
         assert_eq!(c.role_id, None);

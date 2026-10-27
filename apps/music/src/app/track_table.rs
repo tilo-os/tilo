@@ -62,7 +62,6 @@ pub(super) enum Playback {
     Playing,
 }
 
-/// The second column of a table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Second {
     Album,
@@ -75,7 +74,6 @@ pub(super) enum Second {
 pub(super) enum Actions {
     /// Like and a compact menu for track management.
     Track,
-    /// The download's one action.
     Download,
 }
 
@@ -103,12 +101,20 @@ pub(super) struct Shape {
     pub index_width: f32,
     pub duration_width: f32,
     pub action_width: f32,
+    /// Rows spring to their new places when the songs change: the queue,
+    /// whose order the person changes in place.
+    pub moves: bool,
 }
 
 /// What a row asked for; the index is the row's place in the table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum RowEvent {
     Play(usize),
+    /// The row was added to or taken out of the selection (Ctrl or Shift
+    /// with the press): nothing plays.
+    Select(usize),
+    /// A drag began on the row: the selected songs go with it.
+    Drag(usize),
     Menu(usize, Rect),
     Like(usize),
     Offline(usize),
@@ -161,6 +167,8 @@ impl TrackTableHost {
             self.rows = rows;
         }
         if selected != self.selected || selected.is_some() {
+            // A revealed row is lifted alone; when the reveal ends, the
+            // person's own selection is theirs again.
             let mut selection = ui::selection::SelectionModel::new();
             if let Some(row) = selected {
                 selection.select_only(row);
@@ -169,6 +177,36 @@ impl TrackTableHost {
             self.selected = selected;
         }
         self.host.unplace();
+    }
+
+    /// Whether rows are on their way after the songs changed.
+    pub(super) fn rows_moving(&self) -> bool {
+        ui::widget::Widget::needs_animation_frame(self.host.widget())
+    }
+
+    /// The rows selected, by their place in the table.
+    pub(super) fn selected_rows(&self) -> Vec<usize> {
+        self.host.widget().selected_rows()
+    }
+
+    /// The songs selected, in the table's order.
+    pub(super) fn selected_ids(&self) -> Vec<String> {
+        self.selected_rows()
+            .into_iter()
+            .filter_map(|row| self.rows.get(row).map(|cell| cell.id.clone()))
+            .collect()
+    }
+
+    /// Select the rows of the songs `ids`, as they were selected before; a
+    /// song no longer in the table is left out.
+    pub(super) fn select_ids(&mut self, ids: &[String]) {
+        let mut selection = ui::selection::SelectionModel::new();
+        for (row, cell) in self.rows.iter().enumerate() {
+            if ids.contains(&cell.id) {
+                selection.toggle(row);
+            }
+        }
+        self.host.widget_mut().set_selection(selection);
     }
 
     pub(super) fn rows(&self) -> &[TrackCell] {
@@ -341,6 +379,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
     );
 
     let play = Rc::clone(events);
+    let drag = Rc::clone(events);
     let menu = Rc::clone(events);
     let mut table = DataTable::new(columns)
         .with_id("music.tracks")
@@ -348,12 +387,27 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
         .selectable(true)
         .host_scrolled()
         .with_row_height(shape.row_height)
-        .on_row_click(move |row, _, _| play.borrow_mut().push(RowEvent::Play(row)))
+        .on_row_click(move |row, ctrl, shift| {
+            // A press plays the song; with Ctrl or Shift it selects instead,
+            // for several songs to drag onto a playlist at once.
+            play.borrow_mut().push(if ctrl || shift {
+                RowEvent::Select(row)
+            } else {
+                RowEvent::Play(row)
+            });
+        })
+        .on_row_drag_begin(move |row, _, _| drag.borrow_mut().push(RowEvent::Drag(row)))
         .on_row_context_menu(move |row, _, rect| {
             menu.borrow_mut().push(RowEvent::Menu(row, rect));
         });
     if !(shape.header && shape.second.is_some()) {
         table = table.without_header();
+    }
+    if shape.moves {
+        table = table.with_row_key(|row: &TrackCell| {
+            use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+            BuildHasherDefault::<DefaultHasher>::default().hash_one(&row.id)
+        });
     }
     table
 }

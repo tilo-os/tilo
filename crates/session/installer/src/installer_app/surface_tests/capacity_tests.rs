@@ -1,4 +1,3 @@
-//! Capacity selection exercises the same field, published operation and argv as installation.
 use super::*;
 
 fn capacity_app() -> InstallerApp {
@@ -202,15 +201,17 @@ fn backend_validates_the_exact_sized_allocation_without_disk_writes() {
             p.part_uuid, p.start_bytes, p.size_bytes
         ));
     }
-    // `tilo-guided-partition` hands the reviewed allocation to
-    // `tilo-staging-handoff guided-geometry`, which runs these rules.
-    let accepts = |args: &[String]| {
+    // The exact rule `tilo-guided-partition` asks the compiled helper to apply
+    // before it writes any partition table entry. The helper's dispatcher
+    // strips its verb before this call, so these are the numbers alone.
+    let accepts = |args: &[String]| -> Result<(), String> {
         let words: Vec<&str> = args.iter().map(String::as_str).collect();
-        tilo_install_helpers::staging_handoff::backend_commands::guided_geometry(&words).is_ok()
+        tilo_install_helpers::staging_handoff::backend_commands::guided_geometry(&words)
     };
-    assert!(
+    assert_eq!(
         accepts(&args),
-        "the backend must accept the smaller, reviewed write extent"
+        Ok(()),
+        "the backend must accept the smaller, reviewed write extent: {args:?}"
     );
     for (index, value) in [
         (3, (34_u64 << 30).to_string()),
@@ -222,7 +223,7 @@ fn backend_validates_the_exact_sized_allocation_without_disk_writes() {
         let mut invalid = args.clone();
         invalid[index] = value;
         assert!(
-            !accepts(&invalid),
+            accepts(&invalid).is_err(),
             "backend accepted unsafe geometry: {invalid:?}"
         );
     }
@@ -233,7 +234,7 @@ fn backend_validates_the_exact_sized_allocation_without_disk_writes() {
         1 << 20
     ));
     assert!(
-        !accepts(&occupied),
+        accepts(&occupied).is_err(),
         "a stale free extent must fail before partition writes"
     );
 }

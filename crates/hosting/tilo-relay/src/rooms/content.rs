@@ -8,6 +8,11 @@
 //! The host answers from what it keeps, to that member's device alone, in
 //! the same bounded pieces a member answers with; the member keeps the
 //! content once every piece arrived and the bytes hash to what it asked.
+//!
+//! The host asks too: it keeps a copy of the files members post
+//! ([`ContentKeeper`]), so they stay in the room after the member who
+//! posted them leaves. It asks the room on its own presence, and the
+//! pieces members answer it with come to it, not to another device.
 
 use std::sync::{Arc, RwLock};
 
@@ -22,6 +27,34 @@ const PIECE_BYTES: usize = 192 * 1024;
 /// Content the host answers with at most.
 const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Word from the host `host` that it keeps none of what `body`, a
+/// member's `NeighbourMsg::RecordContentWant`, asks for, as a frame for the
+/// member's device alone: the member stops counting on this host for it.
+/// `None` for any other presence.
+pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
+    let Ok(NeighbourMsg::RecordContentWant {
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+    }) = postcard::from_bytes(body)
+    else {
+        return None;
+    };
+    let hash = hash.to_ascii_lowercase();
+    if !tilo_content::valid_hash(&hash) {
+        return None;
+    }
+    postcard::to_allocvec(&NeighbourMsg::RecordContentLacks {
+        responder: peer_handle(host),
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+    })
+    .ok()
+}
+
 /// Where a host's content comes from.
 pub trait RoomContent: Send + Sync {
     /// The bytes named `hash` (lowercase BLAKE3 hex) that a record of `app`
@@ -29,25 +62,112 @@ pub trait RoomContent: Send + Sync {
     fn read(&self, room: &str, app: &str, hash: &str) -> Option<Vec<u8>>;
 }
 
-/// The content source a host's rooms answer from, once it has one.
+/// Where content members answer the host with goes.
+pub trait ContentKeeper: Send + Sync {
+    /// `frame`, a `NeighbourMsg::RecordContentPiece` the member device
+    /// `from` sent this host in `room`.
+    fn piece(&self, room: &str, from: [u8; 32], frame: &[u8]);
+
+    /// Whether `frame` answers a request this host made in `room` and
+    /// would keep: such a piece counts against what the keeper keeps, not
+    /// the member's general content budget.
+    fn expects(&self, room: &str, frame: &[u8]) -> bool {
+        let _ = (room, frame);
+        false
+    }
+}
+
+/// The content source a host's rooms answer from, and the keeper of what
+/// members answer the host with, once it has them.
 #[derive(Default)]
-pub(super) struct ContentSlot(RwLock<Option<Arc<dyn RoomContent>>>);
+pub(super) struct ContentSlot {
+    source: RwLock<Option<Arc<dyn RoomContent>>>,
+    keeper: RwLock<Option<Arc<dyn ContentKeeper>>>,
+}
 
 impl ContentSlot {
     fn get(&self) -> Option<Arc<dyn RoomContent>> {
-        self.0.read_recover().clone()
+        self.source.read_recover().clone()
     }
 }
 
 impl Rooms {
     /// Answer members' requests for content from `content`.
     pub fn serve_content(&self, content: Arc<dyn RoomContent>) {
-        *self.inner.content.0.write_recover() = Some(content);
+        *self.inner.content.source.write_recover() = Some(content);
     }
 
-    /// The pieces answering `body`, a presence `room`'s member published,
-    /// when it asks for content this host keeps: frames for the member's
-    /// device alone. Empty for any other presence.
+    /// The bytes named `hash` this host keeps for the room of `workspace`
+    /// governed here, checked against the hash: what its bots fetched and
+    /// the files it keeps for members. `None` for a room not governed here
+    /// or content it does not keep.
+    pub async fn kept_content(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
+        let source = self.inner.content.get()?;
+        let rooms = self
+            .inner
+            .rooms
+            .lock()
+            .await
+            .iter()
+            .map(|(room, governed)| (room.clone(), governed.clone()))
+            .collect::<Vec<_>>();
+        for (room, governed) in rooms {
+            if governed.lock().await.workspace_id() == workspace {
+                return source
+                    .read(&room, "", hash)
+                    .filter(|bytes| tilo_content::verify(hash, bytes));
+            }
+        }
+        None
+    }
+
+    /// Hand the pieces of content members send this host to `keeper`.
+    pub fn keep_content(&self, keeper: Arc<dyn ContentKeeper>) {
+        *self.inner.content.keeper.write_recover() = Some(keeper);
+    }
+
+    /// `frame`, a piece of content the member device `from` sent this host
+    /// in `room`, to the keeper; dropped when there is none.
+    pub(crate) fn content_for_host(&self, room: &str, from: [u8; 32], frame: &[u8]) {
+        let keeper = self.inner.content.keeper.read_recover().clone();
+        if let Some(keeper) = keeper {
+            keeper.piece(room, from, frame);
+        }
+    }
+
+    /// Whether `frame`, a piece of content sent this host in `room`,
+    /// answers a request its keeper made ([`ContentKeeper::expects`]).
+    pub(crate) fn host_expects(&self, room: &str, frame: &[u8]) -> bool {
+        let keeper = self.inner.content.keeper.read_recover().clone();
+        keeper.is_some_and(|keeper| keeper.expects(room, frame))
+    }
+
+    /// Publish `body`, a `NeighbourMsg::RecordContentWant` naming this
+    /// host, on `room`'s presence: the members keeping the content answer
+    /// the host. The number of devices it reached.
+    ///
+    /// # Errors
+    ///
+    /// The room is not governed here, or its workspace not hosted here.
+    pub async fn ask_members(&self, room: &str, body: Vec<u8>) -> Result<usize, String> {
+        let workspace_id = self
+            .room(room)
+            .await
+            .map_err(|error| error.to_string())?
+            .lock()
+            .await
+            .workspace_id();
+        self.inner
+            .host
+            .records
+            .host_presence(workspace_id, body)
+            .await
+    }
+
+    /// The answer to `body`, a presence `room`'s member published, when it
+    /// asks for content: the pieces of what this host keeps, or word that
+    /// it keeps none, as frames for the member's device alone. Empty for
+    /// any other presence.
     pub(crate) fn content_answer(&self, room: &str, body: &[u8]) -> Vec<Vec<u8>> {
         let Ok(NeighbourMsg::RecordContentWant {
             requester,
@@ -62,16 +182,21 @@ impl Rooms {
         if cluster_id != room || !tilo_content::valid_hash(&hash) {
             return Vec::new();
         }
+        let responder = peer_handle(&self.inner.host.cert.device_public_key);
         let Some(bytes) = self
-            .inner
-            .content
-            .get()
-            .and_then(|content| content.read(room, &app_id, &hash))
+            .app_file(room, &hash)
+            .or_else(|| {
+                self.inner
+                    .content
+                    .get()
+                    .and_then(|content| content.read(room, &app_id, &hash))
+            })
             .filter(|bytes| bytes.len() <= MAX_CONTENT_BYTES)
         else {
-            return Vec::new();
+            return lacks_answer(&self.inner.host.cert.device_public_key, body)
+                .into_iter()
+                .collect();
         };
-        let responder = peer_handle(&self.inner.host.cert.device_public_key);
         let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let piece = |offset: u64, chunk: &[u8]| NeighbourMsg::RecordContentPiece {
             responder,
@@ -137,16 +262,17 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "the relay stays live until its consuming shutdown"
     )]
-    async fn a_member_asking_for_kept_content_gets_it_in_pieces_and_nothing_else() {
+    async fn a_member_asking_for_content_gets_it_in_pieces_or_word_that_it_is_not_kept() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = crate::rooms::tests::governor();
         let relay = crate::rooms::tests::view_read_relay(scratch.path(), &key, &cert).await;
         let rooms = relay.rooms().unwrap().clone();
         let avatar = vec![7_u8; PIECE_BYTES + 10];
         let hash = blake3::hash(&avatar).to_hex().to_string();
-        assert!(
-            rooms.content_answer(ROOM, &want(ROOM, &hash)).is_empty(),
-            "nothing before the host serves content"
+        assert_eq!(
+            lacks(&rooms.content_answer(ROOM, &want(ROOM, &hash))),
+            Some((peer_handle(&cert.device_public_key), 42)),
+            "a host that serves no content keeps none"
         );
         rooms.serve_content(Arc::new(One(avatar.clone())));
 
@@ -178,12 +304,27 @@ mod tests {
             rooms.content_answer(other, &want(ROOM, &hash)).is_empty(),
             "another room's request"
         );
-        assert!(
-            rooms
-                .content_answer(ROOM, &want(ROOM, &"0".repeat(64)))
-                .is_empty(),
-            "not kept"
+        assert_eq!(
+            lacks(&rooms.content_answer(ROOM, &want(ROOM, &"0".repeat(64)))),
+            Some((peer_handle(&cert.device_public_key), 42)),
+            "not kept: the member is told so"
         );
         assert!(rooms.content_answer(ROOM, b"not a request").is_empty());
+    }
+
+    /// Who said, to whom, that it keeps none of what was asked: the one
+    /// frame `frames` holds when it is such word.
+    fn lacks(frames: &[Vec<u8>]) -> Option<(u64, u64)> {
+        let [frame] = frames else {
+            return None;
+        };
+        match postcard::from_bytes(frame).ok()? {
+            NeighbourMsg::RecordContentLacks {
+                responder,
+                requester,
+                ..
+            } => Some((responder, requester)),
+            _ => None,
+        }
     }
 }

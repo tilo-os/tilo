@@ -28,17 +28,84 @@ pub struct RecordEnv<R: Resource> {
     pub(crate) effects: Effects<R>,
 }
 
-impl<R: Resource> Clone for RecordEnv<R> {
+/// One of the documents the app's windows started in the workspace
+/// ([`RecordEnv::window_documents`]).
+pub struct WindowDocument<R: Resource> {
+    /// The record it is.
+    pub record: ui_core::record::RecordId,
+    /// What it holds, as last kept.
+    pub state: Rc<R::State>,
+    /// When it last changed, in milliseconds since the epoch; `0` when no
+    /// change of it says.
+    pub changed_ms: u64,
+}
+
+impl<R: Resource> WindowDocument<R> {
+    /// The launch argument naming it, for [`RecordEnv::open_here`].
+    pub fn uri(&self) -> String {
+        self.record.uri()
+    }
+}
+
+impl<R: Resource> Clone for WindowDocument<R> {
     fn clone(&self) -> Self {
         Self {
+            record: self.record.clone(),
+            state: Rc::clone(&self.state),
+            changed_ms: self.changed_ms,
+        }
+    }
+}
+
+impl<R: Resource> Clone for RecordEnv<R> {
+    fn clone(&self) -> Self {
+        let Shared {
+            alive,
+            saved,
+            saves,
+            run,
+            storage,
+        } = Shared::of(
+            &self.alive,
+            &self.saved,
+            (&self.saves, &self.run, &self.storage),
+        );
+        Self {
             live: self.live.clone(),
-            alive: self.alive.clone(),
+            alive,
             dispatch: self.dispatch.clone(),
-            saved: self.saved.clone(),
-            saves: self.saves.clone(),
-            run: self.run.clone(),
-            storage: Rc::clone(&self.storage),
+            saved,
+            saves,
+            run,
+            storage,
             effects: self.effects.clone(),
+        }
+    }
+}
+
+/// What a [`RecordEnv`] holds that does not name its resource type, cloned
+/// here once rather than in every app's clone of it.
+struct Shared {
+    alive: Weak<()>,
+    saved: LocalState<RecordSaveStatus>,
+    saves: super::saves::Saves,
+    run: Run,
+    storage: Rc<ViewStorage>,
+}
+
+impl Shared {
+    #[inline(never)]
+    fn of(
+        alive: &Weak<()>,
+        status: &LocalState<RecordSaveStatus>,
+        (saves, run, storage): (&super::saves::Saves, &Run, &Rc<ViewStorage>),
+    ) -> Self {
+        Self {
+            alive: alive.clone(),
+            saved: status.clone(),
+            saves: saves.clone(),
+            run: run.clone(),
+            storage: Rc::clone(storage),
         }
     }
 }
@@ -68,6 +135,53 @@ impl<R: Resource> RecordEnv<R> {
         arguments: &[String],
     ) -> Result<ui_core::application::ReplacementOutcome, String> {
         self.run.open_here(arguments)
+    }
+
+    /// The documents this app's windows started in this workspace, each as
+    /// last kept, the most recently changed first, without the one this
+    /// window shows: what an app whose windows each show a document of their
+    /// own ([`ResourceApp::WINDOW_RESOURCE`](super::ResourceApp::WINDOW_RESOURCE))
+    /// lists, so a document made in a window that was closed is reached
+    /// again. Open one here with [`Self::open_here`] naming
+    /// [`WindowDocument::uri`]. Reads every one of them, so ask when the
+    /// list is shown, not on every frame. Empty in a past version and where
+    /// the window keeps no records in a workspace.
+    pub fn window_documents(&self) -> Vec<WindowDocument<R>> {
+        if self.is_past() {
+            return Vec::new();
+        }
+        let Some(store) = self.storage.room_store() else {
+            return Vec::new();
+        };
+        let kind = ui_core::record::RecordKind::new(R::KIND);
+        let shown = self.run.launched.record.as_ref();
+        let mut documents: Vec<WindowDocument<R>> = store
+            .window_records(&kind)
+            .into_iter()
+            .filter(|(record, _)| Some(record) != shown)
+            .filter_map(|(record, mut doc)| {
+                let changed_s = doc
+                    .get_heads()
+                    .iter()
+                    .filter_map(|head| doc.get_change_by_hash(head).map(|change| change.timestamp()))
+                    .max()
+                    .unwrap_or(0);
+                let state = tilo_resource::Reader::<R>::read(&doc)
+                    .map_err(|error| {
+                        tracing::warn!(record = %record, %error, "window document unreadable; left out");
+                    })
+                    .ok()?
+                    .state()
+                    .clone();
+                Some(WindowDocument {
+                    record,
+                    state,
+                    changed_ms: u64::try_from(changed_s).unwrap_or(0).saturating_mul(1000),
+                })
+            })
+            .collect();
+        documents.sort_by_key(|document| std::cmp::Reverse(document.changed_ms));
+        documents
     }
 
     /// The names of the participants, for showing the ids actions record
@@ -124,7 +238,7 @@ impl<R: Resource> RecordEnv<R> {
         let live = self.live.clone();
         let state = self.storage.children::<C>(move || live.get())?;
         let me = self.dispatch.me()?.to_owned();
-        Some(super::Children::new(state, me))
+        Some(super::Children::new(state, me).dispatching(&self.dispatch))
     }
 
     /// Who this view is for: the participant reading and editing through
@@ -258,6 +372,45 @@ impl<R: Resource> RecordEnv<R> {
         self.storage.device()
     }
 
+    /// Read the result of the view action at `target` with `argument`,
+    /// through the session's action door as the person using the app, and
+    /// keep it current ([`Query`](super::Query)): a live action's answer
+    /// follows its provider's changes, one that answers once is read once.
+    /// It is followed while this scope lives.
+    pub fn query<T>(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        argument: tilo_actions::remote::InvokeArgument,
+    ) -> super::Query<T>
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + 'static,
+    {
+        if !self.run.mode.is_live() {
+            // A past version or a capture reaches no provider: a capture
+            // reads what its scenario answers for the action.
+            let answers = self.run.fixture::<super::scenario::Answers>();
+            return super::Query::fixed(
+                answers.as_deref().and_then(|answers| answers.get(&target)),
+            );
+        }
+        super::Query::start(self.dispatch.opener(), &self.alive, target, argument)
+    }
+
+    /// Invoke the action at `target` of another provider with `argument`,
+    /// through the session's action door as the person using the app: a
+    /// write a [`Self::query`] then reads back. Why it did not go ahead is
+    /// told as any refused call of the window is. A past version or a
+    /// capture invokes nothing.
+    pub fn invoke(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        argument: tilo_actions::remote::InvokeArgument,
+    ) {
+        if self.run.mode.is_live() {
+            self.dispatch.opener().invoke(target, argument);
+        }
+    }
+
     /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
     /// theirs alone, kept in their own room and synced to their other
     /// devices, never to a collaborator, whatever room this record is in.
@@ -265,6 +418,15 @@ impl<R: Resource> RecordEnv<R> {
     /// past version) or the record cannot be opened.
     pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
         self.storage.person::<P>()
+    }
+
+    /// The record `P` that `owner` keeps in the window's room and every app
+    /// of the room opens (`collab_types::WORKSPACE_RECORDS`): the
+    /// workspace's emoji, which are Chat's. Changes to it are decided by the
+    /// room's grants on `owner`'s resource. `None` where the host keeps no
+    /// such records (a view of a past version) or it cannot be opened.
+    pub fn workspace<P: Resource>(&self, owner: &'static str) -> Option<super::WorkspaceRecord<P>> {
+        self.storage.workspace::<P>(owner)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their

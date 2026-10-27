@@ -17,6 +17,26 @@ use std::cell::{Cell, RefCell};
 use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
+/// The mapped nodes that take part in history: those inside a bound
+/// component or a legacy tile, and widgets that show or ask for undo or
+/// report an action bracket. Found once per admitted map, so a frame's
+/// history sweep visits them and not every row of a long list.
+#[derive(Default)]
+pub(super) struct HistoryNodes {
+    /// The admission and map size these were found for.
+    pub(super) found_for: Option<(u64, usize)>,
+    pub(super) nodes: Vec<NodeId>,
+    /// Whether any mapped node is outside a bound component: the sweep then
+    /// keeps the transaction boundary such a node's status read made.
+    pub(super) any_unbound: bool,
+}
+
+/// What a placement of every widget saw: where the keyboard focus was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PlacedAll {
+    pub(super) focus: Option<NodeId>,
+}
+
 /// Retained layout and widget lookup state.
 #[cfg_attr(
     not(feature = "native"),
@@ -29,11 +49,27 @@ pub(super) struct LayoutRuntime {
     pub(super) taffy: TaffyTree<()>,
     pub(super) root_node: Option<NodeId>,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
+    /// Which `node_map` pointers were taken from the live tree
+    /// (`app::retained_layout`).
+    pub(super) adopted: crate::retained_widgets::Adopted,
+    /// How many builds' maps were admitted (`App::admit_layout_maps`).
+    pub(super) admissions: u64,
+    /// The mapped nodes the history sweep visits, and the admission and map
+    /// size they were found for (`App::history_sweep_nodes`).
+    pub(super) history_nodes: HistoryNodes,
     pub(super) layout_dirty: bool,
     /// Set when a widget reports `take_structure_dirty()`: without a taffy
     /// rebuild before the next layout pass, runtime-spawned widgets have no
     /// `NodeId` and `apply_layout` skips them.
     pub(super) structure_dirty: bool,
+    /// Set when the root's widgets report a change they carry out in place
+    /// ([`crate::widget::StructureChange::Children`]): the next layout pass
+    /// remounts their children in the retained tree instead of rebuilding
+    /// it, unless something rebuilds it first.
+    pub(super) remount: bool,
+    /// How many times widgets changed the retained tree in place: like
+    /// [`Self::rebuilds`], the widgets compared across a frame changed.
+    pub(super) remounts: u64,
     /// Diffed against `inner_size()` to catch a resize without a `Resized` event.
     pub(super) last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
     /// Last settled logical content size (the window inside `safe_area`);
@@ -41,6 +77,9 @@ pub(super) struct LayoutRuntime {
     pub(super) last_layout_logical: Option<(f64, f64)>,
     /// System chrome drawn over the window, which content stays clear of.
     pub(super) safe_area: crate::scale::SafeArea,
+    /// The row the runner draws the app's window-bar slots in, outside a
+    /// Tilo session, under the safe area's top (`native_runner::slot_bar`).
+    pub(super) slot_bar_inset: f64,
     /// Where the root is placed: the safe area's top-left corner.
     pub(super) content_origin: vello::kurbo::Point,
     /// How many times the taffy tree was rebuilt: a host comparing two
@@ -55,6 +94,24 @@ pub(super) struct LayoutRuntime {
     /// itself with the last one) was described: that host keeps the frame's
     /// damage instead of repainting whole.
     pub(super) frame_rebuilds_described: bool,
+    /// Where the last rebuild no widget describes was asked for, for a test
+    /// that tells why a frame repainted whole.
+    #[cfg(test)]
+    pub(super) undescribed_by: Option<&'static std::panic::Location<'static>>,
+    /// Frames whose layout failed, skipped, and when that was last logged.
+    pub(super) skipped_frames: crate::widget::SkippedFrames,
+    /// The last placement that placed every widget (`None` before one): a
+    /// focus move since places them all again, so a view revealing the
+    /// focused widget reads where it truly stands.
+    pub(super) placed_all: Option<PlacedAll>,
+    /// The last placement placed only what long collections show
+    /// ([`crate::widget::placing_again`]): a widget far from every view
+    /// stands where an earlier placement put it until the next full one
+    /// (`App::place_all`).
+    pub(super) placed_partly: bool,
+    /// What a host that draws only its frames' damage keeps from frame to
+    /// frame ([`crate::draw_cull`]).
+    pub(super) cull: crate::draw_cull::Culling,
 }
 
 impl LayoutRuntime {
@@ -63,23 +120,40 @@ impl LayoutRuntime {
             taffy: TaffyTree::new(),
             root_node: None,
             node_map: std::collections::HashMap::new(),
+            adopted: crate::retained_widgets::Adopted::default(),
+            admissions: 0,
+            history_nodes: HistoryNodes::default(),
             layout_dirty: true,
             structure_dirty: false,
+            remount: false,
+            remounts: 0,
             last_frame_size: None,
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),
+            slot_bar_inset: 0.0,
             content_origin: vello::kurbo::Point::ORIGIN,
             rebuilds: 0,
             rebuild_described: true,
             frame_rebuilds_described: false,
+            #[cfg(test)]
+            undescribed_by: None,
+            skipped_frames: crate::widget::SkippedFrames::default(),
+            placed_all: None,
+            placed_partly: false,
+            cull: crate::draw_cull::Culling::default(),
         }
     }
 
     /// Rebuild the tree before the next layout, for a reason no widget
     /// describes: the frame that does it repaints whole.
+    #[track_caller]
     pub(super) fn request_rebuild(&mut self) {
         self.structure_dirty = true;
         self.rebuild_described = false;
+        #[cfg(test)]
+        {
+            self.undescribed_by = Some(std::panic::Location::caller());
+        }
     }
 }
 
@@ -110,6 +184,12 @@ pub(super) struct InputRuntime {
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
+    /// Where the pointer is, in logical pixels of the app's surface.
+    pub(super) pointer_at: Option<vello::kurbo::Point>,
+    /// Where the person last pressed, while a press (not a key) is the last
+    /// thing they did: what they pressed is in the window there, which is the
+    /// window that asked for whatever the press opens.
+    pub(super) pressed_at: Option<vello::kurbo::Point>,
 }
 
 impl InputRuntime {
@@ -126,6 +206,8 @@ impl InputRuntime {
             tab_order_continues_in_host: false,
             pointer_buttons: 0,
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
+            pointer_at: None,
+            pressed_at: None,
         }
     }
 }
@@ -138,8 +220,14 @@ impl InputRuntime {
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    /// The window the palette was opened from, when the app hosts several
+    /// (the desktop's tiles): the palette centres on it, not on the screen.
+    pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// Why invocations the person made this pass did not run, said over the
+    /// window once the pass ends ([`super::App::refuse_visibly`]).
+    pub(super) refusals: Vec<String>,
     /// The control an accessibility action focused while the same action
     /// replaced widgets: focused again once the next layout admits them.
     pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
@@ -202,6 +290,9 @@ pub(super) struct ActionRuntime {
     /// Each edit an effect submitted for its invoker that the host is still
     /// admitting, by broker request, to the effect invocation it continues.
     pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
+    /// Each invocation of another provider's action a control here is bound
+    /// to that the provider is still answering, by broker request.
+    pub(super) hosted_requests: std::collections::HashSet<u64>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -212,6 +303,12 @@ pub(super) struct ActionRuntime {
     /// Requests to the session action host awaiting their answer, keyed by
     /// the answer they expect, to the local request id they correlate with.
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
+    /// Invocations of this app's own actions, in the order they were made,
+    /// waiting for the route to carry the surface that offers them. The host
+    /// resolves an invocation against the surface it last received from this
+    /// connection, so one sent ahead of that surface is refused as unknown.
+    pub(super) held_own_invocations:
+        std::collections::VecDeque<tilo_actions::remote::InvokeRequest>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
@@ -226,7 +323,6 @@ pub(super) struct ActionRuntime {
 /// Which answer from the session action host a request is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum BrokerReply {
-    /// The receipt for an invocation.
     Receipt(tilo_actions::InvocationId),
     /// The state of an invocation being observed.
     Update(tilo_actions::InvocationId),
@@ -237,7 +333,9 @@ impl ActionRuntime {
         Self {
             published_invocations: Default::default(),
             action_palette: None,
+            palette_window: None,
             ordinary_palette_return_focus: None,
+            refusals: Vec::new(),
             focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
@@ -270,9 +368,11 @@ impl ActionRuntime {
             directed_invocations: std::collections::HashMap::new(),
             acting_for: std::collections::HashMap::new(),
             follow_ups: std::collections::HashMap::new(),
+            hosted_requests: std::collections::HashSet::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
+            held_own_invocations: std::collections::VecDeque::new(),
             #[cfg(any(test, feature = "test-support"))]
             refused_broker_receipt: None,
             next_broker_request_id: Some(0),
@@ -300,6 +400,9 @@ pub(super) struct AccessibilityRuntime {
     pub(super) a11y: crate::a11y::A11ySettings,
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
+    /// The window's content zoom, multiplied into [`Self::ui_scale`] when
+    /// the theme is built (`crate::content_zoom`).
+    pub(super) zoom: crate::content_zoom::WindowZoom,
     pub(super) semantic_tree: crate::a11y_tree::SemanticTree,
     /// Whether anything [`Self::semantic_tree`] is read from may have
     /// changed since it was last refreshed: the document, a widget, the
@@ -331,6 +434,7 @@ impl AccessibilityRuntime {
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
+            zoom: crate::content_zoom::WindowZoom::default(),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             semantic_tree_stale: true,
             semantic_tree_marks: 0,

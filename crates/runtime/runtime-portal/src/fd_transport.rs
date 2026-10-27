@@ -13,9 +13,6 @@ use rustix::net::{
 const MAX_BUNDLE: usize = 3;
 
 /// Send a payload with one borrowed descriptor.
-///
-/// # Errors
-/// Returns the socket error or an error for an empty or partially sent payload.
 pub fn send_with_fd(sock: impl AsFd, payload: &[u8], fd: impl AsFd) -> io::Result<()> {
     send_with_fds(sock, payload, &[fd.as_fd()])
 }
@@ -58,10 +55,6 @@ pub fn send_with_fds(sock: impl AsFd, payload: &[u8], fds: &[BorrowedFd<'_>]) ->
 }
 
 /// Receive a payload and transfer ownership of its optional descriptor to the caller.
-///
-/// # Errors
-/// Returns socket errors or rejects truncated messages and unexpected descriptor counts.
-/// All descriptors received on an error path are closed.
 pub fn recv_with_fd(sock: impl AsFd) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
     recv_into(sock, &mut [0u8; 4096])
 }
@@ -70,9 +63,6 @@ pub fn recv_with_fd(sock: impl AsFd) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
 ///
 /// The caller must validate the message's declared roles and exact count before
 /// using any descriptor. Malformed/truncated messages close every received FD.
-///
-/// # Errors
-/// Returns transport errors or rejects an oversized/truncated descriptor bundle.
 pub fn recv_with_fds(sock: impl AsFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     recv_bundle(sock, &mut [0u8; 4096], MAX_BUNDLE)
 }
@@ -145,7 +135,6 @@ mod tests {
 
     #[test]
     fn a_descriptor_survives_the_socket_and_arrives_close_on_exec() {
-        // The descriptor is live on the far side.
         {
             let (a, b) = UnixStream::pair().unwrap();
             let (mut source, target) = UnixStream::pair().unwrap();
@@ -158,7 +147,6 @@ mod tests {
             received.read_exact(&mut bytes).unwrap();
             assert_eq!(&bytes, b"hello");
         }
-        // And it is close-on-exec.
         {
             let (a, b) = UnixStream::pair().unwrap();
             send_with_fd(&a, b"session", &a).unwrap();
@@ -199,7 +187,6 @@ mod tests {
 
     #[test]
     fn oversized_negotiated_bundle_closes_every_received_descriptor() {
-        // See `rejected_message_closes_descriptors`.
         let _quiet = crate::no_spawns();
         let (sender, receiver) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
@@ -276,7 +263,6 @@ mod tests {
         // (case, descriptor count, payload bytes)
         let cases = [
             ("multiple descriptors are rejected and closed", 2, 1),
-            // Excess descriptors previously truncated the control message.
             ("excess descriptors that truncated control", 32, 1),
             ("maximum rights message", maximum_rights, 1),
             ("truncated payload closes the delivered descriptor", 1, 1024),

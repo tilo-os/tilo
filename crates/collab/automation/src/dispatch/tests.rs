@@ -45,6 +45,7 @@ fn post(actor: InteractionActor, change: &str, caused_by: Option<Cause>) -> Reco
         after: Some(json!({"text": "hi"})),
         caused_by,
         incoming_message: true,
+        housekeeping: false,
         shortcut: None,
         run: None,
     }
@@ -105,6 +106,32 @@ fn a_post_by_a_person_fires_the_bot_with_the_event_bound() {
             event: "a".repeat(64),
             depth: 1
         })
+    );
+}
+
+#[test]
+fn housekeeping_fires_only_a_trigger_that_names_its_action() {
+    let mut read = post(person("bob"), &"h".repeat(64), None);
+    read.did = verb("mark-read");
+    read.housekeeping = true;
+    let any_change = program(vec![watch_chat(ActorFilter::Anyone)]);
+    assert!(
+        dispatch(&as_bot("b1", &any_change), Event::Record(&read))
+            .firings
+            .is_empty(),
+        "marking a channel read changes nothing the record holds"
+    );
+    let reads = program(vec![TriggerSpec::RecordChanged {
+        kind: "chat.workspace".into(),
+        actions: vec!["mark-read".into()],
+        fields: vec![],
+        by: ActorFilter::Anyone,
+    }]);
+    assert_eq!(
+        dispatch(&as_bot("b1", &reads), Event::Record(&read))
+            .firings
+            .len(),
+        1
     );
 }
 

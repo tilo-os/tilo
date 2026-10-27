@@ -1,4 +1,3 @@
-//! App transfer recovery across a deliberately interrupted backend adoption.
 use super::promotion::PromotionEvent;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 

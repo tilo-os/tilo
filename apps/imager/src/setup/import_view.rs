@@ -3448,7 +3448,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn import_resources_and_status_publish_reviewed_endpoints_from_real_events() {
-        // Phase `standalone_import_publishes_stable_operation_resources_before_layout`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             fs::write(source.join("document.txt"), b"kept locally").unwrap();
@@ -3501,7 +3500,6 @@ mod tests {
             assert!(!exposed.contains(&destination_text));
         }
 
-        // Phase `local_read_status_names_reviewed_endpoints_without_publishing_paths`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3526,7 +3524,6 @@ mod tests {
             assert!(!public.contains(&expected_destination));
         }
 
-        // Phase `local_read_status_names_continued_folder_endpoints`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3672,7 +3669,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn review_action_fails_or_cancels_with_its_picker_and_index() {
-        // Phase `prepare_review_effect_fails_when_the_index_save_is_rejected`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3730,7 +3726,6 @@ mod tests {
             );
         }
 
-        // Phase `identity_failure_yields_failed_folder_review_action`.
         {
             let (_temp, mut app, source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3760,7 +3755,6 @@ mod tests {
             }
         }
 
-        // Phase `cancelled_folder_destination_picker_cancels_review_action`.
         {
             let (_temp, mut app, source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3790,7 +3784,6 @@ mod tests {
             }
         }
 
-        // Phase `disconnected_folder_picker_fails_the_review_action`.
         {
             let (_temp, mut app, source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3830,7 +3823,6 @@ mod tests {
             assert!(matches!(update, JobOutcome::Failed { .. }));
         }
 
-        // Phase `semantic_picker_refuses_a_second_request_without_spawning_another_picker`.
         {
             let (_temp, mut app, _source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3857,14 +3849,12 @@ mod tests {
         }
     }
 
-    /// Retained operation actions, continuation revisions and review matching.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn retained_and_continuation_actions_keep_revision_identities() {
-        // Phase `retained_operation_action_tracks_its_id_after_reordering_and_stales_after_removal`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3922,7 +3912,6 @@ mod tests {
             assert!(app.worker.is_none());
         }
 
-        // Phase `continuation_actions_keep_revision_identities_and_reject_replaced_reviews`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3987,7 +3976,6 @@ mod tests {
             );
         }
 
-        // Phase `continuation_batch_affordance_requires_identity_and_reviewed_copy`.
         {
             use ui::headless::{FrameHarness, SemanticExpectation};
             for (scenario, enabled) in [
@@ -4022,7 +4010,6 @@ mod tests {
             }
         }
 
-        // Phase `mismatched_review_records_refuse_start_without_losing_rereview`.
         {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
@@ -4080,7 +4067,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn copy_action_completes_only_after_the_reviewed_worker_finishes() {
-        // Phase `reviewed_batch_rechecks_identity_and_starts_only_reviewed_copy_rows`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4139,7 +4125,6 @@ mod tests {
             );
         }
 
-        // Phase `copy_action_succeeds_only_after_the_worker_finishes`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4165,7 +4150,6 @@ mod tests {
             assert_eq!(app.operations[0].state(), OperationState::Complete);
         }
 
-        // Phase `identity_failure_yields_failed_copy_action_instead_of_success`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4196,7 +4180,6 @@ mod tests {
             assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
         }
 
-        // Phase `broker_cancellation_stops_a_queued_copy_before_the_worker_starts`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4219,7 +4202,6 @@ mod tests {
             assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
         }
 
-        // Phase `stop_copy_command_refuses_when_no_worker_accepts_the_request`.
         {
             let (_temp, mut app, _source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -4236,7 +4218,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn retry_and_restart_resume_the_journaled_worker_honestly() {
-        // Phase `semantic_cancel_and_retry_use_the_existing_journaled_worker`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4343,7 +4324,6 @@ mod tests {
             assert_eq!(reopened.operations[0].state(), OperationState::Complete);
         }
 
-        // Phase `partial_worker_report_remains_visible_as_incomplete`.
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
@@ -4369,14 +4349,12 @@ mod tests {
         }
     }
 
-    /// Issue detail pages.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn issue_detail_pages_publish_restore_and_refuse_when_closed() {
-        // Phase `semantic_issue_details_publish_completed_pages_through_repeatable_public_reads`.
         {
             let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
             let operation = root_resource(&app).children.pop().unwrap();
@@ -4408,7 +4386,6 @@ mod tests {
             ));
         }
 
-        // Phase `first_issues_action_is_unavailable_on_a_single_final_page`.
         #[cfg(unix)]
         {
             let (_temp, mut app, source, destination_parent) = fixture();
@@ -4436,7 +4413,6 @@ mod tests {
             assert_eq!(observed["operations"][0]["first_issues_available"], false);
         }
 
-        // Phase `semantic_first_issue_page_restores_the_original_page_and_closes_both_payloads`.
         {
             let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
             let operation = root_resource(&app).children.pop().unwrap();
@@ -4489,7 +4465,6 @@ mod tests {
             ));
         }
 
-        // Phase `terminal_issue_button_uses_the_production_path_to_restore_the_first_page`.
         {
             use ui::headless::{FrameHarness, SemanticExpectation};
 
@@ -4521,7 +4496,6 @@ mod tests {
             assert_eq!(restored["operations"][0]["next_issues_available"], true);
         }
 
-        // Phase `retained_next_issue_actions_refuse_while_details_are_closed`.
         {
             let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
             let operation = root_resource(&app).children.pop().unwrap();
@@ -4572,7 +4546,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn continuation_batches_retarget_and_retry_without_duplicate_operations() {
-        // Phase `unpublished_continuation_can_review_another_destination_after_collision`.
         {
             for substitute_parent in [false, true] {
                 let (_temp, mut app, source, parent) = fixture();
@@ -4637,7 +4610,6 @@ mod tests {
             }
         }
 
-        // Phase `same_basename_folders_can_retarget_the_second_without_changing_first_output`.
         {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
@@ -4697,7 +4669,6 @@ mod tests {
             assert_eq!(app.operations.len(), 2);
         }
 
-        // Phase `continuation_batch_uses_existing_worker_and_reopen_does_not_duplicate`.
         {
             let (temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4769,7 +4740,6 @@ mod tests {
             assert_eq!(reopened.operations[0].state(), OperationState::Complete);
         }
 
-        // Phase `interrupted_before_journal_creation_can_explicitly_retry_without_new_operation`.
         {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
@@ -4886,7 +4856,6 @@ mod tests {
     /// Failed terminal and start persistence.
     #[test]
     fn failed_checkpoints_never_report_completion_or_create_output() {
-        // Phase `failed_terminal_checkpoint_retains_an_honest_incomplete_result`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4916,7 +4885,6 @@ mod tests {
             );
         }
 
-        // Phase `failed_start_persistence_never_creates_output`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);

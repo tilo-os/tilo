@@ -16,6 +16,45 @@ fn fixture() -> Result<Replica<ContactDirectory>, Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn email_hints_offer_each_person_once_per_mailbox_and_go_stale_on_change() {
+    let mut record = fixture().expect("fixture succeeds");
+    for person in [first(), second()] {
+        record
+            .apply(ContactDirectory::PROJECT_EMAILS.with((
+                person,
+                vec![
+                    "Alice@EXAMPLE.test".into(),
+                    "Alice@example.test".into(),
+                    "bad\n@example.test".into(),
+                ],
+            )))
+            .expect("hints project");
+    }
+    let state = record.state().expect("state loads");
+    let hint = |person: Id| super::EmailHint {
+        person: person.as_str().into(),
+        label: "Alex".into(),
+        email: "Alice@example.test".into(),
+    };
+    assert_eq!(
+        state.email_hints(),
+        vec![hint(first()), hint(second())],
+        "one hint per person and mailbox, invalid ones dropped, people kept apart"
+    );
+    assert!(state.holds(&hint(first())));
+    record
+        .apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Sam".into())))
+        .expect("renamed");
+    record
+        .apply(ContactDirectory::REMOVE_CONTACT.with(second()))
+        .expect("removed");
+    let state = record.state().expect("state loads");
+    assert!(!state.holds(&hint(first())), "a renamed contact is stale");
+    assert!(!state.holds(&hint(second())), "a removed contact is stale");
+    assert_eq!(state.email_hints().len(), 1);
+}
+
+#[test]
 fn email_hints_preserve_ambiguity_case_and_aliases_without_identity_links() {
     let mut record = fixture().expect("fixture succeeds");
     for person in [first(), second()] {

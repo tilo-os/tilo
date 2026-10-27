@@ -99,7 +99,6 @@ impl NotebookFixture {
             .insert(page, String::from_utf8(bytes.to_vec()).unwrap());
     }
 
-    /// The actions that write the fixture's notebook.
     pub fn actions(&self) -> Vec<Action> {
         let titles = self
             .workspace

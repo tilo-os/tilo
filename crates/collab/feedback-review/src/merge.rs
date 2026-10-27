@@ -6,6 +6,7 @@
 //! redacts, whoever wrote the title.
 
 use std::collections::BTreeMap;
+use tilo_sort::CompactSort as _;
 
 use crate::detect::scan;
 use crate::{
@@ -31,7 +32,7 @@ pub fn label_title(step: &ReviewStep) -> LabelTitle {
 }
 
 fn mask_ranges(title: &str, mut ranges: Vec<(usize, usize)>) -> String {
-    ranges.sort_unstable();
+    ranges.compact_sort();
     let mut masked = String::with_capacity(title.len());
     let mut cursor = 0;
     for (start, end) in ranges {
@@ -87,7 +88,7 @@ pub fn merge(
         .filter_map(|proposal| request.redacted(proposal))
         .collect();
     // Longest first, so a value is masked whole before a part of it is.
-    redacted.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+    redacted.compact_sort_by_key(|value| std::cmp::Reverse(value.len()));
     redacted.dedup();
 
     // Only a model's own text replaces a step's title; a model cannot

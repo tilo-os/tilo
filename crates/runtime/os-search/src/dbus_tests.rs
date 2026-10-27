@@ -1,6 +1,3 @@
-//! Both providers on a private session bus, called by name exactly as GNOME
-//! Shell and `KRunner` call them.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -24,7 +24,6 @@ use super::{Storage, StorageError, atomic_write, delete_if_exists, sync_dir};
 pub(super) const CHUNKS_SUFFIX: &str = ".chunks";
 /// Suffix of the chunk list of a blob still being fetched.
 pub(super) const PENDING_CHUNKS_SUFFIX: &str = ".chunks-pending";
-/// Suffix of a payload object's compressed twin.
 pub(super) const TWIN_SUFFIX: &str = tilo_app_package::compressed::SUFFIX;
 /// Prefix of a download not yet verified.
 pub(super) const INCOMING_PREFIX: &str = ".incoming-";

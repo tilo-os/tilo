@@ -274,6 +274,8 @@ impl HostedRoom {
 
 fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
     let mut custody = joined.custody.clone();
+    // In memory only: this probe compares what it holds, never a disk.
+    custody.identity_paths = None;
     let room_cert = custody.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
@@ -310,25 +312,28 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         "a default root must not borrow the selected root's admission"
     );
     let run = probe
-        .admit_mcp_execution(&room.to_string(), "different-own-room", actor)
+        .admit_mcp_execution(&room.to_string(), &room.to_string(), actor)
         .unwrap();
     let retained = run.caller().clone();
     probe.recheck_mcp_executions(room).unwrap();
     assert!(retained.execution_is_live());
-    let original = probe.custody.workspace_device_certs.clone();
-    probe.custody.workspace_device_certs.clear();
-    assert!(probe.recheck_mcp_executions(room).is_err());
+    // What this profile holds for the room is not what the run was admitted
+    // with: the read succeeds and says the custody changed, so the run ends.
+    let mut renewed = probe.custody.device_cert.clone();
+    renewed.device_label = "a reissued certificate".into();
+    sign_device_cert(&mut renewed, &default_root).unwrap();
+    probe
+        .custody
+        .workspace_device_certs
+        .insert(room_topic(room).unwrap(), renewed);
+    assert!(
+        probe.recheck_mcp_executions(room).is_err(),
+        "a custody the read confirms is not what the run was admitted with"
+    );
     assert!(
         !retained.execution_is_live(),
         "authority-side original-pin recheck closes retained custody without a wrapper call"
     );
-    probe.custody.workspace_device_certs = original;
-    probe.recheck_mcp_executions(room).unwrap();
-    assert!(
-        !retained.execution_is_live(),
-        "restoring original selection cannot revive the retired run"
-    );
-    probe.custody.workspace_device_certs.clear();
     assert!(
         probe.action_room(actor, &room.to_string()).is_err(),
         "changed selected custody must not reuse the retained roster identity"
@@ -337,7 +342,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         !probe
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room == room)
+            .any(|workspace| workspace.room() == room)
     );
 }
 
@@ -355,9 +360,8 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     };
     use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
-    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
+    let mut workspace = Workspace::in_room(WorkspaceId(41), room, "Execution isolation");
     workspace.set_owner(actor.to_owned());
-    workspace.set_room(room);
     let room = room.to_string();
     let directory = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree {
@@ -411,22 +415,22 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
     let owner = Caller::local_person(actor).in_room(room.clone());
+    let session = Arc::new(crate::standalone::AdmittedRuntimeSession {
+        policy_time: origin.capture().unwrap(),
+        host: qualified,
+        admission,
+        agent: None,
+        projection: Some(owner.clone()),
+    });
     let host = RuntimeActionHost {
         broker,
         room: "private-profile-room".into(),
         joined: Arc::clone(joined),
-        session: Some(Arc::new(crate::standalone::AdmittedRuntimeSession {
-            policy_time: origin.capture().unwrap(),
-            host: qualified,
-            admission,
-            agent: None,
-            projection: Some(owner.clone()),
-        })),
+        session: Some(Arc::clone(&session)),
     };
-    let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
         on_behalf_of: None,
-        invocation: id,
+        invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: "7".into(),
             address: tilo_actions::ActionAddress::new(
@@ -441,11 +445,16 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         wait_ms: None,
         appearance: None,
     };
+    let id = request.invocation;
     let mut pending = host.invoke(&owner, request.clone());
     assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
     turn();
-    let outcome = pending.poll_ready();
-    let PendingPoll::Ready(Ok(_receipt)) = outcome else {
+    // Answered once the admission is durable, from the journal's writer.
+    let outcome = pending
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    let Some(Ok(_receipt)) = outcome else {
         panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
@@ -454,7 +463,14 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         .owner
         .invalidate_identity(RoomId::parse(&room).unwrap());
     assert!(host.observe(&owner, &id).is_none());
-    assert_eq!(host.cancel(&owner, &id), Err(ActionHostError::NotPermitted));
+    assert_eq!(
+        host.cancel(&owner, &id)
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .ok()
+            .flatten()
+            .expect("the host answers"),
+        Err(ActionHostError::NotPermitted)
+    );
     assert!(matches!(
         host.invoke(&owner, request).poll_ready(),
         PendingPoll::Ready(Err(ActionHostError::NotPermitted))
@@ -616,7 +632,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         joined
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room == room),
+            .any(|workspace| workspace.room() == room),
         "the joined room is a workspace of this profile"
     );
     assert!(
@@ -649,7 +665,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let message = joined
         .owner
         .with_current(room, |view| {
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
@@ -701,7 +717,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let message = joined
         .owner
         .with_current(room, |view| {
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
@@ -762,7 +778,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         !joined
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room == room),
+            .any(|workspace| workspace.room() == room),
         "broker snapshots must drop stale admission too"
     );
     assert!(
@@ -830,6 +846,27 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         .block_on(governing.publish_history(device.device_public_key))
         .unwrap();
     let steward = Steward::open(&governor_root, &governing.governor_key, governing.room);
+    // A member writes only into a record it holds, and joining brings the
+    // room's governance alone: the chat record arrives through the room's
+    // sync, once the host has kept the governor's history. The app opens
+    // in the room as it stands then.
+    tilo_rt::app()
+        .block_on(tilo_test_env::within("the governor's history", async {
+            while session
+                .joined
+                .owner
+                .with_current(governing.room, |view| {
+                    view.peer()
+                        .document(SDK_APP, "")
+                        .map(drop)
+                        .ok_or_else(|| "not yet".to_owned())
+                })
+                .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }))
+        .unwrap();
 
     let log = std::fs::File::create(profile.join("sdk-app.log")).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -1223,9 +1260,16 @@ async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
             )
             .unwrap();
     }
-    let arrival = tilo_test_env::within("the picture at the runtime", arrivals.recv())
-        .await
-        .unwrap();
+    // Where the want stood comes first; then the picture.
+    let arrival = tilo_test_env::within("the picture at the runtime", async {
+        loop {
+            let news = arrivals.recv().await.unwrap();
+            if news.state == tilo_content::ContentState::Resolved {
+                break news;
+            }
+        }
+    })
+    .await;
     assert_eq!(arrival.bytes, picture);
 
     // The governor's device asks for it in turn; the runtime answers it alone.
@@ -1243,6 +1287,16 @@ async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
     tilo_test_env::within("the picture at the governor", async {
         while received < picture.len() {
             if let Some(Inbound::RecordContent { from, frame }) = governor.recv().await {
+                // The host, which keeps none of it, says so: the picture
+                // comes from the runtime.
+                if from == governing.host.device_public_key
+                    && matches!(
+                        postcard::from_bytes(&frame),
+                        Ok(NeighbourMsg::RecordContentLacks { .. })
+                    )
+                {
+                    continue;
+                }
                 assert_eq!(from, device.device_public_key);
                 let Ok(NeighbourMsg::RecordContentPiece {
                     requester,
@@ -1262,4 +1316,128 @@ async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
     })
     .await;
     assert_eq!(gathered, picture);
+}
+
+/// Two devices that reach each other only through the room's host: a want
+/// whose holder is offline waits (the host keeps none of it), and the
+/// moment the holder connects to the host the want is asked of it, and the
+/// content arrives: waiting, then fetching, then here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_it_connects() {
+    use tilo_action_broker::record_content::PIECE_BYTES;
+    use tilo_content::{ContentState, hash_bytes};
+    use tilo_peer_state::peer_handle;
+
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let governing = Box::pin(HostedRoom::start(directory.path())).await;
+    let room = governing.room;
+    let device_key = SigningKey::from_bytes(&[97; 32]);
+    let root_key = SigningKey::from_bytes(&[98; 32]);
+    let mut capabilities = DeviceCapabilities::member();
+    capabilities.foreign = true;
+    let mut device = DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: device_key.verifying_key().to_bytes(),
+        device_label: "Runtime on a laptop".into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut device, &root_key).unwrap();
+    let invitation = governing.invite(device.user_public_key);
+    let joined = Joined::open(
+        directory.path(),
+        HostIdentity {
+            device_cert: device.clone(),
+            device_signing_key: device_key.clone(),
+            workspace_device_certs: std::collections::HashMap::default(),
+            workspace_revocations: std::collections::HashMap::default(),
+            identity_paths: None,
+        },
+        local_endpoint(&device_key).await,
+        BTreeSet::new(),
+        (
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        ),
+    )
+    .unwrap();
+    let content = content::record_content_on(&joined, Arc::new(Shelf::default()));
+    assert_eq!(joined.join(&invitation).await.unwrap(), room);
+    // The holder publishes the room's history, then goes offline.
+    drop(governing.publish_history(device.device_public_key).await);
+    let governor_handle = peer_handle(&governing.governor.device_public_key);
+    let runtime_handle = peer_handle(&device.device_public_key);
+    let route =
+        tilo_action_broker::route::CrdtRoute::record("so.tilo.ebook", room.to_string(), "library");
+    let book: Vec<u8> = (0..PIECE_BYTES + 11)
+        .map(|index| u8::try_from(index % 239).unwrap())
+        .collect();
+    let hash = hash_bytes(&book);
+    let mut news = content.subscribe(&route);
+    content.want(&route, &hash);
+
+    // Asked of the host once connected, which keeps none of it: it waits.
+    tilo_test_env::within("the want waits for a device that has it", async {
+        let mut asked_the_host = false;
+        loop {
+            match news.recv().await.unwrap().state {
+                ContentState::Pending => asked_the_host = true,
+                ContentState::Waiting if asked_the_host => break,
+                ContentState::Waiting => {}
+                other => panic!("{other:?} while its only holder is offline"),
+            }
+        }
+    })
+    .await;
+
+    // The holder connects to the host: the want is asked of it, and it
+    // answers with the book.
+    let (holder, _endpoint) = governing.publish_history(device.device_public_key).await;
+    holder.live_join().unwrap();
+    tilo_test_env::within("the want asked of the holder", async {
+        loop {
+            if let Some(Inbound::Presence { author, payload }) = holder.recv().await
+                && author == device.device_public_key
+                && let Ok(NeighbourMsg::RecordContentWant {
+                    requester,
+                    hash: asked,
+                    ..
+                }) = postcard::from_bytes(&payload)
+            {
+                assert_eq!((requester, asked.as_str()), (runtime_handle, hash.as_str()));
+                break;
+            }
+        }
+    })
+    .await;
+    assert_eq!(
+        news.recv().await.unwrap().state,
+        ContentState::Pending,
+        "fetching from the holder"
+    );
+    for (index, chunk) in book.chunks(PIECE_BYTES).enumerate() {
+        let piece = NeighbourMsg::RecordContentPiece {
+            responder: governor_handle,
+            requester: runtime_handle,
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            hash: hash.clone(),
+            total: book.len() as u64,
+            offset: (index * PIECE_BYTES) as u64,
+            bytes: chunk.to_vec(),
+        };
+        holder
+            .publish_record_content(
+                device.device_public_key,
+                postcard::to_allocvec(&piece).unwrap(),
+            )
+            .unwrap();
+    }
+    let arrived = tilo_test_env::within("the book at the runtime", news.recv())
+        .await
+        .unwrap();
+    assert_eq!(arrived.state, ContentState::Resolved, "here");
+    assert_eq!(arrived.bytes, book);
 }

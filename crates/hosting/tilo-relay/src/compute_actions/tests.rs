@@ -239,7 +239,6 @@ async fn only_the_owner_acting_themselves_may_place() {
             },
             "{stranger:?} may not place"
         );
-        // Nor does this provider answer the whole catalogue for them.
         assert!(!plane.answers(&stranger, &catalogue(None)));
     }
 

@@ -16,8 +16,9 @@ crate-type = ["cdylib", "rlib"]
 # Browser-only, like the runtime it links. Native workspace builds compile an
 # empty library.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# The Activity pane loads as its own module (src/activity.rs).
-tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity"] }
+# The Activity pane (src/activity.rs) and the Feedback composer
+# (src/feedback.rs) load as their own modules.
+tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients", "deferred-feedback-composer", "deferred-people-overlay"] }
 tilo-desktop-surface = { path = "../../session/desktop-surface" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # Search loads as its own module the first time something searches
@@ -30,6 +31,7 @@ tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["l
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 # generated apps: begin (tools/web/generate_web_desktop.py)
+activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar", default-features = false, features = [] }
@@ -51,12 +53,14 @@ notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }
 pdf-viewer = { path = "../../../apps/pdf-viewer" }
 photos = { path = "../../../apps/photos" }
+poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
 sheets = { path = "../../../apps/sheets" }
 shortcuts = { path = "../../../apps/shortcuts" }
 slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
+tasks = { path = "../../../apps/tasks" }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
 tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }

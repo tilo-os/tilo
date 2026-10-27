@@ -25,7 +25,7 @@ pub(crate) fn watch_entries(dir: &Path) -> Result<Watch, FsError> {
 /// two AFS implementations.
 #[cfg(target_os = "linux")]
 const REMOTE_FILESYSTEMS: [u32; 9] = [
-    0x6573_5546,
+    FUSE_SUPER_MAGIC,
     0x0000_6969,
     0x0000_517B,
     0xFF53_4D42,
@@ -36,18 +36,35 @@ const REMOTE_FILESYSTEMS: [u32; 9] = [
     0x5346_414F,
 ];
 
+/// `statfs` magic of FUSE.
+#[cfg(target_os = "linux")]
+const FUSE_SUPER_MAGIC: u32 = 0x6573_5546;
+
 /// [`crate::native::watch_sees_every_change`].
 #[cfg(target_os = "linux")]
 pub(crate) fn sees_every_change(dir: &Path) -> bool {
-    rustix::fs::statfs(dir).is_ok_and(|stat| {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
-        )]
-        let magic = stat.f_type as u32;
-        !REMOTE_FILESYSTEMS.contains(&magic)
-    })
+    let Ok(stat) = rustix::fs::statfs(dir) else {
+        return false;
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
+    )]
+    let magic = stat.f_type as u32;
+    if magic == FUSE_SUPER_MAGIC {
+        return signals_every_change(dir);
+    }
+    !REMOTE_FILESYSTEMS.contains(&magic)
+}
+
+/// Whether the FUSE filesystem holding `dir` says it tells the kernel of
+/// every change, by answering [`crate::native::CHANGE_SIGNAL_XATTR`] there.
+#[cfg(target_os = "linux")]
+fn signals_every_change(dir: &Path) -> bool {
+    let mut value = [0_u8; 8];
+    rustix::fs::getxattr(dir, crate::native::CHANGE_SIGNAL_XATTR, &mut value[..])
+        .is_ok_and(|len| value.get(..len) == Some(b"1".as_slice()))
 }
 
 /// Elsewhere the filesystem's type is not told apart, so a watch is trusted
@@ -63,12 +80,103 @@ fn watch_mode(root: &Path, path: &VPath, mode: RecursiveMode) -> Result<Watch, F
     let root = root.to_path_buf();
     let rescan = path.clone();
     let sink = Arc::clone(&inbox);
+    // Taken before the watch starts, so a change made between the two is
+    // never mistaken for earlier history.
+    #[cfg(target_os = "macos")]
+    let started = Started::of(&target);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+        #[cfg(target_os = "macos")]
+        if started
+            .as_ref()
+            .is_some_and(|started| started.explains(&event))
+        {
+            return;
+        }
         deliver(&sink, &root, &rescan, event);
     })
     .map_err(error)?;
     watcher.watch(&target, mode).map_err(error)?;
     Ok(Watch::new(inbox, Box::new(watcher)))
+}
+
+/// The watched directory as it was when its watch started.
+///
+/// `FSEvents` numbers an event when its daemon gets to it, not when the
+/// change was made, so a stream started "from now" can still be handed what
+/// happened to the watched directory just before: its own creation above
+/// all, when it was made a moment earlier. Reported, that history would wake
+/// the watch's owner for a change it has read already, since whoever starts
+/// a watch reads the directory once after it.
+///
+/// So an event on the directory itself is dropped while the directory is
+/// still the one that was watched, with the mode and owner it had then. A
+/// removal, a replacement or a new mode or owner is reported. Changes to its
+/// entries move its times too, but are reported by their own names, so the
+/// times are not compared: a late report of the directory's making must not
+/// pass as a change because an entry was created since. The one change to
+/// the directory itself left unreported is to its extended attributes,
+/// which only a Linux FUSE mount uses as a signal
+/// ([`crate::native::CHANGE_SIGNAL_XATTR`]), and inotify reports only what
+/// happens after its watch is added.
+#[cfg(target_os = "macos")]
+struct Started {
+    /// The directory as watched.
+    dir: PathBuf,
+    /// The same, canonical, as `FSEvents` names it.
+    canonical: PathBuf,
+    identity: Identity,
+}
+
+#[cfg(target_os = "macos")]
+impl Started {
+    fn of(dir: &Path) -> Option<Self> {
+        Some(Self {
+            identity: Identity::of(dir)?,
+            dir: dir.to_path_buf(),
+            canonical: dir.canonicalize().ok()?,
+        })
+    }
+
+    /// Whether `event` reports only what the directory went through before
+    /// its watch started.
+    fn explains(&self, event: &notify::Result<Event>) -> bool {
+        let Ok(event) = event else {
+            return false;
+        };
+        !event.need_rescan()
+            && !event.paths.is_empty()
+            && event
+                .paths
+                .iter()
+                .all(|path| *path == self.dir || *path == self.canonical)
+            && Identity::of(&self.dir).as_ref() == Some(&self.identity)
+    }
+}
+
+/// Which directory a path names, and who may do what in it.
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+struct Identity {
+    device: u64,
+    inode: u64,
+    born: Option<std::time::SystemTime>,
+    mode: u32,
+    owner: (u32, u32),
+}
+
+#[cfg(target_os = "macos")]
+impl Identity {
+    fn of(dir: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata(dir).ok()?;
+        Some(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            born: metadata.created().ok(),
+            mode: metadata.mode(),
+            owner: (metadata.uid(), metadata.gid()),
+        })
+    }
 }
 
 /// Queue what one native event says changed. A failed event, and a native
@@ -291,6 +399,52 @@ mod tests {
         assert!(!sees_every_change(&dir.path().join("missing")));
     }
 
+    /// Every change `watch` reports up to and including the creation of
+    /// `name` in `dir`, which it makes. A watch reports in the order the
+    /// changes were made, so anything left over from before the watch began
+    /// is among them.
+    fn changes_until_made(watch: &Watch, dir: &Path, name: &str) -> Vec<Change> {
+        std::fs::create_dir(dir.join(name)).unwrap();
+        let made = VPath::new(name).unwrap();
+        let mut seen = Vec::new();
+        tilo_test_env::wait_until("the watch to report the made entry", || {
+            while let Some(change) = watch.try_next() {
+                seen.push(change);
+            }
+            seen.iter().any(|change| change.path == made)
+        });
+        seen
+    }
+
+    /// `FSEvents` can hand a watch the creation of the directory it watches
+    /// when the directory was made a moment before: the event is numbered
+    /// when its daemon gets to it. That is no change since the watch began.
+    #[test]
+    fn a_watch_on_a_just_made_directory_reports_nothing_of_its_making() {
+        for _ in 0..50 {
+            let dir = tempfile::tempdir().unwrap();
+            let watch = watch_entries(dir.path()).unwrap();
+            let seen = changes_until_made(&watch, dir.path(), "made");
+            assert!(seen.iter().all(|change| !change.path.is_root()), "{seen:?}");
+        }
+    }
+
+    /// What the directory itself goes through after the watch began is
+    /// reported, as a change of the watched path.
+    #[cfg(unix)]
+    #[test]
+    fn a_change_to_the_watched_directory_itself_is_reported() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let watch = watch_entries(dir.path()).unwrap();
+        // Past any report of the directory's making.
+        let _ = changes_until_made(&watch, dir.path(), "made");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o750)).unwrap();
+        tilo_test_env::wait_until("the watch to report the directory's new mode", || {
+            std::iter::from_fn(|| watch.try_next()).any(|change| change.path.is_root())
+        });
+    }
+
     #[test]
     fn an_entries_watch_sees_replaced_files_but_not_subdirectories() {
         let dir = tempfile::tempdir().unwrap();
@@ -301,15 +455,12 @@ mod tests {
         crate::native::atomic::write(&dir.path().join("top.json"), b"two").unwrap();
         let top = VPath::new("top.json").unwrap();
         let mut seen = Vec::new();
-        for _ in 0..100 {
+        tilo_test_env::wait_until("the replaced file to be watched", || {
             while let Some(change) = watch.try_next() {
                 seen.push(change);
             }
-            if seen.iter().any(|change| change.path == top) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+            seen.iter().any(|change| change.path == top)
+        });
         assert!(
             seen.iter()
                 .any(|change| change.path == top && change.kind == ChangeKind::Changed),

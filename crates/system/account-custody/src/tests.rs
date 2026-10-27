@@ -267,7 +267,6 @@ fn a_missing_client_id_is_not_configured_not_a_broken_flow() {
             assert_eq!(provider, "Dropbox");
             assert_eq!(key, "TILO_OAUTH_DROPBOX_CLIENT_ID");
         }
-        // A build or environment that provides the id starts a real flow.
         Ok(authorization) => assert!(
             authorization
                 .url()

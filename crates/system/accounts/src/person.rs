@@ -5,10 +5,13 @@
 //! [`PersonAccounts`] is a resource kept in the person's own room, a
 //! [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
 //! whose provider sign-in adds mail accounts, edit it through its actions;
-//! every other app reads it. Each app keeps its copy of the one record. It holds what an account *is* — its type, its name,
-//! its connection settings — and never a credential: secrets stay in this
-//! device's [`SecretVault`](crate::SecretVault) under the account's id, so a
-//! device that has not been signed in yet shows the account and asks for its
+//! every other app reads it. Each app process keeps a copy of the one
+//! record, in step with the others over its route; the apps the session
+//! shows in its own process share the session's copy. It holds what an
+//! account *is* — its type, its name, its connection settings — and never
+//! a credential: secrets stay in this device's
+//! [`SecretVault`](crate::SecretVault) under the account's id, so a device
+//! that has not been signed in yet shows the account and asks for its
 //! secret.
 //!
 //! Services that run outside any app (the storage daemon, the credential

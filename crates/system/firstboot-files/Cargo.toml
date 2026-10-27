@@ -24,6 +24,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

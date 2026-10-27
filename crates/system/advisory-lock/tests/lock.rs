@@ -11,7 +11,6 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
 fn busy(result: Result<FileLock, TryLockError>) -> bool {
     matches!(result.err(), Some(TryLockError::WouldBlock))
@@ -145,14 +144,11 @@ fn peers_are_admitted_by_mode_and_by_the_current_holders() {
     // Phase: try variants fail fast under contention.
     {
         let (_temp, path) = fresh_lock_path();
+        // The holder keeps its lock until the end of the phase: a try
+        // variant that waited for it would never return.
         let _held = FileLock::open(&path, LockMode::Exclusive).unwrap();
-        let started = Instant::now();
         assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
         assert!(busy(FileLock::try_shared(open_lock_file(&path).unwrap())));
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "a try variant must not wait for the holder"
-        );
     }
 
     // Phase: shared holders coexist and exclude an exclusive one.
@@ -239,12 +235,27 @@ fn open_current_follows_a_replaced_name() {
     let (_directory, path) = fresh_lock_path();
     // An exclusive holder retires the lock file while a peer waits on it.
     let retiring = FileLock::open_current(&path, LockMode::Exclusive).unwrap();
-    let waiter = {
+    let (tid, waiter) = {
         let path = path.clone();
-        std::thread::spawn(move || FileLock::open_current(&path, LockMode::Shared).unwrap())
+        let (sender, tid) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            sender
+                .send(tilo_test_env::idle::current_thread_id().ok())
+                .unwrap();
+            FileLock::open_current(&path, LockMode::Shared).unwrap()
+        });
+        (tilo_test_env::recv("the waiter's thread id", &tid), waiter)
     };
-    // Long enough for the waiter to have opened the old file and blocked.
-    std::thread::sleep(Duration::from_millis(100));
+    // The waiter has opened the old file once it sleeps on its lock. Only
+    // Linux shows that; elsewhere the waiter may open the new file instead.
+    if let Some(tid) = tid {
+        tilo_test_env::wait_until("the waiter to block on the old file", || {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).is_ok_and(|stat| {
+                stat.rsplit_once(") ")
+                    .is_some_and(|(_, rest)| rest.starts_with('S'))
+            })
+        });
+    }
     std::fs::remove_file(&path).unwrap();
     drop(retiring);
     let shared = waiter.join().unwrap();

@@ -60,11 +60,6 @@ impl<'peer> PeerRead<'peer> {
     /// Rechecks membership and document access before looking up the exact
     /// admitted plaintext, causally complete route. The embedding owner still
     /// binds the authenticated caller, actual lock/generation and fresh clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`PeerDocumentReadError`] if access is denied or the route is not an exact,
-    /// plaintext, causally complete admitted document.
     pub fn document_read(
         &self,
         device: [u8; 32],

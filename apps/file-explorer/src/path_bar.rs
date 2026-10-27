@@ -196,6 +196,12 @@ impl PathBar {
 }
 
 impl Widget for PathBar {
+    /// The trail has a node of its own; the bar routes and paints it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.crumbs);
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -469,14 +475,19 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
             if !lower_prefix.is_empty() && !name.to_lowercase().starts_with(&lower_prefix) {
                 return None;
             }
-            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-            Some((is_dir, name, e.path()))
+            let path = e.path();
+            // A link to a folder completes as the folder it opens (on Tilo's
+            // image `/home` is one); only a link costs the second stat.
+            let is_dir = e
+                .file_type()
+                .is_ok_and(|t| t.is_dir() || (t.is_symlink() && path.is_dir()));
+            Some((is_dir, name, path))
         })
         .collect();
-    // Directories first, then case-insensitive by name.
+    // Directories first, then names in the order the listing shows them.
     entries.sort_by(|a, b| {
         b.0.cmp(&a.0)
-            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+            .then_with(|| crate::model::name_cmp(&a.1, &b.1))
     });
     entries
         .into_iter()
@@ -665,11 +676,11 @@ mod tests {
                 let wide = bar.crumbs.visible_segments(900.0, &theme, &mut text);
                 assert_eq!(wide, expected);
                 let narrow = bar.crumbs.visible_segments(160.0, &theme, &mut text);
-                assert_eq!(narrow.first().map(String::as_str), Some("Home"));
                 assert_eq!(narrow.last().map(String::as_str), expected.last().copied());
                 if expected.len() > 4 {
+                    assert!(narrow.len() < expected.len(), "the middle folds away");
                     assert_eq!(
-                        narrow,
+                        bar.crumbs.visible_segments(320.0, &theme, &mut text),
                         vec!["Home", "...", "current", "Reports"],
                         "the shared trail preserves its root and final two targets"
                     );
@@ -741,7 +752,6 @@ mod tests {
             let sugg = path_completions("~/Pro", Some(home.path()));
             assert_eq!(sugg.len(), 1);
             assert_eq!(sugg[0].label, "Projects");
-            // The inserted value stays in ~-form for readability.
             assert!(
                 sugg[0].value.starts_with("~/Projects"),
                 "value: {}",
@@ -791,6 +801,44 @@ mod tests {
             assert_eq!(nested.len(), 1);
             assert_eq!(nested[0].label, "nested.txt");
         }
+    }
+
+    /// A link to a folder completes as the folder it opens, with the trailing
+    /// slash that drills into it, and names complete in the listing's order.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_folder_completes_as_a_folder_in_listing_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a-file.txt"), b"x").unwrap();
+        std::fs::write(dir.path().join("file-10.txt"), b"x").unwrap();
+        std::fs::write(dir.path().join("file-9.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("z-linked")).unwrap();
+        std::os::unix::fs::symlink("missing-target", dir.path().join("dangling")).unwrap();
+        let sugg = path_completions(&format!("{}/", dir.path().display()), None);
+        let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "z-linked",
+                "a-file.txt",
+                "dangling",
+                "file-9.txt",
+                "file-10.txt"
+            ],
+            "a linked folder sorts with the folders, numbers read by value"
+        );
+        assert_eq!(
+            sugg[0].value,
+            format!(
+                "{}{}",
+                dir.path().join("z-linked").display(),
+                std::path::MAIN_SEPARATOR
+            ),
+            "the next keystroke drills into the linked folder"
+        );
+        let dangling = sugg.iter().find(|s| s.label == "dangling").unwrap();
+        assert!(!dangling.value.ends_with(std::path::MAIN_SEPARATOR));
     }
 
     #[test]

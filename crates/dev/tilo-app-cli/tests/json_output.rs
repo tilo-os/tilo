@@ -1,6 +1,4 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-//! `--json` keeps stdout to exactly one JSON document, whatever the command
-//! and its child processes print.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -8,7 +6,7 @@ use std::process::{Command, Output};
 use serde_json::Value;
 
 fn tilo_app(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+    Command::new(tilo_test_env::package_binary!("tilo-app"))
         .args(args)
         .current_dir(dir)
         .env_remove("TILO_UI_PATH")
@@ -31,7 +29,7 @@ fn document(output: &Output) -> Value {
 fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
     let dir = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+        Command::new(tilo_test_env::package_binary!("tilo-app"))
             .args(args)
             .current_dir(dir.path())
             .env("PATH", dir.path())
@@ -122,7 +120,7 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
 fn guides_permissions_aliases_are_offline_and_explain_live_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+        Command::new(tilo_test_env::package_binary!("tilo-app"))
             .args(args)
             .current_dir(dir.path())
             .env("PATH", dir.path())
@@ -239,7 +237,7 @@ fn templates_are_listed_in_both_modes() {
 #[test]
 fn focused_examples_show_one_example_offline_outside_a_checkout() {
     let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-app"))
         .args(["examples", "shared-checklist", "--json"])
         .current_dir(dir.path())
         .env("PATH", dir.path())
@@ -464,7 +462,7 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
         .nth(3)
         .unwrap();
     let app = dir.path().join("demo");
-    let new = Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+    let new = Command::new(tilo_test_env::package_binary!("tilo-app"))
         .args(["new", "demo", "--id", "org.example.demo", "--directory"])
         .arg(&app)
         .arg("--ui-path")
@@ -483,7 +481,7 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
         .arg("env")
         .arg(format!("XDG_DATA_DIRS={}", dir.path().display()))
         .arg(format!("XDG_DATA_HOME={}", dir.path().display()))
-        .arg(env!("CARGO_BIN_EXE_tilo-app"))
+        .arg(tilo_test_env::package_binary!("tilo-app"))
         .args(["check", "--json"])
         .arg(&app)
         .env("CARGO", &cargo)

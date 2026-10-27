@@ -807,7 +807,6 @@ mod tests {
 
     #[test]
     fn lsblk_inventory_parses_json_and_text_forms() {
-        // Phase `parse_lsblk_matches_the_captured_inventory`.
         {
             // Real `lsblk` output for exactly LSBLK_COLUMNS, and the disks this
             // module derived from it before the shared parser existed.
@@ -819,14 +818,12 @@ mod tests {
                 include_str!("../tests/fixtures/lsblk-disks.txt")
             );
         }
-        // Phase `lsblk_lists_full_paths_in_the_portable_output_form`.
         {
             assert_eq!(
                 lsblk().args(),
                 ["-J", "-b", "-p", "--output", LSBLK_COLUMNS]
             );
         }
-        // Phase `parses_multiword_model`.
         {
             let out = "/dev/sda 238.5G Samsung SSD 860 EVO disk\n";
             let disks = parse_lsblk(out);
@@ -835,7 +832,6 @@ mod tests {
             assert_eq!(disks[0].size, "238.5G");
             assert_eq!(disks[0].model, "Samsung SSD 860 EVO");
         }
-        // Phase `parses_empty_model`.
         {
             // No model column: only NAME, SIZE, TYPE present.
             let out = "/dev/vda 64G disk\n";
@@ -845,7 +841,6 @@ mod tests {
             assert_eq!(disks[0].size, "64G");
             assert_eq!(disks[0].model, "");
         }
-        // Phase `filters_non_disk_types`.
         {
             let out = "\
     /dev/sda 238.5G Samsung SSD disk
@@ -857,7 +852,6 @@ mod tests {
             let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
             assert_eq!(names, vec!["/dev/sda", "/dev/sdb"]);
         }
-        // Phase `skips_blank_and_malformed_lines`.
         {
             let out = "\n/dev/sda 238.5G Samsung disk\n\ngarbage\n/dev/sdb\n/dev/sdc 1T  disk\n";
             let disks = parse_lsblk(out);
@@ -867,12 +861,10 @@ mod tests {
             assert_eq!(names, vec!["/dev/sda", "/dev/sdc"]);
             assert_eq!(disks[1].model, "");
         }
-        // Phase `empty_output_yields_no_disks`.
         {
             assert!(parse_lsblk("").is_empty());
             assert!(parse_lsblk("\n\n   \n").is_empty());
         }
-        // Phase `label_with_and_without_model`.
         {
             let with = Disk {
                 name: "/dev/sda".into(),
@@ -917,7 +909,6 @@ mod tests {
 
     #[test]
     fn running_and_pseudo_disks_are_never_destructive_targets() {
-        // Phase `memory_and_loop_backed_pseudo_disks_are_never_targets`.
         {
             for name in ["/dev/zram0", "/dev/ram0", "/dev/loop0"] {
                 assert!(!is_installable_device_name(name), "accepted {name}");
@@ -926,7 +917,6 @@ mod tests {
                 assert!(is_installable_device_name(name), "rejected {name}");
             }
         }
-        // Phase `every_mountpoint_marks_a_multimounted_linux_system_disk_unavailable`.
         {
             let fixture = r#"{"blockdevices":[{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"serial":"SYSTEM-DISK","maj:min":"259:0","children":[{"name":"/dev/nvme0n1p3","size":900000000000,"start":2048,"type":"part","fstype":"btrfs","mountpoints":["/var/home","/var","/"],"parttype":"0fc63daf-8483-4772-8e79-3d69d8477de4","partuuid":"00000000-0000-0000-0000-000000000003"}]}]}"#;
             let disks = parse_lsblk(fixture);
@@ -938,7 +928,6 @@ mod tests {
                 "the root mount must not be hidden by another mount of the same partition"
             );
         }
-        // Phase `encrypted_and_lvm_descendants_mark_the_running_disk_unavailable`.
         {
             for holder in [
                 r#"{"name":"/dev/mapper/cryptroot","size":900000000000,"type":"crypt","fstype":"btrfs","mountpoints":["/sysroot","/var/home"]}"#,
@@ -957,7 +946,6 @@ mod tests {
                 );
             }
         }
-        // Phase `nested_non_system_mount_does_not_hide_an_installable_data_disk`.
         {
             let fixture = format!(
                 r#"{{"blockdevices":[{{"name":"/dev/sdb","size":1000000000000,"model":"Data","type":"disk","rm":false,"ro":false,"serial":"DATA-DISK","maj:min":"8:16","children":[{{"name":"/dev/sdb1","size":900000000000,"start":2048,"type":"part","fstype":"crypto_LUKS","mountpoints":[null],"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004","children":[{{"name":"/dev/mapper/data","size":900000000000,"type":"crypt","fstype":"ext4","mountpoints":["/run/media/tilo/data"]}}]}}]}}]}}"#
@@ -967,7 +955,6 @@ mod tests {
             assert_eq!(disks.len(), 1);
             assert!(!disks[0].is_system);
         }
-        // Phase `live_media_mounts_mark_the_installer_device_unavailable`.
         {
             for mountpoint in [
                 "/run/initramfs/live",
@@ -981,7 +968,6 @@ mod tests {
             }
             assert!(!is_live_system_mount("/run/media/tilo/data"));
         }
-        // Phase `destructive_targets_require_live_identity_fields`.
         {
             let fixture = r#"{"blockdevices":[{"name":"/dev/vda","size":68719476736,"model":"VM","type":"disk","rm":false,"ro":false}]}"#;
             let disks = parse_lsblk(fixture);
@@ -993,7 +979,6 @@ mod tests {
 
     #[test]
     fn alongside_discovery_accepts_only_safe_unambiguous_partitions() {
-        // Phase `json_discovery_finds_safe_alongside_root_and_efi`.
         {
             let fixture = format!(
                 r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}},{{"name":"/dev/nvme0n1p5","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000005"}}]}}]}}"#
@@ -1012,7 +997,6 @@ mod tests {
             );
             assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/nvme0n1p4");
         }
-        // Phase `alongside_rejects_small_or_mounted_efi_partitions`.
         {
             let mut p = DiskPartition {
                 name: "/dev/sda1".into(),
@@ -1032,7 +1016,6 @@ mod tests {
             p.mountpoint = "/boot/efi".into();
             assert!(!p.is_alongside_efi_candidate());
         }
-        // Phase `linux_disk_keeps_existing_filesystems_out_of_the_tilo_candidates`.
         {
             let fixture = format!(
                 r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"TILO-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/sda4","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
@@ -1044,7 +1027,6 @@ mod tests {
             assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/sda1");
             assert_eq!(disks[0].partitions[1].filesystem, "ext4");
         }
-        // Phase `alongside_rejects_partition_with_existing_signature`.
         {
             let p = DiskPartition {
                 name: "/dev/sda3".into(),
@@ -1058,7 +1040,6 @@ mod tests {
             };
             assert!(!p.is_alongside_candidate());
         }
-        // Phase `alongside_refuses_ambiguous_root_or_efi_candidates`.
         {
             let fixture = format!(
                 r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI A","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI B","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
@@ -1069,7 +1050,6 @@ mod tests {
             assert!(disks[0].efi_partition().is_none());
             assert!(!disks[0].can_install_alongside());
         }
-        // Phase `alongside_partitions_require_gpt_partuuid`.
         {
             let mut root = DiskPartition {
                 name: "/dev/vda3".into(),
@@ -1091,7 +1071,6 @@ mod tests {
 
     #[test]
     fn alongside_hints_explain_efi_failures_and_windows_preparation() {
-        // Phase `prepared_efi_issue_explains_discovery_time_failures`.
         {
             let mut disk = Disk {
                 name: "/dev/sda".into(),
@@ -1136,7 +1115,6 @@ mod tests {
                     .contains("no stable GPT partition identity")
             );
         }
-        // Phase `windows_preparation_hint_recognizes_ntfs_and_bitlocker_storage`.
         {
             let mut disk = Disk {
                 name: "/dev/sda".into(),
@@ -1180,7 +1158,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn guided_plan_uses_one_free_extent_and_honours_only_a_matching_handoff() {
-        // Phase `guided_plan_uses_one_aligned_gpt_free_extent_without_resizing`.
         {
             let gib = 1024_u64 * 1024 * 1024;
             let fixture = format!(
@@ -1199,7 +1176,6 @@ mod tests {
             assert_eq!(plan.root_size_bytes, 97 * gib - PARTITION_ALIGNMENT_BYTES);
             assert_eq!(disk.occupied_extents().unwrap().len(), 1);
         }
-        // Phase `guided_plan_rejects_non_gpt_and_ambiguous_free_extents`.
         {
             let gib = 1024_u64 * 1024 * 1024;
             let mut disk = Disk {
@@ -1243,7 +1219,6 @@ mod tests {
             );
             assert!(plans[0].free_start_bytes < plans[1].free_start_bytes);
         }
-        // Phase `verified_staged_installer_disk_offers_only_the_prepared_guided_plan`.
         {
             use crate::internal_handoff::tests::{TARGET, handoff};
             let mut disk = staged_disk(|_| {});
@@ -1269,7 +1244,6 @@ mod tests {
                 "the Tilo root must end where the staged installer begins"
             );
         }
-        // Phase `staged_handoff_that_does_not_describe_the_disk_keeps_it_unavailable`.
         {
             use crate::internal_handoff::tests::{TARGET, handoff};
             type Mutation = Box<dyn Fn(&mut serde_json::Value)>;

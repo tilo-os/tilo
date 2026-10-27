@@ -104,7 +104,6 @@ impl PresenceStatus {
 #[derive(Clone, Copy, Debug)]
 pub struct AvatarFace<'a> {
     name: &'a str,
-    #[cfg(feature = "local-daemons")]
     identity: &'a str,
     tint: Tint<'a>,
     image: Option<&'a peniko::ImageData>,
@@ -124,7 +123,6 @@ impl<'a> AvatarFace<'a> {
     pub fn new(name: &'a str, identity: &'a str) -> Self {
         Self {
             name,
-            #[cfg(feature = "local-daemons")]
             identity,
             tint: Tint::Identity(identity),
             image: None,
@@ -189,6 +187,12 @@ impl<'a> AvatarFace<'a> {
     pub fn square(mut self) -> Self {
         self.square = true;
         self
+    }
+
+    /// Whether it is the rounded square rather than the circle.
+    #[must_use]
+    pub fn is_square(&self) -> bool {
+        self.square
     }
 
     /// Paint a separator ring of `ground` around the avatar, for avatars that
@@ -439,6 +443,14 @@ impl<'a> AvatarFace<'a> {
         let image = self.image.or(public_image.as_ref());
         #[cfg(not(feature = "local-daemons"))]
         let image = self.image;
+        // The picture the person chose for their profile, wherever they
+        // show up, unless the caller drew them neutral.
+        let chosen = if image.is_none() && self.tint != Tint::Neutral {
+            crate::people_photos::photo(self.identity)
+        } else {
+            None
+        };
+        let image = image.or(chosen.as_ref());
         if let Some(image) = image {
             crate::image_store::paint_image_cover(
                 ctx.scene,
@@ -556,23 +568,7 @@ impl<'a> AvatarFace<'a> {
     }
 }
 
-/// The first letters of the first and the last word, upper-cased:
-/// `"Ada Lovelace"` gives `"AL"`, `"Grace Brewster Hopper"` gives `"GH"`,
-/// `"ada"` gives `"A"`. Words without a letter are skipped, so `"Tilo 4"`
-/// gives `"T"`, never `"T4"`.
-#[must_use]
-pub fn initials_for_name(name: &str) -> String {
-    let letters: Vec<char> = name
-        .split_whitespace()
-        .filter_map(|word| word.chars().find(|c| c.is_alphabetic()))
-        .collect();
-    let picked: Vec<char> = match letters.as_slice() {
-        [] => Vec::new(),
-        [only] => vec![*only],
-        [first, .., last] => vec![*first, *last],
-    };
-    picked.into_iter().flat_map(char::to_uppercase).collect()
-}
+pub use tilo_face::initials as initials_for_name;
 
 /// Whether initials are dark in this theme: one direction per presence
 /// palette, whichever reads better on the palette's weakest hue, so initials
@@ -619,7 +615,7 @@ pub fn initials_fill(fill: Color, theme: &Theme) -> Color {
 
 /// The initials ink on `fill`.
 ///
-/// One direction per presence palette ([`dark_initials`]). The ink takes
+/// One direction per presence palette (`dark_initials`). The ink takes
 /// the fill's own hue, as deep (or as pale) as it must be to reach
 /// small-text contrast (7:1) on that fill, or the extreme where it cannot.
 #[must_use]
@@ -706,7 +702,6 @@ pub(crate) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::I
 }
 
 impl Avatar {
-    /// An avatar for `name`, coloured by `identity`.
     pub fn person(name: impl Into<String>, identity: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -1105,7 +1100,6 @@ mod tests {
             .presence
             .hue(PresenceHue::of_identity("ada@example.org"));
         assert_eq!(a, expected);
-        // A collaborator's own colour lands on the theme's presence L/C.
         let own = AvatarFace::new("Bob", "bob")
             .presence(Color::from_rgb8(0xe0, 0x60, 0x20))
             .colour(&theme);

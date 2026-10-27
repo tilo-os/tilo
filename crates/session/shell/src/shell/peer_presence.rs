@@ -31,18 +31,27 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use ui::num::f32_of_f64;
 
-use ui::collaboration::{CollabEvent, PresencePayload};
-use ui::presence::{PresenceCtx, PresenceKey};
+use collab_types::presence::PresenceKey;
+use collab_types::presence::PresencePayload;
+use runtime_collab::event::CollabEvent;
+use ui::presence::PresenceCtx;
 
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
 use crate::shell::network::ShellNetwork;
+use tilo_relay_protocol::live::ShownStrip;
+
+mod desk_pointers;
+mod principal;
+pub use desk_pointers::{
+    HeardPointer, desk_layout, fold_live_desk_pointers, place_heard_pointers, place_pointers,
+};
+pub use principal::{PresencePrincipal, certified_role, presence_id, resolve_presence_principal};
 
 /// A room's last-published cursor and when it went out, keyed by room —
 /// what [`should_publish_cursor`] rate-limits against.
 type CursorPublishHistory = HashMap<String, (PointerAnchor, Instant)>;
-type CertifiedPeopleInbound = Arc<Mutex<Vec<(String, Vec<ui::collaboration::Collaborator>)>>>;
+type CertifiedPeopleInbound = Arc<Mutex<Vec<(String, Vec<collab_types::presence::Collaborator>)>>>;
 type DepartureKey = (u64, String, std::time::SystemTime);
 
 /// Where a person's pointer is, in terms every device in the room shares:
@@ -109,6 +118,9 @@ pub struct Desk {
     /// The pointer, or `None` before it has moved or after it left the
     /// window.
     pub pointer: Option<(f64, f64)>,
+    /// The strip shown, where and how far panned: what a live member's
+    /// pointer on a strip showing no window is placed in.
+    pub strip: Option<ShownStrip>,
 }
 
 impl SharedDesk {
@@ -119,6 +131,10 @@ impl SharedDesk {
     /// Replace the tiles shown with `tiles`.
     pub fn set_tiles(&self, tiles: Vec<(u64, vello::kurbo::Rect)>) {
         self.with(|desk| desk.tiles = tiles);
+    }
+
+    pub fn set_strip(&self, strip: Option<ShownStrip>) {
+        self.with(|desk| desk.strip = strip);
     }
 
     /// Record where the pointer is, or that it is in no tile's window.
@@ -143,14 +159,14 @@ pub fn rooms_and_active(
         .desktop
         .workspaces
         .iter()
-        .map(|w| w.room.to_string())
+        .map(|w| w.room().to_string())
         .collect();
     let active = tree
         .desktop
         .workspaces
         .iter()
         .find(|w| w.id == tree.desktop.active)
-        .map(|w| w.room.to_string());
+        .map(|w| w.room().to_string());
     (rooms, active)
 }
 
@@ -182,11 +198,11 @@ pub struct PeerPresence {
     absent: Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     /// Complete owner-backed People contexts. Ordinary app-authored Context
     /// fanout is deliberately not an input: it cannot establish membership.
-    room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
+    room_people: Arc<Mutex<HashMap<String, Vec<collab_types::presence::Collaborator>>>>,
     certified_people_inbound: CertifiedPeopleInbound,
     _certified_people_subscription:
         Option<Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>>,
-    projected_people: Mutex<(Option<String>, HashSet<ui::permissions::UserId>)>,
+    projected_people: Mutex<(Option<String>, HashSet<collab_types::presence::UserId>)>,
     departures: Arc<crate::shell::network::PeerDepartureHistory>,
     seen_departures: Mutex<HashSet<DepartureKey>>,
     /// The departure history's generation [`Self::pump`] last read it at.
@@ -225,6 +241,14 @@ pub struct PeerPresence {
     /// The record each window shows, by tab, as learned from the local app
     /// pointing in it ([`Self::window_record`]).
     window_records: WindowRecords,
+    /// The records local app windows hold, by the window instance the
+    /// launcher started each for: what each window shows from the moment
+    /// its app opens a record, whoever pointed where.
+    window_instances: WindowInstances,
+    /// The strip this desktop shows and how far it is scrolled, as of the
+    /// last layout: what a pointer on a strip showing no window is placed
+    /// in ([`Self::set_shown_strip`]).
+    shown_strip: Mutex<Option<ShownStrip>>,
     /// The window cursor chat last went to: a message keeps going there
     /// while the pointer crosses a gap between windows.
     last_chat_target: Mutex<Option<ChatTarget>>,
@@ -240,6 +264,9 @@ pub struct WindowRecord {
 }
 
 type WindowRecords = Arc<Mutex<HashMap<u64, WindowRecord>>>;
+
+type WindowInstances =
+    Box<dyn Fn() -> Vec<(u64, tilo_action_broker::route::CrdtRoute)> + Send + Sync>;
 
 /// Where this person's cursor chat is: the window it is over, the record
 /// that window shows, and the pointer from the window's top-left corner.
@@ -278,6 +305,13 @@ struct RosterSeen {
 /// late, never wrong for good.
 pub const ROSTER_RECHECK: Duration = Duration::from_secs(1);
 
+#[cfg(test)]
+thread_local! {
+    /// Rosters derived on this thread: the replica read and parse an idle
+    /// frame must not pay.
+    static ROSTER_DERIVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Smallest gap between two pointer publishes for the same room — ~30
 /// Hz, matching the rate the toolkit throttles an app's pointer to so a
 /// desktop cursor and an in-app cursor cost the same on the wire. Both wires
@@ -290,8 +324,7 @@ fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room:
     match payload {
         PresencePayload::Following { .. }
         | PresencePayload::Status { .. }
-        | PresencePayload::Availability { .. }
-        | PresencePayload::Wave { .. } => {
+        | PresencePayload::Availability { .. } => {
             matches!(key, PresenceKey::Workspace { id } if id == room)
         }
         // The room's people told that this person is not here: someone who
@@ -333,7 +366,7 @@ fn fold_typed_presence(
         if let PresencePayload::Interaction(update) = payload {
             // The broker and the network's ingress deliver an actor they
             // vouch for under its own id; anything else is its sender.
-            let id = ui::permissions::UserId(user.clone());
+            let id = collab_types::presence::UserId(user.clone());
             let kind = match presence.participant_kind(&id) {
                 ui::presence::ParticipantKind::Person => tilo_actions::ActorKind::Person,
                 ui::presence::ParticipantKind::Agent => tilo_actions::ActorKind::Agent,
@@ -353,7 +386,7 @@ fn fold_typed_presence(
         {
             // Here Tab/Left is app lifecycle, not the legacy desktop
             // pointer leaving a viewport. Clear only this location.
-            presence.remove_presence(&key, &ui::permissions::UserId(user));
+            presence.remove_presence(&key, &collab_types::presence::UserId(user));
         } else {
             presence.apply_remote_presence(user, key, payload);
         }
@@ -366,7 +399,7 @@ fn departure_presence_ids(
     participant_name: Option<&str>,
     active_labels: &std::collections::BTreeMap<u64, String>,
 ) -> Vec<String> {
-    let mut ids = vec![format!("peer@{session_handle}")];
+    let mut ids = vec![presence_id(session_handle)];
     if let Some(name) = participant_name
         && !active_labels
             .values()
@@ -446,7 +479,6 @@ impl PeerPresence {
                         PresencePayload::Following { .. }
                             | PresencePayload::Status { .. }
                             | PresencePayload::Availability { .. }
-                            | PresencePayload::Wave { .. }
                             | PresencePayload::Interaction(_)
                             | PresencePayload::Arrived
                             | PresencePayload::Left
@@ -520,6 +552,8 @@ impl PeerPresence {
             rooms,
         );
         presence.window_records = window_records;
+        let fanout = Arc::clone(&broker.fanout);
+        presence.window_instances = Box::new(move || fanout.window_records());
         presence
     }
 
@@ -542,7 +576,7 @@ impl PeerPresence {
     fn assemble(
         cursor: Arc<Mutex<Option<PointerAnchor>>>,
         typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
-        room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
+        room_people: Arc<Mutex<HashMap<String, Vec<collab_types::presence::Collaborator>>>>,
         certified_people_inbound: CertifiedPeopleInbound,
         certified_people_subscription: Option<
             Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>,
@@ -596,6 +630,8 @@ impl PeerPresence {
             participants_epoch,
             roster_seen: Mutex::new(None),
             window_records: Arc::default(),
+            window_instances: Box::new(Vec::new),
+            shown_strip: Mutex::new(None),
             last_chat_target: Mutex::new(None),
             net: Arc::clone(net),
         }
@@ -629,7 +665,7 @@ impl PeerPresence {
     pub(crate) fn set_certified_people(
         &self,
         room: &str,
-        people: Vec<ui::collaboration::Collaborator>,
+        people: Vec<collab_types::presence::Collaborator>,
     ) {
         let mine = self.rooms.lock_recover();
         if !mine.iter().any(|current| current == room) {
@@ -658,13 +694,38 @@ impl PeerPresence {
             self.set_rooms(rooms);
             *followed = Some((generation, here));
         }
+        let here = followed.as_ref().and_then(|(_, here)| here.clone());
+        drop(followed);
+        // A room no longer on screen no longer sees this pointer.
+        let withdrawn = self.withdraw_pointer_except(here.as_deref());
         // Say where this session's pointer is whether or not an app is
         // publishing — the app-driven republish alone stays silent over a
         // window whose app draws no cursor.
-        followed
-            .as_ref()
-            .and_then(|(_, here)| here.as_deref())
-            .is_some_and(|here| self.publish_local_cursor(here))
+        here.is_some_and(|here| self.publish_local_cursor(&here)) || withdrawn
+    }
+
+    /// Take this session's pointer away from every room it was last shown
+    /// in but `keep`: its people stop showing it. Returns whether any went.
+    fn withdraw_pointer_except(&self, keep: Option<&str>) -> bool {
+        let gone: Vec<(String, PointerAnchor)> = {
+            let mut last = self.last_published.lock_recover();
+            let gone = last
+                .iter()
+                .filter(|(room, _)| Some(room.as_str()) != keep)
+                .map(|(room, (at, _))| (room.clone(), *at))
+                .collect::<Vec<_>>();
+            for (room, _) in &gone {
+                last.remove(room);
+            }
+            gone
+        };
+        for (room, at) in &gone {
+            if let Ok(key) = serde_json::to_string(&PresenceKey::tile_pointer(room.clone(), at.tab))
+            {
+                self.net.publish_presence_cleared(key);
+            }
+        }
+        !gone.is_empty()
     }
 
     /// Put this session's own pointer on the wire, in the room the user
@@ -682,6 +743,10 @@ impl PeerPresence {
             return false;
         }
         let at = *self.cursor.lock_recover();
+        if at.is_none() {
+            // Off the room's windows: shown there no longer.
+            return self.withdraw_pointer_except(None);
+        }
         let mut last = self.last_published.lock_recover();
         // Read before deciding: a peer joining while this runs is welcomed
         // on the next frame.
@@ -704,8 +769,10 @@ impl PeerPresence {
 
     /// The id the people in a room know this session by: what they wave
     /// at and follow.
-    pub fn own_presence_id(&self) -> String {
-        format!("peer@{}", self.net.local_peer_id_hash())
+    /// The people who waved at this person since the last call, by roster
+    /// id, from the room's live presence.
+    pub fn take_waves(&self) -> Vec<String> {
+        self.net.take_live_waves()
     }
 
     /// The record window `tab` shows, once its app has pointed in it here.
@@ -792,10 +859,18 @@ impl PeerPresence {
         tree: &crate::shell::state::WorkspaceTreeHandle,
     ) -> bool {
         self.set_pointer(desk.pointer.and_then(|at| anchor_pointer(&desk.tiles, at)));
+        self.set_shown_strip(desk.strip);
         self.follow_tree(tree);
         let moved = self.pump(presence, &desk.tiles);
         let roster_changed = self.refresh_roster(presence);
         moved || roster_changed
+    }
+
+    /// The strip this desktop shows, the area it is drawn in and how far it
+    /// is scrolled, as of the last layout; `None` while it shows none. A
+    /// live member's pointer on a strip showing no window is placed in it.
+    pub fn set_shown_strip(&self, strip: Option<ShownStrip>) {
+        *self.shown_strip.lock_recover() = strip;
     }
 
     /// Fold everything that arrived from other hosts into `presence`,
@@ -812,11 +887,14 @@ impl PeerPresence {
     /// [`ui::presence::POINTER_IDLE`] fades out and is retired; while one is
     /// fading this returns `true`, so the fade is painted frame by frame.
     pub fn pump_at(&self, presence: &mut PresenceCtx, tiles: &TabTiles, now: Instant) -> bool {
-        let certified = self
-            .certified_people_inbound
-            .lock()
-            .map(|mut inbound| std::mem::take(&mut *inbound))
-            .unwrap_or_default();
+        // What people say in the workspace in front is what its faces show.
+        let here = self
+            .followed
+            .lock_recover()
+            .as_ref()
+            .and_then(|(_, here)| here.clone());
+        presence.set_room_in_front(here);
+        let certified = std::mem::take(&mut *self.certified_people_inbound.lock_recover());
         for (room, people) in certified {
             self.set_certified_people(&room, people);
         }
@@ -833,10 +911,11 @@ impl PeerPresence {
         let colours = self.net.peer_colours_epoch();
         if self.colours_applied.swap(colours, Ordering::AcqRel) != colours {
             for (peer, hue) in self.net.peer_colours() {
-                presence.set_presence_hue(ui::permissions::UserId(format!("peer@{peer}")), hue);
+                presence.set_presence_hue(collab_types::presence::UserId(presence_id(peer)), hue);
             }
         }
-        let folded = !drained.is_empty();
+        let desk_pointers = self.net.take_live_desk_pointers();
+        let folded = !drained.is_empty() || !desk_pointers.is_empty();
         let said = self.net.take_live_chat();
         let net = Arc::clone(&self.net);
         // Rooms whose pointers this person sees: theirs, unless they show
@@ -866,6 +945,15 @@ impl PeerPresence {
                 &|room| mine.iter().any(|r| r == room),
                 now,
             );
+            let (arrived, cleared) = fold_live_desk_pointers(
+                desk_pointers,
+                &mut anchored,
+                presence,
+                &|room| net.peer_labels(room),
+                &|room| mine.iter().any(|r| r == room),
+                now,
+            );
+            fresh.extend(arrived);
             chat_changed = fold_live_chat(
                 said,
                 &mut anchored,
@@ -874,14 +962,17 @@ impl PeerPresence {
                 &|room| mine.iter().any(|r| r == room),
                 now,
             );
-            place_pointers(&anchored, &fresh, presence, tiles, now)
+            let records = self.shown_records(tiles);
+            let strip = *self.shown_strip.lock_recover();
+            let layout = |room: &str| desk_layout(room, tiles, &records, strip);
+            place_heard_pointers(&anchored, &fresh, presence, tiles, &layout, now) || cleared
         });
         // A room left, or one where this person now shows nothing: its
         // pointers go at once.
         let mut cursor_changed = cursor_changed;
         for user in hidden {
             cursor_changed |= presence.clear_pointer(&user);
-            cursor_changed |= presence.chats.forget(&ui::permissions::UserId(user));
+            cursor_changed |= presence.chats.forget(&collab_types::presence::UserId(user));
         }
         drop(mine);
         let typed = self
@@ -938,7 +1029,7 @@ impl PeerPresence {
         let room = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         drop(tree);
         let Ok(people) = self.room_people.lock() else {
             return false;
@@ -947,7 +1038,7 @@ impl PeerPresence {
         let current: HashSet<_> = rows
             .into_iter()
             .flatten()
-            .map(|participant| ui::permissions::UserId(participant.id.clone()))
+            .map(|participant| collab_types::presence::UserId(participant.id.clone()))
             .collect();
         let Ok(mut projected) = self.projected_people.lock() else {
             return false;
@@ -957,7 +1048,7 @@ impl PeerPresence {
             presence.unregister_peer(&retired.0);
         }
         for participant in rows.into_iter().flatten() {
-            let id = ui::permissions::UserId(participant.id.clone());
+            let id = collab_types::presence::UserId(participant.id.clone());
             let kind = ui::presence::ParticipantKind::from(participant.is_agent);
             changed |= presence.participant_kind(&id) != kind
                 || presence.names.get(&id) != Some(&participant.name);
@@ -1088,6 +1179,8 @@ impl PeerPresence {
         presence: &PresenceCtx,
         generation: u64,
     ) -> Option<(bool, String, u64)> {
+        #[cfg(test)]
+        ROSTER_DERIVES.with(|derives| derives.set(derives.get().saturating_add(1)));
         let local = self.net.local_peer_id_hash();
         // Written only on change — a lock every frame would contend
         // with the network thread. `replica` is locked once to compute
@@ -1100,20 +1193,19 @@ impl PeerPresence {
                 return None;
             };
             let tree = replica.tree.read();
-            let Some(ws) = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == tree.desktop.active)
-            else {
+            let Some(ws) = tree.desktop.active_workspace() else {
                 return Some((false, String::new(), generation));
             };
-            if ws.room.is_nil() {
+            if ws.room().is_nil() {
                 return Some((false, String::new(), generation));
             }
-            let labels = tree.room_peer_labels(ws.room);
+            // What each member calls themselves, over their device's name.
+            let labels = crate::shell::network::named_by_themselves(
+                tree.room_peer_labels(ws.room()),
+                self.net.live_labels_of(&ws.room().to_string()),
+            );
             // Two ways to be present: moving cursor, or CRDT participation.
-            let room = ws.room.to_string();
+            let room = ws.room().to_string();
             let mut arrived = handles_seen_in(presence, &room);
             // A pointer this device can't place (its tab isn't shown here)
             // is still someone pointing at the room's work.
@@ -1136,19 +1228,31 @@ impl PeerPresence {
                 .unwrap_or_default();
             arrived.extend(
                 replica
-                    .participants_in(ws.room)
+                    .participants_in(ws.room())
                     .into_iter()
                     .filter(|handle| !absent.contains(handle)),
             );
-            let principals = tree.room_peer_principals(ws.room);
-            let mut rows = room_roster(ws, &labels, &arrived, local, &principals);
+            let principals = tree.room_session_principals(ws.room());
+            let own_devices = tree.room_own_devices(ws.room());
+            let mut rows = room_roster(ws, &labels, &arrived, local, &principals, &own_devices);
+            let apps = self.net.live_apps_of(&room);
             for row in &mut rows {
-                let presence_id = presence
-                    .names
-                    .iter()
-                    .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.name).then_some(id))
-                    .cloned()
-                    .unwrap_or_else(|| ui::permissions::UserId(row.id.clone()));
+                // A row named by the id its presence carries is that
+                // presence; only a row named otherwise is found by its name,
+                // which two people's devices can share.
+                let own = collab_types::presence::UserId(row.id.clone());
+                let presence_id = if presence.names.contains_key(&own)
+                    || presence.here.values().any(|users| users.contains(&own))
+                {
+                    own
+                } else {
+                    presence
+                        .names
+                        .iter()
+                        .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.name).then_some(id))
+                        .cloned()
+                        .unwrap_or(own)
+                };
                 row.active_tab = presence.here.iter().find_map(|(key, users)| {
                     let PresenceKey::Tab { id } = key else {
                         return None;
@@ -1158,6 +1262,7 @@ impl PeerPresence {
                         .then(|| u64::from_str_radix(id, 16).ok())
                         .flatten()
                 });
+                row.in_app = row.session.and_then(|peer| apps.get(&peer)).cloned();
             }
             let unchanged = ws.collaborators == rows && tree.desktop.collaborators == rows;
             let active = ws.id;
@@ -1282,7 +1387,7 @@ pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 /// (`peer@<handle>`): the room it was sent in, where it is anchored, and
 /// when it was last heard. Kept after it goes quiet — somebody who pointed
 /// at the room's work is still in the room — but no longer placed.
-pub type AnchoredPointers = HashMap<String, (String, PointerAnchor, Instant)>;
+pub type AnchoredPointers = HashMap<String, (String, HeardPointer, Instant)>;
 
 /// Fold inbound presence into `anchored`, naming each sender in
 /// `presence`, and return the ids of the peers whose pointer arrived.
@@ -1306,7 +1411,7 @@ pub fn fold_inbound(
     let mut resolved: Option<(String, PeerLabels)> = None;
     for entry in entries {
         let Ok(PresenceKey::Pointer {
-            space: ui::presence::PointerSpace::Tile { room, tab },
+            space: collab_types::presence::PointerSpace::Tile { room, tab },
         }) = serde_json::from_str::<PresenceKey>(&entry.key)
         else {
             continue;
@@ -1315,22 +1420,32 @@ pub fn fold_inbound(
         if !member_of(&room) {
             continue;
         }
-        // Spelled from the handle, never `entry.user`'s unverified claim.
-        let user = format!("peer@{}", entry.peer);
+        let user = presence_id(entry.peer);
+        if entry.cleared {
+            // Taken away from this room's windows: gone at once, here too.
+            if anchored.get(&user).is_some_and(|(at, _, _)| *at == room) {
+                anchored.remove(&user);
+                presence.clear_pointer(&user);
+            }
+            continue;
+        }
         if !matches!(&resolved, Some((seen, _)) if *seen == room) {
             resolved = Some((room.clone(), labels(&room)));
         }
         if let Some((_, known)) = &resolved
-            && let Some(name) = known.get(&entry.peer)
+            && let PresencePrincipal {
+                id,
+                name: Some(name),
+            } = resolve_presence_principal(known, entry.peer)
         {
-            presence.set_display_name(ui::permissions::UserId(user.clone()), name.clone());
+            presence.set_display_name(collab_types::presence::UserId(id), name);
         }
         let anchor = PointerAnchor {
             tab,
             x: entry.point.0,
             y: entry.point.1,
         };
-        anchored.insert(user.clone(), (room, anchor, now));
+        anchored.insert(user.clone(), (room, HeardPointer::Tab(anchor), now));
         arrived.push(user);
     }
     arrived
@@ -1355,8 +1470,8 @@ pub fn fold_live_chat(
         if !member_of(&entry.room) {
             continue;
         }
-        let user = format!("peer@{}", entry.peer);
-        let id = ui::permissions::UserId(user.clone());
+        let user = presence_id(entry.peer);
+        let id = collab_types::presence::UserId(user.clone());
         changed |= presence.chats.say(
             &id,
             entry
@@ -1384,73 +1499,11 @@ pub fn fold_live_chat(
     changed || presence.chats.animating(now)
 }
 
-/// Put every pointer in `anchored` where its tab's tile is on this device
-/// (`tiles`), filed under its room the way the overlay paints them, and
-/// take off screen any whose tab this device doesn't show. `fresh` peers
-/// are restated even when they haven't moved, so a keepalive keeps them
-/// current. Each is stamped with when it was last *heard*, not placed, so
-/// a pointer riding a scrolling tile still goes quiet on time: one not
-/// heard for [`ui::presence::POINTER_IDLE`] is retired
-/// ([`PresenceCtx::prune_pointers`]) and not placed again until it is.
-/// The same stamp is what tells the presence store a tile carrying the
-/// pointer from the peer moving it: only a newly heard position glides
-/// ([`PresenceCtx::pointer_position_at`]).
-/// Returns whether anything landed, moved, went, or is fading or gliding.
-pub fn place_pointers(
-    anchored: &AnchoredPointers,
-    fresh: &[String],
-    presence: &mut PresenceCtx,
-    tiles: &TabTiles,
-    now: Instant,
-) -> bool {
-    use ui::presence::{POINTER_FADE, POINTER_IDLE};
-    let mut changed = false;
-    for (user, (room, anchor, heard)) in anchored {
-        if now.saturating_duration_since(*heard) >= POINTER_IDLE {
-            continue;
-        }
-        let Some((x, y)) = place_pointer(tiles, *anchor) else {
-            changed |= presence.clear_pointer(user);
-            continue;
-        };
-        let key = PresenceKey::Workspace { id: room.clone() };
-        let at = (f32_of_f64(x), f32_of_f64(y));
-        let placed = presence
-            .pointers
-            .get(&key)
-            .and_then(|list| list.iter().find(|(u, _)| u.0 == *user))
-            .map(|(_, at)| *at);
-        // Restated where it already is (a late joiner's welcome, or an older
-        // build's keepalive): heard again, so it does not fade, but nothing
-        // on screen moves unless it had started fading.
-        let restated = placed == Some(at);
-        if restated && !fresh.contains(user) {
-            continue;
-        }
-        let fading = restated
-            && presence.pointer_opacity(
-                &key,
-                &ui::permissions::UserId(user.clone()),
-                now,
-                POINTER_IDLE,
-                POINTER_FADE,
-            ) < 1.0;
-        // Stamped with when it was heard rather than now: moving with a
-        // tile is not the peer saying anything.
-        presence.apply_remote_presence_at(
-            user.clone(),
-            key,
-            PresencePayload::Pointer { x: at.0, y: at.1 },
-            *heard,
-        );
-        changed |= !restated || fading;
-    }
-    changed |= presence.prune_pointers(now, POINTER_IDLE);
-    changed
-        || presence.pointers_fading(now, POINTER_IDLE, POINTER_FADE)
-        || presence.pointers_easing(now)
-        || presence.pointer_names_fading(now, POINTER_FADE)
-}
+/// How long a peer's pointer stays painted after it was last heard: while
+/// it is in the room's windows, however still (presence.md: only its name
+/// steps aside). It goes when its person takes it away (`PresenceCleared`),
+/// leaves the room, or stops showing where they are.
+pub const POINTER_STAYS: Duration = Duration::MAX;
 
 /// The people in `ws`'s room. Two sources, neither sufficient alone:
 /// `labels` is the room document's answer (everyone its authority has
@@ -1462,19 +1515,24 @@ pub fn place_pointers(
 /// promote its own row. `local` is dropped — the roster is who *else*
 /// is here.
 ///
-/// The role chip comes from the policy, asked about the person a handle's
-/// certified device belongs to (`principals`, from
-/// [`crate::shell::state::WorkspaceTree::room_peer_principals`]) — the key
-/// membership capabilities are written under. A label is what a person is
-/// *called*, not who they are; it is asked only for a handle with no
-/// certified person, which covers the owner's own endpoint, labelled with
-/// its user id.
+/// The role chip is [`certified_role`]: the policy, asked about the person
+/// the room vouches for at a handle (`principals`, from
+/// [`crate::shell::state::WorkspaceTree::room_session_principals`]) — the
+/// key membership capabilities are written under. A label is what a person
+/// is *called*, not who they are, and on the live plane they choose it
+/// themselves, so it never lends a role: a handle the room vouches for
+/// nobody at shows none.
+///
+/// A handle in `own_devices` is another device of this person: its row is
+/// named by that device and marked as one, so it shows among the person's
+/// devices rather than as someone else.
 pub fn room_roster(
     ws: &crate::shell::state::Workspace,
     labels: &PeerLabels,
     arrived: &std::collections::BTreeSet<u64>,
     local: u64,
     principals: &std::collections::BTreeMap<u64, crate::shell::state::UserId>,
+    own_devices: &std::collections::BTreeMap<u64, String>,
 ) -> Vec<crate::shell::state::Collaborator> {
     let mut handles: std::collections::BTreeSet<u64> = labels.keys().copied().collect();
     handles.extend(arrived.iter().copied());
@@ -1482,14 +1540,15 @@ pub fn room_roster(
     handles
         .into_iter()
         .map(|handle| {
-            // Same spelling as the presence path, so avatar and cursor share an id.
-            let id = format!("peer@{handle}");
-            let name = labels.get(&handle).cloned().unwrap_or_else(|| id.clone());
-            let role = match principals.get(&handle) {
-                Some(person) => ws.role_of(person),
-                None => ws.role_of(&name),
-            };
-            let who = crate::shell::state::Collaborator::new(id, name).with_session(handle);
+            // Same principal as the presence path, so avatar and cursor share an id.
+            let PresencePrincipal { id, name } = resolve_presence_principal(labels, handle);
+            let name = name.unwrap_or_else(|| id.clone());
+            let role = certified_role(ws, principals, handle);
+            let who = match own_devices.get(&handle) {
+                Some(device) => crate::shell::state::Collaborator::new(id, device).as_own_device(),
+                None => crate::shell::state::Collaborator::new(id, name),
+            }
+            .with_session(handle);
             let who = match role {
                 Some(role) => who.with_role(crate::shell::state::role_id(role)),
                 None => who,
@@ -1507,8 +1566,8 @@ pub fn room_roster(
 mod tests {
     use super::*;
     use crate::shell::network::InboundPresence;
+    use collab_types::presence::UserId;
     use std::time::SystemTime;
-    use ui::permissions::UserId;
 
     fn interaction(actor: &str) -> PresencePayload {
         PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
@@ -1847,16 +1906,17 @@ mod tests {
     const DESK_TILES: [(u64, vello::kurbo::Rect); 1] =
         [(TAB, vello::kurbo::Rect::new(0.0, 0.0, 2000.0, 2000.0))];
 
-    /// A frame as it arrives off the wire. `user` is the sender's own
-    /// (untrusted) claimed name — tests below pass a wrong one on purpose.
-    fn arrived(user: &str, peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
+    /// A frame as the network queues it: the sender's session and nothing
+    /// it said about who it is (`presence_identity_tests` sends that claim
+    /// over the wire and proves it goes no further).
+    fn arrived(peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
         InboundPresence {
             peer,
-            user: user.into(),
             key: serde_json::to_string(&PresenceKey::tile_pointer(room, TAB))
                 .expect("a tile pointer key serialises"),
             point: at,
             ts: 0,
+            cleared: false,
         }
     }
 
@@ -1912,11 +1972,11 @@ mod tests {
             let mut presence = PresenceCtx::default();
             let entry = InboundPresence {
                 peer: 7,
-                user: "bob".into(),
                 key: serde_json::to_string(&PresenceKey::Workspace { id: room.into() })
                     .expect("a workspace key serialises"),
                 point: (120.0, 240.0),
                 ts: 0,
+                cleared: false,
             };
             assert!(!fold(vec![entry], &mut presence, &unnamed, &any_room));
             assert!(presence.pointers.is_empty(), "{:?}", presence.pointers);
@@ -1931,7 +1991,7 @@ mod tests {
             let mut anchored = AnchoredPointers::new();
             let now = Instant::now();
             let fresh = fold_inbound(
-                vec![arrived("bob", 7, room, (30.0, 20.0))],
+                vec![arrived(7, room, (30.0, 20.0))],
                 &mut anchored,
                 &mut presence,
                 &unnamed,
@@ -1980,91 +2040,24 @@ mod tests {
         a_placed_pointer_follows_the_tile_and_hides_with_it();
     }
 
-    /// A peer that stops saying where it points — crashed, or pointing
-    /// at nothing this room shares — fades out and is retired, however
-    /// its tile moves meanwhile, and comes back when heard from again.
-    /// It stays in the room: the anchor is kept for the roster.
-    #[test]
-    fn a_quiet_peers_pointer_fades_out_and_is_retired() {
-        use ui::presence::{POINTER_FADE, POINTER_IDLE};
-        use vello::kurbo::Rect;
-        let room = "3f2b1c00-0000-4000-8000-000000000001";
-        let key = PresenceKey::Workspace { id: room.into() };
-        let bob = ui::permissions::UserId("peer@7".into());
-        let mut presence = PresenceCtx::default();
-        let mut anchored = AnchoredPointers::new();
-        let t0 = Instant::now();
-        let heard = |anchored: &mut AnchoredPointers, presence: &mut PresenceCtx, at| {
-            fold_inbound(
-                vec![arrived("bob", 7, room, (30.0, 20.0))],
-                anchored,
-                presence,
-                &unnamed,
-                &any_room,
-                at,
-            )
-        };
-        let fresh = heard(&mut anchored, &mut presence, t0);
-        let here = [(TAB, Rect::new(100.0, 50.0, 700.0, 700.0))];
-        assert!(place_pointers(&anchored, &fresh, &mut presence, &here, t0));
-        assert!(presence.pointer_for(&key, &bob).is_some());
-
-        // The desk scrolls while the peer stays silent: the pointer rides
-        // the tile but is not thereby heard from.
-        let fading = t0 + POINTER_IDLE.saturating_sub(POINTER_FADE / 2);
-        let scrolled = [(TAB, Rect::new(40.0, 50.0, 640.0, 700.0))];
-        assert!(
-            place_pointers(&anchored, &[], &mut presence, &scrolled, fading),
-            "a fading pointer asks for the next frame",
-        );
-        assert_eq!(presence.pointer_for(&key, &bob), Some((70.0, 70.0)));
-        let opacity = presence.pointer_opacity(&key, &bob, fading, POINTER_IDLE, POINTER_FADE);
-        assert!(opacity > 0.0 && opacity < 1.0, "half faded: {opacity}");
-
-        let quiet = t0 + POINTER_IDLE;
-        assert!(place_pointers(
-            &anchored,
-            &[],
-            &mut presence,
-            &scrolled,
-            quiet
-        ));
-        assert_eq!(presence.pointer_for(&key, &bob), None, "retired");
-        assert!(
-            !place_pointers(&anchored, &[], &mut presence, &scrolled, quiet),
-            "and not placed again while quiet",
-        );
-        assert!(anchored.contains_key("peer@7"), "still in the room");
-
-        let back = quiet + Duration::from_secs(1);
-        let fresh = heard(&mut anchored, &mut presence, back);
-        assert!(place_pointers(
-            &anchored,
-            &fresh,
-            &mut presence,
-            &scrolled,
-            back
-        ));
-        assert_eq!(presence.pointer_for(&key, &bob), Some((70.0, 70.0)));
-    }
+    #[path = "still_pointer_tests.rs"]
+    mod still_pointer;
 
     /// A resting pointer said again where it already is (an older build's
-    /// keepalive, or the welcome a late joiner gets) is heard, so it does not
-    /// fade, but nothing on screen moves: no repaint, unless it had started
-    /// fading and so comes back.
+    /// keepalive, or the welcome a late joiner gets) moves nothing on
+    /// screen: no repaint.
     #[test]
     fn identical_restated_pointer_does_not_repaint() {
-        use ui::presence::{POINTER_FADE, POINTER_IDLE};
         use vello::kurbo::Rect;
         let room = "3f2b1c00-0000-4000-8000-000000000002";
         let key = PresenceKey::Workspace { id: room.into() };
-        let bob = ui::permissions::UserId("peer@7".into());
+        let bob = collab_types::presence::UserId("peer@7".into());
         let mut presence = PresenceCtx::default();
         let mut anchored = AnchoredPointers::new();
         let here = [(TAB, Rect::new(100.0, 50.0, 700.0, 700.0))];
         let heard = |anchored: &mut AnchoredPointers, presence: &mut PresenceCtx, at| {
             fold_inbound(
-                vec![arrived("bob", 7, room, (30.0, 20.0))],
+                vec![arrived(7, room, (30.0, 20.0))],
                 anchored,
                 presence,
                 &unnamed,
@@ -2085,32 +2078,10 @@ mod tests {
             !place_pointers(&anchored, &fresh, &mut presence, &here, again),
             "the same place heard again paints nothing"
         );
-        // Heard, though: still fully drawn when the first word would have
-        // faded out.
-        let past_first = t0 + POINTER_IDLE;
-        assert!(!place_pointers(
-            &anchored,
-            &[],
-            &mut presence,
-            &here,
-            past_first
-        ));
+        // Still fully drawn long after: a resting pointer does not fade.
+        let later = again + Duration::from_secs(60);
+        assert!(!place_pointers(&anchored, &[], &mut presence, &here, later));
         assert_eq!(presence.pointer_for(&key, &bob), Some((130.0, 70.0)));
-        assert!(
-            presence.pointer_opacity(&key, &bob, past_first, POINTER_IDLE, POINTER_FADE) >= 1.0
-        );
-
-        let fading = again + POINTER_IDLE.saturating_sub(POINTER_FADE / 2);
-        assert!(
-            presence.pointer_opacity(&key, &bob, fading, POINTER_IDLE, POINTER_FADE) < 1.0,
-            "quiet long enough to have started fading"
-        );
-        let fresh = heard(&mut anchored, &mut presence, fading);
-        assert!(
-            place_pointers(&anchored, &fresh, &mut presence, &here, fading),
-            "a fading pointer heard again is painted back"
-        );
-        assert!(presence.pointer_opacity(&key, &bob, fading, POINTER_IDLE, POINTER_FADE) >= 1.0);
     }
 
     fn unnamed(_room: &str) -> PeerLabels {
@@ -2134,7 +2105,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             assert!(fold(
-                vec![arrived("bob", 7, room, (120.0, 240.0))],
+                vec![arrived(7, room, (120.0, 240.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2157,7 +2128,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             fold(
-                vec![arrived("bob", 7, room, (120.0, 240.0))],
+                vec![arrived(7, room, (120.0, 240.0))],
                 &mut presence,
                 &named(&[(7, "bob")]),
                 &any_room,
@@ -2205,8 +2176,8 @@ mod tests {
 
             fold(
                 vec![
-                    arrived("bob", 7, mine, (10.0, 20.0)),
-                    arrived("bob", 7, theirs, (30.0, 40.0)),
+                    arrived(7, mine, (10.0, 20.0)),
+                    arrived(7, theirs, (30.0, 40.0)),
                 ],
                 &mut presence,
                 &unnamed,
@@ -2236,7 +2207,7 @@ mod tests {
             let mut presence = PresenceCtx::default();
 
             let any = fold(
-                vec![arrived("bob", 7, elsewhere, (10.0, 10.0))],
+                vec![arrived(7, elsewhere, (10.0, 10.0))],
                 &mut presence,
                 &unnamed,
                 &|_room| false,
@@ -2258,8 +2229,8 @@ mod tests {
             let mut presence = PresenceCtx::default();
             fold(
                 vec![
-                    arrived("bob", 7, room, (100.0, 100.0)),
-                    arrived("bob", 7, room, (600.0, 300.0)),
+                    arrived(7, room, (100.0, 100.0)),
+                    arrived(7, room, (600.0, 300.0)),
                 ],
                 &mut presence,
                 &unnamed,
@@ -2286,8 +2257,8 @@ mod tests {
             let mut presence = PresenceCtx::default();
             fold(
                 vec![
-                    arrived("bob", 7, here, (10.0, 10.0)),
-                    arrived("carol", 8, there, (20.0, 20.0)),
+                    arrived(7, here, (10.0, 10.0)),
+                    arrived(8, there, (20.0, 20.0)),
                 ],
                 &mut presence,
                 &unnamed,
@@ -2305,7 +2276,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             let any = fold(
-                vec![arrived("bob", 7, room, (1.0, 2.0))],
+                vec![arrived(7, room, (1.0, 2.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2327,11 +2298,11 @@ mod tests {
             let mut presence = PresenceCtx::default();
             let entry = InboundPresence {
                 peer: 9,
-                user: "carol".into(),
                 key: serde_json::to_string(&PresenceKey::Tab { id: "2a".into() })
                     .expect("a tab key serialises"),
                 point: (3.0, 4.0),
                 ts: 0,
+                cleared: false,
             };
             fold(vec![entry], &mut presence, &unnamed, &any_room);
             assert!(
@@ -2362,7 +2333,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             fold(
-                vec![arrived("bob", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut presence,
                 &named(&[(7, "bob")]),
                 &any_room,
@@ -2381,8 +2352,12 @@ mod tests {
         fn a_sender_cannot_name_itself() {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
+            // What the sender's frame said about who it is never reaches
+            // this fold (`InboundPresence` has no field for it; the network's
+            // `presence_identity_tests` sends that claim over the wire): an
+            // unnamed sender is its session.
             fold(
-                vec![arrived("ada", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2402,14 +2377,14 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut before = PresenceCtx::default();
             fold(
-                vec![arrived("", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut before,
                 &unnamed,
                 &any_room,
             );
             let mut after = PresenceCtx::default();
             fold(
-                vec![arrived("", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut after,
                 &named(&[(7, "bob")]),
                 &any_room,
@@ -2447,7 +2422,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             fold(
-                vec![arrived("", 0x2a, room, (5.0, 5.0))],
+                vec![arrived(0x2a, room, (5.0, 5.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2467,101 +2442,8 @@ mod tests {
         a_session_that_names_nobody_is_labelled_with_its_handle();
     }
 
-    /// A workspace `owner` owns, whose room admits `member` as `role` —
-    /// the membership invite redemption writes, keyed by the person's key
-    /// hex.
-    fn room_admitting(
-        owner: &str,
-        member: &str,
-        role: crate::shell::state::CapRole,
-    ) -> crate::shell::state::Workspace {
-        use crate::shell::state::{Workspace, WorkspaceId};
-        let mut ws = Workspace::new(WorkspaceId(1), "Design review");
-        ws.set_room(crate::shell::state::RoomId::new());
-        ws.set_owner(owner.to_string());
-        ws.govern_as_at(
-            owner,
-            tilo_action_policy::Change::AddMember {
-                person: member.to_owned(),
-                role,
-            },
-            tilo_clock::unix_now(),
-        )
-        .expect("the owner admits the member");
-        ws
-    }
-
-    #[test]
-    fn room_roster_takes_roles_from_the_certified_principal_not_the_label() {
-        use crate::shell::state::{CapRole, role_id};
-        let bob = crate::shell::state::person_id_of([0xb0; 32]).expect("a person key");
-        let handle = 7_u64;
-        let arrived = std::collections::BTreeSet::from([handle]);
-
-        // Phase `an_invited_member_shows_their_policy_role`. Bob was
-        // invited as an editor; the room calls him "Bob" and his
-        // certified device belongs to his key. The chip is the policy's.
-        {
-            let ws = room_admitting("ada", &bob, CapRole::Editor);
-            let labels = PeerLabels::from([(handle, "Bob".to_string())]);
-            let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].name, "Bob", "the label is still what he is called");
-            assert_eq!(
-                rows[0].role_id.as_deref(),
-                Some(role_id(CapRole::Editor)),
-                "an invited editor's row carries the role the Members tab shows",
-            );
-        }
-
-        // Phase `a_label_spelling_somebody_else_s_id_does_not_borrow_their_role`.
-        // A certified device is asked about by its person only: a label
-        // that happens to read as the owner's id lends it nothing.
-        {
-            let ws = room_admitting("ada", &bob, CapRole::Viewer);
-            let labels = PeerLabels::from([(handle, "ada".to_string())]);
-            let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
-            assert_eq!(
-                rows[0].role_id.as_deref(),
-                Some(role_id(CapRole::Viewer)),
-                "the chip is the certified person's, not whoever the label spells",
-            );
-        }
-
-        // Phase `the_owner_endpoint_named_with_the_user_id_keeps_owner_role`.
-        // The inviter labels its own endpoint with its user id and has no
-        // certified device in the room; that row keeps the owner chip.
-        {
-            let ws = room_admitting("ada", &bob, CapRole::Editor);
-            let labels = PeerLabels::from([(handle, "ada".to_string())]);
-            let rows = room_roster(
-                &ws,
-                &labels,
-                &arrived,
-                1,
-                &std::collections::BTreeMap::new(),
-            );
-            assert_eq!(
-                rows[0].role_id.as_deref(),
-                Some(role_id(CapRole::Owner)),
-                "an uncertified endpoint labelled with the owner's id keeps the owner chip",
-            );
-        }
-
-        // Phase `a_certified_person_without_membership_has_no_chip`.
-        {
-            let ws = room_admitting("ada", "someone-else", CapRole::Editor);
-            let labels = PeerLabels::from([(handle, "Bob".to_string())]);
-            let principals = std::collections::BTreeMap::from([(handle, bob)]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
-            assert_eq!(
-                rows[0].role_id, None,
-                "a certified person the room never admitted has no role to show",
-            );
-        }
-    }
+    #[path = "roster_role_tests.rs"]
+    mod roster_role;
 }
 
 /// Two sessions, and a pointer that has to get from one to the other.
@@ -2607,8 +2489,8 @@ mod two_sessions {
         let network = Arc::new(network);
         let relay = PeerPresence::for_network(&network, rooms_of(&tree));
         let mut presence = PresenceCtx::default();
-        let id = ui::permissions::UserId("opaque-certified-software".into());
-        let row = ui::collaboration::Collaborator {
+        let id = collab_types::presence::UserId("opaque-certified-software".into());
+        let row = collab_types::presence::Collaborator {
             id: id.0.clone(),
             name: "Tide".into(),
             colour: None,
@@ -2630,7 +2512,7 @@ mod two_sessions {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("the certified roster's room exists")
                 .id;
             tree.set_active(workspace);
@@ -2681,7 +2563,7 @@ mod two_sessions {
             .desktop
             .workspaces
             .iter()
-            .map(|w| w.room.to_string())
+            .map(|w| w.room().to_string())
             .collect()
     }
 
@@ -2719,18 +2601,28 @@ mod two_sessions {
     /// A session that has joined `room`, with names replicated out of
     /// the room's document the way production does it.
     fn guest_joining(host: &mut WorkspaceTree, room: RoomId) -> WorkspaceTree {
+        // Its invite pins the host (hub 1) as the room's governor.
+        guest_invited_by(host, room, &PeerOrigin::hub(1))
+    }
+
+    /// [`guest_joining`], with the invite pinning `governor` as the room's
+    /// governor: the host's own endpoint, as a real invite names it.
+    fn guest_invited_by(
+        host: &mut WorkspaceTree,
+        room: RoomId,
+        governor: &PeerOrigin,
+    ) -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
         let ws = tree.append_empty_workspace("Mine");
         assert!(
-            tree.set_room(ws, room),
+            tree.stand_in_room(ws, room),
             "the guest has to end up in the room it joined",
         );
-        // Its invite pins the host (hub 1) as the room's governor.
-        assert!(tree.pin_room_authority(room, PeerOrigin::hub(1)));
+        assert!(tree.pin_room_authority(room, governor.clone()));
         let changes = host
             .export_room_changes_since(room, &[])
             .expect("the host is in the room it governs");
-        tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
+        tree.apply_room_changes(room, &changes, governor)
             .expect("the host's governance merges into the guest");
         tree
     }
@@ -2740,14 +2632,14 @@ mod two_sessions {
         match msg {
             NeighbourMsg::PresenceMoved {
                 peer,
-                user,
+                user: _,
                 key,
                 point,
                 ts,
                 colour,
             } => {
                 to.note_peer_colour(peer, colour.as_deref());
-                to.handle_presence_message(peer, user, key, point, ts);
+                to.handle_presence_message(peer, key, point, ts);
             }
             other => panic!("expected PresenceMoved, got {other:?}"),
         }
@@ -3147,14 +3039,15 @@ mod two_sessions {
 
         shared.set_pointer(None);
         hosted.frame(&mut presence, &shared.snapshot(), &hosted_handle);
-        assert!(
-            hosted_cmds.try_recv().is_err(),
-            "a pointer that left the window is not restated",
-        );
+        let NeighbourMsg::PresenceCleared { key: cleared, .. } = published(&mut hosted_cmds) else {
+            panic!("expected PresenceCleared");
+        };
+        assert_eq!(cleared, key, "a pointer that left the window is taken away");
+        hosted.frame(&mut presence, &shared.snapshot(), &hosted_handle);
+        assert!(hosted_cmds.try_recv().is_err(), "and not taken away again");
 
         hosted_net.handle_presence_message(
             handle_of(&other_peer),
-            "anyone at all".into(),
             serde_json::to_string(&PresenceKey::tile_pointer(room.to_string(), DESK_TAB))
                 .expect("a tile pointer key serialises"),
             (5.0, 6.0),
@@ -3185,8 +3078,7 @@ mod two_sessions {
         };
         let strip = StripId(77);
         let ws_id = WorkspaceId(7);
-        let mut ws = Workspace::new(ws_id, "Desk");
-        ws.set_room(room);
+        let mut ws = Workspace::in_room(ws_id, room, "Desk");
         ws.strips = vec![Strip {
             id: strip,
             name: "Main".into(),
@@ -3201,6 +3093,7 @@ mod two_sessions {
                             kind: AppKind::Other("Test".into()),
                             label: format!("W{id}"),
                         },
+                        app_title: None,
                     }],
                     active_tab: desk_tab(id),
                     width: WindowWidth::Fraction(250),
@@ -3541,7 +3434,8 @@ mod two_sessions {
             let host_peer = peer_id(51);
             let guest_peer = peer_id(52);
             let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
-            let mut guest_tree = guest_joining(&mut host_tree, room);
+            let mut guest_tree =
+                guest_invited_by(&mut host_tree, room, &PeerOrigin::peer_id(&host_peer));
             looking_at_its_room(&mut guest_tree);
             let guest_handle = guest_tree.shared();
 
@@ -3711,7 +3605,7 @@ mod two_sessions {
             guest,
             key,
             PresencePayload::Availability {
-                state: ui::Availability::Available,
+                state: collab_types::presence::Availability::Available,
                 call: None,
             },
         ));
@@ -3725,9 +3619,15 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// How long [`while_the_replica_is_held`] holds the lock for frames
-    /// that should not need it: far longer than a hundred frames take.
-    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+    /// When `relay` last derived its roster: frames run at that instant
+    /// stay inside [`ROSTER_RECHECK`] however slowly the test runs.
+    fn roster_derived_at(relay: &PeerPresence) -> Instant {
+        relay
+            .roster_seen
+            .lock_recover()
+            .as_ref()
+            .map_or_else(Instant::now, |seen| seen.at)
+    }
 
     /// Run `frames` while another thread holds `net`'s replica lock.
     /// `None` when they did not finish before that thread let go after
@@ -3771,11 +3671,12 @@ mod two_sessions {
         presence: &mut PresenceCtx,
         wakeups: usize,
     ) -> Option<bool> {
-        while_the_replica_is_held(net, PATIENCE, || {
+        let at = roster_derived_at(relay);
+        while_the_replica_is_held(net, tilo_test_env::hang_bound(), || {
             let mut changed = false;
             for _ in 0..wakeups {
-                changed |= relay.pump(presence, &DESK_TILES);
-                changed |= relay.refresh_roster(presence);
+                changed |= relay.pump_at(presence, &DESK_TILES, at);
+                changed |= relay.refresh_roster_at(presence, at);
             }
             changed
         })
@@ -3860,7 +3761,9 @@ mod two_sessions {
         let roster_before = roster_of(&host_handle);
         assert!(host.pump(&mut on_host, &DESK_TILES), "the pointer moves");
         assert_eq!(
-            while_the_replica_is_held(&host_net, PATIENCE, || host.refresh_roster(&on_host)),
+            while_the_replica_is_held(&host_net, tilo_test_env::hang_bound(), || {
+                host.refresh_roster_at(&on_host, roster_derived_at(&host))
+            }),
             Some(false),
             "a pointer moving is told apart from somebody arriving without the replica",
         );
@@ -3898,14 +3801,132 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// What an idle frame cost the roster before it was gated (deriving it
-    /// every frame) against what it costs now, in a room naming 30 people.
-    /// Printed for the record; asserted only in the direction that cannot
-    /// flake, since one side takes the replica and parses 30 endpoint ids
-    /// and the other loads three counters.
+    /// presence.md: a device's name never leaves it. The roster calls a
+    /// member by the name they give themselves once they have said it.
     #[test]
-    fn an_idle_frame_costs_the_roster_a_fraction_of_deriving_it() {
-        const FRAMES: u32 = 2_000;
+    fn the_roster_calls_a_member_by_the_name_they_give_themselves() {
+        let ada = peer_id(71);
+        let (mut host_tree, room) = host_naming(&[(&ada, "Primary device")]);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-named-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "n.sock", &host_handle, &peer_id(70));
+        host_net.hear_live_label_for_test(&room.to_string(), handle_of(&ada), "Ada Lovelace");
+        assert!(host.refresh_roster(&PresenceCtx::default()));
+        assert_eq!(
+            roster_of(&host_handle)
+                .into_iter()
+                .map(|(name, _, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["Ada Lovelace".to_owned()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A role chip is authority, so it comes from who the room vouches for
+    /// at a session, never from what the session is called. A member the
+    /// room never certified names herself after the owner on the live
+    /// plane; she is called that, but wears no role, and the owner's own
+    /// endpoint, which the invite pinned as the room's governor, keeps the
+    /// owner chip.
+    #[test]
+    fn a_name_a_member_gives_herself_never_wears_the_owners_role() {
+        use crate::shell::state::{CapRole, role_id};
+        let governor = peer_id(81);
+        let mallory = peer_id(82);
+        // The host calls its own endpoint by its user id, as inviting does.
+        let (mut host_tree, room) = host_naming(&[(&governor, OWNER), (&mallory, "Mallory")]);
+        let mut guest_tree =
+            guest_invited_by(&mut host_tree, room, &PeerOrigin::peer_id(&governor));
+        looking_at_its_room(&mut guest_tree);
+        let guest_handle = guest_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-role-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (guest, guest_net, _guest_cmds) = session(&dir, "r.sock", &guest_handle, &peer_id(83));
+        guest_net.hear_live_label_for_test(&room.to_string(), handle_of(&mallory), OWNER);
+        assert!(guest.refresh_roster(&PresenceCtx::default()));
+
+        let rows = guest_handle
+            .read()
+            .desktop
+            .active_workspace()
+            .expect("the room is on screen")
+            .collaborators
+            .clone();
+        let row_of = |peer: &str| {
+            rows.iter()
+                .find(|row| row.session == Some(handle_of(peer)))
+                .unwrap_or_else(|| panic!("{peer} is on the roster: {rows:?}"))
+        };
+        let impostor = row_of(&mallory);
+        assert_eq!(impostor.name, OWNER, "she is called what she calls herself");
+        assert_eq!(
+            impostor.role_id, None,
+            "and wears no role: the owner's name is not the owner's authority",
+        );
+        let owner = row_of(&governor);
+        assert_eq!(owner.name, OWNER);
+        assert_eq!(
+            owner.role_id.as_deref(),
+            Some(role_id(CapRole::Owner)),
+            "the room's governor keeps the owner chip",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two devices the room names alike (two people's "Primary device") are
+    /// still two people: where each is comes from its own presence, so
+    /// following one goes where that one is.
+    #[test]
+    fn two_peers_named_alike_are_each_where_their_own_presence_says() {
+        let (first, second) = (peer_id(61), peer_id(62));
+        let (mut host_tree, room) =
+            host_naming(&[(&first, "Primary device"), (&second, "Primary device")]);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-alike-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, _host_net, _host_cmds) = session(&dir, "a.sock", &host_handle, &peer_id(60));
+        let id = |peer: &str| collab_types::presence::UserId(format!("peer@{}", handle_of(peer)));
+        let mut presence = PresenceCtx::default();
+        for peer in [&first, &second] {
+            presence.names.insert(id(peer), "Primary device".into());
+        }
+        presence
+            .here
+            .insert(PresenceKey::Tab { id: "a".into() }, vec![id(&second)]);
+        presence.pointers.insert(
+            PresenceKey::Workspace {
+                id: room.to_string(),
+            },
+            vec![(id(&first), (0.0, 0.0)), (id(&second), (0.0, 0.0))],
+        );
+        assert!(host.refresh_roster(&presence));
+        let where_ = |peer: &str| {
+            host_handle
+                .read()
+                .desktop
+                .active_workspace()
+                .and_then(|workspace| {
+                    workspace
+                        .collaborators
+                        .iter()
+                        .find(|row| row.id == id(peer).0)
+                        .map(|row| row.active_tab)
+                })
+        };
+        assert_eq!(where_(&second), Some(Some(0xa)), "the one in the window");
+        assert_eq!(where_(&first), Some(None), "the other, in none");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An idle frame in a room naming 30 people loads three counters and
+    /// derives no roster: deriving takes the replica and parses 30 endpoint
+    /// ids. Every frame here runs inside the recheck interval.
+    #[test]
+    fn an_idle_frame_derives_no_roster() {
+        const FRAMES: usize = 2_000;
         let people = (0..30_u8)
             .map(|seed| (peer_id(100 + seed), format!("Person {seed}")))
             .collect::<Vec<_>>();
@@ -3920,28 +3941,17 @@ mod two_sessions {
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, _host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &peer_id(99));
         let quiet = PresenceCtx::default();
-        assert!(host.refresh_roster(&quiet));
+        let at = Instant::now();
+        assert!(host.refresh_roster_at(&quiet, at));
         assert_eq!(roster_of(&host_handle).len(), 30);
 
-        let started = Instant::now();
+        let derives = || ROSTER_DERIVES.with(std::cell::Cell::get);
+        let before = derives();
+        assert!(before > 0, "the first refresh derived it");
         for _ in 0..FRAMES {
-            let (changed, _, _) = host
-                .derive_roster(&quiet, host.roster_tree.generation())
-                .expect("the replica");
-            assert!(!changed);
+            assert!(!host.refresh_roster_at(&quiet, at));
         }
-        let derived = started.elapsed();
-        let started = Instant::now();
-        for _ in 0..FRAMES {
-            assert!(!host.refresh_roster(&quiet));
-        }
-        let gated = started.elapsed();
-        eprintln!(
-            "#3805 roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
-            derived / FRAMES,
-            gated / FRAMES,
-        );
-        assert!(gated < derived, "gated {gated:?} vs derived {derived:?}");
+        assert_eq!(derives(), before, "an idle frame derived the roster");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3967,7 +3977,7 @@ mod two_sessions {
             guest
         };
         over_the_wire(published(&mut guest_cmds), &host_net);
-        let user = ui::permissions::UserId(format!("peer@{}", handle_of(&guest_peer)));
+        let user = collab_types::presence::UserId(format!("peer@{}", handle_of(&guest_peer)));
         let worn = host_net
             .peer_colour(handle_of(&guest_peer))
             .expect("the guest's frame says what colour they wear");
@@ -3976,7 +3986,7 @@ mod two_sessions {
         host.pump(&mut on_host, &DESK_TILES);
         assert_eq!(
             on_host.color_overrides.get(&user).copied(),
-            Some(ui::presence::identity_rgb(worn)),
+            Some(collab_types::presence::identity_rgb(worn)),
             "the first frame paints the guest in their colour",
         );
 
@@ -3988,16 +3998,16 @@ mod two_sessions {
         }
         assert_eq!(on_host.color_overrides.get(&user), None);
 
-        let other = if worn == ui::tokens::PresenceHue::Violet {
-            ui::tokens::PresenceHue::Teal
+        let other = if worn == collab_types::presence::PresenceHue::Violet {
+            collab_types::presence::PresenceHue::Teal
         } else {
-            ui::tokens::PresenceHue::Violet
+            collab_types::presence::PresenceHue::Violet
         };
         host_net.note_peer_colour(handle_of(&guest_peer), Some(other.id()));
         host.pump(&mut on_host, &DESK_TILES);
         assert_eq!(
             on_host.color_overrides.get(&user).copied(),
-            Some(ui::presence::identity_rgb(other)),
+            Some(collab_types::presence::identity_rgb(other)),
             "a new colour is painted on the next frame",
         );
         drop(guest);
@@ -4059,8 +4069,8 @@ mod two_sessions {
                 .as_bytes()
         }
 
-        fn guest_user(&self) -> ui::permissions::UserId {
-            ui::permissions::UserId(format!("peer@{}", handle_of(&self.guest_peer)))
+        fn guest_user(&self) -> collab_types::presence::UserId {
+            collab_types::presence::UserId(format!("peer@{}", handle_of(&self.guest_peer)))
         }
     }
 
@@ -4069,6 +4079,7 @@ mod two_sessions {
     /// the guest's name; it keeps the guest's resting pointer up while it
     /// shows; it lingers after Enter and goes; a lone emoji floats up once.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn cursor_chat_crosses_between_two_sessions_beside_the_pointer() {
         use crate::shell::live_presence::{Outbound, participant};
         use tilo_relay_protocol::live::{CursorChat, LiveRecord};
@@ -4082,7 +4093,7 @@ mod two_sessions {
         let mut on_host = PresenceCtx::default();
         pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
         let ada = pair.guest_user();
-        let key = PresenceKey::Workspace { id: room.clone() };
+        let key = PresenceKey::Workspace { id: room };
         assert!(
             on_host.pointer_for(&key, &ada).is_some(),
             "the guest's pointer is here"
@@ -4098,7 +4109,7 @@ mod two_sessions {
             live.say(
                 7,
                 (window.clone(), [300.0, 200.0]),
-                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                participant("Ada".into(), collab_types::presence::PresenceHue::Teal),
                 Some(CursorChat {
                     text: text.into(),
                     sent,
@@ -4116,7 +4127,7 @@ mod two_sessions {
             .bubble(
                 &ada,
                 t0 + Duration::from_secs(1),
-                ui::tokens::EffectiveMotion::new(Default::default(), false),
+                ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             )
             .expect("the host shows what the guest is typing");
         assert_eq!(
@@ -4148,7 +4159,7 @@ mod two_sessions {
             .bubble(
                 &ada,
                 later,
-                ui::tokens::EffectiveMotion::new(Default::default(), false),
+                ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             )
             .expect("a sent message stays a moment");
         assert!(!sent.typing);
@@ -4165,7 +4176,7 @@ mod two_sessions {
                 .bubble(
                     &ada,
                     later + ui::presence::CURSOR_CHAT_LINGER,
-                    ui::tokens::EffectiveMotion::new(Default::default(), false)
+                    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false)
                 )
                 .is_none()
         );
@@ -4175,7 +4186,7 @@ mod two_sessions {
             .react(
                 7,
                 (window, [300.0, 200.0]),
-                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                participant("Ada".into(), collab_types::presence::PresenceHue::Teal),
                 "\u{1f389}".into(),
                 later,
             )
@@ -4189,7 +4200,7 @@ mod two_sessions {
                 .reaction(
                     &ada,
                     later,
-                    ui::tokens::EffectiveMotion::new(Default::default(), false)
+                    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false)
                 )
                 .is_some_and(|float| float.emoji == "\u{1f389}")
         );
@@ -4218,7 +4229,7 @@ mod two_sessions {
         let mut on_host = PresenceCtx::default();
         pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
         let ada = pair.guest_user();
-        let motion = ui::tokens::EffectiveMotion::new(Default::default(), false);
+        let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
         let deliver = |pair: &mut Pair| match published(&mut pair.guest_cmds) {
             NeighbourMsg::AppPresenceV2 {
                 peer,
@@ -4284,43 +4295,14 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&pair.dir);
     }
 
-    /// The voice channel someone is in (its id and name) says where they
-    /// are: "That I'm here" sends how available they are but not their
-    /// call; "Where I am" sends both.
-    #[test]
-    fn a_call_reaches_only_those_who_may_see_where_you_are() {
-        let mut pair = pair("call-visibility");
-        let room = pair.room.to_string();
-        let key = PresenceKey::Workspace { id: room.clone() };
-        let call = ui::CallPresence {
-            channel: "c_voice".into(),
-            name: "voice".into(),
-        }
-        .encode();
-        let available = PresencePayload::Availability {
-            state: ui::Availability::Available,
-            call: Some(call.clone()),
-        };
-        let said = |pair: &mut Pair| match published(&mut pair.guest_cmds) {
-            NeighbourMsg::AppPresenceV2 { presence, .. } => match presence.payload {
-                collab_types::PeerPresencePayload::Availability { call, .. } => call,
-                other => panic!("expected availability, got {other:?}"),
-            },
-            other => panic!("expected room presence, got {other:?}"),
-        };
-        for (visibility, heard) in [
-            (ui::PresenceVisibility::ThatImHere, None),
-            (ui::PresenceVisibility::WhereIAm, Some(call.clone())),
-        ] {
-            pair.guest_net.set_presence_visibility(&room, visibility);
-            let frame = crate::shell::collab_presence::to_peer(&key, &available)
-                .expect("availability encodes");
-            pair.guest_net
-                .publish_app_presence("tilo-shell".into(), room.clone(), frame);
-            assert_eq!(said(&mut pair), heard, "{visibility:?}");
-        }
-        let _ = std::fs::remove_dir_all(&pair.dir);
-    }
+    #[path = "visibility_tests.rs"]
+    mod visibility;
+
+    #[path = "in_app_tests.rs"]
+    mod in_app;
+
+    #[path = "desk_pointer_tests.rs"]
+    mod desk_pointer;
 
     /// The moments after start, before the desktop has handed over what the
     /// person chose in a room: that room is held to the most private choice,
@@ -4355,9 +4337,9 @@ mod two_sessions {
     }
 
     /// What people see, between two sessions: "That I'm here" sends no
-    /// pointer, caret or cursor chat (the guest stays in the roster through
-    /// its arrival); "Nothing" sends nothing, and its holder sees nobody's
-    /// pointer either.
+    /// desktop pointer, no caret outside a shared resource and no cursor
+    /// chat (the guest stays in the roster through its arrival); "Nothing"
+    /// sends nothing, and its holder sees nobody's pointer either.
     #[test]
     fn what_people_see_holds_back_where_you_are_and_nothing_hides_pointers_both_ways() {
         let mut pair = pair("visibility");
@@ -4381,13 +4363,17 @@ mod two_sessions {
         };
         pair.guest_net
             .publish_app_presence("so.tilo.notes".into(), room.clone(), caret);
-        assert!(pair.guest_cmds.try_recv().is_err(), "nor a caret");
-        let arrived = collab_types::PeerPresence {
-            key: vec![1],
-            payload: collab_types::PeerPresencePayload::Arrived,
-        };
+        assert!(
+            pair.guest_cmds.try_recv().is_err(),
+            "nor a caret in no resource it names"
+        );
+        let arrived = crate::shell::collab_presence::to_peer(
+            &PresenceKey::Workspace { id: room.clone() },
+            &PresencePayload::Arrived,
+        )
+        .expect("arrival encodes");
         pair.guest_net
-            .publish_app_presence("so.tilo.notes".into(), room.clone(), arrived);
+            .publish_app_presence("tilo-shell".into(), room.clone(), arrived);
         assert!(
             pair.guest_cmds.try_recv().is_ok(),
             "but being here is: the face shows"

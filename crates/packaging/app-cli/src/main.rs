@@ -12,6 +12,11 @@ use app_cli::{
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 
+mod local_tapp;
+mod store_verbs;
+
+use local_tapp::FileTrust;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "app",
@@ -43,24 +48,42 @@ enum Cmd {
         #[arg(long)]
         installed: bool,
     },
+    /// Open an app, or files and links in it; an app this device doesn't
+    /// have yet is downloaded first.
+    #[command(
+        after_help = "Examples:\n  app open calculator\n  app open notes ~/Documents/plan.md\n  app open browser https://tilo.so"
+    )]
+    Open {
+        /// The app: its name, a word of its name, or its id.
+        app: String,
+        /// Files or links to open in it.
+        items: Vec<String>,
+    },
     /// Search the app store.
     #[command(visible_aliases = ["s", "find"])]
     Search { query: String },
-    /// Install an app by name, slug, or package id.
-    #[command(visible_aliases = ["i", "add"])]
+    /// Install an app by name, slug or package id, or from a package file
+    /// or link. A file from a publisher you don't trust asks first.
+    #[command(
+        visible_aliases = ["i", "add"],
+        after_help = "Examples:\n  app install browser\n  app install ./notes-1.2.0.tapp\n  app install https://example.org/notes.tapp --yes"
+    )]
     Install {
+        /// The app, or a .tapp file or https:// link.
         app: String,
         /// Install this version instead of the newest.
         #[arg(long)]
         version: Option<String>,
+        #[command(flatten)]
+        trust: FileTrust,
         /// Report the download on standard error as `progress downloading
         /// <received> <total>` lines (`-` for an unknown total), then
         /// `progress installing`, for a program showing its own progress.
         #[arg(long)]
         progress_lines: bool,
     },
-    /// Install an exact signed runtime (an app's engine), without installing or
-    /// replacing the app that uses it.
+    /// Install, list and remove the runtimes apps run on (an app's engine)
+    /// and the environment images environments are stacked from.
     Runtime {
         #[command(subcommand)]
         cmd: RuntimeCmd,
@@ -69,6 +92,12 @@ enum Cmd {
     #[command(visible_aliases = ["u", "upgrade"])]
     Update {
         app: Option<String>,
+        /// Update the app from this package file or link instead of its
+        /// repository.
+        #[arg(long, requires = "app", value_name = "TAPP")]
+        from: Option<String>,
+        #[command(flatten)]
+        trust: FileTrust,
         /// As `install --progress-lines`, for one app; `progress up-to-date`
         /// when the store has no newer build of it this system can run.
         #[arg(long, requires = "app")]
@@ -86,6 +115,33 @@ enum Cmd {
     /// Remove an installed app while keeping its saved state.
     #[command(visible_aliases = ["rm", "uninstall"])]
     Remove { app: String },
+    /// Keep an app installed when space runs short: a pinned app is never
+    /// evicted to make room.
+    Pin { app: String },
+    /// Let an app be evicted to make room again.
+    Unpin { app: String },
+    /// Check installed apps' files against their signed manifests: every
+    /// app, or the one named.
+    Verify { app: Option<String> },
+    /// Show an installed app's manifest and how it was installed.
+    Inspect { app: String },
+    /// List the apps running now, with their memory, CPU time and tier.
+    Running {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove app versions and runtime builds nothing uses any more.
+    Gc {
+        /// List what would be removed, removing nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Choose whose packages install without asking, and refuse publishers.
+    Trust {
+        #[command(subcommand)]
+        cmd: store_verbs::TrustCmd,
+    },
     /// Add, remove, or inspect app repositories.
     #[command(visible_alias = "registry")]
     Repo {
@@ -106,6 +162,8 @@ enum RuntimeCmd {
         #[arg(long)]
         repo: Option<String>,
     },
+    #[command(flatten)]
+    Store(store_verbs::RuntimeStoreCmd),
 }
 
 #[derive(Debug, Subcommand)]
@@ -145,6 +203,7 @@ fn main() -> ExitCode {
             let mut generated = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "app", &mut generated);
             clap_complete::generate(shell, &mut Cli::command(), "store", &mut generated);
+            generated.extend_from_slice(open_completions(shell).as_bytes());
             match std::io::stdout().write_all(&generated) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
@@ -162,31 +221,92 @@ fn main() -> ExitCode {
             json,
             installed: false,
         } => list(json),
+        Cmd::Open { app, items } => open(&app, &items),
         Cmd::Search { query } => search(&query),
         Cmd::Install {
             app,
             version,
+            trust,
             progress_lines,
         } => {
             PROGRESS_LINES.store(progress_lines, Ordering::Relaxed);
-            match version {
-                None => change_one(&app, false),
-                Some(version) => install_version(&app, &version),
-            }
+            install(&app, version.as_deref(), &trust)
         }
         Cmd::Rollback { app, to } => rollback(&app, to.as_deref()),
         Cmd::Update {
             app,
+            from,
+            trust,
             progress_lines,
         } => {
             PROGRESS_LINES.store(progress_lines, Ordering::Relaxed);
-            update(app.as_deref())
+            match (app, from) {
+                (Some(app), Some(from)) => update_from(&app, &from, &trust),
+                (app, None) => match trust.file_only_flag() {
+                    Some(flag) => {
+                        eprintln!("app: {flag} goes with --from <file>");
+                        ExitCode::FAILURE
+                    }
+                    None => update(app.as_deref()),
+                },
+                (None, Some(_)) => {
+                    eprintln!("app: --from needs the app it updates");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Cmd::Remove { app } => remove(&app),
+        Cmd::Pin { app } => store_verbs::on_installed("pin", &app),
+        Cmd::Unpin { app } => store_verbs::on_installed("unpin", &app),
+        Cmd::Verify { app } => store_verbs::verify(app.as_deref()),
+        Cmd::Inspect { app } => store_verbs::on_installed("inspect", &app),
+        Cmd::Running { json } => store_verbs::running(json),
+        Cmd::Gc { dry_run } => store_verbs::gc(dry_run),
+        Cmd::Trust { cmd } => store_verbs::trust(cmd),
         Cmd::Repo { cmd } => repo(cmd),
         Cmd::Runtime {
             cmd: RuntimeCmd::Install { runtime, repo },
         } => install_runtime(&runtime, repo.as_deref()),
+        Cmd::Runtime {
+            cmd: RuntimeCmd::Store(cmd),
+        } => store_verbs::runtime(cmd),
+    }
+}
+
+/// App names after `app open`, asked of the desktop as they are typed
+/// (`tilo complete apps`, which prints nothing without a desktop).
+fn open_completions(shell: Shell) -> &'static str {
+    match shell {
+        Shell::Bash => {
+            r#"
+_app_open_dynamic() {
+    if (( COMP_CWORD == 2 )) && [[ "${COMP_WORDS[1]}" == open ]]; then
+        mapfile -t COMPREPLY < <(tilo complete apps "${COMP_WORDS[COMP_CWORD]}" 2>/dev/null)
+        return
+    fi
+    _app "$@"
+}
+complete -F _app_open_dynamic -o bashdefault -o default app store
+"#
+        }
+        Shell::Zsh => {
+            r#"
+_app_open_dynamic() {
+    if (( CURRENT == 3 )) && [[ "${words[2]}" == open ]]; then
+        local -a names
+        names=("${(@f)$(tilo complete apps "${words[CURRENT]}" 2>/dev/null)}")
+        compadd -U -a names
+        return
+    fi
+    _app "$@"
+}
+compdef _app_open_dynamic app store
+"#
+        }
+        Shell::Fish => {
+            "\ncomplete -c app -n '__fish_seen_subcommand_from open; and test (count (commandline -opc)) -eq 2' -f -a '(tilo complete apps (commandline -ct))'\n"
+        }
+        _ => "",
     }
 }
 
@@ -203,8 +323,44 @@ fn parse_cli() -> Cli {
         _ if invoked_as_store => "store",
         _ => "app",
     };
-    let matches = Cli::command().bin_name(bin_name).get_matches();
+    let mut command = Cli::command().bin_name(bin_name);
+    if !tilo_control::client::desktop_present(&tilo_control::client::doors_from_env()) {
+        // Opening needs a desktop session; where there is none it is not
+        // offered, and typed anyway says so in one sentence.
+        command = command.mut_subcommands(|sub| {
+            if sub.get_name() == "open" {
+                sub.hide(true)
+            } else {
+                sub
+            }
+        });
+    }
+    let matches = command.get_matches();
     Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+/// `app open`: the same as `tilo open`.
+fn open(app: &str, items: &[String]) -> ExitCode {
+    let doors = tilo_control::client::doors_from_env();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut out = std::io::stdout().lock();
+    let mut err = std::io::stderr().lock();
+    let code = tilo_control::front::open(
+        &doors,
+        app,
+        items,
+        &cwd,
+        &tilo_control::front::Spelling::standalone(),
+        &mut tilo_control::front::Io {
+            out: &mut out,
+            err: &mut err,
+        },
+    );
+    if code == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(code)
+    }
 }
 
 fn print_apps(apps: &[CatalogueApp]) {
@@ -218,7 +374,11 @@ fn print_apps(apps: &[CatalogueApp]) {
 
 fn list_installed(json: bool) -> ExitCode {
     let apps = match app_cli::installed_apps() {
-        Ok(apps) => apps,
+        Ok(mut apps) => {
+            let host = app_cli::host_apps(&apps);
+            apps.extend(host);
+            apps
+        }
         Err(error) => {
             eprintln!("app: {error}");
             return ExitCode::FAILURE;
@@ -242,14 +402,25 @@ fn list_installed(json: bool) -> ExitCode {
 
 fn print_installed(apps: &[app_cli::InstalledApp]) {
     for app in apps {
-        println!("{}  {}  ({})", app.package_id, app.version, app.from);
+        if app.missing {
+            println!(
+                "{}  {}  ({}, file not found)",
+                app.package_id, app.name, app.from
+            );
+        } else if app.version.is_empty() {
+            println!("{}  {}  ({})", app.package_id, app.name, app.from);
+        } else {
+            println!("{}  {}  ({})", app.package_id, app.version, app.from);
+        }
     }
 }
 
 fn list(json: bool) -> ExitCode {
     if !json {
         match app_cli::installed_apps() {
-            Ok(apps) => {
+            Ok(mut apps) => {
+                let host = app_cli::host_apps(&apps);
+                apps.extend(host);
                 println!("Installed:");
                 print_installed(&apps);
                 println!("Available:");
@@ -817,6 +988,39 @@ fn resolve_installed(query: &str) -> Result<String, String> {
     }
 }
 
+/// `app install`: from a package file or link, or from the repositories.
+fn install(app: &str, version: Option<&str>, trust: &FileTrust) -> ExitCode {
+    if local_tapp::is_package_source(app) {
+        if version.is_some() {
+            eprintln!("app: --version picks from a repository; a package file is its own version");
+            return ExitCode::FAILURE;
+        }
+        let mut progress = progress_reporter();
+        return local_tapp::apply(app, &local_tapp::Change::Install, trust, &mut progress);
+    }
+    if let Some(flag) = trust.file_only_flag() {
+        eprintln!("app: {flag} is for a package file or link; '{app}' comes from a repository");
+        return ExitCode::FAILURE;
+    }
+    match version {
+        None => change_one(app, false),
+        Some(version) => install_version(app, version),
+    }
+}
+
+/// `app update <app> --from <file>`.
+fn update_from(query: &str, from: &str, trust: &FileTrust) -> ExitCode {
+    let id = match resolve_installed(query) {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut progress = progress_reporter();
+    local_tapp::apply(from, &local_tapp::Change::Update(&id), trust, &mut progress)
+}
+
 fn update(query: Option<&str>) -> ExitCode {
     if let Some(query) = query {
         return change_one(query, true);
@@ -952,22 +1156,7 @@ fn remove(query: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match Command::new(app_cli::install::tilo_install_bin())
-        .args(["uninstall", &id, "--keep-state"])
-        .status()
-    {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(
-            status
-                .code()
-                .and_then(|code| u8::try_from(code).ok())
-                .unwrap_or(1),
-        ),
-        Err(error) => {
-            eprintln!("app: could not run tilo-install: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    store_verbs::installer(["uninstall", &id, "--keep-state"])
 }
 
 fn report_unreachable(items: &[app_cli::UnreachableRegistry]) {

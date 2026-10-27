@@ -119,35 +119,15 @@ fn transfer_tab(
 
 /// Closes every tab and remembers the group as one close, so a single
 /// reopen brings the whole group back.
-fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
-    let (tabs, closed) = {
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let tabs = tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .find(|group| group.id == group_id)
-            .map(|group| group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>())
-            .ok_or_else(|| {
-                ActionError::Refused(format!("window group {group_id} is no longer present"))
-            })?;
-        let closed = crate::shell::closed_tabs::capture_group(&tree, group_id);
-        drop(tree);
-        drop(state);
-        (tabs, closed)
-    };
-    for tab in tabs {
-        tab_in_group(chrome, group_id, tab)?;
-        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), tab)
-            .map_err(|_| refused(tab))?;
-    }
-    if let Some(entry) = closed {
-        chrome.borrow_mut().remember_closed_tab_after_removal(entry);
-    }
-    Ok(())
+pub(crate) fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
+    crate::shell::window_actions::close_group(&mut chrome.borrow_mut(), group_id).map_err(|err| {
+        ActionError::Refused(match err {
+            crate::shell::window_actions::TabActionError::UnknownTab => {
+                format!("window group {group_id} is no longer present")
+            }
+            _ => format!("window group {group_id} could not be closed"),
+        })
+    })
 }
 
 fn contract(action: WindowAction) -> tilo_actions::ActionContract {
@@ -326,10 +306,6 @@ impl SearchProvider for DesktopWindowsProvider {
         &KINDS
     }
 
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
-
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
         let mut rows = window_rows(&tree.desktop, ctx.needle);
@@ -397,7 +373,7 @@ impl SearchProvider for DesktopWindowsProvider {
     }
 
     /// An address is looked up in the whole topology. The empty query's
-    /// first page holds [`ui::search::SearchBudget::PALETTE`] rows, fewer
+    /// first page holds [`ui::search::system::SearchBudget::PALETTE`] rows, fewer
     /// than a long session has window actions, so resolving through it left
     /// `group.close` for the focused window `unknown_action` (A07).
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
@@ -441,6 +417,7 @@ mod tests {
                             app_id: "com.google.Chrome".into(),
                             surface_id: 501,
                         },
+                        app_title: None,
                     },
                     Tab {
                         id: 2,
@@ -449,6 +426,7 @@ mod tests {
                             app_id: "com.openai.ChatGPT".into(),
                             surface_id: 502,
                         },
+                        app_title: None,
                     },
                 ],
                 active_tab: 2,
@@ -465,6 +443,7 @@ mod tests {
                         app_id: "com.google.Chrome".into(),
                         surface_id: 503,
                     },
+                    app_title: None,
                 }],
                 active_tab: 3,
                 width: WindowWidth::Normal,
@@ -898,13 +877,13 @@ mod tests {
             "Linux apps"
         }
         fn resource_kinds(&self) -> &[ResourceKind] {
-            &[ResourceKind::HostApplication]
+            &[ResourceKind::Application]
         }
         fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
             (0..40)
                 .map(|i| {
                     SearchResult::nullary(
-                        ResourceKind::HostApplication,
+                        ResourceKind::Application,
                         "host-apps",
                         format!("org.example.App{i}"),
                         format!("App {i}"),
@@ -918,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_palette_offers_windows_to_go_back_to_not_an_inventory() {
+    fn the_empty_palette_is_the_launcher_not_an_inventory() {
         let (chrome, doc) = fixture();
         let mut registry = registry();
         registry.register(Rc::new(
@@ -938,40 +917,16 @@ mod tests {
             },
             12,
         );
-        let first = groups.first().expect("the empty palette has rows");
-        assert_eq!(first.kind, ResourceKind::Tab, "windows come first");
+        // Nothing typed is the launcher: no window rows, no actions, no
+        // inventory; the fake Linux app source answers nothing for it.
         assert!(
-            first
-                .results
-                .iter()
-                .all(|row| row.id.starts_with("tab.focus:")),
-            "every window row goes to it: {:?}",
-            first.results.iter().map(|row| &row.id).collect::<Vec<_>>()
-        );
-        let rows: Vec<&SearchResult> = groups.iter().flat_map(|group| &group.results).collect();
-        assert!(
-            rows.iter().all(
-                |row| row.operation_kind == tilo_actions::OperationKind::View
-                    || row.kind == ResourceKind::Application
-            ),
-            "nothing on the empty palette changes anything: {:?}",
-            rows.iter().map(|row| &row.id).collect::<Vec<_>>()
-        );
-        assert!(
-            !rows
-                .iter()
-                .any(|row| row.kind == ResourceKind::HostApplication),
-            "the Linux app list is a keystroke away, not the default"
-        );
-        assert!(rows.iter().any(|row| row.id == "room.activity.open"));
-        assert!(
-            rows.iter().any(|row| row.id == "shortcut-help.toggle"),
-            "help stays on the empty palette even when it is last in the catalogue"
-        );
-        assert!(
+            groups.is_empty(),
+            "the empty palette lists no window or action: {:?}",
             groups
                 .iter()
-                .all(|group| group.total == group.results.len())
+                .flat_map(|group| &group.results)
+                .map(|row| &row.id)
+                .collect::<Vec<_>>()
         );
 
         let app_scoped = registry.query_grouped(
@@ -989,7 +944,7 @@ mod tests {
         assert_eq!(
             app_scoped
                 .iter()
-                .find(|group| group.kind == ResourceKind::HostApplication)
+                .find(|group| group.kind == ResourceKind::Application)
                 .map(|group| group.total),
             Some(40),
             "scoped to one app, the empty palette lists that app's inventory, not a curated pick"
@@ -1008,7 +963,7 @@ mod tests {
             listing.iter().any(|row| row.id == "tab.close:100:1")
                 && listing
                     .iter()
-                    .filter(|row| row.kind == ResourceKind::HostApplication)
+                    .filter(|row| row.provider_id == "host-apps")
                     .count()
                     == 40,
             "agents still enumerate every action and app"
@@ -1076,6 +1031,7 @@ mod tests {
                             app_id: format!("app.{i}"),
                             surface_id: 500_u64.saturating_add(gid),
                         },
+                        app_title: None,
                     }],
                     active_tab: gid,
                     width: WindowWidth::Normal,

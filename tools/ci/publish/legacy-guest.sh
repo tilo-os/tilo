@@ -21,7 +21,7 @@ cd "$repo_root"
 repository=registry.tilo.so/tilo/legacy-guest
 pins=os/legacy-guest-snapshot.env
 
-# Everything that ends up in the guest disk (os/dev/legacy-guest-snapshot.sh's INPUTS).
+# Everything that ends up in the guest disk.
 inputs_digest() {
   find os/Containerfile.legacy-guest os/legacy-guest os/base-snapshot.env \
     crates/runtime/legacy-agent crates/runtime/legacy-agent-protocol \

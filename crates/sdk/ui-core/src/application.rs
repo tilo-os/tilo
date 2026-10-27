@@ -130,6 +130,9 @@ pub struct HostContext {
     /// Where the app keeps the person's own records on this device, when
     /// the host keeps them ([`Self::provide_person_records`]).
     person: Option<crate::record::person::PersonRecords>,
+    /// Where the app opens the records every app of the room opens, when
+    /// the host keeps them ([`Self::provide_workspace_records`]).
+    workspace: Option<crate::record::workspace::WorkspaceRecords>,
     /// The file areas the host gave it ([`Self::provide_files`]); the
     /// person's own otherwise.
     files: Option<crate::storage::AppFiles>,
@@ -149,7 +152,6 @@ pub struct HostContext {
 /// it played under.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlaybackHandoff {
-    /// The position to continue from.
     pub position_ms: u64,
     /// Whether playback was running and continues running here.
     pub resume_playing: bool,
@@ -175,17 +177,40 @@ pub struct LaunchOption {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capture {
     scenario: Option<String>,
+    driven: bool,
 }
 
 impl Capture {
     /// A capture of the named scenario; `None` is a plain `--shots`.
     pub fn new(scenario: Option<String>) -> Self {
-        Self { scenario }
+        Self {
+            scenario,
+            driven: false,
+        }
+    }
+
+    /// A headless drive of the named scenario (`--headless-drive` with
+    /// `--scenario`): built from the scenario's fixtures as its capture is,
+    /// and still starting nothing on its own, but an action the drive
+    /// invokes runs, as a person's click or an agent's call does. Every
+    /// action the app publishes is then reachable in the scene its
+    /// screenshots show.
+    pub fn driven(scenario: Option<String>) -> Self {
+        Self {
+            scenario,
+            driven: true,
+        }
     }
 
     /// The scenario captured; `None` for a plain `--shots`.
     pub fn scenario(&self) -> Option<&str> {
         self.scenario.as_deref()
+    }
+
+    /// Whether a headless drive invokes the window's actions
+    /// ([`Self::driven`]) rather than only photographing it.
+    pub fn is_driven(&self) -> bool {
+        self.driven
     }
 }
 
@@ -351,6 +376,7 @@ pub struct Reopener {
     content: Option<tilo_content::ContentStore>,
     settings: crate::storage::SettingsDocument,
     person: Option<crate::record::person::PersonRecords>,
+    workspace: Option<crate::record::workspace::WorkspaceRecords>,
     files: Option<crate::storage::AppFiles>,
     private: bool,
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
@@ -401,6 +427,7 @@ impl Reopener {
         context.content.clone_from(&self.content);
         context.settings = self.settings.clone();
         context.person.clone_from(&self.person);
+        context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
         Ok((context, target))
@@ -458,6 +485,7 @@ impl HostContext {
             content: self.content.clone(),
             settings: self.settings.clone(),
             person: self.person.clone(),
+            workspace: self.workspace.clone(),
             files: self.files.clone(),
             private: self.private,
             replacement: Rc::clone(&self.replacement),
@@ -589,6 +617,10 @@ impl HostContext {
             &record,
         )
         .map_err(|error| LaunchError::Record(RecordOpenError::Initialization(error)))?;
+        // Another replica's change to the window's records (a collaborator's
+        // edit, a room's bot posting) wakes the window to show it.
+        let wake_scope = WakeScope::new();
+        records.wake_on_arrival(wake_scope.handle());
         Ok(Self {
             app_id: package,
             instance_id,
@@ -603,7 +635,7 @@ impl HostContext {
             author,
             action_context,
             writes_as_author: false,
-            wake_scope: WakeScope::new(),
+            wake_scope,
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
@@ -619,6 +651,7 @@ impl HostContext {
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
             person: None,
+            workspace: None,
             files: None,
             replacement: Rc::default(),
             launch_arguments: Vec::new(),
@@ -668,7 +701,6 @@ impl HostContext {
         );
         self.content = Some(store);
     }
-    /// The content store the host lent, if any.
     pub fn content(&self) -> Option<&tilo_content::ContentStore> {
         self.content.as_ref()
     }
@@ -869,6 +901,18 @@ impl HostContext {
     pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
         self.person = Some(records);
     }
+    /// Give the component the records every app of its room opens
+    /// ([`crate::record::workspace`]), kept beside the record it shows.
+    pub fn provide_workspace_records(
+        &mut self,
+        records: crate::record::workspace::WorkspaceRecords,
+    ) {
+        self.workspace = Some(records);
+    }
+    /// The records every app of the room opens, when the host keeps them.
+    pub fn workspace_records(&self) -> Option<&crate::record::workspace::WorkspaceRecords> {
+        self.workspace.as_ref()
+    }
     /// This device, as the host names it: stable across launches of the app
     /// on it, distinct on each of the person's devices.
     pub fn device_id(&self) -> &str {
@@ -882,8 +926,6 @@ impl HostContext {
     /// is read: `migrate` makes at most one deterministic housekeeping change
     /// (two devices migrating the same document make the same one) and
     /// answers whether it changed anything.
-    /// # Errors
-    /// The record is not open here, or the migration failed.
     pub fn migrate_record(
         &self,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
@@ -907,8 +949,6 @@ impl HostContext {
     /// arriving over sync are merged: validated first, attributed to them in
     /// history, and never on this participant's undo stack. Returns whether
     /// anything changed.
-    /// # Errors
-    /// The document is not a valid copy of this record, or it is not open.
     pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
         self.records.merge_peer_document(&self.record, document)
     }
@@ -1234,18 +1274,15 @@ pub struct AppComponent {
     report_drained: bool,
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
-    /// The record durability last delivered to the root, and when it was
-    /// sampled.
-    record_save: Option<(crate::record::RecordSaveStatus, crate::time::Instant)>,
+    /// The record durability last delivered to the root.
+    record_save: Option<crate::record::RecordSaveStatus>,
     /// Whether a change to the delivered durability has yet to be presented.
     save_status_changed: bool,
+    /// What the record's store calls, from its own thread, when the writes
+    /// a "Saving…" waits on have resolved: this component's wake, so the
+    /// window syncs and samples the record's durability again then.
+    save_wake: Option<durable_store::ReadyWake>,
 }
-
-/// How soon a component whose record is still being written samples its
-/// durability again. The writer settles off the event loop and nothing wakes
-/// the window when it does, so a "Saving…" would otherwise stay on screen,
-/// and in the accessibility tree, until the next unrelated event.
-const SAVING_RESAMPLE: crate::time::Duration = crate::time::Duration::from_millis(100);
 
 impl AppComponent {
     /// The component the app built to show another record in this one's
@@ -1418,6 +1455,11 @@ impl AppComponent {
     /// arrived.
     pub(crate) fn project_record_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
+        let context = &self.context;
+        let wake = std::sync::Arc::clone(self.save_wake.get_or_insert_with(|| {
+            let handle = context.wake_handle();
+            std::sync::Arc::new(move || handle.wake())
+        }));
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
                 if root.take_save_retry()
@@ -1429,9 +1471,28 @@ impl AppComponent {
                 for refusal in &refusals {
                     root.record_refused(refusal);
                 }
-                let status = binding.records.save_status(&binding.checkout.id).ok()?;
+                for text in root.take_notices() {
+                    if let Err(error) = binding.records.hold_notice(&binding.checkout.id, text) {
+                        tracing::warn!(%error, "a notice could not wait for the room");
+                    }
+                }
+                let said = binding.records.take_said(&binding.checkout.id);
+                for text in &said {
+                    root.record_said(text);
+                }
+                let mut status = binding.records.save_status(&binding.checkout.id).ok()?;
+                if status == crate::record::RecordSaveStatus::Saving {
+                    // Still being written: the record's store wakes this
+                    // component once the write lands; nothing samples it
+                    // again on a timer. Sampled again once armed, so a write
+                    // that landed in between is shown now.
+                    binding
+                        .records
+                        .wake_on_save_progress(&binding.checkout.id, wake);
+                    status = binding.records.save_status(&binding.checkout.id).ok()?;
+                }
                 root.record_save_status(status.clone());
-                Some((status, !refusals.is_empty()))
+                Some((status, !refusals.is_empty() || !said.is_empty()))
             })
             .ok()
             .flatten();
@@ -1443,8 +1504,8 @@ impl AppComponent {
             || self
                 .record_save
                 .as_ref()
-                .is_some_and(|(previous, _)| *previous != status);
-        self.record_save = Some((status, crate::time::now()));
+                .is_some_and(|previous| *previous != status);
+        self.record_save = Some(status);
         if changed {
             // The caller syncs the root again with the new state; a frame
             // shows it. An `App` asks for that frame through
@@ -1456,17 +1517,12 @@ impl AppComponent {
         changed
     }
 
-    /// When the window must sync again without input: shortly after the
-    /// last sample while the record is still being written, so the moment
-    /// it becomes durable is shown. The deadline is fixed to the sample: one
-    /// computed from the time it is asked for would never come due.
-    pub(crate) fn save_status_wake_deadline(&self) -> Option<crate::time::Instant> {
-        match &self.record_save {
-            Some((crate::record::RecordSaveStatus::Saving, sampled)) => {
-                sampled.checked_add(SAVING_RESAMPLE)
-            }
-            _ => None,
-        }
+    /// Whether the record's last sampled durability is still being written.
+    pub(crate) fn record_saving(&self) -> bool {
+        matches!(
+            &self.record_save,
+            Some(crate::record::RecordSaveStatus::Saving)
+        )
     }
 
     /// Whether the delivered durability changed since this was last asked,
@@ -1478,18 +1534,7 @@ impl AppComponent {
     /// The durability last delivered, as sampled.
     #[cfg(test)]
     pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
-        self.record_save.as_ref().map(|(status, _)| status)
-    }
-
-    /// Move the last durability sample back past its resample interval, so a
-    /// test reaches the moment its deadline comes due without waiting for it.
-    #[cfg(test)]
-    pub(crate) fn age_record_save_sample(&mut self) {
-        if let Some((_, sampled)) = &mut self.record_save {
-            *sampled = sampled
-                .checked_sub(SAVING_RESAMPLE * 2)
-                .expect("the monotonic clock started before the sample's resample interval");
-        }
+        self.record_save.as_ref()
     }
 
     pub fn new(
@@ -1532,6 +1577,7 @@ impl AppComponent {
             registry_owner,
             record_save: None,
             save_status_changed: false,
+            save_wake: None,
             host_owner_wakes: None,
         }
     }
@@ -1951,7 +1997,13 @@ impl AppComponent {
                 .records
                 .with_checked(&self.context.record.id, |doc| {
                     for invocation in &owned.2 {
-                        root.poll_resource_operation(*invocation, true, doc, &automerge::ROOT);
+                        crate::widget::poll_resource_operation(
+                            &mut *root,
+                            *invocation,
+                            true,
+                            doc,
+                            &automerge::ROOT,
+                        );
                     }
                 })
                 .map_err(|error| error.to_string());
@@ -2040,6 +2092,9 @@ impl crate::search::SearchProvider for ComponentProvider {
         self.invoke(|provider| provider.facets())
             .unwrap_or_default()
     }
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        self.invoke(|provider| provider.open_action()).flatten()
+    }
     fn search_scopes(&self) -> Vec<crate::search::ScopeDecl> {
         self.invoke(|provider| provider.search_scopes())
             .unwrap_or_default()
@@ -2100,8 +2155,6 @@ pub struct ComponentCloseReport {
 }
 impl ComponentCloseReport {
     /// Retry the same dirty canonical owner, retaining it until durability succeeds.
-    /// # Errors
-    /// Returns the original owner's current persistence failure.
     pub fn retry_record(&mut self) -> Result<(), String> {
         if let Some(records) = &self.record_retry {
             match &self.record_retry_target {
@@ -2228,12 +2281,10 @@ mod cleanup_tests {
     }
     #[test]
     fn panics_propagate_after_the_registry_drops_under_a_closed_scope() {
-        // Case `root_panic_still_drops_registry_under_closed_scope_and_propagates`.
         {
             assert_closed_cleanup("root");
         }
 
-        // Case `registry_panic_propagates_after_both_closed_scope_drops`.
         {
             assert_closed_cleanup("registry");
         }
@@ -2427,7 +2478,6 @@ mod bound_lifetime_tests {
 
     #[test]
     fn component_lifetimes_refuse_stale_wakes_loans_and_busy_entries() {
-        // Case `actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = crate::record::RecordOwners::new(temp.path().into());
@@ -2686,6 +2736,48 @@ mod portable_tests {
         assert_eq!(reopened.author(), &UserId("agent".into()));
         assert_eq!(reopened.host_person(), &probe::author());
         assert_eq!(reopened.callback_binding().host_person, probe::author());
+    }
+
+    /// The compositor runs apps on its frame loop: checkpointing and closing
+    /// one there must never wait for a store's writer thread (an fsync),
+    /// and the document and View still reach the disk.
+    #[test]
+    fn checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage() {
+        let host = probe::ProbeHost::new();
+        let root = host.root();
+        // Opened before: a frame loop opens a record through the store's
+        // own thread, which is not what this test is about.
+        let mut component =
+            probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
+        let checkout = {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let checkout = component.record().clone();
+            assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
+            let report = component.close();
+            assert_eq!(report.record_error, None);
+            assert_eq!(report.view_error, None);
+            drop(component);
+            checkout
+        };
+        // Off the loop the stores may wait for their last commits.
+        let probe::ProbeHost {
+            owners,
+            records,
+            views,
+            temp,
+        } = host;
+        drop((records, owners, views));
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners.open(probe::APP, probe::ROOM).unwrap();
+        assert!(records.open_record(&checkout), "the record was saved");
+        assert_eq!(probe::body(&records, &checkout), "initialized");
+        let saved = InstanceViewStore::new(root, probe::DEVICE, probe::ROOM)
+            .unwrap()
+            .load(7)
+            .unwrap()
+            .expect("the View was saved");
+        assert_eq!(saved.record_id, checkout.id.as_str());
+        drop((records, owners, temp));
     }
 
     #[test]

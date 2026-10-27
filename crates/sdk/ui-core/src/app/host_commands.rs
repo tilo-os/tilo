@@ -40,7 +40,6 @@ impl App {
         Ok(())
     }
 
-    /// The Edit resource, when `address` names it.
     pub(super) fn edit_resource_for(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -56,9 +55,8 @@ impl App {
                 ty.contract.execution =
                     tilo_actions::ExecutionMode::Background { cancellable: false };
                 ty.contract.result = tilo_actions::ResultSpec::Job;
-                ty.contract
-                    .tags
-                    .push(tilo_actions::LOCAL_DEVICE_ONLY.into());
+                // The page's own editing history on this device.
+                ty.contract.tags.push(tilo_actions::OWN_DEVICE_SCOPE.into());
                 ty.description = Some(crate::i18n::I18nManager::lookup_plain(
                     "host-native-page-history-scope",
                 ));
@@ -320,7 +318,8 @@ impl App {
         .unwrap_or_default()
     }
 
-    fn palette_presented(&self) -> bool {
+    /// Whether the action palette covers the window.
+    pub(super) fn palette_presented(&self) -> bool {
         self.actions
             .action_palette
             .as_ref()

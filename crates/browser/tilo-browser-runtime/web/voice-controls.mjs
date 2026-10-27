@@ -2,13 +2,16 @@
  * Call bindings come from the retained component, never from page chrome.
  * The host still decides participation and direction through its grants.
  *
- * Joining a voice channel is being in its call with the microphone on, as
- * on a Tilo device, unless the person last chose to be muted: that choice
- * is remembered (`preferences`). The browser asks for the microphone itself.
+ * Joining a voice channel is being in its call muted and listening, as on
+ * a Tilo device: the browser is asked for nothing. The first unmute asks it
+ * for the microphone; a refusal answers with the call still on, muted, and
+ * the reason in the status (`permission_denied`), never with an error that
+ * would end the call.
  *
  * The camera and a shared screen work as on a Tilo device: the person turns
  * them on in the call (the browser asks for them), everyone learns who shows
- * what from the room's call list (`cameras`, `screens` in each roster), the
+ * what and who is muted or deafened from the room's call list (`cameras`,
+ * `screens`, `muted`, `deafened` in each roster), the
  * app says which pictures it shows (`show`) and collects them (`pictures`),
  * coded, to decode itself.
  */
@@ -20,14 +23,30 @@ const WATCH_HOLD_MS = 20000;
 const WATCH_LOOK_MS = 100;
 /** How long a pictures collection is held before it is answered empty (`PICTURES_HOLD`). */
 const PICTURES_HOLD_MS = 5000;
-const JOIN_MUTED_KEY = 'tilo.calls.joinMuted';
 
-/** The person's remembered mute choice, in this browser's storage. */
-export function storedCallPreferences(storage = globalThis.localStorage) {
-  return {
-    joinMuted() { try { return storage?.getItem(JOIN_MUTED_KEY) === 'true'; } catch { return false; } },
-    remember(muted) { try { storage?.setItem(JOIN_MUTED_KEY, muted ? 'true' : 'false'); } catch {} },
-  };
+/** The issue a call that ended reports: a call the host never granted was
+ * refused, for not being a member or by its denials (`denied`), or because
+ * the room cannot hold calls (`unavailable`); one it granted just ended;
+ * one this browser cannot carry never started (`unsupported`). */
+export function endedIssue({admitted, reason, unsupported}) {
+  if (unsupported) return 'unsupported';
+  if (admitted) return 'session_ended';
+  return /not a member|denied|not permitted|not allowed/i.test(String(reason ?? '')) ? 'denied' : 'unavailable';
+}
+
+const PERSON = /^[0-9a-f]{64}$/;
+
+/** The people the call hears talking now, as the status names them: each
+ * person once by id (`callIdOf`: a guest a bridge carries by theirs),
+ * sorted, this person among them while their microphone is heard. What the
+ * app's speaking rings follow. */
+export function speakingOf(participants) {
+  const people = new Set();
+  for (const participant of participants ?? []) {
+    const id = participant.speaking ? callIdOf(participant) : null;
+    if (id && (PERSON.test(id) || participant.bridged)) people.add(id);
+  }
+  return [...people].sort();
 }
 
 /** The revision of a status's content (FNV-1a over its JSON): it changes
@@ -42,40 +61,81 @@ export function revisionOf(status) {
   return hash || 1;
 }
 
+/** Who a call participant is to the app: its person (hex), or for a person
+ * a bridge carries in from another service `<service>:<account>`; null for
+ * a bridge's own participation, which only listens to carry the call out.
+ * A bridge's participations are held by the bridge's person, never by the
+ * one they carry, so they are never that person. */
+export function callIdOf(participant) {
+  const bridged = participant?.bridged;
+  if (bridged) return bridged.account ? `${bridged.service}:${bridged.account}` : null;
+  return participant?.user || null;
+}
+
 /** Who is in each active call of `app`'s `record`, one roster per voice
- * channel with anyone in it, sorted by channel; each person once. */
+ * channel with anyone in it or a bridge on it, sorted by channel; each
+ * person once, muted (deafened) when muted (deafened) on every device they
+ * are in the call on. People a bridge carries in are its guests, by id, and
+ * the services bridging it its `bridges`. */
 export function rostersOf(calls, app, record) {
   const channels = new Map();
   for (const call of calls ?? []) {
     if (!call.active || call.app !== app || call.record !== record) continue;
-    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set()};
+    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), unmuted: new Set(), hearing: new Set(), guests: new Map(), bridges: new Set()};
     for (const participant of call.participants ?? []) {
+      const bridged = participant.bridged;
+      if (bridged) {
+        roster.bridges.add(bridged.service);
+        const id = callIdOf(participant);
+        if (id && !roster.guests.has(id)) {
+          const guest = {id, name: bridged.name, service: bridged.service};
+          if (bridged.avatar) guest.avatar = bridged.avatar;
+          if (bridged.linked) guest.linked = bridged.linked;
+          if (participant.muted) guest.muted = true;
+          roster.guests.set(id, guest);
+        }
+        continue;
+      }
       if (!participant.user) continue;
       roster.people.add(participant.user);
       if (participant.camera) roster.cameras.add(participant.user);
       if (participant.screen) roster.screens.add(participant.user);
+      // Heard on any of their devices: not muted.
+      if (!participant.muted) roster.unmuted.add(participant.user);
+      if (!participant.deafened) roster.hearing.add(participant.user);
     }
     channels.set(call.channel, roster);
   }
   const sorted = set => [...set].sort();
-  return [...channels].filter(([, roster]) => roster.people.size > 0)
+  return [...channels].filter(([, roster]) => roster.people.size > 0 || roster.guests.size > 0 || roster.bridges.size > 0)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([channel_id, roster]) => {
       const out = {channel_id, people: sorted(roster.people)};
-      // Written only when someone shows something, as the native service does.
+      // Written only when someone shows something or a bridge carries the
+      // call, as the native service does.
       if (roster.cameras.size) out.cameras = sorted(roster.cameras);
       if (roster.screens.size) out.screens = sorted(roster.screens);
+      if (roster.guests.size) out.guests = [...roster.guests.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      if (roster.bridges.size) out.bridges = sorted(roster.bridges);
+      const muted = [...roster.people].filter(person => !roster.unmuted.has(person));
+      if (muted.length) out.muted = muted.sort();
+      // Deafened is muted too: someone heard on another device is neither.
+      const deafened = muted.filter(person => !roster.hearing.has(person));
+      if (deafened.length) out.deafened = deafened;
       return out;
     });
 }
 
-export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, preferences = storedCallPreferences(), clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
+export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
   let generation = 0;
   let owner;
   let inventory = '';
   let revision = 0;
   let inputs = [];
   let listedAt = -Infinity;
+  /** Why the route's last join could not open its call, until it joins or
+   * leaves again: `{route, issue}`. */
+  let refusal;
   function refreshRosters() {
     if (!voice.list || clock.now() - listedAt < ROSTER_REFRESH_MS) return;
     listedAt = clock.now();
@@ -93,10 +153,12 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
     const status = {version: 1, state: ({connecting: 'joining', ended: 'ended'})[state.phase] ?? state.phase,
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
-      issue: state.phase === 'ended' ? 'session_ended' : null,
-      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: [], revision: 0};
+      issue: state.phase === 'ended' ? endedIssue(state) : null,
+      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: live ? speakingOf(state.participants) : [], revision: 0};
     if (live && state.camera) status.camera = true;
     if (live && state.screen) status.screen = true;
+    if (live && state.deafened) status.deafened = true;
+    if (live && state.micIssue) status.issue = state.micIssue;
     if (live && state.videoIssue) status.issue = state.videoIssue;
     return status;
   }
@@ -108,7 +170,8 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       const route = key(request);
       const rosters = () => rostersOf(voice.calls, request.app, request.record);
       const status = () => {
-        if (owner && owner !== route) return stamped({...snapshot(), state: 'idle', muted: true, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
+        if (owner && owner !== route) return stamped({...snapshot(), state: 'idle', muted: true, deafened: undefined, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
+        if (refusal?.route === route && ['idle', 'ended'].includes(voice.call.state.phase)) return stamped({...snapshot(), state: 'ended', muted: true, deafened: undefined, capture_active: false, input_id: null, issue: refusal.issue, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
         return stamped({...snapshot(), rosters: rosters()});
       };
       if (command.op === 'status') {
@@ -147,22 +210,43 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         const ticket = ++generation;
         if (owner && owner !== route) voice.call.leave();
         owner = route;
+        refusal = undefined;
+        // A browser that cannot carry a call says so before it opens one.
+        if (voice.call.unsupported?.()) {
+          if (voice.call.state.phase !== 'idle' && voice.call.state.phase !== 'ended') voice.call.leave();
+          refusal = {route, issue: 'unsupported'};
+          return status();
+        }
         // Joining a voice channel opens its call: the host starts it when
-        // the channel has none yet.
-        const call = await voice.open({app: request.app, record: request.record, channel: command.channel_id});
+        // the channel has none yet. A host that cannot is a refusal the
+        // app shows, with the reason's kind, not a failed command.
+        let call;
+        try {
+          call = await voice.open({app: request.app, record: request.record, channel: command.channel_id});
+          if (!call?.active) throw new Error('channel has no active call');
+        } catch (error) {
+          if (ticket !== generation) throw new Error('call join superseded');
+          if (voice.call.state.phase !== 'idle' && voice.call.state.phase !== 'ended') voice.call.leave();
+          refusal = {route, issue: endedIssue({admitted: false, reason: error?.message ?? error})};
+          return status();
+        }
         if (ticket !== generation) throw new Error('call join superseded');
-        if (!call?.active) throw new Error('channel has no active call');
-        voice.call.join(call.call, {muted: preferences.joinMuted()});
+        voice.call.join(call.call, {muted: true});
       } else if (command.op === 'leave') {
+        refusal = undefined;
         generation++;
         voice.call.leave();
         owner = undefined;
       } else if (command.op === 'set_muted') {
         if (!command.muted && !gesture()) throw new Error('microphone requires a user gesture');
         if (!command.muted && (voice.call.state.phase !== 'live' || !voice.call.state.canPublish)) throw new Error('microphone requires a live publishing grant');
-        preferences.remember(command.muted);
         if (command.muted) generation++;
         await voice.call.setMuted(command.muted);
+      } else if (command.op === 'set_deafened') {
+        if (command.deafened && ['idle', 'ended'].includes(voice.call.state.phase)) throw new Error('deafening requires a call');
+        // Undeafening unmutes again only from the person's gesture, which
+        // the browser asks for the microphone in.
+        await voice.call.setDeafened(command.deafened, {unmute: gesture()});
       } else if (command.op === 'select_input') {
         await voice.call.selectInput(command.input_id);
       } else if (command.op === 'set_camera' || command.op === 'set_screen') {
@@ -170,6 +254,9 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         if (command.on && (voice.call.state.phase !== 'live' || !voice.call.state.canPublish)) throw new Error('pictures require a live publishing grant');
         if (!voice.call.setVideo) throw new Error('this browser cannot show pictures');
         await voice.call.setVideo(command.op === 'set_camera' ? 'camera' : 'screen', command.on);
+      } else if (command.op === 'set_volume') {
+        voice.call.setVolume?.(command.participant, command.percent / 100);
+        return stamped({...snapshot(), rosters: rosters()});
       } else if (command.op === 'show') {
         voice.call.showPictures?.(command.pictures ?? []);
         return stamped({...snapshot(), rosters: rosters()});

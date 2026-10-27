@@ -116,7 +116,6 @@ pub fn timeline_key() -> PresenceKey {
     widget_key(&[TIMELINE])
 }
 
-/// One clip, by its document id.
 pub fn clip_key(id: ClipId) -> PresenceKey {
     widget_key(&[CLIP, &id.to_string()])
 }
@@ -180,7 +179,7 @@ const FACETS: usize = 2;
 
 /// Publishes the local participant's place in the edit, one frame at a time.
 ///
-/// [`ui::widget::Widget::presence_payload`] hands the host a *single*
+/// [`PublishesPresence::presence_payload`](ui::presence::capability::PublishesPresence::presence_payload) hands the host a *single*
 /// key-and-payload per poll, and the host broadcasts it only when it differs
 /// from the last one — which is the right contract for a text caret and an
 /// awkward one here, because this editor has two things to say at once: where
@@ -635,7 +634,6 @@ mod tests {
              wrong place, so the recipe must state it",
             );
         }
-        // Case `keys_read_back_to_the_object_they_name`.
         {
             let clip = Uuid::new_v4();
             assert_eq!(clip_of(&clip_key(clip)), Some(clip));
@@ -643,7 +641,6 @@ mod tests {
             assert_eq!(clip_of(&field_key(FIELD_TITLE_WORDS, clip)), None);
             // Nor does the timeline, which names no object at all.
             assert_eq!(clip_of(&timeline_key()), None);
-            // Nor another app's key of the same shape.
             let foreign = PresenceKey::Widget {
                 path: vec![
                     PathSegment::Field("wp_block".to_string()),
@@ -681,7 +678,6 @@ mod tests {
 
     #[test]
     fn presence_publisher_emits_every_facet_fairly() {
-        // Case `the_point_frame_is_the_playhead_until_a_field_is_being_edited`.
         {
             let (key, payload) = point_frame(None, 12.5);
             assert_eq!(key, timeline_key());
@@ -835,7 +831,6 @@ mod tests {
                 vec![(uid("ada"), 3)],
             );
 
-            // And it comes back when they stop.
             let (k, p) = point_frame(None, 12.5);
             ctx.apply_remote_presence("ada".into(), k, p);
             assert_eq!(peer_playheads(&ctx).len(), 1);

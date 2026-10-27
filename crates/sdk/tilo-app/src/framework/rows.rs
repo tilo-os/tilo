@@ -113,7 +113,6 @@ impl LiveRow {
         self
     }
 
-    /// The row's id.
     pub fn id(&self) -> &str {
         self.resource.id.as_str()
     }
@@ -216,7 +215,6 @@ pub(crate) fn join(existing: &mut Resource, row: Resource) {
     merge(&mut existing.children, row.children);
 }
 
-/// The resource `id` in `resources`, at any depth.
 pub(crate) fn find(resources: &[Resource], id: &str) -> Option<Resource> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {

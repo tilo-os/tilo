@@ -3,7 +3,6 @@
 //! authority.
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::unchecked_time_subtraction,
     reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
 )]
 use super::*;
@@ -58,14 +57,24 @@ async fn open(relay: &LoopbackRelay) -> web_transport_quinn::Session {
         .unwrap()
 }
 
-/// The WebTransport close code the host used, once the session closed.
-async fn close_code(session: &web_transport_quinn::Session) -> Option<u32> {
-    match tokio::time::timeout(PREFACE_BUDGET + Duration::from_secs(2), session.closed()).await {
-        Ok(web_transport_quinn::SessionError::WebTransportError(
-            web_transport_quinn::WebTransportError::Closed(code, _),
-        )) => Some(code),
+/// The WebTransport close code and reason the host used, once the session
+/// closed.
+async fn closed_with(session: &web_transport_quinn::Session) -> Option<(u32, String)> {
+    match tilo_test_env::within("the host closing the session", session.closed()).await {
+        web_transport_quinn::SessionError::WebTransportError(
+            web_transport_quinn::WebTransportError::Closed(code, reason),
+        ) => Some((code, reason)),
         _ => None,
     }
+}
+
+/// The WebTransport close code the host used, once the session closed.
+async fn close_code(session: &web_transport_quinn::Session) -> Option<u32> {
+    closed_with(session).await.map(|(code, _)| code)
+}
+
+fn preface_refusal(error: PrefaceError) -> (u32, String) {
+    (CLOSE_PREFACE, error.to_string())
 }
 
 #[tokio::test]
@@ -76,9 +85,10 @@ async fn session_that_never_sends_a_preface_is_closed_after_the_budget() {
     // A MoQ client that skips the preface opens its SETUP stream directly.
     let mut setup = session.open_uni().await.unwrap();
     setup.write_all(&[0x2f, 0x00, 0x01]).await.unwrap();
-    let started = std::time::Instant::now();
-    assert_eq!(close_code(&session).await, Some(CLOSE_PREFACE));
-    assert!(started.elapsed() >= PREFACE_BUDGET - Duration::from_millis(500));
+    assert_eq!(
+        closed_with(&session).await,
+        Some(preface_refusal(PrefaceError::Timeout))
+    );
     assert_eq!(authority.0.load(Ordering::SeqCst), 0);
     assert_eq!(relay.counters().accepted, 0);
 }
@@ -102,11 +112,11 @@ async fn malformed_prefaces_are_refused_before_any_admission() {
         let (mut send, _recv) = session.open_bi().await.unwrap();
         send.write_all(&bytes).await.unwrap();
         send.finish().unwrap();
-        let started = std::time::Instant::now();
-        assert_eq!(close_code(&session).await, Some(CLOSE_PREFACE), "{case}");
-        assert!(
-            started.elapsed() < PREFACE_BUDGET,
-            "{case} waited for the budget"
+        // Refused for what it sent, not for running out the budget.
+        assert_eq!(
+            closed_with(&session).await,
+            Some(preface_refusal(PrefaceError::Malformed)),
+            "{case}"
         );
         assert_eq!(authority.0.load(Ordering::SeqCst), 0, "{case}");
         assert_eq!(relay.counters().accepted, 0, "{case}");
@@ -127,19 +137,45 @@ async fn refused_grant_is_answered_denied_and_never_reaches_moq() {
     assert_eq!(relay.counters().accepted, 0);
 }
 
+/// A browser reads the answer after the host sent it, and some (Firefox)
+/// drop what is unread when the session closes under them: the session
+/// waits for the client to close it, so the refusal is read as one, not
+/// as a lost connection.
+#[tokio::test]
+async fn a_refused_session_stays_open_for_its_client_to_read_the_refusal() {
+    let authority = Arc::new(Counting::default());
+    let relay = LoopbackRelay::start(authority.clone()).unwrap();
+    let session = open(&relay).await;
+    let (mut send, mut recv) = session.open_bi().await.unwrap();
+    send.write_all(&[PREFACE_VERSION, 0, 6]).await.unwrap();
+    send.write_all(b"forged").await.unwrap();
+    let mut status = [0u8; 1];
+    tilo_test_env::within("the refusal", recv.read_exact(&mut status))
+        .await
+        .unwrap();
+    assert_eq!(status, [STATUS_DENIED]);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), session.closed())
+            .await
+            .is_err(),
+        "the host leaves the client to close the session"
+    );
+    // A client that does not close it is closed after a moment anyway.
+    assert_eq!(close_code(&session).await, Some(CLOSE_DENIED));
+}
+
 #[tokio::test]
 async fn admitted_grant_reaches_moq() {
     let authority = Arc::new(Counting::default());
     let relay = LoopbackRelay::start(authority.clone()).unwrap();
     let session = open(&relay).await;
     let connected = start(session, b"good", None, None).await.unwrap();
-    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+    tilo_test_env::within("the relay accepting the session", async {
         while relay.counters().accepted == 0 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(connected.session.version(), version().unwrap());
     assert!(relay.endpoint.ends_with(VOICE_PATH));
 }

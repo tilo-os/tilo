@@ -609,7 +609,7 @@ mod retirement_tests {
             result
         });
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 client.set_nonblocking(true).unwrap();
                 let stream = tokio::net::UnixStream::from_std(client).unwrap();
                 let (read, write) = stream.into_split();
@@ -653,20 +653,33 @@ mod retirement_tests {
             entered.send(()).unwrap();
             blocked.recv().unwrap();
         });
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the callback to enter", &observed);
         let waiting = drain;
         let (done, stopped) = std::sync::mpsc::channel();
+        let (started, waiter_tid) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
+            started
+                .send(tilo_test_env::idle::current_thread_id().ok())
+                .unwrap();
             waiting.wait().unwrap();
             done.send(()).unwrap();
         });
+        // Where the platform shows it, the waiter is seen blocked on the
+        // callback's token before the token is checked.
+        if let Some(tid) =
+            tilo_test_env::recv("the waiter to start", &waiter_tid).map(|tid| tid.to_string())
+        {
+            tilo_test_env::wait_until("the waiter to block on the drain", || {
+                tilo_test_env::idle::blocked(&tid)
+            });
+        }
         assert!(
-            stopped.recv_timeout(Duration::from_millis(50)).is_err(),
+            stopped.try_recv().is_err(),
             "callback still owns exact drain token"
         );
         release.send(()).unwrap();
         callback.join().unwrap();
-        stopped.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the drain to finish", &stopped);
         waiter.join().unwrap();
     }
 }
@@ -711,10 +724,10 @@ mod read_release_tests {
         // boolean. Deliberately demand another UID and require native refusal.
         let (mut controller, mut consumer) = UnixStream::pair().unwrap();
         controller
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         controller
-            .set_write_timeout(Some(Duration::from_secs(2)))
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         runtime_portal::process_binding::arm(&controller).unwrap();
         let challenge = [91; 32];
@@ -873,7 +886,7 @@ mod read_release_tests {
             result
         });
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 client.set_nonblocking(true).unwrap();
                 let stream = tokio::net::UnixStream::from_std(client).unwrap();
                 let (read,write) = stream.into_split();

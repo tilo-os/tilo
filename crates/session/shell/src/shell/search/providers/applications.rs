@@ -35,6 +35,107 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 /// The provider's own id, which also keys what was chosen from it.
 const PROVIDER_ID: &str = "applications";
 
+/// `open-with:<package id>` addresses an installed app that opens the files
+/// and links an invocation names (`{"open": ["/home/me/a.md"]}`), through the
+/// same "Open with" path Files uses. It is resolved by address only and never
+/// listed: the palette's row for the app stays the nullary one, so Enter,
+/// Shift+Enter and Ctrl+Enter keep opening the app itself.
+pub(crate) const OPEN_WITH_PREFIX: &str = "open-with:";
+
+/// Most files and links one invocation opens.
+const OPEN_WITH_MAX_ITEMS: usize = 64;
+
+/// The `open-with:` row for `app`: its one parameter is the list to open.
+fn open_with_row(app: Arc<InstalledApp>) -> SearchResult {
+    let package_id = app.package_id.clone();
+    let mut row = SearchResult::nullary_fallible(
+        ResourceKind::Application,
+        PROVIDER_ID,
+        format!("{OPEN_WITH_PREFIX}{package_id}"),
+        app.name_for(&crate::shell::i18n::current_locale()),
+        app_detail(&app.package_id, app.category.as_deref()),
+        provider_score(0),
+        |_doc, _root, _chrome: &Chrome| Ok(()),
+    );
+    row.params = vec![
+        crate::shell::search::action_api::ActionParam::required(
+            "open",
+            crate::shell::search::action_api::ParamType::Array,
+            "Absolute paths of files, or links, for the app to open",
+        )
+        .with_schema(serde_json::json!({
+            "minItems": 1,
+            "maxItems": OPEN_WITH_MAX_ITEMS,
+            "items": {"type": "string", "minLength": 1},
+        })),
+    ];
+    row.on_open = std::rc::Rc::new(move |_doc, _root, chrome: &Chrome, args| {
+        open_items_with(chrome, &app, args)
+    });
+    row
+}
+
+/// Open each of `args`' `open` items with exactly `app`: a file through the
+/// "Open with" path (the app must claim its type), a link when `app` is what
+/// opens links of its kind. Stops at the first that does not open.
+fn open_items_with(
+    chrome: &Chrome,
+    app: &InstalledApp,
+    args: &crate::shell::search::action_api::ActionArgs,
+) -> Result<(), ActionError> {
+    let name = app
+        .name_for(&crate::shell::i18n::current_locale())
+        .to_owned();
+    let items = args.array("open").unwrap_or_default();
+    for item in items {
+        let Some(item) = item.as_str() else {
+            continue;
+        };
+        let path = std::path::Path::new(item);
+        if path.is_absolute() {
+            crate::shell::doc_open::open_with_app(path, chrome, &app.package_id).map_err(
+                |error| {
+                    ActionError::Explained(t_args(
+                        "search-open-with-file-failed",
+                        &[
+                            ("app", name.clone().into()),
+                            ("file", item.to_owned().into()),
+                            ("reason", error.user_message().into()),
+                        ],
+                    ))
+                },
+            )?;
+            continue;
+        }
+        let handler = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            crate::shell::uri_open::resolve_for(
+                item,
+                &state.local_user_id,
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| &workspace.default_apps),
+            )
+        };
+        match handler {
+            Ok(handler) if handler.package_id == app.package_id => {
+                crate::shell::uri_open::open_in_workspace(item, chrome)
+                    .map(drop)
+                    .map_err(|error| ActionError::Explained(error.user_message()))?;
+            }
+            Ok(_) | Err(crate::shell::uri_open::UriOpenError::NoHandler { .. }) => {
+                return Err(ActionError::Explained(t_args(
+                    "search-open-with-link-other-app",
+                    &[("app", name.into()), ("link", item.to_owned().into())],
+                )));
+            }
+            Err(error) => return Err(ActionError::Explained(error.user_message())),
+        }
+    }
+    Ok(())
+}
+
 fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     if needle.is_empty() {
         // The apps used most lead the empty list within the order the
@@ -63,9 +164,13 @@ fn app_detail(package_id: &str, category: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The installed apps', the dynamic launchers' and the desktop entries'
+/// generations: the last carries the apps the person took off their apps.
+type Generation = (u64, u128, u64);
+
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
-    index: BackgroundIndex<(u64, u128), ApplicationsSnapshot>,
+    index: BackgroundIndex<Generation, ApplicationsSnapshot>,
     #[cfg(test)]
     source: Option<Arc<ApplicationsTestSource>>,
 }
@@ -93,9 +198,9 @@ impl ApplicationsTestSource {
         })
     }
 
-    fn generation(&self) -> (u64, u128) {
+    fn generation(&self) -> Generation {
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
-        (generation, u128::from(generation))
+        (generation, u128::from(generation), 0)
     }
 
     fn snapshot(&self) -> (u64, Vec<InstalledApp>, Vec<DynamicLauncherRecord>) {
@@ -152,8 +257,17 @@ impl ApplicationsProvider {
         }
     }
 
+    /// How many times this provider has built its index.
+    #[cfg(test)]
+    pub(crate) fn index_builds(&self) -> usize {
+        self.index
+            .probe
+            .builds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     #[allow(clippy::unused_self, reason = "test builds use the injected source")]
-    fn source_generation(&self) -> (u64, u128) {
+    fn source_generation(&self) -> Generation {
         #[cfg(test)]
         if let Some(source) = &self.source {
             return source.generation();
@@ -161,6 +275,7 @@ impl ApplicationsProvider {
         (
             launcher::gui_apps_generation(),
             crate::portal::desktop_services::dynamic_launcher_generation(),
+            desktop_entry::cache::cached_scan_generation(),
         )
     }
 
@@ -170,27 +285,31 @@ impl ApplicationsProvider {
     /// keystroke into an indexing job.
     fn build_snapshot(
         #[cfg(test)] source: Option<Arc<ApplicationsTestSource>>,
-    ) -> ((u64, u128), ApplicationsSnapshot) {
+    ) -> (Generation, ApplicationsSnapshot) {
         #[cfg(test)]
         if let Some(source) = source {
             let (generation, installed, dynamic) = source.snapshot();
             return (
-                (generation, u128::from(generation)),
-                Self::snapshot_from_parts(&installed, dynamic),
+                (generation, u128::from(generation), 0),
+                Self::snapshot_from_parts(&installed, dynamic, &[]),
             );
         }
         let (installed_generation, installed) = launcher::gui_apps_snapshot();
         let (dynamic_generation, dynamic) =
             crate::portal::desktop_services::dynamic_launcher_snapshot();
+        let (entries_generation, scan) = desktop_entry::cache::cached_scan_snapshot();
         (
-            (installed_generation, dynamic_generation),
-            Self::snapshot_from_parts(&installed, dynamic),
+            (installed_generation, dynamic_generation, entries_generation),
+            Self::snapshot_from_parts(&installed, dynamic, &scan.hidden),
         )
     }
 
+    /// The index over `installed` and `dynamic`, less the installed apps
+    /// whose ids are in `removed_from_apps`.
     fn snapshot_from_parts(
         installed: &[InstalledApp],
         dynamic: Vec<DynamicLauncherRecord>,
+        removed_from_apps: &[String],
     ) -> ApplicationsSnapshot {
         let installed_ids: HashSet<String> = installed
             .iter()
@@ -198,6 +317,7 @@ impl ApplicationsProvider {
             .collect();
         let mut entries = installed
             .iter()
+            .filter(|app| !removed_from_apps.contains(&app.package_id))
             .cloned()
             .map(|app| ApplicationEntry::Installed(Arc::new(app)))
             .collect::<Vec<_>>();
@@ -213,7 +333,7 @@ impl ApplicationsProvider {
     /// The worker reads and clones every source itself; the UI tick never
     /// flattens an application corpus before spawn, and a query never starts it.
     #[allow(clippy::unused_self, reason = "test builds use the injected source")]
-    fn builder(&self) -> impl FnOnce() -> ((u64, u128), ApplicationsSnapshot) + Send + 'static {
+    fn builder(&self) -> impl FnOnce() -> (Generation, ApplicationsSnapshot) + Send + 'static {
         #[cfg(test)]
         let source = self.source.clone();
         move || {
@@ -462,7 +582,7 @@ pub(crate) fn grant_file_manager_path(
         },
     );
     let remembered = tree.native_runtime.remember_files_home_consent(ws, &ids);
-    if !remembered && tree.native_authority.requires(ws.room) {
+    if !remembered && tree.native_authority.requires(ws.room()) {
         // Native session consent must have exact live local provenance. A
         // missing identity or full ledger must not leave an unbound row.
         ws.sandbox
@@ -506,7 +626,12 @@ pub(crate) fn launch_installed_app(
             })
     });
     match app {
-        Ok(app) => launch_resolved_installed_app(chrome, &app),
+        Ok(app) => {
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedWindow,
+            );
+            launch_resolved_installed_app(chrome, &app)
+        }
         Err(err) => Err(report_refused_launch(
             chrome,
             package_id,
@@ -591,7 +716,7 @@ fn reopen_focused_local_card(chrome: &Chrome, package_id: &str) -> bool {
     let accepted =
         crate::shell::peer_windows::reopen_local_restore(&mut state.tree_mut(), tab, &app_id);
     if accepted {
-        state.focus_tab(workspace, strip, group, tab);
+        state.select_tab(workspace, strip, group, tab);
     }
     accepted
 }
@@ -609,10 +734,17 @@ fn launch_resolved_installed_app(
     // If the room already has this app open, focus it rather than starting
     // a second copy. See `peer_windows::opened_for_the_room`. A Terminal
     // asked for into a group (the tab strip's "+", Super+T) is the explicit
-    // request for another shell, so it always launches.
+    // request for another shell, so it always launches; so does an app whose
+    // process here opens more windows: asked for again, it opens one.
     let wants_another_terminal = package_id == crate::shell::window_actions::TERMINAL_PACKAGE
         && matches!(chrome.borrow().open_target, OpenTarget::Here(_));
-    let already = if wants_another_terminal {
+    let opens_another_window = chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .is_some_and(|workspace| launcher::opens_more_windows(package_id, workspace.room()));
+    let already = if wants_another_terminal || opens_another_window {
         None
     } else {
         let st = chrome.borrow();
@@ -680,7 +812,7 @@ fn launch_resolved_installed_app(
         let native_room = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .filter(|room| tree.requires_native_owner(*room));
         if let Some(room) = native_room {
             drop(tree);
@@ -720,18 +852,72 @@ fn package_row_opens(result: &SearchResult, app_id: &str) -> bool {
         && crate::shell::launcher::app_id_matches_package(app_id, &result.id)
 }
 
+/// The row that uninstalls `result`'s app (or takes it off the person's
+/// apps), listed under "More actions" on an app's row. Choosing it asks the
+/// person in the shell's sheet, as Files and the Store do: one action from
+/// every door ([`crate::shell::app_list`]). `None` for an app that comes
+/// with the system and stays, or one the list has not read yet.
+pub(crate) fn uninstall_row(provider: &'static str, result: &SearchResult) -> Option<SearchResult> {
+    use os_actions::AppRemoval;
+    let item = crate::shell::app_list::find(&result.id)?;
+    let label = match item.removal() {
+        AppRemoval::Uninstall | AppRemoval::UninstallWithData => t("search-apps-uninstall"),
+        AppRemoval::RemoveFromApps => t("search-apps-remove-from-apps"),
+        AppRemoval::None => return None,
+    };
+    let id = item.id;
+    let mut row = SearchResult::nullary_fallible(
+        ResourceKind::Action,
+        provider,
+        format!("{UNINSTALL_PREFIX}{id}"),
+        label,
+        None,
+        result.score,
+        move |_doc, _root, _chrome: &Chrome| {
+            crate::shell::app_list::ask(&id);
+            Ok(())
+        },
+    );
+    row.operation_kind = tilo_actions::OperationKind::Effect;
+    Some(row)
+}
+
+/// The id prefix of [`uninstall_row`]'s rows.
+pub(crate) const UNINSTALL_PREFIX: &str = "uninstall:";
+
 impl SearchProvider for ApplicationsProvider {
     fn id(&self) -> &'static str {
         PROVIDER_ID
     }
+    fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
+        if result.kind != ResourceKind::Application || result.id.contains(':') {
+            return Vec::new();
+        }
+        uninstall_row(PROVIDER_ID, result).into_iter().collect()
+    }
     fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
         package_row_opens(result, app_id)
+    }
+    fn app_row(&self, app_id: &str) -> Option<SearchResult> {
+        let snapshot = self.snapshot()?;
+        let app = snapshot.entries.iter().find_map(|entry| match entry {
+            ApplicationEntry::Installed(app)
+                if crate::shell::launcher::app_id_matches_package(app_id, &app.package_id) =>
+            {
+                Some(Arc::clone(app))
+            }
+            _ => None,
+        })?;
+        self.installed_rows("", vec![app], &[Some(0)]).pop()
     }
     fn name(&self) -> &str {
         APPLICATIONS_KIND
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
+    }
+    fn launcher_section(&self) -> Option<crate::shell::search::launcher::LauncherSection> {
+        Some(crate::shell::search::launcher::LauncherSection::Apps)
     }
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if !ctx
@@ -791,6 +977,14 @@ impl SearchProvider for ApplicationsProvider {
             );
         }
         let snapshot = self.snapshot()?;
+        if let Some(package_id) = id.strip_prefix(OPEN_WITH_PREFIX) {
+            return snapshot.entries.iter().find_map(|entry| match entry {
+                ApplicationEntry::Installed(app) if app.package_id == package_id => {
+                    Some(open_with_row(Arc::clone(app)))
+                }
+                _ => None,
+            });
+        }
         snapshot
             .entries
             .iter()
@@ -877,10 +1071,10 @@ impl ApplicationsProvider {
     }
 
     fn revision(&self) -> String {
-        let (installed, dynamic) = self.source_generation();
-        let ready = self.index.is_ready(&(installed, dynamic));
+        let (installed, dynamic, entries) = self.source_generation();
+        let ready = self.index.is_ready(&(installed, dynamic, entries));
         format!(
-            "{}:{installed}:{dynamic}",
+            "{}:{installed}:{dynamic}:{entries}",
             if ready { "ready" } else { "indexing" }
         )
     }
@@ -993,9 +1187,6 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -1116,6 +1307,7 @@ mod tests {
                     app_id: "so.tilo.terminal".into(),
                     surface_id: 7,
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,
@@ -1175,6 +1367,7 @@ mod tests {
                     app_id: "so.tilo.terminal".into(),
                     surface_id: 7,
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,
@@ -1228,6 +1421,7 @@ mod tests {
                     label: "Browser".into(),
                     note: "Failed to open".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab,
             width: WindowWidth::Normal,
@@ -1297,17 +1491,29 @@ mod tests {
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        while std::time::Instant::now() < deadline {
+        tilo_test_env::wait_until("the application search index to become ready", || {
             provider.refresh_search_index(ctx);
-            if provider.search_revision(ctx).starts_with("ready:") {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("application search index did not become ready");
+            provider.search_revision(ctx).starts_with("ready:")
+        });
+    }
+
+    #[test]
+    fn an_app_taken_off_the_persons_apps_is_not_listed() {
+        let installed = [app("so.tilo.notes", "Notes"), app("so.tilo.chess", "Chess")];
+        let snapshot = ApplicationsProvider::snapshot_from_parts(
+            &installed,
+            Vec::new(),
+            &["so.tilo.notes".to_owned()],
+        );
+        let listed: Vec<&str> = snapshot
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                ApplicationEntry::Installed(app) => app.package_id.as_str(),
+                ApplicationEntry::Dynamic(_) => "",
+            })
+            .collect();
+        assert_eq!(listed, ["so.tilo.chess"]);
     }
 
     fn app(package_id: &str, display_name: &str) -> InstalledApp {
@@ -1674,6 +1880,55 @@ mod tests {
         assert_eq!(files.name_for("en-US"), "Files");
     }
 
+    /// `tilo open notes ~/a.md` reaches the app through this address: one
+    /// typed `open` list, resolved by address and never listed, so the
+    /// palette's own row for the app stays nullary.
+    #[test]
+    fn open_with_is_addressed_not_listed_and_requires_the_list() {
+        let notes = app_in("so.tilo.notes", "Notes", Some("Productivity"));
+        let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
+            vec![notes],
+            Vec::new(),
+        ));
+        let c = chrome_rc();
+        let state = c.borrow();
+        let doc = AutoCommit::new();
+        let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "notes",
+            wanted: &[ResourceKind::Application],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        refresh_until_ready(&p, &ctx);
+        let listed = p.query(ctx);
+        assert!(listed.iter().any(|row| row.id == "so.tilo.notes"));
+        assert!(
+            listed
+                .iter()
+                .all(|row| !row.id.starts_with(OPEN_WITH_PREFIX) && row.params.is_empty()),
+            "the palette row stays nullary: {listed:?}"
+        );
+        let row = p
+            .resolve("open-with:so.tilo.notes", ctx)
+            .expect("an installed app resolves by its open-with address");
+        assert_eq!(row.title, "Notes");
+        assert_eq!(row.params.len(), 1);
+        assert_eq!(row.params[0].name, "open");
+        assert!(row.params[0].required);
+        assert!(
+            p.resolve("open-with:so.tilo.absent", ctx).is_none(),
+            "only an installed app opens files"
+        );
+        let missing = crate::shell::search::action_api::ActionArgs::bind_json(
+            &row.params,
+            &serde_json::Map::new(),
+        );
+        assert!(missing.is_err(), "the list is required");
+    }
+
     #[test]
     fn an_app_that_is_here_is_just_opened() {
         // Phase `an_app_that_is_already_here_does_not_raise_a_loading_state`.
@@ -1784,19 +2039,12 @@ mod tests {
         };
         let initial_revision = provider.search_revision(&ctx);
         provider.refresh_search_index(&ctx);
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        while std::time::Instant::now() < deadline {
-            if source
+        tilo_test_env::wait_until("the source to materialize once", || {
+            source
                 .materializations
                 .load(std::sync::atomic::Ordering::Relaxed)
-                == 1
-            {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+                >= 1
+        });
         assert_eq!(
             source
                 .materializations
@@ -1965,14 +2213,10 @@ mod tests {
         );
         assert!(!provider.index.building());
 
-        for _ in 0..6_000 {
+        tilo_test_env::wait_until("the application index to become ready", || {
             provider.refresh_search_index(&ctx);
-            if provider.search_revision(&ctx).starts_with("ready:") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(provider.search_revision(&ctx).starts_with("ready:"));
+            provider.search_revision(&ctx).starts_with("ready:")
+        });
         assert_eq!(
             provider
                 .index

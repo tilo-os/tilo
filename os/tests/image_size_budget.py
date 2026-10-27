@@ -6,7 +6,7 @@
     image_size_budget.py list
 
 `--report` takes the JSON tools/perf/image_size.py writes after replaying the
-image's layers from the registry or an OCI layout (CI: build-image.yml);
+image's layers from the registry or an OCI layout (CI: os-acceptance-{arch});
 `--root` walks an unpacked root file system. Either way the answer is the same
 three checks, against os/image-size-budget.toml:
 

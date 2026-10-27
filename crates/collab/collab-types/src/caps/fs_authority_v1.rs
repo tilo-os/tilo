@@ -146,7 +146,6 @@ mod tests {
     #[test]
     fn the_list_seeded_before_the_file_authority_reads_as_the_same_grant() {
         let authority: FsAuthority = serde_json::from_str(SEEDED_2026_10_02).unwrap();
-        // What os/usr/share/tilo/fs-capabilities.json ships today.
         let shipped = CapOverride::grant(
             Subject::person("local"),
             Scope::FsPath("/".into()),

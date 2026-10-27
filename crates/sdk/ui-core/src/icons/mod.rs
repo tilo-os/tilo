@@ -13,8 +13,10 @@
 
 mod app_glyph;
 mod app_image;
+mod service_mark;
 
 pub use app_glyph::app_glyph;
+pub use service_mark::{ServiceMark, service_mark};
 
 pub use app_image::{AppImage, AppImageSource, MAX_DEVICE_PX, device_px, draw_app_image};
 
@@ -185,6 +187,9 @@ icons! {
     PanelLeft => "panel-left",
     /// Show or hide the inspector: the mirror of [`Icon::PanelLeft`].
     PanelRight => "panel-right",
+    /// Show or hide a bottom panel (problems, a terminal): a window with a
+    /// rule near its bottom edge. Lucide `panel-bottom`.
+    PanelBottom => "panel-bottom",
     // --- Everyday set: people, places, media, text and status (Lucide v0.546.0) ---
     EyeOff => "eye-off",
     Phone => "phone",
@@ -250,6 +255,8 @@ icons! {
     ListMusic => "list-music",
     Speaker => "speaker",
     Headphones => "headphones",
+    /// Lucide `headphone-off`: someone who hears nothing of a call.
+    HeadphoneOff => "headphone-off",
     Gauge => "gauge",
     LocateFixed => "locate-fixed",
     Navigation => "navigation",
@@ -300,6 +307,9 @@ icons! {
     Unlink => "unlink",
     /// An agent. Lucide `bot`.
     Bot => "bot",
+    /// Discord's mark, for linking a Discord account. Not Lucide: drawn
+    /// filled ([`Icon::is_brand`]), its eyes left open.
+    Discord => "discord",
     /// A rectangle of an area being selected. Lucide `square-dashed`.
     SquareDashed => "square-dashed",
     /// An ellipse of an area being selected. Lucide `circle-dashed`.
@@ -324,6 +334,12 @@ icons! {
     ScreenShare => "screen-share",
     /// A desktop session in a window (RDP). Lucide `app-window`.
     AppWindow => "app-window",
+    // --- Capture set: what a screenshot, recording or picture in picture takes ---
+    /// Recording: a dot inside a ring, the record button. Lucide `circle-dot`.
+    CircleDot => "circle-dot",
+    /// A strip of windows side by side, the neighbours cut off at both
+    /// edges. Lucide `gallery-horizontal`.
+    GalleryHorizontal => "gallery-horizontal",
     /// One of your own devices. Lucide `monitor-smartphone`.
     MonitorSmartphone => "monitor-smartphone",
     AlignEndVertical => "align-end-vertical",
@@ -340,6 +356,12 @@ icons! {
     AlignCenterHorizontal => "align-center-horizontal",
     AlignStartHorizontal => "align-start-horizontal",
     Command => "command",
+    /// A frame around a smaller screen: covering the whole display.
+    Fullscreen => "fullscreen",
+    /// Four corners pointing out: a picture taking the whole display.
+    Maximize => "maximize",
+    /// Four corners pointing in: a picture leaving the whole display.
+    Minimize => "minimize",
 }
 
 impl Icon {
@@ -347,6 +369,13 @@ impl Icon {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|icon| icon.name() == name)
+    }
+
+    /// A service's mark rather than a Lucide glyph: always drawn filled,
+    /// as the service draws it.
+    #[must_use]
+    pub const fn is_brand(self) -> bool {
+        matches!(self, Self::Discord)
     }
 }
 
@@ -424,6 +453,19 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
     Circle::new(Point::new(cx, cy), r)
         .path_elements(0.1)
         .collect()
+}
+
+/// Discord's mark in the 24×24 viewBox: its outline and its two eyes as
+/// inner loops of one path, which an even-odd fill leaves open.
+fn discord_mark() -> BezPath {
+    let mut mark = path_from_d(
+        "M20.32 4.37C18.8 3.67 17.15 3.16 15.43 2.86C15.22 3.24 14.98 3.73 14.82 4.12C12.98 3.84 11.15 3.84 9.34 4.12C9.17 3.73 8.93 3.24 8.71 2.86C7 3.16 5.35 3.67 3.82 4.37C0.53 9.05 -0.32 13.58 0.1 18.06C2.15 19.56 4.14 20.48 6.09 21.08C6.57 20.43 7 19.73 7.37 19.01C6.67 18.75 6.01 18.43 5.39 18.06C5.55 17.94 5.71 17.82 5.87 17.7C9.8 19.49 14.06 19.49 17.94 17.7C18.1 17.82 18.26 17.94 18.42 18.06C17.8 18.43 17.13 18.75 16.44 19.01C16.81 19.73 17.24 20.43 17.71 21.08C19.67 20.48 21.66 19.56 23.71 18.06C24.21 12.88 22.87 8.38 20.32 4.37Z",
+    );
+    for eye_x in [8.02, 15.98] {
+        let eye = vello::kurbo::Ellipse::new(Point::new(eye_x, 12.91), (2.16, 2.42), 0.0);
+        mark.extend(eye.path_elements(0.05));
+    }
+    mark
 }
 
 /// The strokable subpaths for `icon` in the lucide 24×24 viewBox.
@@ -1086,6 +1128,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
             path_from_d("M15 3v18"),
         ],
+        Icon::PanelBottom => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            path_from_d("M3 15h18"),
+        ],
         Icon::EyeOff => vec![
             path_from_d(
                 "M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49",
@@ -1122,6 +1168,25 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M16 12h1"),
             path_from_d("M21 12v.01"),
             path_from_d("M12 21v-1"),
+        ],
+        Icon::Maximize => vec![
+            path_from_d("M8 3H5a2 2 0 0 0-2 2v3"),
+            path_from_d("M21 8V5a2 2 0 0 0-2-2h-3"),
+            path_from_d("M3 16v3a2 2 0 0 0 2 2h3"),
+            path_from_d("M16 21h3a2 2 0 0 0 2-2v-3"),
+        ],
+        Icon::Minimize => vec![
+            path_from_d("M8 3v3a2 2 0 0 1-2 2H3"),
+            path_from_d("M21 8h-3a2 2 0 0 1-2-2V3"),
+            path_from_d("M3 16h3a2 2 0 0 1 2 2v3"),
+            path_from_d("M16 21v-3a2 2 0 0 1 2-2h3"),
+        ],
+        Icon::Fullscreen => vec![
+            path_from_d("M3 7V5a2 2 0 0 1 2-2h2"),
+            path_from_d("M17 3h2a2 2 0 0 1 2 2v2"),
+            path_from_d("M21 17v2a2 2 0 0 1-2 2h-2"),
+            path_from_d("M7 21H5a2 2 0 0 1-2-2v-2"),
+            rect_path(7.0, 8.0, 10.0, 8.0, 1.0),
         ],
         Icon::ScanLine => vec![
             path_from_d("M3 7V5a2 2 0 0 1 2-2h2"),
@@ -1453,6 +1518,15 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::Headphones => vec![path_from_d(
             "M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3",
         )],
+        Icon::HeadphoneOff => vec![
+            path_from_d("M21 14h-1.343"),
+            path_from_d("M9.128 3.47A9 9 0 0 1 21 12v3.343"),
+            line_path(2.0, 2.0, 22.0, 22.0),
+            path_from_d("M20.414 20.414A2 2 0 0 1 19 21h-1a2 2 0 0 1-2-2v-3"),
+            path_from_d(
+                "M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 2.636-6.364",
+            ),
+        ],
         Icon::Gauge => vec![
             path_from_d("m12 14 4-4"),
             path_from_d("M3.34 19a10 10 0 1 1 17.32 0"),
@@ -1646,6 +1720,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
             path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
         ],
+        Icon::Discord => vec![discord_mark()],
         Icon::Unlink => vec![
             path_from_d(
                 "m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71",
@@ -1781,6 +1856,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M2 8h20"),
             path_from_d("M6 4v4"),
         ],
+        Icon::CircleDot => vec![circle_path(12.0, 12.0, 10.0), circle_path(12.0, 12.0, 1.0)],
+        Icon::GalleryHorizontal => vec![
+            path_from_d("M2 3v18"),
+            rect_path(6.0, 3.0, 12.0, 18.0, 2.0),
+            path_from_d("M22 3v18"),
+        ],
         Icon::MonitorSmartphone => vec![
             path_from_d("M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"),
             path_from_d("M10 19v-3.96 3.15"),
@@ -1865,8 +1946,15 @@ impl Icon {
         let tx = rect.x0 + (size.width - glyph) / 2.0;
         let ty = rect.y0 + (size.height - glyph) / 2.0;
         let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
+        // A brand mark fills even-odd, so its inner loops (Discord's eyes)
+        // stay open; Lucide glyphs keep their non-zero fill.
+        let rule = if self.is_brand() {
+            Fill::EvenOdd
+        } else {
+            Fill::NonZero
+        };
         for sub in icon_subpaths(self) {
-            scene.fill(Fill::NonZero, local, color, None, &sub);
+            scene.fill(rule, local, color, None, &sub);
         }
     }
 
@@ -2101,6 +2189,7 @@ mod tests {
             "droplet",
             "palette",
             "panel-right",
+            "panel-bottom",
             "square-dashed",
             "circle-dashed",
             "lasso",
@@ -2437,7 +2526,6 @@ mod tests {
                 Rect::new(0.0, 0.0, 24.0, 24.0),
                 Color::WHITE,
             );
-            // A stroked glyph emits at least one COLOR draw tag for its path.
             let color_tags = scene
                 .encoding()
                 .draw_tags
@@ -2621,6 +2709,7 @@ mod tests {
                 Icon::ArrowUpDown,
                 Icon::PanelLeft,
                 Icon::PanelRight,
+                Icon::PanelBottom,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
@@ -2642,6 +2731,8 @@ mod tests {
             (Icon::MapPin, 2),
             (Icon::QrCode, 12),
             (Icon::ScanLine, 5),
+            (Icon::Maximize, 4),
+            (Icon::Minimize, 4),
             (Icon::SwitchCamera, 5),
             (Icon::User, 2),
             (Icon::UserPlus, 4),
@@ -2704,6 +2795,7 @@ mod tests {
             (Icon::ListMusic, 5),
             (Icon::Speaker, 4),
             (Icon::Headphones, 1),
+            (Icon::HeadphoneOff, 5),
             (Icon::Gauge, 2),
             (Icon::LocateFixed, 6),
             (Icon::Navigation, 1),
@@ -2757,7 +2849,6 @@ mod tests {
             icon_for_path(Path::new("/x/archive.zip"), true),
             Icon::Folder
         );
-        // Media families.
         assert_eq!(
             icon_for_path(Path::new("a/photo.PNG"), false),
             Icon::Image,

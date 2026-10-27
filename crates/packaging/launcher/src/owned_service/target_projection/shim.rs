@@ -229,9 +229,6 @@ impl MountedTargetBootstrap {
     }
     /// Called exclusively after the canonical mandatory Landlock succeeds.
     /// It cannot recreate transient mount privilege or admit source groups.
-    ///
-    /// # Errors
-    /// Fails if the held read view has not been confined or authenticated credential dropping fails.
     pub fn drop_after_confinement(self) -> io::Result<()> {
         if self.readonly_view.is_some() {
             return Err(refused("Target worker missing held read confinement"));
@@ -348,9 +345,6 @@ impl TargetFuseReady {
     /// Call only after actual `Session::from_fd` handshake. Root observes this
     /// exact target task, not an app-authored readiness label, then checks the
     /// held kernel endpoint with the connected source relay serving requests.
-    ///
-    /// # Errors
-    /// Fails if worker identity or namespace validation, the readiness handshake, or an observation exchange fails.
     pub fn serve_observations(mut self) -> io::Result<()> {
         verify_dropped(self.record.uid, self.record.gid)?;
         if namespaces()? != self.record.namespaces {

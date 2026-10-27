@@ -165,7 +165,6 @@ mod tests {
 
     #[test]
     fn status_log_live_region_politeness_follows_severity() {
-        // Phase `newest_progress_line_is_a_stable_polite_live_region`.
         {
             let log = StatusLog::new(
                 vec![
@@ -182,7 +181,6 @@ mod tests {
                 Some("installer.install-status")
             );
         }
-        // Phase `failures_and_hardware_touch_prompts_are_assertive`.
         {
             for line in [
                 "error: target identity changed",

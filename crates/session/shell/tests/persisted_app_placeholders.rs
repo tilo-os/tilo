@@ -32,6 +32,7 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
                     kind,
                     label: title.into(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,
@@ -39,11 +40,8 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
             focus_history: Vec::new(),
         }],
     };
-    let ws = Workspace::new(ws_id, "Home");
-    let ws = Workspace {
-        strips: vec![strip],
-        ..ws
-    };
+    let mut ws = Workspace::new(ws_id, "Home");
+    ws.strips = vec![strip];
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);
     WorkspaceTree {

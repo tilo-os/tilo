@@ -112,10 +112,6 @@ fn custody_message(error: &account_custody::CustodyError) -> String {
 /// A current access token for an OAuth mail account, refreshed and resealed
 /// by custody when due. `force` refreshes even when the token looks valid
 /// (the server just rejected it).
-///
-/// # Errors
-/// A message naming why no token is available (not signed in, revoked,
-/// offline, provider not configured).
 #[cfg(feature = "live")]
 pub fn access_token(
     custodian: &account_custody::Custodian,

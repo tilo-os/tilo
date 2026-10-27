@@ -88,7 +88,6 @@ pub enum Tier {
     Background,
 }
 
-/// The `oom_score_adj` of an app's `leaf` in `tier`.
 #[must_use]
 pub const fn oom_score_adj(tier: Tier, leaf: crate::app_cgroup::Leaf) -> i32 {
     let app = match tier {
@@ -265,15 +264,10 @@ pub fn session_scope_of(cgroup: &str) -> Option<String> {
 /// How the priority logic reaches systemd and the process table. Production
 /// uses [`BusctlControl`]; tests substitute a recorder.
 pub trait UnitControl: Send + 'static {
-    /// The app scope `pid` runs in, if any.
     fn app_scope_of_pid(&self, pid: u32) -> Option<String>;
     /// Whether the process still exists.
     fn pid_alive(&self, pid: u32) -> bool;
     /// Apply runtime properties to a user-manager unit.
-    ///
-    /// # Errors
-    ///
-    /// The manager's reason when it refuses or is unreachable.
     fn set_properties(&self, unit: &str, props: &[Property]) -> Result<(), String>;
     /// Put `unit` in `tier`: its [`tier_properties`] for a machine with
     /// `total` bytes of memory.
@@ -343,7 +337,6 @@ pub enum Event {
     /// The compositor started the launcher with this pid. Its scope is born
     /// in the foreground tier and is protected until its window appears.
     Launch(u32),
-    /// The launcher with this pid exited.
     Exited(u32),
     /// A toplevel of the client with this pid was created.
     Window(u32),
@@ -592,7 +585,6 @@ pub fn notify_launch(pid: u32) {
     send(Event::Launch(pid));
 }
 
-/// The launcher with `pid` exited.
 pub fn notify_launch_exited(pid: u32) {
     send(Event::Exited(pid));
 }
@@ -686,9 +678,9 @@ pub fn rtkit_args(pid: u32, tid: u64, priority: i32) -> Vec<String> {
 ///
 /// A realtime thread that spins starves everything below it, so the grant is
 /// bounded twice. `RLIMIT_RTTIME` makes the kernel send `SIGXCPU` once the
-/// thread has run [`RT_SOFT_LIMIT_US`] without blocking; the handler installed
+/// thread has run `RT_SOFT_LIMIT_US` without blocking; the handler installed
 /// here drops that thread back to `SCHED_OTHER` and logs it, so a spin costs
-/// latency, not the session. The hard limit, [`RT_HARD_LIMIT_US`] (the ceiling
+/// latency, not the session. The hard limit, `RT_HARD_LIMIT_US` (the ceiling
 /// `RealtimeKit` accepts), only matters if the handler cannot run: then the
 /// kernel kills the process rather than let the machine freeze.
 /// `TILO_PRESENT_RT=0` opts out.
@@ -931,10 +923,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". When the
-    // kernel must choose, background apps go first, the focused app is
-    // protected, and the shell and compositor are never chosen.
     #[test]
     fn the_oom_killer_prefers_the_background_and_never_chooses_the_session() {
         use crate::app_cgroup::Leaf;
@@ -962,7 +950,6 @@ mod tests {
                 assert!(adj >= FOREGROUND_OOM_SCORE_ADJ);
             }
         }
-        // The image gives the session its value.
         let unit =
             include_str!("../../../../os/etc/systemd/system/greetd.service.d/50-tilo-oom.conf");
         assert!(
@@ -1073,10 +1060,8 @@ mod tests {
         // Coming back to what had focus at launch is not moving on.
         rig.send(&[Event::Focus(None), Event::Focus(Some(10)), Event::Settle]);
         assert_eq!(rig.boost.foreground(), [scope(10, "a"), scope(20, "b")]);
-        // The person goes to another window that was already there.
         rig.send(&[Event::Focus(Some(30))]);
         assert_eq!(rig.boost.foreground(), [scope(30, "c")]);
-        // The launch's own window now opening and taking focus boosts it afresh.
         rig.send(&[Event::Window(20), Event::Focus(Some(20)), Event::Settle]);
         assert_eq!(rig.boost.foreground(), [scope(20, "b")]);
     }
@@ -1195,7 +1180,6 @@ mod tests {
         );
         // The spawner is no app; it is not in app.slice's scopes either.
         assert_eq!(app_scope_of(&format!("0::{tree}/spawner\n")), None);
-        // Its tier lands in the cgroup's files.
         let dir = tempfile::tempdir().unwrap();
         for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
             std::fs::write(dir.path().join(file), "").unwrap();

@@ -381,7 +381,7 @@ fn backend_emits_proof_only_after_encrypted_finish() {
 
 #[test]
 fn usage_errors_exit_2() {
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-vm-install-proof"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
         .args(["--target-root", "/x"])
         .output()
         .unwrap();
@@ -395,7 +395,7 @@ fn usage_errors_exit_2() {
         "error: the following arguments are required: --deploy-etc, --efi-root, --target-uki, \
          --disk, --efi-partition, --boot-partition, --root-partition, --output\n"
     ));
-    let ambiguous = Command::new(env!("CARGO_BIN_EXE_tilo-vm-install-proof"))
+    let ambiguous = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
         .args(["--efi", "/x"])
         .output()
         .unwrap();

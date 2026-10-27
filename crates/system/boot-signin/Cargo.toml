@@ -1,0 +1,36 @@
+[package]
+name = "tilo-boot-signin"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The sign-in screen before the system volume is open: the person picks themselves, gives their secret, and tilo-auth opens the volume."
+
+[lib]
+name = "tilo_boot_signin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-boot-signin"
+path = "src/main.rs"
+
+[dependencies]
+# tilo-auth, plymouth and systemd-ask-password are driven as the programs the
+# initramfs carries, as tilo-rollback and tilo-sibling-unlock drive theirs.
+# Refused entries are remembered as HMACs under a key made at start.
+getrandom.workspace = true
+hmac.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tilo-ask-password = { path = "../ask-password" }
+# The person's initials and colour, as the login screen draws them.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
+zeroize.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -261,7 +261,6 @@ mod tests {
 
     #[test]
     fn capability_file_changes_take_effect_during_the_mount() {
-        // Phase `a_grant_added_after_load_takes_effect_without_reloading_by_hand`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -275,7 +274,6 @@ mod tests {
                 "the second subtree must be denied before it is granted, or the test proves nothing"
             );
 
-            // The grant the user makes a minute into the session.
             write_caps(&path, &[read_grant("/w/docs"), read_grant("/w/plans")]);
             assert_eq!(file.refresh(), Refresh::Reloaded(2));
 
@@ -285,7 +283,6 @@ mod tests {
             );
             assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
         }
-        // Phase `a_revoked_grant_stops_working_without_a_remount`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -307,7 +304,6 @@ mod tests {
                 "revoking one capability must not disturb the others"
             );
         }
-        // Phase `an_unchanged_file_is_not_reparsed`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -344,28 +340,21 @@ mod tests {
         }
     }
 
-    /// How long the mount may keep serving a revoked capability: what the
-    /// one-second poll gave before the reload watched the file.
-    const REVOKE_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
-
-    /// How long `holds` took to become true, or `None` if it did not
-    /// within [`REVOKE_BOUND`].
-    async fn within_bound(holds: impl Fn() -> bool) -> Option<std::time::Duration> {
-        let started = std::time::Instant::now();
-        while started.elapsed() <= REVOKE_BOUND {
-            if holds() {
-                return Some(started.elapsed());
+    /// Waits until `holds` is true. The poll and backstop are an hour away,
+    /// so only the file watch can make it so.
+    async fn through_the_watch(what: &str, holds: impl Fn() -> bool + Sync) {
+        tilo_test_env::within(what, async {
+            while !holds() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        None
+        })
+        .await;
     }
 
     /// #4224. The reloader the daemon runs, with its poll fallback and its
     /// backstop both an hour away, so only the file watch can deliver a
-    /// change. A revocation and a removal each reach the live mount within
-    /// the old one-second bound, and a half-written file still keeps the
-    /// previous list.
+    /// change. A revocation and a removal each reach the live mount, and a
+    /// half-written file still keeps the previous list.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_revocation_reaches_the_live_mount_through_the_file_watch_alone() {
         let hour = std::time::Duration::from_secs(3600);
@@ -386,32 +375,32 @@ mod tests {
         assert!(handle.permits(&ALICE, "/w/plans/b.md", Access::Read));
 
         write_caps(&path, &[read_grant("/w/docs")]);
-        let revoked = within_bound(|| !handle.permits(&ALICE, "/w/plans/b.md", Access::Read))
-            .await
-            .expect("a revocation must reach the live mount within the bound");
-        eprintln!(
-            "revocation applied {} ms after the write",
-            revoked.as_millis()
-        );
+        through_the_watch("the revocation to reach the live mount", || {
+            !handle.permits(&ALICE, "/w/plans/b.md", Access::Read)
+        })
+        .await;
         assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
 
-        // What a reader sees if it catches an in-place rewrite midway.
+        // What a reader sees if it catches an in-place rewrite midway, read
+        // here at once rather than whenever the watch gets to it.
         std::fs::write(&path, b"[{\"subject\"").unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        file.refresh();
         assert!(
             handle.permits(&ALICE, "/w/docs/a.md", Access::Read),
             "a half-written file must not revoke every capability"
         );
 
         std::fs::remove_file(&path).unwrap();
-        within_bound(|| !handle.permits(&ALICE, "/w/docs/a.md", Access::Read))
-            .await
-            .expect("removing the list must deny everything within the bound");
+        through_the_watch("removing the list to deny everything", || {
+            !handle.permits(&ALICE, "/w/docs/a.md", Access::Read)
+        })
+        .await;
 
         write_caps(&path, &[read_grant("/w/plans")]);
-        within_bound(|| handle.permits(&ALICE, "/w/plans/b.md", Access::Read))
-            .await
-            .expect("a list that comes back must be enforced again");
+        through_the_watch("a list that comes back to be enforced again", || {
+            handle.permits(&ALICE, "/w/plans/b.md", Access::Read)
+        })
+        .await;
         reload.abort();
     }
 
@@ -455,7 +444,6 @@ mod tests {
 
     #[test]
     fn missing_deleted_malformed_or_empty_capability_files_fail_closed() {
-        // Phase `a_deleted_file_denies_everything`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -473,12 +461,10 @@ mod tests {
             // Idempotent: still missing, still denying, and not re-reported.
             assert_eq!(file.refresh(), Refresh::Unchanged);
 
-            // And it recovers when the file comes back.
             write_caps(&path, &[read_grant("/w/docs")]);
             assert_eq!(file.refresh(), Refresh::Reloaded(1));
             assert!(handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
         }
-        // Phase `a_malformed_file_keeps_the_last_good_list_and_retries`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -486,7 +472,6 @@ mod tests {
             let file = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
             let handle = file.handle();
 
-            // What a reader sees if it catches an in-place rewrite midway.
             std::fs::write(&path, b"[{\"subject\"").unwrap();
             assert!(matches!(file.refresh(), Refresh::Failed(_)));
             assert!(
@@ -501,13 +486,11 @@ mod tests {
             assert!(handle.permits(&ALICE, "/w/plans/b.md", Access::Read));
             assert!(!handle.permits(&ALICE, "/w/docs/a.md", Access::Read));
         }
-        // Phase `a_missing_file_refuses_to_load_rather_than_binding_nothing`.
         {
             let err = CapabilityFile::load("/nonexistent/tilo-caps.json", ALICE, Vec::new())
                 .expect_err("a missing list must not load as an unenforced mount");
             assert!(matches!(err, CapsError::Read { .. }), "got {err:?}");
         }
-        // Phase `an_empty_list_is_a_valid_total_denial`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");

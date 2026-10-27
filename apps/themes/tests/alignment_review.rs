@@ -1,7 +1,3 @@
-//! Alignment contracts exercised on Theme Studio's admitted resource view.
-//! The shared `NavShell`, `Form` and wrapping `Row` widgets now own the geometry that the
-//! earlier customizer painted. Tests observe their production layout.
-
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -56,93 +52,95 @@ fn near(a: f64, b: f64, why: &str) {
     assert!((a - b).abs() < 0.5, "{why}: {a} vs {b}");
 }
 
+/// The theme's commands, in the window bar's order.
+const COMMANDS: [&str; 6] = [
+    "theme-apply",
+    "theme-export",
+    "theme-import",
+    "theme-duplicate",
+    "theme-reset",
+    "theme-delete",
+];
+
+fn bar(app: &mut TestApp<App>) -> ui::window_toolbar::WindowToolbar {
+    app.settle();
+    ui::window_toolbar::declared().unwrap_or_else(|| panic!("the window declares its slots"))
+}
+
 #[test]
 fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
     // The narrowest window that keeps the theme list docked beside the editor.
     let width = 600.0;
     let mut app = frame("editor", (600, 2400), 1.0);
-    let toggle = rect(&mut app, "nav-shell-sidebar");
-    assert!(toggle.width() > 0.0 && toggle.height() > 0.0);
     let preview = rect(&mut app, "theme-preview");
     let gutter = f64::from(app.harness().theme().tokens.spacing.s4);
     assert!(
         preview.x0 >= gutter && preview.x1 <= width - gutter,
         "preview {preview:?} retains content gutters"
     );
-    assert!(
-        preview.y0 >= toggle.y1,
-        "content starts below shared chrome"
-    );
 
-    let action_ids = [
-        "theme-apply",
-        "theme-export",
-        "theme-duplicate",
-        "theme-reset",
-        "theme-delete",
-    ];
-    let actions: Vec<_> = action_ids.iter().map(|id| rect(&mut app, id)).collect();
-    for (i, action) in actions.iter().enumerate() {
-        assert!(
-            action.width() > 0.0 && action.x0 >= 0.0 && action.x1 <= width,
-            "{} remains inside the window: {action:?}",
-            action_ids[i]
-        );
-        near(
-            action.height(),
-            actions[0].height(),
-            "actions share control height",
-        );
-        for other in &actions[i + 1..] {
-            assert!(
-                disjoint(*action, *other),
-                "actions overlap: {action:?} / {other:?}"
-            );
-        }
-    }
-    assert!(
-        actions.iter().any(|r| r.y0 > actions[0].y0),
-        "narrow action row wraps instead of clipping"
+    let toolbar = bar(&mut app);
+    let ids: Vec<&str> = toolbar
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(ids, COMMANDS, "the theme's commands are the bar's");
+    assert_eq!(
+        toolbar.location.map(|location| location.label).as_deref(),
+        Some("Ember"),
+        "the bar names the theme"
     );
+    for id in COMMANDS {
+        assert!(
+            !app.harness().targets().contains_key(id),
+            "the editor draws no {id} of its own"
+        );
+    }
+
     let dropdowns = named(&mut app, "Dropdown");
     assert!(
         !dropdowns.is_empty(),
         "production choices are shared dropdowns"
     );
+    let height = dropdowns[0].height();
     for dropdown in dropdowns {
         assert!(dropdown.width() > 0.0);
-        near(
-            dropdown.height(),
-            actions[0].height(),
-            "choices and actions share control height",
-        );
+        near(dropdown.height(), height, "choices share control height");
     }
-    app.harness()
-        .expect(&SemanticExpectation::named("nav-shell-sidebar").enabled(true))
-        .unwrap();
-    app.harness().click_named("nav-shell-sidebar").unwrap();
-    app.harness()
-        .expect(&SemanticExpectation::named("themes-gallery").enabled(true))
-        .unwrap();
-    let shown = rect(&mut app, "nav-shell-sidebar");
-    near(toggle.x0, shown.x0, "sidebar control keeps its slot");
-    near(
-        toggle.width(),
-        shown.width(),
-        "sidebar control keeps its size",
+    // The list is docked at this width: the bar's toggle hides it and shows
+    // it again. Whether the list is shown is read from the bar, not from the
+    // list itself, which stays addressable while it slides away.
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the bar holds the sidebar toggle, showing the list shown"
     );
+    app.harness()
+        .expect(&SemanticExpectation::named("themes-nav").enabled(true))
+        .unwrap();
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+    assert_eq!(
+        bar(&mut app).sidebar,
+        Some(false),
+        "the toggle hid the list"
+    );
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+    assert_eq!(bar(&mut app).sidebar, Some(true), "and shows it again");
+    app.harness()
+        .expect(&SemanticExpectation::named("themes-nav").enabled(true))
+        .unwrap();
 }
 
 #[test]
 fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
     for width in [480, 1280] {
         let mut app = frame("gallery", (width, 2400), 1.0);
-        let gap = f64::from(app.harness().theme().tokens.spacing.s2);
-        let cards: Vec<_> = Preset::ALL
-            .iter()
-            .map(|preset| rect(&mut app, &format!("preset-{}", preset.id())))
-            .collect();
-        assert!(cards.len() >= 3, "all preset choices must be observed");
+        let gap = f64::from(app.harness().theme().tokens.spacing.rhythm.sibling);
+        let cards = named(&mut app, "Card");
+        assert_eq!(cards.len(), Preset::ALL.len(), "every preset is a card");
         for (i, card) in cards.iter().enumerate() {
             assert!(
                 card.width() > 0.0
@@ -158,8 +156,8 @@ fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
                 );
                 if (card.x0 - other.x0).abs() < 0.5 {
                     assert!(
-                        other.y0 - card.y1 >= gap,
-                        "related cards need the theme's gap"
+                        other.y0 - card.y1 >= gap - 0.5,
+                        "stacked cards keep the grid's gap"
                     );
                 }
             }
@@ -186,41 +184,24 @@ fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
 fn large_text_reflows_controls_and_the_form_without_covering_chrome() {
     let mut one = frame("editor", (480, 4000), 1.0);
     // At double text the list no longer fits beside the editor: the editor
-    // is a screen of its own, its Back the shared control it must not cover.
+    // is a screen of its own, the top-level page, and the window bar's
+    // sidebar toggle reaches the list.
     let mut two = frame("editor", (480, 4000), 2.0);
-    let toggle = rect(&mut two, "nav-shell-back");
+    assert!(
+        bar(&mut two).sidebar.is_some(),
+        "the list's toggle is the window bar's"
+    );
     let preview = rect(&mut two, "theme-preview");
     assert!(
-        preview.y0 >= toggle.y1,
-        "preview remains below scaled shared chrome"
+        preview.y0 >= 0.0 && preview.x0 >= 0.0 && preview.x1 <= 480.0,
+        "preview stays inside the window: {preview:?}"
     );
-    let ids = [
-        "theme-apply",
-        "theme-export",
-        "theme-duplicate",
-        "theme-reset",
-        "theme-delete",
-    ];
-    let actions: Vec<_> = ids.iter().map(|id| rect(&mut two, id)).collect();
-    for (i, action) in actions.iter().enumerate() {
-        assert!(
-            disjoint(toggle, *action),
-            "action must not cover the Back control"
-        );
-        assert!(action.x0 >= 0.0 && action.x1 <= 480.0);
-        assert!(
-            action.height() > rect(&mut one, ids[i]).height(),
-            "large type increases its real control height"
-        );
-        for other in &actions[i + 1..] {
-            assert!(disjoint(*action, *other));
-        }
-    }
     let name = rect(&mut two, "theme-name");
     assert!(
-        name.y0 >= actions.iter().map(|r| r.y1).fold(0.0, f64::max),
-        "form starts below wrapped actions"
+        name.height() > rect(&mut one, "theme-name").height(),
+        "large type increases the field's real height"
     );
+    assert!(name.y0 >= preview.y1, "the form starts below the preview");
     let one_form = named(&mut one, "Form");
     let two_form = named(&mut two, "Form");
     assert_eq!(one_form.len(), 1, "the production editor hosts one form");

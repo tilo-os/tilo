@@ -50,7 +50,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
-use ui::a11y::{AccessibilityRequest, Politeness};
+use ui::a11y::AccessibilityRequest;
 use ui::app::UserEvent;
 use ui::caps_lock::CapsLockEstimate;
 use ui::icons::Icon;
@@ -59,15 +59,15 @@ use ui::text_render::{NumericStyle, OpenTypeTag, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Avatar, AvatarSize, Button, ButtonRole, ControlSize, Dropdown, IconSize, IconWidget, Row,
-    Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Avatar, AvatarSize, Button, ButtonRole, ControlSize, Dropdown, FieldRole, IconWidget,
+    Presentation, Row, Scrollable, SecretKind, SecretPrompt, Spacer, Text, TextInput, Widget,
 };
 
 mod console;
 
 pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 
-use crate::auth::{AuthSession, AuthUpdate, Failure, spawn_auth};
+use crate::auth::{AuthSession, AuthUpdate, Failure, spawn_auth, spawn_handoff};
 use crate::device_status::DeviceStatus;
 use crate::i18n::{t, t_args};
 use crate::local_users::{LoginUser, discover_login_users, remember_user, remembered_user};
@@ -88,12 +88,6 @@ const FORM_WIDTH: f32 = 360.0;
 const FIELD_HEIGHT: f32 = 40.0;
 /// The footer's session picker, wide enough for a session's name.
 const SESSION_PICKER_WIDTH: f32 = 200.0;
-/// Avatar diameter on a roomy display, and when space or large text is tight.
-/// The status line is reserved at this height in *every* state, so a message
-/// appearing — or a spinner replacing it — never resizes the form. Without
-/// the reservation the form jumps the moment a passcode is wrong, which is
-/// exactly when the person is least able to absorb it.
-const STATUS_HEIGHT: f32 = 20.0;
 /// Below this logical height, or at large text, the screen tightens its
 /// spacing and avatar so the form stays above the footer.
 const COMPACT_VIEWPORT_HEIGHT: f64 = 600.0;
@@ -110,7 +104,7 @@ const LARGER_TEXT_SCALE: f32 = 1.5;
 const BACKDROP_PHASE_SECONDS: f64 = ui::auth_backdrop::STILL_SECONDS;
 
 /// How the screen arranges the time and the credentials. Each is a complete
-/// composition; see [`GreeterApp::build_composition`].
+/// composition; see `GreeterApp::build_composition`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     /// The lock screen's arrangement: time and date on the left, the person
@@ -121,6 +115,13 @@ pub enum Direction {
     /// The time as a poster across the bottom left, the credentials to its
     /// right.
     Poster,
+}
+
+/// Whether assistive technology reads a [`Stack`] and its children.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StackAccess {
+    Read,
+    Hidden,
 }
 
 /// A flex group with an explicit gap and optional padding and width.
@@ -141,13 +142,15 @@ struct Stack {
     /// `None` fills the parent's width.
     width: Option<f32>,
     max_width: Option<f32>,
-    min_height: Option<f32>,
     fill_height: bool,
     width_auto: bool,
     grow: bool,
     /// Pinned at this box of its parent instead of taking part in the
     /// parent's flow: the primary output's part of a window spanning several.
     place: Option<Rect>,
+    /// Out of the accessibility tree when hidden: what another display
+    /// repeats of the screen (its clock) is read once, where the card is.
+    access: StackAccess,
     rect: Rect,
 }
 
@@ -163,11 +166,11 @@ impl Stack {
             justify: JustifyContent::Start,
             width: None,
             max_width: None,
-            min_height: None,
             fill_height: false,
             width_auto: false,
             grow: false,
             place: None,
+            access: StackAccess::Read,
             rect: Rect::ZERO,
         }
     }
@@ -205,11 +208,6 @@ impl Stack {
         self
     }
 
-    fn min_height(mut self, height: f32) -> Self {
-        self.min_height = Some(height);
-        self
-    }
-
     fn fill_height(mut self) -> Self {
         self.fill_height = true;
         self
@@ -229,6 +227,12 @@ impl Stack {
     /// Occupy exactly `area` of the parent, out of its flow.
     fn place(mut self, area: Rect) -> Self {
         self.place = Some(area);
+        self
+    }
+
+    /// Hide the stack and its children from assistive technology.
+    fn decorative(mut self) -> Self {
+        self.access = StackAccess::Hidden;
         self
     }
 }
@@ -278,10 +282,6 @@ impl Widget for Stack {
             max_size: Size {
                 width: self.max_width.map_or(Dimension::auto(), length),
                 height: Dimension::auto(),
-            },
-            min_size: Size {
-                width: Dimension::auto(),
-                height: self.min_height.map_or(Dimension::auto(), length),
             },
             flex_grow: if self.grow { 1.0 } else { 0.0 },
             flex_shrink: if self.grow { 1.0 } else { 0.0 },
@@ -389,6 +389,15 @@ impl Widget for Stack {
 
     fn name(&self) -> &'static str {
         "GreeterStack"
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        (self.access == StackAccess::Hidden).then(|| {
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_state(ui::a11y::AccessState {
+                hidden: true,
+                ..Default::default()
+            })
+        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -509,7 +518,6 @@ pub enum AuthScenario {
     PersonalSessionFailed,
     /// Personal-device form when greetd cannot be reached.
     PersonalServiceDown,
-    /// Personal-device form with an expired passcode.
     PersonalPasscodeExpired,
     /// Personal-device form on a machine with a second session installed,
     /// so the footer offers the choice.
@@ -547,6 +555,18 @@ fn enrolled_fingerprint(username: &str) -> bool {
     };
     output.status.success()
         && fingerprint_list_has_enrollment(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Whether this screen may offer `username`'s fingerprint: tilo-authd holds
+/// their key for a session of theirs running now, and fprintd has a print
+/// enrolled. At the first sign-in after boot, or once their sessions have
+/// ended, it may not (docs/security/sign-in.md §4.3); the sign-in service
+/// would not run the fingerprint step either.
+fn fingerprint_offered(username: &str) -> bool {
+    crate::handoff::key_held(
+        std::path::Path::new(crate::handoff::DEFAULT_SOCKET),
+        username,
+    ) && enrolled_fingerprint(username)
 }
 
 /// The time and date the screen shows.
@@ -691,6 +711,20 @@ pub struct GreeterApp {
     /// has, keys typed at the greeter go nowhere, so the console reports
     /// sign-in as accepting input only once this is set.
     keyboard_focus: bool,
+    /// The person who signed in on the boot screen, whose session starts
+    /// without this screen asking them anything.
+    boot_sign_in: BootSignIn,
+}
+
+/// Where the boot sign-in handoff is (see [`crate::handoff`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BootSignIn {
+    /// Nobody signed in at boot, or the handoff is over.
+    None,
+    /// Someone did; their session starts once the event loop runs.
+    Pending,
+    /// greetd is starting their session.
+    Running,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -737,7 +771,7 @@ impl GreeterApp {
             (1, Some(_)) => users
                 .first()
                 .map_or(FingerprintAvailability::Unavailable, |user| {
-                    enrolled_fingerprint(&user.username).into()
+                    fingerprint_offered(&user.username).into()
                 }),
             _ => FingerprintAvailability::CheckNamedAccount,
         };
@@ -748,7 +782,69 @@ impl GreeterApp {
         );
         app.users = users;
         app.device = DeviceStatus::read();
+        if let Some(name) = crate::handoff::pending_sign_in(
+            std::path::Path::new(crate::handoff::DEFAULT_SOCKET),
+            std::path::Path::new(crate::handoff::FIRST_BOOT_AUTOLOGIN),
+        ) {
+            app.offer_boot_sign_in(&name);
+        }
         app
+    }
+
+    /// The person `name` signed in on the boot screen: show the ordinary
+    /// "Starting your session" frame for them, and start their session as
+    /// soon as the event loop runs ([`Self::start_boot_sign_in`]). If it
+    /// does not start, the screen is the one they would otherwise have seen,
+    /// with them already chosen.
+    fn offer_boot_sign_in(&mut self, name: &str) {
+        // An account the screen does not list (discovery is conservative)
+        // falls back to the typed-username form.
+        self.login_user = self
+            .users
+            .iter()
+            .find(|user| user.username == name)
+            .cloned();
+        self.username.set(name.to_owned());
+        self.boot_sign_in = BootSignIn::Pending;
+        self.phase = AuthPhase::Starting;
+        self.notice = Notice::None;
+        self.dirty_structure = true;
+        self.focus_reset_pending = true;
+    }
+
+    /// Ask greetd to start the boot-signed-in person's session.
+    fn start_boot_sign_in(&mut self) {
+        if self.boot_sign_in != BootSignIn::Pending {
+            return;
+        }
+        let Some(proxy) = self.proxy.get().cloned() else {
+            return;
+        };
+        let sock = std::env::var("GREETD_SOCK").ok().filter(|s| !s.is_empty());
+        let (Some(sock), Some(session)) = (sock, self.sessions.get(self.selected_session)) else {
+            self.end_boot_sign_in();
+            return;
+        };
+        self.boot_sign_in = BootSignIn::Running;
+        self.auth_session = Some(spawn_handoff(
+            proxy,
+            sock,
+            self.attempt_username(),
+            session.argv.clone(),
+            Self::session_env(None),
+        ));
+    }
+
+    /// The boot sign-in did not start a session: show the ordinary screen,
+    /// without an error. The person signs in there as they would have.
+    fn end_boot_sign_in(&mut self) {
+        self.boot_sign_in = BootSignIn::None;
+        self.phase = AuthPhase::Idle;
+        self.auth_session.take();
+        self.prompt.clear();
+        self.notice = Notice::None;
+        self.dirty_structure = true;
+        self.focus_reset_pending = true;
     }
 
     /// Construct with an explicit session list (used by tests / headless
@@ -798,7 +894,7 @@ impl GreeterApp {
             ),
             login_user,
             fingerprint,
-            fingerprint_probe: enrolled_fingerprint,
+            fingerprint_probe: fingerprint_offered,
             password_buffer: Arc::new(Mutex::new(String::new())),
             auth_session: None,
             challenge_sequence: Arc::new(AtomicU64::new(1)),
@@ -828,6 +924,7 @@ impl GreeterApp {
             console: None,
             next_sign_in_diagnostics: None,
             keyboard_focus: false,
+            boot_sign_in: BootSignIn::None,
         }
     }
 
@@ -1115,82 +1212,79 @@ impl GreeterApp {
         Box::new(Stack::column(0.0, vec![Box::new(time), Box::new(date)]).align(align))
     }
 
-    /// The single status line, reserved at a constant height in every state
-    /// so the form never jumps, with the Caps-Lock note beneath it while the
-    /// form is editable.
-    fn build_status(&self, theme: &Theme) -> Stack {
-        let c = &theme.tokens.colors;
-        let mut rows: Vec<Box<dyn Widget>> = Vec::new();
-        let line = |lead: Box<dyn Widget>, text: String, color, live| -> Box<dyn Widget> {
-            Box::new(
-                Row::new()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .no_wrap()
-                    .push(lead)
-                    .push(Box::new(
-                        Text::new(&text)
-                            .with_id("greeter.status")
-                            .with_role(TextRole::Label)
-                            .with_color(color)
-                            .with_live(live),
-                    )),
-            )
+    /// The time and date centred on a display without the sign-in card.
+    fn build_display_clock(&self, theme: &Theme, output: Rect) -> Box<dyn Widget> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a display fraction of a few hundred logical px fits f32"
+        )]
+        let fitted = (output.height() * 0.21).min(output.width() * 0.2) as f32;
+        let size = if fitted.is_finite() {
+            fitted.clamp(CLOCK_MIN, CLOCK_MAX)
+        } else {
+            CLOCK_MIN
         };
-        match (self.phase, self.notice) {
-            (AuthPhase::Authenticating, _) => rows.push(line(
-                Box::new(Spinner::with_size(14.0)),
-                self.status_text(),
-                c.text_dim,
-                // PAM prompts can require immediate physical action (for
-                // example, touching the fingerprint reader).
-                Politeness::Assertive,
-            )),
-            (AuthPhase::Starting, _) => rows.push(line(
-                Box::new(Spinner::with_size(14.0)),
-                self.status_text(),
-                c.semantic.success,
-                Politeness::Polite,
-            )),
-            (AuthPhase::Idle, Notice::Hint(_)) => rows.push(line(
-                Box::new(
-                    IconWidget::new(Icon::Info)
-                        .sized(IconSize::Small)
-                        .with_color(c.text_dim),
-                ),
-                self.status_text(),
-                c.text_dim,
-                Politeness::Assertive,
-            )),
-            (AuthPhase::Idle, Notice::Error(_)) => rows.push(line(
-                Box::new(
-                    IconWidget::new(Icon::CircleAlert)
-                        .sized(IconSize::Small)
-                        .with_color(c.semantic.danger),
-                ),
-                self.status_text(),
-                c.semantic.danger,
-                Politeness::Assertive,
-            )),
-            (AuthPhase::Idle, Notice::None) => {}
-        }
-        if self.phase == AuthPhase::Idle && self.caps_lock.on() {
-            rows.push(Box::new(
-                Row::new()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .no_wrap()
-                    .push(Box::new(
-                        IconWidget::new(Icon::ArrowBigUp)
-                            .sized(IconSize::Small)
-                            .with_color(c.semantic.warning),
-                    ))
-                    .push(Box::new(
-                        Text::new(&t("greeter-caps-lock"))
-                            .with_role(TextRole::Label)
-                            .with_color(c.semantic.warning),
-                    )),
-            ));
-        }
-        Stack::column(theme.tokens.spacing.s1, rows).min_height(STATUS_HEIGHT)
+        let time = Text::new(&self.clock.time)
+            .with_id("greeter.display-clock")
+            .with_content_size(size)
+            .with_font_variation(OpenTypeTag::WEIGHT, CLOCK_WEIGHT)
+            .with_numeric_style(NumericStyle::TabularLining)
+            .with_line_height(1.0)
+            .with_color(theme.text_primary);
+        let date = Text::new(&self.clock.date)
+            .with_id("greeter.display-date")
+            .with_role(TextRole::Subheading)
+            .with_weight(TextWeight::Medium)
+            .with_color(theme.tokens.colors.text_dim);
+        Box::new(
+            Stack::column(
+                0.0,
+                vec![Box::new(
+                    Stack::column(0.0, vec![Box::new(time), Box::new(date)])
+                        .align(AlignItems::Center)
+                        .width_auto(),
+                )],
+            )
+            .align(AlignItems::Center)
+            .justify(JustifyContent::Center)
+            .place(output)
+            .decorative(),
+        )
+    }
+
+    /// The passcode, asked with the one password prompt every part of Tilo
+    /// uses: its label, its show/hide button, Caps Lock, and one line under
+    /// it saying what the attempt is doing or why it was refused. The tree
+    /// is built afresh as the form changes, so what is typed lives in the
+    /// greeter's buffer and the prompt starts from it.
+    fn build_passcode(&self, challenge: bool) -> SecretPrompt {
+        let line = Some(self.status_text()).filter(|line| !line.trim().is_empty());
+        let mut prompt = SecretPrompt::new(SecretKind::Secret)
+            .with_presentation(Presentation::DialogBody)
+            .with_id("greeter.password")
+            .with_label(
+                FieldRole::Secret,
+                t(if challenge {
+                    "greeter-auth-response"
+                } else {
+                    "greeter-passcode"
+                }),
+            )
+            .with_secret_buffer(Arc::clone(&self.password_buffer))
+            .with_caps_lock(self.caps_lock);
+        prompt = match (self.phase, self.notice) {
+            // A question from PAM is answered in the field: it stays open.
+            (AuthPhase::Authenticating, _) if challenge => prompt.with_notice(line),
+            // What PAM says while it checks (touch the reader) can need
+            // acting on now: it is said over "Signing in…".
+            (AuthPhase::Authenticating, _) if !self.prompt.trim().is_empty() => prompt
+                .with_busy(Some(t("greeter-signing-in")))
+                .with_notice(line),
+            (AuthPhase::Authenticating | AuthPhase::Starting, _) => prompt.with_busy(line),
+            (AuthPhase::Idle, Notice::Error(_)) => prompt.with_error(line),
+            (AuthPhase::Idle, Notice::Hint(_) | Notice::None) => prompt.with_notice(line),
+        };
+        prompt
     }
 
     /// Who is signing in: their avatar and name, or, when the accounts are
@@ -1262,55 +1356,61 @@ impl GreeterApp {
         let challenge = self.auth_session.as_ref().and_then(AuthSession::challenge);
         let mut form: Vec<Box<dyn Widget>> = Vec::new();
         if self.login_user.is_none() {
-            form.push(Box::new(
-                TextInput::from_state(&self.username)
-                    .with_id("greeter.username")
-                    .with_accessible_name(t("greeter-username"))
-                    .with_placeholder(t("greeter-username-placeholder"))
-                    .disabled(busy),
-            ));
+            // Labelled above, as the password is, and as wide as the
+            // password with its sign-in action.
+            form.push(Box::new(Stack::column(
+                s.s1,
+                vec![
+                    Box::new(Text::new(&t("greeter-username")).with_role(TextRole::Label)),
+                    Box::new(
+                        TextInput::from_state(&self.username)
+                            .with_id("greeter.username")
+                            .with_accessible_name(t("greeter-username"))
+                            .control_size(ControlSize::Regular)
+                            .disabled(busy),
+                    ),
+                ],
+            )));
         }
-        let password_input = {
-            let value = self.password_buffer.lock_recover();
-            TextInput::local()
-                .with_initial_value(&value)
-                .with_id("greeter.password")
-                .with_external_buffer(Arc::clone(&self.password_buffer))
-                .with_accessible_name(t(if challenge.is_some() {
-                    "greeter-auth-response"
-                } else {
-                    "greeter-passcode"
-                }))
-                .with_secret(true)
-                .control_size(ControlSize::Large)
-                .with_placeholder(t("greeter-passcode-placeholder"))
-                .disabled(busy && challenge.is_none())
-        };
         let sign_in = t(if challenge.is_some() {
             "greeter-auth-respond"
         } else {
             "greeter-sign-in"
         });
         let requests = Rc::clone(&self.requests);
+        // The sign-in action sits beside the field, as tall as it and past
+        // the prompt's label row; the username field is as tall too.
+        let field = SecretPrompt::field_height(theme);
+        let action = ControlSize::Regular.height(theme);
+        let label_row = (f64::from(theme.text(TextRole::Label).line_height_px() + s.s1)
+            + (field - action) / 2.0)
+            .max(0.0);
+        let label_row = ui::num::f32_of_f64(label_row);
         form.push(Box::new(
-            // The action takes the field's height, whatever the text scale
-            // makes it, so the two read as one control.
             Row::new()
                 .with_gap(s.s2)
                 .no_wrap()
-                .with_align_items(AlignItems::Stretch)
-                .push(Box::new(password_input))
+                .with_align_items(AlignItems::Start)
+                .push(Box::new(self.build_passcode(challenge.is_some())))
                 .push(Box::new(
-                    Button::new("greeter.login", "")
-                        .role(ui::widget::ButtonRole::Primary)
-                        .with_icon(Icon::ArrowRight)
-                        .with_accessible_name(&sign_in)
-                        .tooltip(sign_in.clone())
-                        .control_size(ControlSize::Large)
-                        .on_click(move || requests.sign_in.set(true)),
+                    Stack::column(
+                        0.0,
+                        vec![
+                            Box::new(Spacer::fixed(label_row)),
+                            Box::new(
+                                Button::new("greeter.login", "")
+                                    .role(ui::widget::ButtonRole::Primary)
+                                    .with_icon(Icon::ArrowRight)
+                                    .with_accessible_name(&sign_in)
+                                    .tooltip(sign_in.clone())
+                                    .control_size(ControlSize::Regular)
+                                    .on_click(move || requests.sign_in.set(true)),
+                            ),
+                        ],
+                    )
+                    .width_auto(),
                 )),
         ));
-        form.push(Box::new(self.build_status(theme)));
         if self.phase == AuthPhase::Authenticating && self.auth_session.is_some() {
             let requests = Rc::clone(&self.requests);
             form.push(Box::new(
@@ -1767,7 +1867,6 @@ impl GreeterApp {
         env
     }
 
-    /// The username this attempt is for.
     fn attempt_username(&self) -> String {
         // A known account's identity comes from conservative host discovery,
         // not the editable field. Otherwise the visible field counts, with
@@ -1914,6 +2013,10 @@ impl GreeterApp {
     /// explain it, clear the passcode, keep the username, and put the
     /// keyboard back on the first field so the next try is just typing.
     fn finish_failure(&mut self, failure: Failure) {
+        if self.boot_sign_in != BootSignIn::None {
+            self.end_boot_sign_in();
+            return;
+        }
         self.phase = AuthPhase::Idle;
         self.auth_session.take();
         self.prompt.clear();
@@ -1962,6 +2065,9 @@ impl GreeterApp {
     /// process exits moments later, but the attempt resolves into a visible
     /// success frame rather than the spinner just disappearing.
     fn begin_starting(&mut self) {
+        if self.boot_sign_in == BootSignIn::Running {
+            remember_user(&self.attempt_username());
+        }
         if self.phase == AuthPhase::Starting {
             return;
         }
@@ -2015,7 +2121,8 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 impl Widget for GreeterApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::host_operation::ResourceOperations
     );
 
     /// Take what the controls reported since the last pass. The document is
@@ -2055,6 +2162,8 @@ impl Widget for GreeterApp {
         // the same event cycle.
         self.composed.sync(state, root);
 
+        self.start_boot_sign_in();
+
         // Each request is taken before it is acted on, so one activation
         // starts exactly one attempt.
         if self.requests.cancel_authentication.take()
@@ -2087,17 +2196,26 @@ impl Widget for GreeterApp {
         (self.layout_area, self.layout_outputs) = self.output_layout();
         let mut composition = self.build_composition(theme);
         if let Some(area) = self.layout_area {
-            // The composition fills the primary output's part of the window.
-            // The box is a widget, not a bare taffy node: the App walks the
-            // widget and taffy trees in lock-step for the focus order, and a
-            // node without a widget shifted every focusable onto its
-            // neighbour's node, so autofocus missed the passcode field.
-            composition = Box::new(
+            // The composition fills the primary output's part of the window,
+            // and every other output shows the clock over the backdrop, as
+            // the lock screen's other displays do. The boxes are widgets, not
+            // bare taffy nodes: the App walks the widget and taffy trees in
+            // lock-step for the focus order, and a node without a widget
+            // shifted every focusable onto its neighbour's node, so autofocus
+            // missed the passcode field.
+            let mut outputs: Vec<Box<dyn Widget>> = vec![Box::new(
                 Stack::column(0.0, vec![composition])
                     .align(AlignItems::Center)
                     .justify(JustifyContent::Center)
                     .place(area),
+            )];
+            outputs.extend(
+                self.layout_outputs
+                    .iter()
+                    .filter(|output| **output != area)
+                    .map(|output| self.build_display_clock(theme, *output)),
             );
+            composition = Box::new(Stack::column(0.0, outputs).fill_height());
         }
         let child = self
             .composed
@@ -2129,10 +2247,15 @@ impl Widget for GreeterApp {
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         self.content = self.rect;
         if self.layout_area.is_some()
-            && let Some(area) = child
+            && let Some(outputs) = child
+            && let Some(area) = taffy
+                .children(outputs)
+                .ok()
+                .and_then(|children| children.first().copied())
         {
             // The primary-output box built above holds the composition.
-            self.content = ui::widget::layout_rect(taffy, area, child_origin);
+            let outputs = ui::widget::layout_rect(taffy, outputs, child_origin);
+            self.content = ui::widget::layout_rect(taffy, area, outputs.origin());
         }
         // The composition depends on the viewport. App and FrameHarness
         // settle this rebuild before painting, including the very first frame
@@ -2263,6 +2386,12 @@ impl Widget for GreeterApp {
         self.composed.children_mut()
     }
 
+    /// The card is rebuilt from state: each build keeps the input in use,
+    /// so a finger gets touch-sized fields and actions.
+    fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+        self.composed.set_interaction_environment(environment);
+    }
+
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         if let Some(c) = self.composed.element() {
             visitor(c);
@@ -2309,42 +2438,6 @@ impl Widget for GreeterApp {
         // The toggles show their new state; the App's theme change rebuilds.
         self.dirty_structure = true;
         Some(request)
-    }
-
-    /// The greeter answers its own published operations; without this the
-    /// host refuses to publish any of them.
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[console::OPERATION]
-    }
-
-    /// The host's action surface admits a greeter operation here, after its
-    /// own resolution, availability and argument binding. It runs exactly
-    /// what the console runs.
-    fn start_operation(
-        &mut self,
-        op: &ui::host_operation::ResourceOperation<'_>,
-        doc: &mut ui::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped().filter(|r| r.type_id == console::OPERATION) else {
-            return ui::host_operation::start_in_children(self, op, doc, path);
-        };
-        let mut encoded = ui::tilo_actions::EncodedAction {
-            type_id: request.type_id.to_owned(),
-            payload: request.payload.to_vec(),
-        };
-        let applied = self.apply_operation(&encoded);
-        encoded.payload.zeroize();
-        applied
-            .map(|value| {
-                Some(ui::host_operation::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput {
-                        value: Some(value),
-                        resources: Vec::new(),
-                    },
-                ))
-            })
-            .map_err(|(_, message)| message)
     }
 
     fn on_external_event(
@@ -2420,6 +2513,44 @@ impl Widget for GreeterApp {
     }
 }
 
+impl ui::host_operation::ResourceOperations for GreeterApp {
+    /// The greeter answers its own published operations; without this the
+    /// host refuses to publish any of them.
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[console::OPERATION]
+    }
+
+    /// The host's action surface admits a greeter operation here, after its
+    /// own resolution, availability and argument binding. It runs exactly
+    /// what the console runs.
+    fn start_operation(
+        &mut self,
+        op: &ui::host_operation::ResourceOperation<'_>,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped().filter(|r| r.type_id == console::OPERATION) else {
+            return ui::host_operation::start_in_children(self, op, doc, path);
+        };
+        let mut encoded = ui::tilo_actions::EncodedAction {
+            type_id: request.type_id.to_owned(),
+            payload: request.payload.to_vec(),
+        };
+        let applied = self.apply_operation(&encoded);
+        encoded.payload.zeroize();
+        applied
+            .map(|value| {
+                Some(ui::host_operation::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                ))
+            })
+            .map_err(|(_, message)| message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2463,6 +2594,7 @@ mod tests {
     use automerge::{AutoCommit, ReadDoc};
     use std::collections::HashMap;
     use taffy::AvailableSpace;
+    use ui::a11y::Politeness;
     use ui::widget::find_test_id;
 
     /// The shipped Tilo session plus a second, separately installed one, so
@@ -2681,10 +2813,18 @@ mod tests {
     /// Everything the panel announces, in tree order: the accessible name of
     /// every node that has one — what a screen reader reads out.
     fn spoken(w: &dyn Widget) -> Vec<String> {
+        fn said(node: ui::a11y::AccessNode, out: &mut Vec<String>) {
+            if let Some(name) = node.name {
+                out.push(name);
+            }
+            for child in node.children {
+                said(child, out);
+            }
+        }
         fn walk(w: &dyn Widget, out: &mut Vec<String>) {
             for c in w.children() {
-                if let Some(name) = Widget::accessibility(c).and_then(|n| n.name) {
-                    out.push(name);
+                if let Some(node) = Widget::accessibility(c) {
+                    said(node, out);
                 }
                 walk(c, out);
             }
@@ -2695,14 +2835,42 @@ mod tests {
     }
 
     fn live_politeness_for(w: &dyn Widget, name: &str) -> Option<Politeness> {
+        /// The node named `name` in `node`'s subtree.
+        fn named<'a>(
+            node: &'a ui::a11y::AccessNode,
+            name: &str,
+        ) -> Option<&'a ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some(name) {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| named(child, name))
+        }
         if let Some(node) = w.accessibility()
-            && node.name.as_deref() == Some(name)
+            && let Some(found) = named(&node, name)
         {
-            return node.live;
+            return found.live;
         }
         w.children()
             .into_iter()
             .find_map(|child| live_politeness_for(child, name))
+    }
+
+    /// The passcode prompt's accessible node.
+    fn passcode_node(w: &dyn Widget) -> ui::a11y::AccessNode {
+        find_test_id(w, "greeter.password")
+            .and_then(Widget::accessibility)
+            .expect("the passcode prompt is accessible")
+    }
+
+    /// Where the passcode's field itself sits, inside its prompt.
+    fn passcode_field_rect(w: &dyn Widget) -> Option<Rect> {
+        let node = find_test_id(w, "greeter.password").and_then(Widget::accessibility)?;
+        let field = node
+            .children
+            .iter()
+            .find(|child| child.role == ui::a11y::Role::TextInput)?;
+        let b = field.bounds?;
+        Some(Rect::new(b.x0, b.y0, b.x1, b.y1))
     }
 
     /// A settled greeter laid out the way App does it, kept alive so it can
@@ -2835,6 +3003,120 @@ mod tests {
         w.children()
             .into_iter()
             .find_map(|child| rect_of(child, id))
+    }
+
+    /// Whether the widget `id` is out of the accessibility tree: it or an
+    /// ancestor reports itself hidden.
+    fn hidden_from_access(w: &dyn Widget, id: &str, hidden: bool) -> Option<bool> {
+        let hidden = hidden || w.accessibility_hidden();
+        if w.test_id() == Some(id) {
+            return Some(hidden);
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| hidden_from_access(child, id, hidden))
+    }
+
+    /// "The login screen must appear with a 2944x1840 built-in panel plus a
+    /// 1920x1080 monitor attached."
+    ///
+    /// The kiosk stretches the one sign-in window over both displays. With
+    /// each display at its own scale that is 3392x1080; when the kiosk keeps
+    /// both at 1x it is 4864x1840, which at the panel's scale 2 was a
+    /// 9728-wide texture the device refused, and the greeter exited until
+    /// greetd gave up. Either way the card is on the panel, the monitor shows
+    /// the time, and the window's frame fits the device.
+    #[test]
+    fn the_login_screen_appears_with_a_built_in_panel_and_a_1080p_monitor_attached() {
+        use crate::output_scale::{Arrangement, Display, Displays};
+        let arrangements = [
+            (
+                Rect::new(0.0, 0.0, 1472.0, 920.0),
+                Rect::new(1472.0, 0.0, 3392.0, 1080.0),
+            ),
+            (
+                Rect::new(0.0, 0.0, 2944.0, 1840.0),
+                Rect::new(2944.0, 0.0, 4864.0, 1080.0),
+            ),
+        ];
+        for (panel, monitor) in arrangements {
+            let displays = Displays::fixed(Arrangement {
+                displays: vec![
+                    Display {
+                        rect: panel,
+                        internal: true,
+                    },
+                    Display {
+                        rect: monitor,
+                        internal: false,
+                    },
+                ],
+            });
+            let window = panel.union(monitor);
+            for theme in [Theme::dark(), Theme::light()] {
+                let mut app =
+                    GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()))
+                        .with_displays(displays.clone());
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "display sizes in logical px fit f32"
+                )]
+                let viewport = (window.width() as f32, window.height() as f32);
+                layout_at_with_theme(&mut app, viewport, &theme);
+                assert_eq!(app.content, panel, "the card fills the built-in panel");
+                for id in ["greeter.password", "greeter.clock"] {
+                    let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
+                    assert!(
+                        rect.area() > 0.0 && inside(panel, rect),
+                        "{id} at {rect:?} is not on the built-in panel {panel:?}"
+                    );
+                }
+                assert!(
+                    rect_of(&app, "greeter.password").is_some_and(|field| !inside(monitor, field)),
+                    "the monitor carries no password field"
+                );
+                for id in ["greeter.display-clock", "greeter.display-date"] {
+                    let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
+                    assert!(
+                        rect.area() > 0.0 && inside(monitor, rect),
+                        "{id} at {rect:?} is not on the monitor {monitor:?}"
+                    );
+                    assert_eq!(
+                        hidden_from_access(&app, id, false),
+                        Some(true),
+                        "the monitor's {id} is read once, on the panel"
+                    );
+                }
+                assert_eq!(
+                    hidden_from_access(&app, "greeter.password", false),
+                    Some(false)
+                );
+            }
+
+            // The frame the window draws at the panel's scale 2 fits every
+            // device the toolkit opens, and keeps the window's logical size.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "display sizes in physical px fit u32"
+            )]
+            let physical = (
+                (window.width() * 2.0) as u32,
+                (window.height() * 2.0) as u32,
+            );
+            let limit = ui::gpu::requested_texture_limit();
+            let extent = ui::scale::fit_to_texture_limit(physical, 2.0, limit);
+            assert!(
+                extent.width <= limit && extent.height <= limit,
+                "{extent:?} exceeds the device limit {limit}"
+            );
+            let logical = ui::scale::logical_size((extent.width, extent.height), extent.scale);
+            assert!(
+                (logical.0 - window.width()).abs() <= 1.0
+                    && (logical.1 - window.height()).abs() <= 1.0,
+                "the frame keeps the window's layout: {logical:?} vs {window:?}"
+            );
+        }
     }
 
     #[test]
@@ -3009,7 +3291,6 @@ mod tests {
                 ["/usr/libexec/tilo-session", "--backend", "drm"]
             );
         }
-        // Phase `two_sessions_put_the_picker_in_the_footer`.
         {
             let app = GreeterApp::with_sessions(test_sessions());
             assert!(app.offers_session_choice());
@@ -3031,7 +3312,6 @@ mod tests {
             );
             assert_eq!(app.session_label(), "Tilo", "the human name, not the id");
         }
-        // Phase `picker_selection_drives_the_started_session`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let doc = AutoCommit::new();
@@ -3042,7 +3322,6 @@ mod tests {
             assert_eq!(app.selected_session, 0);
             assert_eq!(app.session_choice.with(Clone::clone), "Tilo");
 
-            // What the picker stores on a selection.
             app.session_choice.set("Weston".to_owned());
             app.sync(&doc, &root);
             assert_eq!(app.selected_session, 1);
@@ -3059,7 +3338,6 @@ mod tests {
             assert_eq!(app.selected_session, 1, "choice survives a stale label");
             assert!(untouched(&doc), "the choice stays out of the document");
         }
-        // Phase `no_session_is_a_clear_error_not_a_crash`.
         {
             let mut app = GreeterApp::with_sessions_and_login_user(Vec::new(), Some(quick_user()));
             let doc = AutoCommit::new();
@@ -3077,7 +3355,6 @@ mod tests {
 
     #[test]
     fn fingerprint_login_is_offered_only_for_enrolled_accounts_and_sends_no_password() {
-        // Phase `fingerprint_enrollment_output_fails_closed`.
         {
             assert!(fingerprint_list_has_enrollment(
                 "Fingerprints for user tester:\n - #0: right-index-finger\n"
@@ -3090,7 +3367,6 @@ mod tests {
             ));
             assert!(!fingerprint_list_has_enrollment("right-index-finger"));
         }
-        // Phase `fingerprint_action_is_hidden_and_rejected_without_enrollment`.
         {
             let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
                 one_session(),
@@ -3108,7 +3384,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Hint("greeter-hint-no-fingerprint"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
-        // Phase `multi_account_fingerprint_is_resolved_for_the_typed_username`.
         {
             let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
                 one_session(),
@@ -3122,7 +3397,6 @@ mod tests {
             assert!(!app.fingerprint_available_for("alice"));
             assert!(!app.fingerprint_available_for(""));
         }
-        // Phase `fingerprint_auth_explicitly_uses_no_password`.
         {
             let mut app = GreeterApp::with_sessions(one_session());
             let doc = AutoCommit::new();
@@ -3139,7 +3413,6 @@ mod tests {
                 "fingerprint PAM conversation must begin without a dummy password"
             );
         }
-        // Phase `fingerprint_prompt_renders_as_feedback`.
         {
             let app = GreeterApp::for_shot(AuthScenario::Fingerprint);
             assert_eq!(app.phase, AuthPhase::Authenticating);
@@ -3161,7 +3434,6 @@ mod tests {
 
     #[test]
     fn submit_validates_fields_keeps_the_passcode_private_and_ignores_repeats() {
-        // Phase `submit_without_username_is_a_hint`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let mut doc = AutoCommit::new();
@@ -3171,7 +3443,6 @@ mod tests {
             assert!(!app.requests.sign_in.get(), "the request is taken once");
             assert!(untouched(&doc), "an attempt writes nothing to the document");
         }
-        // Phase `submit_without_password_is_a_hint`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let mut doc = AutoCommit::new();
@@ -3189,7 +3460,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
-        // Phase `without_greetd_the_screen_says_so_plainly`.
         {
             let mut app =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3202,34 +3472,31 @@ mod tests {
             assert_eq!(app.notice, Notice::Error("greeter-error-service"));
             assert!(!app.status_text().contains("GREETD_SOCK"));
         }
-        // Phase `a_hint_and_an_error_look_different`.
         {
             let mut hint = GreeterApp::with_sessions(one_session());
             hint.set_hint("greeter-hint-passcode");
             let mut err = GreeterApp::with_sessions(one_session());
             err.finish_failure(Failure::Credentials);
-            let icon = |app: &GreeterApp| {
-                fn walk(w: &dyn Widget, out: &mut Vec<String>) {
-                    for c in w.children() {
-                        if c.name() == "IconWidget" {
-                            out.push(format!("{c:p}"));
-                        }
-                        walk(c, out);
-                    }
-                }
-                let mut out = Vec::new();
-                walk(card_of(app).as_ref(), &mut out);
-                out.len()
-            };
-            assert_eq!(icon(&hint), 1, "a hint carries its quiet info glyph");
-            assert_eq!(icon(&err), 1, "an error carries its alert glyph");
+            // Both are said under the field, at once.
+            assert_eq!(
+                live_politeness_for(card_of(&hint).as_ref(), "Enter your password."),
+                Some(Politeness::Assertive),
+                "a hint is said under the field"
+            );
+            assert_eq!(
+                live_politeness_for(
+                    card_of(&err).as_ref(),
+                    "Incorrect username or password. Try again."
+                ),
+                Some(Politeness::Assertive),
+                "an error is said under the field"
+            );
             assert_eq!(hint.status_text(), "Enter your password.");
             assert_eq!(
                 err.status_text(),
                 "Incorrect username or password. Try again."
             );
         }
-        // Phase `passcode_never_enters_automerge_or_its_saved_history`.
         {
             let app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
@@ -3252,7 +3519,6 @@ mod tests {
             assert_eq!(secret.as_str(), "correct horse battery staple");
             assert!(app.password_buffer.lock().unwrap().is_empty());
         }
-        // Phase `submit_while_busy_is_ignored`.
         for phase in [AuthPhase::Authenticating, AuthPhase::Starting] {
             let mut app = GreeterApp::with_sessions(one_session());
             let doc = AutoCommit::new();
@@ -3318,31 +3584,34 @@ mod tests {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let base = focus_shape(&app);
             let card = card_of(&app);
-            let reveal = find_test_id(card.as_ref(), "greeter.password_reveal")
+            let prompt = passcode_node(card.as_ref());
+            let reveal = prompt
+                .children
+                .iter()
+                .flat_map(|field| field.children.iter())
+                .find(|node| node.role == ui::a11y::Role::ToggleButton)
                 .expect("the shared field retains an addressable reveal control");
-            let accessible = reveal.accessibility().expect("reveal is accessible");
-            assert_eq!(accessible.role, ui::a11y::Role::Button);
-            assert_eq!(accessible.name.as_deref(), Some("Show password"));
+            assert_eq!(reveal.name.as_deref(), Some("Show password"));
             assert!(
-                accessible.value.is_none(),
+                reveal.value.is_none(),
                 "the reveal control exposes no passcode"
             );
             assert!(
-                !reveal.is_focusable(),
+                !reveal.state.focusable,
                 "Tab continues from field to sign-in"
             );
             assert_eq!(
                 base,
                 vec![
-                    "TextInput", // username
-                    "TextInput", // passcode
-                    "Button",    // sign in
-                    "Button",    // fingerprint
-                    "Button",    // larger text
-                    "Button",    // high contrast
-                    "Button",    // screen reader
-                    "Dropdown",  // session
-                    "Dropdown",  // power
+                    "TextInput",    // username
+                    "SecretPrompt", // passcode
+                    "Button",       // sign in
+                    "Button",       // fingerprint
+                    "Button",       // larger text
+                    "Button",       // high contrast
+                    "Button",       // screen reader
+                    "Dropdown",     // session
+                    "Dropdown",     // power
                 ]
             );
             app.selected_session = 1;
@@ -3351,20 +3620,26 @@ mod tests {
             assert_eq!(focus_shape(&app), base, "an error keeps order");
             app.notice = Notice::Hint("greeter-hint-passcode");
             assert_eq!(focus_shape(&app), base, "a hint keeps order too");
-            let texts = count_named(card_of(&app).as_ref(), "Text");
+            let line = |app: &GreeterApp| {
+                passcode_node(card_of(app).as_ref())
+                    .children
+                    .iter()
+                    .find(|node| node.role == ui::a11y::Role::StaticText)
+                    .and_then(|node| node.name.clone())
+            };
+            let hint = line(&app);
             app.caps_lock.observe('A', false);
             assert_eq!(focus_shape(&app), base, "the Caps-Lock note keeps order");
-            assert_eq!(
-                count_named(card_of(&app).as_ref(), "Text"),
-                texts + 1,
-                "the Caps-Lock note adds exactly one line"
+            assert_ne!(
+                line(&app),
+                hint,
+                "the Caps-Lock note is the line under the field"
             );
         }
     }
 
     #[test]
     fn a_personal_device_greets_the_person_and_asks_only_for_the_passcode() {
-        // Phase `sole_local_user_gets_a_one_passcode_form_with_passcode_focus_first`.
         {
             let mut app =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3410,7 +3685,6 @@ mod tests {
             assert!(accessible_name_for(card.as_ref(), "greeter.username").is_none());
             assert_eq!(count_named(card.as_ref(), "Avatar"), 1);
         }
-        // Phase `one_passcode_autofocus_is_exposed_to_assistive_technology`.
         {
             let greeter =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3426,7 +3700,6 @@ mod tests {
                 .and_then(|node| node.name.as_deref());
             assert_eq!(focused, Some("Password"));
         }
-        // Phase `ambiguous_account_discovery_keeps_named_two_field_fallback`.
         {
             let app = GreeterApp::with_sessions_and_login_user(one_session(), None);
             let card = card_of(&app);
@@ -3444,7 +3717,6 @@ mod tests {
                 Some("greeter.username")
             );
         }
-        // Phase `the_person_is_named_before_the_passcode_is_asked`.
         {
             let app = GreeterApp::for_shot(AuthScenario::Personal);
             let said = spoken(card_of(&app).as_ref());
@@ -3466,7 +3738,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
             assert!(untouched(&doc));
         }
-        // Phase `focused_alternate_controls_own_enter`.
         for control in [
             "greeter.session",
             "greeter.fingerprint",
@@ -3512,12 +3783,14 @@ mod tests {
 
     #[test]
     fn in_flight_feedback_is_said_once_with_appropriate_urgency() {
-        // Phase `signing_in_says_so_beside_a_spinner`.
         {
             let app = GreeterApp::for_shot(AuthScenario::PersonalAuthenticating);
             assert_eq!(app.status_text(), "Signing in…");
             let card = card_of(&app);
-            assert_eq!(count_named(card.as_ref(), "Spinner"), 1);
+            assert!(
+                passcode_node(card.as_ref()).state.busy,
+                "the prompt says it is checking"
+            );
             let said = spoken(card.as_ref());
             assert_eq!(
                 said.iter().filter(|s| s.as_str() == "Signing in…").count(),
@@ -3525,7 +3798,6 @@ mod tests {
                 "the in-flight sentence appears exactly once: {said:?}"
             );
         }
-        // Phase `feedback_is_a_live_region_with_appropriate_urgency`.
         for (scenario, message, expected) in [
             (
                 AuthScenario::PersonalHint,
@@ -3550,7 +3822,6 @@ mod tests {
                 "{scenario:?} feedback must be announced at the right urgency"
             );
         }
-        // Phase `worker_prompt_update_reflects_in_feedback`.
         {
             let mut app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
@@ -3567,7 +3838,6 @@ mod tests {
             assert_eq!(app.phase, AuthPhase::Authenticating);
             assert_eq!(app.status_text(), "Place your finger on the reader");
         }
-        // Phase `accepted_resolves_into_a_visible_success_state`.
         {
             let mut app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
@@ -3685,7 +3955,6 @@ mod tests {
                 "the passcode field is editable again"
             );
         }
-        // Phase `focus_reset_after_failure_lands_on_the_passcode_field`.
         {
             let mut greeter =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3708,7 +3977,6 @@ mod tests {
 
     #[test]
     fn authentication_and_power_actions_lock_input_and_reset_focus() {
-        // Phase `authenticating_disables_inputs_and_requests_focus_reset`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             app.begin_authenticating();
@@ -3729,7 +3997,6 @@ mod tests {
                 "focus reset is one-shot"
             );
         }
-        // Phase `authenticating_focus_reset_lands_on_the_sign_in_action`.
         {
             let mut greeter = GreeterApp::with_sessions(one_session());
             greeter.begin_authenticating();
@@ -3746,7 +4013,6 @@ mod tests {
                 .and_then(|node| node.name.as_deref());
             assert_eq!(focused, Some("Sign in"));
         }
-        // Phase `the_power_menu_runs_each_action_once`.
         for action in PowerAction::ALL {
             let mut app = GreeterApp::with_sessions(one_session());
             let doc = AutoCommit::new();
@@ -3780,9 +4046,13 @@ mod tests {
                 !app.needs_animation_frame(),
                 "{scenario:?} must not animate"
             );
-            let first = scene_bytes(&mut app);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let later = scene_bytes(&mut app);
+            // The same screen an hour on: nothing in it may follow the clock.
+            let at = ui::time::Instant::now();
+            let first = ui::time::testing::with_monotonic_time(at, || scene_bytes(&mut app));
+            let hour_on = at
+                .checked_add(Duration::from_secs(3600))
+                .expect("an hour on");
+            let later = ui::time::testing::with_monotonic_time(hour_on, || scene_bytes(&mut app));
             assert!(
                 first == later,
                 "{scenario:?} painted a different frame later"
@@ -3903,7 +4173,6 @@ mod tests {
                 let card = app.composed.element().expect("composed");
                 for id in [
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.larger-text",
                     "greeter.high-contrast",
@@ -3918,7 +4187,7 @@ mod tests {
                         "{id} {rect:?} is off screen at {viewport:?} x{scale} ({scenario:?})"
                     );
                 }
-                let field = rect_for(card, "greeter.password").unwrap();
+                let field = passcode_field_rect(card).unwrap();
                 let action = rect_for(card, "greeter.login").unwrap();
                 assert!(
                     (field.center().y - action.center().y).abs() < 1.0 && action.x0 >= field.x1,
@@ -4013,6 +4282,84 @@ mod tests {
             .expect("the clock asks for a wake");
         let until = wake.saturating_duration_since(Instant::now());
         assert!(until <= Duration::from_secs(60), "{until:?}");
+    }
+
+    #[test]
+    fn a_boot_sign_in_shows_only_the_transition_and_falls_back_without_an_error() {
+        let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.offer_boot_sign_in("grace");
+        app.sync(&doc, &root);
+        assert_eq!(app.phase, AuthPhase::Starting);
+        assert_eq!(
+            app.login_user.as_ref().map(|u| u.username.as_str()),
+            Some("grace"),
+            "the person who signed in at boot is the one starting"
+        );
+        assert_eq!(app.status_text(), "Starting your session…");
+        assert!(
+            !focusables(&app).contains(&"greeter.password".to_string()),
+            "nothing to type while the session starts"
+        );
+
+        app.on_external_event(
+            &AuthUpdate::Accepted.encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Starting);
+
+        // greetd refused, or PAM asked a question: the ordinary screen, with
+        // that person chosen, and no error.
+        let _ = Widget::take_focus_reset(&mut app);
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::Cancelled).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.notice, Notice::None);
+        assert_eq!(app.failures, 0);
+        assert!(Widget::take_focus_reset(&mut app));
+        app.sync(&doc, &root);
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.password")
+        );
+        assert_eq!(
+            app.login_user.as_ref().map(|u| u.username.as_str()),
+            Some("grace")
+        );
+
+        // The handoff is over: a later refusal reads as usual.
+        seed_password(&app, "wrongpw");
+        app.begin_authenticating();
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::Credentials).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.notice, Notice::Error("greeter-error-passcode"));
+    }
+
+    #[test]
+    fn a_boot_sign_in_for_an_unlisted_account_falls_back_to_the_named_form() {
+        let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.offer_boot_sign_in("svc");
+        app.sync(&doc, &root);
+        assert_eq!(app.phase, AuthPhase::Starting);
+        assert_eq!(app.attempt_username(), "svc");
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::NotPermitted).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.notice, Notice::None);
+        assert_eq!(typed_username(&app), "svc");
     }
 
     #[test]

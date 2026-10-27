@@ -722,15 +722,17 @@ builds on demand); `tree` begins with a stable-id hierarchy, keyboard and
 multi-selection behavior, accessibility semantics, a retained row action that
 pins nodes in the resource, bounded virtualization, safe subtree reparenting,
 and structural motion already supplied by `TreeView`; `list` begins with a
-sparse 100-million-item `ListModel`, background page loading, explicit
-loading/error delegates, measured variable-height delegates, stable-key
+sparse 100-million-item `ListModel`, background page loading with the list's
+own placeholders for rows on their way, measured variable-height delegates, stable-key
 multi-selection, and an independently interactive button inside each mounted
 row; `graph` emits a model-bound `ui/main.json` screen, editable without
 rewriting the app, above native controls bound to the resource.
-The `async` starter keeps its input (the folder to scan) in the resource and
-runs the scan as an effect action with `LatestTask` for automatic event-loop
-wakeup, cancellation, and stale-result suppression, plus
-`ModelView::from_state_by` for keyed loading, success, and failure subtrees.
+The `async` starter keeps its input in the resource and runs the work as an
+effect action with `LatestTask` for automatic event-loop wakeup,
+cancellation, and stale-result suppression, plus `ModelView::from_state_by`
+for keyed idle, running and done subtrees: an operation the person started,
+which is what a spinner is for. Data that loads is an `Arriving` read
+instead (see "Data that arrives later").
 The `qr` starter demonstrates a compact generated-visual composition path: an
 IME-capable input invokes `set-payload`, `cx.value` follows the payload,
 `ModelView::from_state` replaces only the generated `QrWidget`, and
@@ -738,7 +740,7 @@ payload-specific alternative text makes the output visible to screen readers,
 inspection, and headless scenarios.
 The `document` starter is the collaborative-text case: title and body are
 Automerge text, concurrent typing merges, the live preview follows every
-edit, and `clear` is a destructive action that asks for confirmation.
+edit, and `clear` is a destructive action that runs at once, with Undo.
 
 Every ordinary `LaunchSpec` also reuses that live root for a screenshot; no
 second screenshot-only tree is required. `shot` writes `preview.png` in the
@@ -887,6 +889,102 @@ Node.js and brotli, which the builder image `tilo-app add ci` uses has.
 example a wrapper that runs it on a remote machine and brings `target/web`
 back. A web package's `[budget]` applies to its module as it
 does to a thin binary.
+
+#### Several people at once
+
+`--share` opens the app in a room that other people join, each from their
+own browser window:
+
+```bash
+tilo-app dev --platform web --share    # rebuild on save, everyone reloads
+tilo-app run --platform web --share    # build once
+```
+
+It prints a join page (`http://127.0.0.1:4321/__tilo/room/play`). Open it
+once per person; each window picks a name and joins as a person of its own,
+so two tabs of one browser are two participants. The SDK's room host
+(`tilo-relay room`, built from the SDK checkout the first time) runs on this
+machine and governs the room: it keys every record's channel and admits
+everyone who opens the page, as an Editor, so keep it on loopback. The room
+and what is in it survive a restart; `--fresh` starts an empty one. Before
+each build `--share` writes `surface.toml` from the code, since the others
+decide every change against the surface it names.
+
+Everyone opens the room's one record of the app: the first window creates
+it and every later one opens it once it has arrived. Nothing in the app is
+specific to this; it is the same model a Tilo workspace runs:
+
+- Who is acting is the host's, not the app's: compare `ActionCx::author`
+  in a verb, and
+  `cx.me()` in a view, rather than storing "the current user". Show ids
+  through `cx.people().name(id)`, in a part of the view that follows
+  `cx.people().revision()`: names reach a window after the record does.
+- Key what each participant owns by their id (`BTreeMap<String, Seat>`),
+  so two people joining at once both keep their entry, and resolve
+  contested slots from the merged state, the same way on every replica.
+- Let one participant write a contended value at a time (the player whose
+  turn it is) or make the verb idempotent; concurrent writes of one scalar
+  keep one of them.
+- Randomness a verb needs comes from `ActionCx::uuid`, which every replica
+  replays to the same value.
+- Everything in the record reaches everyone in the room. A view that shows
+  each participant only their own part (a hand of cards) hides it, but it is
+  not a secret from them.
+
+#### A new version in a running room
+
+`tilo-app push` runs your build of an app, or a new program of your bot, in
+a room that is running now (a Lounge, a team's room), for everyone in it,
+without restarting the room's host:
+
+```bash
+tilo-app package                                   # dist/<pkg>.tapp, signed with your key
+tilo-app push --room tilo-room:<relay>/<workspace>/<room> --identity ~/.tilo-dev
+tilo-app push --room … --identity … \
+  --bot bot/program.json --entry dev.you.greeter --version 0.2.0-dev.3
+```
+
+- The room records the version it runs: the app, its version, the hash of
+  its `surface.toml`, the package's `tapp:` hash and the key that signed it,
+  who installed it and when. It is part of the room's governance, so every
+  member reads it, and anyone can see which version runs and whose build it
+  is. A build that is not a registry release is recorded as a dev build
+  (`--published` says otherwise).
+- The push hands the `.tapp` itself to the room's host first
+  (`upload-app-file`, in pieces); the room's version names the file's
+  BLAKE3 hash, and the host refuses a version naming a file it does not
+  have. Every member's desktop that runs another build of the app asks the
+  room for that hash, as it asks for any content a record references,
+  checks the bytes hash to it, and updates the app from them with
+  `app update --from`, bound to the version's package root and publisher.
+- A change made with another version of the app than the room runs is held,
+  never merged and never refused: once its author runs the room's version,
+  the same changes go out naming that version's surface and are decided
+  against it. Mixed versions cannot write each other's data unseen.
+- A bot's program goes to the room's host with the room's request for that
+  bot. The host runs it at once, as the same bot: its installation, and
+  what its runs had read up to, are kept, and the room's row for it takes
+  the new program and its grants. You must hold every grant the program
+  asks for yourself.
+- Only people the room lets install apps (the `install-app` governance
+  action; the owner holds it, and gives it to a developer as a grant) or
+  bots (`install-bot`) may push.
+- `--identity` is a Tilo identity directory of this machine, enrolled as
+  one of your devices (`tilo-enroll certify`), so the room knows it is you.
+  The room's link names its host's relay endpoint, the workspace that
+  carries the room there, and the room; `@<ip:port>` after the endpoint
+  reaches a relay on this machine or network directly.
+
+Iteration time is the build plus a round trip to the room's host. A native
+build of one app is that app alone. The web desktop is one module today:
+every web app is linked into it and split out of it afterwards, so a web
+build relinks the whole desktop, and a running page cannot load a newer
+module for one app, so a browser in the room keeps its version until the
+page loads a desktop build that carries the room's. A native desktop that
+installs the room's version ends the app's running launches and puts their
+windows back where they were, on the new build, as Reopen does for an app
+ended for memory. While a room runs a dev build, each of that app's windows
+in the room says "Dev build · by <who installed it>" in its bar.
 
 ### Android
 
@@ -1621,23 +1719,32 @@ command path.
 This is the Tilo application API, not an optional automation adapter. A toolbar
 button, menu item, shortcut, context-menu item, search result, script, and agent
 must converge on the same `ActionBinding` and action address. Do not wire a
-direct callback beside `Widget::start_operation`; bind the control and let
+direct callback beside `ResourceOperations::start_operation`; bind the control and let
 the host invoke that operation handler. Do not add a second socket, command
 enum, hidden test callback, or agent-only implementation. CI runs
 `tools/policy/check_app_resource_action_contract.py`, and the runtime independently
 validates the concrete surface before publishing it.
 
 Every `ActionSpec` carries an `ActionContract`. Defaults are deliberately
-conservative (write permission, at-most-once, immediate, live-only). State the
-facts that let a caller plan safely:
+conservative (a change to the document, at-most-once, immediate, live-only).
+State the facts that let a caller plan safely:
 
 - `availability`: keep a temporarily impossible action discoverable with a
   stable code and useful reason; the door checks it again immediately before
   execution.
-- `permission`: `read`, `comment`, `write`, `invite`, or `admin`; the broker
-  uses this exact value for both discovery and invocation.
-- `risk`, `confirmation`, and `reversible`: destructive and privileged actions
-  require a confirmation policy. Confirmation grants are short-lived,
+- `kind`: what the action is able to do — `ActionKind::Read`, `Undoable` or
+  `Outside`, which the framework derives from the code; the broker decides it
+  against the caller's grants at both discovery and invocation. An action
+  declares no permission of its own.
+- `risk` and `confirmation`: privileged and sensitive actions, and
+  destructive ones Undo cannot take back, require a confirmation policy.
+  A destructive action Undo takes back (`ActionKind::Undoable`, or a
+  compensated undo) asks nothing: it runs at once and the app offers Undo
+  (`RiskLevel::requires_confirmation_when`). A typed phrase
+  (`ConfirmationPolicy::Phrase`) is for irreversible, high-risk actions only,
+  and names what is lost (the drive, the app), never a word like "CONFIRM";
+  `tools/policy/check_action_confirmation.py` and
+  `ActionContract::validate_declaration` refuse anything else. Confirmation grants are short-lived,
   one-use, and bound to the actor, address, and arguments.
   An action whose consequence depends on its value (a generic typed edit
   that may delete) classifies each invocation instead
@@ -1647,10 +1754,16 @@ facts that let a caller plan safely:
   `confirmation:by-argument` tag; a caller that cannot classify arguments,
   such as the session broker, treats it as requiring confirmation
   (`ActionContract::advertised_confirmation`).
-- `tags`: `surface:programmatic` (`ActionSpec::programmatic`) marks an action
+- `tags`: `audience:agents` (`ActionSpec::for_audience(Audience::Agents)`,
+  `#[action(audience = "agents")]`, `#[effect(audience = "agents")]`) marks an action
   offered only to agents, scripts and the controls or surfaces that submit it
-  — never a palette row or a menu entry. It is still published, resolvable
-  and invocable by address under the same rules.
+  — never a palette row or a menu entry. Use it for what only a program can
+  supply or use: reading content back, revealing a range by offsets, an edit
+  addressed by an internal id. `audience:people` (`audience = "people"`) is
+  the other way round, for an action whose point is what a person sees next,
+  such as copying a link; agent listings leave it out. With neither, an
+  action is for everyone. Either way it is still published, resolvable and
+  invocable by address under the same rules.
 - `retry`: use `idempotent` only when repetition is observably harmless;
   otherwise use the default `at_most_once`. The reserved
   `retry_with_invocation_id` mode must not be advertised until the calling
@@ -1716,8 +1829,9 @@ let archive = cx.effect_button("Archive", &MailEffect::Archive { conversation: i
 ```
 
 Each variant is a published `Effect` action with typed parameters; its options
-(`job`, `cancellable`, `returns`, `destructive`, `permission = "read"`) are its
-contract. The framework publishes the vocabulary beside the resource's
+(`job`, `cancellable`, `returns`, `destructive`) are its contract. It declares
+no permission: the framework derives the action's kind and the room's grants
+decide it at each door. The framework publishes the vocabulary beside the resource's
 actions, with the availability the handler reports now (`EffectStatus`), and
 routes the palette, agents, scripts and bound controls to the handler as a
 typed value. A job reports progress through its `Progress`, finishes on the UI
@@ -1747,8 +1861,7 @@ ActionSpec::operation(
     "mail.archive",
     &ArchiveArgs { conversation_id },
 )?
-.requiring(PermissionRequirement::Write)
-.reversible()
+.with_need(ActionNeed::of(ActionKind::Outside))
 .retry_policy(RetryPolicy::Idempotent)
 .returns(ResultSpec::Resource {
     resource_kind: "mail.conversation".into(),
@@ -1763,10 +1876,10 @@ with `#[derive(Effect)]` instead, and runs long work as a job through the
 `EffectCx` its handler receives.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
-effect and view type in `Widget::start_operation`, the single entry: return
+effect and view type in `ResourceOperations::start_operation`, the single entry: return
 `Completed` with the promised `ActionOutput` for synchronous work or `Accepted`
 for a job `poll_resource_operation` finishes, and declare the locally handled
-type in `Widget::local_resource_operation_handlers`. Read the request through
+type in `ResourceOperations::local_resource_operation_handlers`. Read the request through
 `op.unscoped()`, which hides a hosted invocation that carries its original
 caller's custody; a handler that honours that custody reads it through
 `op.with_custody()` instead and routes every effect and document write through
@@ -1780,7 +1893,7 @@ Non-mutating retained controls are projected into that catalogue automatically
 from the semantic tree, so focus and safe navigation remain driveable while an
 app is being developed. Effectful generic activation, set-value, toggles, and
 sliders are deliberately not exported: without a domain contract they could
-bypass the real action's permission, risk, and confirmation. Give every
+bypass the real action's grants, risk, and confirmation. Give every
 projected control a stable ID and a localized accessible name. Every effectful
 control must instead converge on a domain action with durable resource
 identity, typed parameters, collaboration semantics, and a useful verb such as
@@ -1862,70 +1975,128 @@ lifecycle, synchronizes bound widgets, and requests a frame. No event-loop
 proxy, string message, polling timer, or app-specific `on_external_event`
 implementation is required.
 
-```rust
-let result = LocalState::new(LoadState::Loading);
-let worker_result = result.writer();
-let unavailable = result.writer();
+#### Data that arrives later
 
-let spawned = ui::background::Background::current().spawn("load project", move || {
-    worker_result.set(load_project().map_or_else(
-        |error| LoadState::Failed(error.to_string()),
-        LoadState::Ready,
-    ));
-});
-if spawned.is_err() {
-    unavailable.set(LoadState::Failed("Loading is unavailable on this host".into()));
+Data that is not here yet — a record the room has not synced to this device,
+a child record or an attachment on its way from another device, a file read,
+a page from a host — is an `Arriving<T>`: pending (with the `Source` its
+answer comes from), ready, or failed. The view says only what shows once the
+data is there; the framework owns every placeholder and every timing.
+
+The resource an app reads is the main case, and it needs no code at all. A
+window opened on a record this device has not got yet (the room's record of
+an app that keeps one, before the room's first sync) shows the app's view
+once the room's holdings arrive from the workspace's host; until then the
+framework stands in for it. A record this device has opens complete on its
+first frame. Children and attachments are reads too:
+
+```rust
+/// A topic's row: its title and the line under it.
+const TOPIC_ROW: RowShape = RowShape::TITLE.with_secondary(1);
+
+fn view(cx: &mut ViewCx<Room>) -> Element {
+    let topics = cx.children::<Topic>().expect("a window someone uses");
+    let mut list = Column::new();
+    for (_, _, topic) in topics.children() {
+        // Pending while the topic's record is on its way from the room.
+        let row = cx.arriving(&topic, |_, topic| {
+            Box::new(ListRow::new(&topic.id, &topic.name).secondary(&topic.summary))
+        });
+        list = list.push(Box::new(row.shaped(SkeletonShape::Row(TOPIC_ROW))));
+    }
+    Box::new(list)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LoadScreen { Loading, Ready, Failed }
-
-let body = ModelView::from_state_by(
-    &result,
-    |result| match result {
-        LoadState::Loading => LoadScreen::Loading,
-        LoadState::Ready(_) => LoadScreen::Ready,
-        LoadState::Failed(_) => LoadScreen::Failed,
-    },
-    |result| match result {
-        LoadState::Loading => Box::new(Spinner::new()),
-        LoadState::Ready(project) => Box::new(project_view(project)),
-        LoadState::Failed(message) => Box::new(Banner::error(message)),
-    },
-);
+// An attachment's bytes: ready once they are on this device.
+let reads = ContentReads::new(content_store);
+let picture = reads.read(&hash);
 ```
+
+Say what the content looks like with `ArrivingView::shaped`. The shape is a
+box: the view reserves it from the first frame, and the placeholder, the
+answer and a failure all stand in it, so nothing moves when the read lands. A
+list row's shape is its kind (`RowShape`: what leads it, its lines), the same
+geometry the real row is laid out with; a `ListRow` or `MediaCard` that lands
+in a box of another shape is a debug assertion. The default is
+`SkeletonShape::Page`, the whole space the view is given, which the window's
+own view takes while its record is on its way. A pending region (the boxes of
+a list or a grid that stand together) names each source once, on the first
+of its boxes waiting on it, in a place the shape keeps for the line. A grid of
+cards on their way is `MediaGrid::of` over `ArrivingView`s shaped as cards. A
+read
+of your own data on a background worker is `Arriving::local`; a failure offers
+a retry that reads again:
+
+```rust
+let project = Arriving::local("load project", || load_project());
+let body = project
+    .view(|project| project_view(project))
+    .shaped(SkeletonShape::Media(MediaAspect::Square));
+```
+
+- **Data on this device** normally answers within a frame or two. The frame
+  that would show the view waits for it up to one frame budget at the
+  display's rate, so the window opens complete: no placeholder and no motion
+  when the answer is inside the budget. A local read that misses the budget
+  (a cold disk) is treated as remote from then on.
+- **Data from elsewhere** gets its space reserved at the content's geometry
+  from the first frame. Nothing but that ground shows for 150 ms; then a
+  skeleton in the content's shape, which stays at least 300 ms so it never
+  flashes; after 2 s the placeholder says where the data comes from ("From
+  Laptop"). The answer cross-fades in at the theme's `fast` duration, also
+  under reduced motion. A failure turns the reserved space into the error,
+  with a retry when the read has one (`Arriving::on_retry`).
+
+Each step is a deadline the window sleeps until: a pending view draws no
+frames between them. Never build a `Spinner` for data; it is for an
+indeterminate operation the person started ("Exporting…").
+
+Where the answer comes from is said by the read itself: `RemoteActions`
+answers and the framework's own reads fill in their `Source`. A read of your
+own names it when it starts:
+
+```rust
+let page: Arriving<Page> = Arriving::pending(Source::host("eu1.tilo.coffee"));
+let completion = page.begin(Source::host("eu1.tilo.coffee"));
+let _ = ui::background::Background::current().spawn("fetch page", move || {
+    completion.finish(fetch_page());
+});
+```
+
+`begin` restarts the read and makes every older `ArrivalCompletion` stale,
+so a slow answer never overwrites a newer one; `writer` publishes more than
+one answer (pages gathering) without restarting it. A host that cannot run
+background work refuses it with `Unsupported`; `Arriving::local` reports the
+refusal as the read's failure.
 
 Start workers through `ui::background::Background::current().spawn`, not
 `std::thread::spawn`. The host decides how background work runs: a native
 process uses a thread pool, a deterministic test drives a pumped queue, and a
 host that cannot run background work refuses it with `Unsupported`. Report a
-refusal as a failure instead of leaving a spinner running. Later examples omit that branch
-for brevity.
+refusal as a failure. Later examples omit that branch for brevity.
 
 Use the ordinary `LocalState` handle for UI-thread reads and callbacks. Move
 `LocalStateWriter` into workers so an idle window cannot miss their changes.
 Several writers may update the same state; updates are serialized and each
 completed update advances one observable revision.
 
-For restartable work such as search, import, or refresh, use `LatestTask<T>`
-instead of coordinating request generations in app code. `begin` publishes
-the running state and returns a single-use `TaskCompletion`; only the newest
-run may complete. Starting again or calling `cancel` invalidates older
-capabilities atomically, so a late worker cannot overwrite newer UI state:
+For restartable operations the person starts, such as an import or an
+export, use `LatestTask<T>` instead of coordinating request generations in
+app code (a read of data is an `Arriving`, above, which is built on it).
+`begin` publishes the running state and returns a single-use
+`TaskCompletion`; only the newest run may complete. Starting again or calling
+`cancel` invalidates older capabilities atomically, so a late worker cannot
+overwrite newer UI state:
 
 ```rust
-let task = LatestTask::new(LoadState::Idle);
-let result = task.state();
+let task = LatestTask::new(Export::Idle);
+let progress = task.state();
 let run_task = task.clone();
 
 let run_job = move || {
-    let completion = run_task.begin(LoadState::Loading);
-    let _ = ui::background::Background::current().spawn("load project", move || {
-        let value = load_project().map_or_else(
-            |error| LoadState::Failed(error.to_string()),
-            LoadState::Ready,
-        );
-        let _ = completion.complete(value);
+    let completion = run_task.begin(Export::Running);
+    let _ = ui::background::Background::current().spawn("export", move || {
+        let _ = completion.complete(Export::Done(export_project()));
     });
 };
 ```
@@ -2015,12 +2186,15 @@ invoke = false  # invoke other apps' actions as this app
 
 ```rust
 let remote = ui::RemoteActions::current();
-let page = remote.catalogue(CatalogueQuery::default()); // LocalState<CatalogueCall>
+let page = remote.catalogue(CatalogueQuery::default()); // CatalogueCall
 let run = remote.invoke(row.target().unwrap(), InvokeArgument::None, None);
+let body = page.view(|page| catalogue_view(page));
 ```
 
-Answers arrive as `LocalState`s, so a bound view updates and an idle window
-wakes. The root that owns the client returns it from
+Answers arrive as `Arriving` reads (`CatalogueCall`, `InvocationCall`,
+`CancellationCall`) that know where they come from, so `view` shows the
+framework's placeholders while they are on the way, a bound view updates, and
+an idle window wakes. A failed catalogue read offers a retry. The root that owns the client returns it from
 `Widget::collaborative_mut` (a `Decorator` can), which is how its requests
 reach the connection. Tests stand in for the session with
 `RemoteActions::enter(host, caller)` and an in-process `ActionHost`.
@@ -2374,10 +2548,8 @@ materialized, implement `TableModel` and construct the same widget with
 states in the visible pixel window plus overscan:
 
 ```rust
-use ui::LatestRequest;
-use ui::widget::data_table::{
-    DataTable, TableModel, TableModelChange, TableRowState,
-};
+use ui::{Arrival, LatestRequest};
+use ui::widget::data_table::{DataTable, TableModel, TableModelChange};
 
 impl TableModel for QueryRows {
     type Row = ResultRow;
@@ -2385,7 +2557,7 @@ impl TableModel for QueryRows {
     fn len(&self) -> usize { self.total_count }
     fn key_at(&self, index: usize) -> Option<u64> { self.order.key_at(index) }
     fn index_of(&self, key: u64) -> Option<usize> { self.order.index_of(key) }
-    fn row_state(&self, index: usize) -> TableRowState<'_, ResultRow> {
+    fn row_state(&self, index: usize) -> Arrival<&ResultRow, &str> {
         self.cache.row_state(index)
     }
     fn request_range(&mut self, visible: std::ops::Range<usize>) {
@@ -2429,8 +2601,14 @@ inside the corresponding virtual `Row` and `Cell`, not duplicated beside the
 table. The tallest mounted control also contributes to variable row
 measurement and stable scroll anchoring.
 
-Return `TableRowState::Loading` or `TableRowState::Error` for non-resident
-rows; both remain real rows with stable geometry and accessibility semantics.
+Return `Arrival::Pending` (with the `Source` the row comes from) or
+`Arrival::Failed` for non-resident rows; both remain real rows with stable
+geometry and accessibility semantics. The table paints a pending row's
+placeholder itself, with the same timing as any data that arrives later: the
+reserved row, a skeleton after the grace period, the source named after a
+while, and the row fading into its slot without moving the others. A model
+that can ask again for a failed row says so with `can_retry`; pressing the
+row then calls `retry`.
 `poll_changes` drains completed work during the framework update pass.
 For a model mutated through another shared owner, call
 `notify_model_changes` after applying the batch. Report `RowsInserted`,
@@ -2535,29 +2713,27 @@ row content changed, while `update_model` conservatively rebuilds all mounted
 delegates.
 
 Paged lists can also implement `row_state`, `request_range`, `poll_changes`,
-and `needs_poll`, then use `VirtualList::new_async`. The delegate receives a
-`ListRowState` for every mounted key, so the app supplies localized ready,
-loading, and error rows without making the whole data source resident:
+and `needs_poll`. `row_state` answers an `Arrival<(), &str>`: a row on its
+way says where it comes from, and the list keeps its slot (its measured or
+estimated height) and paints its placeholder there, with the same timing as
+any data that arrives later. The delegate builds only rows that are there; a
+failed row shows why, with a retry when `can_retry` says the model can ask
+again (`retry`):
 
 ```rust
-let list = VirtualList::new_async(model, 28.0, |model, index, key, state| {
-    match state {
-        ListRowState::Ready => model.row_widget(index, key),
-        ListRowState::Loading => Box::new(Text::new("Loading…")),
-        ListRowState::Error(message) => Box::new(Text::new(message)),
-    }
-});
+let list = VirtualList::new(model, 28.0, |model, index, key| model.row_widget(index, key));
 ```
 
 The list requests one visible-plus-overscan range when its virtual window or
 model state changes. A `poll_changes` batch reconciles keys and replaces
-delegates whose loading state changed or whose keys appear in `RowsChanged`.
+delegates whose state changed or whose keys appear in `RowsChanged`; a row
+that lands fades into its slot.
 Loading rows expose `busy` and error rows expose `invalid` plus the model's
 error description to accessibility; unavailable rows cannot be selected,
 activated, or used as reorder targets. `needs_poll` schedules frames only
 while the source has work in flight. The older boolean `poll_changed` hook
 remains supported; pair it with `invalidate_rows` when ready row content
-changed but its key and `ListRowState` did not.
+changed but its key and `row_state` did not.
 
 `TreeView::new(TreeNode<T>)` is the shortest form for an app-owned hierarchy.
 Give collection controls an explicit `with_id` when scenarios or inspection
@@ -2590,9 +2766,10 @@ tree.update_source(
 ```
 
 Paged models may know `child_count` before the corresponding ids are in memory.
-Override `TreeModel::child_state` and return `TreeChildState::Loading` or
-`TreeChildState::Error`; the tree keeps the slot in layout and accessibility
-instead of collapsing it. A model-owned source implements `request_load` and
+Override `TreeModel::child_state` and return `Arrival::Pending` (with the
+`Source` the child comes from) or `Arrival::Failed`; the tree keeps the slot
+in layout and accessibility instead of collapsing it, and paints its
+placeholder with the same timing as any data that arrives later. A model-owned source implements `request_load` and
 drains `poll_changes`; `LatestRequest` supplies stale-result suppression and
 the event-loop wakeup:
 
@@ -2622,31 +2799,10 @@ request when clicked or activated with Enter or Space. Sources that cannot
 wake the application may return `true` from `needs_poll`; idle workers should
 prefer `LatestRequest`.
 
-Use `with_slot_delegate` to replace the built-in placeholder copy with
-localized retained widgets. The delegate receives the stable `TreeSlot`, its
-depth, and `TreeSlotState::Loading` or `TreeSlotState::Error`. Only unresolved
-rows in the virtual window are mounted. The tree keeps the outer tree-item
-semantics, marks loading rows busy and error rows invalid, measures variable
-placeholder heights, and preserves click/keyboard activation as retry:
-
-```rust
-tree.with_slot_delegate(|_, slot, _depth, state| {
-    let message = match state {
-        TreeSlotState::Loading => "project-tree-loading",
-        TreeSlotState::Error { .. } => "project-tree-load-error",
-    };
-    Box::new(Text::new(message).with_id(format!("tree-slot-{}", slot.index)))
-});
-```
-
-Generated tree components install this localized delegate by default. Replace
-it with a progress indicator, diagnostic detail, or a retry button when the app
-needs richer loading UI; ordinary child-widget focus and accessibility remain
-nested beneath the slot's `TreeItem` semantic node.
-
 When a slot changes state, send `TreeModelChange::SlotsChanged`. The tree
 invalidates request deduplication and transfers focus, measured height, and the
-viewport anchor from the placeholder to the loaded node id.
+viewport anchor from the placeholder to the loaded node id, which fades in
+over the placeholder.
 
 ```rust
 tree.notify_model_changes(&[TreeModelChange::SlotsChanged {
@@ -2738,8 +2894,11 @@ read differently needs a new `#[resource(version = N)]`) all fail it.
 
 ### Confirming destructive actions in tests
 
-A destructive verb or a removal never applies before the person agrees, from
-whatever path it comes: a button, a menu, the palette, an agent, or an editor
+A removal Undo takes back (any change of the document alone) runs at once,
+from whatever path it comes, and the surface offers Undo in the standard
+notice (`NavShell::toast_with_action(.., "Undo")`, whose press is an
+`UndoRequest::Undo`). Only what Undo cannot take back never applies before
+the person agrees: a button, a menu, the palette, an agent, or an editor
 applying its own edit now (`Dispatcher::submit_now` / `apply_now` hand it to
 the host, which asks). Do not give the app a dialog of its own for this; the
 host asks. A test confirms what the host asks with one call, through the real

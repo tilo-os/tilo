@@ -228,7 +228,6 @@ mod tests {
 
     #[test]
     fn status_bar_reserves_its_band_and_sits_on_the_region() {
-        // Case `split_reserves_the_band_at_the_bottom`.
         {
             let theme = Theme::dark();
             let region = Rect::new(0.0, 40.0, 800.0, 600.0);
@@ -237,14 +236,12 @@ mod tests {
             assert_eq!(content.y1, bar.y0, "nothing is painted under the bar");
             assert_eq!((content.y0, bar.y1), (region.y0, region.y1));
             assert_eq!(height(&Theme::dark().with_ui_scale(2.0)), 56.0);
-            // At a large text scale the bar grows with its caption line.
             let large = Theme::dark().with_text_scale(3.0);
             let line = f64::from(large.text(TextRole::Caption).line_height_px());
             assert!(height(&large) >= line + f64::from(large.tokens.spacing.s1) * 2.0);
             assert!(height(&large) > height(&theme));
         }
 
-        // Case `clickable_readouts_return_their_rects_and_keep_the_text_edge`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -286,7 +283,6 @@ mod tests {
             assert!((ly + 8.0 - rect.center().y).abs() < 1e-9);
         }
 
-        // Case `the_bar_is_not_a_raised_band`.
         {
             let theme = Theme::light();
             let mut tr = TextRenderer::new();

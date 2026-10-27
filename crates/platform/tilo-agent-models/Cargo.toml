@@ -1,0 +1,17 @@
+[package]
+name = "tilo-agent-models"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license = "MIT"
+description = "The models a person's providers offer for an agent's run, as a record every app of theirs reads"
+
+[dependencies]
+serde.workspace = true
+tilo-resource = { path = "../../sdk/tilo-resource" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -16,7 +16,7 @@ const ENTRY_LIMIT: usize = 200;
 
 /// The journal effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "logs.effects", device_only)]
+#[effect(operation = "logs.effects")]
 pub enum JournalEffect {
     /// Refresh journal.
     #[effect(job, kind = "read")]
@@ -31,7 +31,7 @@ pub enum JournalEffect {
     ///
     /// Writes the entries the filter shows to a JSON Lines file the person
     /// picks.
-    #[effect(job)]
+    #[effect(attended, job)]
     ExportFilteredJsonl,
     /// Show entry details.
     #[effect(kind = "read")]

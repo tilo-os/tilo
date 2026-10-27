@@ -10,29 +10,37 @@ catalogue="$root/crates/session/shell/src/shell/catalogue.rs"
 history="$root/crates/session/shell/src/shell/history_narrative.rs"
 firstboot="$root/crates/session/shell/src/firstboot.rs"
 
+# Each failure names its file and pattern. (A bare `! grep` would not stop the
+# script under set -e: errexit ignores negated commands.)
+need() { grep -Fq -- "$1" "$2" || { echo "missing in ${2#"$root"/}: $1" >&2; exit 1; }; }
+forbid() { ! grep -Eq -- "$1" "$2" || { echo "forbidden in ${2#"$root"/}: $1" >&2; exit 1; }; }
+
 # Projection talks to the projector service over its control socket and
 # spawns nothing: frames are size-capped and every reply wait is bounded.
-! grep -Eq 'Command::new|\.spawn\(\)|\.output\(\)|wait_with_output\(' "$projection"
-grep -Fq 'control::write_request(' "$projection"
-grep -Fq 'recv_timeout(' "$projection"
-grep -Fq 'CONNECT_REPLY_TIMEOUT' "$projection"
-grep -Fq 'DISCONNECT_REPLY_TIMEOUT' "$projection"
-grep -Fq 'pub const CONTROL_FRAMING: Framing = Framing::little_endian(1024 * 1024);' "$projector_control"
+forbid 'Command::new|\.spawn\(\)|\.output\(\)|wait_with_output\(' "$projection"
+need 'control::write_request(' "$projection"
+need 'recv_timeout(' "$projection"
+need 'CONNECT_REPLY_TIMEOUT' "$projection"
+need 'DISCONNECT_REPLY_TIMEOUT' "$projection"
+need 'pub const CONTROL_FRAMING: Framing = Framing::little_endian(1024 * 1024);' "$projector_control"
 
-grep -Fq 'bounded_command::run_prepared(' "$capture"
-grep -Fq '.process_group(0)' "$capture"
-grep -Fq 'bounded_command::terminate_tree(' "$capture"
+need 'bounded_command::run_prepared(' "$capture"
+need '.process_group(0)' "$capture"
+need 'bounded_command::terminate_tree(' "$capture"
 
-grep -Fq 'bounded_command::run_prepared(' "$catalogue"
-grep -Fq 'LIST_OUTPUT_LIMIT' "$catalogue"
-grep -Fq 'INSTALL_TIMEOUT' "$catalogue"
-! grep -Eq '\.output\(\)|wait_with_output\(' "$catalogue"
+need 'bounded_command::run_prepared(' "$catalogue"
+need 'LIST_OUTPUT_LIMIT' "$catalogue"
+need 'INSTALL_TIMEOUT' "$catalogue"
+forbid '\.output\(\)|wait_with_output\(' "$catalogue"
 
-grep -Fq 'bounded_command::run_prepared(' "$history"
-grep -Fq 'NARRATIVE_TIMEOUT' "$history"
-! grep -Eq '\.spawn\(\)|\.output\(\)|wait_with_output\(' "$history"
+# History prose asks the on-device model provider over HTTP and spawns
+# nothing: the request is time-bounded and the answer size-capped.
+forbid 'Command::new|\.spawn\(\)|\.output\(\)|wait_with_output\(' "$history"
+need '.timeout(NARRATIVE_TIMEOUT)' "$history"
+need '.bytes_limited(NARRATIVE_RESPONSE_LIMIT)' "$history"
+forbid '\.bytes\(\)' "$history"
 
-grep -Fq 'bounded_command::run_prepared(' "$firstboot"
-! grep -Eq '\.output\(\)|wait_with_output\(' "$firstboot"
+need 'bounded_command::run_prepared(' "$firstboot"
+forbid '\.output\(\)|wait_with_output\(' "$firstboot"
 
 echo 'shell subprocess boundary: ok'

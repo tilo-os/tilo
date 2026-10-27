@@ -5,7 +5,6 @@
 use super::participants::note_participant_outcome;
 use crate::WpFormat;
 use crate::effects::WordProcessorEffect;
-use crate::find_bar::Blocks;
 use crate::i18n::t;
 use crate::num;
 use crate::word_processor::Caret;
@@ -80,8 +79,26 @@ impl WordProcessorWidget {
             None => return Some(Err("the document is not at hand".into())),
         };
         let participant = ui::invocation_scope::current_participant();
+        // An image told the heading it goes after goes at that paragraph's
+        // end, found by its text.
+        let after = match effect {
+            WordProcessorEffect::PlaceImage {
+                after: Some(after), ..
+            } if cx.place().is_some() => {
+                return Some(Err(format!(
+                    "give `at` or `after`, not both (`after` is `{after}`)"
+                )));
+            }
+            WordProcessorEffect::PlaceImage {
+                after: Some(after), ..
+            } => match crate::actions::image_place::after_paragraph(&doc, after) {
+                Ok(place) => Some(place),
+                Err(error) => return Some(Err(error)),
+            },
+            _ => None,
+        };
         // Told where to act, it acts there; else at the invoker's caret.
-        let view = match (cx.place(), &participant) {
+        let view = match (after.as_ref().or_else(|| cx.place()), &participant) {
             (Some(place), _) => {
                 match crate::actions::participant::ParticipantView::at_place(&doc, place) {
                     Ok(view) => view,
@@ -165,7 +182,6 @@ impl WordProcessorWidget {
         })
     }
 
-    /// Read the kept state, once there is one.
     pub(super) fn with_live<T>(
         &self,
         read: impl FnOnce(&tilo_document::RichTextState) -> T,
@@ -183,8 +199,6 @@ impl WordProcessorWidget {
             eprintln!("word-processor: paragraphs unreadable: {error}");
         }
     }
-
-    // ---- Tilo action dispatch ------------------------------------------------
 
     /// Dispatch one [`RichTextAction`](crate::actions::RichTextAction) —
     /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
@@ -405,12 +419,24 @@ impl WordProcessorWidget {
 
     /// Bring the kept state up to date with `state` in the middle of an edit;
     /// the next refresh still copies what changed into the views.
-    fn sync_source(&mut self, state: &AutoCommit) {
+    pub(super) fn sync_source(&mut self, state: &AutoCommit) {
         self.source_unseen |= self.refresh_live(state);
     }
 
+    /// Run a caret motion with the body order brought up to date with
+    /// `state`, so it finds the caret's neighbours without listing the body.
+    pub(super) fn with_kept_body<T>(
+        &mut self,
+        state: &AutoCommit,
+        motion: impl FnOnce(&mut crate::word_processor::WordProcessor) -> T,
+    ) -> T {
+        self.sync_source(state);
+        let body = self.kept_body();
+        self.inner.with_kept_body(body, motion)
+    }
+
     /// The kept body order, once there is kept state.
-    fn kept_body(&self) -> Option<std::rc::Rc<tilo_document::BodyOrder>> {
+    pub(super) fn kept_body(&self) -> Option<std::rc::Rc<tilo_document::BodyOrder>> {
         self.with_live(|s| std::rc::Rc::clone(s.body()))
     }
 
@@ -457,9 +483,7 @@ impl WordProcessorWidget {
             if query.len() > crate::actions::editing::MAX_FIND_QUERY_BYTES {
                 return Err("the Find query is too long".into());
             }
-            let blocks = self.search_blocks(state);
-            let effect = self.find.open(Some(query), &mut Blocks(&blocks));
-            self.apply_find_effect(state, effect);
+            self.find_now(state, query);
             return Ok(());
         }
         let view = self.local_edit_view();
@@ -472,9 +496,6 @@ impl WordProcessorWidget {
 
     /// Move `participant`'s own view (its caret, selection or Find) as
     /// `movement` says. Nothing is written into the document.
-    ///
-    /// # Errors
-    /// Returns the view primitive's refusal (stale range, no caret, …).
     pub(crate) fn move_participant_view(
         &mut self,
         participant: &tilo_actions::ParticipantId,
@@ -714,11 +735,9 @@ impl WordProcessorWidget {
         })
     }
 
-    // ---- participant views ---------------------------------------------------
-
     /// This window's own view as a participant view: the caret, the
     /// selection anchor, the active region and the Find bar's query and hits.
-    /// [`Self::wp_resource_ctx`] is its projection (computed from the render
+    /// `Self::wp_resource_ctx` is its projection (computed from the render
     /// cache so it stays cheap per frame); `view.ctx(doc)` yields the same
     /// context.
     pub fn local_participant_view(&self) -> crate::actions::participant::ParticipantView {
@@ -1005,6 +1024,43 @@ impl WordProcessorWidget {
         self.perform_action(state, &action);
     }
 
+    /// Make the target paragraphs a list (`ordered` numbered, else
+    /// bulleted), or plain paragraphs again when every one already is that
+    /// list, as one replayable action. Table cells and other structural
+    /// blocks keep their kind.
+    pub(super) fn dispatch_toggle_list(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        ordered: bool,
+    ) {
+        let targets = self.inner.target_block_ids(state);
+        let textual: Vec<&BlockView> = targets
+            .iter()
+            .filter_map(|id| self.blocks.iter().find(|block| &block.id == id))
+            .filter(|block| matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item"))
+            .collect();
+        if textual.is_empty() {
+            return;
+        }
+        let already = textual
+            .iter()
+            .all(|block| block.kind == "list_item" && block.flag("ordered") == ordered);
+        let blocks: Vec<String> = textual.iter().map(|block| block.id.clone()).collect();
+        let region = self.inner.region_kind();
+        let action = if already {
+            crate::actions::set_paragraph_style_action(region, blocks, "paragraph", None, None)
+        } else {
+            crate::actions::set_paragraph_style_action(
+                region,
+                blocks,
+                "list_item",
+                None,
+                Some(ordered),
+            )
+        };
+        self.perform_action(state, &action);
+    }
+
     /// Insert a `rows`×`cols` table after the caret as one replayable action,
     /// then re-seat the caret into the new table's first cell (presentation) —
     /// the cell ids are minted inside `apply`, so they're discovered from the
@@ -1193,10 +1249,24 @@ impl WordProcessorWidget {
                 self.open_in_place(cx, std::path::Path::new(&path))?;
             }
             WordProcessorEffect::OpenDocument { path: None } => {
+                // Where files have paths, the document is worked on where it
+                // is; elsewhere (a browser page) its contents are brought in
+                // and Save asks where they go.
+                if tilo_files::available(tilo_files::Feature::NativePaths) {
+                    return Ok(
+                        cx.choose_path(open_request(), |editor, path, cx| match path {
+                            Some(path) => {
+                                editor.open_in_place(cx, &path)?;
+                                Ok(Effected::done())
+                            }
+                            None => Err("the file picker was cancelled".into()),
+                        }),
+                    );
+                }
                 return Ok(
-                    cx.choose_path(open_request(), |editor, path, cx| match path {
-                        Some(path) => {
-                            editor.open_in_place(cx, &path)?;
+                    cx.choose_file(open_request(), |editor, file, cx| match file {
+                        Some(file) => {
+                            editor.open_contents(cx, &file.name, &file.bytes)?;
                             Ok(Effected::done())
                         }
                         None => Err("the file picker was cancelled".into()),
@@ -1206,7 +1276,10 @@ impl WordProcessorWidget {
             WordProcessorEffect::Save { path } => {
                 match path.map(PathBuf::from).or_else(|| self.path.clone()) {
                     Some(path) => self.save_now(cx, &path)?,
-                    None => return Ok(self.choose_where_to_save(cx)),
+                    None => match self.kept.clone() {
+                        Some((kept, format)) => return self.write_kept(cx, &kept, format),
+                        None => return Ok(self.choose_where_to_save(cx)),
+                    },
                 }
             }
             WordProcessorEffect::SaveAs { path: Some(path) } => {
@@ -1216,8 +1289,7 @@ impl WordProcessorWidget {
                 return Ok(self.choose_where_to_save(cx));
             }
             WordProcessorEffect::Find => {
-                let doc = cx.document().ok_or("the document is not at hand")?.clone();
-                self.open_find(&doc);
+                ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Find);
             }
             WordProcessorEffect::ZoomIn => {
                 self.zoom_by(0.1);
@@ -1235,6 +1307,12 @@ impl WordProcessorWidget {
             }
             WordProcessorEffect::Ruler => self.view.ruler_visible = !self.view.ruler_visible,
             WordProcessorEffect::Outline => self.outline.toggle(),
+            WordProcessorEffect::ImportDocxContent { content, name } => {
+                return self.import_content(cx, &content, name.as_deref());
+            }
+            WordProcessorEffect::ExportContent { format } => {
+                return self.export_content(cx, format.as_deref());
+            }
             other => return Err(format!("`{}` is not handled here", other.id())),
         }
         self.lifecycle.dirty = true;
@@ -1253,13 +1331,129 @@ impl WordProcessorWidget {
             .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
         let format = WpFormat::from_path(path);
-        let action = crate::import_action(&bytes, format, self.inner.content_store())?;
+        self.replace_with(cx, &bytes, format)?;
+        self.set_file(path.to_path_buf(), format);
+        Ok(())
+    }
+
+    /// Replace the document with the file `name` whose contents are `bytes`
+    /// (its format by extension), as one action Undo takes back. It has no
+    /// path here, so Save asks where it goes.
+    fn open_contents(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let format = WpFormat::from_path(std::path::Path::new(name));
+        self.replace_with(cx, bytes, format)?;
+        self.path = None;
+        self.kept = None;
+        self.format = Some(format);
+        Ok(())
+    }
+
+    /// Replace the body of this document, while it is empty, with the file
+    /// `name` (Word when it has none) kept as `content`, a
+    /// `tilo.content:<hash>` address. A document with words, pictures or
+    /// tables in it is someone's writing, which an import never replaces.
+    fn import_content(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        content: &str,
+        name: Option<&str>,
+    ) -> ui::framework::EffectAnswer {
+        let hash = ui::tilo_actions::content_hash(content.trim())
+            // A plan that carried the content gives its bare hash.
+            .or_else(|| {
+                let bare = content.trim();
+                (bare.len() == 64 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                    .then_some(bare)
+            })
+            .ok_or_else(|| format!("`{content}` names no content: give `tilo.content:<hash>`"))?
+            .to_ascii_lowercase();
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let containers = crate::model::open(&doc)?;
+        let written =
+            tilo_doc::model::materialize_region(&doc, &containers, tilo_doc::model::Region::Body)
+                .iter()
+                .any(|block| block.kind != "paragraph" || !block.text.trim().is_empty());
+        if written {
+            return Err(
+                "this document already has writing in it, which an import would replace: open a \
+                 new document and import there"
+                    .into(),
+            );
+        }
+        let name = name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("document.docx");
+        let bytes = self
+            .inner
+            .content_store()
+            .read(&hash)
+            .ok_or_else(|| format!("{name} is not on this device"))?;
+        let format = WpFormat::from_path(std::path::Path::new(name));
+        self.replace_with(cx, &bytes, format)?;
+        self.path = None;
+        self.kept = None;
+        self.format = Some(format);
+        self.lifecycle.dirty = true;
+        Ok(ui::framework::Effected::value(serde_json::json!({
+            "imported": name,
+            "content": format!("tilo.content:{hash}"),
+        })))
+    }
+
+    /// Keep the document as a file in `format` (Word when none) in the
+    /// content store, and answer its address.
+    fn export_content(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        format: Option<&str>,
+    ) -> ui::framework::EffectAnswer {
+        let extension = format
+            .map(|format| format.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|format| !format.is_empty())
+            .unwrap_or_else(|| "docx".to_owned());
+        let format = match extension.as_str() {
+            "docx" | "word" => WpFormat::Docx,
+            "odt" => WpFormat::Odt,
+            "md" | "markdown" => WpFormat::Markdown,
+            "html" | "htm" => WpFormat::Html,
+            "rtf" => WpFormat::Rtf,
+            "txt" | "text" => WpFormat::Text,
+            "pdf" => WpFormat::Pdf,
+            other => {
+                return Err(format!(
+                    "`{other}` is no format: docx, odt, md, html, rtf, txt or pdf"
+                ));
+            }
+        };
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let bytes = self.export_bytes(&doc, format)?;
+        let hash = self
+            .inner
+            .content_store()
+            .put(&bytes)
+            .map_err(|error| format!("the document could not be kept: {error}"))?;
+        ui::framework::Effected::content(&hash)
+    }
+
+    /// Replace the document's body with `bytes` read as `format`.
+    fn replace_with(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        bytes: &[u8],
+        format: WpFormat,
+    ) -> Result<(), String> {
+        let action = crate::import_action(bytes, format, self.inner.content_store())?;
         let dispatch = cx.dispatcher();
         dispatch.group(|| {
             dispatch.submit(crate::model::edit(&action));
             dispatch.submit(crate::model::Document::ADOPT_COMMENTS.invoke());
         });
-        self.set_file(path.to_path_buf(), format);
         self.scroll_y = 0.0;
         // The whole body changes; per-block caches keyed by id/text go stale.
         self.layout_cache.clear();
@@ -1282,6 +1476,21 @@ impl WordProcessorWidget {
         Ok(())
     }
 
+    /// Write the document to `destination`, a place with no path here, as
+    /// `format`, without asking.
+    fn write_kept(
+        &mut self,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+        destination: &ui::portal::SaveDestination,
+        format: WpFormat,
+    ) -> ui::framework::EffectAnswer {
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let bytes = self.export_bytes(&doc, format)?;
+        Ok(cx.write_destination(destination, bytes, |_, written, _| {
+            written.map(|()| ui::framework::Effected::done())
+        }))
+    }
+
     /// Ask the person where to save with the host's chooser; the chosen file
     /// is written on the next sync, which answers the caller.
     fn choose_where_to_save(
@@ -1292,6 +1501,21 @@ impl WordProcessorWidget {
             || "Untitled.md".to_string(),
             |f| f.to_string_lossy().into_owned(),
         );
+        if !tilo_files::available(tilo_files::Feature::NativePaths) {
+            // No path here (a browser page): the document goes where the
+            // person chooses, as the chosen name's format, and that place is
+            // kept for the next Save.
+            return cx.choose_destination(save_request(&suggested), |editor, destination, cx| {
+                let destination =
+                    destination.ok_or_else(|| "the file picker was cancelled".to_owned())?;
+                let format = WpFormat::from_path(std::path::Path::new(destination.name()));
+                // An export-only format is a copy, not the document's place.
+                if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
+                    editor.kept = Some((destination.clone(), format));
+                }
+                editor.write_kept(cx, &destination, format)
+            });
+        }
         cx.choose_path(save_request(&suggested), |editor, path, cx| match path {
             Some(path) => {
                 editor.pending_save = Some((path, cx.reply()));

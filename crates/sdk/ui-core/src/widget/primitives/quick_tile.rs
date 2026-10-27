@@ -27,7 +27,6 @@ pub struct QuickTileFace {
     pub main: Rect,
     /// The chevron half, when the tile has a section.
     pub expand: Option<Rect>,
-    /// Whether the tile's control is on.
     pub on: bool,
     /// The half under the pointer, if any.
     pub hovered: Option<Rect>,

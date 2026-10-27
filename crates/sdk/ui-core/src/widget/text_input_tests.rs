@@ -4,6 +4,7 @@ use crate::text_edit::SUGGESTION_SETTLE;
 use crate::text_selection::{next_word_boundary, prev_word_boundary};
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
+use winit::event::TouchPhase;
 
 /// The 1× size a role-less field sets its text at.
 fn body_size() -> f32 {
@@ -579,9 +580,9 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
         draw_with_theme(&mut ti, &Theme::dark());
         let dark_signature = ti.shaped_layout_signature;
         draw_with_theme(&mut ti, &Theme::light());
-        assert_ne!(
+        assert_eq!(
             ti.shaped_layout_signature, dark_signature,
-            "theme-dependent syntax colours invalidate the attributed layout"
+            "syntax colours paint with the rows, so another theme keeps the shaped layout"
         );
     }
 }
@@ -969,6 +970,52 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
+    // Case `an_unfocused_field_the_wheel_scrolled_keeps_its_scroll`.
+    {
+        for shaped in [false, true] {
+            let text = "a long source row\n".repeat(80);
+            let mut input = TextInput::local().multiline(true).with_initial_value(&text);
+            input.rect = Rect::new(0., 0., 300., 100.);
+            input.is_focused = false;
+            input.is_hovered = true;
+            input.lines = (0..80)
+                .map(|i| VisualLine {
+                    start: i * 18,
+                    end: i * 18 + 17,
+                    hard_break: true,
+                    y: i as f64 * 20.,
+                    char_x: vec![],
+                })
+                .collect();
+            let mut handled = false;
+            input.handle_mouse_wheel(
+                &winit::event::MouseScrollDelta::LineDelta(0.0, -2.0),
+                winit::event::TouchPhase::Moved,
+                1.0,
+                &mut handled,
+            );
+            let scrolled = input.scroll_y;
+            assert!(
+                handled && scrolled > 0.0,
+                "the wheel scrolls a hovered field"
+            );
+            if shaped {
+                input.update_ml_scroll(0., 20., 1600.);
+            } else {
+                input.update_ml_body_scroll(20.);
+            }
+            assert_eq!(input.scroll_y, scrolled, "the next frame keeps the scroll");
+            input.set_focus(true);
+            input.set_focus(false);
+            if shaped {
+                input.update_ml_scroll(0., 20., 1600.);
+            } else {
+                input.update_ml_body_scroll(20.);
+            }
+            assert_eq!(input.scroll_y, 0.0, "a field left again shows its start");
+        }
+    }
+
     // Case `snapshot_scroll_opt_in_preserves_unfocused_shaped_and_body_views`.
     {
         for shaped in [false, true] {
@@ -1024,7 +1071,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             "disabled input must not be focusable"
         );
 
-        // The setter path agrees with the builder.
         let mut later = TextInput::new(Vec::new());
         later.set_disabled(true);
         assert!(!Widget::is_focusable(&later));
@@ -1043,7 +1089,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         assert_eq!(ti.value(), "", "disabled input must not insert text");
         assert!(ti.take_dirty().is_none(), "no edit should be recorded");
 
-        // The SAME event DOES edit an enabled input, proving the bail-out suppressed it.
         let mut on = TextInput::local();
         on.set_focus(true);
         on.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
@@ -1193,7 +1238,6 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         assert_eq!(ti.selected_str(), Some("hello"), "clicked word is selected");
         assert!(ti.context_menu.is_open(), "menu opened");
 
-        // Empty clipboard in the headless test env omits Paste.
         let labels = ti.context_menu_labels();
         assert!(labels.contains(&"Cut".to_string()), "got {labels:?}");
         assert!(labels.contains(&"Copy".to_string()), "got {labels:?}");
@@ -1876,7 +1920,9 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
             .with_secret(true);
         input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         input.text = "correct horse battery staple".into();
+        // An edit not yet measured nor published.
         input.dirty = true;
+        input.layout_dirty = true;
         let document = AutoCommit::new();
         input.sync(&document, &automerge::ROOT);
 
@@ -1989,7 +2035,6 @@ fn a_secret_never_reaches_the_clipboard() {
     let clipboard = || crate::text_selection::clipboard_paste();
 
     for revealed in [false, true] {
-        // Case `copy_and_cut_leave_the_clipboard_alone`.
         {
             crate::text_selection::clipboard_copy("before");
             let mut ti = TextInput::local()
@@ -2019,7 +2064,6 @@ fn a_secret_never_reaches_the_clipboard() {
             assert_eq!(ti.selected_str(), Some("s3cr3t"), "and the selection");
         }
 
-        // Case `the_menu_offers_neither_copy_nor_cut_nor_text_actions`.
         {
             crate::text_selection::clipboard_copy("pasted");
             let mut ti = TextInput::local()
@@ -2040,7 +2084,6 @@ fn a_secret_never_reaches_the_clipboard() {
             assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
         }
 
-        // Case `paste_still_fills_a_secret`.
         {
             crate::text_selection::clipboard_copy("hunter2");
             let mut ti = TextInput::local().with_secret(true);
@@ -4137,7 +4180,6 @@ fn insertion_collapses_an_empty_drag_selection() {
     for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
         let mut ti = TextInput::new(Vec::new());
         ti.set_text(text);
-        // A real same-position drag may retain an anchor at its caret.
         ti.core.set_selection(caret, caret);
         ti.insert_str("N");
         assert_eq!(ti.selection_range_public(), None);
@@ -5361,5 +5403,128 @@ fn cant_and_wont_are_corrected_and_backspace_takes_a_correction_back_for_good() 
             format!("{typed} "),
             "a correction taken back is not made again"
         );
+    }
+}
+
+#[test]
+fn arrow_keys_cross_the_rows_a_paragraph_wraps_onto() {
+    let _settled = crate::motion::testing::settled();
+    let text = "alpha beta gamma delta epsilon zeta eta theta";
+    let mut ti = TextInput::local().multiline(true).with_initial_value(text);
+    ti.set_focus(true);
+    ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 400.0));
+    draw_to_populate(&mut ti);
+    assert!(ti.multiline_shaped);
+    let rows = ti
+        .single_layout
+        .as_ref()
+        .map_or(0, |layout| layout.buffer.layout_runs().count());
+    assert!(rows > 2, "the paragraph wraps onto {rows} rows");
+    let mut doc = AutoCommit::new();
+    ti.set_cursor_pos(0);
+    for (key, end) in [(NamedKey::ArrowRight, text.len()), (NamedKey::ArrowLeft, 0)] {
+        let mut presses = 0;
+        while ti.cursor_pos() != end && presses <= 2 * text.len() {
+            let before = ti.cursor_pos();
+            drive(&mut ti, &mut doc, &named_key(key), mods(false, false));
+            presses += 1;
+            assert_ne!(
+                ti.cursor_pos(),
+                before,
+                "{key:?} stopped at byte {before} after {presses} presses"
+            );
+        }
+        assert_eq!(ti.cursor_pos(), end, "{key:?} reaches the end of the text");
+    }
+}
+
+/// A focused field laid out too narrow for its text scrolls to its caret;
+/// widened so the whole text fits, it shows the text from its start again.
+#[test]
+fn a_focused_field_that_widens_shows_its_text_from_the_start() {
+    let _settled = crate::motion::testing::settled();
+    let name = "Travel";
+    let mut ti = TextInput::local().with_initial_value(name);
+    ti.set_focus(true);
+    ti.set_cursor_pos(name.len());
+    let theme = Theme::dark();
+    let presence = crate::presence::PresenceCtx::empty();
+    let mut tr = TextRenderer::new();
+    let mut draw_at = |ti: &mut TextInput, width: f64| {
+        ti.apply_layout_external(Rect::new(0.0, 0.0, width, 32.0));
+        let mut scene = Scene::new();
+        Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    };
+    draw_at(&mut ti, 40.0);
+    assert!(ti.scroll_x() > 0.0, "narrow, it follows the caret");
+    draw_at(&mut ti, 400.0);
+    assert_eq!(ti.scroll_x(), 0.0, "wide, the whole name shows");
+}
+
+/// Six chrome surfaces paint a field themselves and forward its pointer
+/// events ([`TextInput::handle_chrome_pointer`]); each copies the selection
+/// back into the text it owns. Hover is not ours to take, a press places the
+/// caret where the person pointed, a drag sweeps a selection, and a press
+/// that takes the selection back reports it collapsed rather than nothing to
+/// say — otherwise the surface keeps painting a selection nobody holds.
+#[test]
+fn a_chrome_owned_field_places_the_caret_and_reports_every_selection() {
+    let _settled = crate::motion::testing::settled();
+    {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+
+        let inside = x_for_byte(&ti, 8);
+        let before = ti.selection_anchor_focus_or_caret();
+        assert!(
+            !ti.handle_chrome_pointer(&cursor_moved(inside, 20.0), 1.0, mods(false, false)),
+            "a hover belongs to the surface, not to the field"
+        );
+        assert_eq!(
+            ti.selection_anchor_focus_or_caret(),
+            before,
+            "and it places no caret"
+        );
+        assert!(
+            ti.handle_chrome_pointer(&mouse_press(), 1.0, mods(false, false)),
+            "a press on the field is the field's"
+        );
+        assert_eq!(
+            ti.selection_anchor_focus_or_caret(),
+            (8, 8),
+            "the caret went where the person pressed"
+        );
+    }
+    {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+
+        let start = x_for_byte(&ti, 2);
+        let end = x_for_byte(&ti, 9);
+        ti.handle_chrome_pointer(&cursor_moved(start, 20.0), 1.0, mods(false, false));
+        assert!(ti.handle_chrome_pointer(&mouse_press(), 1.0, mods(false, false)));
+        ti.handle_chrome_pointer(&cursor_moved(end, 20.0), 1.0, mods(false, false));
+        assert_eq!(
+            ti.selection_anchor_focus_or_caret(),
+            (2, 9),
+            "the drag swept a selection the surface can paint"
+        );
+        // A press back on the text collapses that selection; the surface
+        // hears the collapsed pair, not silence.
+        assert!(ti.handle_chrome_pointer(&mouse_press(), 1.0, mods(false, false)));
+        let (anchor, caret) = ti.selection_anchor_focus_or_caret();
+        assert_eq!(anchor, caret, "a click takes the selection back");
+    }
+    {
+        // The same press at a device scale of two lands on the same letter.
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        let inside = x_for_byte(&ti, 8);
+        ti.handle_chrome_pointer(&cursor_moved(inside * 2.0, 40.0), 2.0, mods(false, false));
+        assert!(ti.handle_chrome_pointer(&mouse_press(), 2.0, mods(false, false)));
+        assert_eq!(ti.selection_anchor_focus_or_caret(), (8, 8));
     }
 }

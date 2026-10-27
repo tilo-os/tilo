@@ -30,8 +30,6 @@ impl Identity {
     }
 }
 
-/// # Errors
-/// Returns an error on platforms without verified directory-entry persistence support.
 pub fn supported() -> io::Result<()> {
     if cfg!(any(target_os = "macos", target_os = "linux")) {
         Ok(())

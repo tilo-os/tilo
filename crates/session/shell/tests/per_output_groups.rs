@@ -95,6 +95,7 @@ fn group(id: GroupId) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: format!("W{id}"),
             },
+            app_title: None,
         }],
         active_tab: tab,
         // Wide enough that three overflow every fixture display, so there
@@ -109,8 +110,7 @@ fn group(id: GroupId) -> WindowGroup {
 /// state: the first three on the primary display, the rest on the second.
 fn tree() -> WorkspaceTree {
     let ws_id = WorkspaceId(7);
-    let mut ws = Workspace::new(ws_id, "Desk");
-    ws.set_room(RoomId::parse(ROOM).expect("room id"));
+    let mut ws = Workspace::in_room(ws_id, RoomId::parse(ROOM).expect("room id"), "Desk");
     ws.strips = vec![Strip {
         id: STRIP,
         name: "Main".into(),
@@ -451,13 +451,16 @@ fn no_window_straddles_a_seam() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let mut desk = Desk::fixture(fixture);
         assert_every_group_stays_on_its_display(&mut desk, fixture);
-        // Unpanned, the second display's first window starts at that
-        // display's own left edge, not wherever the first display's row
-        // happened to end.
+        // Unpanned, the second display's first window starts the strip's
+        // edge gutter past that display's own left edge, not wherever the
+        // first display's row happened to end, and not flush with the seam:
+        // a window's edge is drawn just outside it, so flush with a
+        // display's edge it is cut off there.
         let first_on_second = desk.rect_of(ON_SECOND[0]);
+        let gutter = ui::widget::STRIP_EDGE_GUTTER_PX;
         assert!(
-            (first_on_second.x0 - desk.display(1).x0).abs() < 0.5,
-            "{fixture}: {first_on_second:?} should start at {:?}",
+            (first_on_second.x0 - (desk.display(1).x0 + gutter)).abs() < 0.5,
+            "{fixture}: {first_on_second:?} should start {gutter} px into {:?}",
             desk.display(1)
         );
     }
@@ -507,7 +510,6 @@ fn a_new_window_opens_on_the_display_with_focus() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let mut desk = Desk::fixture(fixture);
         assert_eq!(desk.focused_display(), Some(0), "{fixture}");
-        // The pointer crossing onto the second display takes focus with it.
         let second = desk.display(1);
         desk.point_at(Point::new(second.center().x, second.center().y));
         assert_eq!(desk.focused_display(), Some(1), "{fixture}");
@@ -589,10 +591,8 @@ fn the_chord_moves_the_focused_group_to_the_neighbouring_display() {
         );
         assert_takes_its_new_displays_height(&mut desk, fixture, moving);
 
-        // And back.
         desk.press(NamedKey::ArrowLeft, chord);
         assert_eq!(desk.display_of(moving), Some(0), "{fixture}");
-        // The plain reorder chord still reorders, within the display.
         let before = desk.strip_order();
         desk.press(
             NamedKey::ArrowLeft,
@@ -881,9 +881,7 @@ impl Collaborator {
         let room = RoomId::parse(ROOM).expect("room");
         let mut tree = WorkspaceTree::default();
         tree.set_salt_override(SALT.wrapping_add(1));
-        let ws = tree.append_empty_workspace("Joined");
-        assert!(tree.set_room(ws, room));
-        // The desk's invite names it as the room's governor.
+        tree.join_room("Joined", room).expect("joins the room");
         assert!(tree.pin_room_authority(room, PeerOrigin::peer_id("docked-laptop")));
         let mut collaborator = Self { tree, room };
         collaborator.receive(desk);
@@ -932,7 +930,6 @@ fn display_changes_never_reorder_a_collaborators_strip() {
         assert_eq!(collaborator.strip_order(), shared, "{fixture}: unplug");
         assert_eq!(desk.strip_order(), shared, "{fixture}: unplug");
 
-        // Replugged, then a group sent to the other display.
         desk.replug();
         desk.focus(ON_SECOND[1]);
         desk.focus(ON_PRIMARY[2]);
@@ -991,7 +988,6 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let mut desk = Desk::fixture(fixture);
         assert_groups_on_their_monitors(&mut desk, fixture);
-        // What `state.json` holds.
         let saved = serde_json::to_string(&*desk.fb.chrome().tree()).expect("the state saves");
 
         // Replugged on each other's ports while running.
@@ -1001,7 +997,6 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
         assert_groups_on_their_monitors(&mut desk, &format!("{fixture}, port swap"));
         assert_every_group_stays_on_its_display(&mut desk, fixture);
 
-        // Restarted from the saved state with the outputs renumbered.
         let mut tree: WorkspaceTree = serde_json::from_str(&saved).expect("the saved state loads");
         tree.set_salt_override(SALT);
         let outputs = desk.outputs.clone();
@@ -1017,48 +1012,74 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
     }
 }
 
+/// Each strip is a full-height screen, one shown at a time, on every
+/// display: the focused strip's windows take each display's height, and the
+/// other strip keeps its windows on their displays, a screen away and off
+/// screen, until it is focused.
 #[test]
-fn every_display_shows_every_strips_groups() {
+fn every_display_shows_the_focused_strip_as_a_full_screen() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let outputs = with_monitors(output_fixture(fixture).expect("fixture"));
         let mut desk = Desk::with_tree(two_strip_tree(), outputs);
-        for display in [0, 1] {
-            let own = desk.display(display);
-            let mut bands = Vec::new();
-            for strip in [STRIP, STRIP_B] {
-                let on: Vec<Rect> = desk
-                    .layout_of(strip)
-                    .into_iter()
-                    .filter(|(_, _, d)| *d == Some(display))
-                    .map(|(_, r, _)| r)
-                    .collect();
-                assert!(
-                    !on.is_empty(),
-                    "{fixture}: strip {strip:?} has windows on {display}"
-                );
-                for rect in &on {
-                    let shown = rect.intersect(own);
-                    assert!(
-                        shown.height() > 100.0
-                            && rect.y0 >= own.y0 - 0.5
-                            && rect.y1 <= own.y1 + 0.5,
-                        "{fixture}: a window of strip {strip:?} is shown on display {display}: {rect:?} on {own:?}"
-                    );
-                }
-                let first = on[0];
-                assert!(
-                    first.intersect(own).width() > 0.0,
-                    "{fixture}: the first window of strip {strip:?} is in view on {display}: {first:?}"
-                );
-                bands.push((
-                    on.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min),
-                    on.iter().map(|r| r.y1).fold(f64::NEG_INFINITY, f64::max),
-                ));
+        for (shown, hidden) in [(STRIP, STRIP_B), (STRIP_B, STRIP)] {
+            if shown == STRIP_B {
+                let mut moved = false;
+                desk.fb
+                    .with_chrome(|chrome| moved = chrome.focus_strip(shown));
+                assert!(moved, "{fixture}: the second strip takes focus");
+                desk.settle_until("the second strip slides in", |desk| {
+                    desk.fb.host().strip_row_rect(hidden).is_none()
+                        && desk.fb.host().strip_row_rect(shown).is_some()
+                });
             }
             assert!(
-                bands[0].1 <= bands[1].0 + 0.5,
-                "{fixture}: the strips stack on display {display} without overlapping: {bands:?}"
+                desk.fb.host().strip_row_rect(shown).is_some()
+                    && desk.fb.host().strip_row_rect(hidden).is_none(),
+                "{fixture}: the strip deck shows {shown:?} and has {hidden:?} off screen"
             );
+            for display in [0, 1] {
+                let own = desk.display(display);
+                let mut on = |strip: StripId| -> Vec<Rect> {
+                    desk.layout_of(strip)
+                        .into_iter()
+                        .filter(|(_, _, d)| *d == Some(display))
+                        .map(|(_, r, _)| r)
+                        .collect()
+                };
+                let shown_rects = on(shown);
+                let hidden_rects = on(hidden);
+                assert!(
+                    !shown_rects.is_empty() && !hidden_rects.is_empty(),
+                    "{fixture}: both strips have windows on {display}"
+                );
+                for rect in &shown_rects {
+                    assert!(
+                        rect.intersect(own).height() > own.height() / 2.0
+                            && rect.y0 >= own.y0 - 0.5
+                            && rect.y1 <= own.y1 + 0.5,
+                        "{fixture}: a window of the focused strip {shown:?} takes display {display}'s height: {rect:?} on {own:?}"
+                    );
+                }
+                let first = shown_rects[0];
+                assert!(
+                    first.intersect(own).width() > 0.0,
+                    "{fixture}: the first window of strip {shown:?} is in view on {display}: {first:?}"
+                );
+                let top = shown_rects
+                    .iter()
+                    .map(|r| r.y0)
+                    .fold(f64::INFINITY, f64::min);
+                let bottom = shown_rects
+                    .iter()
+                    .map(|r| r.y1)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                for rect in &hidden_rects {
+                    assert!(
+                        rect.y0 >= bottom - 0.5 || rect.y1 <= top + 0.5,
+                        "{fixture}: a window of {hidden:?}, the strip not shown, is laid out a screen away from {shown:?}'s on {display}: {rect:?}, shown between {top} and {bottom}"
+                    );
+                }
+            }
         }
     }
 }
@@ -1113,7 +1134,6 @@ fn dragging_a_group_onto_another_display_moves_it_there() {
         );
         assert_takes_its_new_displays_height(&mut desk, how, moving);
         assert_every_group_stays_on_its_display(&mut desk, how);
-        // Nothing overlaps on either display.
         let layout = desk.layout();
         for (i, (a, ra, da)) in layout.iter().enumerate() {
             for (b, rb, db) in layout.iter().skip(i + 1) {

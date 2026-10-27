@@ -1,5 +1,3 @@
-//! The fanotify change journal on a dedicated store volume.
-
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -25,9 +23,10 @@ fn describe(e: &fs_native::journal::JournalEntry) -> String {
     }
 }
 
+/// fanotify queues an event in the syscall that causes it, so once a change
+/// has returned, reading what is queued without waiting reads its events.
 fn drain(j: &mut ChangeJournal) -> Vec<String> {
-    j.pump_until_idle(Duration::from_millis(150), Duration::from_secs(10))
-        .unwrap();
+    j.pump(Some(Duration::ZERO)).unwrap();
     j.take().entries.iter().map(describe).collect()
 }
 
@@ -114,8 +113,7 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
         fs::create_dir_all(s.live.join("a/b")).unwrap();
         fs::write(s.live.join("a/b/f"), b"x").unwrap();
         fs::rename(s.live.join("a"), s.live.join("z")).unwrap();
-        j.pump_until_idle(Duration::from_millis(150), Duration::from_secs(5))
-            .unwrap();
+        j.pump(Some(Duration::ZERO)).unwrap();
         let cs = cap.capture(&j.take()).unwrap();
         let mut paths: Vec<String> = cs
             .ops
@@ -143,8 +141,7 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
             // Keep the queue drained so events cannot merge in the kernel.
             j.pump(Some(Duration::ZERO)).unwrap();
         }
-        j.pump_until_idle(Duration::from_millis(100), Duration::from_secs(5))
-            .unwrap();
+        j.pump(Some(Duration::ZERO)).unwrap();
         let first = j.take();
         let modifies = first
             .entries
@@ -157,7 +154,6 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
             j.events_read(),
             j.kernel_mutes() > 0
         );
-        // The next batch sees the file again.
         f.write_all(b"more").unwrap();
         drop(f);
         let got = drain(&mut j);
@@ -179,8 +175,7 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
                 fs::write(dir.join(format!("f{f}")), [u8::try_from(d).unwrap(); 64]).unwrap();
             }
         }
-        j.pump_until_idle(Duration::from_millis(200), Duration::from_secs(30))
-            .unwrap();
+        j.pump(Some(Duration::ZERO)).unwrap();
         let batch = j.take();
         // Other tests on the volume can also make the journal ask for a rescan
         // (their directories vanish before events are read); either reason
@@ -199,8 +194,7 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
         assert_eq!(cap.nodes().count(), 20_020);
         // After the rescan only the next real change is published.
         fs::write(s.live.join("d0/f0"), b"changed").unwrap();
-        j.pump_until_idle(Duration::from_millis(150), Duration::from_secs(5))
-            .unwrap();
+        j.pump(Some(Duration::ZERO)).unwrap();
         let cs = cap.capture(&j.take()).unwrap();
         let paths: Vec<PathBuf> = cs.ops.iter().map(|o| o.path().to_path_buf()).collect();
         assert_eq!(paths, [PathBuf::from("d0/f0")]);
@@ -227,8 +221,7 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
             v
         };
         assert_eq!(names(&batch.entries), ["before", "during"]);
-        j.pump_until_idle(Duration::from_millis(100), Duration::from_secs(5))
-            .unwrap();
+        j.pump(Some(Duration::ZERO)).unwrap();
         assert_eq!(names(j.pending()), ["during", "after"]);
     }
     // Phase `journal_records_every_change_in_writer_order` (defined above).

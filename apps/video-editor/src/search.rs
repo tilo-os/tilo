@@ -220,7 +220,6 @@ mod tests {
 
     #[test]
     fn editor_search_finds_media_clips_captions_and_late_tracks() {
-        // Case `a_shot_is_findable_as_media_and_as_an_exact_clip`.
         {
             let p = project_with_things();
             let hits = source(&p).search("coastline");
@@ -236,7 +235,6 @@ mod tests {
                         .is_some_and(|text| text.contains(&timecode::clock(12.0)))
             }));
         }
-        // Case `caption_and_marker_note_search_preserve_unicode_and_late_text`.
         {
             let mut project = project_with_things();
             project.markers.push(crate::model::Marker {
@@ -274,7 +272,6 @@ mod tests {
                     .any(|hit| hit.action_id == anchor("media", title_id))
             );
         }
-        // Case `late_track_remains_findable_in_a_large_project`.
         {
             let (provider, hit) = assert_late_hit_reachable(
                 |corpus| {
@@ -299,7 +296,6 @@ mod tests {
     }
 
     fn assert_search_pagination() {
-        // Case `pages_bound_work_and_materialisation_without_losing_broad_hits`.
         {
             let mut project = Project::new("large");
             for number in 0..257 {
@@ -341,7 +337,6 @@ mod tests {
 
     #[test]
     fn editor_search_hits_open_current_items_and_stale_ones_are_refused() {
-        // Case `every_hit_opens_a_current_item_and_a_stale_hit_is_refused`.
         {
             let mut project = project_with_things();
             let clip = project.clips[0].id;
@@ -369,7 +364,6 @@ mod tests {
                 "deleted target is refused"
             );
         }
-        // Case `duplicate_effect_instances_are_searchable_by_id_and_a_stale_one_is_refused`.
         {
             let mut project = project_with_things();
             let clip_id = project.clips[0].id;

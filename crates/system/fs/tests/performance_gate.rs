@@ -135,7 +135,6 @@ fn idle_namespace_anti_entropy_performance_gate() {
             let content = iroh_blobs::Hash::new(change.to_le_bytes());
             assert!(host.set_content(file, Some(&content), change, change));
         }
-        // Reading the heads commits the edit as one change.
         host.heads();
     }
     let mut device =
@@ -183,7 +182,6 @@ fn restart_resync_performance_gate() {
         let content = iroh_blobs::Hash::new(file.to_le_bytes());
         host.create_file(ROOT_INO, format!("file-{file}"), Some(&content), 1, file)
             .expect("create restart fixture file");
-        // Reading the heads commits each file as one change.
         host.heads();
     }
     let mut device =

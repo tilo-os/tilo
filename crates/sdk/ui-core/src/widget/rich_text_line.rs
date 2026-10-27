@@ -13,9 +13,10 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
+use tilo_sort::CompactSort as _;
 
 use crate::color_compat::ColorCompat;
-use crate::richtext::RichSpan;
+use crate::richtext::{RichSpan, inline_emoji};
 use crate::widget::text_input::SingleLineAttributes;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -172,6 +173,10 @@ pub struct RichTextLine {
     author_runs: Vec<(usize, usize, String)>,
     /// The colours mentions are painted in; accent ink when unset.
     mention_paint: Option<marks::MentionPaint>,
+    /// The revision of the window's workspace emoji the line's runs were
+    /// last built against: when it moves, a `:name:` may have become a
+    /// picture or stopped being one.
+    emoji_revision: Option<u64>,
 }
 
 impl RichTextLine {
@@ -208,6 +213,7 @@ impl RichTextLine {
             closed: None,
             author_runs: Vec::new(),
             mention_paint: None,
+            emoji_revision: None,
         }
     }
 
@@ -441,7 +447,6 @@ impl RichTextLine {
         self.inner.set_align(align);
     }
 
-    /// How the line's text is aligned.
     pub fn align(&self) -> crate::richtext::TextAlign {
         self.inner.align()
     }
@@ -549,7 +554,7 @@ impl RichTextLine {
     }
 
     pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
-        marks.sort_by_key(|s| s.range.start);
+        marks.compact_sort_by_key(|s| s.range.start);
         self.dirty.styled_layout |= self.marks != marks;
         self.marks = marks;
     }
@@ -617,7 +622,7 @@ impl RichTextLine {
 
     pub fn add_mark(&mut self, span: MarkSpan) {
         self.marks.push(span);
-        self.marks.sort_by_key(|s| s.range.start);
+        self.marks.compact_sort_by_key(|s| s.range.start);
         self.dirty.styled_layout = true;
     }
 
@@ -657,7 +662,6 @@ impl RichTextLine {
         self.inner.first_row_band()
     }
 
-    /// The style the line's text is shaped in under `text_scale`.
     pub(super) fn line_style(&self, text_scale: f32) -> crate::text_render::TextStyle {
         self.inner.line_style(text_scale)
     }
@@ -736,7 +740,7 @@ impl RichTextLine {
                     }
                 }
             }
-            boundaries.sort_unstable();
+            boundaries.compact_sort();
             boundaries.dedup();
             for endpoints in boundaries.windows(2) {
                 let &[start, end] = endpoints else { continue };
@@ -769,7 +773,14 @@ impl RichTextLine {
                     .color(color)
                     .background(mention_band);
                 span.kind = mark_kind(&segment);
-                attributes.spans.push(span);
+                // Prose draws its workspace emoji; code keeps `:name:`.
+                if segment.code || !self.inline_formatting || !slice.contains(':') {
+                    attributes.spans.push(span);
+                } else {
+                    attributes
+                        .spans
+                        .extend(inline_emoji::split_spans_in_window(vec![span]));
+                }
             }
             if segment.underline {
                 attributes.underlines.push(range);
@@ -826,7 +837,6 @@ impl RichTextLine {
             }
         }
 
-        // Drain pending marks onto the inserted bytes.
         if inserted > 0 && !self.pending_marks.is_empty() {
             let range = at..at.saturating_add(inserted);
             let pending = std::mem::take(&mut self.pending_marks);
@@ -861,7 +871,7 @@ impl RichTextLine {
                     }
                 }
             }
-            boundaries.sort_unstable();
+            boundaries.compact_sort();
             boundaries.dedup();
             let spans = boundaries
                 .windows(2)
@@ -888,12 +898,20 @@ impl RichTextLine {
             self.inner.set_rich_spans(Some(spans));
             return;
         }
-        if !self.wrap || !self.inline_formatting || self.marks.is_empty() {
+        self.emoji_revision = window_emoji_revision();
+        if !self.wrap || !self.inline_formatting {
             self.inner.set_rich_spans(None);
             return;
         }
+        if self.marks.is_empty() {
+            let text = self.value();
+            let spans = inline_emoji::writes_window_emoji(text)
+                .then(|| inline_emoji::split_spans_in_window(vec![RichSpan::new(text)]));
+            self.inner.set_rich_spans(spans);
+            return;
+        }
         let text = self.value();
-        let spans = marks::segments_for(text.len(), &self.marks)
+        let spans: Vec<RichSpan> = marks::segments_for(text.len(), &self.marks)
             .into_iter()
             .filter_map(|segment| {
                 let source = text.get(segment.range.clone())?;
@@ -911,14 +929,32 @@ impl RichTextLine {
                     let background = theme.tokens.colors.surfaces.raised;
                     span.background = Some([background.r(), background.g(), background.b()]);
                 }
-                if segment.code || segment.link.is_some() || segment.external_link {
+                if segment.code
+                    || segment.link.is_some()
+                    || segment.external_link
+                    || segment.resource_link.is_some()
+                {
                     let color = theme.tokens.colors.text_primary;
                     span.color = Some([color.r(), color.g(), color.b()]);
                 }
                 Some(span)
             })
             .collect();
+        let spans = if text.contains(':') {
+            inline_emoji::split_spans_in_window(spans)
+        } else {
+            spans
+        };
         self.inner.set_rich_spans(Some(spans));
+    }
+
+    /// Whether the window's workspace emoji changed since the line's runs
+    /// were built, for a line that writes a `:name:` at all. Asked where no
+    /// window's code runs, nothing moved.
+    fn emoji_moved(&self) -> bool {
+        self.inline_formatting
+            && self.value().contains(':')
+            && window_emoji_revision().is_some_and(|now| self.emoji_revision != Some(now))
     }
 
     fn draw_wrapped_mark_decorations(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
@@ -927,10 +963,11 @@ impl RichTextLine {
         }
         for span in &self.marks {
             let (color, strike) = match span.mark {
-                Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
-                    (theme.tokens.colors.text_primary, false)
-                }
-                Mark::Underline => (theme.tokens.colors.text_primary, false),
+                Mark::Link(_)
+                | Mark::Transclusion(_)
+                | Mark::ExternalLink(_)
+                | Mark::ResourceLink(_)
+                | Mark::Underline => (theme.tokens.colors.text_primary, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
                 _ => continue,
             };
@@ -1165,13 +1202,14 @@ impl Widget for RichTextLine {
     }
 
     fn layout_needs_measure(&self) -> bool {
-        (self.wrap && self.dirty.styled_layout) || self.inner.layout_needs_measure()
+        (self.wrap && (self.dirty.styled_layout || self.emoji_moved()))
+            || self.inner.layout_needs_measure()
     }
 
     /// A line's height follows its text and its inline marks, both of which
     /// `measure` re-applies; the childless default would dirty every line.
     fn is_layout_dirty(&self) -> bool {
-        self.dirty.styled_layout || self.inner.is_layout_dirty()
+        self.dirty.styled_layout || self.emoji_moved() || self.inner.is_layout_dirty()
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -1450,6 +1488,11 @@ impl Widget for RichTextLine {
     }
 }
 
+/// The revision of the window's workspace emoji, if its host registered any.
+fn window_emoji_revision() -> Option<u64> {
+    crate::workspace_emoji::current().map(|source| source.revision())
+}
+
 fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
     theme.tokens.syntax.color(kind)
 }
@@ -1602,7 +1645,6 @@ mod tests {
 
     #[test]
     fn rich_line_shapes_once_at_every_scale() {
-        // Case `large_text_shapes_once_not_geometry_scale_squared`.
         {
             let normal = rendered_advance_at_scale(1.0);
             let doubled = rendered_advance_at_scale(2.0);
@@ -1612,7 +1654,6 @@ mod tests {
             );
         }
 
-        // Case `base_font_override_scales_once_across_relayout_caret_selection_and_pointer`.
         {
             let mut line = RichTextLine::new().with_text("alpha beta").with_size(16.0);
             line.set_marks(vec![MarkSpan::new(0..5, Mark::Code)]);
@@ -1658,7 +1699,6 @@ mod tests {
             assert_eq!(diff_splice("xé", "xê"), (1, 2, 2));
         }
 
-        // Case `rich_marks_paint_each_glyph_once`.
         {
             let mut line = RichTextLine::new().with_text("aBz");
             line.set_marks(vec![MarkSpan::new(1..2, Mark::Bold)]);
@@ -1666,7 +1706,6 @@ mod tests {
             assert_eq!(scene.encoding().resources.glyphs.len(), 3);
         }
 
-        // Case `rich_marks_style_only_changes_refresh_authoritative_geometry`.
         {
             for scale in [1.0, 2.0] {
                 let theme = Theme::dark().with_text_scale(scale);
@@ -1689,7 +1728,6 @@ mod tests {
             }
         }
 
-        // Case `rich_marks_scrolled_selection_and_pointer_share_the_painted_end`.
         {
             for scale in [1.0, 2.0] {
                 let theme = Theme::dark().with_text_scale(scale);
@@ -1710,7 +1748,6 @@ mod tests {
 
     #[test]
     fn bound_line_reads_the_document_and_keeps_edits_for_its_owner() {
-        // Case `bound_line_reads_text_from_doc`.
         {
             use automerge::{ObjType, ROOT, transaction::Transactable};
             let mut doc = automerge::AutoCommit::new();
@@ -1719,12 +1756,10 @@ mod tests {
 
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
-            // The root arg is unused once a Text is bound.
             line.sync(&doc, &ROOT);
             assert_eq!(line.value(), "hello");
         }
 
-        // Case `editing_bound_line_leaves_the_document_to_the_owner`.
         {
             use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
             let mut doc = automerge::AutoCommit::new();
@@ -1745,7 +1780,6 @@ mod tests {
             assert_eq!(line.take_dirty().as_deref(), Some("hi"));
         }
 
-        // Case `author_marks_in_the_document_become_author_runs`.
         {
             use automerge::{ObjType, ROOT, transaction::Transactable};
             let mut doc = automerge::AutoCommit::new();
@@ -1773,7 +1807,6 @@ mod tests {
             );
         }
 
-        // Case `diff_splice_detects_simple_insertion`.
         {
             assert_eq!(diff_splice("abc", "abXc"), (2, 1, 0));
             assert_eq!(diff_splice("abc", "abc"), (3, 0, 0));
@@ -1784,7 +1817,6 @@ mod tests {
 
     #[test]
     fn construction_and_programmatic_state_do_not_count_as_edits() {
-        // Case `new_starts_empty_unfocused`.
         {
             let l = RichTextLine::new();
             assert_eq!(l.value(), "");
@@ -1793,7 +1825,6 @@ mod tests {
             assert!(l.cursor_at_end());
         }
 
-        // Case `with_text_seeds_value_and_parks_cursor_at_end`.
         {
             let l = RichTextLine::new().with_text("hello");
             assert_eq!(l.value(), "hello");
@@ -1801,7 +1832,6 @@ mod tests {
             assert!(!l.cursor_at_start());
         }
 
-        // Case `set_text_does_not_mark_dirty`.
         {
             let mut l = RichTextLine::new();
             l.set_text("seeded");
@@ -1813,7 +1843,6 @@ mod tests {
             assert!(l.cursor_at_end());
         }
 
-        // Case `cursor_at_start_after_set_cursor_pos_zero`.
         {
             let mut l = RichTextLine::new().with_text("abc");
             l.set_cursor_pos(0);
@@ -1823,7 +1852,6 @@ mod tests {
             assert!(l.cursor_at_end());
         }
 
-        // Case `accessibility_reports_single_line_text_input_with_value`.
         {
             use crate::a11y::Role;
             let l = RichTextLine::new().with_text("hello world");
@@ -1836,7 +1864,6 @@ mod tests {
             assert!(!node.state.protected, "block text is never a secret field");
         }
 
-        // Case `accessibility_focus_tracks_inner_input`.
         {
             let mut l = RichTextLine::new().with_text("x");
             Widget::set_focus(&mut l, true);
@@ -1847,7 +1874,6 @@ mod tests {
 
     #[test]
     fn boundary_keys_yield_block_signals() {
-        // Case `enter_key_yields_signal_with_cursor_byte`.
         {
             let mut l = RichTextLine::new().with_text("abcdef");
             l.set_focus(true);
@@ -1860,7 +1886,6 @@ mod tests {
             assert_eq!(l.value(), "abcdef");
         }
 
-        // Case `enter_at_end_yields_signal_with_full_length`.
         {
             let mut l = RichTextLine::new().with_text("hi");
             l.set_focus(true);
@@ -1871,7 +1896,6 @@ mod tests {
             }
         }
 
-        // Case `backspace_at_byte_zero_yields_signal`.
         {
             let mut l = RichTextLine::new().with_text("abc");
             l.set_focus(true);
@@ -1881,7 +1905,6 @@ mod tests {
             assert_eq!(l.value(), "abc");
         }
 
-        // Case `backspace_after_byte_zero_falls_through_to_inner`.
         {
             let mut l = RichTextLine::new().with_text("abc");
             l.set_focus(true);
@@ -1892,7 +1915,6 @@ mod tests {
             assert!(l.take_dirty().is_some());
         }
 
-        // Case `arrow_up_down_emit_signals`.
         {
             let mut l = RichTextLine::new().with_text("x");
             l.set_focus(true);
@@ -1902,7 +1924,6 @@ mod tests {
             assert_eq!(l.take_signal(), Some(LineSignal::ArrowDown));
         }
 
-        // Case `typing_double_bracket_emits_link_open_signal`.
         {
             let mut l = RichTextLine::new();
             l.set_focus(true);
@@ -1920,7 +1941,6 @@ mod tests {
 
     #[test]
     fn typing_edits_only_when_focused_and_reports_one_dirty_edge() {
-        // Case `typing_marks_dirty_and_appends`.
         {
             let mut l = RichTextLine::new();
             l.set_focus(true);
@@ -1932,7 +1952,6 @@ mod tests {
             assert!(l.take_dirty().is_none());
         }
 
-        // Case `unfocused_line_ignores_keys`.
         {
             let mut l = RichTextLine::new().with_text("abc");
             dispatch(&mut l, &named_key(NamedKey::Enter));
@@ -1941,7 +1960,6 @@ mod tests {
             assert_eq!(l.value(), "abc");
         }
 
-        // Case `user_rich_mark_edit_emits_one_dirty_edge_but_projection_and_pending_marks_do_not`.
         {
             let mut line = RichTextLine::new().with_text("text");
             let mut doc = AutoCommit::new();
@@ -1982,7 +2000,6 @@ mod tests {
 
     #[test]
     fn marks_toggle_apply_pending_and_shift_with_edits() {
-        // Case `toggle_mark_on_selection_wraps_it`.
         {
             let mut l = RichTextLine::new().with_text("hello");
             l.set_focus(true);
@@ -1995,7 +2012,6 @@ mod tests {
             assert!(l.pending_marks().is_empty());
         }
 
-        // Case `selected_formatting_reports_one_edit_without_changing_text`.
         {
             let mut line = RichTextLine::new().with_text("hello");
             line.inner_mut().set_selection(0, 5);
@@ -2011,7 +2027,6 @@ mod tests {
             );
         }
 
-        // Case `pending_mark_applies_to_next_typed_char`.
         {
             let mut l = RichTextLine::new();
             l.set_focus(true);
@@ -2019,14 +2034,12 @@ mod tests {
             assert_eq!(l.pending_marks().len(), 1);
             dispatch(&mut l, &char_key("x"));
             assert_eq!(l.value(), "x");
-            // Pending was drained onto the inserted byte.
             assert!(l.pending_marks().is_empty());
             assert_eq!(l.marks().len(), 1);
             assert_eq!(l.marks()[0].range, 0..1);
             assert_eq!(l.marks()[0].mark, Mark::Bold);
         }
 
-        // Case `marks_shift_on_insert_before`.
         {
             let mut l = RichTextLine::new().with_text("hello");
             l.set_marks(vec![MarkSpan::new(2..4, Mark::Bold)]);
@@ -2037,7 +2050,6 @@ mod tests {
             assert_eq!(l.marks()[0].range, 3..5);
         }
 
-        // Case `marks_shift_on_delete_before`.
         {
             let mut l = RichTextLine::new().with_text("Xhello");
             l.set_marks(vec![MarkSpan::new(3..5, Mark::Bold)]);
@@ -2048,7 +2060,6 @@ mod tests {
             assert_eq!(l.marks()[0].range, 2..4);
         }
 
-        // Case `link_at_byte_finds_mark`.
         {
             let id = uuid::Uuid::from_u128(7);
             let marks = vec![MarkSpan::new(2..6, Mark::Link(id))];
@@ -2060,7 +2071,6 @@ mod tests {
 
     #[test]
     fn literal_code_is_immune_to_formatting_and_note_links() {
-        // Case `literal_code_rejects_formatting_shortcuts_and_restores_prose_behavior`.
         {
             for modifier in [ModifiersState::CONTROL, ModifiersState::SUPER] {
                 for shortcut in ["b", "i", "e", "u"] {
@@ -2085,7 +2095,6 @@ mod tests {
             }
         }
 
-        // Case `literal_code_brackets_do_not_open_note_links_or_inherit_pending_marks`.
         {
             let mut line = RichTextLine::new();
             line.set_focus(true);
@@ -2116,5 +2125,86 @@ mod tests {
     }
     fn _placeholder_for_modifiers_key_state() -> ModifiersKeyState {
         ModifiersKeyState::Unknown
+    }
+
+    /// A line in a window whose workspace has an emoji draws its picture,
+    /// wrapped or not, marked or not; it stops once the workspace drops it.
+    #[test]
+    fn a_workspace_emoji_draws_as_its_picture_until_the_workspace_drops_it() {
+        use crate::richtext::inline_emoji::tests::{Fixed, workspace};
+        let draws_picture = |scene: &Scene| {
+            scene
+                .encoding()
+                .draw_tags
+                .contains(&vello_encoding::DrawTag::IMAGE)
+        };
+        let theme = Theme::dark();
+        let text = "nice :party_parrot: work";
+        let at = text.find(':').unwrap();
+        let emoji = at..at + ":party_parrot:".len();
+
+        assert!(
+            !draws_picture(&layout_and_draw(
+                &mut RichTextLine::new().with_text(text),
+                &theme,
+                400.0
+            )),
+            "outside a window the name is text"
+        );
+
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let source = std::rc::Rc::new(Fixed::new(workspace()));
+        crate::workspace_emoji::register(&scope.handle(), source.clone());
+        for (wrap, marked) in [(false, false), (true, false), (true, true), (false, true)] {
+            let mut line = RichTextLine::new().with_text(text);
+            line.set_wrap(wrap);
+            if marked {
+                line.set_marks(vec![MarkSpan {
+                    range: 0..4,
+                    mark: Mark::Bold,
+                }]);
+            }
+            assert!(
+                draws_picture(&layout_and_draw(&mut line, &theme, 400.0)),
+                "wrap {wrap}, marked {marked}"
+            );
+            let rects = line.mark_rects(&theme, emoji.clone());
+            let advance = f64::from(crate::richtext::inline_emoji::ADVANCE_EM * line.font_size);
+            assert_eq!(rects.len(), 1);
+            assert!(
+                (rects[0].width() - advance).abs() < 0.5,
+                "one emoji wide: {} vs {advance}",
+                rects[0].width()
+            );
+            assert_eq!(line.value(), text, "the text is unchanged");
+            assert!(!line.emoji_moved(), "drawn against the emoji now");
+
+            source.set(crate::workspace_emoji::WorkspaceEmoji::default());
+            assert!(
+                line.emoji_moved() && line.is_layout_dirty(),
+                "the workspace's emoji moved"
+            );
+            assert!(!draws_picture(&layout_and_draw(&mut line, &theme, 400.0)));
+            let rects = line.mark_rects(&theme, emoji.clone());
+            assert!(
+                rects[0].width() > advance * 2.0,
+                "`:party_parrot:` is text again"
+            );
+            source.set(workspace());
+        }
+
+        let mut code = RichTextLine::new().with_text(":tilo:");
+        code.set_marks(vec![MarkSpan {
+            range: 0..6,
+            mark: Mark::Code,
+        }]);
+        for wrap in [false, true] {
+            code.set_wrap(wrap);
+            assert!(
+                !draws_picture(&layout_and_draw(&mut code, &theme, 400.0)),
+                "inline code keeps `:tilo:`, wrap {wrap}"
+            );
+        }
     }
 }

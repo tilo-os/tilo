@@ -2,18 +2,21 @@
 //!
 //! Owns the in-memory [`RepoModel`], the diffs, the active screen and all
 //! transient selection and scroll state. Durable preferences live in the
-//! CRDT via [`Settings`]. The widget paints the window from toolkit faces:
-//! one header row holding each column's header (the sidebar toggle and the
-//! repository name over the list, the screen switcher and the screen's
-//! commands over the content), the list column of the Changes and History
-//! screens on the sidebar region through a [`SidebarDrawer`] (docked when the
-//! window is wide, a floating drawer when it is narrow), and the screen's
-//! content on the window ground. Presses are routed through the targets the
-//! last paint recorded.
+//! CRDT via [`Settings`]. The window's bar holds the client's controls
+//! (`window_bar`): the repository as the location, the screens as its
+//! views, the list column's toggle, Fetch, Pull and Push, the diff's layout
+//! and syntax highlighting, and History. The widget paints no header row:
+//! the list column of the Changes and History screens stands on the sidebar
+//! region through a [`SidebarDrawer`] (docked when the window is wide, a
+//! floating drawer when it is narrow), and the screen's content on the
+//! window ground. Presses are routed through the targets the last paint
+//! recorded.
 
-use std::cell::Cell;
+mod commits;
+mod keys;
+mod window_bar;
+
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
@@ -37,11 +40,9 @@ use ui::tilo_actions::ActionOutput;
 use ui::tilo_resource::Invoke;
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
-use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalHit,
-    ModalLayout, ModalSpec, SegmentedFace, SegmentedTouch, SegmentedTouchGroup,
-    SegmentedTouchResult, SidebarDrawer, TextInput, TextInputKind, ToggleGroup, Toolbar, Widget,
+    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalSpec,
+    SidebarDrawer, TextInput, TextInputKind, Widget,
 };
 
 use crate::changes::{self, ChangesHit};
@@ -60,7 +61,6 @@ use crate::settings::{DiffLayout, Settings};
 enum Field {
     /// The commit-message field.
     Commit,
-    /// The new-branch name field on the Branches screen.
     Branch,
     /// The repository-path field on the "open a repository" screen.
     Open,
@@ -127,6 +127,78 @@ enum Confirm {
     DiscardHunk(usize),
     /// Delete a local branch.
     DeleteBranch(String),
+    /// Switch to a branch while the working tree holds uncommitted work:
+    /// the person chooses what becomes of it. A clean tree has nothing at
+    /// stake and switches without a question, so this only ever asks when
+    /// there is work to lose.
+    SwitchBranch { name: String },
+}
+
+/// Where the first-run screen puts its three controls: the path to type in,
+/// the system file chooser beside it, and the button that opens it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OpenControls {
+    field: Rect,
+    choose: Rect,
+    open: Rect,
+}
+
+impl OpenControls {
+    /// One row while the path keeps `path_room` beside the two buttons; under
+    /// that the buttons stand on their own row under it. A path field
+    /// squeezed to nothing is not a field: at a large text scale in a long
+    /// language the three controls do not fit side by side, and the row that
+    /// cannot hold them has to become two.
+    fn at(
+        lane: Rect,
+        y: f64,
+        h: f64,
+        gap: f64,
+        choose_w: f64,
+        open_w: f64,
+        path_room: f64,
+    ) -> Self {
+        let room = lane.width() - choose_w - open_w - 2.0 * gap;
+        let path_room = path_room.min(lane.width() / 2.0);
+        if room >= path_room {
+            let open = Rect::new(lane.x1 - open_w, y, lane.x1, y + h);
+            let choose = Rect::new(open.x0 - gap - choose_w, y, open.x0 - gap, y + h);
+            return Self {
+                field: Rect::new(lane.x0, y, choose.x0 - gap, y + h),
+                choose,
+                open,
+            };
+        }
+        let choose = Rect::new(
+            lane.x0,
+            y + h + gap,
+            (lane.x0 + choose_w).min(lane.x1),
+            y + 2.0 * h + gap,
+        );
+        Self {
+            field: Rect::new(lane.x0, y, lane.x1, y + h),
+            open: Rect::new(lane.x1 - open_w, choose.y0, lane.x1, choose.y1),
+            choose,
+        }
+    }
+}
+
+/// One answer to a confirmation sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfirmChoice {
+    Discard,
+    DeleteBranch,
+    /// Switch, taking the uncommitted work along.
+    SwitchCarrying,
+    /// Switch, parking the uncommitted work on the stash first.
+    SwitchStashing,
+}
+
+/// How an answer reads: its label, and whether it destroys something.
+struct ChoiceFace {
+    choice: ConfirmChoice,
+    label: String,
+    danger: bool,
 }
 
 impl Confirm {
@@ -139,6 +211,9 @@ impl Confirm {
             Confirm::DeleteBranch(name) => {
                 t_args("git-confirm-delete-branch-title", &[("name", name.into())])
             }
+            Confirm::SwitchBranch { name, .. } => {
+                t_args("git-confirm-switch-title", &[("name", name.into())])
+            }
         }
     }
 
@@ -149,26 +224,44 @@ impl Confirm {
             }
             Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard-body",
             Confirm::DeleteBranch(_) => "git-confirm-delete-branch-body",
+            Confirm::SwitchBranch { .. } => "git-confirm-switch-body",
         })
     }
 
-    fn action(&self) -> String {
-        t(match self {
-            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard",
-            Confirm::DeleteBranch(_) => "git-delete-branch",
-        })
+    /// The answers this sheet offers, in reading order after Cancel.
+    fn choices(&self) -> Vec<ChoiceFace> {
+        match self {
+            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => vec![ChoiceFace {
+                choice: ConfirmChoice::Discard,
+                label: t("git-confirm-discard"),
+                danger: true,
+            }],
+            Confirm::DeleteBranch(_) => vec![ChoiceFace {
+                choice: ConfirmChoice::DeleteBranch,
+                label: t("git-delete-branch"),
+                danger: true,
+            }],
+            // The work comes along or it is parked; there is no third answer
+            // that keeps it anywhere else.
+            Confirm::SwitchBranch { .. } => vec![
+                ChoiceFace {
+                    choice: ConfirmChoice::SwitchStashing,
+                    label: t("git-switch-stash"),
+                    danger: false,
+                },
+                ChoiceFace {
+                    choice: ConfirmChoice::SwitchCarrying,
+                    label: t("git-switch-carry"),
+                    danger: false,
+                },
+            ],
+        }
     }
 }
 
 /// Something a press, a key or an assistive action can do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Hit {
-    /// Show or hide the list column.
-    SidebarToggle,
-    Screen(Screen),
-    DiffLayout(DiffLayout),
-    SyntaxHighlight,
-    Remote(RemoteAction),
     /// The scrim behind an open drawer: dismisses it.
     Scrim,
     DismissError,
@@ -176,6 +269,20 @@ enum Hit {
     Diff(DiffHit),
     /// A commit row, by index.
     Commit(usize),
+    /// A changed file of the selected commit, by index: opens its diff.
+    CommitFile(usize),
+    /// The way back from a commit file's diff to the commit itself.
+    BackToCommit,
+    /// Keep one side of a conflicted file.
+    ResolveConflict(crate::repo::ConflictSide),
+    /// The conflicted file's own sentence: what keeping each side costs.
+    ConflictNote,
+    /// The question a confirmation sheet asks, and the sentence under it
+    /// saying what answering costs.
+    ConfirmQuestion,
+    /// One answer on that sheet, by index: Cancel first, then the choices in
+    /// the order the sheet offers them.
+    ConfirmAnswer(usize),
     Panel(PanelHit),
     OpenPath,
     /// Choose the repository's folder with the system's file chooser.
@@ -247,7 +354,6 @@ pub struct GitClientApp {
     /// No repository is bound: keep the "open a repository" empty state
     /// until an explicit path or restored record selects a repository.
     awaiting_repo: bool,
-    /// Which embedded text field holds focus, if any.
     focus: Option<Field>,
     /// Commit-message field (toolkit `TextInput`, local mode).
     commit_input: TextInput,
@@ -290,27 +396,45 @@ pub struct GitClientApp {
     // --- Branches screen state ---
     panels_scroll: f64,
 
-    /// A destructive step waiting for confirmation, and where its sheet was
-    /// laid out last.
+    /// The changed files of the commits whose detail has been opened, by
+    /// commit id. Read on demand: walking the history for every commit's
+    /// tree diff up front costs a second on a real repository.
+    commit_files: HashMap<String, Vec<FileChange>>,
+    /// The commit diff on screen: the commit and the file whose changes the
+    /// detail column shows instead of the commit's own page.
+    commit_diff: Option<(String, String)>,
+    /// The commit diffs shown so far, by commit and path.
+    commit_diffs: HashMap<(String, String), crate::model::FileDiff>,
+    /// Which file of the selected commit is under the keyboard, and whether
+    /// the keyboard is in the file list or the commit list.
+    file_selection: Option<usize>,
+    /// Which local branch of the branches page is under the keyboard.
+    branch_selection: Option<usize>,
+    /// What keeping each side of the conflicted file under review would
+    /// discard, and which file it was read for. Read once per conflict: the
+    /// choice is worth naming, not re-reading every frame.
+    conflict_cost: Option<(String, Option<crate::repo::ConflictCost>)>,
+    /// What the last action did, said once: a branch switched, a stash made,
+    /// a push sent. Only failures used to be reported, so work that
+    /// succeeded looked like work that had not happened.
+    notice: Option<String>,
+
+    /// A question waiting for its answer: a destructive step, or a switch
+    /// that has to say what becomes of uncommitted work.
     confirm: Option<Confirm>,
-    confirm_layout: Option<ModalLayout>,
+    /// The sheet asking it, which owns its own hover, keyboard focus and
+    /// activation, so the question answers to Tab and Enter like every other
+    /// question in the system rather than only to the pointer.
+    confirm_sheet: ui::widget::ModalSheet,
 
     /// The list column of the Changes and History screens: docked beside the
     /// content when the window is wide, a floating drawer when it is narrow.
     drawer: SidebarDrawer,
-    /// The window's History control, which the header row holds, and where
-    /// the last paint put it.
-    history: ui::widget::HistoryOpener,
-    history_rect: Rect,
-    /// The Syntax toggle in the Changes header, and the press it reports.
-    syntax_tool: Toolbar,
-    syntax_pressed: Rc<Cell<bool>>,
     /// View state a screenshot scenario asks for once the window is laid out.
     staged: Staged,
 
     /// The pointer, while it is over the window.
     pointer: Option<Point>,
-    segmented_touch: SegmentedTouch,
     /// The host's keyboard conventions (which modifier is the command key).
     conventions: ui::platform::PlatformConventions,
 
@@ -416,11 +540,6 @@ impl GitClientApp {
             .with_accessible_name(t("git-repository-path"))
             .with_kind(TextInputKind::Path)
             .with_placeholder(t("git-repository-path"));
-        let syntax_pressed = Rc::new(Cell::new(false));
-        let pressed = Rc::clone(&syntax_pressed);
-        let syntax_tool =
-            Toolbar::new(Orientation::Horizontal)
-                .push_toggle(&t("git-syntax"), true, move || pressed.set(true));
         Self {
             dispatcher: None,
             mode: RunMode::Live,
@@ -454,8 +573,15 @@ impl GitClientApp {
             history_scroll: 0.0,
             detail_scroll: 0.0,
             panels_scroll: 0.0,
+            commit_files: HashMap::new(),
+            commit_diff: None,
+            commit_diffs: HashMap::new(),
+            file_selection: None,
+            branch_selection: None,
+            conflict_cost: None,
+            notice: None,
             confirm: None,
-            confirm_layout: None,
+            confirm_sheet: ui::widget::ModalSheet::new(),
             // Both lists are content the person reads: the overview width,
             // docked or as a drawer, so a row reads the same in both.
             // The diff beside them keeps the content minimum plus a rail's
@@ -468,16 +594,11 @@ impl GitClientApp {
                         + ui::tokens::Metrics::BASE.content_min_width
                         + ui::tokens::Metrics::BASE.rail_width,
                 )),
-            syntax_tool,
-            syntax_pressed,
             staged: Staged::Nothing,
             pointer: None,
-            segmented_touch: SegmentedTouch::default(),
             conventions: ui::platform::PlatformConventions::default(),
             targets: Vec::new(),
             semantic: Vec::new(),
-            history: ui::widget::HistoryOpener::new(),
-            history_rect: Rect::ZERO,
             scroll_regions: Vec::new(),
             scroll_bars: Vec::new(),
             scrollbar: Scrollbar::vertical(),
@@ -577,6 +698,74 @@ impl GitClientApp {
     pub fn test_last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
+    /// What the last action did, as the banner says it.
+    #[doc(hidden)]
+    pub fn test_notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+    /// The branch whose switch is waiting for an answer, if any.
+    #[doc(hidden)]
+    pub fn test_pending_switch(&self) -> Option<&str> {
+        match &self.confirm {
+            Some(Confirm::SwitchBranch { name, .. }) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+    /// Answer the pending switch the way its sheet's buttons do.
+    #[doc(hidden)]
+    pub fn test_answer_switch(&mut self, plan: crate::repo::CheckoutPlan) {
+        let choice = match plan {
+            crate::repo::CheckoutPlan::Carry => ConfirmChoice::SwitchCarrying,
+            crate::repo::CheckoutPlan::Stash => ConfirmChoice::SwitchStashing,
+        };
+        self.perform_confirmed(choice);
+    }
+    /// Show commit `index` and read its changed files, as opening History does.
+    #[doc(hidden)]
+    pub fn test_commit_files(&mut self, index: usize) -> Vec<String> {
+        self.select_commit(index);
+        let Some(commit) = self.model.commits.get(index) else {
+            return Vec::new();
+        };
+        let id = commit.id.clone();
+        self.load_commit_files(&id);
+        self.commit_files
+            .get(&id)
+            .map(|files| files.iter().map(|file| file.path.clone()).collect())
+            .unwrap_or_default()
+    }
+    /// Open the diff of file `index` in the selected commit.
+    #[doc(hidden)]
+    pub fn test_open_commit_file(&mut self, index: usize) {
+        self.open_commit_file(index);
+    }
+    /// The commit diff on screen, as `(commit, file)`.
+    #[doc(hidden)]
+    pub fn test_commit_diff(&self) -> Option<(String, String)> {
+        self.commit_diff.clone()
+    }
+    /// Select the first conflicted file, as choosing its row does.
+    #[doc(hidden)]
+    pub fn test_select_conflicted_file(&mut self) {
+        for area in [
+            crate::model::ChangeArea::Unstaged,
+            crate::model::ChangeArea::Staged,
+            crate::model::ChangeArea::Untracked,
+        ] {
+            let found = change_list(&self.model, area)
+                .iter()
+                .position(|file| file.kind == crate::model::ChangeKind::Conflicted);
+            if let Some(index) = found {
+                self.selected_change = Some((area, index));
+                return;
+            }
+        }
+    }
+    /// Keep one side of the selected conflicted file, as `o` and `t` do.
+    #[doc(hidden)]
+    pub fn test_resolve_conflict(&mut self, side: crate::repo::ConflictSide) {
+        self.resolve_conflict(side);
+    }
 
     /// Re-read the live repository into the model after a mutation, so the
     /// UI reflects the *actual* on-disk state (proving the op took effect).
@@ -595,6 +784,13 @@ impl GitClientApp {
             if self.selected_commit >= self.model.commits.len() {
                 self.selected_commit = 0;
             }
+            // A branch the person deleted is no longer under the keyboard:
+            // keep the selection on a branch, not past the end of the list.
+            let local = self.model.branches.iter().filter(|b| !b.is_remote).count();
+            self.branch_selection = self
+                .branch_selection
+                .map(|index| index.min(local.saturating_sub(1)))
+                .filter(|_| local > 0);
             self.diff_scroll = 0.0;
         }
     }
@@ -605,12 +801,17 @@ impl GitClientApp {
         match result {
             Ok(()) => {
                 self.last_error = None;
+                self.notice = None;
                 self.reload();
             }
-            Err(e) => {
-                self.last_error = Some(e.to_string());
-            }
+            Err(e) => self.report_error(&e),
         }
+    }
+
+    /// Report a failed action, in place of any notice.
+    fn report_error(&mut self, error: &anyhow::Error) {
+        self.notice = None;
+        self.last_error = Some(error.to_string());
     }
 
     /// The repo path for actions; `None` means sample-backed (no real repo).
@@ -704,8 +905,6 @@ impl GitClientApp {
     fn selected_is_staged(&self) -> bool {
         matches!(self.selected_change, Some((ChangeArea::Staged, _)))
     }
-
-    // --- Mutations on the model (mirror a real git op) -----------------
 
     /// Stage or unstage a single file. Against a real repo this calls
     /// `git2` (`add` / `reset HEAD -- path`) and re-reads the model so the
@@ -962,6 +1161,18 @@ impl GitClientApp {
     /// Give keyboard focus to one embedded text field (or none), keeping the
     /// toolkit inputs' focus flags mutually exclusive.
     fn set_focus(&mut self, field: Option<Field>) {
+        // The message is written in the list column, which a narrow window
+        // keeps in the drawer: focusing the field opens it, so the person is
+        // never typing into something they cannot see.
+        if field == Some(Field::Commit) && self.drawer.is_overlay() && !self.drawer.is_open() {
+            // A window someone uses slides the column in; a capture puts it
+            // where it stands, so the frame does not depend on the clock.
+            if self.mode.is_live() {
+                self.drawer.open();
+            } else {
+                self.drawer.snap(true);
+            }
+        }
         self.focus = field;
         self.commit_input.set_focus(field == Some(Field::Commit));
         self.branch_input.set_focus(field == Some(Field::Branch));
@@ -985,14 +1196,14 @@ impl GitClientApp {
     // source of truth (see `crate::actions`).
 
     /// Flip the diff-pane layout (unified ⇄ side-by-side). Routed to by the
-    /// header's layout control and the `d` shortcut.
+    /// window bar's layout items and the `d` shortcut.
     fn toggle_diff_layout(&mut self) {
         if let Err(error) = self.switch_diff_layout() {
             self.last_error = Some(error);
         }
     }
 
-    /// Flip diff syntax highlighting. Routed to by the header's Syntax toggle.
+    /// Flip diff syntax highlighting. Routed to by the window bar's item.
     fn toggle_syntax_highlight(&mut self) {
         if let Err(error) = self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight) {
             self.last_error = Some(error);
@@ -1106,7 +1317,15 @@ impl GitClientApp {
         }
         let Some(path) = self.repo() else { return };
         let res = match action {
-            BranchAction::Checkout(name) => crate::repo::checkout_branch(&path, &name),
+            // Switching branches with work in the tree asks first: the work
+            // either comes along or is parked, and the person decides which.
+            BranchAction::Checkout(name) => {
+                if self.model.change_count() > 0 {
+                    self.confirm = Some(Confirm::SwitchBranch { name });
+                    return;
+                }
+                crate::repo::checkout_branch(&path, &name)
+            }
             BranchAction::Delete(name) => crate::repo::delete_branch(&path, &name),
             BranchAction::StashApply(i) => crate::repo::stash_apply(&path, i),
         };
@@ -1118,19 +1337,6 @@ impl GitClientApp {
         change_list(&self.model, area)
             .get(idx)
             .map(|f| f.path.clone())
-    }
-
-    // --- Layout and paint ------------------------------------------------
-
-    /// The header row's height: the shell metric, grown so a control and its
-    /// `s3` insets always fit at a large text scale.
-    fn header_height(theme: &Theme) -> f64 {
-        let control = ui::widget::text_control_height(
-            f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
-            theme,
-        );
-        f64::from(theme.tokens.metrics.header_height)
-            .max(control + 2.0 * f64::from(theme.tokens.spacing.s3))
     }
 
     /// Whether an open drawer covers the window: everything under its scrim
@@ -1156,36 +1362,18 @@ impl GitClientApp {
         self.paint_scroll_bars(ctx);
     }
 
-    /// Paint the screens, the header row and the list column.
+    /// Paint the screens and the list column.
     fn paint_screens(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
         self.targets.clear();
         self.semantic.clear();
         self.scroll_regions.clear();
         if self.awaiting_repo {
-            self.syntax_tool.lay_out_in(Rect::ZERO, ctx.text, ctx.theme);
             self.paint_open(ctx, presence);
             return;
         }
         let theme = ctx.theme;
         let window = self.rect;
-        let header_h = Self::header_height(theme);
         let has_list = self.screen.has_list();
-        // The window's header row: the drawer lays its toggle out in it and
-        // a floating drawer opens under it, so the row stays live. The
-        // History control takes the trailing corner.
-        let row = Rect::new(
-            window.x0,
-            window.y0,
-            window.x1,
-            (window.y0 + header_h).min(window.y1),
-        );
-        let history_shown = self.history.is_shown();
-        let face = if has_list {
-            self.drawer.header_with_history(row, theme, history_shown)
-        } else {
-            ui::chrome::HeaderRowFace::new(row, theme).with_history_if(history_shown)
-        };
-        self.history_rect = face.history;
         if has_list {
             self.drawer.tick(theme);
             self.drawer.resolve(window);
@@ -1201,26 +1389,13 @@ impl GitClientApp {
         } else {
             window
         };
-        let header = Rect::new(column.x0, row.y0, column.x1, row.y1);
-        let body = Rect::new(column.x0, header.y1, column.x1, window.y1.max(header.y1));
+        let body = Rect::new(column.x0, window.y0, column.x1, window.y1);
         let body = self.paint_banner(ctx, body);
         match self.screen {
             Screen::Changes => self.paint_diff(ctx, body),
             Screen::History => self.paint_detail(ctx, body),
             Screen::Panels => self.paint_panels(ctx, presence, body),
         }
-        // A docked, open list column holds the toggle in its own header; in
-        // every other case it leads the content header.
-        let toggle_in_list = has_list && !overlay && self.drawer.is_open();
-        self.paint_content_header(
-            ctx,
-            presence,
-            header,
-            has_list && !toggle_in_list,
-            face.toggle,
-        );
-        self.history
-            .paint(ctx.scene, ctx.transform, ctx.text, theme, self.history_rect);
 
         if !has_list {
             return;
@@ -1230,18 +1405,17 @@ impl GitClientApp {
             if self.drawer.reveal() <= 0.001 || panel.width() <= 0.0 {
                 return;
             }
-            // Everything under the drawer is inert while it is out; the row
-            // above it stays live.
-            self.targets.retain(|t| t.rect.y1 <= row.y1 + 0.5);
-            self.semantic.retain(|t| t.rect.y1 <= row.y1 + 0.5);
+            // Everything under the drawer is inert while it is out.
+            self.targets.clear();
+            self.semantic.clear();
             self.targets.push(Target {
-                rect: Rect::new(window.x0, row.y1, window.x1, window.y1),
+                rect: window,
                 hit: Hit::Scrim,
             });
             self.scroll_regions.clear();
             let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
             let mut lctx = PaintCtx::new(&mut *ctx.scene, ctx.transform, &mut *ctx.text, &local);
-            self.paint_list_column(&mut lctx, presence, panel, panel, 0.0, None);
+            self.paint_list_column(&mut lctx, presence, panel, panel);
         } else if panel.width() > 0.5 {
             let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
             // The list keeps its width while the column opens or closes: it
@@ -1253,35 +1427,21 @@ impl GitClientApp {
                 panel.y1,
             );
             let mut lctx = PaintCtx::new(&mut *ctx.scene, ctx.transform, &mut *ctx.text, &local);
-            let toggle = toggle_in_list.then_some(face.toggle);
-            self.paint_list_column(&mut lctx, presence, panel, full, header_h, toggle);
+            self.paint_list_column(&mut lctx, presence, panel, full);
         } else {
             self.commit_input.apply_layout_external(Rect::ZERO);
         }
     }
 
-    fn paint_toggle(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        let hovered = self.pointer.is_some_and(|p| rect.contains(p));
-        self.drawer
-            .draw_toggle(ctx.scene, ctx.transform, ctx.text, ctx.theme, rect, hovered);
-        self.push_target(rect, Hit::SidebarToggle);
-    }
-
-    /// The list column: its header (the toggle and the repository's name)
-    /// over the Changes or History list. `full` is the column at its full
-    /// width; `clip` is what of it is showing.
+    /// The list column: the Changes or History list. `full` is the column
+    /// at its full width; `clip` is what of it is showing.
     fn paint_list_column(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
         clip: Rect,
         full: Rect,
-        header_h: f64,
-        toggle: Option<Rect>,
     ) {
-        let theme = ctx.theme;
-        let s3 = f64::from(theme.tokens.spacing.s3);
-        let gap = f64::from(theme.tokens.spacing.s2);
         ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1289,36 +1449,9 @@ impl GitClientApp {
             ctx.transform,
             &clip,
         );
-        let header = Rect::new(full.x0, full.y0, full.x1, full.y0 + header_h);
-        // Under the window's header row (a floating drawer) the column has
-        // no header of its own.
-        if header_h > 0.0 {
-            let x = if let Some(rect) = toggle {
-                self.paint_toggle(ctx, rect);
-                rect.x1 + gap
-            } else {
-                header.x0 + s3
-            };
-            let heading = theme.text(TextRole::Heading);
-            let name = ctx.text.elide_to_width_style(
-                &self.model.name,
-                ui::num::f32_of_f64((header.x1 - s3 - x).max(0.0)),
-                &heading,
-            );
-            ctx.text_role_in_band(
-                &name,
-                TextRole::Heading,
-                theme.text_primary,
-                x,
-                header,
-                None,
-            );
-        }
-
-        let list = Rect::new(full.x0, header.y1, full.x1, full.y1.max(header.y1));
         match self.screen {
-            Screen::Changes => self.paint_changes_list(ctx, presence, list, clip),
-            Screen::History => self.paint_history_list(ctx, list, clip),
+            Screen::Changes => self.paint_changes_list(ctx, presence, full, clip),
+            Screen::History => self.paint_history_list(ctx, full, clip),
             Screen::Panels => {}
         }
         ctx.scene.pop_layer();
@@ -1418,175 +1551,6 @@ impl GitClientApp {
         });
     }
 
-    /// The content column's header: the toggle when the list is hidden, the
-    /// screen switcher, and the screen's commands at the trailing end; one
-    /// hairline under it.
-    fn paint_content_header(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        presence: &PresenceCtx,
-        header: Rect,
-        with_toggle: bool,
-        toggle: Rect,
-    ) {
-        let theme = ctx.theme;
-        let s3 = f64::from(theme.tokens.spacing.s3);
-        let gap = f64::from(theme.tokens.spacing.s2);
-        ui::surface::separator(
-            ctx.scene,
-            ctx.transform,
-            header.x0,
-            header.x1,
-            header.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
-        let x = if with_toggle {
-            self.paint_toggle(ctx, toggle);
-            toggle.x1 + gap
-        } else {
-            header.x0 + s3
-        };
-
-        let owned: Vec<String> = Screen::ALL.iter().map(|s| s.label()).collect();
-        let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let natural =
-            SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, theme);
-        let mut right = header.x1 - s3;
-        if self.history_rect.width() > 0.0 {
-            right = right.min(self.history_rect.x0 - gap);
-        }
-        let min_x = x + natural + s3;
-        match self.screen {
-            Screen::Changes => {
-                right = self.paint_diff_commands(ctx, presence, header, right, min_x);
-            }
-            Screen::Panels => {
-                let placed = panels::remote_buttons(ctx, header, right, min_x, self.pointer);
-                for (rect, action) in placed {
-                    right = right.min(rect.x0 - s3);
-                    self.push_target(rect, Hit::Remote(action));
-                }
-            }
-            Screen::History => {}
-        }
-        if self.screen != Screen::Changes {
-            self.syntax_tool.lay_out_in(Rect::ZERO, ctx.text, theme);
-        }
-
-        let width = natural.min((right - x).max(0.0));
-        let h = SegmentedFace::height(ControlSize::Regular, theme);
-        let y = header.center().y - h / 2.0;
-        let each = width / labels.len() as f64;
-        let rects: Vec<Rect> = (0..labels.len())
-            .map(|i| Rect::new(x + each * i as f64, y, x + each * (i + 1) as f64, y + h))
-            .collect();
-        let selected = Screen::ALL
-            .iter()
-            .position(|s| *s == self.screen)
-            .unwrap_or(0);
-        let hovered = self
-            .pointer
-            .and_then(|p| rects.iter().position(|r| r.contains(p)));
-        ToggleGroup::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &SegmentedFace::new(&rects, &labels, selected).hovered(hovered),
-        );
-        for (rect, screen) in rects.iter().zip(Screen::ALL) {
-            self.push_target(*rect, Hit::Screen(screen));
-        }
-    }
-
-    /// The diff commands at the header's trailing end: the layout choice and
-    /// the Syntax toggle. Where both do not fit right of `min_x` the layout
-    /// choice stays and the toggle leaves (it stays in the palette).
-    /// Returns where the commands start.
-    fn paint_diff_commands(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        presence: &PresenceCtx,
-        header: Rect,
-        right: f64,
-        min_x: f64,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let s3 = f64::from(theme.tokens.spacing.s3);
-        let h = SegmentedFace::height(ControlSize::Regular, theme);
-        let y = header.center().y - h / 2.0;
-
-        self.syntax_tool
-            .set_active(0, self.settings.syntax_highlight);
-        self.syntax_tool.lay_out_in(Rect::ZERO, ctx.text, theme);
-        let tool_w = f64::from(
-            Widget::measure(
-                &mut self.syntax_tool,
-                taffy::Size {
-                    width: None,
-                    height: None,
-                },
-                taffy::Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                ctx.text,
-            )
-            .width,
-        );
-        let (unified, split) = (t("git-diff-unified"), t("git-diff-split"));
-        let labels = [unified.as_str(), split.as_str()];
-        let layout_w =
-            SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, theme);
-        let with_tool = right - tool_w - s3 - layout_w >= min_x;
-        if !with_tool && right - layout_w < min_x {
-            return right;
-        }
-
-        let mut right = right;
-        if with_tool {
-            // As tall as the header's other controls.
-            let tool = Rect::new(right - tool_w, y, right, y + h);
-            self.syntax_tool.lay_out_in(tool, ctx.text, theme);
-            Widget::draw(
-                &mut self.syntax_tool,
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                theme,
-                presence,
-            );
-            self.semantic.push(Target {
-                rect: tool,
-                hit: Hit::SyntaxHighlight,
-            });
-            right = tool.x0 - s3;
-        }
-
-        let x0 = right - layout_w;
-        let rects = [
-            Rect::new(x0, y, x0 + layout_w / 2.0, y + h),
-            Rect::new(x0 + layout_w / 2.0, y, right, y + h),
-        ];
-        let selected = usize::from(self.settings.diff_layout == DiffLayout::SideBySide);
-        let hovered = self
-            .pointer
-            .and_then(|p| rects.iter().position(|r| r.contains(p)));
-        ToggleGroup::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &SegmentedFace::new(&rects, &labels, selected)
-                .style(ui::widget::SegmentedStyle::Quiet)
-                .hovered(hovered),
-        );
-        self.push_target(rects[0], Hit::DiffLayout(DiffLayout::Unified));
-        self.push_target(rects[1], Hit::DiffLayout(DiffLayout::SideBySide));
-        x0 - s3
-    }
-
     /// An error or a running transfer as a banner at the top of the content;
     /// returns the content area under it.
     fn paint_banner(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) -> Rect {
@@ -1595,6 +1559,8 @@ impl GitClientApp {
             (BannerKind::Info, job.label.clone(), false)
         } else if let Some(error) = &self.last_error {
             (BannerKind::Error, error.clone(), true)
+        } else if let Some(notice) = &self.notice {
+            (BannerKind::Success, notice.clone(), true)
         } else {
             return body;
         };
@@ -1626,6 +1592,15 @@ impl GitClientApp {
 
     /// The selected file's diff, or one sentence when there is none.
     fn paint_diff(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
+        let body = if let Some(file) = self.selected_conflict() {
+            let (below, hits) = self.paint_conflict_actions(ctx, body, &file, self.pointer);
+            for (rect, hit) in hits {
+                self.push_target(rect, hit);
+            }
+            below
+        } else {
+            body
+        };
         let key = self.current_diff_key();
         let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) else {
             let title = t(if self.model.change_count() == 0 {
@@ -1652,6 +1627,9 @@ impl GitClientApp {
                 settings: self.settings,
                 staged,
                 can_discard: true,
+                // A conflicted file's decision is the band above its diff:
+                // staging the markers would settle it as neither side.
+                actions: self.selected_conflict().is_none(),
                 pointer: self.pointer,
             },
         );
@@ -1670,29 +1648,6 @@ impl GitClientApp {
         });
     }
 
-    /// The selected commit.
-    fn paint_detail(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
-        let Some(commit) = self.model.commits.get(self.selected_commit) else {
-            EmptyState::paint(
-                ctx,
-                body,
-                &EmptyStateContent::new(&t("git-no-commits")),
-                Point::new(f64::MIN, f64::MIN),
-            );
-            return;
-        };
-        let height = history::paint_detail(ctx, body, commit, self.detail_scroll);
-        let max_y = height - body.height();
-        self.detail_scroll = self.detail_scroll.clamp(0.0, max_y.max(0.0));
-        self.scroll_regions.push(ScrollRegion {
-            rect: body,
-            scroller: Scroller::Detail,
-            max_y,
-            max_x: 0.0,
-            ground: ctx.theme.tokens.colors.surfaces.content,
-        });
-    }
-
     /// The branches page.
     fn paint_panels(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
         let out = panels::paint(
@@ -1704,6 +1659,7 @@ impl GitClientApp {
                 pointer: self.pointer,
                 can_create: self.repo_path.is_some(),
                 branch_name: self.branch_input.value(),
+                selected: self.branch_selection,
                 worktree_fields: [
                     self.worktree_branch_input.value(),
                     self.worktree_path_input.value(),
@@ -1756,31 +1712,12 @@ impl GitClientApp {
         });
     }
 
-    /// The "open a repository" screen: the window's header row (empty: no
-    /// repository has screens yet), then what to do, the path field and the
-    /// Open button, and the reason the last attempt failed.
-    fn paint_open(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
-        use ui::widget::banner::{BannerContent, BannerKind};
+    /// The open screen's title and what to do, from `at` down; returns
+    /// where the path row starts.
+    fn paint_open_intro(ctx: &mut PaintCtx<'_>, at: Point, width: f32) -> f64 {
         let theme = ctx.theme;
         let s = &theme.tokens.spacing;
-        let window = self.rect;
-        let header_y = (window.y0 + Self::header_height(theme)).min(window.y1);
-        ui::surface::separator(
-            ctx.scene,
-            ctx.transform,
-            window.x0,
-            window.x1,
-            header_y,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
-        let body = Rect::new(window.x0, header_y, window.x1, window.y1.max(header_y));
-        let lane = ui::content_layout::FocusedContentLane::new()
-            .max_width(f64::from(theme.tokens.metrics.panel_width_sheet))
-            .gutter(f64::from(s.s6))
-            .layout(body);
-        let width = ui::num::f32_of_f64(lane.width());
-        let mut y = body.y0 + body.height() / 3.0;
+        let mut y = at.y;
         let title = t("git-open-title");
         let title_h = ctx
             .measure_role(&title, TextRole::Title, Some(width))
@@ -1789,7 +1726,7 @@ impl GitClientApp {
             &title,
             TextRole::Title,
             theme.text_primary,
-            Point::new(lane.x0, y),
+            Point::new(at.x, y),
             Some(width),
         );
         y += title_h + f64::from(s.s2);
@@ -1799,24 +1736,49 @@ impl GitClientApp {
             &hint,
             TextRole::Body,
             theme.text_dim,
-            Point::new(lane.x0, y),
+            Point::new(at.x, y),
             Some(width),
         );
-        y += hint_h + f64::from(s.s6);
+        y + hint_h + f64::from(s.s6)
+    }
+
+    /// The "open a repository" screen: what to do, the path field and the
+    /// Open button, and the reason the last attempt failed.
+    fn paint_open(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
+        use ui::widget::banner::{BannerContent, BannerKind};
+        let theme = ctx.theme;
+        let s = &theme.tokens.spacing;
+        let body = self.rect;
+        let lane = ui::content_layout::FocusedContentLane::new()
+            .max_width(f64::from(theme.tokens.metrics.panel_width_sheet))
+            .gutter(f64::from(s.s6))
+            .layout(body);
+        let width = ui::num::f32_of_f64(lane.width());
+        let y = Self::paint_open_intro(
+            ctx,
+            Point::new(lane.x0, body.y0 + body.height() / 3.0),
+            width,
+        );
 
         let h = ButtonFace::height(ControlSize::Regular, theme);
         let label = t("git-open");
         let button_w = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme);
-        let button = Rect::new(lane.x1 - button_w, y, lane.x1, y + h);
         // Beside the path, the system's file chooser: most people pick the
         // folder rather than type where it is.
         let choose_label = t("git-choose");
         let choose_face =
             || ButtonFace::new(Rect::ZERO, &choose_label).icon(ui::icons::Icon::FolderOpen);
         let choose_w = choose_face().intrinsic_width(ctx.text, theme);
-        let choose_x1 = button.x0 - f64::from(s.s2);
-        let choose = Rect::new(choose_x1 - choose_w, y, choose_x1, y + h);
-        let field = Rect::new(lane.x0, y, choose.x0 - f64::from(s.s2), y + h);
+        let controls = OpenControls::at(
+            lane,
+            y,
+            h,
+            f64::from(s.s2),
+            choose_w,
+            button_w,
+            f64::from(theme.tokens.metrics.content_min_width),
+        );
+        let (field, choose, button) = (controls.field, controls.choose, controls.open);
         self.open_input.apply_layout_external(field);
         self.open_input
             .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
@@ -1868,7 +1830,7 @@ impl GitClientApp {
         }
 
         if let Some(error) = &self.last_error {
-            let top = button.y1 + f64::from(s.s4);
+            let top = button.y1.max(choose.y1) + f64::from(s.s4);
             let content = BannerContent::new(BannerKind::Error, error);
             let h = Banner::height(&content, lane.width(), ctx.text, theme);
             let banner = Rect::new(lane.x0, top, lane.x1, top + h);
@@ -1876,69 +1838,20 @@ impl GitClientApp {
         }
     }
 
-    // --- Activation -----------------------------------------------------
-
     /// Switch the active screen.
     fn switch_screen(&mut self, screen: Screen) {
         self.screen = screen;
         self.set_focus(None);
         self.confirm = None;
-    }
-
-    fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
-        if self.confirm.is_some() || self.drawer_is_modal() {
-            return (Vec::new(), Vec::new());
-        }
-        let screens = self
-            .targets
-            .iter()
-            .filter_map(|target| matches!(target.hit, Hit::Screen(_)).then_some(target.rect))
-            .collect();
-        let layouts = self
-            .targets
-            .iter()
-            .filter_map(|target| matches!(target.hit, Hit::DiffLayout(_)).then_some(target.rect))
-            .collect();
-        (screens, layouts)
-    }
-
-    fn handle_segmented_touch(
-        &mut self,
-        touch: &winit::event::Touch,
-        scale: f64,
-        edits: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        let (screens, layouts) = self.segmented_rects();
-        let selected_screen = Screen::ALL
-            .iter()
-            .position(|screen| *screen == self.screen)
-            .unwrap_or(0);
-        let layout = self
-            .preferences
-            .as_ref()
-            .map_or(self.settings.diff_layout, |preferences| {
-                preferences.get().diff_layout
-            });
-        let selected_layout = usize::from(layout == DiffLayout::SideBySide);
-        let groups = [
-            SegmentedTouchGroup::new(0, &screens, selected_screen),
-            SegmentedTouchGroup::new(1, &layouts, selected_layout),
-        ];
-        let result = self.segmented_touch.handle(touch, scale, &groups);
-        if let SegmentedTouchResult::Selected { group, index } = result {
-            let hit = if group == 0 {
-                Screen::ALL.get(index).copied().map(Hit::Screen)
-            } else {
-                [DiffLayout::Unified, DiffLayout::SideBySide]
-                    .get(index)
-                    .copied()
-                    .map(Hit::DiffLayout)
-            };
-            if let Some(hit) = hit {
-                self.activate(hit, edits);
+        // The branches page opens on its first local branch, as History
+        // opens on its first commit: otherwise the first arrow lands on the
+        // second branch and Enter checks that one out.
+        if screen == Screen::Panels && self.branch_selection.is_none() {
+            let local = self.model.branches.iter().filter(|b| !b.is_remote).count();
+            if local > 0 {
+                self.branch_selection = Some(0);
             }
         }
-        result.handled()
     }
 
     /// Do what `hit` names: the one path pointer presses, keys and
@@ -1947,10 +1860,6 @@ impl GitClientApp {
         if let (Some(dispatcher), Some((row, effect))) =
             (&self.dispatcher, self.effect_for_hit(&hit))
         {
-            if matches!(hit, Hit::DiffLayout(layout) if layout == self.preferences.as_ref().map_or(self.settings.diff_layout, |preferences| preferences.get().diff_layout))
-            {
-                return;
-            }
             if let Some(row) = row {
                 dispatcher.effect_on(&row, &effect);
             } else {
@@ -1960,7 +1869,6 @@ impl GitClientApp {
         }
         let in_drawer = self.drawer_is_modal();
         match hit {
-            Hit::SidebarToggle => self.drawer.toggle(),
             Hit::Scrim => {
                 if !self
                     .pointer
@@ -1969,30 +1877,40 @@ impl GitClientApp {
                     self.drawer.close();
                 }
             }
-            Hit::Screen(screen) => self.switch_screen(screen),
-            Hit::DiffLayout(layout) => {
-                if self.settings.diff_layout != layout {
-                    self.toggle_diff_layout();
-                }
+            Hit::DismissError => {
+                self.last_error = None;
+                self.notice = None;
             }
-            Hit::SyntaxHighlight => self.toggle_syntax_highlight(),
-            Hit::Remote(action) => self.apply_remote_action(action),
-            Hit::DismissError => self.last_error = None,
             Hit::Change(change) => self.activate_change(change, in_drawer),
             Hit::Diff(diff) => self.activate_diff(diff),
             Hit::Commit(index) => {
-                self.selected_commit = index;
-                self.detail_scroll = 0.0;
+                self.select_commit(index);
                 if in_drawer {
                     self.drawer.close();
                 }
             }
+            Hit::CommitFile(index) => {
+                self.file_selection = Some(index);
+                self.open_commit_file(index);
+            }
+            Hit::BackToCommit => {
+                self.commit_diff = None;
+                self.diff_scroll = 0.0;
+                self.diff_hscroll = 0.0;
+            }
+            Hit::ResolveConflict(side) => self.resolve_conflict(side),
+            // Read or asked, never pressed: the conflict's own sentence, the
+            // question a sheet puts, and the repository chooser, which is
+            // dispatched as its effect.
+            Hit::ConflictNote | Hit::ConfirmQuestion | Hit::ChooseRepository => {}
+            // The sheet's answers, reached by a press or by assistive
+            // technology activating the button it names.
+            Hit::ConfirmAnswer(index) => self.answer_confirm(index),
             Hit::Panel(panel) => self.activate_panel(panel),
             Hit::OpenPath => self.set_focus(Some(Field::Open)),
             Hit::OpenRepository => self.open_repo_from_input(),
             // Dispatched as its effect (`effect_for_hit`); a direct press
             // without the published action does nothing.
-            Hit::ChooseRepository => {}
         }
     }
 
@@ -2055,33 +1973,84 @@ impl GitClientApp {
         }
     }
 
-    /// Carry out the confirmed destructive step.
-    fn perform_confirmed(&mut self) {
-        match self.confirm.take() {
-            Some(Confirm::DiscardFile { area, index, .. }) => self.discard_file(area, index),
-            Some(Confirm::DiscardHunk(hunk)) => self.discard_hunk(hunk),
-            Some(Confirm::DeleteBranch(name)) => {
+    /// Carry out the answer `choice` to the open confirmation sheet.
+    fn perform_confirmed(&mut self, choice: ConfirmChoice) {
+        match (self.confirm.take(), choice) {
+            (Some(Confirm::DiscardFile { area, index, .. }), ConfirmChoice::Discard) => {
+                self.discard_file(area, index);
+            }
+            (Some(Confirm::DiscardHunk(hunk)), ConfirmChoice::Discard) => {
+                self.discard_hunk(hunk);
+            }
+            (Some(Confirm::DeleteBranch(name)), ConfirmChoice::DeleteBranch) => {
                 self.apply_branch_action(BranchAction::Delete(name));
             }
-            None => {}
-        }
-    }
-
-    /// A press while the confirmation sheet is up: its buttons, its close
-    /// control and its scrim; nothing under it.
-    fn confirm_press(&mut self, pos: Point) {
-        let Some(layout) = &self.confirm_layout else {
-            return;
-        };
-        match layout.hit(pos) {
-            Some(ModalHit::Action(0) | ModalHit::Close) => self.confirm = None,
-            Some(ModalHit::Action(_)) => self.perform_confirmed(),
-            Some(ModalHit::Scrim) if layout.dismiss_on_scrim => self.confirm = None,
+            (Some(Confirm::SwitchBranch { name, .. }), ConfirmChoice::SwitchCarrying) => {
+                self.switch_branch(&name, crate::repo::CheckoutPlan::Carry);
+            }
+            (Some(Confirm::SwitchBranch { name, .. }), ConfirmChoice::SwitchStashing) => {
+                self.switch_branch(&name, crate::repo::CheckoutPlan::Stash);
+            }
             _ => {}
         }
     }
 
-    /// Scroll the region under `pos`.
+    /// Switch to `name`, deciding what happens to uncommitted work through
+    /// `plan`, and say what became of it.
+    fn switch_branch(&mut self, name: &str, plan: crate::repo::CheckoutPlan) {
+        let Some(path) = self.repo() else { return };
+        match crate::repo::checkout_branch_planned(&path, name, plan) {
+            Ok(stash) => {
+                self.last_error = None;
+                self.notice = Some(match stash {
+                    Some(stash) => t_args(
+                        "git-switched-stashed",
+                        &[("name", name.into()), ("stash", stash.into())],
+                    ),
+                    None => t_args("git-switched", &[("name", name.into())]),
+                });
+                self.reload();
+            }
+            Err(error) => self.report_error(&error),
+        }
+    }
+
+    /// Answer the sheet with its action `index`: Cancel (0) puts the
+    /// question away, and the rest are its own answers in the order it
+    /// offered them.
+    fn answer_confirm(&mut self, index: usize) {
+        let choice = match index {
+            0 => None,
+            index => self.confirm.as_ref().and_then(|confirm| {
+                confirm
+                    .choices()
+                    .get(index.saturating_sub(1))
+                    .map(|face| face.choice)
+            }),
+        };
+        self.confirm_sheet.reset();
+        match choice {
+            // `perform_confirmed` takes the question; leaving it standing
+            // where no answer was found puts it away instead of asking
+            // forever.
+            Some(choice) => self.perform_confirmed(choice),
+            None => self.confirm = None,
+        }
+    }
+
+    /// A press, a key or an assistive activation while the sheet is up: the
+    /// sheet's own answers, its close control and its scrim; nothing under
+    /// it.
+    fn answer_sheet(&mut self, response: ui::widget::SheetResponse) {
+        match response {
+            ui::widget::SheetResponse::Action(index) => self.answer_confirm(index),
+            ui::widget::SheetResponse::Dismiss => {
+                self.confirm = None;
+                self.confirm_sheet.reset();
+            }
+        }
+    }
+
     fn scroll_at(&mut self, pos: Point, dx: f64, dy: f64) {
         let Some(region) = self
             .scroll_regions
@@ -2285,8 +2254,6 @@ impl GitClientApp {
         self.scrollbar_region = hovered;
     }
 
-    // --- Accessibility --------------------------------------------------
-
     /// The semantic inventory of the last paint: one node per control and
     /// row, keyed by a stable action target.
     fn accessibility_targets(&self) -> Vec<(String, Rect, ui::a11y::AccessNode)> {
@@ -2335,69 +2302,6 @@ impl GitClientApp {
         for target in &self.semantic {
             let rect = target.rect;
             let entry = match &target.hit {
-                Hit::SidebarToggle => button(
-                    "git.navigation-toggle".into(),
-                    rect,
-                    t(if self.drawer.is_open() {
-                        "git-sidebar-hide"
-                    } else {
-                        "git-sidebar-show"
-                    }),
-                ),
-                Hit::Screen(screen) => (
-                    screen.target().to_string(),
-                    rect,
-                    AccessNode::new(Role::Tab)
-                        .with_name(screen.label())
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .selected(*screen == self.screen),
-                        )
-                        .with_bounds(rect),
-                ),
-                Hit::DiffLayout(layout) => {
-                    let (target, name) = match layout {
-                        DiffLayout::Unified => {
-                            ("git.diff-layout.unified", t("git-diff-unified-name"))
-                        }
-                        DiffLayout::SideBySide => {
-                            ("git.diff-layout.split", t("git-diff-split-name"))
-                        }
-                    };
-                    (
-                        target.to_string(),
-                        rect,
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .selected(self.settings.diff_layout == *layout),
-                            )
-                            .with_bounds(rect),
-                    )
-                }
-                Hit::SyntaxHighlight => (
-                    "git.syntax-highlight".to_string(),
-                    rect,
-                    AccessNode::new(Role::Button)
-                        .with_name(t("git-syntax-name"))
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .checked(self.settings.syntax_highlight),
-                        )
-                        .with_bounds(rect),
-                ),
-                Hit::Remote(action) => {
-                    let (target, name) = match action {
-                        RemoteAction::Fetch => ("git.remote.fetch", t("git-fetch-name")),
-                        RemoteAction::Pull => ("git.remote.pull", t("git-pull-name")),
-                        RemoteAction::Push => ("git.remote.push", t("git-push-name")),
-                    };
-                    button(target.into(), rect, name)
-                }
                 Hit::DismissError => {
                     let text = if let Some(job) = &self.remote_job {
                         job.label.clone()
@@ -2476,6 +2380,108 @@ impl GitClientApp {
                             )
                             .with_bounds(rect),
                     )
+                }
+                Hit::CommitFile(index) => {
+                    let commit_id = self
+                        .model
+                        .commits
+                        .get(self.selected_commit)
+                        .map(|commit| commit.id.clone())
+                        .unwrap_or_default();
+                    let Some(file) = self
+                        .commit_files
+                        .get(&commit_id)
+                        .and_then(|files| files.get(*index))
+                    else {
+                        continue;
+                    };
+                    (
+                        format!("git.commit-file:{index}"),
+                        rect,
+                        AccessNode::new(Role::ListItem)
+                            .with_name(t_args(
+                                "git-commit-file-name",
+                                &[
+                                    ("file", file.path.as_str().into()),
+                                    ("kind", file.kind.label().into()),
+                                ],
+                            ))
+                            .with_description(t("git-show-commit-file"))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(self.file_selection == Some(*index)),
+                            )
+                            .with_bounds(rect),
+                    )
+                }
+                Hit::BackToCommit => {
+                    button("git.back-to-commit".into(), rect, t("git-back-to-commit"))
+                }
+                Hit::ConflictNote => {
+                    let note = self.conflict_sentence();
+                    out.push((
+                        "git.conflict.note".into(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(&note)
+                            .with_value(&note)
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
+                }
+                // The question and what answering costs, read out as one
+                // sentence: a reader hears what it is deciding about.
+                Hit::ConfirmQuestion => {
+                    let Some(confirm) = &self.confirm else {
+                        continue;
+                    };
+                    let text = format!("{} {}", confirm.title(), confirm.body());
+                    out.push((
+                        "git.confirm.question".into(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(&text)
+                            .with_value(&text)
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
+                }
+                Hit::ConfirmAnswer(index) => {
+                    let Some(confirm) = &self.confirm else {
+                        continue;
+                    };
+                    let name = match *index {
+                        0 => t("git-cancel"),
+                        index => match confirm.choices().get(index.saturating_sub(1)) {
+                            Some(face) => face.label.clone(),
+                            None => continue,
+                        },
+                    };
+                    out.push((
+                        format!("git.confirm:{index}"),
+                        rect,
+                        AccessNode::new(Role::Button)
+                            .with_name(&name)
+                            .with_state(AccessState::new().focusable(true))
+                            .with_bounds(rect),
+                        Some(Hit::ConfirmAnswer(*index)),
+                    ));
+                    continue;
+                }
+                Hit::ResolveConflict(side) => {
+                    let (target, name) = match side {
+                        crate::repo::ConflictSide::Ours => {
+                            ("git.conflict.ours".to_string(), t("git-conflict-take-ours"))
+                        }
+                        crate::repo::ConflictSide::Theirs => (
+                            "git.conflict.theirs".to_string(),
+                            t("git-conflict-take-theirs"),
+                        ),
+                    };
+                    button(target, rect, name)
                 }
                 Hit::Panel(PanelHit::WorktreeInfo(index)) => {
                     let Some(worktree) = self.model.worktrees.get(*index) else {
@@ -2677,12 +2683,6 @@ impl GitClientApp {
     }
 }
 
-/// Whether `p` falls inside a non-empty `rect` (a zero-size rect never hits).
-fn rect_hit(rect: Rect, p: Point) -> bool {
-    rect.width() > 0.0 && rect.height() > 0.0 && rect.contains(p)
-}
-
-/// The files of one change area.
 fn change_list(model: &RepoModel, area: ChangeArea) -> &[FileChange] {
     match area {
         ChangeArea::Staged => &model.staged,
@@ -2704,15 +2704,16 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
-    ui::provides!(
-        dyn ui::widget::WindowHeader,
-        dyn ui::widget::controls::ActionControls
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.adopt_preferences();
         self.drain_remote();
         self.publish_shared_repo_if_needed();
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        self.run_window_toolbar();
     }
 
     fn build_layout(
@@ -2750,6 +2751,8 @@ impl Widget for GitClientApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A key (1, 2, 3, d) changes what the bar shows without a sync.
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         self.paint_window(&mut ctx, presence);
     }
@@ -2762,66 +2765,77 @@ impl Widget for GitClientApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use ui::widget::modal_dialog;
-        Widget::draw_overlay(
-            &mut self.syntax_tool,
-            scene,
-            transform,
-            text,
-            theme,
-            presence,
-        );
         let Some(confirm) = &self.confirm else {
-            self.confirm_layout = None;
+            self.confirm_sheet.reset();
             return;
         };
         let window = presence.viewport.get().unwrap_or(self.rect);
         let title = confirm.title();
         let body = confirm.body();
-        let action = confirm.action();
+        let choices = confirm.choices();
         let cancel = t("git-cancel");
-        let hovered = |index: usize| {
-            self.confirm_layout
-                .as_ref()
-                .and_then(|layout| layout.actions.get(index).copied())
-                .zip(self.pointer)
-                .is_some_and(|(rect, p)| rect.contains(p))
+        let mut actions = vec![ModalAction::secondary(&cancel)];
+        // The answer the sheet recommends is its primary; a second answer
+        // that keeps the work another way is the alternate, which stands
+        // apart so the two are not read as the same act.
+        let mut recommended = true;
+        for face in &choices {
+            actions.push(if face.danger {
+                ModalAction::danger(&face.label)
+            } else if std::mem::take(&mut recommended) {
+                ModalAction::primary(&face.label)
+            } else {
+                ModalAction::alternate(&face.label)
+            });
+        }
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .dismiss_on_scrim(true);
+        self.confirm_sheet
+            .paint_message(scene, transform, text, theme, window, &spec, &body);
+        // While the question is up it is the whole of what a person can act
+        // on: the picture under the scrim is context, and a press there only
+        // dismisses. So the accessibility tree holds the question and its
+        // answers, and not the page they were asked about.
+        let Some(layout) = self.confirm_sheet.layout() else {
+            return;
         };
-        let actions = [
-            ModalAction::secondary(&cancel).hovered(hovered(0)),
-            ModalAction::danger(&action).hovered(hovered(1)),
-        ];
-        let style = theme.text(TextRole::Body);
-        let spec = ModalSpec::new(&title).actions(&actions);
-        let width = modal_dialog::body_width(window, spec.max_width, theme);
-        let (_, body_h) = text.measure_style(&body, Some(ui::num::f32_of_f64(width)), &style);
-        let spec = spec.body_height(f64::from(body_h)).dismiss_on_scrim(true);
-        let layout = modal_dialog::layout(window, &spec, text, theme);
-        modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
-        let (_, dim) = modal_dialog::ink(theme);
-        text.draw_style(
-            scene,
-            &body,
-            dim,
-            transform.pre_translate(vello::kurbo::Vec2::new(layout.body.x0, layout.body.y0)),
-            Some(ui::num::f32_of_f64(layout.body.width())),
-            &style,
-        );
-        modal_dialog::paint_actions(scene, transform, text, theme, &layout, &spec);
-        self.confirm_layout = Some(layout);
+        let mut reached = vec![Target {
+            rect: Rect::new(
+                layout.title.x0,
+                layout.title.y0,
+                layout.body.x1,
+                layout.body.y1,
+            ),
+            hit: Hit::ConfirmQuestion,
+        }];
+        for (index, rect) in layout.actions.iter().copied().enumerate() {
+            if rect.area() > 0.0 {
+                reached.push(Target {
+                    rect,
+                    hit: Hit::ConfirmAnswer(index),
+                });
+            }
+        }
+        self.semantic = reached;
+        self.targets.clear();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self
-            .history
-            .handle_event(event, self.history_rect, ctx.scale_factor)
-        {
-            *ctx.handled = true;
-            return;
-        }
-        if let WindowEvent::Touch(touch) = event
-            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
-        {
+        // A question holds the window while it asks: it takes the pointer,
+        // the keyboard (Tab moves between its answers, Enter takes the one
+        // under focus) and the scrim's dismissal, and the page behind it
+        // takes nothing.
+        if self.confirm.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
+            }
+            if let Some(response) = self.confirm_sheet.handle(event, ctx.scale_factor) {
+                self.answer_sheet(response);
+            }
             *ctx.handled = true;
             return;
         }
@@ -2859,9 +2873,6 @@ impl Widget for GitClientApp {
             } => {
                 self.scrollbar.release();
                 self.forward_to_inputs(&mut input);
-                if self.syntax_pressed.replace(false) {
-                    self.toggle_syntax_highlight();
-                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -2873,7 +2884,6 @@ impl Widget for GitClientApp {
                         (p.x / ctx.scale_factor, p.y / ctx.scale_factor)
                     }
                 };
-                // Shift turns a vertical wheel sideways.
                 let (dx, dy) = if ctx.modifiers.state().shift_key() && dx == 0.0 {
                     (dy, 0.0)
                 } else {
@@ -2900,18 +2910,6 @@ impl Widget for GitClientApp {
         }
     }
 
-    fn claims_raw_touch(&self, point: Point) -> bool {
-        let (screens, layouts) = self.segmented_rects();
-        screens
-            .iter()
-            .chain(&layouts)
-            .any(|rect| rect.contains(point))
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.segmented_touch.is_active()
-    }
-
     fn name(&self) -> &'static str {
         "GitClientApp"
     }
@@ -2921,7 +2919,7 @@ impl Widget for GitClientApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let mut children: Vec<_> = self
+        let children: Vec<_> = self
             .accessibility_targets()
             .into_iter()
             .enumerate()
@@ -2933,7 +2931,6 @@ impl Widget for GitClientApp {
                 node.with_key(index as u64).with_action_target(target)
             })
             .collect();
-        children.extend(self.history.accessibility(self.history_rect));
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
                 .with_name("Git")
@@ -2965,9 +2962,6 @@ impl Widget for GitClientApp {
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
-        if self.history.perform_semantic_action(target, action) {
-            return true;
-        }
         let (state, path) = ui::doc::document(state, path);
 
         let field = match target {
@@ -3024,8 +3018,8 @@ impl Widget for GitClientApp {
 }
 
 impl GitClientApp {
-    /// Forward one event to a single embedded widget (a text field or the
-    /// Syntax toggle), returning whether it consumed the event.
+    /// Forward one event to a single embedded text field, returning whether
+    /// it consumed the event.
     fn fwd(
         widget: &mut dyn Widget,
         event: &WindowEvent,
@@ -3053,23 +3047,18 @@ impl GitClientApp {
         handled
     }
 
-    /// Forward a pointer event to every text field (so an in-flight drag-select
-    /// keeps updating regardless of which field started it) and to the
-    /// Syntax toggle.
+    /// Forward a pointer event to every text field, so an in-flight
+    /// drag-select keeps updating regardless of which field started it.
     fn forward_to_inputs(&mut self, ctx: &mut InputEventCtx<'_>) {
-        let modal = self.drawer_is_modal() || self.confirm.is_some();
-        let tool = (!modal && self.screen == Screen::Changes)
-            .then_some(&mut self.syntax_tool as &mut dyn Widget);
-        let widgets: [Option<&mut dyn Widget>; 7] = [
-            Some(&mut self.commit_input),
-            Some(&mut self.branch_input),
-            Some(&mut self.worktree_branch_input),
-            Some(&mut self.worktree_path_input),
-            Some(&mut self.worktree_start_input),
-            Some(&mut self.open_input),
-            tool,
+        let widgets: [&mut dyn Widget; 6] = [
+            &mut self.commit_input,
+            &mut self.branch_input,
+            &mut self.worktree_branch_input,
+            &mut self.worktree_path_input,
+            &mut self.worktree_start_input,
+            &mut self.open_input,
         ];
-        for widget in widgets.into_iter().flatten() {
+        for widget in widgets {
             Self::fwd(
                 widget,
                 ctx.event,
@@ -3083,34 +3072,14 @@ impl GitClientApp {
     }
 
     /// Route a left press: the confirmation sheet when it is up, a text
-    /// field (focus and caret), the Syntax toggle, then the target under the
-    /// pointer. A press anywhere else blurs the focused field.
+    /// field (focus and caret), then the target under the pointer. A press
+    /// anywhere else blurs the focused field.
     fn handle_press(&mut self, ctx: &mut InputEventCtx<'_>) {
         let Some(pos) = self.pointer else {
             return;
         };
-        if self.confirm.is_some() {
-            self.confirm_press(pos);
-            return;
-        }
         if self.scroll_bar_press(pos) {
             self.set_focus(None);
-            return;
-        }
-        if !self.drawer_is_modal()
-            && self.screen == Screen::Changes
-            && rect_hit(self.syntax_tool.get_rect(), pos)
-        {
-            self.set_focus(None);
-            Self::fwd(
-                &mut self.syntax_tool,
-                ctx.event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                &mut ctx.state,
-                ctx.path,
-                ctx.taffy,
-            );
             return;
         }
         let hit = self
@@ -3189,14 +3158,8 @@ impl GitClientApp {
             return;
         }
 
-        // The confirmation sheet holds the keyboard: Escape cancels it.
-        if self.confirm.is_some() {
-            if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) {
-                self.confirm = None;
-            }
-            *handled = true;
-            return;
-        }
+        // A question holds the keyboard through the sheet it is asked on,
+        // which `handle_event` routes before any of this runs.
 
         // A focused text field takes the keys, except Enter (submit) and Escape
         // (blur) which the app intercepts. Text editing — cursor, selection,
@@ -3275,36 +3238,18 @@ impl GitClientApp {
                 *handled = true;
                 return;
             }
+            if self.handle_action_key(s.as_str(), modifiers, &ev.logical_key) {
+                *handled = true;
+                return;
+            }
         }
 
         if self.navigate_list(&ev.logical_key) {
             *handled = true;
+            return;
         }
-    }
-
-    /// Arrow keys move the selection in the active list. Returns whether
-    /// `key` did.
-    fn navigate_list(&mut self, key: &Key) -> bool {
-        let step = match key {
-            Key::Named(NamedKey::ArrowDown) => 1,
-            Key::Named(NamedKey::ArrowUp) => -1,
-            _ => return false,
-        };
-        match self.screen {
-            Screen::History => {
-                self.selected_commit = if step > 0 {
-                    (self.selected_commit + 1).min(self.model.commits.len().saturating_sub(1))
-                } else {
-                    self.selected_commit.saturating_sub(1)
-                };
-                self.detail_scroll = 0.0;
-                true
-            }
-            Screen::Changes => {
-                self.select_next_change(step);
-                true
-            }
-            Screen::Panels => false,
+        if self.navigate_panels(&ev.logical_key) {
+            *handled = true;
         }
     }
 
@@ -3338,16 +3283,6 @@ impl GitClientApp {
     }
 }
 
-/// The view's header row is the window's: it holds the History control the
-/// host offers, so the window draws no History bar above the client.
-impl ui::widget::WindowHeader for GitClientApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.history.control() != control {
-            self.history.set_control(control);
-        }
-    }
-}
-
 impl GitClientApp {
     pub(crate) fn attach_control_actions(
         &mut self,
@@ -3359,11 +3294,6 @@ impl GitClientApp {
     fn effect_for_hit(&self, hit: &Hit) -> Option<(Option<String>, GitClientEffect)> {
         let effect = match hit {
             Hit::ChooseRepository => GitClientEffect::ChooseRepository,
-            Hit::Screen(Screen::Changes) => GitClientEffect::ShowChanges,
-            Hit::Screen(Screen::History) => GitClientEffect::ShowHistory,
-            Hit::Screen(Screen::Panels) => GitClientEffect::ShowBranches,
-            Hit::DiffLayout(_) => GitClientEffect::DiffLayout,
-            Hit::SyntaxHighlight => GitClientEffect::SyntaxHighlight,
             Hit::Panel(PanelHit::CreateWorktree) => GitClientEffect::CreateWorktree {
                 path: self.worktree_path_input.value().to_owned(),
                 branch: self.worktree_branch_input.value().to_owned(),
@@ -3403,10 +3333,6 @@ impl GitClientApp {
 }
 
 impl ui::widget::controls::ActionControls for GitClientApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.history.take()
-    }
-
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         self.semantic_entries()
             .into_iter()
@@ -3667,7 +3593,7 @@ impl GitClientApp {
         }
         match effect {
             GitClientEffect::OpenRepository { path } => self.open_repository_at(&path)?,
-            GitClientEffect::ChooseRepository => return Ok(self.choose_repository(cx)),
+            GitClientEffect::ChooseRepository => return Ok(Self::choose_repository(cx)),
             GitClientEffect::RunApprovedCheck { check_id } => {
                 let checked = cx.approved_check_reported(&check_id)?;
                 return Ok(cx.spawn(checked, |_app, observed, _cx| observed.map(Effected::value)));
@@ -3755,10 +3681,7 @@ impl GitClientApp {
 impl GitClientApp {
     /// Ask the system's file chooser for the repository's folder, then
     /// open it; cancelling leaves the window as it was.
-    fn choose_repository(
-        &mut self,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
-    ) -> Effected {
+    fn choose_repository(cx: &mut EffectCx<crate::resource::GitClient, Self>) -> Effected {
         let picker =
             ui::portal::PickRequest::writable_directory(&t("git-choose-title"), &t("git-open"))
                 .thread_name("git-repository-picker")
@@ -3904,6 +3827,16 @@ impl GitClientApp {
                 }
                 self.diff_scroll = 0.0;
             }
+            // The file a merge left conflicted, open, so the capture shows
+            // the choice it waits on and what each side costs.
+            Some("conflict") => self.test_select_conflicted_file(),
+            // The question a dirty tree asks before it changes branch: the
+            // capture of the decision itself, not of what it is about.
+            Some("switch") => {
+                self.confirm = Some(Confirm::SwitchBranch {
+                    name: "wgpu-pipeline".to_owned(),
+                });
+            }
             // The narrow window's list column, revealed over its scrim
             // rather than the closed default a fresh narrow window opens to.
             Some("narrow") => self.drawer.snap(true),
@@ -3931,6 +3864,49 @@ impl GitClientApp {
 mod tests {
     use super::*;
     use ui::widget::Widget;
+
+    /// The first-run screen's three controls fit the lane they are drawn in:
+    /// side by side while the path keeps room to type in, and in two rows
+    /// below that, so neither a field nor a button is squeezed to nothing.
+    #[test]
+    fn the_open_screen_folds_its_row_before_it_squeezes_the_path() {
+        let wide_lane = Rect::new(0.0, 0.0, 400.0, 400.0);
+        let wide = OpenControls::at(wide_lane, 60.0, 32.0, 8.0, 102.0, 58.0, 180.0);
+        assert!(
+            (wide.field.y0 - wide.choose.y0).abs() < f64::EPSILON,
+            "one row when it fits"
+        );
+        assert!(
+            wide.field.width() >= 180.0,
+            "the path keeps its room: {:?}",
+            wide.field
+        );
+        assert!(wide.choose.x1 <= wide.open.x0, "the buttons do not overlap");
+        assert!(!wide.field.overlaps(wide.choose) && !wide.choose.overlaps(wide.open));
+
+        // The same lane at a 1.5 text scale in an expanded language: the two
+        // buttons take almost all of it.
+        let lane = Rect::new(0.0, 0.0, 342.0, 400.0);
+        let narrow = OpenControls::at(lane, 60.0, 48.0, 12.0, 215.0, 85.0, 180.0);
+        assert!(
+            narrow.field.y1 <= narrow.choose.y0,
+            "the buttons moved under the path: {:?} {:?}",
+            narrow.field,
+            narrow.choose
+        );
+        assert!(
+            (narrow.field.width() - lane.width()).abs() < f64::EPSILON,
+            "the path keeps the whole row"
+        );
+        assert!(
+            narrow.choose.width() >= 215.0,
+            "the chooser keeps its label"
+        );
+        assert!(
+            narrow.choose.x1 <= narrow.open.x0,
+            "the buttons do not overlap"
+        );
+    }
 
     #[test]
     fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
@@ -3960,14 +3936,6 @@ mod tests {
         app.drawer.snap(app.drawer.is_open());
         draw_frame(&mut app);
         app
-    }
-
-    fn target(app: &GitClientApp, hit: &Hit) -> Option<Rect> {
-        app.targets
-            .iter()
-            .rev()
-            .find(|target| target.hit == *hit)
-            .map(|target| target.rect)
     }
 
     fn press(app: &mut GitClientApp, pos: Point, doc: &mut AutoCommit) {
@@ -4016,29 +3984,36 @@ mod tests {
 
     fn panels_screen_never_collapses() {
         let app = app_at(400.0, Screen::Panels);
-        assert!(target(&app, &Hit::SidebarToggle).is_none());
+        let toolbar = app.window_toolbar();
+        assert!(
+            toolbar.sidebar_unavailable,
+            "no list, so the toggle cannot act"
+        );
         assert!(!app.drawer_is_modal());
     }
 
-    /// The overlay flap: the hamburger toggles it, a scrim click dismisses it, a click
-    /// inside keeps it open, and while open it hides and blocks background controls.
-    /// Each phase is a former test with its own fresh fixture.
+    /// The overlay flap: the bar's sidebar toggle opens and closes it, a scrim
+    /// click dismisses it, a click inside keeps it open, and while open it
+    /// hides and blocks background controls. Each phase is a former test with
+    /// its own fresh fixture.
     #[test]
     fn overlay_flap_toggles_dismisses_and_blocks_the_background() {
-        hamburger_click_toggles_overlay_flap();
+        bar_toggle_opens_and_closes_overlay_flap();
         scrim_click_dismisses_open_overlay_flap();
         click_inside_open_flap_does_not_dismiss_it();
         open_overlay_hides_and_blocks_background_controls();
     }
 
-    fn hamburger_click_toggles_overlay_flap() {
+    fn bar_toggle_opens_and_closes_overlay_flap() {
         let mut app = app_at(680.0, Screen::Changes);
-        let mut doc = AutoCommit::new();
         assert!(!app.drawer.is_open());
-        let toggle = target(&app, &Hit::SidebarToggle).unwrap();
-        press(&mut app, toggle.center(), &mut doc);
+        assert_eq!(app.window_toolbar().sidebar, Some(false));
+        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        draw_frame(&mut app);
         assert!(app.drawer.is_open());
-        press(&mut app, toggle.center(), &mut doc);
+        assert_eq!(app.window_toolbar().sidebar, Some(true));
+        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        draw_frame(&mut app);
         assert!(!app.drawer.is_open());
     }
 
@@ -4069,17 +4044,11 @@ mod tests {
         app.drawer.snap(true);
         draw_frame(&mut app);
         assert!(app.drawer_is_modal());
-        let header = GitClientApp::header_height(&Theme::dark());
         assert!(
             app.semantic
                 .iter()
-                .filter(|t| t.rect.y0 >= header)
                 .all(|t| matches!(t.hit, Hit::Change(_) | Hit::Commit(_))),
             "covered content controls leave the accessible tree"
-        );
-        assert!(
-            app.semantic.iter().any(|t| matches!(t.hit, Hit::Screen(_))),
-            "the unoccluded window header remains reachable"
         );
         let covered = app.drawer.sidebar_rect();
         press(
@@ -4116,64 +4085,6 @@ mod tests {
         semantic_open_repository_binds_the_entered_repository();
         semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs();
         synthetic_accessibility_controls_are_addressable_at_their_drawn_rects();
-    }
-
-    /// App-bar geometry: controls stay visible and separate at narrow widths, inside
-    /// the window without overlap, on one centre line per row, and a wrapped bar
-    /// moves the body down. Each phase is a former test with its own fresh fixture.
-    #[test]
-    fn appbar_controls_lay_out_inside_the_window_without_overlap() {
-        appbar_controls_stay_visible_and_separate_at_narrow_widths();
-        appbar_controls_stay_inside_the_window_and_never_overlap();
-        appbar_controls_share_one_centre_line_per_row();
-        wrapped_appbar_moves_the_body_down_with_it();
-    }
-
-    fn appbar_controls_stay_visible_and_separate_at_narrow_widths() {
-        let theme = Theme::dark();
-        let header_h = GitClientApp::header_height(&theme);
-        for width in [320.0, 390.0, 460.0, 480.0, 560.0, 680.0, 800.0, 1280.0] {
-            for screen in Screen::ALL {
-                let app = app_at(width, screen);
-                let header: Vec<&Target> = app
-                    .targets
-                    .iter()
-                    .filter(|t| {
-                        matches!(
-                            t.hit,
-                            Hit::SidebarToggle
-                                | Hit::Screen(_)
-                                | Hit::DiffLayout(_)
-                                | Hit::Remote(_)
-                        )
-                    })
-                    .collect();
-                assert!(
-                    header
-                        .iter()
-                        .filter(|t| matches!(t.hit, Hit::Screen(_)))
-                        .count()
-                        == 3,
-                    "{width}: every screen is reachable"
-                );
-                for (i, a) in header.iter().enumerate() {
-                    assert!(
-                        a.rect.x0 >= -0.01 && a.rect.x1 <= width + 0.01 && a.rect.y1 <= header_h,
-                        "{width}: {:?} at {:?} leaves the header",
-                        a.hit,
-                        a.rect
-                    );
-                    for b in header.iter().skip(i + 1) {
-                        assert!(
-                            a.rect.intersect(b.rect).area() <= 0.01,
-                            "{width}: {:?} overlaps {:?}",
-                            a.hit,
-                            b.hit
-                        );
-                    }
-                }
-            }
-        }
     }
 
     fn semantic_open_repository_binds_the_entered_repository() {
@@ -4225,12 +4136,13 @@ mod tests {
             .filter_map(|child| child.action_target.as_deref())
             .collect();
         assert_eq!(targets.len(), node.children.len());
-        assert!(targets.contains("git.screen.changes"));
-        assert!(targets.contains("git.screen.history"));
-        assert!(targets.contains("git.diff-layout.unified"));
-        assert!(targets.contains("git.diff-layout.split"));
-        assert!(targets.contains("git.syntax-highlight"));
         assert!(targets.contains("git.commit-message"));
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.starts_with("git.change.open:")),
+            "the changed files are reachable: {targets:?}"
+        );
         for (index, child) in node.children.iter().enumerate() {
             assert_eq!(
                 Widget::synthetic_accessibility_rect(&app, &[index]),
@@ -4240,16 +4152,6 @@ mod tests {
         }
 
         let mut doc = automerge::AutoCommit::new();
-        let before = app.settings.diff_layout;
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            "git.diff-layout.split",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
-        assert_ne!(app.settings.diff_layout, before);
-
         assert!(Widget::perform_semantic_action(
             &mut app,
             "git.commit-message",
@@ -4260,9 +4162,8 @@ mod tests {
         assert_eq!(app.focus, Some(Field::Commit));
     }
 
-    /// Paint one frame with a real text renderer so every measured app-bar
-    /// rect (`tab_rects`, settings cluster, hamburger, title block) is the
-    /// production geometry, not a hand-poked stand-in.
+    /// Paint one frame with a real text renderer so every measured rect is
+    /// the production geometry, not a hand-poked stand-in.
     fn draw_frame(app: &mut GitClientApp) {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -4275,46 +4176,5 @@ mod tests {
             &theme,
             &PresenceCtx::default(),
         );
-    }
-
-    fn appbar_controls_stay_inside_the_window_and_never_overlap() {
-        appbar_controls_stay_visible_and_separate_at_narrow_widths();
-    }
-
-    fn appbar_controls_share_one_centre_line_per_row() {
-        let app = app_at(1280.0, Screen::Changes);
-        let header = GitClientApp::header_height(&Theme::dark());
-        let row = app
-            .targets
-            .iter()
-            .filter(|t| matches!(t.hit, Hit::Screen(_) | Hit::DiffLayout(_) | Hit::Remote(_)))
-            .collect::<Vec<_>>();
-        assert!(!row.is_empty());
-        for t in row {
-            assert!((t.rect.center().y - header / 2.0).abs() < 0.01);
-            assert!(t.rect.height() >= f64::from(Theme::dark().tokens.metrics.min_pointer_target));
-        }
-    }
-
-    fn wrapped_appbar_moves_the_body_down_with_it() {
-        for width in [320.0, 480.0, 1280.0] {
-            let app = app_at(width, Screen::Changes);
-            let header = GitClientApp::header_height(&Theme::dark());
-            let document_actions = app
-                .targets
-                .iter()
-                .filter(|target| matches!(target.hit, Hit::Diff(_)))
-                .collect::<Vec<_>>();
-            assert!(
-                !document_actions.is_empty(),
-                "the selected sample file publishes diff actions"
-            );
-            for target in document_actions {
-                assert!(
-                    target.rect.y0 >= header,
-                    "document action stays below its header"
-                );
-            }
-        }
     }
 }

@@ -562,7 +562,6 @@ mod tests {
             before,
             "store churn below a room must not bump its membership generation"
         );
-        // The watch is still there and still sees membership.
         std::fs::write(room.join(MEMBERSHIP_FILE), b"[]").unwrap();
         moves_from(&generation, before, "the room to bump").await;
         task.abort();

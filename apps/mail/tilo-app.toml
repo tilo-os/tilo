@@ -17,7 +17,7 @@ runtime  = "tilo-runtime/2026.07"
 # HTML bodies render in the Chromium engine runtime, in a sandboxed view with
 # scripts and remote content blocked (reader.rs, html_mail.rs). Without the
 # runtime the reader shows the message as styled text.
-optional-runtimes = ["tilo-runtime/2026.10.17-chromium"]
+optional-runtimes = ["tilo-runtime/2026.10.23-chromium"]
 platforms = ["linux", "macos"]
 platform-reason = "Speaks IMAP and SMTP over raw sockets until a host-side proxy exists."
 
@@ -28,10 +28,10 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications", "gpu"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications", "gpu"]
 
 [resources]
-kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text"]
+kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -66,8 +66,8 @@ file-chooser = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/mail"

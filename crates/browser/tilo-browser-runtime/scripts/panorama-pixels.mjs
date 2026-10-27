@@ -11,7 +11,7 @@ try{
   const {createPresentedSource,createPanorama}=await import('/panorama.mjs');
   const input=document.createElement('canvas');input.width=200;input.height=100;
   const c=input.getContext('2d');c.fillStyle='#ff0000';c.fillRect(0,0,200,100);c.fillStyle='#0000ff';c.fillRect(40,20,20,20);
-  let t=0;const layer={members:()=>['fixture-agent'],onMember:()=>()=>{},remoteState:()=>[{publisher:'fixture-agent',seq:1,receivedAtMs:0,focus:{app:'fixture',record:'synthetic-only'},pointer:[20,10],participant:{label:'Test only',color:'#00ff00'}}]};
+  let t=0;const layer={members:()=>['fixture-agent'],onMember:()=>()=>{},remoteState:()=>[{publisher:'fixture-agent',seq:1,receivedAtMs:0,focus:{app:'fixture',record:'synthetic-only'},pointer:{window:{app:'fixture',record:'synthetic-only'},at:[20,10]},participant:{label:'Test only',color:'#00ff00'}}]};
   const source=createPresentedSource({audience:'synthetic-only',app:'fixture',canvas:input,layer:()=>layer,valid:()=>true,now:()=>t});
   const output=document.createElement('canvas');
   const view=createPanorama({canvas:output,sources:[{source:source.handle,rect:[100,50,100,50]}],width:200,height:100,now:()=>t});

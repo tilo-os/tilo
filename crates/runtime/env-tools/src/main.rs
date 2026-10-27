@@ -1,7 +1,8 @@
 //! `tilo-env-tools` — build tool images without a session.
 //!
-//! CI uses it to publish the tool catalog for each env-runtime; a relay's
-//! compute worker uses it to build a member's tool where their session runs.
+//! CI uses it to build the tool catalog for each env-runtime and to sign it
+//! for publication; a relay's compute worker uses it to build a member's tool
+//! where their session runs.
 //! Output is one JSON document on stdout; progress and logs go to stderr.
 
 use std::path::{Path, PathBuf};
@@ -75,9 +76,13 @@ enum Command {
         #[command(flatten)]
         runtime: RuntimeArgs,
         /// Publisher identity file (`{"secret_key_hex": …}`); a throwaway
-        /// key when absent.
-        #[arg(long)]
+        /// key when neither it nor `--publisher` is given.
+        #[arg(long, conflicts_with = "publisher")]
         identity: Option<PathBuf>,
+        /// Seal for this publisher (hex public key) without its key: the
+        /// image carries a placeholder signature, and `sign-catalog` signs it.
+        #[arg(long)]
+        publisher: Option<String>,
         /// Where the `.tapp` goes.
         #[arg(long)]
         out_dir: PathBuf,
@@ -109,6 +114,11 @@ enum Command {
         #[arg(required = true)]
         packages: Vec<String>,
     },
+    /// Sign the tools `build --publisher` sealed (every `.tapp` in
+    /// `--tapps`) and write `catalog.json` naming the signed ids beside them
+    /// in `--out`. Builds nothing: a release's signing step runs it over a
+    /// build's output.
+    SignCatalog(SignCatalogArgs),
     /// Merge catalog documents into one.
     MergeCatalogs {
         #[arg(long)]
@@ -116,6 +126,28 @@ enum Command {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
     },
+}
+
+#[derive(clap::Args)]
+struct SignCatalogArgs {
+    /// Publisher identity file (`{"secret_key_hex": …}`).
+    #[arg(long)]
+    identity: PathBuf,
+    /// The env-runtime image id (`tapp:<hex>`) every tool was built on.
+    #[arg(long)]
+    runtime: PackageId,
+    /// The tools' architecture, `x86_64` or `aarch64`.
+    #[arg(long)]
+    arch: String,
+    /// The catalog the build wrote, naming the unsigned ids.
+    #[arg(long)]
+    catalog: PathBuf,
+    /// The directory holding the unsigned `.tapp`s.
+    #[arg(long)]
+    tapps: PathBuf,
+    /// Receives `<hex id>.tapp` for each signed tool and `catalog.json`.
+    #[arg(long)]
+    out: PathBuf,
 }
 
 #[derive(serde::Serialize)]
@@ -168,18 +200,16 @@ fn main() -> anyhow::Result<()> {
         Command::Build {
             runtime,
             identity,
+            publisher,
             out_dir,
             catalog,
             packages,
         } => {
             let (id, tree) = runtime.materialise()?;
-            let identity = match identity {
-                Some(path) => env_tools::signing::identity_file(&path)?,
-                None => SigningIdentity::generate(),
-            };
+            let sealer = Sealer::of(identity.as_deref(), publisher.as_deref())?;
             std::fs::create_dir_all(&out_dir)?;
             let builder = Builder::new(
-                DirStore::new(id, tree, Some(identity), Some(out_dir))?,
+                DirStore::new(id, tree, Some(sealer), Some(out_dir))?,
                 NoCatalog,
                 &runtime.state,
             )
@@ -207,10 +237,7 @@ fn main() -> anyhow::Result<()> {
             out,
             packages,
         } => {
-            let publisher: [u8; 32] = hex::decode(&publisher)
-                .ok()
-                .and_then(|bytes| bytes.try_into().ok())
-                .context("--publisher is not 32 hex bytes")?;
+            let publisher = parse_publisher(&publisher)?;
             let state = store::default_state_dir()
                 .ok_or_else(|| anyhow::anyhow!("no cache directory for the tool builder"))?;
             let builder = Builder::new(
@@ -224,6 +251,7 @@ fn main() -> anyhow::Result<()> {
                 "key": built.key,
             }))
         }
+        Command::SignCatalog(args) => sign_catalog(&args),
         Command::MergeCatalogs { out, inputs } => {
             let mut merged = Catalog::default();
             for input in &inputs {
@@ -233,6 +261,31 @@ fn main() -> anyhow::Result<()> {
             print(&serde_json::json!({ "tools": merged.tools.len() }))
         }
     }
+}
+
+fn sign_catalog(args: &SignCatalogArgs) -> anyhow::Result<()> {
+    let identity = env_tools::signing::identity_file(&args.identity)?;
+    let arch = match args.arch.as_str() {
+        "x86_64" => tilo_app_package::manifest::Arch::X86_64,
+        "aarch64" => tilo_app_package::manifest::Arch::AArch64,
+        other => anyhow::bail!("--arch {other:?}: tools are built for x86_64 or aarch64"),
+    };
+    let unsigned =
+        Catalog::load(&args.catalog).with_context(|| args.catalog.display().to_string())?;
+    let (signed, ids) = env_tools::delegated::sign_catalog(
+        &unsigned,
+        &args.tapps,
+        &args.runtime,
+        arch,
+        &identity,
+        &args.out,
+    )?;
+    signed.save(&args.out.join("catalog.json"))?;
+    let ids: std::collections::BTreeMap<String, String> = ids
+        .into_iter()
+        .map(|(unsigned, signed)| (unsigned.to_string(), signed.to_string()))
+        .collect();
+    print(&serde_json::json!({ "signed": ids }))
 }
 
 /// Add `built` to the catalog document at `path`, creating it if missing.
@@ -324,12 +377,38 @@ impl RuntimeArgs {
     }
 }
 
+fn parse_publisher(hex: &str) -> anyhow::Result<[u8; 32]> {
+    hex::decode(hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .context("--publisher is not 32 hex bytes")
+}
+
+/// Who a written tool is sealed by.
+enum Sealer {
+    Identity(SigningIdentity),
+    /// For this publisher, whose key is elsewhere: a placeholder signature
+    /// that `sign-catalog` replaces.
+    Publisher([u8; 32]),
+}
+
+impl Sealer {
+    /// `build`'s `--identity` or `--publisher`; a throwaway key without either.
+    fn of(identity: Option<&Path>, publisher: Option<&str>) -> anyhow::Result<Self> {
+        Ok(match (identity, publisher) {
+            (_, Some(hex)) => Self::Publisher(parse_publisher(hex)?),
+            (Some(path), None) => Self::Identity(env_tools::signing::identity_file(path)?),
+            (None, None) => Self::Identity(SigningIdentity::generate()),
+        })
+    }
+}
+
 /// A store over one runtime that writes each tool it is given to a
 /// directory as a `.tapp`, for publishing.
 struct DirStore {
     runtime: PackageId,
     tree: PathBuf,
-    identity: Option<SigningIdentity>,
+    sealer: Option<Sealer>,
     out_dir: Option<PathBuf>,
     arch: tilo_app_package::manifest::Arch,
     written: Mutex<Option<PathBuf>>,
@@ -339,13 +418,13 @@ impl DirStore {
     fn new(
         runtime: PackageId,
         tree: PathBuf,
-        identity: Option<SigningIdentity>,
+        sealer: Option<Sealer>,
         out_dir: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             runtime,
             tree,
-            identity,
+            sealer,
             out_dir,
             arch: image::host_arch()?,
             written: Mutex::new(None),
@@ -370,10 +449,19 @@ impl ToolStore for DirStore {
         key: &CacheKey,
         requested: &[String],
     ) -> anyhow::Result<PackageId> {
-        let (Some(identity), Some(out_dir)) = (&self.identity, &self.out_dir) else {
+        let (Some(sealer), Some(out_dir)) = (&self.sealer, &self.out_dir) else {
             anyhow::bail!("this command only resolves");
         };
-        let packed = image::seal_tool(tree, key, requested, self.arch, identity)?;
+        let packed = match sealer {
+            Sealer::Identity(identity) => {
+                image::seal_tool(tree, key, requested, self.arch, identity)?
+            }
+            Sealer::Publisher(publisher) => tilo_app_package::seal_image_for(
+                tree,
+                &image::tool_spec(key, requested, self.arch),
+                *publisher,
+            )?,
+        };
         let name = image::tool_id(requested);
         let digest = key.digest().to_hex();
         let path = out_dir.join(format!(

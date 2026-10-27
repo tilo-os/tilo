@@ -643,11 +643,6 @@ pub fn invoke(
 /// [`invoke`] after an outer policy boundary has completed the action
 /// contract's confirmation step. This is intentionally separate from
 /// [`invoke`], whose default is fail-closed for consequential actions.
-///
-/// # Errors
-///
-/// Returns the same errors as [`invoke`], except confirmation has already
-/// been granted by the caller.
 pub fn invoke_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -683,11 +678,6 @@ fn invoke_with_consent(
 }
 
 /// Typed-argument counterpart to [`invoke`].
-///
-/// # Errors
-///
-/// Returns address, availability, confirmation, argument, registry, dispatch,
-/// and result-contract errors encountered while invoking the action.
 pub fn invoke_json(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -704,11 +694,6 @@ pub fn invoke_json(
 
 /// Typed-argument invocation after an outer policy boundary has completed the
 /// action contract's confirmation step.
-///
-/// # Errors
-///
-/// Returns the same errors as [`invoke_json`], except confirmation has already
-/// been granted by the caller.
 pub fn invoke_json_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -1438,7 +1423,7 @@ mod tests {
                     )],
                     |args| encoded(&Note::Retitle(args.text("title").unwrap_or("").to_owned())),
                 )
-                .programmatic()
+                .for_audience(crate::Audience::Agents)
                 .with_risk(|args| {
                     if args.text("title").is_some_and(str::is_empty) {
                         crate::RiskLevel::Destructive
@@ -1500,7 +1485,6 @@ mod tests {
         run(&mut doc, "", true).expect("a confirmed destructive value runs");
         assert_eq!(stored_title(&doc).as_deref(), Some(""));
 
-        // The legacy text door classifies the same value the same way.
         let mut transport = LocalTransport::new();
         assert_eq!(
             invoke(
@@ -1668,8 +1652,7 @@ mod tests {
         // Arguments that cannot bind build nothing, so they get the declared policy.
         assert_eq!(spec.confirmation_for_json(&serde_json::Map::new()), none);
 
-        // The inert contract carries both properties across every boundary.
-        assert!(spec.is_programmatic() && spec.contract.is_programmatic());
+        assert!(!spec.reaches_people() && !spec.contract.reaches_people());
         assert!(spec.contract.confirmation_depends_on_arguments());
         assert_eq!(spec.contract.confirmation, none);
         assert_eq!(spec.contract.advertised_confirmation(), confirm);

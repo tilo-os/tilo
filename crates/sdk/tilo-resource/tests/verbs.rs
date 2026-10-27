@@ -297,9 +297,18 @@ fn a_verb_with_an_outbox_reaches_outside() {
     assert_eq!(Shelf::kind_of(&rename), ActionKind::Undoable);
     let tree = published(&shelf);
     let spec = |id: &str| tree.actions.iter().find(|spec| spec.id == id).unwrap();
-    assert!(!spec("mail-to").contract.reversible);
-    assert!(spec("retitle").contract.reversible);
-    assert!(spec(tilo_resource::APPLY).contract.reversible);
+    // The kind follows from what each action is able to do: a verb that
+    // queues reaches outside, one that only edits the document is undoable,
+    // and so is the generic `apply`.
+    assert_eq!(spec("mail-to").contract.kind, ActionKind::Outside);
+    assert_eq!(spec("retitle").contract.kind, ActionKind::Undoable);
+    assert_eq!(
+        spec(tilo_resource::APPLY).contract.kind,
+        ActionKind::Undoable
+    );
+    assert!(!spec("mail-to").contract.can_be_undone());
+    assert!(spec("retitle").contract.can_be_undone());
+    assert!(spec(tilo_resource::APPLY).contract.can_be_undone());
     assert_eq!(
         tilo_resource::spec_kind(spec("mail-to")),
         ActionKind::Outside
@@ -549,6 +558,79 @@ fn an_effect_parameter_publishes_what_its_type_is_written_as() {
             ("colour".to_owned(), tilo_actions::ParamType::Object),
             ("opaque".to_owned(), tilo_actions::ParamType::Object),
         ]
+    );
+}
+
+/// A tag a test host treats an effect by.
+const PRINTED_TAG: &str = "test:printed";
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.press")]
+pub enum PressEffect {
+    /// Print the shelf.
+    #[effect(job, returns, host_render, tag = PRINTED_TAG)]
+    Print,
+    /// Count the cards.
+    #[effect(returns)]
+    Count,
+    /// Export the shelf.
+    #[effect(returns, kind = "read", outside_with = "path")]
+    Export {
+        #[param("Where to write it; kept as content when absent")]
+        path: Option<String>,
+    },
+}
+
+#[test]
+fn an_export_reaches_outside_only_when_told_where_to_write() {
+    use tilo_resource::Effect as _;
+    let export = PressEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == "export")
+        .unwrap();
+    assert_eq!(
+        export.contract.kind,
+        ActionKind::Read,
+        "offered as the least it does"
+    );
+    let need = |arguments: serde_json::Value| {
+        export
+            .need_for(Some(arguments.as_object().unwrap()), None)
+            .kind
+    };
+    assert_eq!(need(serde_json::json!({})), ActionKind::Read);
+    assert_eq!(need(serde_json::json!({ "path": null })), ActionKind::Read);
+    assert_eq!(
+        need(serde_json::json!({ "path": "/tmp/shelf.json" })),
+        ActionKind::Outside
+    );
+}
+
+#[test]
+fn an_effect_carries_the_tags_its_host_treats_it_by() {
+    use tilo_resource::Effect as _;
+    let specs = PressEffect::specs();
+    let tags = |id: &str| {
+        specs
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap()
+            .contract
+            .tags
+            .clone()
+    };
+    let print = tags("print");
+    assert!(
+        print.iter().any(|tag| tag == tilo_actions::HOST_RENDER_TAG),
+        "a host-rendered effect says so: {print:?}"
+    );
+    assert!(print.iter().any(|tag| tag == PRINTED_TAG), "{print:?}");
+    let count = tags("count");
+    assert!(
+        count
+            .iter()
+            .all(|tag| tag != tilo_actions::HOST_RENDER_TAG && tag != PRINTED_TAG),
+        "an untagged effect carries neither: {count:?}"
     );
 }
 
@@ -866,6 +948,59 @@ fn a_place_not_loaded_still_resolves_by_id() {
     assert!(Pages::child(&state, id).is_none(), "nothing is loaded");
     let child = tilo_resource::child_by_id::<Pages>(&state, pages.doc(), id).expect("resolved");
     assert_eq!(child.label, "Chapter one");
+}
+
+fn three_pages() -> Replica<Pages> {
+    let mut pages = Replica::<Pages>::new();
+    for title in ["Cover", "Contents", "Chapter one"] {
+        pages.apply(Pages::ADD_PAGE.with(title.to_owned())).unwrap();
+    }
+    pages
+}
+
+#[test]
+fn places_as_they_were_are_the_publication_they_were() {
+    let pages = three_pages();
+    let mut state = Pages::read(pages.doc()).unwrap();
+    state.loaded = vec![0, 1];
+    let first = tilo_resource::derived::published::<Pages>(state.places());
+    let again = tilo_resource::derived::published::<Pages>(state.places());
+    assert!(std::rc::Rc::ptr_eq(&first, &again));
+
+    state.loaded = vec![0, 1, 2];
+    let more = tilo_resource::derived::published::<Pages>(state.places());
+    assert!(!std::rc::Rc::ptr_eq(&first, &more));
+    let labels: Vec<&str> = more
+        .resources()
+        .iter()
+        .map(|place| place.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Cover", "Contents", "Chapter one"]);
+    for (was, now) in first.resources().iter().zip(more.resources().iter()) {
+        assert!(
+            std::rc::Rc::ptr_eq(was, now),
+            "{} is published again",
+            was.label
+        );
+    }
+}
+
+#[test]
+fn reading_more_of_a_document_is_no_revision() {
+    let mut pages = three_pages();
+    let mut reader = tilo_resource::Reader::<Pages>::open(pages.doc_mut()).unwrap();
+    let revision = reader.revision();
+    let demand = tilo_resource::Demand::none().with_keys(["p0", "p2"]);
+    assert!(reader.demand(pages.doc(), demand).unwrap());
+    assert_eq!(reader.state().loaded, [0, 2]);
+    assert_eq!(reader.revision(), revision);
+    assert_eq!(reader.loads(), 1);
+
+    pages
+        .apply(Pages::ADD_PAGE.with("Index".to_owned()))
+        .unwrap();
+    assert!(reader.sync(pages.doc()).unwrap());
+    assert_ne!(reader.revision(), revision);
 }
 
 /// An absent option given positionally is left out, as a parameter not

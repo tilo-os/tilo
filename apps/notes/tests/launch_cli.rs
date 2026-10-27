@@ -13,7 +13,7 @@ fn drive(
     actions: &serde_json::Value,
 ) -> serde_json::Value {
     std::fs::create_dir_all(host).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_notes"));
+    let mut command = Command::new(tilo_test_env::package_binary!("notes"));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

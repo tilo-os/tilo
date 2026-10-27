@@ -128,6 +128,7 @@ capabilities! {
     Notifications = "notifications": "Show notifications.",
     Secrets = "secrets": "Keep secrets in the platform's credential store.",
     Settings = "settings": "Keep per-app preferences.",
+    SettingsSystem = "settings.system": "Change every setting of the device, as the settings app the system ships.",
     NetworkHttp = "network.http": "Make HTTP requests.",
     NetworkFetchProxy = "network.fetch-proxy": "Read any site's responses in a page through the host's fetch proxy.",
     NetworkStatus = "network.status": "Know whether the device is online or metered.",
@@ -165,6 +166,7 @@ const WEB_PROCESSES: &str = "A browser page cannot start programs.";
 const WEB_WEBVIEW: &str = "A browser page cannot embed another browser.";
 const WEB_WAKE: &str = "A closed browser page cannot be woken reliably.";
 const LINUX_ONLY_IO_URING: &str = "io_uring is an interface of the Linux kernel.";
+const TILO_OS_SETTINGS: &str = "Only Tilo OS keeps a device's settings for its settings app.";
 
 impl Capability {
     /// Parse a manifest spelling.
@@ -245,6 +247,13 @@ impl Capability {
             Self::Location => [Prompt, Prompt, Prompt],
             Self::Camera | Self::Microphone | Self::ScreenCapture => [Prompt, Planned, Planned],
             Self::WebView => [Available, Available, Unsupported(WEB_WEBVIEW)],
+            // The session's settings service grants it, on Tilo OS, to the
+            // settings app the image ships and to no other.
+            Self::SettingsSystem => [
+                Available,
+                Unsupported(TILO_OS_SETTINGS),
+                Unsupported(TILO_OS_SETTINGS),
+            ],
             // The app sandbox refuses io_uring unless the person grants it
             // (an app the image ships is granted what it declares); runtimes
             // fall back to epoll without it, so declare it optional.
@@ -305,7 +314,6 @@ impl fmt::Display for Capability {
     }
 }
 
-/// `feature`'s row in its platform crate.
 fn platform_row(feature: impl tilo_platform_caps::Feature) -> [Availability; 3] {
     feature.targets().map(|availability| match availability {
         tilo_platform_caps::Availability::Available => Availability::Available,

@@ -519,7 +519,11 @@ pub struct Firewall {
     /// Panic mode: entered and left by verbs.
     #[model(readonly)]
     pub panic_mode: bool,
-    /// Active zone
+    /// Active zone. A more trusted zone ([`ZoneKind::ALL`]'s order) lets
+    /// more in, so switching to one weakens the firewall.
+    #[model(weaker = [
+        "drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"
+    ])]
     pub default_zone: ZoneKind,
     /// The configured zones, by zone name.
     pub zones: BTreeMap<String, StoredZone>,

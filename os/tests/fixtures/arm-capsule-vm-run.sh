@@ -9,7 +9,7 @@ bind_file() {
     mount --bind "$1" "$2"
     mount -o remount,bind,ro "$2"
 }
-bind_file /inputs/tilo-launcher /usr/bin/tilo-launcher
+bind_file /inputs/tilo-launcher /usr/libexec/tilo/tilo-launcher
 bind_file /inputs/tilo-windows-runtime /usr/libexec/tilo-windows-runtime
 bind_file /inputs/umu_run.py /usr/libexec/umu_run.py
 bind_file /inputs/umu_run.py /usr/libexec/tilo-umu-run
@@ -23,7 +23,7 @@ mount --bind /dev/null /dev/dri/renderD128
 chown 1000:1000 /run/user/1000 /home/tilo
 chmod 700 /run/user/1000
 /usr/bin/true
-/usr/bin/tilo-launcher __sandbox-exec --ro /usr --ro /lib --ro /lib64 \
+/usr/libexec/tilo/tilo-launcher __sandbox-exec --ro /usr --ro /lib --ro /lib64 \
     --rw /tmp --net-restricted -- /usr/bin/true
 echo TILO_ARM_CAPSULE_TRANSPORT_PASS
 mode=$(cat /inputs/mode)

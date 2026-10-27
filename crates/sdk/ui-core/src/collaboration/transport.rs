@@ -246,6 +246,14 @@ pub trait CollabTransport: Send {
         None
     }
 
+    /// Ask `channel`'s reader for the whole committed read, as an owner being
+    /// built does. Whether the ask was taken.
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_request_whole_read_for_test(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
+    }
+
     /// Hand one native media command for `channel` to the transport's media
     /// side channel. Returns whether it was admitted.
     fn send_native_media(
@@ -359,11 +367,6 @@ impl DocumentPublicationReceipt {
     }
 
     /// Inspect completion without waiting. A completed receipt is consumed.
-    ///
-    /// # Errors
-    ///
-    /// Returns the prefix failure, or the transport's disconnection cause
-    /// when it dropped the receipt unresolved.
     pub fn try_complete(&self) -> Result<Option<()>, DocumentPublicationError> {
         match self.receiver.try_recv() {
             Ok(result) => result.map(Some),
@@ -374,11 +377,6 @@ impl DocumentPublicationReceipt {
 
     /// Wait for completion, optionally within an absolute deadline. A
     /// completed result takes precedence over an elapsed deadline.
-    ///
-    /// # Errors
-    ///
-    /// Returns a publication failure, the transport stopping, or the
-    /// deadline elapsing.
     pub fn wait(self, deadline: Option<Instant>) -> Result<(), DocumentPublicationError> {
         if self.try_complete()?.is_some() {
             return Ok(());

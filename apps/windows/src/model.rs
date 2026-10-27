@@ -11,13 +11,6 @@ pub enum Route {
 }
 impl Route {
     pub const ALL: [Self; 3] = [Self::Wine, Self::Proton, Self::Vm];
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Wine => "Wine",
-            Self::Proton => "Proton",
-            Self::Vm => "Windows VM",
-        }
-    }
     pub const fn short(self) -> &'static str {
         match self {
             Self::Wine => "WINE",
@@ -34,14 +27,12 @@ impl Route {
             Self::Vm => "windows-route-vm",
         }
     }
-    pub const fn security_summary(self) -> &'static str {
+    /// Fluent key naming how an app on this route is kept apart from the
+    /// rest of the computer.
+    pub const fn security_key(self) -> &'static str {
         match self {
-            Self::Wine | Self::Proton => {
-                "It runs in a private capsule that sees only the files and devices you allow."
-            }
-            Self::Vm => {
-                "It shares Windows with your other Windows apps. Files reach it only when you open them with it."
-            }
+            Self::Wine | Self::Proton => "windows-route-capsule-security",
+            Self::Vm => "windows-route-vm-security",
         }
     }
 }
@@ -54,12 +45,13 @@ pub enum Confidence {
     Fallback,
 }
 impl Confidence {
-    pub const fn label(self) -> &'static str {
+    /// Fluent key for how well this computer's catalogue knows the app runs.
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Verified => "Verified",
-            Self::Community => "Community tested",
-            Self::Heuristic => "Best match",
-            Self::Fallback => "Untested",
+            Self::Verified => "windows-confidence-verified",
+            Self::Community => "windows-confidence-community",
+            Self::Heuristic => "windows-confidence-best-match",
+            Self::Fallback => "windows-confidence-untested",
         }
     }
 }
@@ -75,15 +67,16 @@ pub enum AppStatus {
     Uninstalled,
 }
 impl AppStatus {
-    pub const fn label(self) -> &'static str {
+    /// Fluent key for where an app's installation stands.
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Ready => "Ready",
-            Self::Running => "Running",
-            Self::NeedsAttention => "Needs attention",
-            Self::Installing => "Installing",
-            Self::Uninstalling => "Uninstalling",
-            Self::Failed => "Setup didn't finish",
-            Self::Uninstalled => "Uninstalled, data kept",
+            Self::Ready => "windows-app-status-ready",
+            Self::Running => "windows-app-status-running",
+            Self::NeedsAttention => "windows-app-status-needs-attention",
+            Self::Installing => "windows-app-status-installing",
+            Self::Uninstalling => "windows-app-status-uninstalling",
+            Self::Failed => "windows-app-status-failed",
+            Self::Uninstalled => "windows-app-status-uninstalled",
         }
     }
 }

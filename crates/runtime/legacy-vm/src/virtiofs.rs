@@ -137,12 +137,12 @@ mod tests {
         {
             let daemon = virtiofsd_argv(VIRTIOFSD, &share, socket, 1000, 1, 1);
             let argv = confined_argv(
-                Path::new("/usr/bin/tilo-legacy"),
+                Path::new("/usr/libexec/tilo/tilo-legacy"),
                 &share,
                 socket,
                 daemon.clone(),
             );
-            assert_eq!(argv[..2], ["/usr/bin/tilo-legacy", "confine-fs"]);
+            assert_eq!(argv[..2], ["/usr/libexec/tilo/tilo-legacy", "confine-fs"]);
             let (ro, rw, program) = parse_confined(&argv[2..]).unwrap();
             assert!(ro.contains(&PathBuf::from("/var/home/you/Music")));
             assert!(ro.contains(&PathBuf::from("/usr")));

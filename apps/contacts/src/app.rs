@@ -33,14 +33,14 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Button, ButtonRole, ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList,
-    NavPane, NavSection, NavShell, TaffyTreeExt, Widget,
+    ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList, NavPane, NavSection,
+    NavShell, TaffyTreeExt, Widget,
 };
 
 use crate::form::EditForm;
 use crate::model::{Contact, ContactId, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
-use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane, queue};
+use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane};
 
 mod dialogs;
 mod effects;
@@ -53,6 +53,10 @@ const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
 
 /// The sidebar destinations that are not groups.
 const ALL_DESTINATION: &str = "all";
+
+/// What an empty book says to someone who may only view it, in place of a
+/// New contact that would only be refused.
+const VIEW_ONLY_MESSAGE: &str = "You can view this address book, but not add to it.";
 const FAVORITES_DESTINATION: &str = "favorites";
 const GROUP_DESTINATION: &str = "group:";
 
@@ -117,6 +121,17 @@ enum MoreAction {
     ReviewDuplicate,
 }
 
+/// The action ids of the window bar's slots ([`ContactsApp::window_toolbar`]).
+const BAR_NEW: &str = "new-contact";
+const BAR_FAVORITE: &str = "favorite";
+const BAR_EDIT: &str = "edit";
+const BAR_DELETE: &str = "delete";
+const BAR_SAVE: &str = "save";
+const BAR_CANCEL: &str = "cancel";
+const BAR_IMPORT: &str = "import";
+const BAR_EXPORT: &str = "export";
+const BAR_REVIEW_DUPLICATE: &str = "review-duplicate";
+
 /// Which menu is open, and the rows it shows in order (`None` for a
 /// separator).
 enum OpenMenu {
@@ -133,18 +148,16 @@ enum PendingMenu {
 /// What the content column shows.
 #[derive(Clone, PartialEq, Debug)]
 enum ContentKey {
-    FirstRun,
+    /// An empty book, whose first contact anyone who may edit adds here.
+    FirstRun {
+        read_only: bool,
+    },
     Nothing,
     Contact(Box<Contact>),
-    Edit { epoch: u64, calendar: bool },
-}
-
-/// What the content column's header holds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum HeaderKey {
-    Empty,
-    View { favorite: bool },
-    Edit,
+    Edit {
+        epoch: u64,
+        calendar: bool,
+    },
 }
 
 #[allow(
@@ -171,7 +184,6 @@ pub struct ContactsApp {
     /// target id parks here while "Save changes?" is asked.
     pending_switch: Option<ContactId>,
 
-    // ---- the window ----
     rect: Rect,
     shell: NavShell,
     shared: Shared,
@@ -183,15 +195,12 @@ pub struct ContactsApp {
     /// while the list has rows to order.
     sort_shown: bool,
     overview_controls_shown: Option<(bool, Option<FileWork>)>,
-    /// The More menu's rows and whether each is enabled, as last handed to
-    /// its button.
-    more_shown: Vec<(MoreAction, bool)>,
-    /// The More command chosen in the menu, run after the event.
+    /// The More command chosen in the window bar's menu, run after the
+    /// event.
     more_pick: std::sync::Arc<std::sync::Mutex<Option<MoreAction>>>,
     /// The sidebar rows last handed to the shell.
     sidebar_shown: Vec<(String, String, u32)>,
     content_shown: Option<ContentKey>,
-    header_shown: Option<HeaderKey>,
     dialog: Option<(DialogKey, Element)>,
     menu: ContextMenu,
     open_menu: Option<OpenMenu>,
@@ -208,6 +217,9 @@ pub struct ContactsApp {
     detail_scroll: (Option<ContactId>, std::rc::Rc<std::cell::Cell<(f32, f32)>>),
     last_mouse: Point,
     list_stale: bool,
+    /// Whether the list was published standing alone, a narrow window's
+    /// screen: only then does an empty book say so in the list.
+    list_alone: bool,
     structure_dirty: bool,
     layout_dirty: bool,
     dirty: bool,
@@ -227,26 +239,23 @@ pub struct ContactsApp {
     pub(crate) identity_directory:
         Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
     unconfirmed_save: Option<EditForm>,
+    /// Whether the notice showing offers to undo a deletion, and whether a
+    /// later change of the person's has since made its Undo stale.
+    delete_undo: Cell<DeleteUndo>,
 }
 
-/// The overview header's commands: search, more, and new contact.
-fn overview_actions(shared: &Shared, more: Vec<MenuItem>) -> Vec<Element> {
-    vec![
-        Box::new(ui::search::search_button(
-            ui::search::SearchRequest::this_app(),
-        )),
-        Box::new(
-            Button::icon_only(MORE_BUTTON, Icon::MoreHorizontal, "More actions").with_menu(more),
-        ),
-        Box::new(
-            Button::icon_only("contacts.new", Icon::Plus, "New contact")
-                .on_view(queue(shared, Request::NewContact)),
-        ),
-    ]
+/// A deleted contact's "Undo" notice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DeleteUndo {
+    /// No notice offers to undo a deletion.
+    #[default]
+    None,
+    /// The notice's Undo takes back the deletion, the same as Ctrl+Z.
+    Offered,
+    /// The person changed the book since: Undo would take back that change
+    /// instead, so the notice goes.
+    Lapsed,
 }
-
-/// The overview header's More button, which opens the [`MoreAction`] menu.
-const MORE_BUTTON: &str = "contacts.more";
 
 /// The list's orders: the control's value, its label, and the key.
 const SORTS: &[(&str, &str, SortKey)] = &[
@@ -285,21 +294,16 @@ fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
     Box::new(
         ui::widget::Row::new()
             .with_id("contacts.sort-row")
-            .with_padding_rhythm(None, Some(ui::tokens::Rhythm::Related))
+            // The list's rows stand a tight inset in from the pane's edge;
+            // the dropdown starts where their faces do.
+            .with_padding_rhythm(
+                Some(ui::tokens::Rhythm::Tight),
+                Some(ui::tokens::Rhythm::Related),
+            )
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(taffy::AlignItems::Center)
             .push(Box::new(sort.control_size(ControlSize::Regular))),
     )
-}
-
-/// The first widget in `root`'s tree with `id`, depth first, to change.
-fn find_mut<'w>(root: &'w mut dyn Widget, id: &str) -> Option<&'w mut dyn Widget> {
-    if root.test_id() == Some(id) {
-        return Some(root);
-    }
-    root.children_mut()
-        .into_iter()
-        .find_map(|child| find_mut(child, id))
 }
 
 impl ContactsApp {
@@ -428,7 +432,29 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    fn announce_refusal(&mut self) {
+    /// Say `text` of a change just submitted once it is kept: at once in an
+    /// address book nobody else decides, once the room accepts it in a
+    /// shared one, and never when the room refuses it
+    /// ([`Self::announce_answers`]).
+    fn say_when_kept(&mut self, text: &str) {
+        match &self.dispatcher {
+            Some(dispatcher) => dispatcher.say_when_kept(text),
+            None => self.show_toast(text),
+        }
+    }
+
+    /// Show what the room answered of this window's changes: one it kept
+    /// is said done ("Contact created"), and one it refused, which the
+    /// record withdrew, says why instead.
+    fn announce_answers(&mut self) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let said = dispatcher.said();
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.show_toast(text);
+        }
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
@@ -465,8 +491,17 @@ impl ContactsApp {
         if dispatcher.read_only() {
             return Err("you can only view this address book".into());
         }
+        self.lapse_delete_undo();
         dispatcher.submit(invoke);
         Ok(())
+    }
+
+    /// A change of the person's after a deletion: the deletion is no longer
+    /// their last step, so its notice's Undo would take back something else.
+    fn lapse_delete_undo(&self) {
+        if self.delete_undo.get() == DeleteUndo::Offered {
+            self.delete_undo.set(DeleteUndo::Lapsed);
+        }
     }
 
     /// The live app. Never fabricates sample content.
@@ -485,10 +520,6 @@ impl ContactsApp {
     ) -> Self {
         self.shell = self
             .shell
-            .inspector_header(
-                crate::account_editor::CATALOG.t("contacts-accounts"),
-                Vec::new(),
-            )
             .with_inspector_hidden()
             .with_inspector_state(&editor.visible);
         self.account_editor = Some(editor);
@@ -517,8 +548,8 @@ impl ContactsApp {
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
-            .content(empty_pane(&shared, "No contact selected", None))
-            .overview_header("All contacts", overview_actions(&shared, Vec::new()));
+            .content(empty_pane(&shared, "No contact selected", None, None))
+            .with_window_toolbar();
         shell.show(NavPane::Overview);
         Self {
             store,
@@ -540,11 +571,9 @@ impl ContactsApp {
             sort_choice,
             sort_shown: false,
             overview_controls_shown: None,
-            more_shown: Vec::new(),
             more_pick: std::sync::Arc::default(),
             sidebar_shown: Vec::new(),
             content_shown: None,
-            header_shown: None,
             dialog: None,
             menu: ContextMenu::new(),
             open_menu: None,
@@ -555,6 +584,7 @@ impl ContactsApp {
             detail_scroll: (None, std::rc::Rc::default()),
             last_mouse: Point::ZERO,
             list_stale: true,
+            list_alone: false,
             structure_dirty: false,
             layout_dirty: true,
             dirty: true,
@@ -568,6 +598,7 @@ impl ContactsApp {
             account_pane: None,
             identity_directory: None,
             unconfirmed_save: None,
+            delete_undo: Cell::default(),
             import_conflicts: Vec::new(),
             pending_conflict_resolution: None,
         }
@@ -640,12 +671,6 @@ impl ContactsApp {
             }
             "favorites" => self.set_group_filter(Some(FAVORITES_FILTER.into())),
             "context" => self.pending_menu = self.selected.map(PendingMenu::Contact),
-            "more" => {
-                self.publish_more();
-                if let Some(button) = self.more_button() {
-                    button.open(true);
-                }
-            }
             "import-conflict" => {
                 if let Some(existing) = self.selected.and_then(|id| self.store.contact(id)).cloned()
                 {
@@ -800,7 +825,7 @@ impl ContactsApp {
                     // An edited contact shows its changes as the form closes;
                     // storing them says nothing.
                     if form.is_new {
-                        self.show_toast("Contact created");
+                        self.say_when_kept("Contact created");
                     }
                     self.mode = Mode::View;
                     self.shared.borrow_mut().reveal = Some(id);
@@ -969,13 +994,33 @@ impl ContactsApp {
         }
     }
 
-    /// Delete the contact `id`: the host asks the person to confirm, and the
-    /// contact leaves the list once the book no longer holds it.
+    /// Delete the contact `id` at the person's own press, key or menu
+    /// choice. The deletion is one undo step of theirs, so nothing is asked:
+    /// it applies now and the notice's Undo takes it back, the same as
+    /// Ctrl+Z. The palette, a script or an agent is still asked first.
     fn delete_contact(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
-        if let Err(error) = self.try_perform_action(doc, Contacts::delete(id)) {
-            self.reconcile_refused_action(doc, "delete contact", &error);
-        }
         self.dirty = true;
+        let Some(dispatcher) = &self.dispatcher else {
+            self.show_toast("Couldn't delete contact: the address book is not open");
+            return;
+        };
+        if dispatcher.read_only() {
+            self.show_toast("Couldn't delete contact: you can only view this address book");
+            return;
+        }
+        let name = self.store.contact(id).map(Contact::display_name);
+        if let Err(error) = dispatcher.submit_gesture(doc, Contacts::delete(id)) {
+            self.show_toast(format!("Couldn't change the address book: {error}"));
+            return;
+        }
+        let notice = name.map_or_else(
+            || "Contact deleted".to_owned(),
+            |name| format!("Deleted {name}"),
+        );
+        self.shell.dismiss_toast();
+        self.shell
+            .toast_with_action(notice, ToastKind::Info, "undo-2", "Undo");
+        self.delete_undo.set(DeleteUndo::Offered);
     }
 
     /// Move the list selection by `delta` rows within the visible set.
@@ -1042,43 +1087,6 @@ impl ContactsApp {
         rows
     }
 
-    /// Hand the More button its rows when what they offer changed.
-    fn publish_more(&mut self) {
-        let rows = self.more_rows();
-        if rows == self.more_shown {
-            return;
-        }
-        let items = rows
-            .iter()
-            .map(|&(action, enabled)| {
-                let label = match action {
-                    MoreAction::Import if !enabled => "Importing…",
-                    MoreAction::Import => "Import contacts",
-                    MoreAction::Export => "Export contacts",
-                    MoreAction::ReviewDuplicate => "Review possible duplicate",
-                };
-                let pick = std::sync::Arc::clone(&self.more_pick);
-                MenuItem::action(label, move || {
-                    if let Ok(mut pick) = pick.lock() {
-                        *pick = Some(action);
-                    }
-                })
-                .with_enabled(enabled)
-            })
-            .collect();
-        if let Some(button) = self.more_button() {
-            button.set_items(items);
-            self.more_shown = rows;
-        }
-    }
-
-    /// The overview header's More button, inside the shell.
-    fn more_button(&mut self) -> Option<&mut ui::widget::MenuButton> {
-        find_mut(&mut self.shell, MORE_BUTTON)?
-            .as_any_mut()?
-            .downcast_mut::<ui::widget::MenuButton>()
-    }
-
     fn execute_more_action(&mut self, doc: &ui::widget::Edits<'_>, action: MoreAction) {
         match action {
             MoreAction::Import => self.request_import(),
@@ -1118,7 +1126,10 @@ impl ContactsApp {
         if !groups.is_empty() {
             sections.push(NavSection::new("groups", "Groups", groups));
         }
+        // Groups come under their heading as the person makes them: the
+        // sidebar is a list from the start, whether or not any has loaded.
         NavList::new(sections)
+            .with_headings()
             .with_id("contacts.groups")
             .with_accessible_name("Groups")
             .bind_selection(destination)
@@ -1167,7 +1178,9 @@ impl ContactsApp {
             };
         }
         if self.store.is_empty() {
-            return ContentKey::FirstRun;
+            return ContentKey::FirstRun {
+                read_only: self.read_only(),
+            };
         }
         match self.selected.and_then(|id| self.store.contact(id)) {
             Some(contact) => ContentKey::Contact(Box::new(contact.clone())),
@@ -1175,55 +1188,116 @@ impl ContactsApp {
         }
     }
 
-    fn header_key(&self) -> HeaderKey {
-        if self.mode == Mode::Edit && self.form.is_some() {
-            return HeaderKey::Edit;
+    /// What the bar names: the person being written, the person shown
+    /// (beside the list, or pushed over it in a narrow window), else the
+    /// list.
+    fn location_label(&self) -> String {
+        if let Some(form) = self.form.as_ref().filter(|_| self.mode == Mode::Edit) {
+            let draft = &form.draft;
+            let unnamed = [&draft.first, &draft.last, &draft.org]
+                .iter()
+                .all(|part| part.trim().is_empty());
+            return if form.is_new && unnamed {
+                "New contact".to_owned()
+            } else {
+                draft.display_name()
+            };
         }
-        match self.selected.and_then(|id| self.store.contact(id)) {
-            Some(contact) if !self.store.is_empty() => HeaderKey::View {
-                favorite: contact.favorite,
-            },
-            _ => HeaderKey::Empty,
+        let list_in_front =
+            !self.shell.geometry().stack.is_empty() && self.shell.front_pane() != NavPane::Content;
+        if !list_in_front && let Some(contact) = self.selected.and_then(|id| self.store.contact(id))
+        {
+            return contact.display_name();
         }
+        self.destination_label()
+            .unwrap_or_else(|| "All contacts".to_owned())
     }
 
-    /// The content header's title and commands for `key`.
-    fn content_header(&self, key: HeaderKey) -> (&'static str, Vec<Element>) {
-        let shared = &self.shared;
-        match key {
-            HeaderKey::Empty => ("", Vec::new()),
-            HeaderKey::View { favorite } => {
-                let commands: Vec<Element> = vec![
-                    Box::new(
-                        Button::icon_only("contacts.favorite", Icon::Star, "Favorite")
-                            .toggled(favorite)
-                            .on_view(queue(shared, Request::ToggleFavorite)),
-                    ),
-                    Box::new(
-                        Button::new("contacts.edit", "Edit")
-                            .on_view(queue(shared, Request::EditSelected)),
-                    ),
-                    Box::new(
-                        Button::icon_only("contacts.delete", Icon::Trash2, "Delete contact")
-                            .on_view(queue(shared, Request::DeleteSelected)),
-                    ),
-                ];
-                ("", commands)
+    /// The window bar's slots ([`ui::window_toolbar`]): the shell's own,
+    /// what is open as the window's location, New contact and what can be done
+    /// to the person shown (or Save and Cancel while editing them), and
+    /// import, export and a duplicate's review in the bar's menu.
+    fn window_toolbar(&self) -> ui::window_toolbar::WindowToolbar {
+        use ui::window_toolbar::{ToolbarAction, ToolbarLocation};
+        let mut toolbar = self.shell.window_toolbar();
+        toolbar.location = Some(ToolbarLocation {
+            label: self.location_label(),
+            ..ToolbarLocation::default()
+        });
+        let mut actions = Vec::new();
+        if self.mode == Mode::Edit && self.form.is_some() {
+            actions.push(ToolbarAction::new(BAR_SAVE, "check", "Save"));
+            // Not the window's own ✕: Cancel leaves the form, not the window.
+            actions.push(ToolbarAction::new(BAR_CANCEL, "undo-2", "Cancel"));
+        } else {
+            actions.push(ToolbarAction::new(BAR_NEW, "plus", "New contact"));
+            if let Some(contact) = self
+                .selected
+                .and_then(|id| self.store.contact(id))
+                .filter(|_| !self.store.is_empty())
+            {
+                actions.push(
+                    ToolbarAction::new(BAR_FAVORITE, "star", "Favorite").on(contact.favorite),
+                );
+                // Named for the whole contact: each field's pencil edits
+                // only that field.
+                actions.push(ToolbarAction::new(BAR_EDIT, "pencil", "Edit contact"));
+                actions.push(ToolbarAction::new(BAR_DELETE, "trash-2", "Delete contact"));
             }
-            HeaderKey::Edit => (
-                "",
-                vec![
-                    Box::new(
-                        Button::new("contacts.form.cancel", "Cancel")
-                            .on_view(queue(shared, Request::Cancel)),
-                    ),
-                    Box::new(
-                        Button::new("contacts.form.save", "Save")
-                            .role(ButtonRole::Primary)
-                            .on_view(queue(shared, Request::Save)),
-                    ),
-                ],
-            ),
+        }
+        for (action, enabled) in self.more_rows() {
+            let (id, icon, name) = match action {
+                MoreAction::Import if !enabled => (BAR_IMPORT, "download", "Importing…"),
+                MoreAction::Import => (BAR_IMPORT, "download", "Import contacts"),
+                MoreAction::Export => (BAR_EXPORT, "upload", "Export contacts"),
+                MoreAction::ReviewDuplicate => {
+                    (BAR_REVIEW_DUPLICATE, "users", "Review possible duplicate")
+                }
+            };
+            actions.push(
+                ToolbarAction::new(id, icon, name)
+                    .enabled(enabled)
+                    .in_menu(),
+            );
+        }
+        NavShell::push_window_actions(&mut toolbar, actions);
+        toolbar
+    }
+
+    /// Queue what the person did in the window's bar, applied with what the
+    /// panes asked for ([`Self::apply_requests`]).
+    fn take_window_toolbar_events(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                self.dirty = true;
+                continue;
+            }
+            let ui::window_toolbar::ToolbarEvent::Action { id } = event else {
+                continue;
+            };
+            let request = match id.as_str() {
+                BAR_NEW => Request::NewContact,
+                BAR_FAVORITE => Request::ToggleFavorite,
+                BAR_EDIT => Request::EditSelected,
+                BAR_DELETE => Request::DeleteSelected,
+                BAR_SAVE => Request::Save,
+                BAR_CANCEL => Request::Cancel,
+                more => {
+                    let action = match more {
+                        BAR_IMPORT => MoreAction::Import,
+                        BAR_EXPORT => MoreAction::Export,
+                        BAR_REVIEW_DUPLICATE => MoreAction::ReviewDuplicate,
+                        _ => continue,
+                    };
+                    if let Ok(mut pick) = self.more_pick.lock() {
+                        *pick = Some(action);
+                    }
+                    self.dirty = true;
+                    continue;
+                }
+            };
+            self.shared.borrow_mut().push(request);
+            self.dirty = true;
         }
     }
 
@@ -1243,18 +1317,13 @@ impl ContactsApp {
                 photo: pictures.hold_text(&contact.photo),
             })
             .collect();
-        let empty_title = match self.group_filter.as_deref() {
-            Some(FAVORITES_FILTER) => Some("No favorites yet".to_owned()),
-            Some(_) => Some("No one is in this group".to_owned()),
-            None => None,
-        };
+        self.list_alone = !self.shell.geometry().stack.is_empty();
         let sortable = !rows.is_empty();
         self.sort_shown = sortable;
         {
             let mut bridge = self.shared.borrow_mut();
-            if bridge.rows != rows || bridge.empty_title != empty_title {
+            if bridge.rows != rows {
                 bridge.rows = rows;
-                bridge.empty_title = empty_title;
                 bridge.revision = bridge.revision.wrapping_add(1);
             }
         }
@@ -1277,10 +1346,55 @@ impl ContactsApp {
             self.sidebar_shown = sidebar;
             self.structure_dirty = true;
         }
-        self.shell.set_overview_title(
-            self.destination_label()
-                .unwrap_or_else(|| "All contacts".to_owned()),
-        );
+    }
+
+    /// What the list says in place of rows: its title, sentence and icon.
+    /// Beside the content, an empty book is said once, by the content's
+    /// first-run pane; a narrow window's list stands alone, so it says so
+    /// itself rather than show nothing. While the first contact is being
+    /// written the form takes that pane's place, so the list says it then
+    /// too, and where the new contact will appear.
+    fn list_empty_state(&self) -> (Option<String>, Option<String>, Option<Icon>) {
+        let creating = self.mode == Mode::Edit && self.form.as_ref().is_some_and(|f| f.is_new);
+        match self.group_filter.as_deref() {
+            Some(FAVORITES_FILTER) => (Some("No favorites yet".to_owned()), None, None),
+            Some(_) => (Some("No one is in this group".to_owned()), None, None),
+            None if self.store.is_empty() && (self.list_alone || creating) => {
+                let message = if self.read_only() {
+                    Some(VIEW_ONLY_MESSAGE.to_owned())
+                } else if creating {
+                    Some("The contact you're adding appears here once you save it.".to_owned())
+                } else {
+                    None
+                };
+                (
+                    Some("No contacts yet".to_owned()),
+                    message,
+                    Some(Icon::Users),
+                )
+            }
+            None => (None, None, None),
+        }
+    }
+
+    /// Hand the list what it says in place of rows, when that changed.
+    fn publish_list_empty_state(&self) {
+        let (title, message, icon) = self.list_empty_state();
+        let mut bridge = self.shared.borrow_mut();
+        if bridge.empty_title != title
+            || bridge.empty_message != message
+            || bridge.empty_icon != icon
+        {
+            bridge.empty_title = title;
+            bridge.empty_message = message;
+            bridge.empty_icon = icon;
+            bridge.revision = bridge.revision.wrapping_add(1);
+        }
+    }
+
+    /// Whether this participant may only view the address book.
+    fn read_only(&self) -> bool {
+        self.dispatcher.as_ref().is_some_and(Dispatcher::read_only)
     }
 
     /// The shared list controls and a truthful, live announcement of the
@@ -1315,11 +1429,14 @@ impl ContactsApp {
     /// Hand the shell and the panes what the window shows now. Cheap when
     /// nothing changed: each part is rebuilt only when what it shows did.
     fn publish(&mut self) {
+        if self.list_alone == self.shell.geometry().stack.is_empty() {
+            self.list_stale = true;
+        }
         if self.list_stale {
             self.publish_list();
         }
+        self.publish_list_empty_state();
         self.publish_overview_controls();
-        self.publish_more();
         if self
             .selected
             .is_some_and(|id| self.store.contact(id).is_none() && self.awaiting != Some(id))
@@ -1340,12 +1457,19 @@ impl ContactsApp {
         let content = self.content_key();
         if self.content_shown.as_ref() != Some(&content) {
             let element: Element = match &content {
-                ContentKey::FirstRun => empty_pane(
+                ContentKey::FirstRun { read_only: false } => empty_pane(
                     &self.shared,
                     "No contacts yet",
+                    None,
                     Some(("New contact", Request::NewContact)),
                 ),
-                ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None),
+                ContentKey::FirstRun { read_only: true } => empty_pane(
+                    &self.shared,
+                    "No contacts yet",
+                    Some(VIEW_ONLY_MESSAGE),
+                    None,
+                ),
+                ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None, None),
                 ContentKey::Contact(contact) => {
                     if self.detail_scroll.0 != Some(contact.id) {
                         self.detail_scroll = (Some(contact.id), std::rc::Rc::default());
@@ -1362,13 +1486,7 @@ impl ContactsApp {
             self.structure_dirty = true;
         }
 
-        let header = self.header_key();
-        if self.header_shown != Some(header) {
-            let (title, actions) = self.content_header(header);
-            self.shell.set_content_header(title, actions);
-            self.header_shown = Some(header);
-            self.structure_dirty = true;
-        }
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
 
         let wanted = self.wanted_dialog();
         if self.dialog.as_ref().map(|(key, _)| key) != wanted.as_ref() {
@@ -1384,7 +1502,6 @@ impl ContactsApp {
         }
     }
 
-    /// Open a contact's actions at `anchor`.
     fn open_menu_at(&mut self, menu: PendingMenu, anchor: Rect) {
         let mut built = ContextMenu::new();
         let open = match menu {
@@ -1461,6 +1578,7 @@ impl ContactsApp {
     /// Turn what the panes and buttons asked for into view changes and
     /// document actions.
     fn apply_requests(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.take_window_toolbar_events();
         let picked = self.more_pick.lock().ok().and_then(|mut pick| pick.take());
         if let Some(action) = picked {
             self.execute_more_action(doc, action);
@@ -1678,8 +1796,20 @@ impl Default for ContactsApp {
     }
 }
 
+/// A deletion notice's Undo goes through the host's undo, the same as
+/// Ctrl+Z.
+impl ui::undo::UndoControl for ContactsApp {
+    fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
+        self.shell.take_toast_action()?;
+        (self.delete_undo.take() == DeleteUndo::Offered).then_some(ui::undo::UndoRequest::Undo)
+    }
+}
+
 impl Widget for ContactsApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::undo::UndoControl
+    );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(editor) = &self.account_editor {
@@ -1693,7 +1823,7 @@ impl Widget for ContactsApp {
             }
         }
         self.import_opened_cards();
-        self.announce_refusal();
+        self.announce_answers();
         self.poll_destination();
         if let Some(scenario) = self.scenario.take() {
             self.stage(&scenario);
@@ -1715,6 +1845,10 @@ impl Widget for ContactsApp {
             dialog.settle(edits, path);
         }
         self.apply_requests(edits);
+        if self.delete_undo.get() == DeleteUndo::Lapsed {
+            self.delete_undo.set(DeleteUndo::None);
+            self.shell.dismiss_toast();
+        }
         self.poll_destination();
         self.publish();
     }

@@ -52,14 +52,24 @@ moddir="$module"
 install
 
 cat >"$work/expected-events" <<EOF
-multiple:awk bash cat chmod cryptsetup dd find grep install ln lsblk readlink rm seq sleep systemd-ask-password systemd-cryptsetup systemd-escape tilo-rollback tr udevadm tpm2_createprimary tpm2_flushcontext tpm2_getpolicydigest tpm2_load tpm2_loadexternal tpm2_nvread tpm2_nvreadpublic tpm2_policyauthorize tpm2_policyauthvalue tpm2_policynv tpm2_policypcr tpm2_policyor tpm2_readpublic tpm2_startauthsession tpm2_unseal tpm2_verifysignature
+multiple:awk bash cat chmod cryptsetup dd find grep install ln lsblk readlink rm seq sleep systemd-ask-password systemd-cryptsetup systemd-escape tr udevadm tpm2_createprimary tpm2_flushcontext tpm2_getcap tpm2_getpolicydigest tpm2_load tpm2_loadexternal tpm2_nvread tpm2_nvreadpublic tpm2_policyauthorize tpm2_policyauthvalue tpm2_policynv tpm2_policypcr tpm2_policyor tpm2_readpublic tpm2_startauthsession tpm2_unseal tpm2_verifysignature
 hook:cmdline:90:$module/parse-tilo-root.sh
-simple:/usr/bin/tilo-rollback:/usr/bin/tilo-rollback
+simple:/usr/libexec/tilo/tilo-rollback:/usr/bin/tilo-rollback
+simple:/usr/libexec/tilo/tilo-boot-signin:
+simple:/usr/libexec/tilo/tilo-auth:/usr/bin/tilo-auth
 simple:/usr/libexec/tilo-rollback-initrd-unlock:
 simple:/usr/libexec/tilo-root-discover:
 simple:/usr/lib/systemd/system-generators/tilo-root-generator:
 simple:/usr/share/tilo/tpm2-pcr-signing.public.pem:
 EOF
 cmp "$work/expected-events" "$work/events"
+
+# The module is chosen on what every encrypted root needs. The boot sign-in
+# rides along: check() never makes it, or tilo-auth, a reason to skip.
+required=""
+require_binaries() { required="$*"; }
+check && status=0 || status=$?
+test "$status" = 255
+test "$required" = "/usr/libexec/tilo/tilo-rollback cryptsetup systemd-ask-password systemd-escape"
 
 printf 'ok: dracut accepts only root=tilo-auto and installs its complete command closure\n'

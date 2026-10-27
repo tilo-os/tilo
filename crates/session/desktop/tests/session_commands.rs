@@ -36,11 +36,12 @@ fn source() -> (DesktopTree, CommandSource) {
                     kind: AppKind::Other("so.tilo.notes".into()),
                     label: "Not authority".into(),
                 },
+                app_title: None,
             })
             .collect(),
     }];
     let source = CommandSource {
-        room: workspace.room.to_string(),
+        room: workspace.room().to_string(),
         heads: vec![[7; 32]],
     };
     (tree, source)

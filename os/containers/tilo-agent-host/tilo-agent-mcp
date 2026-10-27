@@ -29,7 +29,7 @@ if [ ! -s "$IDENTITY/device/cert.bin" ]; then
     exit 1
   fi
   echo "tilo-agent-mcp: waiting to pair as personal device ($LABEL)" >&2
-  /usr/bin/tilo-enroll pair-device \
+  /usr/libexec/tilo/tilo-enroll pair-device \
     --identity-root "$IDENTITY" \
     --identity-dir "$IDENTITY_DIR" \
     --label "$LABEL" \

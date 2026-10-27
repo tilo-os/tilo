@@ -42,6 +42,23 @@ impl ShellLink {
     pub fn choose_identity(&self, _answered: impl FnOnce(Result<(), String>) + Send + 'static) {
         match self.0 {}
     }
+
+    /// Show the shell's app chooser (unreachable: no link exists here).
+    pub fn choose_app(
+        &self,
+        _purpose: &str,
+        _chosen: impl FnOnce(Result<Option<ChosenApp>, String>) + Send + 'static,
+    ) {
+        match self.0 {}
+    }
+}
+
+/// The app the person chose in the shell's app chooser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChosenApp {
+    pub id: String,
+    pub name: String,
+    pub window_ids: Vec<String>,
 }
 
 /// Always `None`: no session shell hands this process a connection.

@@ -399,22 +399,12 @@ impl MlsGovernanceFrameV1 {
     }
 
     /// Verify the frame's detached signature without applying live policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`VerifyError`] for malformed keys, encoding failures, or a
-    /// signature mismatch.
     pub fn verify_signature(&self) -> Result<(), VerifyError> {
         verify_event(&self.signing_view()?, &self.signature, &self.signed_by)
     }
 
     /// Validate signature, replay link, live revision/capability, membership
     /// transition, payload bounds, and migration acknowledgement.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MlsGovernanceError`] when any cryptographic or live-policy
-    /// precondition fails.
     pub fn validate(&self, context: &MlsGovernanceContext<'_>) -> Result<(), MlsGovernanceError> {
         if self.version != MLS_GOVERNANCE_VERSION {
             return Err(MlsGovernanceError::Version(self.version));
@@ -597,11 +587,6 @@ impl MlsAccessRequestV1 {
     }
 
     /// Verify the version, payload bound and device signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MlsGovernanceError`] for another version, an empty or
-    /// oversized key package, or a bad signature.
     pub fn verify(&self) -> Result<(), MlsGovernanceError> {
         if self.version != MLS_ACCESS_VERSION {
             return Err(MlsGovernanceError::Version(self.version));
@@ -744,10 +729,6 @@ impl MlsGovernanceAckV1 {
     }
 
     /// Verify the version and device signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MlsGovernanceError`] for another version or a bad signature.
     pub fn verify(&self) -> Result<(), MlsGovernanceError> {
         if self.version != MLS_ACCESS_VERSION {
             return Err(MlsGovernanceError::Version(self.version));

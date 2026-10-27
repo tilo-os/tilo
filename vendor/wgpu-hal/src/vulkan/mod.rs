@@ -529,6 +529,10 @@ struct DeviceShared {
 
     /// Tilo: set by [`Device::simulate_device_loss`].
     simulated_loss: core::sync::atomic::AtomicBool,
+    /// Tilo: the newest fence value read on this device, for [`Device::simulate_hang`].
+    fence_value_seen: core::sync::atomic::AtomicU64,
+    /// Tilo: set by [`Device::simulate_hang`]; `FenceValue::MAX` while the GPU works.
+    hung_at: core::sync::atomic::AtomicU64,
 
     // The `drop_guard` field must be the last field of this struct so it is dropped last.
     // Do not add new fields after it.

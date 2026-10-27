@@ -134,7 +134,6 @@ mod tests {
     use super::*;
     #[test]
     fn rich_metadata_extracts_only_from_matching_content() {
-        // Phase `extracts_png_dimensions`.
         {
             let mut png = vec![0; 24];
             png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -143,12 +142,10 @@ mod tests {
             let p = extract("photo.png", &png).unwrap();
             assert_eq!((p.image_width, p.image_height), (Some(640), Some(480)));
         }
-        // Phase `extracts_pdf_page_count_without_unbounded_input`.
         {
             let p = extract("a.pdf", b"%PDF-1.7 /Type /Pages /Type /Page /Type /Page\n").unwrap();
             assert_eq!(p.page_count, Some(2));
         }
-        // Phase `extracts_wav_duration_and_codec`.
         {
             let mut wav = Vec::from(&b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x40\x1f\x00\x00"[..]);
             wav.resize(wav.len() + 8_000, 0);
@@ -157,7 +154,6 @@ mod tests {
             assert_eq!(p.codec.as_deref(), Some("pcm"));
             assert_eq!(p.container.as_deref(), Some("wav"));
         }
-        // Phase `rejects_spoofed_extension`.
         {
             assert!(extract("photo.png", b"not a png").is_none());
         }

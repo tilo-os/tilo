@@ -109,6 +109,12 @@ impl Widget for WorkspaceView {
         taffy.widget_leaf(style, node_map, self)
     }
     crate::rect_geometry!();
+    /// Sized by its style alone (no `measure`): nothing it changes needs
+    /// taffy to measure it again, and saying it does re-solved the layout of
+    /// everything above it on every frame.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
     fn draw(
         &mut self,
         scene: &mut Scene,

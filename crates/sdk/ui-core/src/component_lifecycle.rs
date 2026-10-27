@@ -99,7 +99,6 @@ pub fn take_replacement(
     capability_mut::<dyn ComponentLifecycle>(widget)?.take_replacement()
 }
 
-/// Unsaved external documents under `widget`.
 pub fn unsaved_documents(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -124,7 +123,6 @@ pub fn checkpoint_components(widget: &mut dyn Widget) -> Vec<String> {
         .collect()
 }
 
-/// Finish an admitted close under `widget`.
 pub fn finish_admitted_close(
     widget: &mut dyn Widget,
 ) -> Vec<crate::application::ComponentCloseReport> {
@@ -138,7 +136,6 @@ pub fn finish_admitted_close(
         .collect()
 }
 
-/// Close every component under `widget`.
 pub fn close_components(widget: &mut dyn Widget) -> Vec<crate::application::ComponentCloseReport> {
     if let Some(lifecycle) = capability_mut::<dyn ComponentLifecycle>(&mut *widget) {
         return lifecycle.close_components();
@@ -150,7 +147,6 @@ pub fn close_components(widget: &mut dyn Widget) -> Vec<crate::application::Comp
         .collect()
 }
 
-/// Drain close reports under `widget`.
 pub fn take_component_close_reports(
     widget: &mut dyn Widget,
 ) -> Vec<crate::application::ComponentCloseReport> {

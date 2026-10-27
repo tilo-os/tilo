@@ -99,10 +99,8 @@ pub fn to_csv(rows: &[Vec<String>]) -> String {
 mod tests {
     use super::*;
 
-    /// CSV parsing, quoting on export and escaped-quote round-trips.
     #[test]
     fn csv_parses_quotes_and_round_trips_escapes() {
-        // Case `parse_basic_grid`.
         {
             let m = parse_csv("a,b,c\n1,2,3");
             assert_eq!(m.get(&(0, 0)).unwrap(), "a");
@@ -110,20 +108,17 @@ mod tests {
             assert_eq!(m.get(&(1, 1)).unwrap(), "2");
         }
 
-        // Case `parse_quoted_field_with_comma`.
         {
             let m = parse_csv("\"hello, world\",x");
             assert_eq!(m.get(&(0, 0)).unwrap(), "hello, world");
             assert_eq!(m.get(&(1, 0)).unwrap(), "x");
         }
 
-        // Case `export_quotes_when_needed`.
         {
             let rows = vec![vec!["a".to_string(), "b,c".to_string()]];
             assert_eq!(to_csv(&rows), "a,\"b,c\"\n");
         }
 
-        // Case `round_trip_escaped_quotes`.
         {
             let m = parse_csv("\"say \"\"hi\"\"\"");
             assert_eq!(m.get(&(0, 0)).unwrap(), "say \"hi\"");

@@ -21,6 +21,9 @@ wayland-server = { version = "=0.31.13", optional = true }
 wayland-backend = { version = "0.3", optional = true }
 wayland-scanner = { version = "0.31", optional = true }
 
+[target.'cfg(unix)'.dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
 [lints]
 workspace = true
 

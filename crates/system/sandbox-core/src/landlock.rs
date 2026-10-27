@@ -204,7 +204,6 @@ pub fn access_for_fd(
 pub enum NetRestriction {
     /// TCP is not handled by the ruleset at all.
     Unrestricted,
-    /// Every TCP bind and connect is denied.
     DenyAll,
     /// Every TCP bind and connect is denied except connecting to this port.
     ConnectOnly(u16),
@@ -438,14 +437,12 @@ mod tests {
     }
     #[test]
     fn landlock_plans_map_ro_and_rw_rules_in_order_without_widening() {
-        // Phase `plan_maps_ro_to_read_only_access`.
         {
             let plan = access_plan(&[PathBuf::from("/usr")], &[], FS_ABI);
             assert_eq!(plan.len(), 1);
             assert_eq!(plan[0].access, AccessFs::from_read(FS_ABI));
             assert!(!plan[0].access.contains(AccessFs::WriteFile));
         }
-        // Phase `plan_maps_rw_to_full_access_superset`.
         {
             let plan = access_plan(&[PathBuf::from("/a")], &[PathBuf::from("/b")], FS_ABI);
             let ro = plan.iter().find(|r| r.path == *"/a").unwrap().access;
@@ -454,7 +451,6 @@ mod tests {
             assert_eq!(rw, AccessFs::from_all(FS_ABI));
             assert!(rw.contains(AccessFs::MakeReg));
         }
-        // Phase `plan_preserves_order_ro_then_rw`.
         {
             let plan = access_plan(
                 &[PathBuf::from("/a"), PathBuf::from("/b")],
@@ -471,7 +467,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `a_newer_abi_never_widens_an_application_plan`.
         {
             let newer = access_plan(&[], &[PathBuf::from("/a")], ABI::V6);
             assert_eq!(newer[0].access, AccessFs::from_all(FS_ABI));
@@ -480,7 +475,6 @@ mod tests {
 
     #[test]
     fn landlock_rules_request_exactly_their_rights_and_the_ruleset_is_pinned() {
-        // Phase `concrete_file_rules_never_request_directory_rights`.
         {
             let temp = tempfile::NamedTempFile::new().expect("temp file");
             let fd = PathFd::new(temp.path()).expect("open temp file");
@@ -490,7 +484,6 @@ mod tests {
             assert!(access.contains(AccessFs::ReadFile));
             assert!(access.contains(AccessFs::IoctlDev));
         }
-        // Phase `directory_rules_keep_every_requested_right`.
         {
             let dir = tempfile::tempdir().expect("temp dir");
             let fd = PathFd::new(dir.path()).expect("open temp dir");
@@ -529,7 +522,6 @@ mod tests {
 
     #[test]
     fn landlock_outcomes_cover_every_status_and_report_partial_enforcement() {
-        // Phase `outcome_mapping_covers_all_ruleset_statuses`.
         {
             assert_eq!(
                 outcome_from_status(&RulesetStatus::FullyEnforced),
@@ -544,7 +536,6 @@ mod tests {
                 LandlockOutcome::NotEnforced
             );
         }
-        // Phase `outcomes_short_of_full_enforcement_say_so`.
         {
             assert!(LandlockOutcome::NotEnforced.describe().contains("NOT"));
             assert!(LandlockOutcome::Errored.describe().contains("failed"));
@@ -640,7 +631,6 @@ mod tests {
             BitFlags::from(Scope::AbstractUnixSocket)
         );
 
-        // Every confining ruleset asks for both scopes.
         let app = RulesetSpec::application(Vec::new(), NetRestriction::Unrestricted);
         assert_eq!(app.scoped, both);
         assert_eq!(RulesetSpec::deny_all().scoped, both);
@@ -682,7 +672,6 @@ mod tests {
         let host_name = format!("tilo-landlock-scope-host-{id}");
         let host_addr = SocketAddr::from_abstract_name(host_name.as_bytes()).unwrap();
         let _host = UnixListener::bind_addr(&host_addr).unwrap();
-        // Outside any domain the abstract socket is reachable.
         UnixStream::connect_addr(&host_addr).expect("unconfined connect");
 
         let dir = tempfile::tempdir().unwrap();

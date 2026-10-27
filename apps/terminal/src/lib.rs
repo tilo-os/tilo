@@ -24,13 +24,16 @@ pub mod actions;
 mod graphics;
 pub mod history;
 mod i18n;
+mod image_loads;
 mod native_editor;
 pub mod parse;
+pub mod preferences;
 pub mod resource;
 pub mod runs;
 mod scenarios;
 pub mod screen;
 pub mod target;
+pub mod undoability;
 
 pub use graphics::TerminalImagePlacement;
 
@@ -46,7 +49,9 @@ pub use portable_pty::CommandBuilder;
 // Keep the large implementation private while exposing the stable types above.
 mod inner {
     include!("main_body.rs");
+    include!("scrollback_ui.rs");
     include!("target_ui.rs");
+    include!("window_ui.rs");
 }
 
 mod async_open;
@@ -121,9 +126,6 @@ impl HostedProcessServices {
 
     /// Open a session on `target` over `first`, or over a fresh connection
     /// to the session's supervisor once the first has been used.
-    ///
-    /// # Errors
-    /// Returns why the session did not open.
     pub(crate) fn open_session(
         first: Option<Self>,
         target: &target::SessionTarget,
@@ -147,9 +149,6 @@ impl HostedProcessServices {
 
     /// One request to the session's supervisor over a fresh connection;
     /// returns its one-line answer.
-    ///
-    /// # Errors
-    /// Returns why the supervisor could not be asked.
     pub(crate) fn ask(request: &serde_json::Value) -> Result<String, String> {
         use std::io::{BufRead, Write};
         let stream = Self::default()

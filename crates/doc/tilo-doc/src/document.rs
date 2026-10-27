@@ -4,6 +4,7 @@
 
 use crate::model::{Containers, DocMut, DocRef, IdGen, IdGenError};
 use automerge::{AutoCommit, ROOT};
+use tilo_sort::CompactSort as _;
 
 #[derive(thiserror::Error, Debug)]
 pub enum DocError {
@@ -97,7 +98,7 @@ pub fn author_runs(marks: &[MarkSpan]) -> Vec<(usize, usize, String)> {
         .filter_map(|m| m.value.as_str().map(|a| (m.start, m.end, a.to_string())))
         .filter(|(_, _, a)| !a.is_empty())
         .collect();
-    runs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    runs.compact_sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut merged: Vec<(usize, usize, String)> = Vec::with_capacity(runs.len());
     for (start, end, author) in runs {
         match merged.last_mut() {
@@ -720,7 +721,6 @@ mod tests {
 
     #[test]
     fn new_documents_have_the_root_layout_and_survive_save_load() {
-        // Phase `new_doc_has_root_layout`.
         {
             let d = Document::new();
             let (v, _) = d.doc.get(&ROOT, KEY_SCHEMA).unwrap().unwrap();
@@ -735,7 +735,6 @@ mod tests {
                 );
             }
         }
-        // Phase `save_load_roundtrips`.
         {
             let mut d = Document::new();
             let bytes = d.save();
@@ -747,7 +746,6 @@ mod tests {
 
     #[test]
     fn column_and_language_settings_default_set_clear_and_persist() {
-        // Phase `columns_default_set_clear_and_persist`.
         {
             let mut d = Document::new();
             assert_eq!(
@@ -774,19 +772,16 @@ mod tests {
             assert_eq!(d3.columns(), (1, None));
             assert_eq!(d3.materialize().columns, 1);
         }
-        // Phase `columns_count_is_clamped_to_at_least_one`.
         {
             let mut d = Document::new();
             // A zero count is meaningless; the reader clamps to a single column.
             d.set_columns(0, None);
             assert_eq!(d.columns(), (1, None));
         }
-        // Phase `docsnapshot_default_is_single_column`.
         {
             // The hand-rolled `Default` must yield one column, not the integer default 0.
             assert_eq!(crate::snapshot::DocSnapshot::default().columns, 1);
         }
-        // Phase `language_default_set_clear_and_persist`.
         {
             let mut d = Document::new();
             assert_eq!(d.language(), None, "default has no declared language");
@@ -804,13 +799,11 @@ mod tests {
                 "language survives save/load"
             );
 
-            // An empty code clears the setting.
             let mut d3 = Document::load(&bytes).unwrap();
             d3.set_language("");
             assert_eq!(d3.language(), None);
             assert_eq!(d3.materialize().language, None);
         }
-        // Phase `open_without_language_is_backward_compatible`.
         {
             // A document saved with no language must still open and read `None` (the `meta.language` register simply doesn't exist).
             let mut d = Document::new();
@@ -822,7 +815,6 @@ mod tests {
 
     #[test]
     fn blocks_text_and_marks_edit_in_order_and_materialize() {
-        // Phase `insert_blocks_are_ordered`.
         {
             let mut d = Document::new();
             let a = d.insert_block(None, "paragraph");
@@ -831,7 +823,6 @@ mod tests {
             assert_eq!(d.blocks_in_order(), vec![a.clone(), c.clone(), b]);
             assert_eq!(d.block_kind(&c).as_deref(), Some("paragraph"));
         }
-        // Phase `remove_and_move_block`.
         {
             let mut d = Document::new();
             let a = d.insert_block(None, "paragraph");
@@ -842,7 +833,6 @@ mod tests {
             d.move_block(&c, None); // to front
             assert_eq!(d.blocks_in_order(), vec![c, a]);
         }
-        // Phase `text_splice_and_read`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -853,14 +843,12 @@ mod tests {
             d.splice_text(&p, 0, 5, "HELLO");
             assert_eq!(d.block_text(&p).as_deref(), Some("HELLO, world"));
         }
-        // Phase `text_handles_unicode`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
             d.splice_text(&p, 0, 0, "héllo");
             assert_eq!(d.block_text(&p).as_deref(), Some("héllo"));
         }
-        // Phase `marks_apply_over_range`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -873,7 +861,6 @@ mod tests {
                 "expected strong[0,5], got {m:?}"
             );
         }
-        // Phase `mark_survives_later_text_insert`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -887,7 +874,6 @@ mod tests {
                 "mark must track text shift, got {m:?}"
             );
         }
-        // Phase `materialize_reflects_model`.
         {
             let mut d = Document::new();
             let a = d.insert_block(None, "heading");
@@ -904,7 +890,6 @@ mod tests {
             assert_eq!(snap.blocks[1].text, "Body");
             assert!(snap.blocks[1].marks.iter().any(|m| m.name == "strong"));
         }
-        // Phase `seeded_id_gen_avoids_collision_over_existing_doc`.
         {
             let mut d = Document::new();
             let a = d.insert_block(None, "paragraph");
@@ -936,7 +921,6 @@ mod tests {
 
     #[test]
     fn notes_comments_and_tracked_changes_read_back_and_persist() {
-        // Phase `footnote_accessors_and_snapshot`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -961,7 +945,6 @@ mod tests {
                     .any(|m| m.name == crate::schema::MARK_NOTE_REF)
             );
         }
-        // Phase `comment_accessors_and_snapshot`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -986,7 +969,6 @@ mod tests {
                     .any(|m| m.name == crate::schema::MARK_COMMENT)
             );
         }
-        // Phase `tracked_change_accessors_and_save_load`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -995,7 +977,7 @@ mod tests {
             let del = d.track_delete(&p, 4, 10, "Hopper", "2021-07-08");
 
             let mut want = vec![ins.clone(), del.clone()];
-            want.sort();
+            want.compact_sort();
             assert_eq!(d.change_ids(), want);
             assert_eq!(d.change_kind(&ins), Some(crate::snapshot::ChangeKind::Ins));
             assert_eq!(d.change_kind(&del), Some(crate::snapshot::ChangeKind::Del));
@@ -1077,7 +1059,6 @@ mod tests {
     /// ways they converge with both sides' edits present (CRDT-native).
     #[test]
     fn replicas_converge_with_both_sides_concurrent_edits() {
-        // Disjoint text and block edits.
         let (mut a, mut b, p) = forked("base");
         a.splice_text(&p, 4, 0, "-A");
         let q = b.insert_block(Some(&p), "paragraph");
@@ -1085,7 +1066,6 @@ mod tests {
         converge(&mut a, &mut b, "disjoint edits");
         assert_eq!(a.blocks_in_order().len(), 2);
 
-        // A footnote on one side, an endnote on the other.
         let (mut a, mut b, p) = forked("base");
         let na = a.insert_footnote(&p, 4);
         let nab = a.insert_note_block(&na, None, "paragraph").unwrap();
@@ -1100,7 +1080,6 @@ mod tests {
             "both notes present after merge"
         );
 
-        // A comment on each side.
         let (mut a, mut b, p) = forked("base text here");
         a.add_comment(&p, 0, 4, "A", "from A"); // over "base"
         b.add_comment(&p, 5, 9, "B", "from B"); // over "text"
@@ -1129,7 +1108,6 @@ mod tests {
         assert!(replies.iter().any(|reply| reply.id == ar));
         assert!(replies.iter().any(|reply| reply.id == br));
 
-        // A tracked change on each side.
         let (mut a, mut b, p) = forked("shared base text");
         a.track_delete(&p, 0, 6, "A", ""); // "shared"
         b.track_insert(&p, 16, "!", "B", "");

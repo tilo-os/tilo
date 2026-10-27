@@ -55,6 +55,19 @@ pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u32 {
     }
 }
 
+/// Widest a [`WindowWidth::Normal`] window resolves to: two thirds of a
+/// 1920 px display. On a wider screen two thirds is a window mostly made of
+/// empty panes and lines too long to read, so the default stops growing and
+/// the strip shows more of its neighbours instead.
+pub const NORMAL_MAX_PX: f64 = 1280.0;
+
+/// Widest a [`WindowWidth::Normal`] window alone on its strip resolves to.
+/// Two thirds is the default so that a neighbour has room beside it; with
+/// no neighbour that third is wallpaper nobody can use, so a lone window
+/// takes the strip, up to the width of a 1920 px display, past which a
+/// single window is mostly empty panes and over-long lines.
+pub const ALONE_MAX_PX: f64 = 1920.0;
+
 /// Narrowest a window is made to open beside another so that both are on
 /// screen together. Below it, an app's own layout (a sidebar and a body,
 /// a header with its controls) no longer fits, so a share narrower than
@@ -146,9 +159,37 @@ impl WindowWidth {
         let usable = strip_usable_px.max(1.0);
         // Rounded: a client's geometry is integers, and a fractional width
         // would leave sub-pixel seams between groups.
-        (usable * self.fraction())
-            .round()
-            .clamp(min_group_px(usable), max_group_px(usable))
+        let px = (usable * self.fraction()).round();
+        // The default width suits the screen it is on: never wider than
+        // reads well on a big display, and never narrower than an app's
+        // two-pane layout needs, so on a phone a window takes the whole
+        // strip instead of a sliver with the next one peeking in. A
+        // person's own resize (a `Fraction`) and the tiers they pick stay
+        // what they asked for.
+        let px = match self {
+            WindowWidth::Normal => px
+                .min(NORMAL_MAX_PX)
+                .max(SIDE_BY_SIDE_MIN_PX.min(usable).round()),
+            _ => px,
+        };
+        px.clamp(min_group_px(usable), max_group_px(usable))
+    }
+
+    /// [`Self::resolve`] for a window that is `alone` on its strip or not.
+    /// A lone window at the default width takes the strip's usable width
+    /// (up to [`ALONE_MAX_PX`]) instead of leaving a third of it empty;
+    /// once a second window joins it, it is two thirds again and the
+    /// newcomer takes the rest ([`share_beside`]). A width the person chose
+    /// (a tier or their own resize) stays what they asked for either way.
+    pub fn resolve_in_strip(&self, strip_usable_px: f64, alone: bool) -> f64 {
+        if alone && matches!(self, WindowWidth::Normal) {
+            let usable = strip_usable_px.max(1.0);
+            return usable
+                .min(ALONE_MAX_PX)
+                .max(self.resolve(usable))
+                .clamp(min_group_px(usable), max_group_px(usable));
+        }
+        self.resolve(strip_usable_px)
     }
 
     /// Always a [`WindowWidth::Fraction`] — records the proportion the
@@ -213,7 +254,6 @@ mod tests {
             assert!(pair_px(pair, usable, 8.0) <= screen, "{pair:?}");
             assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
         }
-        // Phase `a_wide_window_shares_the_screen_equally`.
         {
             let (usable, screen) = (997.0, 1248.0);
             let pair = share_beside(WindowWidth::Wide, WindowWidth::Normal, usable, screen, 8.0)
@@ -225,7 +265,6 @@ mod tests {
                 "the pair uses the whole screen, not just the usable width: {pair:?}"
             );
         }
-        // Phase `room_beside_a_narrow_window_is_taken_without_moving_it`.
         {
             let usable = 1904.0;
             let pair = share_beside(
@@ -244,7 +283,6 @@ mod tests {
             assert!(pair_px(pair, usable, 8.0) <= usable, "{pair:?}");
             assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
         }
-        // Phase `windows_that_already_fit_are_left_alone`.
         {
             assert_eq!(
                 share_beside(
@@ -257,7 +295,6 @@ mod tests {
                 None
             );
         }
-        // Phase `a_screen_too_narrow_to_share_scrolls_instead`.
         {
             assert_eq!(
                 share_beside(WindowWidth::Normal, WindowWidth::Normal, 800.0, 800.0, 8.0),
@@ -268,12 +305,49 @@ mod tests {
     }
 
     #[test]
+    fn the_default_width_suits_very_wide_and_very_narrow_screens() {
+        // On a 1920 px display two thirds is as wide as a default window gets.
+        assert!((WindowWidth::Normal.resolve(1920.0) - NORMAL_MAX_PX).abs() < 1.0);
+        // A 2560 px display does not stretch it into a mostly empty pane.
+        assert!((WindowWidth::Normal.resolve(2496.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
+        assert!((WindowWidth::Normal.resolve(5000.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
+        assert!((WindowWidth::Normal.resolve(1376.0) - 918.0).abs() < f64::EPSILON);
+        // A phone's strip is one window wide: no sliver, no neighbour peeking.
+        assert!((WindowWidth::Normal.resolve(326.0) - 326.0).abs() < f64::EPSILON);
+        assert!((WindowWidth::Normal.resolve(600.0) - SIDE_BY_SIDE_MIN_PX).abs() < f64::EPSILON);
+        assert!((WindowWidth::Wide.resolve(2496.0) - 2496.0).abs() < f64::EPSILON);
+        assert!((WindowWidth::Fraction(667).resolve(2496.0) - 1665.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_lone_default_window_takes_the_strip_and_a_chosen_width_stays() {
+        // The 1440 px browser desktop: 1376 px between the strip's gutters.
+        assert!((WindowWidth::Normal.resolve_in_strip(1376.0, true) - 1376.0).abs() < f64::EPSILON);
+        assert!((WindowWidth::Normal.resolve_in_strip(1376.0, false) - 918.0).abs() < f64::EPSILON);
+        // A 1920 px display fills; a 2560 px one stops at a 1920 px window.
+        assert!((WindowWidth::Normal.resolve_in_strip(1856.0, true) - 1856.0).abs() < f64::EPSILON);
+        assert!(
+            (WindowWidth::Normal.resolve_in_strip(2496.0, true) - ALONE_MAX_PX).abs()
+                < f64::EPSILON
+        );
+        // What the person picked is not widened.
+        assert!(
+            (WindowWidth::Narrow.resolve_in_strip(1376.0, true)
+                - WindowWidth::Narrow.resolve(1376.0))
+            .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (WindowWidth::Fraction(500).resolve_in_strip(1376.0, true) - 688.0).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
     fn widths_load_as_clamped_fractions_with_a_pixel_floor() {
-        // Phase `pixel_widths_are_refused`.
         {
             assert!(serde_json::from_str::<WindowWidth>(r#"{"Custom":600}"#).is_err());
         }
-        // Phase `out_of_range_fraction_is_clamped_on_load`.
         {
             let width: WindowWidth = serde_json::from_str(r#"{"Fraction":0}"#).unwrap();
             assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
@@ -295,16 +369,12 @@ mod tests {
                 "stored as it landed"
             );
         }
-        // Phase `no_artificial_limits_beyond_the_floor_and_the_storable_range`.
         {
             // A 10% window on a 3840 px strip is 384 px: no share floor.
             assert!((WindowWidth::Fraction(100).resolve(3840.0) - 384.0).abs() < 1.0);
-            // Narrower than the floor resolves to the floor, nothing more.
             assert!((WindowWidth::Fraction(10).resolve(1472.0) - WIDTH_FLOOR_PX).abs() < 1e-9);
-            // Wider than the strip is allowed.
             assert!((WindowWidth::Fraction(2500).resolve(1000.0) - 2500.0).abs() < 1e-9);
         }
-        // Phase `resolve_respects_the_pixel_floor`.
         {
             assert!(
                 (WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON

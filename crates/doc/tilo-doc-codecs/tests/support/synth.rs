@@ -1,6 +1,3 @@
-//! Deterministic, realistic Markdown of a requested size, shared by the
-//! codec scaling test and the `codec_scaling` example.
-
 use std::fmt::Write as _;
 
 /// Markdown of at least `target` bytes: repeated sections of headings,

@@ -21,7 +21,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 
-/// See the [module docs](self).
+/// See the module docs.
 pub struct Columns {
     main: Element,
     aside: Option<Element>,

@@ -18,6 +18,7 @@ fields = [
   { path = "sheets.*.charts.*.area.left", type = "Id" },
   { path = "sheets.*.charts.*.area.bottom", type = "Id" },
   { path = "sheets.*.charts.*.area.right", type = "Id" },
+  { path = "sheets.*.hidden", type = "bool" },
   { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
   { path = "comments.*.sheet", type = "Id", readonly = true },
   { path = "comments.*.area", type = "Area", readonly = true, stored = "record" },
@@ -35,6 +36,7 @@ fields = [
   { path = "settings.currency", type = "Option<Currency>" },
   { path = "settings.date_format", type = "Option<DateStyle>" },
   { path = "settings.time_format", type = "Option<TimeStyle>" },
+  { path = "title", type = "Option<String>" },
 ]
 
 [[resources.verbs]]
@@ -43,6 +45,38 @@ kind = "undoable"
 params = [
   { name = "name", required = false, schema = { type = ["string", "null"] } },
   { name = "after", required = false, schema = { type = ["string", "null"] } },
+  { name = "rows", required = false, schema = { type = ["array", "null"], items = { type = "array", items = {} } } },
+  { name = "columns", required = false, schema = { type = ["array", "null"], items = { type = "string" } } },
+  { name = "records", required = false, schema = { type = ["array", "null"], items = {} } },
+  { name = "formats", required = false, schema = { type = ["object", "null"] } },
+  { name = "workbook", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-title"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-records"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "records", required = true, schema = { type = "array", items = {} } },
+  { name = "row", required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+  { name = "columns", required = false, schema = { type = ["array", "null"], items = { type = "string" } } },
+  { name = "key", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "upsert-item"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "match", required = true, schema = { type = "object" } },
+  { name = "value", required = true, schema = { type = "object" } },
 ]
 
 [[resources.verbs]]
@@ -140,8 +174,9 @@ params = [
 id = "import-sheets"
 kind = "undoable"
 params = [
-  { name = "sheets", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, cells = { type = "array", items = { type = "object", additionalProperties = false, properties = { bold = { type = ["boolean", "null"] }, cell = { type = "string" }, format = { type = ["string", "null"] }, input = { type = ["string", "null"] } }, required = ["cell"] } } }, required = ["name", "cells"] } } },
+  { name = "sheets", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, cells = { type = "array", items = { type = "object", additionalProperties = false, properties = { bold = { type = ["boolean", "null"] }, cell = { type = "string" }, format = { type = ["string", "null"] }, input = { type = ["string", "null"] } }, required = ["cell"] } }, hidden = { type = "boolean" } }, required = ["name", "cells"] } } },
   { name = "source", required = false, schema = { type = ["string", "null"] } },
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

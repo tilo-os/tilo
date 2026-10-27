@@ -2,7 +2,8 @@
 #
 # Reads nothing it was not handed: both sides of a comparison arrive
 # through the host's file-chooser portal, so the app needs the session
-# bus and no standing filesystem grant at all. Never writes.
+# bus and no standing filesystem grant at all. The one thing it writes is
+# the merged result, and only where the person pointed the chooser.
 #
 
 
@@ -23,7 +24,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "files.paths", "app-files"]
+optional = ["files.open", "files.save", "files.paths", "app-files"]
 
 [resources]
 kinds = ["diffmerge.session"]
@@ -57,8 +58,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/diffmerge"

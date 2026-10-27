@@ -86,6 +86,10 @@ pub enum MediaArt<'a> {
     Paint(ArtPainter<'a>),
     /// No art (yet): the generated gradient and initials.
     Placeholder,
+    /// Art on its way ([`crate::arriving`]), at its placeholder step: the
+    /// card's ground until the skeleton shows, then the skeleton's tone in
+    /// the art's place, so the card keeps its geometry as the art lands.
+    Arriving(crate::arriving::Step),
 }
 
 impl std::fmt::Debug for MediaArt<'_> {
@@ -97,6 +101,7 @@ impl std::fmt::Debug for MediaArt<'_> {
             Self::Kind(icon) => write!(f, "Kind({icon:?})"),
             Self::Paint(_) => f.write_str("Paint"),
             Self::Placeholder => f.write_str("Placeholder"),
+            Self::Arriving(step) => write!(f, "Arriving({step:?})"),
         }
     }
 }
@@ -108,6 +113,18 @@ pub enum MediaBadge<'a> {
     Duration(&'a str),
     /// Watched / read share, `0.0..=1.0`, along the bottom edge.
     Progress(f64),
+    /// Its content is on its way to this device, since the instant given:
+    /// the shared indeterminate bar along the bottom edge, in place of the
+    /// progress.
+    Loading(crate::time::Instant),
+    /// Where its content stands while it is neither here nor on its way
+    /// ("Waiting for a device that has it"): a still line along the bottom
+    /// edge, in place of the progress. `detail`, when given, is what the
+    /// card's accessible value adds to it.
+    Status {
+        label: &'a str,
+        detail: Option<&'a str>,
+    },
     /// Broadcasting now, at the top-leading corner.
     Live,
     /// Available offline, at the top-trailing corner.
@@ -153,7 +170,6 @@ struct MediaMetrics {
     text_gap: f64,
     inset: f64,
     lift: f64,
-    progress: f64,
     action: f64,
     icon: f64,
     mark: f64,
@@ -174,7 +190,6 @@ impl MediaMetrics {
             text_gap: f64::from(spacing.s2),
             inset: f64::from(spacing.s2),
             lift: f64::from(spacing.s2),
-            progress: f64::from(metrics.chrome_rule_px) * 3.0,
             action: f64::from(metrics.bar_height),
             icon: f64::from(metrics.icon_md),
             mark: f64::from(metrics.icon_sm),
@@ -303,16 +318,27 @@ impl<'a> MediaCardFace<'a> {
     /// it, so their titles line up.
     pub fn text_height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = MediaMetrics::new(theme);
-        self.text_height_with(text, &m, width)
+        self.text_block(text, &m, Some(width)).0
     }
 
-    fn text_height_with(&self, text: &mut TextRenderer, m: &MediaMetrics, width: f64) -> f64 {
+    /// The height of the text block at `width` and the height of its title,
+    /// or as tall as they can be (a title of two lines) without a width: a
+    /// grid estimates the cards it has not measured.
+    fn text_block(
+        &self,
+        text: &mut TextRenderer,
+        m: &MediaMetrics,
+        width: Option<f64>,
+    ) -> (f64, f64) {
         let Some(title) = self.title else {
-            return 0.0;
+            return (0.0, 0.0);
         };
-        let wrap = crate::num::f32_of_f64(width.max(1.0));
-        let lines = text.clamp_to_lines(title, &m.title, wrap, 2).len().max(1);
-        let mut h = crate::num::f64_of_usize(lines) * MediaMetrics::line(text, &m.title);
+        let lines = width.map_or(2, |width| {
+            let wrap = crate::num::f32_of_f64(width.max(1.0));
+            text.clamp_to_lines(title, &m.title, wrap, 2).len().max(1)
+        });
+        let title = crate::num::f64_of_usize(lines) * MediaMetrics::line(text, &m.title);
+        let mut h = title;
         let meta_lines = self.meta.iter().flatten().count();
         let metadata = crate::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
         h += if self.creator.is_some() {
@@ -320,13 +346,13 @@ impl<'a> MediaCardFace<'a> {
         } else {
             metadata
         };
-        (m.text_gap + h).ceil()
+        ((m.text_gap + h).ceil(), title)
     }
 
     /// The card's total height at `width`, with its own text block.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = MediaMetrics::new(theme);
-        width / self.aspect.ratio() + self.text_height_with(text, &m, width)
+        width / self.aspect.ratio() + self.text_block(text, &m, Some(width)).0
     }
 
     /// The art's rect inside a card at `rect`.
@@ -484,6 +510,11 @@ impl<'a> MediaCardFace<'a> {
                     value.push(format!("{}% {done}", (p.clamp(0.0, 1.0) * 100.0).round()));
                 }
                 MediaBadge::Live => value.push("Live".to_owned()),
+                MediaBadge::Loading(_) => value.push("Loading".to_owned()),
+                MediaBadge::Status { label, detail } => {
+                    value.push((*label).to_owned());
+                    value.extend(detail.map(str::to_owned));
+                }
                 MediaBadge::Downloaded => value.push("Downloaded".to_owned()),
                 MediaBadge::Tag(tag, _) => value.push((*tag).to_owned()),
             }
@@ -611,6 +642,21 @@ fn paint_art(
         }
         MediaArt::Mosaic(_) | MediaArt::Placeholder => {
             paint_placeholder(ctx, m, art, radius, title);
+        }
+        MediaArt::Arriving(step) => {
+            if matches!(
+                step,
+                crate::arriving::Step::Skeleton | crate::arriving::Step::Named
+            ) {
+                let tone = crate::widget::skeleton_tone(ctx.theme.tokens.colors.surfaces.content);
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    tone,
+                    None,
+                    &RoundedRect::from_rect(art, radius),
+                );
+            }
         }
     }
 }
@@ -754,38 +800,52 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 .style(style)
                 .paint(ctx.scene, ctx.transform, ctx.text, theme);
         }
+        MediaBadge::Loading(started) => {
+            let bar = progress_rect(art, m, theme);
+            if bar.width() > 0.0 {
+                crate::widget::ProgressBarFace::indeterminate(started).paint(ctx, bar);
+            }
+        }
+        MediaBadge::Status { label, .. } => {
+            // A still line on the floating material across the art's foot,
+            // wrapping within it.
+            let width = (art.width() - 4.0 * pad).max(1.0);
+            #[allow(clippy::cast_possible_truncation, reason = "a width in pixels")]
+            let (w, h) = ctx.text.measure_style(label, Some(width as f32), &m.badge);
+            let plate = Rect::new(
+                art.x0 + pad,
+                art.y1 - pad - f64::from(h) - pad,
+                art.x1 - pad,
+                art.y1 - pad,
+            );
+            crate::floating_surface::paint_material(
+                ctx.scene,
+                ctx.transform,
+                &RoundedRect::from_rect(plate, pad),
+                crate::floating_surface::Material::Floating,
+                theme,
+            );
+            ctx.text(
+                label,
+                &m.badge,
+                theme.text_primary,
+                Point::new(plate.center().x - f64::from(w) / 2.0, plate.y0 + pad / 2.0),
+                #[allow(clippy::cast_possible_truncation, reason = "a width in pixels")]
+                Some(width as f32),
+            );
+        }
         MediaBadge::Progress(share) => {
+            // No progress draws nothing; some draws the design system's
+            // bar, inset from the art's foot and corners so it reads as a
+            // bar however little is filled.
             let share = share.clamp(0.0, 1.0);
-            let track = Rect::new(art.x0, art.y1 - m.progress, art.x1, art.y1);
-            // Clip to the art's rounded corners so the bar follows them.
-            let clip = RoundedRect::from_rect(art, m.radius);
-            ctx.scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &clip,
-            );
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                colors.surfaces.overlay,
-                None,
-                &track,
-            );
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                colors.intent.neutral_fill,
-                None,
-                &Rect::new(
-                    track.x0,
-                    track.y0,
-                    track.x0 + track.width() * share,
-                    track.y1,
-                ),
-            );
-            ctx.scene.pop_layer();
+            if share > 0.0 {
+                let bar = progress_rect(art, m, theme);
+                if bar.width() > 0.0 {
+                    #[allow(clippy::cast_possible_truncation, reason = "a share in 0..=1")]
+                    crate::widget::ProgressBarFace::new(share as f32).paint(ctx, bar);
+                }
+            }
         }
     }
 }
@@ -806,6 +866,17 @@ pub enum MediaSource {
     /// Painted by the app from theme values.
     Paint(Box<dyn Fn(&mut PaintCtx<'_>, Rect)>),
     Placeholder,
+}
+
+/// Where a card's progress bar sits: inset from the art's foot and corners.
+fn progress_rect(art: Rect, m: &MediaMetrics, theme: &Theme) -> Rect {
+    let height = crate::widget::ProgressBarFace::height(theme).min(art.height());
+    Rect::new(
+        art.x0 + m.inset,
+        art.y1 - m.inset - height,
+        art.x1 - m.inset,
+        art.y1 - m.inset,
+    )
 }
 
 /// Owned badge for the retained card.
@@ -857,12 +928,24 @@ pub struct MediaCard {
     metrics: Option<MediaMetrics>,
     /// Set by a [`MediaGrid`] so every card of a row shares one text height.
     shared_text_height: Option<f64>,
+    /// Set by a [`MediaGrid`] while the card is too far from the viewport
+    /// for its title to be measured: its text height is an estimate.
+    text_estimated: bool,
+    /// Set by a [`MediaGrid`] when an estimated card comes near the
+    /// viewport: the next layout measures it.
+    wants_measure: bool,
     rect: Rect,
     dirty: bool,
 }
 
 impl MediaCard {
     pub fn new(id: impl Into<String>, source: MediaSource) -> Self {
+        Self::new_owned(id.into(), source)
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, source: MediaSource) -> Self {
         let loaded = match &source {
             MediaSource::Image(image) => Some(image.clone()),
             _ => None,
@@ -885,6 +968,8 @@ impl MediaCard {
             activation: Activation::new(id),
             metrics: None,
             shared_text_height: None,
+            text_estimated: false,
+            wants_measure: false,
             rect: Rect::ZERO,
             dirty: true,
         }
@@ -1022,11 +1107,17 @@ impl MediaCard {
         f(&face)
     }
 
-    fn own_text_height(&self, text: &mut TextRenderer, width: f64) -> f64 {
+    /// The card's text block at `width` (estimated without one), placing
+    /// the creator beside the meta under the title it measured.
+    fn own_text_height(&mut self, text: &mut TextRenderer, width: Option<f64>) -> f64 {
         let Some(m) = &self.metrics else {
             return 0.0;
         };
-        self.with_face(|face| face.text_height_with(text, m, width))
+        let (height, title) = self.with_face(|face| face.text_block(text, m, width));
+        if width.is_some() {
+            self.creator_title_height = title;
+        }
+        height
     }
 
     fn action_target(&self) -> Option<Rect> {
@@ -1046,8 +1137,17 @@ impl MediaCard {
     }
 }
 
+impl crate::widget::ReservedShape for MediaCard {
+    fn reserved_shape(&self) -> crate::widget::SkeletonShape {
+        crate::widget::SkeletonShape::Media(self.aspect)
+    }
+}
+
 impl Widget for MediaCard {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ReservedShape
+    );
 
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         if let Some(creator) = &mut self.creator
@@ -1099,20 +1199,9 @@ impl Widget for MediaCard {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 160.0,
         }));
-        if self.creator.is_some()
-            && let Some(m) = &self.metrics
-            && let Some(title) = &self.title
-        {
-            let lines = text_renderer
-                .clamp_to_lines(title, &m.title, crate::num::f32_of_f64(width.max(1.0)), 2)
-                .len()
-                .max(1);
-            self.creator_title_height =
-                crate::num::f64_of_usize(lines) * MediaMetrics::line(text_renderer, &m.title);
-        }
-        let text = self
-            .shared_text_height
-            .unwrap_or_else(|| self.own_text_height(text_renderer, width));
+        let text = self.shared_text_height.unwrap_or_else(|| {
+            self.own_text_height(text_renderer, (!self.text_estimated).then_some(width))
+        });
         taffy::Size {
             width: crate::num::f32_of_f64(width),
             height: crate::num::f32_of_f64(width / self.aspect.ratio() + text),
@@ -1216,10 +1305,16 @@ impl Widget for MediaCard {
 
     crate::widget::pressable!(rect);
 
-    crate::redraw_flag!();
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.wants_measure
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
 
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.wants_measure
     }
 
     fn name(&self) -> &'static str {
@@ -1326,6 +1421,19 @@ pub struct MediaGrid {
     column_gap: f64,
     row_gap: f64,
     rect: Rect,
+    /// What the viewport showed of the grid at its last draw, from the
+    /// grid's top. Only cards within a viewport's height of it have their
+    /// titles measured; the others are as tall as their text can be.
+    window: (f64, f64),
+}
+
+/// The window a grid measures before its first draw: a tall screen.
+const FIRST_WINDOW: (f64, f64) = (0.0, 1200.0);
+
+/// Whether `top..bottom` lies within a viewport's height of `window`.
+fn near(window: (f64, f64), top: f64, bottom: f64) -> bool {
+    let margin = window.1 - window.0;
+    top < window.1 + margin && bottom > window.0 - margin
 }
 
 impl MediaGrid {
@@ -1340,6 +1448,7 @@ impl MediaGrid {
             column_gap: 0.0,
             row_gap: 0.0,
             rect: Rect::ZERO,
+            window: FIRST_WINDOW,
         }
     }
 
@@ -1371,17 +1480,34 @@ impl MediaGrid {
         card_columns(width, self.extent, self.column_gap)
     }
 
-    /// `count` loading cards at `aspect`: skeletons with the art and the
-    /// full text block of a card (a title and a meta line).
-    pub fn loading(count: usize, aspect: MediaAspect) -> Self {
+    /// `count` cards at `aspect` on their way from `from`, asked at
+    /// `since`: each reserves a card's art and text block and steps through
+    /// the framework's placeholder ([`crate::widget::ArrivingView`]). The
+    /// cards stand in one region, so the grid names its source once.
+    pub fn arriving(
+        count: usize,
+        aspect: MediaAspect,
+        from: &crate::arriving::Source,
+        since: crate::time::Instant,
+    ) -> Self {
+        Self::of(
+            (0..count)
+                .map(|_| {
+                    crate::widget::ArrivingView::placeholder_since(
+                        from.clone(),
+                        since,
+                        crate::widget::SkeletonShape::Media(aspect),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// A grid of `cards` that are not all [`MediaCard`]s yet: cards on
+    /// their way, each an [`crate::widget::ArrivingView`] shaped as a card.
+    pub fn of(cards: Vec<Element>) -> Self {
         let mut grid = Self::new(Vec::new());
-        grid.cards = (0..count)
-            .map(|_| {
-                Box::new(crate::widget::Skeleton::new(
-                    crate::widget::SkeletonShape::Media(aspect),
-                )) as Element
-            })
-            .collect();
+        grid.cards = cards;
         grid
     }
 }
@@ -1404,6 +1530,13 @@ impl Widget for MediaGrid {
         };
         self.column_gap = column_gap;
         self.row_gap = row_gap;
+        if matches!(self.mode, GridMode::Columns) {
+            // A card the grid has not sized yet is solved at an estimate,
+            // and only the ones that land near the viewport are measured.
+            for card in self.cards_mut() {
+                card.text_estimated |= card.shared_text_height.is_none();
+            }
+        }
         self.nodes = self
             .cards
             .iter_mut()
@@ -1487,17 +1620,44 @@ impl Widget for MediaGrid {
                     changed |= taffy.set_style(node, style).is_ok();
                 }
                 // Every card of a row shares the row's tallest text block.
-                let heights: Vec<f64> = self
-                    .cards_mut()
-                    .map(|card| card.own_text_height(text, column))
-                    .collect();
-                let mut shared = Vec::with_capacity(heights.len());
-                for row in heights.chunks(columns.max(1)) {
-                    let tallest = row.iter().copied().fold(0.0, f64::max);
+                // Cards far from the viewport keep the height they were
+                // measured at, or are as tall as their text can be, so laying
+                // out a long grid shapes only the titles near what is shown.
+                let window = self.window;
+                let mut shared = Vec::with_capacity(self.cards.len());
+                for (row, nodes) in self
+                    .cards
+                    .chunks_mut(columns.max(1))
+                    .zip(self.nodes.chunks(columns.max(1)))
+                {
+                    let (top, bottom) = nodes.iter().filter_map(|&n| taffy.layout(n).ok()).fold(
+                        (f64::INFINITY, f64::NEG_INFINITY),
+                        |(top, bottom), l| {
+                            let y = f64::from(l.location.y);
+                            (top.min(y), bottom.max(y + f64::from(l.size.height)))
+                        },
+                    );
+                    let measure = top > bottom || near(window, top, bottom);
+                    let mut tallest = 0.0_f64;
+                    for card in row
+                        .iter_mut()
+                        .filter_map(|card| card.as_any_mut()?.downcast_mut::<MediaCard>())
+                    {
+                        let height = if measure {
+                            changed |= card.text_estimated;
+                            card.text_estimated = false;
+                            card.wants_measure = false;
+                            card.own_text_height(text, Some(column))
+                        } else if card.text_estimated {
+                            card.own_text_height(text, None)
+                        } else {
+                            card.shared_text_height.unwrap_or_default()
+                        };
+                        tallest = tallest.max(height);
+                    }
                     shared.extend(std::iter::repeat_n(tallest, row.len()));
                 }
-                let mut cards: Vec<&mut MediaCard> = self.cards_mut().collect();
-                for (card, height) in cards.iter_mut().zip(shared) {
+                for (card, height) in self.cards_mut().zip(shared) {
                     if card.shared_text_height != Some(height) {
                         card.shared_text_height = Some(height);
                         changed = true;
@@ -1561,6 +1721,21 @@ impl Widget for MediaGrid {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if matches!(self.mode, GridMode::Columns) {
+            let top = self.rect.y0;
+            self.window = presence
+                .viewport()
+                .map_or((f64::NEG_INFINITY, f64::INFINITY), |vp| {
+                    (vp.y0 - top, vp.y1 - top)
+                });
+            // Cards scrolled near the viewport are measured by the next
+            // layout, a viewport's height before they are shown.
+            let window = self.window;
+            for card in self.cards_mut() {
+                card.wants_measure |=
+                    card.text_estimated && near(window, card.rect.y0 - top, card.rect.y1 - top);
+            }
+        }
         for card in &mut self.cards {
             card.draw(scene, transform, text_renderer, theme, presence);
         }

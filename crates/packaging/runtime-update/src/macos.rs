@@ -38,10 +38,6 @@ pub struct Bundle {
 
 impl Bundle {
     /// The bundle containing the running executable (`Contents/MacOS/…`).
-    ///
-    /// # Errors
-    ///
-    /// The executable is not inside an app bundle.
     pub fn running() -> io::Result<Self> {
         let executable = std::env::current_exe()?.canonicalize()?;
         let path = executable

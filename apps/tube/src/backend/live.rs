@@ -31,6 +31,7 @@ use rustypipe::model::{
     ChannelItem, Comment as RpComment, PlaylistItem, Verification, VideoItem, YouTubeItem,
 };
 use rustypipe::param::search_filter::{ItemType, Order, SearchFilter, UploadDate};
+use tilo_innertube as innertube;
 
 use crate::backend::{BackendError, BackendOutcome, BackendResult, YtBackend};
 use crate::model::{Channel, Comment, Playlist, Video};
@@ -58,10 +59,6 @@ pub struct RustyPipeBackend {
 }
 
 impl RustyPipeBackend {
-    /// # Errors
-    ///
-    /// Returns `Err` if the app runtime is unusable from the calling thread or
-    /// the rustypipe client fails to build.
     pub fn new() -> Result<Self, BackendError> {
         // rustypipe `tokio::spawn`s background work (the visitor-data
         // prefetch and the connection tasks behind its HTTP client) that must
@@ -104,14 +101,10 @@ impl RustyPipeBackend {
     /// Run one search and split the results into videos, playlists and creator
     /// rows — the enrichment source for the primary backend, which returns only
     /// videos (and no avatars). Real `InnerTube` data in a single call.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the search request fails.
     pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
         let q = self.rp.query();
         let res = self
-            .block(async { q.search::<YouTubeItem, _>(query).await })
+            .block(innertube::search(&q, query))
             .map_err(|e| BackendError(format!("search_items: {e}")))?;
         let mut out = SearchItems {
             videos: Vec::new(),
@@ -129,14 +122,10 @@ impl RustyPipeBackend {
     }
 
     /// Fetch a playlist page: its metadata + ordered video list.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the playlist request fails.
     pub fn playlist_page(&self, id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
         let q = self.rp.query();
         let pl = self
-            .block(async { q.playlist(id).await })
+            .block(innertube::playlist(&q, id))
             .map_err(|e| BackendError(format!("playlist {id}: {e}")))?;
         let videos: Vec<Video> = pl.videos.items.into_iter().map(map_video_item).collect();
         let (channel_id, channel_name) = pl
@@ -308,7 +297,7 @@ impl YtBackend for RustyPipeBackend {
     fn search(&self, query: &str) -> BackendOutcome {
         let q = self.rp.query();
         let res = self
-            .block(async { q.search::<YouTubeItem, _>(query).await })
+            .block(innertube::search(&q, query))
             .map_err(|e| BackendError(format!("search: {e}")))?;
         Ok(BackendResult::Videos(videos_from_items(res.items.items)))
     }
@@ -316,7 +305,7 @@ impl YtBackend for RustyPipeBackend {
     fn video(&self, id: &str) -> BackendOutcome {
         let q = self.rp.query();
         let d = self
-            .block(async { q.video_details(id).await })
+            .block(innertube::video_details(&q, id))
             .map_err(|e| BackendError(format!("video: {e}")))?;
         let channel_id = d.channel.id.clone();
         let v = Video {
@@ -349,7 +338,7 @@ impl YtBackend for RustyPipeBackend {
     fn channel(&self, id: &str) -> BackendOutcome {
         let q = self.rp.query();
         let ch = self
-            .block(async { q.channel_videos(id).await })
+            .block(innertube::channel_videos(&q, id))
             .map_err(|e| BackendError(format!("channel: {e}")))?;
         let channel = Channel {
             id: ch.id.clone(),
@@ -376,7 +365,7 @@ impl YtBackend for RustyPipeBackend {
         // dedicated endpoint — fetch details and lift `.recommended`.
         let q = self.rp.query();
         let d = self
-            .block(async { q.video_details(id).await })
+            .block(innertube::video_details(&q, id))
             .map_err(|e| BackendError(format!("related: {e}")))?;
         let vids = d
             .recommended
@@ -390,7 +379,7 @@ impl YtBackend for RustyPipeBackend {
     fn trending(&self) -> BackendOutcome {
         let q = self.rp.query();
         let items = self
-            .block(async { q.trending().await })
+            .block(innertube::trending(&q))
             .map_err(|e| BackendError(format!("trending: {e}")))?;
         Ok(BackendResult::Videos(
             items.into_iter().map(map_video_item).collect(),
@@ -401,12 +390,12 @@ impl YtBackend for RustyPipeBackend {
         // `video_details` carries an (initially empty) top-comments paginator
         // holding the continuation token; fetching its first page pulls the real
         // "most liked first" comments via the `next`/comments endpoint.
-        let d = self
-            .block(async { self.rp.query().video_details(id).await })
-            .map_err(|e| BackendError(format!("comments details {id}: {e}")))?;
         let q = self.rp.query();
+        let d = self
+            .block(innertube::video_details(&q, id))
+            .map_err(|e| BackendError(format!("comments details {id}: {e}")))?;
         let page = self
-            .block(async { d.top_comments.next(q).await })
+            .block(innertube::next_comments(&d.top_comments, &q))
             .map_err(|e| BackendError(format!("comments page {id}: {e}")))?;
         let items = page.map(|p| p.items).unwrap_or_default();
         Ok(items.into_iter().take(60).map(map_comment).collect())
@@ -423,7 +412,7 @@ impl YtBackend for RustyPipeBackend {
             .sort(Order::Views)
             .date(UploadDate::Week);
         let res = self
-            .block(async { q.search_filter::<YouTubeItem, _>(query, &filter).await })
+            .block(innertube::search_filter(&q, query, &filter))
             .map_err(|e| BackendError(format!("popular_search {query:?}: {e}")))?;
         Ok(BackendResult::Videos(videos_from_items(res.items.items)))
     }
@@ -441,7 +430,6 @@ mod tests {
             absolute_url("//yt3.ggpht.com/abc=s176"),
             "https://yt3.ggpht.com/abc=s176",
         );
-        // Already-absolute and empty URLs pass through untouched.
         assert_eq!(
             absolute_url("https://yt3.ggpht.com/x"),
             "https://yt3.ggpht.com/x"

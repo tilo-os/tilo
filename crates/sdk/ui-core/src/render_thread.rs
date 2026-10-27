@@ -19,14 +19,14 @@
 //! worker, which drops its `RenderSurface<'static>` before the `Window` is
 //! dropped — required or wgpu panics on a surface outliving its window.
 //! On `suspended` the worker drops only the surface and hands its context
-//! and renderer back ([`RenderThreadHandle::shutdown_keeping_renderer`]), so
+//! and renderer back (`RenderThreadHandle::shutdown_keeping_renderer`), so
 //! the next surface does not open a device and compile pipelines again.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the GPU render worker is a dedicated thread"
 )]
 
-mod cpu_raster;
+pub(crate) mod cpu_raster;
 #[cfg(test)]
 mod deferred_pipelines_tests;
 mod native_gpu_trace;
@@ -43,7 +43,7 @@ mod surface_lifecycle_tests;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use std::thread::JoinHandle;
 
@@ -52,16 +52,14 @@ pub(crate) mod timing;
 
 use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
-use crate::offscreen::{
-    damage_geometric_capacity_enabled, damage_texture_extent,
-    damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
-    damage_texture_height_extent, damage_texture_needs_replacement,
-};
+#[cfg(test)]
+use crate::retained_raster::{DamageCache, rasterize_damage};
+pub use crate::retained_raster::{FrameContent, RetainedRaster, RetainedTarget};
 use tilo_lock::MutexRecover as _;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::util::RenderSurface;
-use vello::{FineDamageRect, RenderParams, Renderer, Scene};
+use vello::{Renderer, Scene};
 
 /// Compile-time `Send` check: a vello/wgpu regression fails to compile rather
 /// than at thread spawn.
@@ -96,6 +94,10 @@ pub enum RenderRequest {
         scroll_copies: Vec<crate::scroll_copy::DeviceCopy>,
         /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
+        /// The scene holds only what its damage needs (`crate::draw_cull`):
+        /// it must not be repainted beyond the damage, and a frame that must
+        /// be is not presented, but asks main for one drawn whole.
+        partial: bool,
         /// The backdrops the scene's floating surfaces were recorded over
         /// (`crate::backdrop`), in physical pixels. Empty draws no blur.
         backdrop: crate::backdrop::BackdropFrame,
@@ -161,8 +163,7 @@ impl PreparedRenderer {
 #[path = "render_retry.rs"]
 pub(crate) mod retry;
 
-#[path = "render_bump_recovery.rs"]
-mod bump_recovery;
+use crate::render_bump_recovery as bump_recovery;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {
@@ -197,6 +198,10 @@ pub struct RenderThreadHandle {
     /// Set by the worker when presented pixels lost geometry to a Vello bump
     /// overflow; the next frame main submits must repaint everything.
     full_repaint: Arc<AtomicBool>,
+    /// The largest texture edge the frames' device accepts: main fits each
+    /// frame under it (`crate::scale::fit_to_texture_limit`). The limit
+    /// every device is opened with until the worker reads its own device's.
+    texture_limit: Arc<AtomicU32>,
     join: Option<JoinHandle<Option<PreparedRenderer>>>,
 }
 
@@ -300,150 +305,28 @@ fn notify_render_completion(waiting: &AtomicBool, wake: &dyn Fn(), outcome: Fram
     }
 }
 
-struct DamageTarget {
-    width: u32,
-    height: u32,
-    texture: vello::wgpu::Texture,
-    view: vello::wgpu::TextureView,
-}
-
-#[derive(Default)]
-struct DamageCache {
-    targets: Vec<DamageTarget>,
-    last_region_count: Option<usize>,
-    geometric_capacity: bool,
-    coarse_pool_high_water_pixels: u64,
-    /// Scratch space for scroll copies within the retained target.
-    copy_scratch: crate::scroll_copy::CopyScratch,
-}
-
-/// What a host keeps between frames to rasterize them into one retained
-/// target: the damage scratch, the backdrop blur and, on a software adapter,
-/// the CPU canvas. The app's own render worker draws with it, and so does the
-/// room's render service for each surface it draws for an app
-/// (`tilo-render-service`), so both produce the same pixels from the same
-/// frame.
-pub struct RetainedRaster {
-    damage_cache: DamageCache,
-    /// Built with the first frame that draws a floating surface over the
-    /// blurred material.
-    backdrop_blur: Option<crate::backdrop::BackdropBlur>,
-    cpu: Option<cpu_raster::CpuCanvas>,
-}
-
-impl RetainedRaster {
-    /// Scratch for one target; `on_cpu` rasterizes on the CPU and uploads the
-    /// pixels (a software adapter, see [`rasterizes_on_cpu`]).
-    pub fn new(on_cpu: bool) -> Self {
-        Self {
-            damage_cache: DamageCache {
-                geometric_capacity: damage_geometric_capacity_enabled(),
-                ..DamageCache::default()
-            },
-            backdrop_blur: None,
-            cpu: on_cpu.then(cpu_raster::CpuCanvas::new),
-        }
-    }
-
-    /// Whether frames are rasterized on the CPU.
-    pub fn on_cpu(&self) -> bool {
-        self.cpu.is_some()
-    }
-
-    /// The target was replaced (a resize): nothing retained is current.
-    pub fn invalidate(&mut self) {
-        self.damage_cache = DamageCache {
-            geometric_capacity: self.damage_cache.geometric_capacity,
-            ..DamageCache::default()
-        };
-        if let Some(canvas) = self.cpu.as_mut() {
-            canvas.invalidate();
-        }
-    }
-
-    /// Bring `target` up to date with `frame`: its backdrops blurred and
-    /// substituted, its scroll copies made, its damage (or all of it)
-    /// repainted. Returns the pixels rasterized, and the backdrop pass's
-    /// statistics when the frame had backdrops.
-    pub fn rasterize(
-        &mut self,
-        (device, queue): (&vello::wgpu::Device, &vello::wgpu::Queue),
-        renderer: &mut Renderer,
-        target: RetainedTarget<'_>,
-        frame: FrameContent<'_>,
-    ) -> (Result<u64, String>, Option<crate::backdrop::BackdropStats>) {
-        // Floating surfaces over the blurred material: render, blur and
-        // substitute each one's backdrop before the frame that draws it.
-        let backdrop_stats = (!frame.backdrop.is_empty()).then(|| {
-            self.backdrop_blur
-                .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(device))
-                .prepare(
-                    device,
-                    queue,
-                    renderer,
-                    frame.backdrop,
-                    (frame.width, frame.height),
-                    frame.base_color,
-                )
-        });
-        let raster_frame = FrameContent {
-            backdrop: &crate::backdrop::BackdropFrame::default(),
-            ..frame
-        };
-        let rasterized =
-            if let Some(canvas) = self.cpu.as_mut().filter(|_| frame.backdrop.is_empty()) {
-                canvas.rasterize(&raster_frame).inspect(|_| {
-                    canvas.upload(queue, target.texture);
-                })
-            } else {
-                // Backdrop substitutions currently belong to Vello's GPU renderer.
-                // Invalidate retained CPU pixels when that path writes the target.
-                if let Some(canvas) = self.cpu.as_mut() {
-                    canvas.invalidate();
-                }
-                rasterize_damage(
-                    (device, queue),
-                    target,
-                    renderer,
-                    &mut self.damage_cache,
-                    &raster_frame,
-                )
-                .map_err(|error| error.to_string())
-            };
-        if let Some(blur) = self.backdrop_blur.as_mut() {
-            blur.release(renderer);
-        }
-        (rasterized, backdrop_stats)
-    }
-
-    /// The CPU canvas after [`Self::rasterize_cpu`]: premultiplied RGBA8
-    /// rows of `width * 4` bytes, or `None` on a GPU raster.
-    pub fn cpu_pixels(&self) -> Option<&[u8]> {
-        self.cpu.as_ref().map(cpu_raster::CpuCanvas::pixels)
-    }
-
-    /// [`Self::rasterize`] for a host without a GPU, on a raster made
-    /// [`on_cpu`](Self::on_cpu): the canvas itself is the target, returned as
-    /// premultiplied RGBA8 rows of `width * 4` bytes. Backdrops are not
-    /// blurred; their placeholders show the opaque material.
-    ///
-    /// # Errors
-    ///
-    /// When the raster is not on the CPU or the frame cannot be rasterized.
-    pub fn rasterize_cpu(&mut self, frame: FrameContent<'_>) -> Result<&[u8], String> {
-        let canvas = self
-            .cpu
-            .as_mut()
-            .ok_or_else(|| "this raster draws on a GPU".to_owned())?;
-        canvas.rasterize(&FrameContent {
-            backdrop: &crate::backdrop::BackdropFrame::default(),
-            ..frame
-        })?;
-        Ok(canvas.pixels())
-    }
-}
-
 impl RenderThreadHandle {
+    /// The largest edge a frame sent to this worker may have, in pixels.
+    #[cfg(feature = "native")]
+    pub(crate) fn texture_limit(&self) -> u32 {
+        self.texture_limit.load(Ordering::Relaxed)
+    }
+
+    /// A window of `physical` pixels at `scale`, as a frame this worker can
+    /// draw: past the device's texture limit it draws at a lower scale.
+    #[cfg(feature = "native")]
+    pub(crate) fn frame_extent(
+        &self,
+        physical: winit::dpi::PhysicalSize<u32>,
+        scale: f64,
+    ) -> crate::scale::RenderExtent {
+        crate::scale::fit_to_texture_limit(
+            (physical.width, physical.height),
+            scale,
+            self.texture_limit(),
+        )
+    }
+
     /// Whether the worker asked for a whole-surface repaint since the last
     /// call. It wakes the window when it asks, so the request does not wait
     /// for an unrelated event.
@@ -512,6 +395,8 @@ pub(crate) fn spawn_render_thread_deferred(
     let waiting = Arc::new(AtomicBool::new(false));
     let full_repaint = Arc::new(AtomicBool::new(false));
     let worker_full_repaint = full_repaint.clone();
+    let texture_limit = Arc::new(AtomicU32::new(crate::gpu::requested_texture_limit()));
+    let worker_texture_limit = texture_limit.clone();
     let buffers = BufferPool::new(pool_rx, waiting.clone());
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
@@ -530,6 +415,12 @@ pub(crate) fn spawn_render_thread_deferred(
                 }
             };
             tilo_startup_metrics::mark("window-render-context-done");
+            if let Some(device) = render_cx.devices.get(surface.dev_id) {
+                worker_texture_limit.store(
+                    device.device.limits().max_texture_dimension_2d,
+                    Ordering::Relaxed,
+                );
+            }
             // `TILO_UI_PRESENT=1` logs per-frame encode/acquire/present timings
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
@@ -610,6 +501,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     mut damage_regions,
                     scroll_copies,
                     full_redraw,
+                    partial,
                     cpu_frame_id,
                     backdrop,
                 ) = match msg {
@@ -621,6 +513,7 @@ pub(crate) fn spawn_render_thread_deferred(
                         damage_regions,
                         scroll_copies,
                         full_redraw,
+                        partial,
                         cpu_frame_id,
                         backdrop,
                         on_present,
@@ -634,6 +527,7 @@ pub(crate) fn spawn_render_thread_deferred(
                             damage_regions,
                             scroll_copies,
                             full_redraw,
+                            partial,
                             cpu_frame_id,
                             backdrop,
                         )
@@ -742,6 +636,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     FrameRasterizers {
                         renderer: &mut renderer,
                         raster: &mut raster,
+                        damage_only: partial,
                     },
                     FrameContent {
                         scene: &scene,
@@ -851,6 +746,12 @@ pub(crate) fn spawn_render_thread_deferred(
                 }
                 // After the outcome is published, so main's per-frame
                 // accounting is untouched: a repaint is a later, ordinary frame.
+                // A scene drawn for its damage only that was not presented
+                // cannot be drawn again for more: the next frame is drawn
+                // whole.
+                if partial && outcome != FrameOutcome::Presented {
+                    request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
+                }
                 if poll_bump_recovery(&mut bump_recovery, &mut renderer, &render_cx, &surface) {
                     request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
                 }
@@ -883,6 +784,7 @@ pub(crate) fn spawn_render_thread_deferred(
         frame_complete,
         retry: retry::RenderRetryState::default(),
         full_repaint,
+        texture_limit,
         join: Some(join),
     })
 }
@@ -1042,334 +944,6 @@ fn resize_surface_checked(
     }
 }
 
-/// The retained frame the native host rasterizes into and presents from.
-/// Pixels outside a frame's damage are whatever the previous frame left, so
-/// it must only ever be written through [`RetainedRaster::rasterize`].
-/// `Rgba8Unorm` with storage, copy-source and copy-destination usage.
-#[derive(Clone, Copy)]
-pub struct RetainedTarget<'a> {
-    pub texture: &'a vello::wgpu::Texture,
-    pub view: &'a vello::wgpu::TextureView,
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::expect_used,
-    clippy::too_many_lines,
-    reason = "damage bounds are clamped to the u32 surface before narrowing; one bounded GPU transaction keeps retained-target correctness visible in one place"
-)]
-fn rasterize_damage(
-    (device, queue): (&vello::wgpu::Device, &vello::wgpu::Queue),
-    retained: RetainedTarget<'_>,
-    renderer: &mut Renderer,
-    damage_cache: &mut DamageCache,
-    frame: &FrameContent<'_>,
-) -> Result<u64, vello::Error> {
-    let FrameContent {
-        scene,
-        width,
-        height,
-        base_color,
-        damage_regions,
-        scroll_copies,
-        full_redraw,
-        ..
-    } = *frame;
-    let full_pixels = u64::from(width).saturating_mul(u64::from(height));
-    let render_full = |renderer: &mut Renderer| {
-        renderer.render_to_texture(
-            device,
-            queue,
-            scene,
-            retained.view,
-            &RenderParams {
-                base_color,
-                width,
-                height,
-                antialiasing_method: vello::AaConfig::Area,
-            },
-        )
-    };
-    if full_redraw {
-        if damage_cache
-            .last_region_count
-            .is_some_and(|previous| previous != 0)
-        {
-            renderer.trim_pooled_buffers();
-        }
-        while let Some(target) = damage_cache.targets.pop() {
-            renderer.invalidate_texture_bindings(&target.view);
-        }
-        damage_cache.last_region_count = Some(0);
-        damage_cache.coarse_pool_high_water_pixels = full_pixels;
-        render_full(renderer)?;
-        return Ok(full_pixels);
-    }
-    // What a scroll keeps on screen moves before the damage around it is
-    // repainted; the target holds the last presented frame.
-    if !scroll_copies.is_empty() {
-        let mut encoder = device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
-            label: Some("ui-native-scroll-copies"),
-        });
-        if !crate::scroll_copy::encode_copies(
-            device,
-            &mut encoder,
-            retained.texture,
-            &mut damage_cache.copy_scratch,
-            scroll_copies,
-        ) {
-            while let Some(target) = damage_cache.targets.pop() {
-                renderer.invalidate_texture_bindings(&target.view);
-            }
-            damage_cache.last_region_count = Some(0);
-            damage_cache.coarse_pool_high_water_pixels = full_pixels;
-            render_full(renderer)?;
-            return Ok(full_pixels);
-        }
-        queue.submit([encoder.finish()]);
-    }
-    if damage_regions.is_empty() {
-        return Ok(0);
-    }
-
-    let mut damage_pixels = 0u64;
-    let mut damage_region_count = 0usize;
-    for rect in damage_regions {
-        let x0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
-        let y0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
-        let x1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
-        let y1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
-        let region_width = x1.saturating_sub(x0);
-        let region_height = y1.saturating_sub(y0);
-        damage_pixels = damage_pixels
-            .saturating_add(u64::from(region_width).saturating_mul(u64::from(region_height)));
-        damage_region_count = damage_region_count
-            .saturating_add(usize::from(region_width != 0 && region_height != 0));
-    }
-    // A large union costs less as one Vello pass and must not retain a second
-    // near-window-sized texture. This is both the time and memory bound.
-    if damage_pixels == 0 || damage_pixels >= full_pixels.saturating_div(2) {
-        if damage_cache
-            .last_region_count
-            .is_some_and(|previous| previous != 0)
-        {
-            renderer.trim_pooled_buffers();
-        }
-        while let Some(target) = damage_cache.targets.pop() {
-            renderer.invalidate_texture_bindings(&target.view);
-        }
-        damage_cache.last_region_count = Some(0);
-        damage_cache.coarse_pool_high_water_pixels = full_pixels;
-        render_full(renderer)?;
-        return Ok(full_pixels);
-    }
-
-    let regions = coalesce_regions(
-        damage_regions
-            .iter()
-            .filter_map(|rect| {
-                let x0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
-                let y0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
-                let x1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
-                let y1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
-                let region_width = x1.saturating_sub(x0);
-                let region_height = y1.saturating_sub(y0);
-                (region_width != 0 && region_height != 0).then_some(Region {
-                    x: x0,
-                    y: y0,
-                    width: region_width,
-                    height: region_height,
-                })
-            })
-            .collect(),
-    );
-    let prefix_width = regions
-        .iter()
-        .map(|r| r.x.saturating_add(r.width))
-        .max()
-        .unwrap_or(0);
-    let prefix_height = regions
-        .iter()
-        .map(|r| r.y.saturating_add(r.height))
-        .max()
-        .unwrap_or(0);
-    let raster_pixels = u64::from(prefix_width).saturating_mul(u64::from(prefix_height));
-    if renderer.sparse_fine_supported() {
-        if damage_cache.coarse_pool_high_water_pixels >= full_pixels.saturating_div(2)
-            && raster_pixels.saturating_mul(4) <= damage_cache.coarse_pool_high_water_pixels
-        {
-            renderer.trim_pooled_buffers();
-            damage_cache.coarse_pool_high_water_pixels = 0;
-        }
-        let fine_damage: Vec<FineDamageRect> = regions
-            .iter()
-            .map(|region| FineDamageRect {
-                x: region.x,
-                y: region.y,
-                width: region.width,
-                height: region.height,
-            })
-            .collect();
-        if let Some(stats) = renderer.render_to_texture_with_damage(
-            device,
-            queue,
-            scene,
-            retained.view,
-            &RenderParams {
-                base_color,
-                width: prefix_width,
-                height: prefix_height,
-                antialiasing_method: vello::AaConfig::Area,
-            },
-            &fine_damage,
-        )? {
-            while let Some(target) = damage_cache.targets.pop() {
-                renderer.invalidate_texture_bindings(&target.view);
-            }
-            damage_cache.last_region_count = Some(damage_region_count);
-            damage_cache.coarse_pool_high_water_pixels = damage_cache
-                .coarse_pool_high_water_pixels
-                .max(stats.coarse_pixels);
-            return Ok(stats.fine_pixels);
-        }
-    }
-    if raster_pixels >= full_pixels.saturating_div(2) {
-        if damage_cache
-            .last_region_count
-            .is_some_and(|previous| previous != 0)
-        {
-            renderer.trim_pooled_buffers();
-        }
-        while let Some(target) = damage_cache.targets.pop() {
-            renderer.invalidate_texture_bindings(&target.view);
-        }
-        damage_cache.last_region_count = Some(0);
-        damage_cache.coarse_pool_high_water_pixels = full_pixels;
-        render_full(renderer)?;
-        return Ok(full_pixels);
-    }
-    // Damage topology is volatile; preserve warm partial pools, but discard
-    // full-target scratch before switching to the smaller prefix target.
-    if damage_cache.last_region_count == Some(0) {
-        renderer.trim_pooled_buffers();
-    }
-    damage_cache.last_region_count = Some(damage_region_count);
-    damage_cache.coarse_pool_high_water_pixels = damage_cache
-        .coarse_pool_high_water_pixels
-        .max(raster_pixels);
-    let texture_limit = device.limits().max_texture_dimension_2d;
-    let allocated_width = if damage_cache.geometric_capacity {
-        damage_texture_geometric_width_extent(prefix_width, width, texture_limit)
-    } else {
-        damage_texture_extent(prefix_width, texture_limit)
-    };
-    let allocated_height = damage_texture_height_extent(prefix_height, texture_limit);
-    let recreate = damage_cache.targets.first().is_none_or(|target| {
-        if damage_cache.geometric_capacity {
-            damage_texture_geometric_needs_replacement(
-                target.width,
-                target.height,
-                prefix_width,
-                prefix_height,
-                allocated_width,
-                allocated_height,
-            )
-        } else {
-            damage_texture_needs_replacement(
-                target.width,
-                target.height,
-                prefix_width,
-                prefix_height,
-            )
-        }
-    });
-    if recreate {
-        if let Some(target) = damage_cache.targets.first() {
-            renderer.invalidate_texture_bindings(&target.view);
-        }
-        let texture = device.create_texture(&vello::wgpu::TextureDescriptor {
-            label: Some("ui-native-damage-target"),
-            size: vello::wgpu::Extent3d {
-                width: allocated_width,
-                height: allocated_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: vello::wgpu::TextureDimension::D2,
-            format: vello::wgpu::TextureFormat::Rgba8Unorm,
-            usage: vello::wgpu::TextureUsages::STORAGE_BINDING
-                | vello::wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
-        let replacement = DamageTarget {
-            width: allocated_width,
-            height: allocated_height,
-            texture,
-            view,
-        };
-        if let Some(target) = damage_cache.targets.first_mut() {
-            *target = replacement;
-        } else {
-            damage_cache.targets.push(replacement);
-        }
-    }
-    let target = damage_cache
-        .targets
-        .first()
-        .expect("damage target was inserted above");
-    renderer.render_to_texture_with_post_render(
-        device,
-        queue,
-        scene,
-        &target.view,
-        &RenderParams {
-            base_color,
-            width: prefix_width,
-            height: prefix_height,
-            antialiasing_method: vello::AaConfig::Area,
-        },
-        |encoder| {
-            for region in &regions {
-                encoder.copy_texture_to_texture(
-                    vello::wgpu::TexelCopyTextureInfo {
-                        texture: &target.texture,
-                        mip_level: 0,
-                        origin: vello::wgpu::Origin3d {
-                            x: region.x,
-                            y: region.y,
-                            z: 0,
-                        },
-                        aspect: vello::wgpu::TextureAspect::All,
-                    },
-                    vello::wgpu::TexelCopyTextureInfo {
-                        texture: retained.texture,
-                        mip_level: 0,
-                        origin: vello::wgpu::Origin3d {
-                            x: region.x,
-                            y: region.y,
-                            z: 0,
-                        },
-                        aspect: vello::wgpu::TextureAspect::All,
-                    },
-                    vello::wgpu::Extent3d {
-                        width: region.width,
-                        height: region.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-        },
-    )?;
-    while damage_cache.targets.len() > 1 {
-        let target = damage_cache.targets.pop().expect("length checked above");
-        renderer.invalidate_texture_bindings(&target.view);
-    }
-    Ok(raster_pixels)
-}
-
 /// A suboptimal acquisition still owns a swapchain texture. Discard it while
 /// the old swapchain is configured, before entering recovery; a wildcard match
 /// would keep the acquisition temporary alive across the reconfiguration.
@@ -1398,22 +972,6 @@ fn acquire_surface_texture(
     }
 }
 
-/// One frame's scene, surface size and damage, as the worker received it.
-#[derive(Clone, Copy)]
-pub struct FrameContent<'a> {
-    pub scene: &'a Scene,
-    pub width: u32,
-    pub height: u32,
-    pub base_color: Color,
-    /// Physical-pixel rectangles that changed.
-    pub damage_regions: &'a [Rect],
-    /// Copies within the target before the damage is repainted.
-    pub scroll_copies: &'a [crate::scroll_copy::DeviceCopy],
-    /// Repaint everything: the target is not current, or the frame says so.
-    pub full_redraw: bool,
-    pub backdrop: &'a crate::backdrop::BackdropFrame,
-}
-
 /// How a presented frame is identified and observed.
 #[derive(Clone, Copy)]
 struct FramePresentation<'a> {
@@ -1426,6 +984,8 @@ struct FramePresentation<'a> {
 struct FrameRasterizers<'a> {
     renderer: &'a mut Renderer,
     raster: &'a mut RetainedRaster,
+    /// The scene holds only what its damage needs (`crate::draw_cull`).
+    damage_only: bool,
 }
 
 #[allow(
@@ -1439,7 +999,11 @@ fn render_one_frame(
     frame: FrameContent<'_>,
     present: FramePresentation<'_>,
 ) -> FrameOutcome {
-    let FrameRasterizers { renderer, raster } = rasterizers;
+    let FrameRasterizers {
+        renderer,
+        raster,
+        damage_only,
+    } = rasterizers;
     let FrameContent {
         scene,
         width,
@@ -1506,15 +1070,16 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-start");
     }
-    let (rasterized, backdrop_stats) = raster.rasterize(
-        (&device_handle.device, &device_handle.queue),
-        renderer,
-        RetainedTarget {
-            texture: &surface.target_texture,
-            view: &surface.target_view,
-        },
-        frame,
-    );
+    let target = RetainedTarget {
+        texture: &surface.target_texture,
+        view: &surface.target_view,
+    };
+    let gpu = (&device_handle.device, &device_handle.queue);
+    let (rasterized, backdrop_stats) = if damage_only {
+        raster.rasterize_damage_only(gpu, renderer, target, frame)
+    } else {
+        raster.rasterize(gpu, renderer, target, frame)
+    };
     if present_dbg && let Some(stats) = backdrop_stats {
         eprintln!(
             "present-backdrop {frame_ix}: substituted={} skipped={} encode={}us",
@@ -1523,6 +1088,11 @@ fn render_one_frame(
     }
     let raster_pixels = match rasterized {
         Ok(pixels) => pixels,
+        // A scene drawn for its damage only that had to repaint more: the
+        // worker asks main for one drawn whole.
+        Err(err) if err == crate::retained_raster::DAMAGE_ONLY_REFUSED => {
+            return FrameOutcome::Skipped;
+        }
         Err(err) => {
             // A programmer bug (bad encoding / ran out of GPU resources); log and
             // skip rather than panic, which would tear down the app with no
@@ -1744,6 +1314,15 @@ fn bounded_present_damage(
     )
 }
 
+/// Whether the render worker repaints a frame of `width` × `height` with
+/// `damage` (physical pixels) from its scene region by region, never
+/// whole: what a frame drawn for its damage only needs
+/// (`crate::draw_cull`).
+pub(crate) fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
+    bounded_present_damage(width, height, damage).is_some()
+        && crate::retained_raster::repaints_alone(width, height, damage)
+}
+
 #[cfg(test)]
 mod present_damage_tests {
     use super::{Rect, bounded_present_damage};
@@ -1812,7 +1391,6 @@ mod admission_tests {
 
     #[test]
     fn occlusion_admission_keeps_payloads_probes_and_sibling_projections() {
-        // Case `occluded_primary_keeps_visible_sibling_projection_fresh_through_real_admission`.
         {
             use crate::widget::Widget;
             use automerge::transaction::Transactable;
@@ -1940,7 +1518,6 @@ mod admission_tests {
             );
         }
 
-        // Case `occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return`.
         {
             let now = crate::time::now();
             let mut retry = retry::RenderRetryState::default();
@@ -1976,7 +1553,6 @@ mod admission_tests {
             assert_eq!(retry.deadline(), Some(now + retry::FRAME_INTERVAL));
         }
 
-        // Case `admission_defers_without_consuming_partial_state_and_retains_reservation`.
         {
             let (tx, rx) = mpsc::sync_channel(2);
             let waiting = Arc::new(AtomicBool::new(false));
@@ -1986,7 +1562,6 @@ mod admission_tests {
             tx.send(41).unwrap();
             assert!(pool.prepare().unwrap());
             assert!(!waiting.load(Ordering::SeqCst));
-            // An aborted layout keeps the reservation for the next redraw.
             assert!(pool.prepare().unwrap());
             assert_eq!(pool.recv().unwrap(), 41);
             assert!(!pool.prepare().unwrap());
@@ -1997,7 +1572,6 @@ mod admission_tests {
 
     #[test]
     fn completion_and_failure_wake_deferred_work_without_losing_buffers() {
-        // Case `failed_outcomes_wake_even_without_deferred_work`.
         {
             use std::cell::Cell;
             let waiting = AtomicBool::new(false);
@@ -2020,7 +1594,6 @@ mod admission_tests {
             assert!(!waiting.load(Ordering::SeqCst));
         }
 
-        // Case `completion_wakes_only_deferred_work_and_cannot_lose_ready_buffers`.
         {
             use std::cell::Cell;
             let (tx, rx) = mpsc::sync_channel(2);
@@ -2061,7 +1634,7 @@ mod admission_tests {
 }
 
 /// Every frame the native host presents is its retained target after
-/// [`rasterize_damage`]. However frames alternate between partial and full
+/// `retained_raster::rasterize_damage`. However frames alternate between partial and full
 /// raster, what is presented must equal a full render of the same scene;
 /// otherwise the screen shows holes or stale content outside the damage.
 #[cfg(test)]
@@ -2129,7 +1702,6 @@ mod retained_damage_tests {
     }
 
     fn target(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
-        // The same usage the native surface target carries.
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("retained-damage-test-target"),
             size: wgpu::Extent3d {
@@ -2481,7 +2053,6 @@ mod retained_damage_tests {
             renderer.enable_canonical_segment_order(device).unwrap();
             renderer
         };
-        // What a renderer that already knows this scene presents.
         let mut oracle = renderer_for();
         let (oracle_texture, oracle_view) = target(device);
         let mut oracle_cache = DamageCache::default();

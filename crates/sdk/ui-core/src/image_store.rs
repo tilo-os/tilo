@@ -7,12 +7,14 @@
 //!
 //! No networking here — the toolkit stays HTTP-free, and a no-op fetcher
 //! keeps tests and hermetic offline builds deterministic. Decoding uses the
-//! `image` crate; cloning a returned `ImageData` only bumps an `Arc`.
+//! toolkit's decoders ([`crate::image_decoders`]); cloning a returned
+//! `ImageData` only bumps an `Arc`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use tilo_sort::CompactSort as _;
 
 use crate::background::Background;
 use crate::time::Duration;
@@ -39,6 +41,9 @@ enum Slot {
     Ready(PenikoImage),
     /// Fetch or decode failed; won't retry.
     Failed,
+    /// Fetched before the decoders were in (they are fetched on first use
+    /// where the program defers them): loaded again once they are.
+    Undecoded,
 }
 
 struct SlotEntry {
@@ -74,7 +79,7 @@ impl CacheState {
         // before issuing another tick, so no two cache entries become
         // indistinguishable through counter wraparound.
         let mut order: Vec<_> = self.slots.keys().cloned().collect();
-        order.sort_by_key(|url| self.slots.get(url).map_or(0, |entry| entry.last_used));
+        order.compact_sort_by_key(|url| self.slots.get(url).map_or(0, |entry| entry.last_used));
         for (tick, url) in (1_u64..).zip(order) {
             if let Some(entry) = self.slots.get_mut(&url) {
                 entry.last_used = tick;
@@ -98,7 +103,7 @@ fn slot_bytes(slot: &Slot) -> u64 {
         Slot::Ready(image) => u64::from(image.width)
             .saturating_mul(u64::from(image.height))
             .saturating_mul(4),
-        Slot::Loading(_) | Slot::Failed => 0,
+        Slot::Loading(_) | Slot::Failed | Slot::Undecoded => 0,
     }
 }
 
@@ -306,6 +311,14 @@ impl HostImageLoader {
         )
     }
 
+    /// Settle an exact reservation with a slot the toolkit decoded itself.
+    fn complete_slot(&mut self, ticket: &ImageCompletionTicket, slot: Slot) -> bool {
+        if !Arc::ptr_eq(&self.shared, &ticket.shared) {
+            return false;
+        }
+        self.settle(&ticket.url, &ticket.request, slot)
+    }
+
     /// Cancel one exact reservation. A late result or later ticket drop is inert.
     /// Closed-owner cleanup releases custody but returns `false` without publication.
     pub fn cancel(&mut self, ticket: &ImageCompletionTicket) -> bool {
@@ -321,7 +334,6 @@ impl HostImageLoader {
         std::iter::from_fn(|| self.next_request()).collect()
     }
 
-    /// The next requested URL, if any.
     pub fn next_request(&mut self) -> Option<String> {
         loop {
             let url = self.requests.as_ref()?.try_recv().ok()?;
@@ -465,17 +477,10 @@ impl NativeLoader {
             let this = Arc::clone(self);
             let job_url = ticket.url.clone();
             let spawned = self.background.spawn("ui-image", move || {
-                let decoded = (this.fetch)(&job_url).as_deref().and_then(|encoded| {
-                    tilo_image_codec::DecodeImage {
-                        encoded,
-                        max_dimension: ticket.max_dimension(),
-                    }
-                    .decode_native()
-                    .ok()
-                });
+                let slot = decoded_slot((this.fetch)(&job_url).as_deref(), ticket.max_dimension());
                 {
                     let mut state = this.state();
-                    state.loader.complete_decoded(&ticket, decoded);
+                    state.loader.complete_slot(&ticket, slot);
                     state.running = state.running.saturating_sub(1);
                 }
                 this.start_queued();
@@ -591,10 +596,14 @@ impl ImageStore {
         let last_used = slots.next_tick();
         if let Some(entry) = slots.slots.get_mut(url) {
             entry.last_used = last_used;
-            return match &entry.slot {
-                Slot::Ready(img) => Some(img.clone()),
-                _ => None,
-            };
+            match &entry.slot {
+                Slot::Ready(img) => return Some(img.clone()),
+                // The decoders arrived since: load it again, below.
+                Slot::Undecoded if crate::image_decoders::decoders_in() => {
+                    slots.slots.remove(url);
+                }
+                _ => return None,
+            }
         }
         if slots.slots.len() >= IMAGE_CACHE_ENTRY_LIMIT && !evict_one_settled(&mut slots) {
             // Every slot is still loading. Avoid an unbounded work queue; a
@@ -723,18 +732,52 @@ fn validated_slot(decoded: Option<tilo_image_codec::DecodedImage>, max_dimension
     ))
 }
 
+/// A small picture held in memory, decoded ([`decode_held`]).
+pub(crate) enum HeldPicture {
+    Ready(PenikoImage),
+    /// The decoders are still to come (fetched on first use).
+    Pending,
+    /// It does not decode.
+    Broken,
+}
+
+/// Decode a small picture held in memory (a workspace emoji) at most
+/// `max_dimension` wide and tall.
+pub(crate) fn decode_held(encoded: &[u8], max_dimension: u32) -> HeldPicture {
+    match decoded_slot(Some(encoded), max_dimension) {
+        Slot::Ready(image) => HeldPicture::Ready(image),
+        Slot::Undecoded => HeldPicture::Pending,
+        Slot::Failed | Slot::Loading(_) => HeldPicture::Broken,
+    }
+}
+
+/// A picture made small ([`small_png`]).
+pub(crate) enum SmallPicture {
+    /// The PNG, at most the size asked.
+    Ready(Vec<u8>),
+    /// The decoders are still to come (fetched on first use).
+    Pending,
+    /// It does not decode.
+    Broken,
+}
+
+/// `encoded` (PNG, JPEG or WebP) as a PNG at most `max_dimension` wide and
+/// tall, aspect kept.
+pub(crate) fn small_png(encoded: &[u8], max_dimension: u32) -> SmallPicture {
+    let Some(decoders) = crate::image_decoders::decoders() else {
+        return SmallPicture::Pending;
+    };
+    (decoders.small_png)(encoded, max_dimension).map_or(SmallPicture::Broken, SmallPicture::Ready)
+}
+
 fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
-    validated_slot(
-        bytes.and_then(|encoded| {
-            tilo_image_codec::DecodeImage {
-                encoded,
-                max_dimension,
-            }
-            .decode_native()
-            .ok()
-        }),
-        max_dimension,
-    )
+    let Some(encoded) = bytes else {
+        return Slot::Failed;
+    };
+    let Some(decoders) = crate::image_decoders::decoders() else {
+        return Slot::Undecoded;
+    };
+    validated_slot((decoders.bounded)(encoded, max_dimension), max_dimension)
 }
 
 /// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.
@@ -838,15 +881,15 @@ mod tests {
         let fetch: Fetcher = Arc::new(move |_| source.read().ok()?.clone());
         let store = ImageStore::new(&fetch);
         store.get("asset:late");
-        store.block_until_idle(Duration::from_secs(2));
+        store.block_until_idle(tilo_test_env::hang_bound());
         assert!(store.get("asset:late").is_none(), "no bytes yet: failed");
         *bytes.write().unwrap() = Some(png_bytes(4, 3, [9, 9, 9]));
-        store.block_until_idle(Duration::from_secs(2));
+        store.block_until_idle(tilo_test_env::hang_bound());
         assert!(store.get("asset:late").is_none(), "a failure is cached");
         assert!(store.forget_failed());
         assert!(!store.forget_failed(), "nothing left to forget");
         store.get("asset:late");
-        store.block_until_idle(Duration::from_secs(2));
+        store.block_until_idle(tilo_test_env::hang_bound());
         assert!(store.get("asset:late").is_some());
     }
 
@@ -885,7 +928,6 @@ mod tests {
 
     #[test]
     fn store_schedules_one_load_per_url_and_settles_ready_or_failed() {
-        // Case `get_returns_none_then_ready_after_async_decode`.
         {
             let bytes = png_bytes(12, 8, [10, 200, 30]);
             // Asserting `!is_idle()` right after the miss is a race: the worker
@@ -926,7 +968,6 @@ mod tests {
             );
         }
 
-        // Case `failed_fetch_settles_as_failed_not_pending`.
         {
             let fetch: Fetcher = Arc::new(|_url: &str| None);
             let store = ImageStore::new(&fetch);
@@ -938,7 +979,6 @@ mod tests {
             assert!(store.is_known("http://example.test/missing.jpg"));
         }
 
-        // Case `empty_url_is_ignored`.
         {
             let fetch: Fetcher = Arc::new(|_url: &str| Some(png_bytes(2, 2, [0, 0, 0])));
             let store = ImageStore::new(&fetch);
@@ -949,7 +989,6 @@ mod tests {
 
     #[test]
     fn host_and_background_loaders_settle_only_what_they_run() {
-        // Case `host_driven_store_loads_only_what_the_host_completes`.
         {
             let (store, mut loader) = ImageStore::host_driven();
             assert!(store.get("a.png").is_none());
@@ -974,7 +1013,6 @@ mod tests {
             );
         }
 
-        // Case `pumped_background_runs_native_loads_one_job_per_image`.
         {
             let pumped = crate::background::Pumped::new();
             let bytes = png_bytes(4, 4, [9, 9, 9]);
@@ -998,7 +1036,6 @@ mod tests {
             assert!(store.get("four.png").is_some(), "parking pumps the queue");
         }
 
-        // Case `a_host_without_background_work_settles_loads_as_failed`.
         {
             let fetch: Fetcher = Arc::new(|_| Some(png_bytes(2, 2, [0, 0, 0])));
             let store = {
@@ -1013,7 +1050,6 @@ mod tests {
 
     #[test]
     fn decoded_cache_enforces_entry_byte_and_lru_limits() {
-        // Case `decoded_cache_has_strict_entry_and_byte_limits`.
         {
             let mut slots = CacheState::default();
             for index in 0..IMAGE_CACHE_ENTRY_LIMIT.saturating_add(5) {
@@ -1037,7 +1073,6 @@ mod tests {
             assert!(large_slots.slots.len() < IMAGE_CACHE_ENTRY_LIMIT);
         }
 
-        // Case `decoded_cache_evicts_the_least_recently_used_settled_entry`.
         {
             let mut cache = CacheState::default();
             for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
@@ -1063,7 +1098,6 @@ mod tests {
             assert!(cache.slots.contains_key("new-image"));
         }
 
-        // Case `lru_clock_rebases_before_exhaustion_without_aliasing_live_entries`.
         {
             let mut cache = CacheState::default();
             cache.slots.insert(
@@ -1091,7 +1125,6 @@ mod tests {
 
     #[test]
     fn decode_dimension_limits_fit_thumbnails_documents_and_the_cache_budget() {
-        // Case `decode_downscales_oversized_sources_before_caching`.
         {
             let bytes = png_bytes(700, 2, [20, 40, 60]);
             let (_, width, height) =
@@ -1099,7 +1132,6 @@ mod tests {
             assert!(width <= 600 && height <= 600);
         }
 
-        // Case `document_decode_limit_cannot_exceed_the_cache_budget`.
         {
             let bytes = png_bytes(5000, 2, [20, 40, 60]);
             let (_, width, height) = decode_rgba(&bytes, u32::MAX).unwrap();
@@ -1107,7 +1139,6 @@ mod tests {
             assert!(u64::from(width) * u64::from(height) * 4 <= IMAGE_CACHE_BYTE_LIMIT);
         }
 
-        // Case `document_store_preserves_scan_resolution_without_changing_thumbnail_defaults`.
         {
             let bytes = png_bytes(1200, 760, [20, 40, 60]);
             let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));

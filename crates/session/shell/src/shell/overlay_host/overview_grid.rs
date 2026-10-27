@@ -21,12 +21,15 @@
 
 use std::collections::HashMap;
 
+use tilo_desktop::overview_picture::{
+    GridMetrics, StripPlace, Tile, band_height, draw_empty_strip, draw_strip_name, draw_tile_title,
+    layout_strips,
+};
 use tilo_desktop::text_entry::{self, Edit, Mods};
 use tilo_desktop::window_switcher::{PreviewState, PreviewWell, SwitcherWindow, WindowSwitcher};
 use ui::TextRole;
-use ui::num::f64_of_usize;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::text_selection::Selection;
 use ui::theme::Theme;
 use ui::widget::{Button, ControlSize, FieldFace, IconButton, TextInput, Widget as _};
@@ -46,209 +49,14 @@ pub(super) const COLUMN_WIDTH_PX: f64 = ui::tokens::Metrics::BASE.overview_panel
 /// The narrowest picture worth putting beside the panel; a narrower display
 /// holds the picture inside the panel instead.
 const MIN_PICTURE_WIDTH_PX: f64 = ui::tokens::Metrics::BASE.overview_picture_min_width as f64;
-/// A window is pictured at most at this share of its size on the display:
-/// a workspace of one window still reads as a picture, not as the window.
-const MAX_SCALE: f64 = 0.5;
 /// A pictured window carried to another workspace is left this faint in
 /// its place.
 const CARRIED_ALPHA: f32 = 0.35;
 /// Width to height of a window's tab that is not in front, beside it.
 const BEHIND_TAB_ASPECT: f64 = 0.75;
-/// Most faces drawn on one window before the picture says nothing more.
-const TILE_FACES_MAX: usize = 3;
 
-/// Spacing of the picture, from the theme.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct GridMetrics {
-    /// A strip's name line, with the air below it.
-    pub label_h: f64,
-    /// Air between a pictured window and its title.
-    pub title_gap: f64,
-    /// Line height of a window's title.
-    pub title_lh: f64,
-    /// Air between two strips.
-    pub row_gap: f64,
-    /// Air between two windows of a strip.
-    pub window_gap: f64,
-    /// Air between two tabs of one window, so they read as one window's.
-    pub tab_gap: f64,
-    /// Height of a strip's windows when the picture sits inside the panel.
-    pub band: f64,
-    /// Side of a strip's icon buttons.
-    pub control: f64,
-    /// Corner radius of a pictured window at rest.
-    pub radius: f64,
-    /// Corner radius of a window on its strip, where a picture starts.
-    pub window_radius: f64,
-}
-
-impl GridMetrics {
-    pub(super) fn for_theme(theme: &Theme) -> Self {
-        let tokens = &theme.tokens;
-        let spacing = &tokens.spacing;
-        let lh = |role| f64::from(tokens.typography.style(role).line_height_px());
-        let control = ControlSize::Small.height(theme);
-        Self {
-            label_h: control.max(lh(TextRole::Label)) + f64::from(spacing.s2),
-            title_gap: f64::from(spacing.s1),
-            title_lh: lh(TextRole::Caption),
-            row_gap: f64::from(spacing.s6),
-            window_gap: f64::from(spacing.s4),
-            tab_gap: f64::from(spacing.s1),
-            band: f64::from(spacing.s16) * 1.5,
-            control,
-            radius: f64::from(tokens.radii.control),
-            window_radius: f64::from(ui::tokens::Radii::WINDOW),
-        }
-    }
-
-    fn title_h(&self) -> f64 {
-        self.title_gap + self.title_lh
-    }
-}
-
-/// Where one strip sits in the picture.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(super) struct StripPlace {
-    /// The strip's name line, across the picture.
-    pub label: Rect,
-    /// Each window's picture, in strip order.
-    pub wells: Vec<Rect>,
-    /// Each window's title line, under its picture.
-    pub titles: Vec<Rect>,
-    /// The slot a strip with no windows shows instead.
-    pub empty: Option<Rect>,
-}
-
-impl StripPlace {
-    /// Everything the strip occupies: its name line and its windows.
-    pub(super) fn bounds(&self) -> Rect {
-        self.wells
-            .iter()
-            .chain(&self.titles)
-            .chain(&self.empty)
-            .fold(self.label, |all, rect| all.union(*rect))
-    }
-}
-
-/// Height of a picture of `strips` strips whose windows are `band` tall.
-pub(super) fn band_height(strips: usize, m: &GridMetrics, band: f64) -> f64 {
-    if strips == 0 {
-        return 0.0;
-    }
-    let n = f64_of_usize(strips);
-    n * (m.label_h + band + m.title_h()) + (n - 1.0) * m.row_gap
-}
-
-/// Lay out `strips`, each a list of its windows' sizes on the display, in
-/// `area` (`joined[s][i]` puts strip `s`'s window `i` against the one before
-/// it, as a tab of the same window): one scale for the whole picture so windows keep their sizes
-/// relative to each other, a smaller one only for a strip too wide for the
-/// picture. With `band`, every strip's windows are that tall and the picture
-/// grows down from the top of `area`; without, it fills `area`'s height,
-/// centred.
-pub(super) fn layout_strips(
-    area: Rect,
-    strips: &[Vec<Size>],
-    joined: &[Vec<bool>],
-    m: &GridMetrics,
-    band: Option<f64>,
-) -> Vec<StripPlace> {
-    if strips.is_empty() || area.width() <= 0.0 {
-        return Vec::new();
-    }
-    let gap = |strip: usize, window: usize| {
-        if joined
-            .get(strip)
-            .and_then(|joined| joined.get(window))
-            .copied()
-            .unwrap_or(false)
-        {
-            m.tab_gap
-        } else {
-            m.window_gap
-        }
-    };
-    let gaps = |strip: usize, count: usize| (1..count).map(|i| gap(strip, i)).sum::<f64>();
-    let tallest = |sizes: &Vec<Size>| sizes.iter().map(|s| s.height).fold(0.0, f64::max);
-    let reference = strips.iter().map(tallest).fold(0.0, f64::max).max(1.0);
-    // A strip with no windows takes a row as tall as the others' windows.
-    let heights: Vec<f64> = strips
-        .iter()
-        .map(|sizes| {
-            Some(tallest(sizes))
-                .filter(|h| *h > 0.0)
-                .unwrap_or(reference)
-        })
-        .collect();
-    let fixed = band_height(strips.len(), m, 0.0);
-    let fill_scale = ((area.height() - fixed) / heights.iter().sum::<f64>()).clamp(0.0, MAX_SCALE);
-    let rows: Vec<(f64, f64)> = strips
-        .iter()
-        .zip(&heights)
-        .enumerate()
-        .map(|(si, (sizes, height))| {
-            let height_scale = band.map_or(fill_scale, |band| band / height);
-            let widths: f64 = sizes.iter().map(|s| s.width).sum();
-            let gaps = gaps(si, sizes.len());
-            let width_scale = if widths > 0.0 {
-                ((area.width() - gaps) / widths).max(0.0)
-            } else {
-                f64::INFINITY
-            };
-            (height_scale.min(width_scale), height * height_scale)
-        })
-        .collect();
-    let row_width = |si: usize, sizes: &Vec<Size>, (scale, band_h): (f64, f64)| {
-        if sizes.is_empty() {
-            return band_h * 16.0 / 10.0;
-        }
-        sizes.iter().map(|s| s.width * scale).sum::<f64>() + gaps(si, sizes.len())
-    };
-    let widest = strips
-        .iter()
-        .zip(&rows)
-        .enumerate()
-        .map(|(si, (sizes, row))| row_width(si, sizes, *row))
-        .fold(0.0, f64::max)
-        .min(area.width());
-    let x0 = area.x0 + ((area.width() - widest) / 2.0).max(0.0);
-    let total = fixed + rows.iter().map(|(_, band_h)| band_h).sum::<f64>();
-    let mut y = if band.is_some() {
-        area.y0
-    } else {
-        area.y0 + ((area.height() - total) / 2.0).max(0.0)
-    };
-    let mut places = Vec::with_capacity(strips.len());
-    for (si, (sizes, (scale, band_h))) in strips.iter().zip(rows).enumerate() {
-        let label = Rect::new(x0, y, x0 + widest, y + m.label_h);
-        y = label.y1;
-        let mut place = StripPlace {
-            label,
-            ..StripPlace::default()
-        };
-        if sizes.is_empty() {
-            let w = (band_h * 16.0 / 10.0).min(widest);
-            place.empty = Some(Rect::new(x0, y, x0 + w, y + band_h));
-        }
-        let mut x = x0;
-        for (wi, size) in sizes.iter().enumerate() {
-            if wi > 0 {
-                x += gap(si, wi);
-            }
-            let well = Rect::new(x, y, x + size.width * scale, y + size.height * scale);
-            let title_y = well.y1 + m.title_gap;
-            place.wells.push(well);
-            place
-                .titles
-                .push(Rect::new(well.x0, title_y, well.x1, title_y + m.title_lh));
-            x = well.x1;
-        }
-        y += band_h + m.title_h() + m.row_gap;
-        places.push(place);
-    }
-    places
-}
+/// Another person on a tab: the tab, their initial and their colour.
+type PersonOnTab = (u64, char, Color);
 
 /// One strip of this workspace, as the overview pictures it.
 #[derive(Clone, Debug)]
@@ -386,10 +194,11 @@ impl ShellOverlayHost {
             .map(|window| (window.address.tab, window))
             .collect();
         // Where each other person is: the tab their presence names.
-        let people: Vec<(u64, char, Color)> =
+        let people: Vec<PersonOnTab> =
             tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local_user)
                 .into_iter()
-                .filter(|row| !row.invited && row.id != own && row.id != local_user)
+                .filter(|row| !row.invited && !row.own_device && row.id != own)
+                .filter(|row| row.id != local_user)
                 .filter_map(|row| {
                     let tab = workspace
                         .collaborators
@@ -400,72 +209,85 @@ impl ShellOverlayHost {
                     Some((tab, row.initial, row.color))
                 })
                 .collect();
-        workspace
-            .strips
-            .iter()
-            .map(|strip| {
-                let row = self.group_row_ptrs.get(&strip.id).map(|&ptr| {
-                    // SAFETY: see the field doc on `group_row_ptrs`; this is
-                    // a read-only query under `&self`.
-                    let row: &ui::widget::GroupRow = unsafe { &*ptr };
-                    row
-                });
-                let mut windows = Vec::new();
-                let mut sizes = Vec::new();
-                let mut faces = Vec::new();
-                let mut joined = Vec::new();
-                let mut front = Vec::new();
-                for group in
-                    tilo_desktop::composition::display_ordered(&tree.desktop.outputs, strip)
-                {
-                    // The whole window, its bar included, as its picture
-                    // shows it. Its other tabs stand beside it, narrower: they
-                    // are the same window, not windows of their own.
-                    let laid_out = row
-                        .and_then(|row| row.groups.iter().find(|g| g.id == group.id))
-                        .map(|g| g.get_rect())
-                        .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
-                    let size = laid_out.map_or(fallback, |rect| rect.size());
-                    let behind = Size::new(
-                        (size.height * BEHIND_TAB_ASPECT).min(size.width),
-                        size.height,
+        let strips =
+            self.overview_strips_of(&tree, workspace, focused, (&listed, &people), fallback);
+        drop(tree);
+        strips
+    }
+
+    /// Each strip of `workspace` as the overview pictures it: its windows
+    /// in display order (`listed` names them), how big each is drawn, and
+    /// who of the `people` is on which.
+    fn overview_strips_of(
+        &self,
+        tree: &crate::shell::state::WorkspaceTree,
+        workspace: &tilo_desktop_model::Workspace,
+        focused: Option<StripId>,
+        (listed, people): (&HashMap<u64, SwitcherWindow>, &[PersonOnTab]),
+        fallback: Size,
+    ) -> Vec<OverviewStrip> {
+        let mut strips = Vec::with_capacity(workspace.strips.len());
+        for strip in &workspace.strips {
+            let row = self.group_row_ptrs.get(&strip.id).map(|&ptr| {
+                // SAFETY: see the field doc on `group_row_ptrs`; this is
+                // a read-only query under `&self`.
+                let row: &ui::widget::GroupRow = unsafe { &*ptr };
+                row
+            });
+            let mut windows = Vec::new();
+            let mut sizes = Vec::new();
+            let mut faces = Vec::new();
+            let mut joined = Vec::new();
+            let mut front = Vec::new();
+            for group in tilo_desktop::composition::display_ordered(&tree.desktop.outputs, strip) {
+                // The whole window, its bar included, as its picture
+                // shows it. Its other tabs stand beside it, narrower: they
+                // are the same window, not windows of their own.
+                let laid_out = row
+                    .and_then(|row| row.groups.iter().find(|g| g.id == group.id))
+                    .map(ui::widget::Widget::get_rect)
+                    .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+                let size = laid_out.map_or(fallback, |rect| rect.size());
+                let behind = Size::new(
+                    (size.height * BEHIND_TAB_ASPECT).min(size.width),
+                    size.height,
+                );
+                let mut first = true;
+                for tab in &group.tabs {
+                    let Some(window) = listed.get(&tab.id).cloned() else {
+                        continue;
+                    };
+                    sizes.push(if tab.id == group.active_tab {
+                        size
+                    } else {
+                        behind
+                    });
+                    faces.push(
+                        people
+                            .iter()
+                            .filter(|(on, _, _)| *on == tab.id)
+                            .map(|(_, initial, color)| (*initial, *color))
+                            .collect(),
                     );
-                    let mut first = true;
-                    for tab in &group.tabs {
-                        let Some(window) = listed.get(&tab.id).cloned() else {
-                            continue;
-                        };
-                        sizes.push(if tab.id == group.active_tab {
-                            size
-                        } else {
-                            behind
-                        });
-                        faces.push(
-                            people
-                                .iter()
-                                .filter(|(on, _, _)| *on == tab.id)
-                                .map(|(_, initial, color)| (*initial, *color))
-                                .collect(),
-                        );
-                        joined.push(!first);
-                        front.push(tab.id == group.active_tab);
-                        windows.push(window);
-                        first = false;
-                    }
+                    joined.push(!first);
+                    front.push(tab.id == group.active_tab);
+                    windows.push(window);
+                    first = false;
                 }
-                OverviewStrip {
-                    id: strip.id,
-                    name: strip.name.clone(),
-                    renamable: tree.may_rename_strip(strip.id),
-                    focused: Some(strip.id) == focused,
-                    windows,
-                    sizes,
-                    joined,
-                    front,
-                    faces,
-                }
-            })
-            .collect()
+            }
+            strips.push(OverviewStrip {
+                id: strip.id,
+                name: strip.name.clone(),
+                renamable: tree.may_rename_strip(strip.id),
+                focused: Some(strip.id) == focused,
+                windows,
+                sizes,
+                joined,
+                front,
+                faces,
+            });
+        }
+        strips
     }
 
     /// Where the picture lies: beside the panel, or in the current
@@ -632,7 +454,7 @@ impl ShellOverlayHost {
                 } else {
                     group
                         .active_host()
-                        .map_or_else(|| group.get_rect(), |host| host.get_rect())
+                        .map_or_else(|| group.get_rect(), ui::widget::Widget::get_rect)
                 };
                 Some(rect)
             })
@@ -757,8 +579,6 @@ impl ShellOverlayHost {
         ))
     }
 
-    // -- drawing ---------------------------------------------------------
-
     /// Every pictured window at the zoom's `progress`: from its place on its
     /// strip (0) to its place in the picture (1), with each strip's name,
     /// its controls and the window being carried, if any.
@@ -804,21 +624,22 @@ impl ShellOverlayHost {
                 continue;
             };
             if let Some(empty) = place.empty {
-                Self::draw_overview_empty_strip(
+                draw_empty_strip(
                     &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                     empty,
                     ui::motion::unit_opacity(chrome),
                 );
             }
             for (wi, window) in strip.windows.iter().enumerate() {
-                let (Some(well), Some(title)) = (place.wells.get(wi), place.titles.get(wi)) else {
+                let (Some(well), Some(caption)) = (place.wells.get(wi), place.titles.get(wi))
+                else {
                     continue;
                 };
                 let tile = Tile {
                     window,
                     front: strip.front.get(wi).copied().unwrap_or(true),
                     well: *well,
-                    title: *title,
+                    title: *caption,
                     faces: strip.faces.get(wi).map_or(&[][..], Vec::as_slice),
                 };
                 let live = self.draw_overview_tile(
@@ -863,7 +684,8 @@ impl ShellOverlayHost {
                 );
                 self.overview_window_source(tile.window.address.group, painted)
             })
-            .flatten();
+            .flatten()
+            .filter(|&from| Self::flies_from(from, self.overview_output_rect()));
         // A window that stands on its strip flies from there, its picture
         // exactly over it at the start; one that is not laid out (or under
         // reduced motion) fades in where it rests.
@@ -937,7 +759,7 @@ impl ShellOverlayHost {
             thumbnails,
         );
         if chrome > 0.0 {
-            self.draw_overview_tile_title(
+            draw_tile_title(
                 &mut ui::paint::PaintCtx::new(scene, transform, &mut *ctx.text, theme),
                 tile,
                 rect,
@@ -948,71 +770,6 @@ impl ShellOverlayHost {
             scene.pop_layer();
         }
         live
-    }
-
-    /// A pictured window's title under its picture at `rect`, and the faces
-    /// of the people in it at the title's end.
-    fn draw_overview_tile_title(
-        &self,
-        ctx: &mut ui::paint::PaintCtx<'_>,
-        tile: &Tile<'_>,
-        rect: Rect,
-        (alpha, active): (f32, bool),
-    ) {
-        let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
-        let g = GridMetrics::for_theme(theme);
-        let colors = &theme.tokens.colors;
-        let style = theme.tokens.typography.style(TextRole::Caption);
-        let line = Rect::new(
-            rect.x0,
-            rect.y1 + g.title_gap,
-            rect.x1,
-            rect.y1 + g.title_gap + g.title_lh,
-        );
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            alpha,
-            transform,
-            &line.inflate(g.title_lh, g.title_lh),
-        );
-        let face = g.title_lh;
-        let shown = tile.faces.len().min(TILE_FACES_MAX);
-        let faces_w = if shown == 0 {
-            0.0
-        } else {
-            face * (1.0 + 0.6 * f64_of_usize(shown.saturating_sub(1)))
-        };
-        let text_w = (line.width() - faces_w - f64::from(theme.tokens.spacing.s1)).max(0.0);
-        let title =
-            ctx.text
-                .elide_to_width_style(&tile.window.title, ui::num::f32_of_f64(text_w), &style);
-        ctx.text.draw_style(
-            scene,
-            &title,
-            if active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            },
-            transform.pre_translate((line.x0, line.y0).into()),
-            None,
-            &style,
-        );
-        let ground = ui::chrome::shell::desktop_ground(theme);
-        let mut x1 = line.x1;
-        for (initial, color) in tile.faces.iter().take(shown).rev() {
-            let disc = Rect::new(x1 - face, line.y0, x1, line.y0 + face);
-            ui::widget::AvatarFace::new(&initial.to_string(), "")
-                .presence(*color)
-                .ringed_on(ground)
-                .paint(
-                    &mut ui::paint::PaintCtx::new(scene, transform, &mut *ctx.text, theme),
-                    disc,
-                );
-            x1 -= face * 0.6;
-        }
-        scene.pop_layer();
     }
 
     /// Strip `si`'s name line: its name (or the field while it is typed) and
@@ -1058,31 +815,11 @@ impl ShellOverlayHost {
                 .map_or(place.label.x1, |(_, rect)| {
                     rect.x0 - f64::from(theme.tokens.spacing.s2)
                 });
-            let mut style = theme.tokens.typography.style(TextRole::Label);
-            if strip.focused {
-                style.weight = TextWeight::Semibold;
-            }
-            let name = ctx.text.elide_to_width_style(
-                &strip.name,
-                ui::num::f32_of_f64((end - place.label.x0).max(0.0)),
-                &style,
-            );
-            let (_, name_h) = ctx.text.measure_style(&name, None, &style);
-            let colors = &theme.tokens.colors;
-            let top = place.label.y0
-                + (place.label.height() - f64::from(theme.tokens.spacing.s2) - f64::from(name_h))
-                    / 2.0;
-            ctx.text.draw_style(
-                scene,
-                &name,
-                if strip.focused {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                },
-                transform.pre_translate((place.label.x0, top).into()),
-                None,
-                &style,
+            draw_strip_name(
+                &mut ui::paint::PaintCtx::new(scene, transform, &mut *ctx.text, theme),
+                place.label,
+                end,
+                (&strip.name, strip.focused),
             );
             if shown {
                 for (control, rect) in controls {
@@ -1102,47 +839,13 @@ impl ShellOverlayHost {
         scene.pop_layer();
     }
 
-    /// The slot of a strip with no windows.
-    fn draw_overview_empty_strip(ctx: &mut ui::paint::PaintCtx<'_>, slot: Rect, alpha: f32) {
-        if alpha <= 0.0 {
-            return;
-        }
-        let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &slot);
-        let on = ui::widget::paint_surface(
-            scene,
-            transform,
-            slot,
-            ui::widget::SurfaceLevel::Region,
-            theme,
-        );
-        let style = on.tokens.typography.style(TextRole::Caption);
-        let label = t("overview-strip-empty");
-        let (w, h) = ctx.text.measure_style(&label, None, &style);
-        ctx.text.draw_style(
-            scene,
-            &label,
-            on.tokens.colors.text_dim,
-            transform.pre_translate(
-                (
-                    slot.center().x - f64::from(w) / 2.0,
-                    slot.center().y - f64::from(h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            &style,
-        );
-        scene.pop_layer();
-    }
-
     /// The name field over a strip's name line.
     fn draw_overview_naming_field(&mut self, ctx: &mut ui::paint::PaintCtx<'_>, field: Rect) {
         let Some(naming) = self.overview_naming.as_mut() else {
             return;
         };
         let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
-        let placeholder = t("strip-switcher-name-placeholder");
+        let placeholder = tilo_desktop::i18n::t("strip-switcher-name-placeholder");
         let face = FieldFace::new(field, &naming.text)
             .placeholder(&placeholder)
             .text_role(TextRole::Label)
@@ -1228,8 +931,6 @@ impl ShellOverlayHost {
             thumbnails,
         );
     }
-
-    // -- the keyboard ----------------------------------------------------
 
     /// Left and Right walk the pictured windows in reading order, a ring
     /// like the room list; Up and Down go to the nearest window of the strip
@@ -1380,8 +1081,6 @@ impl ShellOverlayHost {
         taken
     }
 
-    // -- naming and moving strips ----------------------------------------
-
     fn begin_overview_naming(&mut self, picture: &OverviewPicture, si: usize) {
         let Some(strip) = picture.strips.get(si).filter(|strip| strip.renamable) else {
             return;
@@ -1497,8 +1196,18 @@ impl ShellOverlayHost {
     /// A press while a strip's name is typed: on the field it stays with the
     /// field, anywhere else it keeps the name and is taken, so it does not
     /// also act on what is under it.
-    pub(super) fn overview_naming_takes_press(&mut self, event: &WindowEvent) -> bool {
+    pub(super) fn overview_naming_takes_press(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+    ) -> bool {
         if self.overview_naming.is_none() {
+            return false;
+        }
+        if let WindowEvent::CursorMoved { .. } = event {
+            // The field is painted by the toolkit's TextInput outside the
+            // retained tree; its hover and drag need the same local cursor.
+            self.overview_naming_field_pointer(event, scale_factor);
             return false;
         }
         let WindowEvent::MouseInput {
@@ -1506,7 +1215,8 @@ impl ShellOverlayHost {
             ..
         } = event
         else {
-            return false;
+            self.overview_naming_field_pointer(event, scale_factor);
+            return matches!(event, WindowEvent::MouseInput { .. });
         };
         let picture = self.overview_picture();
         let on_field = self
@@ -1516,11 +1226,30 @@ impl ShellOverlayHost {
             .and_then(|si| self.overview_naming_field(&picture, si))
             .zip(self.last_cursor)
             .is_some_and(|(field, p)| field.contains(p));
-        if !on_field {
+        if on_field {
+            self.overview_naming_field_pointer(event, scale_factor);
+        } else {
             self.commit_overview_naming();
         }
         self.bump_chrome();
         true
+    }
+
+    /// Hand a pointer event to the naming field and copy its selection back.
+    fn overview_naming_field_pointer(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        let Some(naming) = self.overview_naming.as_mut() else {
+            return false;
+        };
+        let Some(field) = naming.input.as_mut() else {
+            return false;
+        };
+        let took =
+            field.handle_chrome_pointer(event, scale_factor, winit::event::Modifiers::default());
+        if took {
+            let (anchor, cursor) = field.selection_anchor_focus_or_caret();
+            naming.selection = Selection { anchor, cursor };
+        }
+        took
     }
 
     /// A click or tap on the picture's strip names and controls. Returns
@@ -1548,8 +1277,6 @@ impl ShellOverlayHost {
         self.bump_chrome();
         true
     }
-
-    // -- accessibility ---------------------------------------------------
 
     /// The strips of this workspace for assistive technology, top to
     /// bottom: each one's name and whether it has focus. Renaming and moving
@@ -1588,98 +1315,5 @@ impl ShellOverlayHost {
                 )
                 .with_children(items),
         )
-    }
-}
-
-/// A pictured window, as drawn.
-struct Tile<'a> {
-    window: &'a SwitcherWindow,
-    front: bool,
-    well: Rect,
-    title: Rect,
-    faces: &'a [(char, Color)],
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn metrics() -> GridMetrics {
-        GridMetrics::for_theme(&Theme::dark())
-    }
-
-    #[test]
-    fn strips_stack_top_to_bottom_with_their_windows_in_strip_order_and_relative_sizes() {
-        let m = metrics();
-        let area = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let strips = vec![
-            vec![Size::new(1000.0, 900.0), Size::new(500.0, 900.0)],
-            vec![],
-            vec![Size::new(800.0, 900.0)],
-        ];
-        let places = layout_strips(area, &strips, &[], &m, None);
-        assert_eq!(places.len(), 3);
-        let first = &places[0];
-        assert_eq!(first.wells.len(), 2);
-        assert!(first.wells[0].x1 < first.wells[1].x0, "left to right");
-        let ratio = first.wells[0].width() / first.wells[1].width();
-        assert!((ratio - 2.0).abs() < 1e-6, "sizes stay relative: {ratio}");
-        assert!(places[1].empty.is_some(), "an empty strip keeps its row");
-        assert!(places[0].label.y1 <= first.wells[0].y0);
-        assert!(first.titles[0].y0 > first.wells[0].y1);
-        for pair in places.windows(2) {
-            assert!(pair[0].bounds().y1 <= pair[1].label.y0, "top to bottom");
-        }
-        for place in &places {
-            let b = place.bounds();
-            assert!(b.x0 >= area.x0 && b.x1 <= area.x1 + 1e-6, "{b:?}");
-            assert!(b.y0 >= area.y0 && b.y1 <= area.y1 + 1e-6, "{b:?}");
-        }
-        // Never larger than half the window it pictures.
-        assert!(places[2].wells[0].height() <= 900.0 * MAX_SCALE + 1e-6);
-    }
-
-    #[test]
-    fn the_tabs_of_one_window_sit_together_and_windows_apart() {
-        let m = metrics();
-        let area = Rect::new(0.0, 0.0, 1600.0, 800.0);
-        let strips = vec![vec![Size::new(400.0, 900.0); 3]];
-        // The first two are tabs of one window, the third its own window.
-        let places = layout_strips(area, &strips, &[vec![false, true, false]], &m, None);
-        let wells = &places[0].wells;
-        assert!((wells[1].x0 - wells[0].x1 - m.tab_gap).abs() < 1e-6);
-        assert!((wells[2].x0 - wells[1].x1 - m.window_gap).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_strip_too_wide_for_the_picture_shrinks_alone() {
-        let m = metrics();
-        let area = Rect::new(0.0, 0.0, 600.0, 800.0);
-        let strips = vec![
-            vec![Size::new(1000.0, 900.0); 6],
-            vec![Size::new(400.0, 900.0)],
-        ];
-        let places = layout_strips(area, &strips, &[], &m, None);
-        let wide = places[0].wells.last().expect("windows");
-        assert!(wide.x1 <= area.x1 + 1e-6, "{wide:?}");
-        assert!(
-            places[1].wells[0].height() > places[0].wells[0].height(),
-            "the other strip keeps the picture's scale"
-        );
-    }
-
-    #[test]
-    fn inside_the_panel_every_strip_is_one_band_tall_and_the_picture_grows_down() {
-        let m = metrics();
-        let area = Rect::new(10.0, 100.0, 610.0, 100.0);
-        let strips = vec![vec![Size::new(800.0, 600.0)], vec![Size::new(400.0, 600.0)]];
-        let places = layout_strips(area, &strips, &[], &m, Some(m.band));
-        assert_eq!(places[0].label.y0, area.y0);
-        assert!((places[0].wells[0].height() - m.band).abs() < 1e-6);
-        let bottom = places.last().map(StripPlace::bounds).expect("strips").y1;
-        assert!(
-            (bottom - (area.y0 + band_height(2, &m, m.band))).abs() < 1e-6,
-            "{bottom}"
-        );
     }
 }

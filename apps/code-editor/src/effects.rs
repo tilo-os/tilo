@@ -38,13 +38,13 @@ pub enum CodeEditorEffect {
     /// Opens a file Code can reach: one it was handed or one in its open
     /// project. Any other file is opened from Files (its `open-with` with
     /// Code Editor), which hands the file to Code.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable)]
     OpenFile {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<String>,
     },
     /// Open project folder.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable)]
     OpenFolder {
         #[param("Absolute path of the folder; omit to choose one")]
         path: Option<String>,
@@ -52,7 +52,7 @@ pub enum CodeEditorEffect {
     /// New file.
     NewBuffer,
     /// Save file.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, destructive)]
     Save {
         #[param("The file record's id; omit for the active file")]
         file: Option<String>,
@@ -60,10 +60,9 @@ pub enum CodeEditorEffect {
         path: Option<String>,
     },
     /// Save as.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
     SaveAs,
     /// Save all files.
-    #[effect(device_only)]
     SaveAll,
     /// Format file.
     ///
@@ -71,7 +70,6 @@ pub enum CodeEditorEffect {
     /// edit.
     FormatFile,
     /// Revert file to saved.
-    #[effect(device_only)]
     RevertFile,
     /// Find in file.
     #[effect(kind = "read")]

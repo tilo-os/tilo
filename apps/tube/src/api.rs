@@ -1,6 +1,10 @@
-//! Live data sources: Invidious (search + metadata), `SponsorBlock`
+//! Live data sources: `YouTube`'s own web API ([`crate::innertube`]) with
+//! public Invidious instances behind it (search + metadata), `SponsorBlock`
 //! (segments) and `DeArrow` (de-clickbait titles/thumbnails).
 //!
+//! Where the extractors cannot run (a page, a build without them) the worker
+//! answers from `YouTube`'s web API first and Invidious second, asking the
+//! instances that answered lately first ([`tilo_invidious::health`]).
 //! The backends (rustypipe, yt-dlp) run on a background [`Worker`] thread;
 //! the plain HTTP sources (`SponsorBlock`, `DeArrow`, dislikes) are async
 //! `tilo_net` requests the worker hands to the app runtime. The `--shots` path
@@ -65,7 +69,20 @@ pub enum Request {
     /// resolved URL comes back as [`Update::StreamResolved`]; the actual decode +
     /// audio out happens in the watch page's media-engine-backed `VideoPlayer`,
     /// not here.
-    PlayVideo(String),
+    PlayVideo {
+        id: String,
+        /// The quality the person chose (`"720p"`, `"auto"`): the stream
+        /// resolved is no larger than it.
+        quality: String,
+    },
+    /// Fetch the caption tracks `id` offers, and then the track the person
+    /// chose, if there is one.
+    Captions {
+        id: String,
+        /// The language code of the track to download, or `None` to fetch
+        /// only the list of tracks the video offers.
+        language: Option<String>,
+    },
 }
 
 /// The worker's end of the result queue. Every result it posts wakes the
@@ -81,9 +98,6 @@ pub struct Updates {
 
 impl Updates {
     /// Post `update`, waiting while the queue is full, and wake the window.
-    ///
-    /// # Errors
-    /// The update back when the window is gone.
     pub fn send(&self, update: Update) -> Result<(), std::sync::mpsc::SendError<Update>> {
         self.tx.send(update)?;
         self.wake.wake();
@@ -91,9 +105,6 @@ impl Updates {
     }
 
     /// Post `update` unless the queue is full, and wake the window.
-    ///
-    /// # Errors
-    /// The update back when the queue is full or the window is gone.
     pub fn try_send(&self, update: Update) -> Result<(), std::sync::mpsc::TrySendError<Update>> {
         self.tx.try_send(update)?;
         self.wake.wake();
@@ -113,10 +124,13 @@ pub enum Update {
         /// when one exists.
         thumbnail_url: Option<String>,
     },
-    /// Crowdsourced dislike count for a video (Return `YouTube` Dislike).
+    /// Crowdsourced dislike count for a video (Return `YouTube` Dislike),
+    /// with the like count it reports beside it: the watch page shows both
+    /// counts or neither, and a search hit carries no like count of its own.
     Dislikes {
         video: String,
         count: u64,
+        likes: Option<u64>,
     },
     /// Live search results: the query, the ordered videos, and the playlists +
     /// creator rows that share the query (so the type filter has all three).
@@ -154,6 +168,9 @@ pub enum Update {
         live: bool,
         label: String,
     },
+    /// No source answered a feed or search request, and why. Settles the
+    /// request so the page stops loading and says what is wrong.
+    Unreached(Unreached),
     /// A real, directly-playable stream URL resolved for a watch id. The UI
     /// opens it into the watch page's `VideoPlayer` engine (real decode + audio).
     StreamResolved {
@@ -163,8 +180,77 @@ pub enum Update {
         /// Short quality label for the status log (e.g. `360p`).
         quality: String,
     },
+    /// The caption tracks a video offers, and the lines of one of them when
+    /// the person chose it. `lines` is `None` when only the list was asked
+    /// for; `failure` says why a chosen track could not be read.
+    Captions {
+        video: String,
+        tracks: Vec<crate::captions::CaptionTrack>,
+        language: Option<String>,
+        lines: Option<Vec<crate::captions::CaptionCue>>,
+        failure: Option<String>,
+    },
+    /// No source gave a playable stream for a watch id: the page says so
+    /// rather than showing its still poster as if it were about to play.
+    Unplayable {
+        video: String,
+        /// `YouTube`'s own words when it refused to play the video (such
+        /// as a bot check), for the page to pass on.
+        said: Option<String>,
+    },
+    /// The top videos `YouTube` answers for what the platform search is
+    /// asked while the person types ([`crate::suggest`]); empty when no
+    /// source answered.
+    Suggestions {
+        query: String,
+        videos: Vec<Video>,
+    },
     /// Non-fatal note surfaced in the status log.
     Note(String),
+}
+
+/// Why a live request found no source. Only [`Unreached::Offline`] means the
+/// device has no network: a source that refuses, fails or cannot be read
+/// while the device is online is a different problem with a different fix,
+/// and calling it "offline" sends the person to check a connection that
+/// works.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unreached {
+    /// The device has no network.
+    Offline,
+    /// The app runs in a browser page, the sources do not let a page read
+    /// their responses (CORS), and the host serving the page offers no fetch
+    /// proxy to relay them.
+    NoRelay,
+    /// The network is up but no source answered; the last failure.
+    Failed(String),
+}
+
+impl Unreached {
+    /// Classify a failed request. `online` is the device's network status,
+    /// `relay` whether the host offers a fetch proxy, and `unreadable`
+    /// whether no source gave a readable answer and the browser hid at least
+    /// one, as it hides a cross-origin refusal.
+    #[must_use]
+    pub fn classify(online: bool, relay: bool, unreadable: bool, last: String) -> Self {
+        if !online {
+            Self::Offline
+        } else if unreadable && !relay {
+            Self::NoRelay
+        } else {
+            Self::Failed(last)
+        }
+    }
+
+    /// [`Self::classify`] against this device's status and host.
+    fn now(unreadable: bool, last: String) -> Self {
+        Self::classify(
+            tilo_net::status::online(),
+            tilo_net::proxy::endpoint().is_some(),
+            unreadable,
+            last,
+        )
+    }
 }
 
 /// The shared client for the plain HTTP sources; `None` only if the TLS
@@ -197,10 +283,6 @@ async fn get_json(
 /// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
 /// API's "no segments for this video" response) is treated as an empty list
 /// rather than an error.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response body isn't valid JSON.
 pub async fn fetch_sponsor(
     client: &tilo_net::Client,
     video_id: &str,
@@ -268,10 +350,6 @@ fn category_json() -> String {
 /// Fetch `DeArrow` branding for a video: the top-voted crowdsourced title (when it
 /// outranks the original) and a community thumbnail URL (a frame rendered at the
 /// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response body isn't valid JSON.
 pub async fn fetch_dearrow(
     client: &tilo_net::Client,
     video_id: &str,
@@ -351,32 +429,39 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
     (title, thumbnail_url)
 }
 
-/// Fetch the crowdsourced dislike count for a video via Return `YouTube` Dislike
-/// (`GET /votes?videoId=<id>`).
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails, the response isn't valid JSON, or it
-/// carries no dislike count.
-pub async fn fetch_dislikes(client: &tilo_net::Client, video_id: &str) -> anyhow::Result<u64> {
-    fetch_dislikes_at(client, DISLIKE_ENDPOINT, video_id).await
+/// A video's votes as Return `YouTube` Dislike reports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Votes {
+    /// The crowdsourced dislike estimate.
+    pub dislikes: u64,
+    /// The like count, when the response carries one.
+    pub likes: Option<u64>,
 }
 
-async fn fetch_dislikes_at(
+/// Fetch a video's votes via Return `YouTube` Dislike
+/// (`GET /votes?videoId=<id>`).
+pub async fn fetch_votes(client: &tilo_net::Client, video_id: &str) -> anyhow::Result<Votes> {
+    fetch_votes_at(client, DISLIKE_ENDPOINT, video_id).await
+}
+
+async fn fetch_votes_at(
     client: &tilo_net::Client,
     endpoint: &str,
     video_id: &str,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<Votes> {
     let resp = get_json(client, endpoint, &[("videoId", video_id)])
         .await?
         .ok_or_else(|| anyhow::anyhow!("HTTP 404"))?;
-    parse_dislikes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
+    parse_votes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
 }
 
-/// Parse a Return `YouTube` Dislike `/votes` response's dislike count. Pure (no
-/// I/O) so it is unit-tested directly.
-pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
-    resp.get("dislikes").and_then(serde_json::Value::as_u64)
+/// Parse a Return `YouTube` Dislike `/votes` response. Pure (no I/O) so it
+/// is unit-tested directly.
+pub fn parse_votes(resp: &serde_json::Value) -> Option<Votes> {
+    Some(Votes {
+        dislikes: resp.get("dislikes")?.as_u64()?,
+        likes: resp.get("likes").and_then(serde_json::Value::as_u64),
+    })
 }
 
 /// One Invidious list item (a search hit, a trending or recommended video,
@@ -416,11 +501,7 @@ fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
         .get("lengthSeconds")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0) as u32;
-    let published = item
-        .get("publishedText")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let published = published_text(item, views, duration);
     Some(Video {
         id: id.to_string(),
         title: title.to_string(),
@@ -446,14 +527,7 @@ fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
             .to_string(),
         likes: 0,
         seed: id.to_string(),
-        thumbnail_url: item
-            .get("videoThumbnails")
-            .and_then(|t| t.as_array())
-            .and_then(|a| a.first())
-            .and_then(|t| t.get("url"))
-            .and_then(|u| u.as_str())
-            .map(std::string::ToString::to_string)
-            .unwrap_or_default(),
+        thumbnail_url: crate::backend::yt_thumb_url(id),
         category: category.to_string(),
         dearrow_thumb: false,
         sponsor: vec![],
@@ -463,6 +537,92 @@ fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
     })
+}
+
+/// When an Invidious row says its video went up, or "" when it does not
+/// know: a row without views or a length (a list the instance could not
+/// fill, a stream that has not started) says "0 seconds ago" whatever the
+/// video's age.
+fn published_text(item: &serde_json::Value, views: u64, duration: u32) -> String {
+    let text = item
+        .get("publishedText")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let placeholder = views == 0 && duration == 0 && text.starts_with("0 ");
+    if placeholder {
+        String::new()
+    } else {
+        text.to_string()
+    }
+}
+
+/// The best progressive stream (picture and sound in one file, which the
+/// media engine plays from one URL) in an Invidious video answer: its URL and
+/// quality label.
+fn muxed_stream(detail: &serde_json::Value, wanted: Option<u32>) -> Option<(String, String)> {
+    let streams = detail.get("formatStreams")?.as_array()?;
+    let itag = |stream: &serde_json::Value| {
+        stream
+            .get("itag")
+            .and_then(|itag| {
+                itag.as_str()
+                    .and_then(|text| text.parse().ok())
+                    .or_else(|| itag.as_u64())
+            })
+            .unwrap_or(0)
+    };
+    // 22 is 720p, 18 is 360p; either is H.264 and AAC in MP4, which every
+    // browser and GStreamer plays. The height the person chose caps this
+    // first, so a smaller choice is what is fetched rather than a preference
+    // nothing reads.
+    let height_of = |stream: &serde_json::Value| {
+        stream
+            .get("resolution")
+            .or_else(|| stream.get("qualityLabel"))
+            .and_then(|label| label.as_str())
+            .and_then(|label| {
+                label
+                    .trim_end_matches('p')
+                    .split('x')
+                    .next_back()
+                    .and_then(|height| height.parse::<u32>().ok())
+            })
+            .unwrap_or(0)
+    };
+    let cap = wanted.unwrap_or(u32::MAX);
+    let under = streams.iter().filter(|stream| height_of(stream) <= cap);
+    let mut candidates: Vec<&serde_json::Value> = under.collect();
+    if candidates.is_empty() {
+        // Nothing that small: the smallest the source has, rather than
+        // nothing at all.
+        if let Some(smallest) = streams.iter().min_by_key(|stream| height_of(stream).max(1)) {
+            candidates.push(smallest);
+        }
+    }
+    [22, 18]
+        .into_iter()
+        .find_map(|wanted| {
+            candidates
+                .iter()
+                .copied()
+                .find(|stream| itag(stream) == wanted)
+        })
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .max_by_key(|stream| height_of(stream))
+        })
+        .and_then(|stream| {
+            let url = stream.get("url")?.as_str()?.to_string();
+            let quality = stream
+                .get("qualityLabel")
+                .or_else(|| stream.get("quality"))
+                .and_then(|label| label.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some((url, quality))
+        })
 }
 
 /// Fetch one video's `SponsorBlock` segments, `DeArrow` branding and dislike
@@ -488,9 +648,13 @@ async fn branding(client: tilo_net::Client, id: String, up_tx: Updates) {
             let _ = up_tx.send(Update::Note(format!("DeArrow: {e}")));
         }
     }
-    match fetch_dislikes(&client, &id).await {
-        Ok(count) => {
-            let _ = up_tx.send(Update::Dislikes { video: id, count });
+    match fetch_votes(&client, &id).await {
+        Ok(votes) => {
+            let _ = up_tx.send(Update::Dislikes {
+                video: id,
+                count: votes.dislikes,
+                likes: votes.likes,
+            });
         }
         Err(e) => {
             let _ = up_tx.send(Update::Note(format!("Dislikes: {e}")));
@@ -503,6 +667,9 @@ async fn branding(client: tilo_net::Client, id: String, up_tx: Updates) {
 pub struct Worker {
     tx: SyncSender<Request>,
     rx: Receiver<Update>,
+    /// Where the platform search's live answers are asked from; `None` for
+    /// a scripted worker, whose answers the test sends.
+    suggest: Option<(crate::suggest::Suggesting, Updates)>,
 }
 
 impl Worker {
@@ -516,6 +683,7 @@ impl Worker {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
         let (up_tx, up_rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
         let up_tx = Updates { tx: up_tx, wake };
+        let suggest = Some((crate::suggest::Suggesting::default(), up_tx.clone()));
         // Without threads (a browser page) the extractors cannot run; the
         // public Invidious API answers instead, as tasks on the app runtime.
         if matches!(
@@ -528,6 +696,7 @@ impl Worker {
             return Self {
                 tx: req_tx,
                 rx: up_rx,
+                suggest,
             };
         }
         // If the OS can't give us a thread (resource exhaustion), degrade to a
@@ -545,6 +714,15 @@ impl Worker {
             // orthogonal to the InnerTube source).
             let offline = crate::backend::default_backend();
             let live = try_live_backend(&up_tx);
+            // Without an extractor (a build without them, or neither starts)
+            // the sources a page uses answer here too.
+            if live.is_none() && client.is_some() {
+                let _ = ui::rt::block_on(task_worker(req_rx, up_tx));
+                return;
+            }
+            // Behind the extractors, YouTube's own API resolves a stream
+            // when they cannot.
+            let youtube = client.clone().map(crate::innertube::InnerTube::new);
             // One lazily-constructed rustypipe backend serves everything the
             // primary (yt-dlp) source can't: top comments, the creator avatars
             // + playlists + creator rows that enrich a search (yt-dlp list
@@ -563,7 +741,7 @@ impl Worker {
                 label: if live.is_some() {
                     "connecting…".into()
                 } else {
-                    "offline".into()
+                    "no live source".into()
                 },
             });
             while let Ok(req) = req_rx.recv() {
@@ -669,7 +847,10 @@ impl Worker {
                                 let _ = up_tx.send(Update::Feed(vs));
                                 let _ = up_tx.send(Update::Status { live: true, label });
                             }
-                            _ => send_status(&up_tx, false),
+                            _ => {
+                                let _ =
+                                    up_tx.send(Update::Unreached(native_unreached(live.is_some())));
+                            }
                         }
                     }
                     Request::PlaylistPage(id) => {
@@ -760,13 +941,40 @@ impl Worker {
                             let _ = up_tx.send(Update::ChannelPage { channel, uploads });
                         }
                     }
-                    Request::PlayVideo(id) => {
+                    Request::Captions { id, language } => {
+                        let (tracks, lines, failure) = ui::rt::block_on(fetch_captions(
+                            youtube.as_ref(),
+                            client.as_ref(),
+                            &id,
+                            language.as_deref(),
+                        ))
+                        .unwrap_or_else(|error| {
+                            (
+                                Vec::new(),
+                                None,
+                                Some(format!("the caption worker stopped: {error}")),
+                            )
+                        });
+                        let _ = up_tx.send(Update::Captions {
+                            video: id,
+                            tracks,
+                            language,
+                            lines,
+                            failure,
+                        });
+                    }
+                    Request::PlayVideo { id, quality } => {
                         // Resolve a real, fully-rangeable stream URL for the
                         // watch page's media engine. Proxy-first (Invidious
                         // `local=true`, which serves whole-file byte ranges),
                         // falling back to the live backend's direct URL.
-                        match resolve_stream_url(live.as_deref(), &id) {
-                            Some((url, has_audio, quality)) => {
+                        match resolve_stream_url(
+                            live.as_deref(),
+                            youtube.as_ref(),
+                            &id,
+                            crate::util::quality_height(&quality),
+                        ) {
+                            Ok((url, has_audio, quality)) => {
                                 let _ = up_tx.send(Update::Note(format!(
                                     "stream: {quality} {} [{}]",
                                     if has_audio {
@@ -783,12 +991,8 @@ impl Worker {
                                     quality,
                                 });
                             }
-                            None => {
-                                let _ = up_tx.send(Update::Note(
-                                    "could not resolve a playable stream (no Invidious \
-                                         instance served bytes, and no direct URL was available)"
-                                        .into(),
-                                ));
+                            Err(said) => {
+                                let _ = up_tx.send(Update::Unplayable { video: id, said });
                             }
                         }
                     }
@@ -800,6 +1004,7 @@ impl Worker {
         Self {
             tx: req_tx,
             rx: up_rx,
+            suggest,
         }
     }
 
@@ -814,6 +1019,40 @@ impl Worker {
         self.tx.try_send(req)
     }
 
+    /// Ask `YouTube` for the top videos of `query`, what the platform
+    /// search is asked, answered as [`Update::Suggestions`]. Asks on the app
+    /// runtime, apart from the request queue, so a slow extractor never
+    /// holds it up; one request at a time, for the latest query once the
+    /// typing pauses ([`crate::suggest`]). False when nothing will answer
+    /// (no runtime to ask on), so the search does not wait for it.
+    pub fn suggest(&self, query: &str) -> bool {
+        let Some((suggesting, updates)) = &self.suggest else {
+            // Scripted: the test sends the answers.
+            return true;
+        };
+        if !suggesting.want(query) {
+            return true;
+        }
+        let Ok(runtime) = ui::rt::try_app() else {
+            suggesting.give_up();
+            return false;
+        };
+        let (suggesting, updates) = (suggesting.clone(), updates.clone());
+        drop(runtime.spawn(async move {
+            let client = client();
+            let youtube = client.clone().map(crate::innertube::InnerTube::new);
+            let fetch = |query: String| {
+                let (client, youtube) = (client.clone(), youtube.as_ref());
+                async move { suggested_videos(client.as_ref(), youtube, &query).await }
+            };
+            crate::suggest::ask_youtube(suggesting, fetch, |update| {
+                let _ = updates.try_send(update);
+            })
+            .await;
+        }));
+        true
+    }
+
     /// Non-blocking drain of any results ready this frame.
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
@@ -826,7 +1065,14 @@ impl Worker {
     pub fn scripted(wake: ui::WakeHandle) -> (Self, Updates) {
         let (tx, _requests) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
         let (results, rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
-        (Self { tx, rx }, Updates { tx: results, wake })
+        (
+            Self {
+                tx,
+                rx,
+                suggest: None,
+            },
+            Updates { tx: results, wake },
+        )
     }
 }
 
@@ -845,29 +1091,146 @@ fn short_host(url: &str) -> String {
 /// endpoint serves whole-file byte ranges — the reliable path for seeking and
 /// for streaming past the first minute), then falls back to the live backend's
 /// direct playback source (yt-dlp / rustypipe). Returns `(url, has_audio,
-/// quality)`, or `None` when nothing is playable.
-fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String, bool, String)> {
+/// quality)`; when nothing is playable, what `YouTube` said if it refused.
+fn resolve_stream_url(
+    live: Option<&dyn YtBackend>,
+    youtube: Option<&crate::innertube::InnerTube>,
+    id: &str,
+    wanted: Option<u32>,
+) -> Result<(String, bool, String), Option<String>> {
     // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
     // `android_vr` client) that streams the WHOLE video+audio without the
     // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
     // play the full length and seek. (Proven with `--probe-engine`: full
     // duration, buffered to 100%.)
     if let Some(b) = live
-        && let Ok(src) = b.resolve_playback_source(id)
+        && let Ok(src) = b.resolve_playback_source(id, wanted)
         && !src.url.is_empty()
     {
-        return Some((src.url, src.has_audio, src.quality));
+        return Ok((src.url, src.has_audio, src.quality));
+    }
+    // Then YouTube's own API: the Android client's progressive stream,
+    // which serves every byte range.
+    let mut said = None;
+    if let Some(youtube) = youtube
+        && let Ok(answer) = ui::rt::block_on(youtube.stream(id, wanted))
+    {
+        match answer {
+            Ok(stream) => return Ok((stream.url, true, stream.quality)),
+            Err(error) => said = crate::innertube::refusal(&error),
+        }
     }
     // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
     // instance network has largely collapsed, so this is a last resort for when
     // yt-dlp is unavailable.
-    let proxied = ui::rt::block_on(crate::backend::proxy::resolve_rangeable(id))
+    let proxied = ui::rt::block_on(crate::backend::proxy::resolve_rangeable(id, wanted))
         .ok()
         .flatten();
     if let Some(r) = proxied {
-        return Some((r.url, r.has_audio, r.quality));
+        return Ok((r.url, r.has_audio, r.quality));
     }
-    None
+    Err(said)
+}
+
+/// The caption tracks `id` offers, and the lines of `language` if one was
+/// asked for: `(tracks, lines, why-not)`. A video with no captions is not a
+/// failure — it simply offers none, and the page says so.
+async fn fetch_captions(
+    youtube: Option<&crate::innertube::InnerTube>,
+    client: Option<&tilo_net::Client>,
+    id: &str,
+    language: Option<&str>,
+) -> (
+    Vec<crate::captions::CaptionTrack>,
+    Option<Vec<crate::captions::CaptionCue>>,
+    Option<String>,
+) {
+    let mut tracks = match youtube {
+        Some(youtube) => youtube.caption_tracks(id).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    if tracks.is_empty()
+        && let Some(client) = client
+        && let Ok(answer) = invidious_json(client, &format!("/api/v1/captions/{id}"), &[]).await
+    {
+        tracks = caption_tracks_of(&answer);
+    }
+    let Some(language) = language else {
+        return (tracks, None, None);
+    };
+    let Some(track) = tracks.iter().find(|track| track.language == language) else {
+        return (tracks, None, None);
+    };
+    let Some(client) = client else {
+        return (tracks, None, None);
+    };
+    match fetch_timed_text(client, &track.url).await {
+        Ok(lines) if !lines.is_empty() => (tracks, Some(lines), None),
+        Ok(_) => (tracks, None, Some("the caption track was empty".into())),
+        Err(error) => (tracks, None, Some(format!("{error:#}"))),
+    }
+}
+
+/// The caption tracks an Invidious video answer lists: `/api/v1/captions/{id}`
+/// names each one's label, language and the URL that serves its WebVTT.
+fn caption_tracks_of(answer: &serde_json::Value) -> Vec<crate::captions::CaptionTrack> {
+    answer
+        .get("captions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|track| {
+            let language = track
+                .get("language_code")
+                .or_else(|| track.get("languageCode"))
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
+            let url = track.get("url").and_then(serde_json::Value::as_str)?;
+            Some(crate::captions::CaptionTrack {
+                label: track
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&language)
+                    .to_string(),
+                automatic: track
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kind| kind == "asr")
+                    || track
+                        .get("automatic")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                url: url.to_string(),
+                language,
+            })
+        })
+        .collect()
+}
+
+/// A caption track's WebVTT text. The URL arrives relative to the instance
+/// that listed it (Invidious), so it is resolved against the instance that
+/// answers for it, exactly as the listing did.
+async fn fetch_timed_text(
+    client: &tilo_net::Client,
+    url: &str,
+) -> anyhow::Result<Vec<crate::captions::CaptionCue>> {
+    let url = if url.starts_with("http") {
+        url.to_string()
+    } else {
+        let Some(base) = tilo_invidious::health::ranked().into_iter().next() else {
+            anyhow::bail!("no caption source is configured");
+        };
+        format!("{}{}", base.trim_end_matches('/'), url)
+    };
+    let text = client
+        .get(&url)
+        .timeout(INVIDIOUS_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(crate::captions::parse_vtt(&text))
 }
 
 /// Construct the live rustypipe backend when the `live` feature is on and it
@@ -1069,26 +1432,22 @@ fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
         .collect()
 }
 
-/// Broadcast which data source just answered so the UI pill reflects reality.
-/// The worker where there are no threads: every request answered from the
-/// public Invidious API through `tilo_net` (the host's fetch proxy where a
-/// site refuses cross-origin reads). Updates are offered, never waited on:
-/// the page has one thread and the UI drains them.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one match arm per Request variant, as in the threaded worker's loop"
-)]
+/// The worker where there are no threads: every request answered from
+/// `YouTube`'s own web API ([`crate::innertube`]), and from the public
+/// Invidious instances when that fails, through `tilo_net` (the host's fetch
+/// proxy where a site refuses cross-origin reads). Updates are offered,
+/// never waited on: the page has one thread and the UI drains them.
 async fn task_worker(requests: Receiver<Request>, updates: Updates) {
     let post = |update: Update| {
         let _ = updates.try_send(update);
     };
     let Some(client) = client() else {
-        post(Update::Status {
-            live: false,
-            label: "offline — no network client".into(),
-        });
+        post(Update::Unreached(Unreached::Failed(
+            "the network client did not start".into(),
+        )));
         return;
     };
+    let youtube = crate::innertube::InnerTube::new(client.clone());
     post(Update::Status {
         live: false,
         label: "connecting…".into(),
@@ -1102,152 +1461,400 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
         };
-        match request {
-            Request::Branding(id) => branding(client.clone(), id, updates.clone()).await,
-            Request::Search { query } => {
-                let found = invidious_videos(
-                    &client,
+        answer(&client, &youtube, request, &updates).await;
+    }
+}
+
+/// The videos `YouTube` finds for `query`, as Tube's own search asks it:
+/// its web API first, Invidious second; empty when neither answers.
+async fn suggested_videos(
+    client: Option<&tilo_net::Client>,
+    youtube: Option<&crate::innertube::InnerTube>,
+    query: &str,
+) -> Vec<Video> {
+    if let Some(youtube) = youtube
+        && let Ok(found) = youtube.search(query).await
+        && !found.videos.is_empty()
+    {
+        return found.videos;
+    }
+    let Some(client) = client else {
+        return Vec::new();
+    };
+    invidious_videos(
+        client,
+        "/api/v1/search",
+        &[("q", query), ("type", "video")],
+        "Search",
+    )
+    .await
+    .unwrap_or_default()
+}
+
+/// Answer one request in the page worker: `YouTube` first, then Invidious.
+async fn answer(
+    client: &tilo_net::Client,
+    youtube: &crate::innertube::InnerTube,
+    request: Request,
+    updates: &Updates,
+) {
+    let post = |update: Update| {
+        let _ = updates.try_send(update);
+    };
+    match request {
+        Request::Branding(id) => branding(client.clone(), id, updates.clone()).await,
+        Request::Search { query } => {
+            let found = match youtube.search(&query).await {
+                Ok(found) if !found.videos.is_empty() => Ok((found, youtube_status())),
+                first => invidious_videos(
+                    client,
                     "/api/v1/search",
                     &[("q", query.as_str()), ("type", "video")],
                     "Search",
                 )
-                .await;
-                post(invidious_status(found.is_ok()));
-                post(Update::SearchResults {
-                    query,
-                    videos: found.unwrap_or_default(),
-                    playlists: Vec::new(),
-                    channels: Vec::new(),
+                .await
+                .map(|videos| {
+                    let channels = first.map(|found| found.channels).unwrap_or_default();
+                    (
+                        crate::innertube::Found { videos, channels },
+                        invidious_status(),
+                    )
+                }),
+            };
+            match found {
+                Ok((found, status)) => {
+                    post(status);
+                    post(Update::SearchResults {
+                        query,
+                        videos: found.videos,
+                        playlists: Vec::new(),
+                        channels: found.channels,
+                    });
+                }
+                Err(failure) => post(Update::Unreached(failure.unreached())),
+            }
+        }
+        Request::Feed => {
+            let popular = match youtube_popular(youtube).await {
+                Some(videos) => Ok((videos, youtube_status())),
+                None => invidious_popular(client)
+                    .await
+                    .map(|videos| (videos, invidious_status())),
+            };
+            match popular {
+                Ok((videos, status)) if !videos.is_empty() => {
+                    post(Update::Feed(videos));
+                    post(status);
+                }
+                Ok(_) => post(Update::Unreached(Unreached::now(
+                    false,
+                    "the popular list is empty".into(),
+                ))),
+                Err(failure) => post(Update::Unreached(failure.unreached())),
+            }
+        }
+        Request::VideoMeta(id) => {
+            let watch = match youtube.video(&id).await {
+                Ok(watch) => Some(watch),
+                Err(_) => invidious_watch(client, &id).await,
+            };
+            if let Some((video, related)) = watch {
+                post(Update::VideoMeta {
+                    video: Box::new(video),
+                    related,
                 });
             }
-            Request::Feed => {
-                match invidious_videos(&client, "/api/v1/trending", &[], "Trending").await {
-                    Ok(videos) if !videos.is_empty() => {
-                        post(Update::Feed(videos));
-                        post(invidious_status(true));
-                    }
-                    _ => post(invidious_status(false)),
-                }
+        }
+        Request::Channel(id) => {
+            let page = match youtube.channel(&id).await {
+                Ok(page) => Some(page),
+                Err(_) => invidious_channel(client, &id).await,
+            };
+            if let Some((channel, uploads)) = page {
+                post(Update::ChannelPage {
+                    channel: Box::new(channel),
+                    uploads,
+                });
             }
-            Request::VideoMeta(id) => {
-                let path = format!("/api/v1/videos/{id}");
-                if let Ok(detail) = invidious_json(&client, &path, &[]).await
-                    && let Some(video) = video_from_item(&detail, "Video")
-                {
-                    let related = detail
-                        .get("recommendedVideos")
-                        .and_then(|items| items.as_array())
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(|item| video_from_item(item, "Related"))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    post(Update::VideoMeta {
-                        video: Box::new(video),
-                        related,
-                    });
-                }
-            }
-            Request::Channel(id) => {
-                let path = format!("/api/v1/channels/{id}");
-                if let Ok(page) = invidious_json(&client, &path, &[]).await {
-                    let text = |key: &str| {
-                        page.get(key)
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string()
-                    };
-                    let image = |key: &str| {
-                        page.get(key)
-                            .and_then(|v| v.as_array())
-                            .and_then(|images| images.last())
-                            .and_then(|image| image.get("url"))
-                            .and_then(|url| url.as_str())
-                            .unwrap_or_default()
-                            .to_string()
-                    };
-                    let channel = Channel {
-                        id: id.clone(),
-                        name: text("author"),
-                        handle: String::new(),
-                        subscribers: page
-                            .get("subCount")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(0),
-                        verified: page
-                            .get("authorVerified")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
-                        description: text("description"),
-                        seed: id.clone(),
-                        avatar_url: image("authorThumbnails"),
-                        banner_url: image("authorBanners"),
-                    };
-                    let uploads = page
-                        .get("latestVideos")
-                        .and_then(|items| items.as_array())
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(|item| video_from_item(item, "Uploads"))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    post(Update::ChannelPage {
-                        channel: Box::new(channel),
-                        uploads,
-                    });
-                }
-            }
-            Request::PlaylistPage(id) => {
-                post(Update::Note(format!("playlist {id}: unavailable here")));
-            }
-            Request::PlayVideo(id) => match crate::backend::proxy::resolve_rangeable(&id).await {
-                Some(resolved) => post(Update::StreamResolved {
-                    video: id,
-                    url: resolved.url,
-                    has_audio: resolved.has_audio,
-                    quality: resolved.quality,
-                }),
-                None => post(Update::Note(
-                    "could not resolve a playable stream (no Invidious instance served bytes)"
-                        .into(),
-                )),
-            },
+        }
+        Request::PlaylistPage(id) => {
+            post(Update::Note(format!("playlist {id}: unavailable here")));
+        }
+        Request::Captions { id, language } => {
+            let (tracks, lines, failure) =
+                fetch_captions(Some(youtube), Some(client), &id, language.as_deref()).await;
+            post(Update::Captions {
+                video: id,
+                tracks,
+                language,
+                lines,
+                failure,
+            });
+        }
+        Request::PlayVideo { id, quality } => post(play(client, youtube, id, &quality).await),
+    }
+}
+
+/// The stream for `id`: `YouTube`'s own, else an Invidious instance's; when
+/// neither plays it, what `YouTube` said if it refused.
+async fn play(
+    client: &tilo_net::Client,
+    youtube: &crate::innertube::InnerTube,
+    id: String,
+    quality: &str,
+) -> Update {
+    let wanted = crate::util::quality_height(quality);
+    let mut said = None;
+    let stream = match youtube.stream(&id, wanted).await {
+        Ok(stream) => Some((stream.url, stream.quality)),
+        Err(error) => {
+            said = crate::innertube::refusal(&error);
+            invidious_stream(client, &id, wanted).await
+        }
+    };
+    match stream {
+        Some((url, quality)) => Update::StreamResolved {
+            video: id,
+            url,
+            has_audio: true,
+            quality,
+        },
+        None => Update::Unplayable { video: id, said },
+    }
+}
+
+/// The popular feed from `YouTube`: each topic's most-viewed videos of the
+/// week, interleaved; `None` when no topic answered.
+async fn youtube_popular(youtube: &crate::innertube::InnerTube) -> Option<Vec<Video>> {
+    let mut lists = Vec::new();
+    for seed in POPULAR_SEEDS {
+        if let Ok(videos) = youtube.popular(seed).await
+            && !videos.is_empty()
+        {
+            lists.push(videos);
         }
     }
+    (!lists.is_empty()).then(|| dedup_by_id(crate::recommend::interleave_newest_first(lists)))
 }
 
-fn invidious_status(live: bool) -> Update {
+fn youtube_status() -> Update {
     Update::Status {
-        live,
-        label: if live {
-            "live (Invidious)".into()
-        } else {
-            "offline — no Invidious instance answered".into()
-        },
+        live: true,
+        label: "live (YouTube)".into(),
     }
 }
 
+/// A watch page from Invidious: the video and its recommendations.
+async fn invidious_watch(client: &tilo_net::Client, id: &str) -> Option<(Video, Vec<Video>)> {
+    let detail = invidious_json(client, &format!("/api/v1/videos/{id}"), &[])
+        .await
+        .ok()?;
+    let video = video_from_item(&detail, "Video")?;
+    let related = detail
+        .get("recommendedVideos")
+        .and_then(|items| items.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| video_from_item(item, "Related"))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((video, related))
+}
+
+/// A channel page and its newest uploads from Invidious.
+async fn invidious_channel(client: &tilo_net::Client, id: &str) -> Option<(Channel, Vec<Video>)> {
+    let page = invidious_json(client, &format!("/api/v1/channels/{id}"), &[])
+        .await
+        .ok()?;
+    let text = |key: &str| {
+        page.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let image = |key: &str| {
+        page.get(key)
+            .and_then(|v| v.as_array())
+            .and_then(|images| images.last())
+            .and_then(|image| image.get("url"))
+            .and_then(|url| url.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let channel = Channel {
+        id: id.to_string(),
+        name: text("author"),
+        handle: String::new(),
+        subscribers: page
+            .get("subCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        verified: page
+            .get("authorVerified")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        description: text("description"),
+        seed: id.to_string(),
+        avatar_url: image("authorThumbnails"),
+        banner_url: image("authorBanners"),
+    };
+    let uploads = page
+        .get("latestVideos")
+        .and_then(|items| items.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| video_from_item(item, "Uploads"))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((channel, uploads))
+}
+
+/// Topics whose most-viewed videos of the week make the popular feed, as
+/// the desktop composes it ([`live_popular_feed`]).
+const POPULAR_SEEDS: [&str; 4] = ["news", "music", "gaming", "technology"];
+
+/// The popular feed from Invidious: each topic's most-viewed videos of the
+/// week, interleaved. A topic no instance answers is left out; only when
+/// none answers is it a failure.
+async fn invidious_popular(client: &tilo_net::Client) -> Result<Vec<Video>, InvidiousFailure> {
+    let mut lists = Vec::new();
+    let mut failed = None;
+    for seed in POPULAR_SEEDS {
+        let query = [
+            ("q", seed),
+            ("type", "video"),
+            ("sort", "view_count"),
+            ("date", "week"),
+        ];
+        match invidious_videos(client, "/api/v1/search", &query, "Popular").await {
+            Ok(videos) if !videos.is_empty() => lists.push(videos),
+            Ok(_) => {}
+            Err(failure) => failed = Some(failure),
+        }
+    }
+    match (lists.is_empty(), failed) {
+        (true, Some(failure)) => Err(failure),
+        _ => Ok(dedup_by_id(crate::recommend::interleave_newest_first(
+            lists,
+        ))),
+    }
+}
+
+/// A playable stream for `id`: the progressive stream an instance's video
+/// answer names, else one an instance's media proxy serves.
+async fn invidious_stream(
+    client: &tilo_net::Client,
+    id: &str,
+    wanted: Option<u32>,
+) -> Option<(String, String)> {
+    if let Ok(detail) = invidious_json(client, &format!("/api/v1/videos/{id}"), &[]).await
+        && let Some(stream) = muxed_stream(&detail, wanted)
+    {
+        return Some(stream);
+    }
+    let resolved = crate::backend::proxy::resolve_rangeable(id, wanted).await?;
+    Some((resolved.url, resolved.quality))
+}
+
+fn invidious_status() -> Update {
+    Update::Status {
+        live: true,
+        label: "live (Invidious)".into(),
+    }
+}
+
+/// No Invidious instance answered a request.
+#[derive(Debug)]
+struct InvidiousFailure {
+    last: anyhow::Error,
+    /// Some instance failed the way a browser hides a cross-origin refusal.
+    hidden: bool,
+    /// Some instance gave an answer the app could read (an error status, a
+    /// body that is not the API's), so the sources were reachable.
+    read: bool,
+}
+
+impl InvidiousFailure {
+    /// No instance gave a readable answer, and the browser hid at least one:
+    /// unreachable instances and timeouts say nothing either way, but a
+    /// relay would have read the hidden ones.
+    fn unreadable(&self) -> bool {
+        self.hidden && !self.read
+    }
+
+    fn unreached(&self) -> Unreached {
+        Unreached::now(self.unreadable(), format!("{:#}", self.last))
+    }
+
+    fn note(&mut self, error: anyhow::Error) {
+        match error.downcast_ref::<tilo_net::NetError>() {
+            Some(net) if net.may_be_cors() => self.hidden = true,
+            Some(net) if net.is_connect() || net.is_timeout() => {}
+            _ => self.read = true,
+        }
+        self.last = error;
+    }
+}
+
+/// How long one Invidious instance may take before the next is asked: most
+/// of the public list is down at any time, and waiting out each would leave
+/// the page loading for minutes.
+const INVIDIOUS_TIMEOUT: Duration = Duration::from_millis(2500);
+
 /// `path` (with `query`) as JSON from the first public Invidious instance
-/// that answers it.
+/// that answers it, asking those that answered lately first.
 async fn invidious_json(
     client: &tilo_net::Client,
     path: &str,
     query: &[(&str, &str)],
-) -> anyhow::Result<serde_json::Value> {
-    let mut last = anyhow::anyhow!("no Invidious instance answered");
-    for instance in tilo_invidious::instances() {
+) -> Result<serde_json::Value, InvidiousFailure> {
+    invidious_json_from(client, &tilo_invidious::health::ranked(), path, query).await
+}
+
+async fn invidious_json_from(
+    client: &tilo_net::Client,
+    instances: &[String],
+    path: &str,
+    query: &[(&str, &str)],
+) -> Result<serde_json::Value, InvidiousFailure> {
+    let mut failure = InvidiousFailure {
+        last: anyhow::anyhow!("no Invidious instance is configured"),
+        hidden: false,
+        read: false,
+    };
+    for instance in instances {
         let url = format!("{}{path}", instance.trim_end_matches('/'));
-        match get_json(client, &url, query).await {
-            Ok(Some(value)) if value.get("error").is_none() => return Ok(value),
-            Ok(_) => last = anyhow::anyhow!("{instance} has no answer for {path}"),
-            Err(error) => last = error,
-        }
+        let asked = tilo_clock::now();
+        let answer = async {
+            let resp = client
+                .get(&url)
+                .query(query)
+                .timeout(INVIDIOUS_TIMEOUT)
+                .send()
+                .await?;
+            if resp.status() == tilo_net::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            anyhow::Ok(Some(
+                resp.error_for_status()?.json::<serde_json::Value>().await?,
+            ))
+        };
+        let error = match answer.await {
+            Ok(Some(value)) if value.get("error").is_none() => {
+                tilo_invidious::health::answered(instance, asked.elapsed());
+                return Ok(value);
+            }
+            Ok(_) => anyhow::anyhow!("{instance} has no answer for {path}"),
+            Err(error) => error.context(instance.clone()),
+        };
+        tilo_invidious::health::failed(instance);
+        failure.note(error);
     }
-    Err(last)
+    Err(failure)
 }
 
 /// A list of videos (search hits, trending) from the Invidious API.
@@ -1256,7 +1863,7 @@ async fn invidious_videos(
     path: &str,
     query: &[(&str, &str)],
     category: &str,
-) -> anyhow::Result<Vec<Video>> {
+) -> Result<Vec<Video>, InvidiousFailure> {
     let value = invidious_json(client, path, query).await?;
     Ok(value
         .as_array()
@@ -1274,12 +1881,25 @@ fn send_status(up_tx: &Updates, live: bool) {
     let label = if live {
         "live (rustypipe)"
     } else {
-        "offline — no live data"
+        "no live data"
     };
     let _ = up_tx.send(Update::Status {
         live,
         label: label.into(),
     });
+}
+
+/// Why the threaded worker's live backends produced no feed. The backends
+/// report their own failures as status notes; this names the class.
+fn native_unreached(has_backend: bool) -> Unreached {
+    Unreached::now(
+        false,
+        if has_backend {
+            "the video backends returned nothing".into()
+        } else {
+            "this build has no live video backend".into()
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1339,13 +1959,11 @@ mod tests {
 
     #[test]
     fn sponsorblock_categories_and_segments_parse() {
-        // Case `category_json_lists_all`.
         {
             let j = category_json();
             assert!(j.contains("sponsor"));
             assert!(j.contains("music_offtopic"));
         }
-        // Case `parse_skip_segments_maps_and_sorts`.
         {
             // The shape the direct `?videoID=` endpoint returns: a flat array of
             // segment objects. Unknown categories are dropped; the rest come back
@@ -1364,7 +1982,6 @@ mod tests {
             assert_eq!(segs[2].category, Category::Outro);
             assert_eq!(segs[1].votes, 10);
         }
-        // Case `parse_skip_segments_empty_on_non_array`.
         {
             assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
         }
@@ -1372,11 +1989,14 @@ mod tests {
 
     #[test]
     fn api_workers_queue_and_query_branding_endpoints() {
-        // Case `saturated_worker_queue_returns_the_unqueued_request`.
         {
             let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
             let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
-            let worker = Worker { tx, rx };
+            let worker = Worker {
+                tx,
+                rx,
+                suggest: None,
+            };
             assert!(worker.request(Request::Feed).is_ok());
             let error = worker
                 .request(Request::Search {
@@ -1392,7 +2012,6 @@ mod tests {
                 Request::Search { query } if query == "latest intent"
             ));
         }
-        // Case `branding_clients_send_expected_queries_and_parse_http_responses`.
         {
             let (base, server) = serve_http(vec![
                 (
@@ -1405,7 +2024,11 @@ mod tests {
                     200,
                     r#"{"titles":[{"title":"Accurate title","votes":5,"original":false}],"thumbnails":[{"timestamp":12.5,"votes":4,"original":false}]}"#,
                 ),
-                ("/votes?videoId=fixture", 200, r#"{"dislikes":42}"#),
+                (
+                    "/votes?videoId=fixture",
+                    200,
+                    r#"{"likes":900,"dislikes":42}"#,
+                ),
                 ("/api/skipSegments?videoID=none&categories=", 404, ""),
             ]);
             let c = client().expect("an HTTP client");
@@ -1428,9 +2051,12 @@ mod tests {
             assert_eq!(title.as_deref(), Some("Accurate title"));
             assert!(thumbnail.is_some_and(|url| url.contains("time=12.5")));
             assert_eq!(
-                block(fetch_dislikes_at(&c, &format!("{base}/votes"), "fixture"))
-                    .expect("dislike response"),
-                42
+                block(fetch_votes_at(&c, &format!("{base}/votes"), "fixture"))
+                    .expect("votes response"),
+                Votes {
+                    dislikes: 42,
+                    likes: Some(900),
+                }
             );
             assert!(
                 block(fetch_sponsor_at(
@@ -1443,5 +2069,165 @@ mod tests {
             );
             server.join().expect("HTTP fixture completed");
         }
+    }
+
+    #[test]
+    fn sources_that_fail_while_online_are_not_offline() {
+        // Case `only_a_device_without_network_is_offline`. In a page the
+        // browser hides why a cross-origin read failed; with no fetch proxy
+        // that is the answer to give, never "offline" while online.
+        {
+            let classify = |online, relay, unreadable| {
+                Unreached::classify(online, relay, unreadable, "HTTP 503".into())
+            };
+            assert_eq!(classify(false, false, true), Unreached::Offline);
+            assert_eq!(classify(false, true, false), Unreached::Offline);
+            assert_eq!(classify(true, false, true), Unreached::NoRelay);
+            let failed = Unreached::Failed("HTTP 503".into());
+            assert_eq!(classify(true, true, true), failed, "a relay was tried");
+            assert_eq!(classify(true, false, false), failed);
+        }
+        {
+            let (base, server) = serve_http(vec![("/api/v1/trending", 503, "{}")]);
+            let closed = {
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind a port");
+                format!("http://{}", listener.local_addr().expect("address"))
+            };
+            let c = client().expect("an HTTP client");
+            let failure = block(invidious_json_from(
+                &c,
+                &[closed, base.clone()],
+                "/api/v1/trending",
+                &[],
+            ))
+            .expect_err("no instance answers");
+            assert!(
+                !failure.unreadable(),
+                "a status and a refused connection are not a hidden cross-origin refusal"
+            );
+            assert!(failure.read, "the failing instance answered");
+            let last = format!("{:#}", failure.last);
+            assert!(last.contains(&base) && last.contains("503"), "{last}");
+            server.join().expect("HTTP fixture completed");
+        }
+        // Case `a_page_that_reads_no_instance_lacks_a_relay`: in a page, the
+        // instances the browser hid, beside ones that timed out or did not
+        // resolve, are a missing relay, not a source failure.
+        {
+            let mut failure = InvidiousFailure {
+                last: anyhow::anyhow!("none"),
+                hidden: false,
+                read: false,
+            };
+            let hidden = || tilo_net::NetError::Connect {
+                message: "TypeError: Failed to fetch".into(),
+                cross_origin: true,
+            };
+            failure.note(anyhow::Error::new(hidden()).context("https://a.example"));
+            failure.note(tilo_net::NetError::Timeout.into());
+            assert!(failure.unreadable());
+            failure.note(tilo_net::NetError::Status(tilo_net::StatusCode::FORBIDDEN).into());
+            assert!(!failure.unreadable(), "an instance answered readably");
+        }
+    }
+
+    #[test]
+    fn invidious_rows_show_real_ages_and_readable_thumbnails() {
+        // Case `a_row_without_data_has_no_age`: what an instance answers for
+        // a list it could not fill.
+        {
+            let row = serde_json::json!({
+                "type": "video", "videoId": "5M2AdP8XVFw", "title": "A stream",
+                "author": "Someone", "authorId": "UC1",
+                "viewCount": 0, "lengthSeconds": 0,
+                "published": 1_792_575_385, "publishedText": "0 seconds ago",
+                "videoThumbnails": [{"quality": "maxres",
+                    "url": "https://invidious.example/vi/5M2AdP8XVFw/maxres.jpg"}],
+            });
+            let video = video_from_item(&row, "Popular").expect("a video row");
+            assert_eq!(video.published, "", "no age rather than a made-up one");
+            // The instance's own image URLs answer HTML to the app; YouTube's
+            // image host serves every video's still to a page.
+            assert_eq!(
+                video.thumbnail_url,
+                "https://i.ytimg.com/vi/5M2AdP8XVFw/hqdefault.jpg"
+            );
+        }
+        {
+            let row = serde_json::json!({
+                "type": "video", "videoId": "dQw4w9WgXcQ", "title": "A video",
+                "viewCount": 52459, "lengthSeconds": 212, "publishedText": "1 day ago",
+            });
+            let video = video_from_item(&row, "Popular").expect("a video row");
+            assert_eq!(video.published, "1 day ago");
+            assert_eq!(video.duration, 212);
+        }
+    }
+
+    #[test]
+    fn a_video_answer_names_its_best_progressive_stream() {
+        // Case `720p_before_360p`.
+        {
+            let detail = serde_json::json!({"formatStreams": [
+                {"itag": "18", "url": "https://media.example/18", "qualityLabel": "360p"},
+                {"itag": "22", "url": "https://media.example/22", "qualityLabel": "720p"},
+            ]});
+            assert_eq!(
+                muxed_stream(&detail, None),
+                Some(("https://media.example/22".into(), "720p".into()))
+            );
+        }
+        {
+            let detail = serde_json::json!({"formatStreams": [
+                {"itag": 43, "url": "https://media.example/43", "quality": "medium"},
+            ]});
+            assert_eq!(
+                muxed_stream(&detail, None),
+                Some(("https://media.example/43".into(), "medium".into()))
+            );
+            assert_eq!(
+                muxed_stream(&serde_json::json!({"formatStreams": []}), None),
+                None
+            );
+            assert_eq!(muxed_stream(&serde_json::json!({}), None), None);
+        }
+    }
+
+    #[test]
+    fn a_chosen_smaller_quality_is_the_stream_that_is_named() {
+        let detail = serde_json::json!({"formatStreams": [
+            {"itag": "18", "url": "https://media.example/18", "qualityLabel": "360p", "resolution": "640x360"},
+            {"itag": "22", "url": "https://media.example/22", "qualityLabel": "720p", "resolution": "1280x720"},
+        ]});
+        assert_eq!(
+            muxed_stream(&detail, Some(480)),
+            Some(("https://media.example/18".into(), "360p".into())),
+            "asking for 480p on a metered connection must not fetch 720p"
+        );
+        assert_eq!(
+            muxed_stream(&detail, Some(1080)),
+            Some(("https://media.example/22".into(), "720p".into())),
+            "a size the source does not have gets the best it does"
+        );
+        // Nothing at or under the cap: the smallest the source has, rather
+        // than nothing at all.
+        assert_eq!(
+            muxed_stream(&detail, Some(240)),
+            Some(("https://media.example/18".into(), "360p".into()))
+        );
+    }
+
+    #[test]
+    fn caption_tracks_name_their_languages_and_machine_transcripts() {
+        let answer = serde_json::json!({"captions": [
+            {"label": "English", "language_code": "en", "url": "/api/v1/captions/x?label=English"},
+            {"label": "Deutsch (automatisch)", "language_code": "de", "url": "/api/v1/captions/x?label=de", "kind": "asr"},
+        ]});
+        let tracks = caption_tracks_of(&answer);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].language, "en");
+        assert!(!tracks[0].automatic);
+        assert_eq!(tracks[1].label, "Deutsch (automatisch)");
+        assert!(tracks[1].automatic, "a machine transcript says so");
     }
 }

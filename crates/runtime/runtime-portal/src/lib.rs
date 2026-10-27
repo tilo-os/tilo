@@ -34,6 +34,7 @@ pub mod retained_role;
 pub mod runtime_request;
 pub mod service_socket;
 pub mod tools;
+pub mod windows;
 
 /// The app ↔ runtime interface's one version: what an app and the session
 /// services the launcher connects it to (collaboration, the filesystem and
@@ -42,7 +43,7 @@ pub mod tools;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 2;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 10;
 
 use std::env;
 use std::io;

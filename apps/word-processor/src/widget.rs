@@ -39,7 +39,8 @@ use ui::{PathSegment, PresenceKey};
 
 use crate::WpFormat;
 use crate::compact_swatch_palette::CompactSwatchPalette;
-use crate::find_bar::{Blocks, FindBar};
+use crate::document_find::DocumentFind;
+use crate::file_menu::FileMenu;
 use crate::i18n::t;
 use crate::num;
 use crate::outline_pane::OutlinePane;
@@ -51,7 +52,6 @@ use crate::ruler::Ruler;
 use crate::ruler::RulerMarker;
 use crate::style_color_picker::StyleColorPicker;
 use crate::style_menu::StyleMenu;
-use crate::template_picker::TemplatePicker;
 use crate::text_offsets::{byte_to_char, char_to_byte};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
@@ -61,8 +61,14 @@ use ui::widget::{ControlSize, SegmentedTouch};
 mod accessibility;
 mod block_layout;
 mod controls;
+#[cfg(test)]
+mod damage_tests;
 mod dispatch;
 mod find;
+#[cfg(test)]
+mod find_cover_tests;
+#[cfg(test)]
+mod format_click_tests;
 mod image_layout;
 mod images;
 mod input;
@@ -79,6 +85,7 @@ mod semantic_geometry;
 mod text_runs;
 mod toolbar;
 mod traits;
+mod window_bar;
 
 use pagination::page_stack_to_flow;
 
@@ -89,7 +96,8 @@ use block_layout::line_spacing_label;
 use image_layout::PaintOptions as ImagePaintOptions;
 pub use proofing::WriterLayout;
 use proofing::misspelled_spans;
-use toolbar::{ToolAction, ToolEntry};
+#[cfg(test)]
+use toolbar::ToolAction;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
 /// [`Span`](crate::actions::Span)s for an action payload.
@@ -221,9 +229,12 @@ fn luminance(c: Color) -> f64 {
 }
 
 const PAGE_TOP: f64 = 28.0;
+/// The least a page keeps beside either pane: the column it would lose the
+/// sheet whole in. Below that width the pane floats instead of docking.
+const PAGE_KEEPS: f64 = MAX_PAGE_W / 2.0;
 /// The window width (at 1×) from which the outline docks beside a page it
 /// leaves readable; below it the outline is a drawer over the page.
-const OUTLINE_DOCKS_FROM: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64 + 600.0;
+const OUTLINE_DOCKS_FROM: f64 = ui::tokens::Metrics::BASE.panel_min_width as f64 + PAGE_KEEPS;
 /// The width from which the inspector docks beside a whole page; below it
 /// the inspector is a sheet over the page.
 const INSPECTOR_DOCKS_FROM: f64 =
@@ -449,10 +460,6 @@ enum PanelHit {
     /// attr — direct formatting, not the style default). The "This paragraph"
     /// section, distinct from the named-style editor below it.
     ParaAlign(&'static str),
-    /// Set the focused style's font family.
-    SetFont(&'static str),
-    ToggleBold,
-    ToggleItalic,
     SetColor([u8; 3]),
     /// Open the shared colour-picker popover to choose an arbitrary colour for
     /// the focused style (beyond the quick-preset swatches).
@@ -475,7 +482,6 @@ enum PanelHit {
     ImageInline,
     /// Turn the selected object into a freely positioned page object.
     ImageFreePosition,
-    /// Float the selected object at paragraph scope, with text on its right.
     ImageWrapLeft,
     /// Float the selected object at paragraph scope, with text on its left.
     ImageWrapRight,
@@ -793,7 +799,6 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, color: Color, x0: f64, x1
     let mut x = x0;
     let mut up = false;
     path.move_to((x0, y));
-    // Step in half-periods, alternating the peak above/below the baseline.
     while x < x1 {
         x = (x + SQUIGGLE_PERIOD / 2.0).min(x1);
         let dy = if up { -SQUIGGLE_AMP } else { SQUIGGLE_AMP };
@@ -993,12 +998,6 @@ impl ProofingPreferences {
     }
 }
 
-#[derive(Default)]
-struct StagedOverlays {
-    template_picker: bool,
-    toolbar_overflow: bool,
-}
-
 /// The revision and preview state represented by the materialized body views.
 #[derive(Default)]
 struct MaterializedBody {
@@ -1025,10 +1024,19 @@ pub struct WordProcessorWidget {
     copied: CopiedParts,
     pointer: Point,
     drag: DragSelect,
+    /// The word or paragraph a double- or triple-click selected, as its
+    /// `(start, end)` carets: a drag that continues the click grows the
+    /// selection by whole units and always keeps this one in it.
+    drag_unit: Option<(Caret, Caret)>,
     path: Option<PathBuf>,
+    /// Where the document was saved when that place has no path here (a
+    /// browser page's Save dialog file), and as what: every later Save
+    /// writes there without asking, and only Save As asks again.
+    kept: Option<(ui::portal::SaveDestination, WpFormat)>,
     format: Option<WpFormat>,
-    /// Find & Replace owns its query modes, match cursor, drawing, and hit map.
-    find: FindBar,
+    /// The window bar's search over the document: its query, matches and
+    /// the replacements waiting for the document.
+    find: DocumentFind,
     /// Image bytes (content address → bytes) fetched from the content store for the images the
     /// document references, plus a
     /// lazily-decoded image cache (`None` = decode failed / unsupported format).
@@ -1068,20 +1076,8 @@ pub struct WordProcessorWidget {
     /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
     dbg_layout_hits: usize,
     dbg_layout_misses: usize,
-    /// Each visible toolbar command's rect this frame, for hit-testing and
-    /// the accessibility tree.
-    toolbar: Vec<(ToolAction, Rect)>,
-    /// The toolbar itself, hosted in the painted chrome.
-    tool_bar: ui::widget::Toolbar,
-    /// The commands the toolbar was built from.
-    tool_entries: Vec<ToolEntry>,
-    /// The command the toolbar fired since the last event was routed.
-    tool_fired: std::rc::Rc<std::cell::Cell<Option<ToolAction>>>,
-    /// The toolbar's band this frame.
-    tool_band: Rect,
-    /// The Find bar's band this frame (empty while it is closed).
-    find_band: Rect,
-    /// The theme for what is drawn on the paper, this frame.
+    /// The command each of the window bar's slots runs, as last declared.
+    bar_commands: Vec<(String, window_bar::BarCommand)>,
     paper_theme: Theme,
     /// The window's theme this frame, for what is drawn on the desk.
     desk_theme: Theme,
@@ -1096,6 +1092,18 @@ pub struct WordProcessorWidget {
     scroll_y: f64,
     scroll_viewport: f64,
     max_scroll: f64,
+    /// How many pages the document has, as the last pass paginated it.
+    pages: usize,
+    /// The distance from one page's top to the next's, in screen px: one page
+    /// down is this far.
+    page_pitch: f64,
+    /// How much of the canvas the window's search covers from its top, in
+    /// content px: the document scrolls that far before its start, so a
+    /// match near the start can be shown clear of the search's options.
+    find_inset: f64,
+    /// What the window's search covers of the editor
+    /// ([`ui::widget::Findable::set_find_cover`]).
+    find_cover: Option<Rect>,
     /// The document's stylesheet (component-instance styles). Authoritative copy
     /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
     sheet: crate::styles::StyleSheet,
@@ -1115,6 +1123,10 @@ pub struct WordProcessorWidget {
     /// The page rect in screen space (post-scroll), cached each frame so the
     /// event handler can hit-test layout guides against it.
     page_rect: Rect,
+    /// How the page shows the document's margins ([`pagination::margin_scale`]),
+    /// cached each frame with the page rect so the ruler draws and drags them
+    /// where the text stands.
+    page_margin_scale: f64,
     /// The bottom layout bar's clickable chips: `(mode, rect)`.
     layout_chips: Vec<(LayoutMode, Rect)>,
     layout_bar_height: f64,
@@ -1156,8 +1168,6 @@ pub struct WordProcessorWidget {
     zoom: ZoomControl,
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
-    /// One-shot headless staging deferred until toolbar geometry is laid out.
-    staged: StagedOverlays,
     /// Footnotes / endnotes (materialized from the doc), sorted by note id; the
     /// in-text numbering is derived from `note-ref` document order, not this order.
     notes: Vec<NoteView>,
@@ -1217,33 +1227,24 @@ pub struct WordProcessorWidget {
     /// over a scrim in a narrow one.
     outline_drawer: ui::widget::SidebarDrawer,
     inspector_drawer: ui::widget::SidebarDrawer,
-    /// Their show/hide buttons at the ends of the toolbar band, the
-    /// window's header row.
-    outline_toggle: Rect,
-    inspector_toggle: Rect,
-    /// The window's History control in the header row's trailing corner,
-    /// when the host offers it.
-    window_history: ui::widget::HistoryOpener,
-    window_history_rect: Rect,
-    /// The retained toolbar or History button changed since the tree was built.
-    retained_tree_stale: bool,
     /// Crash-recovery persistence and its Restore/Discard surface.
     /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
-    template_picker: TemplatePicker,
+    file_menu: FileMenu,
     /// An in-flight request for an image to insert: `Some` while the host's
     /// chooser is open; its answer is drained each frame in
     /// [`Self::drain_image_choice`].
-    portal_rx: Option<portal::PortalChannel>,
+    portal_rx: Option<portal::ContentsChannel>,
     /// A save whose destination the person chose, written on the next sync
     /// with the document, and the caller it answers.
     pending_save: Option<(PathBuf, ui::framework::EffectReply)>,
-    // ---- paragraph-style context menu -------------------------------------
     /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
     style_menu: StyleMenu,
-    // ---- transient status toast -------------------------------------------
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Notice,
+    /// The last frame's drawing, part by part, so a frame reports where it
+    /// differs from it.
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     ime_rect: Option<Rect>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
@@ -1348,10 +1349,6 @@ impl Default for WordProcessorWidget {
 
 impl WordProcessorWidget {
     /// Construct from the canonical record; this performs no document writes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the document does not carry the Writer schema.
     pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
         let mut widget = Self::new();
         widget.inner.bind_view_only(state, &automerge::ROOT);
@@ -1383,9 +1380,10 @@ impl WordProcessorWidget {
             copied: CopiedParts::default(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
+            drag_unit: None,
             path: None,
             format: None,
-            find: FindBar::default(),
+            find: DocumentFind::default(),
             blobs: std::collections::BTreeMap::new(),
             image_cache: std::collections::HashMap::new(),
             blocks: Vec::new(),
@@ -1404,12 +1402,7 @@ impl WordProcessorWidget {
             recent_layout_cache: HashMap::new(),
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
-            toolbar: Vec::new(),
-            tool_bar: ui::widget::Toolbar::new(ui::widget::toolbar::Orientation::Horizontal),
-            tool_entries: Vec::new(),
-            tool_fired: std::rc::Rc::new(std::cell::Cell::new(None)),
-            tool_band: Rect::ZERO,
-            find_band: Rect::ZERO,
+            bar_commands: Vec::new(),
             paper_theme: Theme::light(),
             desk_theme: Theme::dark(),
             text_scale: 1.0,
@@ -1417,6 +1410,10 @@ impl WordProcessorWidget {
             scroll_y: 0.0,
             scroll_viewport: 0.0,
             max_scroll: 0.0,
+            pages: 1,
+            page_pitch: 0.0,
+            find_inset: 0.0,
+            find_cover: None,
             sheet: crate::styles::StyleSheet::default(),
             margins: Edges::uniform(72.0),
             layout_mode: LayoutMode::None,
@@ -1429,6 +1426,7 @@ impl WordProcessorWidget {
             },
             ruler: Ruler::default(),
             page_rect: Rect::ZERO,
+            page_margin_scale: 1.0,
             layout_chips: Vec::new(),
             layout_bar_height: 0.0,
             zoom_viewport: Rect::ZERO,
@@ -1467,7 +1465,6 @@ impl WordProcessorWidget {
             zoom_input: zoom_field(),
             zoom_rect: Rect::ZERO,
             zoom: ZoomControl::new(),
-            staged: StagedOverlays::default(),
             notes: Vec::new(),
             dict: None,
             proofing: ProofingPreferences::for_session(),
@@ -1508,16 +1505,13 @@ impl WordProcessorWidget {
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
                 .overlay_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
                 .breakpoint(INSPECTOR_DOCKS_FROM),
-            outline_toggle: Rect::ZERO,
-            inspector_toggle: Rect::ZERO,
-            window_history: ui::widget::HistoryOpener::new(),
-            window_history_rect: Rect::ZERO,
-            retained_tree_stale: false,
-            template_picker: TemplatePicker::default(),
+            file_menu: FileMenu::default(),
             portal_rx: None,
             pending_save: None,
+            kept: None,
             style_menu: StyleMenu::default(),
             toast: Notice::default(),
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
@@ -1533,8 +1527,6 @@ impl WordProcessorWidget {
         widget.style_pick = style_pick_menu(&style_pick_choice);
         widget
     }
-
-    // ---- Framework hosting ---------------------------------------------------
 
     /// Take part in the framework: read the document from its live state and
     /// submit edits through its dispatcher.
@@ -1744,7 +1736,6 @@ impl WordProcessorWidget {
         self.proofing.enabled && ui::text_assistance::preferences().check_spelling
     }
 
-    /// The language words are checked in.
     pub fn spell_language(&self) -> &str {
         &self.proofing.language
     }
@@ -1799,26 +1790,11 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Stage the template picker for the next headless overlay pass.
-    pub fn stage_template_picker_for_shot(&mut self) {
-        self.staged.template_picker = true;
-    }
-
-    /// Stage the compact-toolbar overflow menu for the next headless overlay
-    /// pass.
-    pub fn stage_toolbar_overflow_for_shot(&mut self) {
-        self.staged.toolbar_overflow = true;
-    }
-
-    /// Put the production Find bar into a deterministic populated state for
-    /// visual review. The query still runs through the complete-document search
-    /// path, so this catches virtualized/offscreen result regressions rather
-    /// than painting a mock search surface.
+    /// Show the matches of `query` for visual review. The query runs through
+    /// the complete-document search path, so this catches virtualized or
+    /// offscreen result regressions rather than painting mock highlights.
     pub fn stage_find_for_shot(&mut self, state: &AutoCommit, query: &str) {
-        let blocks = self.search_blocks(state);
-        let effect = self.find.open(Some(query), &mut Blocks(&blocks));
-        self.apply_find_effect(state, effect);
-        self.lifecycle.dirty = true;
+        self.find_now(state, query);
     }
 
     /// Open one materialized durable comment thread for visual/a11y review.
@@ -1843,8 +1819,6 @@ impl WordProcessorWidget {
         match scenario {
             "styles" => self.set_styles_panel_open(true),
             "error" => self.stage_error_for_shot(),
-            "template-picker" => self.stage_template_picker_for_shot(),
-            "toolbar-overflow" => self.stage_toolbar_overflow_for_shot(),
             "find" => self.stage_find_for_shot(state, "report"),
             "comments" => self.stage_review(state, false),
             "threaded-comments" => self.stage_review(state, true),
@@ -1975,6 +1949,7 @@ impl WordProcessorWidget {
 
     pub fn set_file(&mut self, path: PathBuf, format: WpFormat) {
         self.path = Some(path);
+        self.kept = None;
         self.format = Some(format);
     }
 
@@ -1988,38 +1963,35 @@ impl WordProcessorWidget {
         format: WpFormat,
     ) -> Result<(), String> {
         self.lifecycle.dirty = true;
-        if self.inner.containers.is_some() {
-            // The file keeps the comment threads in its text, as file
-            // formats do.
-            let file = crate::model::export_copy(state)?;
-            match format.export(file.as_ref(), self.inner.content_store()) {
-                Ok(bytes) => {
-                    tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
-                        |e| {
-                            eprintln!("word-processor: could not write {}: {e}", path.display());
-                            self.save_error = Some(Rect::ZERO);
-                            format!("could not write {}: {e}", path.display())
-                        },
-                    )?;
-                    self.save_error = None;
-                    self.note_file_written(path, &bytes);
-                }
-                Err(e) => {
-                    eprintln!("word-processor: export failed: {e}");
-                    self.save_error = Some(Rect::ZERO);
-                    return Err(format!("export failed: {e}"));
-                }
-            }
-        } else {
-            return Err("document has no writable path or initialized body".into());
-        }
+        let bytes = self.export_bytes(state, format)?;
+        tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(|e| {
+            eprintln!("word-processor: could not write {}: {e}", path.display());
+            self.save_error = Some(Rect::ZERO);
+            format!("could not write {}: {e}", path.display())
+        })?;
+        self.save_error = None;
+        self.note_file_written(path, &bytes);
         if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
             self.set_file(path.to_path_buf(), format);
         }
         Ok(())
     }
 
-    // ---- Zoom ---------------------------------------------------------------
+    /// `state` as a file in `format`, keeping the comment threads in its
+    /// text, as file formats do.
+    fn export_bytes(&mut self, state: &AutoCommit, format: WpFormat) -> Result<Vec<u8>, String> {
+        if self.inner.containers.is_none() {
+            return Err("document has no writable path or initialized body".into());
+        }
+        let file = crate::model::export_copy(state)?;
+        format
+            .export(file.as_ref(), self.inner.content_store())
+            .map_err(|e| {
+                eprintln!("word-processor: export failed: {e}");
+                self.save_error = Some(Rect::ZERO);
+                format!("export failed: {e}")
+            })
+    }
 
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.
@@ -2088,6 +2060,9 @@ impl WordProcessorWidget {
             return;
         }
         let moved = self.refresh_live(state) | std::mem::take(&mut self.source_unseen);
+        // Search ranges are character offsets, not stable anchors: an open
+        // search reads the paragraphs again when the document moves.
+        self.follow_find(state, moved);
         if let Some(body) = self.with_live(|s| std::rc::Rc::clone(s.body())) {
             self.body_order = body;
         }
@@ -2181,12 +2156,6 @@ impl WordProcessorWidget {
         let live: std::collections::HashSet<&str> =
             self.blocks.iter().map(|b| b.id.as_str()).collect();
         self.spell_cache.retain(|id, _| live.contains(id.as_str()));
-        if moved && self.find.is_open() {
-            // Search ranges are character offsets, not stable anchors. Follow
-            // edits before navigation or replacement can use the old ranges.
-            let blocks = self.search_blocks(state);
-            self.find.refresh(&mut Blocks(&blocks));
-        }
     }
 
     /// The running region (if any) whose reference-page band contains content-
@@ -2401,7 +2370,7 @@ struct NumSlot {
 /// plus its accessible children.
 ///
 /// The word processor renders its blocks directly (materialized [`BlockView`]s,
-/// not child widgets), so [`Widget::accessibility`]'s usual "single local node +
+/// not child widgets), so [`Widget::accessibility`](ui::widget::Widget::accessibility)'s usual "single local node +
 /// `Widget::children`" path doesn't apply. Instead it builds the whole tree itself
 /// via [`WordProcessorWidget::accessibility_tree`], with this struct as the carrier;
 /// `accessibility` returns this tree's root so the host still sees a focusable
@@ -2583,13 +2552,6 @@ impl CommentThreadLayout {
             ),
         }
     }
-}
-
-/// The editor as the Find bar's host: it searches the whole document and
-/// replaces matches through the editor's own undoable splice.
-struct EditorFind<'a, 'doc> {
-    wp: &'a mut WordProcessorWidget,
-    state: &'a mut ui::widget::Edits<'doc>,
 }
 
 #[cfg(test)]

@@ -39,7 +39,6 @@ pub mod provider {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MountSpec {
     pub account_id: String,
-    /// Provider key, one of [`provider`].
     pub provider: String,
     /// Provider-specific, non-secret configuration.
     pub config: serde_json::Value,

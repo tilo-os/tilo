@@ -21,10 +21,18 @@ pub const TOOL_PROTOCOL_VERSION: u32 = crate::RUNTIME_INTERFACE_VERSION;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
 const MAX_WIRE_BYTES: usize = 4 * 1024;
-/// A reply may carry the drive list, so it gets more room than a request.
-pub const MAX_REPLY_BYTES: usize = 16 * 1024;
+/// A reply may carry the drive list or the app list, so it gets more room
+/// than a request: the most apps one reply lists, each at its largest.
+pub const MAX_REPLY_BYTES: usize = MAX_LISTED_APPS * MAX_APP_ENTRY_BYTES + 16 * 1024;
 /// The most drives one reply lists.
 pub const MAX_LISTED_DRIVES: usize = 32;
+/// The most apps one reply lists ([`ToolIntent::Applications`]).
+pub const MAX_LISTED_APPS: usize = 1024;
+/// The most one listed app takes on the wire: its id, name, icon and
+/// program, each bounded by the shell before it is listed.
+pub const MAX_APP_ENTRY_BYTES: usize = 2 * 1024;
+/// The longest app id an app may name ([`ToolIntent::UninstallApplication`]).
+pub const MAX_APP_ID_BYTES: usize = 512;
 const MAX_DRIVE_ID_BYTES: usize = 64;
 const MAX_DIRECTORY_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
@@ -88,6 +96,8 @@ pub enum WorkspaceSettingsRoute {
     Members,
     PrivacySecurity,
     AppsFiles,
+    /// The workspace's own emoji.
+    Emoji,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +145,92 @@ pub enum ToolIntent {
     /// asks the person first unless they chose to remember the drive; the
     /// app learns nothing more than that the request was taken.
     OpenDrive { drive: String },
+    /// List the person's apps, every kind in one list ([`ToolReply::applications`]).
+    /// The shell answers only Files: it is the person's own view of them.
+    Applications,
+    /// Open an app from [`ToolIntent::Applications`].
+    OpenApplication { app: String },
+    /// Uninstall an app from [`ToolIntent::Applications`], or take a part of
+    /// the system off the person's apps. The shell asks the person first, in
+    /// its own sheet; the app learns nothing more than that the request was
+    /// taken.
+    UninstallApplication { app: String },
+}
+
+/// What uninstalling a listed app does, as the person is asked about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppRemoval {
+    /// A Flatpak: uninstalled, and its data moved to the Trash unless the
+    /// person keeps it.
+    UninstallWithData,
+    /// Uninstalled; nothing of the person's is touched (a Tilo app), or the
+    /// program file goes to the Trash (a downloaded program).
+    Uninstall,
+    /// Part of the system: it can only be taken off the person's apps.
+    RemoveFromApps,
+    /// Neither: an app the system image ships.
+    None,
+}
+
+/// Where a listed app came from, as the person knows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppKind {
+    /// A Tilo package.
+    Tilo,
+    Flatpak,
+    /// A downloaded `AppImage`.
+    AppImage,
+    /// Another downloaded program, or a menu entry the person made.
+    Program,
+    /// A menu entry of the operating system.
+    #[default]
+    System,
+}
+
+/// One app as an app lists it ([`ToolIntent::Applications`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppEntry {
+    /// The id [`ToolIntent::OpenApplication`] and
+    /// [`ToolIntent::UninstallApplication`] take.
+    pub id: String,
+    pub name: String,
+    /// A Tilo app's package id, for its own glyph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// The icon file, an absolute path, when the app has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The program file of a downloaded program, an absolute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    pub removal: AppRemoval,
+    #[serde(default)]
+    pub kind: AppKind,
+    /// What it takes on disk, in bytes, where that is known: a Flatpak's
+    /// installed files, a downloaded program's file, a Tilo app's bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+impl AppEntry {
+    /// Whether every field fits the bound [`MAX_APP_ENTRY_BYTES`] sets.
+    #[must_use]
+    pub fn fits(&self) -> bool {
+        let optional = |field: &Option<String>| field.as_ref().map_or(0, String::len);
+        let total = [
+            self.id.len(),
+            self.name.len(),
+            optional(&self.package),
+            optional(&self.icon),
+            optional(&self.program),
+            128,
+        ]
+        .into_iter()
+        .fold(0_usize, usize::saturating_add);
+        self.id.len() <= MAX_APP_ID_BYTES && total <= MAX_APP_ENTRY_BYTES
+    }
 }
 
 /// An NTFS drive as an app lists it: what to call it and whether it is open.
@@ -214,7 +310,17 @@ impl ToolIntent {
                 }
                 Ok(())
             }
+            Self::OpenApplication { app } | Self::UninstallApplication { app } => {
+                if app.is_empty()
+                    || app.len() > MAX_APP_ID_BYTES
+                    || app.chars().any(char::is_control)
+                {
+                    return Err("invalid app".into());
+                }
+                Ok(())
+            }
             Self::Drives
+            | Self::Applications
             | Self::Firewall { .. }
             | Self::Disks { .. }
             | Self::Backups { .. }
@@ -261,7 +367,8 @@ impl ToolIntent {
     /// contextual surface.
     pub fn package_id(&self) -> Option<&'static str> {
         match self {
-            Self::Vpn { .. } => Some("so.tilo.vpn"),
+            // VPN lives in Settings → Network.
+            Self::Vpn { .. } => Some("so.tilo.settings"),
             Self::Firewall { .. } => Some("so.tilo.firewall"),
             Self::Disks { .. } => Some("so.tilo.disks"),
             Self::Backups { .. } => Some("so.tilo.backups"),
@@ -269,7 +376,10 @@ impl ToolIntent {
             Self::WorkspaceSettings { .. }
             | Self::IdentityBackup
             | Self::Drives
-            | Self::OpenDrive { .. } => None,
+            | Self::OpenDrive { .. }
+            | Self::Applications
+            | Self::OpenApplication { .. }
+            | Self::UninstallApplication { .. } => None,
         }
     }
 }
@@ -279,6 +389,25 @@ pub struct ToolRequest {
     pub protocol: u32,
     pub workspace_id: String,
     pub intent: ToolIntent,
+    /// The broker invocation the app makes this request for, when one the
+    /// broker delivered is running (an agent asked the app to open another
+    /// one): its id as 32 lowercase hex digits. The shell admits the request
+    /// as that invocation's caller; without it, only the person's own press
+    /// in the app is behind the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
+}
+
+/// The wire form of [`ToolRequest::on_behalf_of`].
+#[must_use]
+pub fn invocation_hex(invocation: [u8; 16]) -> String {
+    use std::fmt::Write as _;
+    invocation
+        .iter()
+        .fold(String::with_capacity(32), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +417,9 @@ pub struct ToolReply {
     /// The answer to [`ToolIntent::Drives`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drives: Vec<DriveEntry>,
+    /// The answer to [`ToolIntent::Applications`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<AppEntry>,
 }
 
 /// Ask the current shell session to open a known tool at a typed context.
@@ -297,9 +429,13 @@ pub struct ToolReply {
 /// Returns an error message if `intent` fails [`ToolIntent::validate`], the process is not
 /// attached to a Tilo workspace or its tool service, the request is too large to send, or the
 /// shell rejects or fails to answer the request.
-pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
+///
+/// `on_behalf_of` is the broker invocation the request is made for
+/// ([`ToolRequest::on_behalf_of`]): `ui::invocation_scope::delivered_invocation`
+/// read where the app decided to ask, `None` for the person's own press.
+pub fn open_tool(intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String> {
     intent.validate()?;
-    send_tool_request(intent).map(drop)
+    send_tool_request(intent, on_behalf_of).map(drop)
 }
 
 /// The NTFS drives the shell can open, for an app's list of places.
@@ -308,16 +444,31 @@ pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
 ///
 /// As [`open_tool`].
 pub fn list_drives() -> Result<Vec<DriveEntry>, String> {
-    send_tool_request(ToolIntent::Drives).map(|reply| reply.drives)
+    send_tool_request(ToolIntent::Drives, None).map(|reply| reply.drives)
+}
+
+/// The person's apps, for Files' Applications place.
+///
+/// # Errors
+///
+/// As [`open_tool`].
+pub fn list_applications() -> Result<Vec<AppEntry>, String> {
+    send_tool_request(ToolIntent::Applications, None).map(|reply| reply.applications)
 }
 
 #[cfg(not(unix))]
-fn send_tool_request(_intent: ToolIntent) -> Result<ToolReply, String> {
+fn send_tool_request(
+    _intent: ToolIntent,
+    _on_behalf_of: Option<[u8; 16]>,
+) -> Result<ToolReply, String> {
     Err("The shell tool service is unavailable".to_string())
 }
 
 #[cfg(unix)]
-fn send_tool_request(intent: ToolIntent) -> Result<ToolReply, String> {
+fn send_tool_request(
+    intent: ToolIntent,
+    on_behalf_of: Option<[u8; 16]>,
+) -> Result<ToolReply, String> {
     let workspace_id = std::env::var("TILO_WORKSPACE_ID")
         .map_err(|_| "This app is not attached to a Tilo workspace".to_string())?;
     let raw_fd: i32 = std::env::var(TOOL_SERVICE_FD_ENV)
@@ -329,6 +480,7 @@ fn send_tool_request(intent: ToolIntent) -> Result<ToolReply, String> {
         protocol: TOOL_PROTOCOL_VERSION,
         workspace_id,
         intent,
+        on_behalf_of: on_behalf_of.map(invocation_hex),
     };
     // SAFETY: the launcher keeps the service descriptor open for the
     // process's lifetime; it is only borrowed for this exchange.
@@ -405,7 +557,7 @@ mod tests {
                 let reply = ToolReply {
                     accepted: true,
                     message: request.workspace_id,
-                    drives: Vec::new(),
+                    ..ToolReply::default()
                 };
                 let mut encoded = serde_json::to_vec(&reply).unwrap();
                 encoded.push(b'\n');
@@ -421,6 +573,7 @@ mod tests {
                             protocol: TOOL_PROTOCOL_VERSION,
                             workspace_id: format!("{caller}-{turn}"),
                             intent: ToolIntent::Drives,
+                            on_behalf_of: None,
                         };
                         let reply = exchange(client.as_fd(), &request).unwrap();
                         assert_eq!(reply.message, request.workspace_id);

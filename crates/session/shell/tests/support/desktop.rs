@@ -35,19 +35,25 @@ use tilo_identity_ceremony::IdentityRecord;
 /// this.
 pub const HEARTBEAT_BUDGET: Duration = Duration::from_millis(500);
 
-/// How long the main loop may keep *working* without returning to its loop.
-/// Over [`HEARTBEAT_BUDGET`] but under this it is slow, which is reported
-/// ([`Desktop::jank`]); over this it is spinning, which fails. A loop that is
-/// *blocked* (waiting on a lock, a descriptor, a child) fails at the budget:
-/// work finishes, a deadlock does not.
-pub const BUSY_LIMIT: Duration = Duration::from_secs(5);
+/// How long the main loop may keep *working* without returning to its loop:
+/// the shared hang bound. Over [`HEARTBEAT_BUDGET`] it is slow, which is
+/// reported ([`Desktop::jank`]) however loaded the machine is; only a loop
+/// that never comes back is spinning, which fails. A loop that is *blocked*
+/// (waiting on a lock, a descriptor, a child) fails at the budget: work
+/// finishes, a deadlock does not.
+fn busy_limit() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 /// How often the monitor asks for a heartbeat.
 const POLL: Duration = Duration::from_millis(50);
 
-/// The longest an ordinary control call may take. Answers arrive in
-/// milliseconds; this only decides when a call that never answered is reported.
-pub const CALL_DEADLINE: Duration = Duration::from_secs(10);
+/// The longest an ordinary control call may take: the shared hang bound.
+/// Answers arrive in milliseconds; this only decides when a call that never
+/// answered is reported.
+fn call_deadline() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 /// How long the compositor may take to deliver the report of a stall: every
 /// thread's state and symbolized stack. It names the stall within
@@ -187,6 +193,15 @@ impl Drop for Client {
 impl Desktop {
     /// Boot a headless compositor over `tree` and wait until it serves.
     pub fn start(size: (i32, i32), tree: &shell::shell::state::WorkspaceTree) -> Self {
+        Self::start_with_env(size, tree, &[])
+    }
+
+    /// [`Self::start`], with `env` added to the compositor's environment.
+    pub fn start_with_env(
+        size: (i32, i32),
+        tree: &shell::shell::state::WorkspaceTree,
+        env: &[(&str, &str)],
+    ) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path near 108 bytes, so the runtime dir is short.
         let runtime_dir = PathBuf::from(format!(
@@ -202,7 +217,7 @@ impl Desktop {
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_shell"))
+        let mut child = Command::new(tilo_test_env::package_binary!("shell"))
             .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
@@ -223,6 +238,7 @@ impl Desktop {
             .env("TILO_PAINT_STATS", "1")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
+            .envs(env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -267,6 +283,11 @@ impl Desktop {
         }
     }
 
+    /// The compositor's `XDG_CACHE_HOME`, where its crash records go.
+    pub fn cache_home(&self) -> PathBuf {
+        self.runtime_dir.join("cache")
+    }
+
     /// The wayland socket's file name, as `WAYLAND_DISPLAY` takes it.
     pub fn display_name(&self) -> String {
         self.wayland_socket
@@ -291,8 +312,9 @@ impl Desktop {
             let last = self.last_call.lock().map(|c| c.clone()).unwrap_or_default();
             panic!(
                 "DESKTOP FROZE: the compositor's main loop stalled.\n\
-                 It did not acknowledge a wake within {HEARTBEAT_BUDGET:?} (or, working, within {BUSY_LIMIT:?}). Last control call: {last}\n\
+                 It did not acknowledge a wake within {HEARTBEAT_BUDGET:?} (or, working, within {:?}). Last control call: {last}\n\
                  {report}\n--- compositor log tail ---\n{}",
+                busy_limit(),
                 self.recent_log(40)
             );
         }
@@ -313,7 +335,7 @@ impl Desktop {
     /// reply (`{"ok":..}`, `{"err":..}` or a payload object).
     #[track_caller]
     pub fn call(&self, request: &Value) -> Value {
-        self.call_within(request, CALL_DEADLINE)
+        self.call_within(request, call_deadline())
     }
 
     /// [`Self::call`] with an explicit deadline for calls that wait on purpose.
@@ -390,6 +412,49 @@ impl Desktop {
     pub fn thread_dump(&self) -> String {
         self.liveness_threads()
             .unwrap_or_else(|e| format!("(no thread dump: {e})"))
+    }
+
+    /// One request on the liveness socket, answered off the main loop.
+    fn liveness(&self, request: &str) -> Result<Answer, String> {
+        let path = shell::compositor::liveness::socket_path(&self.control);
+        let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(STALL_REPORT_DEADLINE))
+            .map_err(|e| e.to_string())?;
+        stream
+            .write_all(format!("{request}\n").as_bytes())
+            .map_err(|e| e.to_string())?;
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str(&line).map_err(|e| format!("{e}: {line}"))
+    }
+
+    /// From now on, record every path the compositor's main thread walks
+    /// (`compositor::liveness::main_thread_files`). Startup is over: the
+    /// main loop opens, stats and lists nothing by path after it.
+    ///
+    /// # Panics
+    ///
+    /// When the audit cannot be armed: a desktop that cannot be watched
+    /// proves nothing.
+    #[track_caller]
+    pub fn forbid_main_thread_files(&self) {
+        match self.liveness(r#"{"op":"forbid_main_thread_files"}"#) {
+            Ok(Answer::Armed) => {}
+            other => panic!("arming the main-thread file audit: {other:?}"),
+        }
+    }
+
+    /// Every path the main thread walked since
+    /// [`Self::forbid_main_thread_files`], with where it was.
+    #[track_caller]
+    pub fn main_thread_files(&self) -> Vec<shell::compositor::liveness::FileWalk> {
+        match self.liveness(r#"{"op":"main_thread_files"}"#) {
+            Ok(Answer::MainThreadFiles(walks)) => walks,
+            other => panic!("reading the main-thread file audit: {other:?}"),
+        }
     }
 
     fn liveness_threads(&self) -> Result<String, String> {
@@ -470,7 +535,6 @@ impl Desktop {
         self.ok(&json!({"op": "pointer_move", "x": x, "y": y}));
     }
 
-    /// Type `text`.
     #[track_caller]
     pub fn type_text(&self, text: &str) {
         self.ok(&json!({"op": "type", "text": text}));
@@ -579,7 +643,7 @@ impl Desktop {
     pub fn invoke_action(&self, provider: &str, id: &str) -> Value {
         let reply = self.call_within(
             &json!({"op": "actions_invoke", "provider": provider, "id": id, "wait_ms": 8000}),
-            Duration::from_secs(15),
+            call_deadline(),
         );
         assert!(
             reply.get("err").is_none(),
@@ -666,6 +730,12 @@ impl Desktop {
                 lines[start..].join("\n")
             })
             .unwrap_or_default()
+    }
+
+    /// The compositor's `/proc/<pid>/NAME` file (`status`, `limits`, ...).
+    pub fn proc_file(&self, name: &str) -> String {
+        let pid = self.child.lock().map_or(0, |child| child.id());
+        std::fs::read_to_string(format!("/proc/{pid}/{name}")).unwrap_or_default()
     }
 
     /// CPU the compositor process used, in milliseconds, per `/proc`.
@@ -835,15 +905,11 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 let mut answer = serde_json::from_str::<Answer>(&line);
                 // A stall whose main thread was still computing is slow work:
                 // note it with its stack, then hold the loop to the busy limit.
-                if let Ok(Answer::Stalled {
-                    budget_ms,
-                    main_thread_cpu_ms,
-                    main_thread_starved_ms,
-                    threads,
-                    ..
-                }) = &answer
-                    && answer.as_ref().is_ok_and(Answer::stalled_but_working)
+                if let Ok(stalled @ Answer::Stalled { threads, .. }) = &answer
+                    && stalled.stalled_but_working()
                 {
+                    let summary = render(stalled);
+                    let summary = summary.lines().next().unwrap_or_default();
                     let main = threads.first().map_or("", |t| t.backtrace.as_str());
                     let top: Vec<&str> = main
                         .lines()
@@ -851,17 +917,13 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                         .take(14)
                         .collect();
                     if let Ok(mut jank) = watch.jank.lock() {
-                        jank.push(format!(
-                            "main loop slow for over {budget_ms} ms ({main_thread_cpu_ms} ms CPU, \
-                             {main_thread_starved_ms} ms waiting for a core):\n{}",
-                            top.join("\n")
-                        ));
+                        jank.push(format!("{summary}\n{}", top.join("\n")));
                     }
                     // Keep asking: it still working is fine, its turning blocked
                     // (a lock, I/O) fails at once, and working past the limit is
                     // a spin.
                     let mut waited = HEARTBEAT_BUDGET;
-                    while waited < BUSY_LIMIT {
+                    while waited < busy_limit() {
                         line.clear();
                         if !liveness.heartbeat(&mut line) {
                             return;
@@ -889,8 +951,23 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                     }
                 }
                 match answer {
-                    Ok(Answer::Alive { latency_ms, .. }) => {
+                    Ok(Answer::Alive {
+                        latency_ms,
+                        halfway,
+                        ..
+                    }) => {
                         watch.beats.fetch_add(1, Ordering::Relaxed);
+                        // Back within the budget, but asleep at its middle:
+                        // note where, as slow work is noted.
+                        if let Some(thread) = halfway
+                            && let Ok(mut jank) = watch.jank.lock()
+                        {
+                            jank.push(format!(
+                                "main loop took {latency_ms:.0} ms to acknowledge, idle at the \
+                                 middle of the budget in state {} waiting in {}:\n{}",
+                                thread.state, thread.wait, thread.backtrace
+                            ));
+                        }
                         let micros =
                             u64::try_from(Duration::from_secs_f64(latency_ms / 1000.0).as_micros())
                                 .unwrap_or(u64::MAX);
@@ -1107,7 +1184,7 @@ pub struct Pressure {
 impl Pressure {
     /// `busy` spinning threads and a `bytes`-sized rewritten working set.
     pub fn start(busy: usize, bytes: usize) -> Self {
-        let child = Command::new(env!("CARGO_BIN_EXE_pressure_fixture"))
+        let child = Command::new(tilo_test_env::package_binary!("pressure_fixture"))
             .arg(busy.to_string())
             .arg(bytes.to_string())
             .stdin(Stdio::null())

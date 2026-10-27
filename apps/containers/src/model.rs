@@ -100,12 +100,15 @@ pub struct Stats {
     pub net_rx_bytes: u64,
     /// Cumulative network transmitted bytes.
     pub net_tx_bytes: u64,
-    /// Block-device read bytes.
     pub block_read_bytes: u64,
     /// Block-device write bytes.
     pub block_write_bytes: u64,
     /// Number of processes/threads in the cgroup.
     pub pids: u32,
+    /// When this telemetry sample was read, in milliseconds since the Unix
+    /// epoch. `None` for a sample with no measurement behind it.
+    #[serde(default)]
+    pub fetched_unix_ms: Option<u64>,
 }
 
 impl Default for Stats {
@@ -120,6 +123,7 @@ impl Default for Stats {
             block_read_bytes: 0,
             block_write_bytes: 0,
             pids: 0,
+            fetched_unix_ms: None,
         }
     }
 }
@@ -158,6 +162,10 @@ pub struct Container {
     /// A failed log read is separate from a successful empty log.
     #[serde(default)]
     pub logs_error: Option<String>,
+    /// When these log lines were read, in milliseconds since the Unix epoch.
+    /// `None` for the bundled sample or a container never opened.
+    #[serde(default)]
+    pub logs_fetched_unix_ms: Option<u64>,
 }
 
 impl Container {
@@ -389,6 +397,7 @@ fn sample_container_web_frontend() -> Container {
         ],
         stats: Stats {
             available: true,
+            fetched_unix_ms: None,
             cpu_percent: 0.07,
             mem_bytes: 18 * 1024 * 1024,
             mem_limit_bytes: 256 * 1024 * 1024,
@@ -400,6 +409,7 @@ fn sample_container_web_frontend() -> Container {
         },
         logs_error: None,
         logs: sample_nginx_logs(),
+        logs_fetched_unix_ms: None,
     }
 }
 
@@ -437,6 +447,7 @@ fn sample_container_api_server() -> Container {
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
             available: true,
+            fetched_unix_ms: None,
             cpu_percent: 0.23,
             mem_bytes: 142 * 1024 * 1024,
             mem_limit_bytes: 512 * 1024 * 1024,
@@ -448,6 +459,7 @@ fn sample_container_api_server() -> Container {
         },
         logs_error: None,
         logs: sample_api_logs(),
+        logs_fetched_unix_ms: None,
     }
 }
 
@@ -478,6 +490,7 @@ fn sample_container_postgres() -> Container {
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
             available: true,
+            fetched_unix_ms: None,
             cpu_percent: 0.04,
             mem_bytes: 96 * 1024 * 1024,
             mem_limit_bytes: 1024 * 1024 * 1024,
@@ -489,6 +502,7 @@ fn sample_container_postgres() -> Container {
         },
         logs_error: None,
         logs: sample_postgres_logs(),
+        logs_fetched_unix_ms: None,
     }
 }
 
@@ -511,6 +525,7 @@ fn sample_container_redis_cache() -> Container {
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
             available: true,
+            fetched_unix_ms: None,
             cpu_percent: 0.01,
             mem_bytes: 6 * 1024 * 1024,
             mem_limit_bytes: 128 * 1024 * 1024,
@@ -526,6 +541,7 @@ fn sample_container_redis_cache() -> Container {
                 .into(),
             "1:M 30 Jun 2026 06:42:02.116 * Ready to accept connections tcp".into(),
         ],
+        logs_fetched_unix_ms: None,
     }
 }
 
@@ -556,6 +572,7 @@ fn sample_container_build_runner() -> Container {
             "[runner] cargo build -p shell ... ok (184.2s)".into(),
             "[runner] job complete, exit 0".into(),
         ],
+        logs_fetched_unix_ms: None,
     }
 }
 
@@ -597,6 +614,7 @@ fn sample_container_minio() -> Container {
             "WARNING: Console endpoint is listening on a dynamic port".into(),
             "Received signal SIGKILL, exiting".into(),
         ],
+        logs_fetched_unix_ms: None,
     }
 }
 
@@ -623,6 +641,7 @@ fn sample_container_grafana() -> Container {
         labels: vec![("io.tilo.cluster".into(), "observability".into())],
         stats: Stats {
             available: true,
+            fetched_unix_ms: None,
             cpu_percent: 0.0,
             mem_bytes: 54 * 1024 * 1024,
             mem_limit_bytes: 256 * 1024 * 1024,
@@ -638,6 +657,7 @@ fn sample_container_grafana() -> Container {
                 .into(),
             "logger=http.server level=info msg=\"HTTP Server Listen\" address=[::]:3000".into(),
         ],
+        logs_fetched_unix_ms: None,
     }
 }
 
@@ -857,7 +877,6 @@ mod tests {
         }
     }
 
-    /// The sample engine is populated and consistent, with named volumes.
     #[test]
     fn sample_engine_is_consistent() {
         // --- phase: sample_engine_is_populated_and_consistent ---

@@ -5,8 +5,6 @@ use crate::widget::{Column, Container, Scrollable};
 use std::cell::Cell;
 use std::rc::Rc;
 
-// ---- pure reflow geometry ----
-
 #[test]
 fn card_columns_reflow_fill_and_align_by_width() {
     assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
@@ -20,8 +18,6 @@ fn card_columns_reflow_fill_and_align_by_width() {
     assert!((3.0 * w + 2.0 * 16.0 - 820.0).abs() < 0.01);
     assert!((card_column_width(500.0, 1, 16.0) - 500.0).abs() < 0.01);
 }
-
-// ---- fixtures ----
 
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;
@@ -139,8 +135,6 @@ fn lay_out_grid(mut g: CardGrid, w: f64, h: f64) -> CardGrid {
     g
 }
 
-// ---- CardGrid ----
-
 #[test]
 fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {
     let theme = Theme::dark();
@@ -188,6 +182,120 @@ fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {
     assert!(CardWidth::Regular.min_width(&Theme::dark().with_text_scale(2.0)) > min * 1.5);
     let wide = lay_out_grid(wide, width, 2000.0);
     assert!(wide.columns_for_width(width) < 3);
+}
+
+/// A card led by its art shows the art first, across the card's inner
+/// width, and its name and actions in one row under it.
+#[test]
+fn a_card_led_by_its_art_shows_the_art_first_and_its_caption_under_it() {
+    let theme = Theme::dark();
+    let art = || Box::new(Container::new().with_no_padding().with_height(120.0)) as Element;
+    let actions = || {
+        Box::new(
+            Actions::new(Button::new("use", "Use").role(ButtonRole::Primary))
+                .secondary(Button::new("customize", "Customize")),
+        ) as Element
+    };
+    let card = Card::with_media(art())
+        .with_title("Placeholder")
+        .with_title_action("Dark graphite", actions());
+    let g = lay_out_grid(CardGrid::new(vec![Box::new(card)]), 400.0, 1000.0);
+    let card = g.cards[0].get_rect();
+    let parts = g.cards[0].children();
+    assert_eq!(
+        parts.len(),
+        2,
+        "one header, replaced in place, under the art"
+    );
+    let media = parts[0].get_rect();
+    let header = parts[1].get_rect();
+    let pad = f64::from(theme.tokens.spacing.rhythm.section);
+    assert!((media.height() - 120.0).abs() < 0.5, "{media:?}");
+    assert!(
+        (media.y0 - (card.y0 + pad)).abs() < 0.5,
+        "the art leads the card"
+    );
+    assert!(
+        (media.width() - (card.width() - 2.0 * pad)).abs() < 0.5,
+        "the art spans the inner width: {media:?} in {card:?}"
+    );
+    assert!(header.y0 >= media.y1, "the caption sits under the art");
+    let caption = parts[1].children();
+    assert!(
+        caption[1].get_rect().x1 <= header.x1 + 0.5
+            && caption[1].get_rect().x0 > caption[0].get_rect().x0,
+        "the actions trail the name on the same row"
+    );
+}
+
+/// A selected card's edge is its own outline made heavier and accented, at
+/// the same place: no ring outside it, no gap between two outlines.
+#[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel coordinates inside the rendered frame"
+)]
+fn a_selected_card_replaces_its_edge_with_one_accent_outline() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let grid = CardGrid::new(vec![
+            Box::new(Card::new(Box::new(Text::new("Chosen"))).selected(true)),
+            Box::new(Card::new(Box::new(Text::new("Other")))),
+        ]);
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(Container::new().with_child(Box::new(grid))),
+            (600, 300),
+            theme.clone(),
+        );
+        let inspection = harness.inspection();
+        let mut cards = Vec::new();
+        collect_named(&inspection.root, "Card", &mut cards);
+        assert_eq!(cards.len(), 2);
+        let rgba = harness.render_rgba();
+        let pixel = |x: f64, y: f64| {
+            let (x, y) = (x.floor() as usize, y.floor() as usize);
+            let at = (y * 600 + x) * 4;
+            [rgba[at], rgba[at + 1], rgba[at + 2]]
+        };
+        let accent = theme.tokens.colors.intent.accent.to_rgba8();
+        let accent = [accent.r, accent.g, accent.b];
+        let ground = theme.tokens.colors.surfaces.content.to_rgba8();
+        let ground = [ground.r, ground.g, ground.b];
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 12);
+        let width = crate::surface::selected_edge_width(&theme);
+        let (chosen, other) = (rect(cards[0]), rect(cards[1]));
+        let mid = chosen.center().y;
+        assert!(
+            near(pixel(chosen.x0 + width / 2.0, mid), accent),
+            "{}: the edge is in the accent",
+            theme.name
+        );
+        assert!(
+            near(pixel(chosen.x0 - 2.0, mid), ground),
+            "{}: nothing is drawn outside the card",
+            theme.name
+        );
+        assert!(
+            !near(pixel(chosen.x0 + width + 2.0, mid), accent),
+            "{}: one outline, not two",
+            theme.name
+        );
+        assert!(
+            !near(pixel(other.x0 + width / 2.0, other.center().y), accent),
+            "{}: an unselected card keeps its rest edge",
+            theme.name
+        );
+    }
+}
+
+fn collect_named<'a>(node: &'a InspectionNode, name: &str, out: &mut Vec<&'a InspectionNode>) {
+    if node.widget == name {
+        out.push(node);
+    }
+    for child in &node.children {
+        collect_named(child, name, out);
+    }
 }
 
 #[test]

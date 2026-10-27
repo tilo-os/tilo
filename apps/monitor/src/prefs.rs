@@ -11,7 +11,7 @@ use ui::storage::{Scope, SettingsSchema};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prefs {
-    /// Sampler cadence in milliseconds, one of the header menu's choices.
+    /// Sampler cadence in milliseconds, one of the window bar menu's choices.
     pub interval_ms: u64,
     /// Whether periodic sampling is running. Manual Refresh remains available
     /// while paused, making pause a low-power inspection mode rather than a

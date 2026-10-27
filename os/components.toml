@@ -118,7 +118,10 @@ files = [
   # The interface versions this image serves. The shell serves shell-ui and
   # judges apps against this file, so the file it reads must come from the
   # same source: a shell swapped onto an older image otherwise reads a
-  # declaration in another format and judges nothing.
+  # declaration in another format and judges nothing. The shell is its one
+  # owner: the launcher, tilo-install, the app host and the runtime services
+  # read it too, so tilo-vmd refuses a generation in which any of them was
+  # built for another declaration (crates/dev/tilo-vmd/src/interfaces.rs).
   { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" },
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.
@@ -152,7 +155,8 @@ packages = ["tilo-control"]
 bins = ["tilo-control"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
+  { from = "tilo-control", to = "/usr/libexec/tilo/tilo-control", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-control" },
 ]
 
 [[component]]
@@ -164,7 +168,8 @@ bins = ["tilo-runtime-mcp"]
 dev_features = ["dev-overrides"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-runtime-mcp", to = "/usr/bin/tilo-runtime-mcp", mode = "0755" },
+  { from = "tilo-runtime-mcp", to = "/usr/libexec/tilo/tilo-runtime-mcp", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-runtime-mcp" },
 ]
 
 [[component]]
@@ -175,7 +180,8 @@ packages = ["launcher"]
 bins = ["tilo-launcher"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-launcher", to = "/usr/bin/tilo-launcher", mode = "0755" },
+  { from = "tilo-launcher", to = "/usr/libexec/tilo/tilo-launcher", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-launcher" },
 ]
 
 [[component]]
@@ -237,7 +243,8 @@ packages = ["install"]
 bins = ["tilo-install"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-install", to = "/usr/bin/tilo-install", mode = "0755" },
+  { from = "tilo-install", to = "/usr/libexec/tilo/tilo-install", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-install" },
 ]
 
 [[component]]
@@ -248,7 +255,8 @@ packages = ["tilo-app-package-cli"]
 bins = ["tilo-app-package"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-app-package", to = "/usr/bin/tilo-app-package", mode = "0755" },
+  { from = "tilo-app-package", to = "/usr/libexec/tilo/tilo-app-package", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-app-package" },
 ]
 
 [[component]]
@@ -289,7 +297,8 @@ packages = ["runtime-bundle"]
 bins = ["tilo-runtime-bundle"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-runtime-bundle", to = "/usr/bin/tilo-runtime-bundle", mode = "0755" },
+  { from = "tilo-runtime-bundle", to = "/usr/libexec/tilo/tilo-runtime-bundle", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-runtime-bundle" },
 ]
 
 [[component]]
@@ -323,7 +332,8 @@ files = [
   { from = "tilo-relay-environment", to = "/usr/libexec/tilo-relay-environment", mode = "0755" },
   { from = "tilo-relay-offers", to = "/usr/libexec/tilo-relay-offers", mode = "0755" },
   # The legacy VM service a guest's app shims reach through the broker.
-  { from = "tilo-legacy", to = "/usr/bin/tilo-legacy", mode = "0755" },
+  { from = "tilo-legacy", to = "/usr/libexec/tilo/tilo-legacy", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-legacy" },
 ]
 
 [[component]]
@@ -335,8 +345,10 @@ bins = ["tilo-model-manager", "tilo-speech-worker"]
 user_units = ["tilo-models.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-model-manager", to = "/usr/bin/tilo-model-manager", mode = "0755" },
-  { from = "tilo-speech-worker", to = "/usr/bin/tilo-speech-worker", mode = "0755" },
+  { from = "tilo-model-manager", to = "/usr/libexec/tilo/tilo-model-manager", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-model-manager" },
+  { from = "tilo-speech-worker", to = "/usr/libexec/tilo/tilo-speech-worker", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-speech-worker" },
   { from = "@manifest/usr/share/licenses/tilo-speech-worker/LICENSE", to = "/usr/share/licenses/tilo-speech-worker/LICENSE", mode = "0644" },
 ]
 
@@ -350,8 +362,10 @@ features = ["tilo-model-gateway/local-models"]
 user_units = ["tilo-model-gateway.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-model-gateway", to = "/usr/bin/tilo-model-gateway", mode = "0755" },
-  { from = "tilo-model-http", to = "/usr/bin/tilo-model-http", mode = "0755" },
+  { from = "tilo-model-gateway", to = "/usr/libexec/tilo/tilo-model-gateway", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-model-gateway" },
+  { from = "tilo-model-http", to = "/usr/libexec/tilo/tilo-model-http", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-model-http" },
 ]
 
 [[component]]
@@ -363,7 +377,8 @@ bins = ["tilo-secret-service"]
 user_units = ["tilo-secret-service.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-secret-service", to = "/usr/bin/tilo-secret-service", mode = "0755" },
+  { from = "tilo-secret-service", to = "/usr/libexec/tilo/tilo-secret-service", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-secret-service" },
 ]
 
 # The shared runtime and every packaged thin app. One component because Rust
@@ -461,7 +476,8 @@ bins = ["tilo-greeter"]
 units = ["greetd.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-greeter", to = "/usr/bin/tilo-greeter", mode = "0755" },
+  { from = "tilo-greeter", to = "/usr/libexec/tilo/tilo-greeter", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-greeter" },
 ]
 
 [[component]]
@@ -473,7 +489,8 @@ packages = ["installer"]
 bins = ["tilo-installer", "tilo-firstboot-home-seeds"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-installer", to = "/usr/bin/tilo-installer", mode = "0755" },
+  { from = "tilo-installer", to = "/usr/libexec/tilo/tilo-installer", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-installer" },
   { from = "tilo-firstboot-home-seeds", to = "/usr/libexec/tilo-firstboot-home-seeds", mode = "0755" },
 ]
 
@@ -488,9 +505,12 @@ bins = ["tilo-relay", "tilo-relay-admin", "tilo-enroll", "tilo-home-peer-control
 units = ["tilo-relay.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-relay", to = "/usr/bin/tilo-relay", mode = "0755" },
-  { from = "tilo-relay-admin", to = "/usr/bin/tilo-relay-admin", mode = "0755" },
-  { from = "tilo-enroll", to = "/usr/bin/tilo-enroll", mode = "0755" },
+  { from = "tilo-relay", to = "/usr/libexec/tilo/tilo-relay", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-relay" },
+  { from = "tilo-relay-admin", to = "/usr/libexec/tilo/tilo-relay-admin", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-relay-admin" },
+  { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-enroll" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node (docs/node-machine.md).
   { from = "@manifest/usr/lib/tilo/node-relay.toml", to = "/usr/lib/tilo/node-relay.toml", mode = "0644" },
@@ -516,6 +536,21 @@ files = [
   { from = "tilo-system-extension-manager", to = "/usr/libexec/tilo-system-extension-manager", mode = "0755" },
 ]
 
+# This account's identity from a shell, for headless devices: create, status,
+# pair, approve, list and revoke devices. tilo-enroll and
+# tilo-home-peer-control do the privileged steps.
+[[component]]
+name = "identity-cli"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-identity-host"]
+bins = ["tilo-identity"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-identity", to = "/usr/libexec/tilo/tilo-identity", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-identity" },
+]
+
 [[component]]
 name = "crypto"
 kind = "userspace"
@@ -524,7 +559,8 @@ packages = ["tilo-crypto"]
 bins = ["tilo-crypto"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-crypto", to = "/usr/bin/tilo-crypto", mode = "0755" },
+  { from = "tilo-crypto", to = "/usr/libexec/tilo/tilo-crypto", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-crypto" },
 ]
 
 [[component]]
@@ -536,10 +572,13 @@ bins = ["tilo-image-trust", "tilo-device-key-init", "tilo-board-successor"]
 units = ["tilo-device-key-init.service"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-image-trust", to = "/usr/bin/tilo-image-trust", mode = "0755" },
-  { from = "tilo-device-key-init", to = "/usr/bin/tilo-device-key-init", mode = "0755" },
+  { from = "tilo-image-trust", to = "/usr/libexec/tilo/tilo-image-trust", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-image-trust" },
+  { from = "tilo-device-key-init", to = "/usr/libexec/tilo/tilo-device-key-init", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-device-key-init" },
   { from = "@manifest/usr/libexec/tilo-image-trust-staged", to = "/usr/libexec/tilo-image-trust-staged", mode = "0755" },
   { from = "@manifest/usr/libexec/tilo-verified-update", to = "/usr/libexec/tilo-verified-update", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-update-channel", to = "/usr/libexec/tilo-update-channel", mode = "0755" },
   { from = "tilo-board-successor", to = "/usr/libexec/tilo-board-successor", mode = "0755" },
   { from = "@asset/cosign-v2.5.2", to = "/usr/libexec/tilo-cosign", mode = "0755" },
 ]
@@ -554,13 +593,32 @@ layer = "recovery-files"
 files = [
   { from = "tilo", to = "/usr/bin/tilo", mode = "0755" },
   { link = "tilo", to = "/usr/bin/system", layer = "desktop-binaries" },
+  # Each noun under its own name and as tilo-<noun> (argv[0] multicall).
+  # `app` is its own program; `do` is a shell keyword, so only `tilo do`.
+  { link = "tilo", to = "/usr/bin/device", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/action", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/package", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/agent", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/tilo-app", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/tilo-action", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/tilo-device", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/tilo-package", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/bin/tilo-agent", layer = "desktop-binaries" },
   # Shell completions the image build generates from the binary; a dev build
   # of the binary alone leaves them absent.
   { from = "completions/bash/tilo", to = "/usr/share/bash-completion/completions/tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
   { link = "tilo", to = "/usr/share/bash-completion/completions/system", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/device", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/action", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/package", layer = "desktop-binaries" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/agent", layer = "desktop-binaries" },
   { from = "completions/fish/tilo.fish", to = "/usr/share/fish/vendor_completions.d/tilo.fish", mode = "0644", optional = true, layer = "desktop-binaries" },
   { from = "completions/zsh/_tilo", to = "/usr/share/zsh/site-functions/_tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
   { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_device", layer = "desktop-binaries" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_action", layer = "desktop-binaries" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_package", layer = "desktop-binaries" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_agent", layer = "desktop-binaries" },
 ]
 
 # Consent-gated NTFS access: the root service the shell asks to open a drive
@@ -577,6 +635,21 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-ntfs-mount", to = "/usr/libexec/tilo-ntfs-mount", mode = "0755" },
   { from = "ntfs-mount/fuse-handoff.so", to = "/usr/lib/tilo/ntfs-mount/fuse-handoff.so", mode = "0755" },
+]
+
+# Your devices as a VPN: the root helper the shell asks for a tunnel's TUN,
+# routes, kill switch, DNS and an exit's forwarding (docs/device-vpn.md).
+# Socket-activated, so a swap takes effect at its next start.
+[[component]]
+name = "device-vpn"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-device-vpn"]
+bins = ["tilo-device-vpn"]
+units = ["tilo-device-vpn.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-device-vpn", to = "/usr/libexec/tilo-device-vpn", mode = "0755" },
 ]
 
 # The one writer of the read-only ESP, started on demand as
@@ -706,7 +779,26 @@ packages = ["tilo-rollback"]
 bins = ["tilo-rollback"]
 layer = "rollback-files"
 files = [
-  { from = "tilo-rollback", to = "/usr/bin/tilo-rollback", mode = "0755" },
+  { from = "tilo-rollback", to = "/usr/libexec/tilo/tilo-rollback", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-rollback" },
+]
+
+# Signing in: tilo-authd checks every secret, pam_tilo asks it from every PAM
+# service, and tilo-auth signs in at boot. tilo-auth is in the rollback layer
+# so the initramfs, built after it, can carry it as it carries tilo-rollback.
+[[component]]
+name = "sign-in"
+kind = "userspace"
+scope = "vm"
+outside_sessions = true
+packages = ["tilo-auth", "pam-tilo"]
+bins = ["tilo-authd", "tilo-auth"]
+units = ["tilo-authd.service"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-authd", to = "/usr/libexec/tilo/tilo-authd", mode = "0755" },
+  { from = "tilo-auth", to = "/usr/libexec/tilo/tilo-auth", mode = "0755" },
+  { from = "libpam_tilo.so", to = "/usr/lib64/security/pam_tilo.so", mode = "0755" },
 ]
 
 [[component]]
@@ -718,7 +810,23 @@ packages = ["tilo-sibling-unlock"]
 bins = ["tilo-sibling-unlock"]
 layer = "rollback-files"
 files = [
-  { from = "tilo-sibling-unlock", to = "/usr/bin/tilo-sibling-unlock", mode = "0755" },
+  { from = "tilo-sibling-unlock", to = "/usr/libexec/tilo/tilo-sibling-unlock", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-sibling-unlock" },
+]
+
+# The sign-in screen before the system volume is open. It runs only in the
+# initramfs (os/usr/lib/dracut/modules.d/91tilo-rollback copies it there), so
+# it has no PATH link.
+[[component]]
+name = "boot-signin"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-encrypted-install.sh"
+packages = ["tilo-boot-signin"]
+bins = ["tilo-boot-signin"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-boot-signin", to = "/usr/libexec/tilo/tilo-boot-signin", mode = "0755" },
 ]
 
 [[component]]
@@ -741,7 +849,9 @@ files = [
 # or copies any of it.
 
 # The dev-VM guest daemon. It is not a service: `tilo-vm` runs
-# `ssh <vm> tilo-vmd rpc` per call, hence the PATH link.
+# `ssh <vm> tilo-vmd rpc` per call, hence the PATH link. The link names the
+# daemon itself, not `tilo`: swapping it is how an older image gets the
+# daemon it needs, and such an image's `tilo` runs no programs by name.
 [[component]]
 name = "vmd"
 kind = "userspace"
@@ -751,8 +861,8 @@ packages = ["tilo-vmd"]
 bins = ["tilo-vmd"]
 layer = "dev-tools"
 files = [
-  { from = "tilo-vmd", to = "/usr/libexec/tilo-vmd", mode = "0755" },
-  { link = "../libexec/tilo-vmd", to = "/usr/bin/tilo-vmd" },
+  { from = "tilo-vmd", to = "/usr/libexec/tilo/tilo-vmd", mode = "0755" },
+  { link = "../libexec/tilo/tilo-vmd", to = "/usr/bin/tilo-vmd" },
 ]
 
 # tilo-vmd's requests over the peer network, for a device beyond the LAN
@@ -768,8 +878,8 @@ packages = ["tilo-device-admin"]
 bins = ["tilo-device-admin"]
 layer = "dev-tools"
 files = [
-  { from = "tilo-device-admin", to = "/usr/libexec/tilo-device-admin", mode = "0755" },
-  { link = "../libexec/tilo-device-admin", to = "/usr/bin/tilo-device-admin" },
+  { from = "tilo-device-admin", to = "/usr/libexec/tilo/tilo-device-admin", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-device-admin" },
 ]
 
 # The host CLI, so a Tilo dev machine is a developer's machine too: it drives
@@ -783,7 +893,8 @@ packages = ["tilo-vm"]
 bins = ["tilo-vm"]
 layer = "dev-tools"
 files = [
-  { from = "tilo-vm", to = "/usr/bin/tilo-vm", mode = "0755" },
+  { from = "tilo-vm", to = "/usr/libexec/tilo/tilo-vm", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-vm" },
 ]
 
 # A signed app registry on loopback offering newer versions of an installed
@@ -797,7 +908,8 @@ packages = ["test-app-registry"]
 bins = ["tilo-test-registry"]
 layer = "dev-tools"
 files = [
-  { from = "tilo-test-registry", to = "/usr/bin/tilo-test-registry", mode = "0755" },
+  { from = "tilo-test-registry", to = "/usr/libexec/tilo/tilo-test-registry", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/tilo-test-registry" },
 ]
 
 # ---- Boot: effective only after a cold boot ---------------------------------
@@ -808,9 +920,9 @@ files = [
 # VM-wide as the next boot entry and reboots. The others stay scenario-only, and
 # a swap of them is redirected to the scenario that cold-boots them.
 # `installer`, `rollback` and `sibling-unlock` above are boot components too:
-# the installer runs from installer media, tilo-rollback is copied into the
-# initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback, and
-# tilo-sibling-unlock by os/usr/lib/dracut/modules.d/92tilo-sibling-unlock.
+# the installer runs from installer media, tilo-rollback and tilo-boot-signin
+# are copied into the initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback,
+# and tilo-sibling-unlock by os/usr/lib/dracut/modules.d/92tilo-sibling-unlock.
 
 [[component]]
 name = "kernel"

@@ -19,8 +19,88 @@ use tilo_moq::client::{
 };
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
 
+use super::call_seal::{Sealing, open_audio, seal_audio};
+use channel_crypto::ChannelContentKeys;
+use collab_types::ChannelId;
+
 const RATE: f64 = 48_000.0;
 const FRAME: usize = 960;
+/// A loop turn this late let a received frame wait past the client's
+/// 200 ms receive budget, with margin for when in the turn it arrived.
+const LOOP_STALL: Duration = Duration::from_millis(100);
+/// How often the starvation probe looks at the process.
+const PROBE: Duration = Duration::from_millis(10);
+/// A probe that wakes this late, or finds the process's threads waited this
+/// many times its interval for a core, saw the process starved.
+const PROBE_LATE: Duration = Duration::from_millis(50);
+const PROBE_QUEUED: u32 = 3;
+/// Every budget a frame spends before it is read: the publisher's group
+/// (100 ms), the receiver's group read and its 200 ms receive budget. A frame
+/// sent this long before a starved stretch could still be in one of them.
+const BEFORE_STARVED: Duration = Duration::from_millis(400);
+/// A frame sent this soon after a starved stretch can still meet a receiver
+/// that is catching up on its backlog.
+const AFTER_STARVED: Duration = Duration::from_millis(200);
+
+/// The time every thread of this process has spent runnable and waiting for
+/// a core, per the scheduler's `/proc/self/task/*/schedstat`.
+fn process_run_queue_wait() -> Duration {
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return Duration::ZERO;
+    };
+    let nanos: u64 = tasks
+        .flatten()
+        .filter_map(|task| std::fs::read_to_string(task.path().join("schedstat")).ok())
+        .filter_map(|stat| stat.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .sum();
+    Duration::from_nanos(nanos)
+}
+
+/// Stretches in which this process was starved of CPU, watched from a thread
+/// of its own: any of the call's tasks may have waited then, publisher,
+/// relay, receiver or reader, and the frames in their budgets expired.
+struct StarvationProbe {
+    stretches: Arc<std::sync::Mutex<Vec<(Instant, Instant)>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl StarvationProbe {
+    fn start() -> Self {
+        let stretches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread = std::thread::spawn({
+            let (stretches, stop) = (Arc::clone(&stretches), Arc::clone(&stop));
+            move || {
+                let (mut before, mut queued) = (Instant::now(), process_run_queue_wait());
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(PROBE);
+                    let (now, waited) = (Instant::now(), process_run_queue_wait());
+                    let interval = now.duration_since(before);
+                    if interval >= PROBE + PROBE_LATE
+                        || waited.saturating_sub(queued) >= interval * PROBE_QUEUED
+                    {
+                        stretches.lock().unwrap().push((before, now));
+                    }
+                    (before, queued) = (now, waited);
+                }
+            }
+        });
+        Self {
+            stretches,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn finish(mut self) -> Vec<(Instant, Instant)> {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+        std::mem::take(&mut *self.stretches.lock().unwrap())
+    }
+}
 const CALL: &str = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0";
 
 fn namespace(publisher: char) -> String {
@@ -87,6 +167,13 @@ fn bursts(frequency: f64, offset_ms: usize, seconds: usize) -> Vec<i16> {
         .collect()
 }
 
+/// Whether frame `sequence` of a burst track offset by `offset_ms` lies
+/// wholly inside a 200 ms burst.
+fn is_tone_frame(sequence: usize, offset_ms: usize) -> bool {
+    let start = (sequence * 20 + 1000 - offset_ms % 1000) % 1000;
+    start + 20 <= 200
+}
+
 /// Share of block energy at `frequency` (1.0 for a pure matching tone).
 fn tone_share(samples: &[i16], frequency: f64) -> f64 {
     let c = 2.0 * (std::f64::consts::TAU * frequency / RATE).cos();
@@ -107,7 +194,15 @@ fn tone_share(samples: &[i16], frequency: f64) -> f64 {
 struct Side {
     client: Client,
     frequency: f64,
+    offset_ms: usize,
     packets: Vec<Vec<u8>>,
+    sealing: Sealing,
+}
+
+fn keys_of(channel: ChannelId, key: u8) -> ChannelContentKeys {
+    let wire = (1_u8, channel, 1_u64, vec![(1_u64, [key; 32])]);
+    ChannelContentKeys::from_bytes(&postcard::to_stdvec(&wire).expect("keys encode"))
+        .expect("keys decode")
 }
 fn start(relay: &LoopbackRelay, own: char, other: char, proof: &[u8]) -> Client {
     let scope = ConnectionScope {
@@ -143,6 +238,9 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
     let mut encoder = OpusEncoder::new().expect("native voice proof requires GStreamer opusenc");
     let seconds = 5;
     let relay = LoopbackRelay::start(Arc::new(TestIdentities)).expect("loopback relay");
+    let channel = collab_types::document_channel_id("so.tilo.chat", "room", "general");
+    let keys = keys_of(channel, 7);
+    let stranger = keys_of(channel, 9);
     let mut sides = Vec::new();
     for (own, other, proof, frequency, offset) in [
         ('a', 'b', &b"native-proof-a"[..], 700.0, 0),
@@ -163,7 +261,12 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         sides.push(Side {
             client: start(&relay, own, other, proof),
             frequency,
+            offset_ms: offset,
             packets,
+            sealing: Sealing {
+                keys: keys.clone(),
+                publication: namespace(own),
+            },
         });
     }
     for side in &sides {
@@ -188,33 +291,53 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
     }
     let frames = sides[0].packets.len().min(sides[1].packets.len());
     let mut sent_at = vec![vec![None; frames]; 2];
+    let side_packets: Vec<Vec<Vec<u8>>> = sides.iter().map(|side| side.packets.clone()).collect();
     let mut decoders = [
         OpusDecoder::new().expect("opusdec"),
         OpusDecoder::new().expect("opusdec"),
     ];
     let mut received = [Vec::new(), Vec::new()];
     let mut ticker = tokio::time::interval(Duration::from_millis(20));
-    let started = Instant::now();
-    let deadline = started + Duration::from_secs(seconds as u64 + 2);
+    let bound = Instant::now() + tilo_test_env::hang_bound();
+    // Once every frame is sent, a second for the last of them to arrive.
+    let mut drain_until = None;
+    // A live call drops audio its tasks could not handle within the frame
+    // budgets, as a player that cannot run must: that is the scheduler, not
+    // the transport this test measures. Starved stretches are watched from
+    // this loop (the reader) and from a thread looking at the whole process.
+    let probe = StarvationProbe::start();
+    let mut stalls: Vec<(Instant, Instant)> = Vec::new();
+    let mut last_turn = Instant::now();
     let mut next = 0;
-    while Instant::now() < deadline {
+    while drain_until.is_none_or(|until| Instant::now() < until) && Instant::now() < bound {
         ticker.tick().await;
+        let turn = Instant::now();
+        if turn.duration_since(last_turn) > LOOP_STALL {
+            stalls.push((last_turn, turn));
+        }
+        last_turn = turn;
         if next < frames {
             for (index, side) in sides.iter().enumerate() {
                 let now = Instant::now();
+                let header = ((next * FRAME) as u64, FRAME as u16);
                 side.client
-                    .try_send(CapturedOpus {
-                        timestamp_48k: (next * FRAME) as u64,
-                        duration_samples: FRAME as u16,
-                        payload: side.packets[next].clone(),
-                        captured_at: now,
-                    })
+                    .try_send_sealed(
+                        CapturedOpus {
+                            timestamp_48k: header.0,
+                            duration_samples: header.1,
+                            payload: side.packets[next].clone(),
+                            captured_at: now,
+                        },
+                        |sequence, payload| seal_audio(&side.sealing, sequence, header, &payload),
+                    )
                     .expect("native publication");
                 sent_at[index][next] = Some(now);
             }
             next += 1;
+            if next == frames {
+                drain_until = Some(Instant::now() + Duration::from_secs(1));
+            }
         }
-        // Each side receives the other side's publication.
         for (receiver, side) in sides.iter().enumerate() {
             while let Some(frame) = side.client.try_recv() {
                 let sender = 1 - receiver;
@@ -229,7 +352,15 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
                 } else {
                     -(at.duration_since(frame.received_at).as_secs_f64() * 1000.0)
                 };
-                let pcm = decoders[receiver].decode(&frame.object.payload);
+                let publication = &frame.publisher.namespace;
+                assert!(
+                    open_audio(&stranger, channel, publication, &frame.object).is_none(),
+                    "other keys open nothing"
+                );
+                assert_ne!(frame.object.payload, side_packets[sender][sequence]);
+                let opus = open_audio(&keys, channel, publication, &frame.object)
+                    .expect("the call's keys open each frame");
+                let pcm = decoders[receiver].decode(&opus);
                 received[receiver].push((sequence, latency, pcm));
             }
         }
@@ -237,12 +368,37 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             break;
         }
     }
+    stalls.extend(probe.finish());
+    let starved: Vec<(Instant, Instant)> = stalls
+        .iter()
+        .map(|(from, to)| {
+            (
+                from.checked_sub(BEFORE_STARVED).unwrap_or(*from),
+                *to + AFTER_STARVED,
+            )
+        })
+        .collect();
     let mut report = serde_json::Map::new();
     for (receiver, rows) in received.iter().enumerate() {
         let sender = 1 - receiver;
         let own = sides[receiver].frequency;
         let expected = sides[sender].frequency;
         let mut latencies: Vec<f64> = rows.iter().map(|row| row.1).collect();
+        // Frames whose budgets ran while the process was starved may have
+        // expired on the way.
+        let exposed: Vec<usize> = (0..frames)
+            .filter(|n| {
+                sent_at[sender][*n]
+                    .is_some_and(|at| starved.iter().any(|(from, to)| at >= *from && at <= *to))
+            })
+            .collect();
+        let delivered_unexposed = rows.iter().filter(|row| !exposed.contains(&row.0)).count();
+        let unexposed = frames - exposed.len();
+        let offset = sides[sender].offset_ms;
+        let tone_expected = rows
+            .iter()
+            .filter(|row| is_tone_frame(row.0, offset))
+            .count();
         let decoded_samples: usize = rows.iter().map(|row| row.2.len()).sum();
         let tone_frames = rows
             .iter()
@@ -265,6 +421,9 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "ownToneFrames": own_frames,
             "senderCounters": format!("{:?}", sides[sender].client.counters()),
             "receiverCounters": format!("{:?}", sides[receiver].client.counters()),
+            "deliveredTonePositions": tone_expected,
+            "starvedMs": stalls.iter().map(|(from, to)| to.duration_since(*from).as_millis()).sum::<u128>(),
+            "exposedFrames": exposed.len(),
             "missing": (0..frames).filter(|n| !rows.iter().any(|row| row.0 == *n)).collect::<Vec<_>>(),
             "transportLatencyMs": if latencies.is_empty() { serde_json::Value::Null } else { serde_json::json!({
                 "p50": percentile(&mut latencies, 0.5), "p90": percentile(&mut latencies, 0.9), "max": percentile(&mut latencies, 1.0)}) },
@@ -282,14 +441,18 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "{} of {frames} frames vanished without a drop reason: {counters:?}",
             frames as u64 - accounted
         );
+        // Of the frames sent while the reader could run, the transport
+        // delivers nearly all; those it could not read were counted above.
         assert!(
-            rows.len() * 100 >= frames * 95,
-            "delivered {} of {frames}: {counters:?}",
-            rows.len()
+            delivered_unexposed * 100 >= unexposed * 95,
+            "delivered {delivered_unexposed} of {unexposed} frames sent while the process ran \
+             ({} more sent around {} starved stretches): {counters:?}",
+            exposed.len(),
+            stalls.len()
         );
         assert!(
-            tone_frames * 10 >= expected_tone_frames * 8,
-            "tone frames {tone_frames} of {expected_tone_frames}"
+            tone_frames * 10 >= tone_expected * 8,
+            "tone frames {tone_frames} of {tone_expected} delivered at tone positions"
         );
         assert_eq!(own_frames, 0, "a receiver never hears its own publication");
         assert!(

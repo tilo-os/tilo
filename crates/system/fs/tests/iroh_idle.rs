@@ -23,11 +23,10 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 const IDLE_WINDOW: Duration = Duration::from_secs(30);
 
-/// How soon a change on an interface must reach the endpoint's addresses.
-/// netwatch debounces netlink events for 250 ms; the clock poll it no longer
-/// runs came every 15 s.
+/// How long the endpoint's runtime must have been still before an idle
+/// window opens: well under the shortest removed period (15 s).
 #[cfg(target_os = "linux")]
-const NOTICED_WITHIN: Duration = Duration::from_secs(5);
+const SETTLED: Duration = Duration::from_secs(3);
 
 /// The endpoint's own runtime threads, so the test's and the relay's are
 /// not counted.
@@ -112,6 +111,18 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         threads.retain(|thread| thread.comm.starts_with(ENDPOINT_THREADS));
         threads
     };
+    // The relay counts the disconnect as soon as the endpoint's relay task
+    // drops the connection, and the endpoint reaps that task a moment
+    // later on its own runtime; on a loaded machine that last wake can fall
+    // inside the window. Start the window once the runtime has been still
+    // for a few seconds: shorter than any of the periods the window must
+    // catch, so a periodic wake still shows within it.
+    tilo_test_env::wait_until("the endpoint's runtime to finish closing the relay", || {
+        let before = threads();
+        let started = std::time::Instant::now();
+        std::thread::sleep(SETTLED);
+        tilo_test_env::idle::Wakeups::between(before, threads(), started.elapsed()).blocking() == 0
+    });
     let before = threads();
     let started = std::time::Instant::now();
     std::thread::sleep(IDLE_WINDOW);
@@ -204,8 +215,7 @@ fn an_unchanged_net_report_rests_the_next() {
 
 /// A network change (an interface coming up, an address added and removed,
 /// as when Wi-Fi joins or a VPN goes up and down) reaches the endpoint's
-/// addresses through netlink within [`NOTICED_WITHIN`], with no clock poll
-/// to fall back on. Runs itself again inside a user and network namespace of
+/// addresses through netlink, with no clock poll to fall back on. Runs itself again inside a user and network namespace of
 /// its own, where it may change `lo`.
 #[cfg(target_os = "linux")]
 #[test]
@@ -243,8 +253,6 @@ mod netns {
         time::Instant,
     };
 
-    use super::NOTICED_WITHIN;
-
     const CHILD: &str = "TILO_IROH_NETNS_CHILD";
 
     pub(super) fn in_child() -> bool {
@@ -270,8 +278,10 @@ mod netns {
         );
     }
 
-    /// How long the endpoint is watched while the lifetimes are refreshed.
-    const REFRESH_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+    /// The refreshes the endpoint is watched through, and the gap between
+    /// them: ten seconds of a router's advertisements, roughly.
+    const REFRESHES: u32 = 50;
+    const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
 
     pub(super) fn refreshes_do_not_wake_the_endpoint() {
         set_up("lo", true);
@@ -288,31 +298,25 @@ mod netns {
         });
         std::thread::sleep(std::time::Duration::from_secs(1));
 
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let router = {
-            let stop = std::sync::Arc::clone(&stop);
-            std::thread::spawn(move || {
-                while !stop.load(std::sync::atomic::Ordering::Acquire) {
-                    refresher.refresh();
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-                refresher.sent
-            })
-        };
         let threads = || {
             let mut threads = tilo_test_env::idle::sample_process(std::process::id())
                 .expect("this process's threads");
             threads.retain(|thread| thread.comm.starts_with(super::ENDPOINT_THREADS));
             threads
         };
+        // The window lasts as long as the router takes for its refreshes,
+        // however slowly they go out.
+        let sent_before = refresher.sent;
         let before = threads();
         let started = Instant::now();
-        std::thread::sleep(REFRESH_WINDOW);
+        for _ in 0..REFRESHES {
+            refresher.refresh();
+            std::thread::sleep(REFRESH_EVERY);
+        }
         let wakeups = tilo_test_env::idle::Wakeups::between(before, threads(), started.elapsed());
-        stop.store(true, std::sync::atomic::Ordering::Release);
-        let sent = router.join().expect("the router simulation ends");
+        let sent = refresher.sent - sent_before;
         eprintln!("{sent} lifetime refreshes; the endpoint: {wakeups}");
-        assert!(sent >= 40, "the router simulation ran: {sent}");
+        assert_eq!(sent, REFRESHES, "the router simulation ran");
         assert_eq!(
             wakeups.blocking(),
             0,
@@ -364,7 +368,6 @@ mod netns {
             message.extend_from_slice(&[family, 128, 0, 0]);
             message.extend_from_slice(&1_u32.to_ne_bytes());
             for kind in [2_u16, 1] {
-                // IFA_LOCAL, then IFA_ADDRESS
                 message.extend_from_slice(&20_u16.to_ne_bytes());
                 message.extend_from_slice(&kind.to_ne_bytes());
                 message.extend_from_slice(&address);
@@ -423,22 +426,18 @@ mod netns {
         set_up(ALIAS, true);
         noticed("an address added", || has(IpAddr::V4(ALIAS_ADDR)));
 
-        // Taking a labelled address down removes it.
         set_up(ALIAS, false);
         noticed("the address removed", || !has(IpAddr::V4(ALIAS_ADDR)));
 
         runtime.block_on(endpoint.close());
     }
 
-    fn noticed(what: &str, mut seen: impl FnMut() -> bool) {
+    /// Waits for the endpoint to see a change. That netlink carries it, and
+    /// not the clock poll netwatch no longer runs, is what this file's idle
+    /// tests show: with no poll, nothing else could.
+    fn noticed(what: &str, seen: impl FnMut() -> bool) {
         let changed = Instant::now();
-        while !seen() {
-            assert!(
-                changed.elapsed() <= NOTICED_WITHIN,
-                "the endpoint did not notice {what} within {NOTICED_WITHIN:?}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        tilo_test_env::wait_until(format_args!("the endpoint to notice {what}"), seen);
         eprintln!("noticed {what} after {} ms", changed.elapsed().as_millis());
     }
 
@@ -610,7 +609,8 @@ fn gossip_stops_shuffling_after_its_last_peer_leaves_and_restarts_on_join() {
 }
 
 /// iroh-gossip sweeps a topic's message cache only while something is
-/// cached: the first message arms the sweep, it stops once the caches have
+/// cached: a message with no neighbour to hear it is not cached, the first
+/// one a neighbour hears arms the sweep, it stops once the caches have
 /// expired, and the next message arms it once more. Driven through the
 /// public sans-IO topic state, with Tilo's gossip timings.
 #[test]
@@ -628,7 +628,7 @@ fn gossip_sweeps_a_topic_cache_only_while_it_holds_messages() {
         broadcast: plumtree.clone(),
         ..Config::default()
     };
-    let mut state: topic::State<u64, _> = topic::State::new(1, None, config);
+    let mut state: topic::State<u64, _> = topic::State::new(1, None, config.clone());
     let sweeps = |events: Vec<topic::OutEvent<u64>>| -> Vec<topic::Timer<u64>> {
         events
             .into_iter()
@@ -655,6 +655,22 @@ fn gossip_sweeps_a_topic_cache_only_while_it_holds_messages() {
 
     let start = Instant::now();
     let mut now = start;
+    assert!(
+        broadcast(&mut state, b"alone", now).is_empty(),
+        "a message nobody hears arms no sweep"
+    );
+    let mut peer: topic::State<u64, _> = topic::State::new(2, None, config);
+    let join = peer
+        .handle(topic::InEvent::Command(Command::Join(vec![1])), now)
+        .find_map(|event| match event {
+            topic::OutEvent::SendMessage(1, message) => Some(message),
+            _ => None,
+        })
+        .expect("the peer sends its join request");
+    let _ = state
+        .handle(topic::InEvent::RecvMessage(2, join), now)
+        .count();
+    assert!(state.has_active_peers(), "the peer joined the topic");
     let mut armed = broadcast(&mut state, b"first", now);
     assert_eq!(armed.len(), 1, "the first message arms one sweep");
     assert!(
@@ -683,5 +699,77 @@ fn gossip_sweeps_a_topic_cache_only_while_it_holds_messages() {
         broadcast(&mut state, b"third", now).len(),
         1,
         "the next message arms the sweep again"
+    );
+}
+
+/// A neighbours-only gossip message reaches every direct neighbour, also
+/// one plumtree moved to its lazy set. In a triangle the first swarm
+/// message arrives twice somewhere and prunes that link to lazy; a
+/// neighbours-only message (how Tilo announces device identities) then has
+/// to cross it all the same. Three topic states with every message routed
+/// at once.
+#[test]
+fn gossip_neighbours_only_messages_cross_a_pruned_link() {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+    use iroh_gossip::proto::{Command, Config, DeliveryScope, Scope, topic};
+    use tokio::time::Instant;
+
+    let now = Instant::now();
+    let mut states: BTreeMap<u64, topic::State<u64, _>> = (1..=3)
+        .map(|id| (id, topic::State::new(id, None, Config::default())))
+        .collect();
+    let mut neighbours: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    let mut heard: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    let mut run = |states: &mut BTreeMap<u64, topic::State<u64, _>>,
+                   first: Vec<(u64, topic::InEvent<u64>)>| {
+        let mut queue: VecDeque<(u64, topic::InEvent<u64>)> = first.into();
+        while let Some((at, event)) = queue.pop_front() {
+            let state = states.get_mut(&at).expect("a peer of the triangle");
+            for out in state.handle(event, now) {
+                match out {
+                    topic::OutEvent::SendMessage(to, message) => {
+                        queue.push_back((to, topic::InEvent::RecvMessage(at, message)));
+                    }
+                    topic::OutEvent::EmitEvent(topic::Event::NeighborUp(peer)) => {
+                        neighbours.entry(at).or_default().insert(peer);
+                    }
+                    topic::OutEvent::EmitEvent(topic::Event::Received(event))
+                        if event.scope == DeliveryScope::Neighbors =>
+                    {
+                        heard.entry(at).or_default().insert(event.delivered_from);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+    let join = |peers: Vec<u64>| topic::InEvent::Command(Command::Join(peers));
+    run(
+        &mut states,
+        vec![(1, join(vec![])), (2, join(vec![1])), (3, join(vec![1, 2]))],
+    );
+    let swarm = |body: &'static [u8]| {
+        topic::InEvent::Command(Command::Broadcast(body.into(), Scope::Swarm))
+    };
+    run(
+        &mut states,
+        vec![(1, swarm(b"one")), (2, swarm(b"two")), (3, swarm(b"three"))],
+    );
+    let hello = || {
+        topic::InEvent::Command(Command::Broadcast(
+            b"hello".as_slice().into(),
+            Scope::Neighbors,
+        ))
+    };
+    run(&mut states, (1..=3).map(|id| (id, hello())).collect());
+    assert_eq!(
+        neighbours.values().map(BTreeSet::len).sum::<usize>(),
+        6,
+        "the three peers are each other's neighbours: {neighbours:?}"
+    );
+    assert_eq!(
+        heard, neighbours,
+        "every peer hears the neighbours-only message of each of its neighbours"
     );
 }

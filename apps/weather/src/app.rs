@@ -3,9 +3,8 @@
 //! Weather is an **overview + detail** pair of content panels (HIG §1b), not
 //! a sidebar app. The window is the shared [`ui::widget::NavShell`] with no
 //! sidebar: the *contentful city list* is the overview, the forecast is the
-//! content, and each has its header in the shell's one header row (the
-//! list's "Places" with its Add button, the forecast's place name with its
-//! Refresh and History buttons).
+//! content. The window bar names the place shown and offers Add place and
+//! Refresh (`window_bar`); the shell draws no header row.
 //!
 //! * **Wide** (both columns fit): the two panels sit **side by side**.
 //! * **Narrow**: the city list is full-screen; tapping a city **pushes** the
@@ -40,7 +39,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, Element, NavPane, NavShell, Widget};
+use ui::widget::{Element, NavPane, NavShell, Widget};
 
 use crate::actions::WeatherEffect;
 use crate::core::{Core, ForecastNotice, NavIntent};
@@ -73,8 +72,6 @@ struct PendingRefresh {
 pub struct WeatherApp {
     core: Rc<RefCell<Core>>,
     nav: NavShell,
-    /// Whether the forecast column's header shows a place's actions.
-    shows_forecast: bool,
     /// The places the overview's rail was last built from.
     rail: RailPlaces,
     pending_scenario: Option<String>,
@@ -87,7 +84,6 @@ pub struct WeatherApp {
     initial_fetch_done: bool,
     /// Whether the framework has presented the saved places yet.
     presented: bool,
-    last_activity: Instant,
     /// The refresh an invocation waits for, if any.
     refresh: Option<PendingRefresh>,
 }
@@ -109,9 +105,16 @@ impl WeatherApp {
                     Some("Saved places changed before the refresh was dispatched".into());
             }
         }
+        let changed = self.core.borrow().model.locations != state.locations;
         let mut persisted = state.clone();
         self.core.borrow_mut().adopt_saved_places(&mut persisted);
         self.presented = true;
+        // Adopting changed places discards the replies still on their way;
+        // fetch again what that left without a forecast. Before the first
+        // refresh, `ensure_service` fetches every place anyway.
+        if changed && self.live && self.initial_fetch_done {
+            self.core.borrow_mut().fetch_missing_forecasts();
+        }
     }
 
     /// Take the framework's dispatcher, and the forecasts this window shows:
@@ -235,7 +238,6 @@ impl WeatherApp {
             }
             None => self.core.borrow_mut().refresh_all(),
         }
-        self.last_activity = ui::time::now();
         self.refresh = Some(PendingRefresh {
             tickets: self.core.borrow().queued_weather_tickets_after(marker),
             failure: None,
@@ -257,27 +259,17 @@ impl WeatherApp {
     }
 
     /// The window: the city list as the overview and the forecast as the
-    /// content, both rendering from the one shared [`Core`], each with its
-    /// header in the shell's header row.
-    /// The forecast's header offers Refresh only while it shows a place; the
-    /// shell puts History at the header row's trailing edge.
+    /// content, both rendering from the one shared [`Core`]; their actions
+    /// are the window bar's.
     fn build_nav(core: &Rc<RefCell<Core>>) -> NavShell {
-        let add: Element = Box::new(
-            Button::icon_only("weather.add-place", Icon::Plus, "Add place").on_view({
-                let core = Rc::clone(core);
-                move || core.borrow_mut().begin_search()
-            }),
-        );
-        let title = Self::content_title(&core.borrow());
         let rail = core.borrow().rail_places();
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("weather-shell")
+            .with_window_toolbar()
             .overview(Box::new(OverviewPane::new(Rc::clone(core))))
             .overview_rail(Self::place_rail(core, &rail))
             .content(Box::new(DetailPane::new(Rc::clone(core))))
-            .overview_header("Places", vec![add])
-            .content_header(title, Self::content_actions(core))
     }
 
     /// What the city list collapses into where it no longer fits beside the
@@ -304,60 +296,38 @@ impl WeatherApp {
         Box::new(rail)
     }
 
-    /// The forecast's header actions: Refresh while it shows a place.
-    fn content_actions(core: &Rc<RefCell<Core>>) -> Vec<Element> {
-        if !Self::shows_forecast(&core.borrow()) {
-            return Vec::new();
-        }
-        vec![Box::new(
-            Button::icon_only("weather.refresh", Icon::Refresh, "Refresh forecast").on_effect({
-                let core = Rc::clone(core);
-                move || core.borrow_mut().refresh_selected_forecast()
-            }),
-        )]
-    }
-
     /// Whether the forecast column shows a place (and so can refresh it).
     fn shows_forecast(core: &Core) -> bool {
         core.model.selected_location().is_some()
     }
 
-    /// The forecast column's title: the selected place's name.
-    fn content_title(core: &Core) -> String {
-        core.model
-            .selected_location()
-            .map(|location| location.name.clone())
-            .unwrap_or_default()
-    }
-
-    /// Keep the forecast column's header on the selected place: its name as
-    /// the title, and Refresh only while there is a place to refresh.
-    fn sync_title(&mut self) {
+    /// Keep the overview's rail on the saved places.
+    fn sync_rail(&mut self) {
         let rail = self.core.borrow().rail_places();
         if rail != self.rail {
             self.nav
                 .set_overview_rail(Some(Self::place_rail(&self.core, &rail)));
             self.rail = rail;
         }
-        let shows = Self::shows_forecast(&self.core.borrow());
-        let title = Self::content_title(&self.core.borrow());
-        if shows == self.shows_forecast {
-            self.nav.set_content_title(title);
-        } else {
-            self.shows_forecast = shows;
-            self.nav
-                .set_content_header(title, Self::content_actions(&self.core));
+    }
+
+    /// With no place chosen the forecast column is only a placeholder, so
+    /// the places (and their Add place) are the screen to be on: a window
+    /// narrowed to one screen at a time then keeps them in front rather than
+    /// pushing a blank forecast over them. Choosing a place shows its forecast.
+    fn keep_places_in_front_without_a_forecast(&mut self) {
+        if !Self::shows_forecast(&self.core.borrow()) && self.nav.front_pane() != NavPane::Overview
+        {
+            self.nav.show(NavPane::Overview);
         }
     }
 
     fn assemble(core: Rc<RefCell<Core>>) -> Self {
         let nav = Self::build_nav(&core);
-        let shows_forecast = Self::shows_forecast(&core.borrow());
         let rail = core.borrow().rail_places();
         Self {
             core,
             nav,
-            shows_forecast,
             rail,
             pending_scenario: None,
             repaint_staged: false,
@@ -365,7 +335,6 @@ impl WeatherApp {
             service: None,
             initial_fetch_done: false,
             presented: false,
-            last_activity: ui::time::now(),
             refresh: None,
         }
     }
@@ -428,9 +397,6 @@ impl WeatherApp {
         let reqs = self.core.borrow_mut().take_tracked_outbox();
         let mut completions = Vec::new();
         let disconnected = if let Some(svc) = self.service.as_ref() {
-            if !reqs.is_empty() {
-                self.last_activity = ui::time::now();
-            }
             for r in reqs {
                 if let Some(failed) = svc.request(r) {
                     completions.push(failed);
@@ -474,7 +440,7 @@ impl WeatherApp {
         if navigate == Some(NavIntent::ShowDetail) {
             self.nav.show(NavPane::Content);
         }
-        self.sync_title();
+        self.sync_rail();
         navigate.is_some()
     }
 
@@ -527,7 +493,7 @@ impl WeatherApp {
                 .set_notice(Some(ForecastNotice::UpdateFailed)),
             _ => {}
         }
-        self.sync_title();
+        self.sync_rail();
     }
 
     /// Stage a capture: the sample places with the network off, then the
@@ -579,10 +545,20 @@ impl ui::widget::Decorator for WeatherApp {
         &mut self.nav
     }
 
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.take_window_toolbar_events();
+        self.follow_core();
+        self.declare_window_toolbar();
+        self.nav.sync(state, path);
+    }
+
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Semantic actions reach the owning pane directly, so finish their
         // navigation here as well as on pointer input.
-        self.follow_core()
+        let asked = self.take_window_toolbar_events();
+        let followed = self.follow_core();
+        self.declare_window_toolbar();
+        asked || followed
     }
 
     fn draw(
@@ -594,6 +570,8 @@ impl ui::widget::Decorator for WeatherApp {
         presence: &PresenceCtx,
     ) {
         self.tick_network();
+        self.keep_places_in_front_without_a_forecast();
+        self.core.borrow_mut().side_by_side = self.nav.geometry().side_by_side;
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
         self.stage_pending_scenario();
@@ -631,26 +609,14 @@ impl ui::widget::Decorator for WeatherApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let core_busy = {
-            let core = self.core.borrow();
-            (core.is_fetching() && self.last_activity.elapsed().as_secs() < 12)
-                || core.search_pending()
-        };
-        core_busy
-            || self.pending_scenario.is_some()
-            || self.repaint_staged
-            || self.nav.needs_animation_frame()
+        // A forecast or a place on its way wakes the app when it lands
+        // (the worker's wake handle), and a debounced search at its
+        // deadline: neither runs frames while it waits.
+        self.pending_scenario.is_some() || self.repaint_staged || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
-        let core_busy = {
-            let core = self.core.borrow();
-            // Keep pumping while a geocode is armed OR in flight, so its
-            // result is drained and the dropdown updates promptly rather than
-            // parking on the loading state until the next input event.
-            core.is_fetching() || core.search_pending()
-        };
-        core_busy || self.nav.needs_idle_sync()
+        self.nav.needs_idle_sync()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -662,6 +628,8 @@ impl ui::widget::Decorator for WeatherApp {
             .min()
     }
 }
+
+mod window_bar;
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
@@ -771,11 +739,11 @@ mod interaction_tests {
             self.app.core.borrow().row_rect_for_test(0).center().x
         }
 
-        /// Click the named control the way a person would.
-        fn click_named(&mut self, name: &str) {
+        /// Press one of the app's actions in the window bar.
+        fn press_bar(&mut self, id: &str) {
             Framed::harness_mut(&mut self.app)
-                .click_named(name)
-                .expect("the control is on screen");
+                .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+            self.redraw();
         }
 
         /// How far a row must be swiped to be removed.
@@ -784,26 +752,87 @@ mod interaction_tests {
         }
     }
 
-    fn headings(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
-        fn semantic(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
-            if matches!(node.role, ui::a11y::Role::Heading { .. }) {
-                out.push(node.clone());
-            }
-            for child in node.children {
-                semantic(child, out);
-            }
-        }
-        if let Some(node) = widget.accessibility() {
-            semantic(node, out);
-        }
-        for child in widget.children() {
-            headings(child, out);
-        }
+    #[test]
+    fn with_no_places_the_empty_state_takes_the_wide_column() {
+        let empty = |w: f64, h: f64| {
+            let mut harness = Harness {
+                app: Framed::new(
+                    ui::State::new(),
+                    WeatherApp::new(),
+                    ui::headless::viewport((w, h)),
+                    Theme::dark(),
+                ),
+                tr: TextRenderer::new(),
+            };
+            harness.redraw();
+            harness
+        };
+        // Side by side, the forecast's column carries it, not the list.
+        let mut h = empty(1708.0, 1400.0);
+        let geometry = h.app.nav.geometry().clone();
+        assert!(geometry.side_by_side);
+        let action = h
+            .app
+            .core
+            .borrow()
+            .empty_action_for_test()
+            .expect("Add place shows");
+        assert!(
+            geometry.content_column.contains(action.center()),
+            "{action:?} in {:?}",
+            geometry.content_column
+        );
+        h.click(action.center().x, action.center().y);
+        assert!(
+            h.app.core.borrow().search_is_focused(),
+            "its Add place adds a place"
+        );
+
+        // A narrow window shows only the list, which then carries it.
+        let mut h = empty(420.0, 800.0);
+        assert!(!h.app.nav.geometry().side_by_side);
+        let action = h
+            .app
+            .core
+            .borrow()
+            .empty_action_for_test()
+            .expect("Add place shows");
+        h.click(action.center().x, action.center().y);
+        assert!(h.app.core.borrow().search_is_focused());
+    }
+
+    #[test]
+    fn narrowing_an_empty_window_keeps_its_add_place_working() {
+        let mut h = Harness {
+            app: Framed::new(
+                ui::State::new(),
+                WeatherApp::new(),
+                ui::headless::viewport((1708.0, 1400.0)),
+                Theme::dark(),
+            ),
+            tr: TextRenderer::new(),
+        };
+        h.redraw();
+        h.layout(420.0, 800.0);
+        h.redraw();
+        // The list stays in front: no place is chosen, so the forecast
+        // would be empty.
+        assert_eq!(h.app.nav.front_pane(), NavPane::Overview);
+        let action = h
+            .app
+            .core
+            .borrow()
+            .empty_action_for_test()
+            .expect("Add place shows");
+        h.click(action.center().x, action.center().y);
+        assert!(
+            h.app.core.borrow().search_is_focused(),
+            "the visible Add place adds a place"
+        );
     }
 
     #[test]
     fn layout_reflows_and_scrolls() {
-        // Case `resize_reflows_between_side_by_side_and_push`.
         {
             // The layout MUST be re-derived from the current allocated width
             // on every layout — not cached from the first frame.
@@ -820,7 +849,6 @@ mod interaction_tests {
             assert_eq!(g.overview, ui::widget::OverviewPlacement::Rail, "{g:?}");
             assert!(g.stack.is_empty(), "the rail keeps the forecast beside it");
 
-            // Simulate a resize down to a narrow width on the SAME instance.
             h.layout(420.0, 720.0);
             assert!(
                 !h.app.nav.geometry().stack.is_empty(),
@@ -834,7 +862,6 @@ mod interaction_tests {
                 "widening reflows back to side by side"
             );
         }
-        // Case `wheel_scrolls_the_forecast_body`.
         {
             let mut h = Harness::new(1280.0, 620.0);
             h.redraw();
@@ -853,7 +880,6 @@ mod interaction_tests {
                 "wheel scrolls the forecast body down"
             );
         }
-        // Case `hourly_strip_scrolls_when_it_overflows`.
         {
             // The 24 hours are laid out at a minimum per-hour width, so they
             // overflow the band and the strip scrolls horizontally via the
@@ -866,7 +892,6 @@ mod interaction_tests {
             );
             assert_eq!(h.app.core.borrow().hourly_scroll_x(), 0.0);
 
-            // A horizontal wheel over the strip scrolls it.
             let vp = h.app.core.borrow().hourly_viewport_rect();
             let p = vp.center();
             h.move_to(p.x, p.y);
@@ -876,20 +901,18 @@ mod interaction_tests {
                 "a horizontal wheel scrolls the overflowing strip"
             );
         }
-        // Case `forecast_title_follows_the_selected_place`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.key(Key::Named(NamedKey::ArrowDown), None);
             h.layout(1280.0, 720.0);
             let second = h.app.core.borrow().model.locations[1].name.clone();
-            // The column titles are the header row's headings.
-            let mut headings_found = Vec::new();
-            headings(&h.app.nav, &mut headings_found);
-            assert!(
-                headings_found
-                    .iter()
-                    .any(|heading| heading.name.as_deref() == Some(second.as_str())),
-                "the forecast's header names the selected place"
+            assert_eq!(
+                h.app
+                    .window_toolbar()
+                    .location
+                    .map(|location| location.label),
+                Some(second),
+                "the window bar names the selected place"
             );
         }
     }
@@ -900,7 +923,6 @@ mod interaction_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn city_navigation_by_pointer_keyboard_and_accessibility() {
-        // Case `tapping_a_city_pushes_detail_then_back_returns`.
         {
             let mut h = Harness::new(420.0, 720.0);
             assert!(!h.app.nav.geometry().stack.is_empty());
@@ -910,7 +932,6 @@ mod interaction_tests {
                 "starts on the full-screen city list"
             );
 
-            // Tap the SECOND city in the overview list.
             h.redraw(); // lay out the rows
             let (x, y) = (h.row_center_x(), h.row_center_y(1));
             h.click(x, y);
@@ -925,19 +946,22 @@ mod interaction_tests {
                 "tap pushes the forecast in"
             );
 
-            // Settle the push so the Back button is placed, then press Back.
+            // Settle the push, then press the window bar's Back.
             h.app.nav.snap();
             h.layout(420.0, 720.0);
-            let back = h.app.nav.geometry().back;
-            assert!(back.width() > 0.0, "a pushed forecast has a Back button");
-            h.click_named("nav-shell-back");
+            assert!(
+                !h.app.window_toolbar().leading.is_empty(),
+                "a pushed forecast has Back in the window bar"
+            );
+            Framed::harness_mut(&mut h.app)
+                .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+            h.redraw();
             assert_ne!(
                 h.app.nav.front_pane(),
                 NavPane::Content,
                 "Back returns to the city list"
             );
         }
-        // Case `accessible_city_selection_commits_and_navigates_without_pointer_input`.
         {
             let mut h = Harness::new(420.0, 720.0);
             let results = crate::sample::sample_geocode_results();
@@ -964,7 +988,6 @@ mod interaction_tests {
             assert_eq!(app.nav.front_pane(), ui::widget::NavPane::Content);
             assert!(!app.update(&state.doc, &state.root));
         }
-        // Case `arrow_keys_navigate_cities_and_fetch`.
         {
             let mut h = Harness::new(1280.0, 720.0); // side-by-side; detail follows
             h.redraw();
@@ -993,12 +1016,11 @@ mod interaction_tests {
                 "Arrow Up moves it back"
             );
         }
-        // Case `header_refresh_button_queues_a_fetch`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            h.click_named("weather.refresh");
+            h.press_bar(window_bar::REFRESH);
             let queued = h
                 .app
                 .core
@@ -1008,7 +1030,6 @@ mod interaction_tests {
                 .any(|r| matches!(r, Request::Forecast { .. }));
             assert!(queued, "clicking Refresh queues a forecast fetch");
         }
-        // Case `detail_keyboard_controls_scroll_hourly_forecast_and_refresh`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1037,7 +1058,6 @@ mod interaction_tests {
                 "R refreshes the forecast through the same queued network path as the button"
             );
         }
-        // Case `root_accessibility_announces_weather_status`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1054,7 +1074,6 @@ mod interaction_tests {
 
     #[test]
     fn live_weather_starts_empty_and_fetches_only_restored_or_selected_places() {
-        // Case `onboarding_scenario_matches_the_live_empty_state`.
         {
             // The onboarding capture shows the SAME place-less empty state a
             // live first run shows, not a half-cleared sample.
@@ -1074,7 +1093,6 @@ mod interaction_tests {
                 "each staged place offers its forecast"
             );
         }
-        // Case `initial_refresh_waits_for_restored_locations`.
         {
             let mut app = WeatherApp::new();
             app.live = true;
@@ -1096,7 +1114,6 @@ mod interaction_tests {
             app.ensure_service();
             assert!(app.core.borrow_mut().take_outbox().is_empty());
         }
-        // Case `a_new_window_starts_empty_with_no_fabricated_places_or_readings`.
         {
             // A window invents nothing: neither cities the user never added nor
             // readings for them. It shows the places the framework presents.
@@ -1110,7 +1127,6 @@ mod interaction_tests {
                 "no phantom Loading spinner with nothing to fetch"
             );
         }
-        // Case `selecting_a_city_queues_a_real_fetch`.
         {
             // Proves the select path issues a network request (not a mock): the
             // outbox holds a Forecast request the app would pump to the worker.
@@ -1131,7 +1147,6 @@ mod interaction_tests {
             );
             let _ = KPoint::ZERO;
         }
-        // Case `detail_renders_air_quality_from_real_data`.
         {
             // The sample carries a real air-quality reading; the detail render path
             // must consume it without panicking, and the selected place must
@@ -1143,7 +1158,6 @@ mod interaction_tests {
                 assert!(aq.has_any() && aq.european_aqi.is_some());
             }
             h.redraw(); // paints the air-quality tiles from the real reading
-            // The section extends the scrollable body.
             assert!(h.app.core.borrow().max_scroll() > 0.0);
         }
     }
@@ -1154,11 +1168,10 @@ mod interaction_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn adding_a_place_picks_geocoded_results() {
-        // Case `the_add_button_opens_the_shared_autocomplete`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             assert!(!h.app.core.borrow().search_is_focused());
-            h.click_named("weather.add-place");
+            h.press_bar(window_bar::ADD_PLACE);
             assert!(
                 h.app.core.borrow().search_is_focused(),
                 "Add place shows and focuses the field"
@@ -1174,7 +1187,6 @@ mod interaction_tests {
                 "the overlay lists every geocoded match"
             );
         }
-        // Case `picking_a_search_result_adds_and_selects_it`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             let before = h.app.core.borrow().model.locations.len();
@@ -1184,7 +1196,6 @@ mod interaction_tests {
                 .seed_search("Par", crate::sample::sample_geocode_results());
             h.redraw(); // place the field + populate the shared overlay
 
-            // Arrow-key navigation of the shared overlay, then Enter to accept.
             h.key(Key::Named(NamedKey::ArrowDown), None);
             assert_eq!(
                 h.app.core.borrow().search_highlight_label().as_deref(),
@@ -1205,7 +1216,6 @@ mod interaction_tests {
                 "the added city becomes selected"
             );
         }
-        // Case `arrow_nav_picks_the_disambiguated_result`.
         {
             // Two cities named "Paris" (France, then Texas): arrowing to the SECOND
             // and accepting must add THAT one.
@@ -1226,7 +1236,6 @@ mod interaction_tests {
                 "arrowing to the 2nd match adds Paris, Texas — not France"
             );
         }
-        // Case `typing_builds_the_query_and_escape_ends_it`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1261,7 +1270,6 @@ mod interaction_tests {
                 "Escape clears the query"
             );
         }
-        // Case `typing_then_enter_queues_a_debounced_geocode`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1296,7 +1304,6 @@ mod interaction_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn place_menu_and_swipe_gestures_edit_the_city_list() {
-        // Case `right_click_menu_remove_deletes_the_city_and_persists`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1335,7 +1342,6 @@ mod interaction_tests {
                 "the menu closes after an action"
             );
         }
-        // Case `right_click_menu_move_to_top_reorders`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1356,7 +1362,6 @@ mod interaction_tests {
                 "Move to top floats the entry to index 0"
             );
         }
-        // Case `right_click_menu_refresh_queues_a_fetch_for_that_city`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1380,7 +1385,6 @@ mod interaction_tests {
                 "the menu's Refresh queues a real forecast fetch for that city"
             );
         }
-        // Case `swipe_left_past_threshold_deletes_the_city`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1404,7 +1408,6 @@ mod interaction_tests {
                 "the swiped city is gone"
             );
         }
-        // Case `short_swipe_does_not_delete`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1422,15 +1425,12 @@ mod interaction_tests {
         }
     }
 
-    // ---- drag-to-reorder through handle_event ---------------------------
-
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn drag_reorder_reflows_live_commits_on_drop_and_cancels() {
-        // Case `vertical_drag_reorders_the_city`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1461,7 +1461,6 @@ mod interaction_tests {
                 "dropping below the list lands it at the end"
             );
         }
-        // Case `drag_reflows_the_list_live_and_commits_only_on_drop`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1508,13 +1507,11 @@ mod interaction_tests {
                 );
             }
 
-            // Releasing commits the tracked insertion into the model.
             h.release();
             let model = &h.app.core.borrow().model;
             assert_ne!(model.locations[0].id, first, "the drop reordered the model");
             assert_eq!(model.locations.len(), order_before.len());
         }
-        // Case `escape_cancels_an_in_flight_reorder_and_restores_order`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1538,7 +1535,6 @@ mod interaction_tests {
                 "a reorder is in flight before Escape"
             );
 
-            // Escape abandons the drag and snaps the list back.
             h.key(Key::Named(NamedKey::Escape), None);
             {
                 let core = h.app.core.borrow();
@@ -1578,7 +1574,6 @@ mod interaction_tests {
 
     #[test]
     fn provider_cache_is_device_local_across_remote_and_local_changes() {
-        // Case `remote_location_change_preserves_device_local_provider_cache`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             let oslo = crate::model::SavedLocation::new(
@@ -1622,7 +1617,6 @@ mod interaction_tests {
                 "local pending provider cache survived the durable-state adoption"
             );
         }
-        // Case `location_rows_offer_views_and_refreshes_beside_document_actions`.
         {
             let h = Harness::new(1280.0, 720.0);
             let rows = h.app.location_rows();
@@ -1641,7 +1635,6 @@ mod interaction_tests {
                 assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
             }
         }
-        // Case `local_navigation_does_not_drop_device_local_provider_cache`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             let id = h.app.core.borrow().model.locations[0].id;
@@ -1808,7 +1801,6 @@ mod refresh_tests {
             assert!(requests.try_iter().next().is_none());
         }
 
-        // Nothing to refresh, or a refresh already running, is refused.
         {
             let (mut app, _requests, _responses) = fixture(&WeatherModel::default());
             assert!(app.admit_refresh(None, |_| {}).is_err());
@@ -1818,6 +1810,59 @@ mod refresh_tests {
             let _heard = admit(&mut app, None);
             assert!(app.admit_refresh(None, |_| {}).is_err());
         }
+    }
+
+    #[test]
+    fn a_place_added_while_the_saved_places_change_still_gets_its_forecast() {
+        // The place was added and its forecast requested; then the saved
+        // places arrived from the document a little different (another
+        // window reordered them). That fences the reply already on its way,
+        // so the window must ask again rather than load forever.
+        let (mut app, requests, responses) = fixture(&WeatherModel::default());
+        app.initial_fetch_done = true;
+        let place = crate::model::SavedLocation::new(
+            "Amsterdam",
+            "North Holland",
+            "The Netherlands",
+            "NL",
+            52.37,
+            4.89,
+            "auto",
+        );
+        let id = place.id;
+        app.core.borrow_mut().model.add_location(place);
+        app.core.borrow_mut().refresh_selected_forecast();
+        app.tick_network();
+        let first: Vec<_> = requests.try_iter().collect();
+        assert!(!first.is_empty());
+
+        let mut presented = app.core.borrow().model.clone();
+        presented.locations[0].order_rank += 512.0;
+        app.adopt_resource_state(&presented);
+        app.tick_network();
+        let again: Vec<_> = requests.try_iter().collect();
+        assert!(
+            again.iter().any(|request| matches!(
+                request,
+                Request::Tracked { request, .. }
+                    if matches!(request.as_ref(), Request::Forecast { location_id, .. } if *location_id == id)
+            )),
+            "the fenced forecast is requested again"
+        );
+
+        for request in first.iter().chain(&again) {
+            responses.send(completion(request, None)).unwrap();
+        }
+        app.tick_network();
+        assert!(app.core.borrow().model.snapshots.contains_key(&id));
+        assert!(!app.core.borrow().is_fetching());
+
+        // A place that already has a forecast is not fetched again.
+        let mut presented = app.core.borrow().model.clone();
+        presented.locations[0].order_rank += 512.0;
+        app.adopt_resource_state(&presented);
+        app.tick_network();
+        assert!(requests.try_iter().next().is_none());
     }
 
     fn accepted_worker_death(restore: bool) {
@@ -2004,16 +2049,17 @@ mod framework_tests {
         .unwrap();
         assert_eq!(app.state().model().locations[0].id, tokyo);
         let removed = app.state().model().locations[3].id;
-        assert!(
-            app.call_on(
-                &location_resource_id(removed),
-                "remove",
-                serde_json::json!({})
-            )
-            .is_err(),
-            "removing a place asks for confirmation"
-        );
-        assert_eq!(app.state().model().locations.len(), 4);
+        app.call_on(
+            &location_resource_id(removed),
+            "remove",
+            serde_json::json!({}),
+        )
+        .expect("Undo takes a removed place back, so removing asks nothing");
+        assert_eq!(app.state().model().locations.len(), 3);
+        assert!(app.undo(), "removing a place is one undo step");
+        let restored = app.state().model();
+        assert_eq!(restored.locations.len(), 4);
+        assert_eq!(restored.locations[3].id, removed, "back where it was");
     }
 
     /// What an agent does to the places is history a person can read.

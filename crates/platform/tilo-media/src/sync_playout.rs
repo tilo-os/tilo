@@ -109,7 +109,6 @@ impl ClockMapping for LinearClockMapping {
 /// Which part of a stereo source a group member plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelRole {
-    /// The left channel of a stereo pair.
     Left,
     /// The right channel of a stereo pair.
     Right,
@@ -177,7 +176,6 @@ pub struct AudioFrame {
 /// What [`SyncPlayout::push`] did with a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PushOutcome {
-    /// Buffered for playout.
     Queued,
     /// A frame with the same media timestamp is already buffered.
     Duplicate,

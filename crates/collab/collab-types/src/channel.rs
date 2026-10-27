@@ -95,9 +95,7 @@ pub struct ArtifactRef {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemberRef {
-    /// The member's identity public key.
     pub identity: Ed25519PublicKey,
-    /// The granted role.
     pub role: Role,
     /// Id of the attestation that issued this grant; the validator resolves
     /// it against the channel's attestation store and walks the trust chain

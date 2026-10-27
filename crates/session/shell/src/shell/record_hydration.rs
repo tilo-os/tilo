@@ -23,17 +23,31 @@
 //! Anything that needs a record by id uses this: a collaborator's window
 //! following a document someone moved to another workspace, and a window
 //! continuing on another of the person's devices.
+//!
+//! The frame loop keeps records and presentations without waiting for the
+//! disk, and the app that opens them next reads them from it. So a record,
+//! or a View naming it, is `landing` until its writes have reached the
+//! disk, and nothing opens a window on it before then: hydration says
+//! [`Hydration::Waiting`], and callers that point a window at it wait too.
+//!
+//! Nor does the frame loop read the disk: a profile's store answers it
+//! Opening while the store's own thread opens or reads a document, and the
+//! loop asks the same store again on a later round (`open_profile`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tilo_actions::remote::{
     ActionHostError, Caller, CallerPrincipal, MAX_FETCHED_RECORD_BYTES, MAX_RECORD_PIECE_BYTES,
     Pending, PendingPoll, RecordPiece, RecordQuery, RemoteActionMessage,
 };
+
 use ui::application::NativeProfile;
-use ui::record::transfer;
+use ui::record::transfer::{self, Landing};
 use ui::record::{RecordCheckout, RecordId};
 
 use crate::shell::state::WorkspaceAuthority as _;
@@ -76,7 +90,7 @@ pub fn serve(
         reason: crate::shell::i18n::t("record-not-kept-here"),
     };
     let workspace = workspace
-        .filter(|workspace| workspace.room.to_string() == query.room)
+        .filter(|workspace| workspace.room().to_string() == query.room)
         .ok_or_else(not_kept)?;
     // Only a person the room lets read the app is answered; a room without
     // an owner is nobody else's to read.
@@ -93,7 +107,11 @@ pub fn serve(
         return Err(ActionHostError::NotPermitted);
     }
     let id = RecordId::parse(&query.record).ok_or_else(not_kept)?;
-    let root = profile_root(data_home.ok_or_else(not_kept)?, workspace.room, &query.app);
+    let root = profile_root(
+        data_home.ok_or_else(not_kept)?,
+        workspace.room(),
+        &query.app,
+    );
     if !root.is_dir() {
         return Err(not_kept());
     }
@@ -237,6 +255,109 @@ pub fn set_source(source: Arc<dyn RecordSource>) {
     }
 }
 
+/// Writes for one record still on their way to the disk, with the profile
+/// whose store accepted them: only that store knows how they went.
+struct Arriving {
+    address: RecordAddress,
+    profile: Rc<NativeProfile>,
+    landings: Vec<Landing>,
+}
+
+/// A profile the frame loop opened, kept while it comes back to it.
+struct OpenProfile {
+    root: PathBuf,
+    room: RoomId,
+    profile: Rc<NativeProfile>,
+    used: Instant,
+}
+
+/// How long a profile nobody asked for stays open.
+const PROFILE_IDLE: Duration = Duration::from_secs(60);
+
+thread_local! {
+    /// Kept on the frame loop that wrote them; a profile's store is not
+    /// shared between threads.
+    static ARRIVING: RefCell<Vec<Arriving>> = const { RefCell::new(Vec::new()) };
+    static PROFILES: RefCell<Vec<OpenProfile>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The profile of an app in `room` at `dir`, the same store each time this
+/// thread asks within a minute. A thread that must not wait on the disk is
+/// answered Opening while the store's own thread reads for it, and only
+/// that store remembers the work: asking again must reach it.
+pub(crate) fn open_profile(dir: &Path, room: RoomId) -> Option<Rc<NativeProfile>> {
+    PROFILES.with(|profiles| {
+        let mut profiles = profiles.borrow_mut();
+        profiles.retain(|open| open.used.elapsed() < PROFILE_IDLE);
+        if let Some(open) = profiles
+            .iter_mut()
+            .find(|open| open.room == room && open.root == dir)
+        {
+            open.used = Instant::now();
+            return Some(Rc::clone(&open.profile));
+        }
+        let profile = Rc::new(NativeProfile::open(dir, Some(&room.to_string())).ok()?);
+        profiles.push(OpenProfile {
+            root: dir.to_path_buf(),
+            room,
+            profile: Rc::clone(&profile),
+            used: Instant::now(),
+        });
+        Some(profile)
+    })
+}
+
+/// Wait for `landings` in `profile` before anything opens `address`.
+pub(crate) fn hold_until_landed(
+    address: &RecordAddress,
+    profile: Rc<NativeProfile>,
+    landings: impl IntoIterator<Item = Option<Landing>>,
+) {
+    let landings: Vec<Landing> = landings.into_iter().flatten().collect();
+    if Landing::all(profile.store().as_ref(), &landings) == durable_store::Durability::Durable {
+        return;
+    }
+    ARRIVING.with(|arriving| {
+        arriving.borrow_mut().push(Arriving {
+            address: address.clone(),
+            profile,
+            landings,
+        });
+    });
+}
+
+/// Whether writes for `address` are still on their way to the disk: `Err`
+/// when one failed, and nothing should open it as kept.
+pub(crate) fn landing(address: &RecordAddress) -> Result<bool, String> {
+    ARRIVING.with(|arriving| {
+        let mut arriving = arriving.borrow_mut();
+        let mut outcome = Ok(false);
+        arriving.retain(|entry| {
+            if &entry.address != address {
+                return true;
+            }
+            match Landing::all(entry.profile.store().as_ref(), &entry.landings) {
+                durable_store::Durability::Durable => false,
+                durable_store::Durability::Pending => {
+                    if outcome.is_ok() {
+                        outcome = Ok(true);
+                    }
+                    true
+                }
+                durable_store::Durability::Failed(reason) => {
+                    outcome = Err(reason);
+                    false
+                }
+            }
+        });
+        outcome
+    })
+}
+
+fn any_landing() -> bool {
+    ARRIVING.with(|arriving| !arriving.borrow().is_empty())
+}
+
 /// Where a hydration stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Hydration {
@@ -251,6 +372,9 @@ pub enum Hydration {
 struct Entry {
     address: RecordAddress,
     answer: Option<Pending<Result<Vec<u8>, String>>>,
+    /// An answer this device has yet to keep: its profile's store is still
+    /// opening the record for a thread that may not wait.
+    unkept: Option<Vec<u8>>,
     state: Hydration,
 }
 
@@ -288,7 +412,7 @@ fn hydrate_from(
         if was_waiting && entry.state != Hydration::Waiting {
             WAITING.fetch_sub(1, Ordering::Release);
         }
-        return entry.state.clone();
+        return once_landed(address, entry.state.clone());
     }
     let Some(source) = source() else {
         return Hydration::Failed("no other device of the room is reachable".into());
@@ -296,6 +420,7 @@ fn hydrate_from(
     let mut entry = Entry {
         address: address.clone(),
         answer: Some(source.fetch(address)),
+        unkept: None,
         state: Hydration::Waiting,
     };
     settle(&mut entry, data_home);
@@ -304,13 +429,23 @@ fn hydrate_from(
         WAITING.fetch_add(1, Ordering::Release);
     }
     entries.push(entry);
-    state
+    once_landed(address, state)
 }
 
-/// Whether any hydration still waits for an answer. One atomic load, so the
-/// frame loop may ask every round.
+/// A kept record is kept only once it has reached the disk.
+fn once_landed(address: &RecordAddress, state: Hydration) -> Hydration {
+    match (&state, landing(address)) {
+        (Hydration::Kept(_), Ok(true)) => Hydration::Waiting,
+        (Hydration::Kept(_), Err(reason)) => Hydration::Failed(reason),
+        _ => state,
+    }
+}
+
+/// Whether any hydration still waits for an answer or for the disk. One
+/// atomic load and a thread-local check, so the frame loop may ask every
+/// round.
 pub fn any_waiting() -> bool {
-    WAITING.load(Ordering::Acquire) > 0
+    WAITING.load(Ordering::Acquire) > 0 || any_landing()
 }
 
 /// Whether [`WAITING`] agrees with the entries it counts. Both are read under
@@ -338,22 +473,39 @@ pub fn forget(address: &RecordAddress) {
 }
 
 fn settle(entry: &mut Entry, data_home: &Path) {
-    let Some(answer) = entry.answer.as_mut() else {
-        return;
+    let bytes = match (entry.unkept.take(), entry.answer.as_mut()) {
+        (Some(bytes), _) => bytes,
+        (None, None) => return,
+        (None, Some(answer)) => {
+            let result = match answer.poll_ready() {
+                PendingPoll::Waiting => return,
+                PendingPoll::Ready(result) => result,
+                PendingPoll::Abandoned => Err("the network went away".into()),
+            };
+            entry.answer = None;
+            match result {
+                Ok(bytes) => bytes,
+                Err(reason) => {
+                    entry.state = Hydration::Failed(reason);
+                    return;
+                }
+            }
+        }
     };
-    let result = match answer.poll_ready() {
-        PendingPoll::Waiting => return,
-        PendingPoll::Ready(result) => result,
-        PendingPoll::Abandoned => Err("the network went away".into()),
-    };
-    entry.answer = None;
-    entry.state = match result.and_then(|bytes| keep(&entry.address, data_home, &bytes)) {
-        Ok(checkout) => Hydration::Kept(checkout),
+    entry.state = match keep(&entry.address, data_home, &bytes) {
+        Ok(Some(checkout)) => Hydration::Kept(checkout),
+        Ok(None) => {
+            entry.unkept = Some(bytes);
+            Hydration::Waiting
+        }
         Err(reason) => Hydration::Failed(reason),
     };
 }
 
 /// Keep bytes another device sent as `address` in this device's profile.
+/// The record is `landing` until it has reached the disk. `None` while the
+/// profile's store is still opening it for a thread that may not wait on
+/// the disk: keep the same bytes again later.
 ///
 /// # Errors
 /// Bytes that are not that live record, or a profile that cannot hold it.
@@ -361,56 +513,70 @@ pub fn keep(
     address: &RecordAddress,
     data_home: &Path,
     bytes: &[u8],
-) -> Result<RecordCheckout, String> {
+) -> Result<Option<RecordCheckout>, String> {
     let root = profile_root(data_home, address.room, &address.app_id);
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    let profile = NativeProfile::open(&root, Some(&address.room.to_string()))
-        .map_err(|error| error.to_string())?;
-    transfer::adopt_fetched(
+    let profile = open_profile(&root, address.room)
+        .ok_or_else(|| "this device's profile of the app cannot be opened".to_owned())?;
+    let (checkout, landing) = match transfer::adopt_fetched(
         profile.store(),
         &address.app_id,
         profile.workspace_id(),
         &address.record,
         bytes,
-    )
-    .map_err(|error| error.to_string())
+    ) {
+        Ok(kept) => kept,
+        Err(error) if error.is_opening() => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    hold_until_landed(address, profile, [landing]);
+    Ok(Some(checkout))
 }
 
 /// Give `instance` of `address`'s app on this device a saved presentation
 /// naming `address`'s record, unless it already names it: how a window
 /// opened here reopens on a record brought from elsewhere. `record` is the
-/// record as kept, when the caller has it.
+/// record as kept, when the caller has it. The presentation is `landing`
+/// until it has reached the disk; start the window after that. `false`
+/// while the profile's store is still reading for a thread that may not
+/// wait on the disk: ask again later.
 pub fn reopen_on(
     address: &RecordAddress,
     data_home: &Path,
     instance: u64,
     record: Option<&RecordCheckout>,
-) {
+) -> bool {
     let root = profile_root(data_home, address.room, &address.app_id);
-    let Ok(profile) = NativeProfile::open(&root, Some(&address.room.to_string())) else {
-        return;
+    let Some(profile) = open_profile(&root, address.room) else {
+        return true;
     };
-    let saved = profile.saved_view(instance).ok().flatten();
+    let saved = match profile.saved_view(instance) {
+        Ok(saved) => saved,
+        Err(error) if error.is_opening() => return false,
+        Err(_) => None,
+    };
     if saved
         .as_ref()
         .is_some_and(|view| view.record_id == address.record.as_str())
     {
-        return;
+        return true;
     }
     let record = if let Some(record) = record {
         record.clone()
     } else {
-        let Some(found) = transfer::read_by_id(
+        match transfer::read_by_id(
             profile.store(),
             &address.app_id,
             profile.workspace_id(),
             &address.record,
-        )
-        .ok()
-        .and_then(|doc| ui::record::identity(&doc)) else {
-            return;
-        };
-        found
+        ) {
+            Ok(doc) => match ui::record::identity(&doc) {
+                Some(found) => found,
+                None => return true,
+            },
+            Err(error) if error.is_opening() => return false,
+            Err(_) => return true,
+        }
     };
     let view = saved.unwrap_or_else(|| ui::application_view::SavedInstanceView {
         version: 2,
@@ -423,24 +589,37 @@ pub fn reopen_on(
         view: ui::view::View::default(),
         application: None,
     });
-    if let Err(error) = profile.adopt_view(&view, instance, &record) {
-        tracing::warn!(%error, "could not point the window at the record brought over");
+    match profile.adopt_view(&view, instance, &record) {
+        Ok(landing) => hold_until_landed(address, profile, [landing]),
+        Err(error) => {
+            tracing::warn!(%error, "could not point the window at the record brought over");
+        }
     }
+    true
 }
 
-/// Whether this device keeps `address` as a live record already.
-pub fn kept_here(address: &RecordAddress, data_home: &Path) -> bool {
+/// The live record this device keeps as `address` already, if it does:
+/// `None` while its profile's store is still reading it for a thread that
+/// may not wait on the disk. Hand what it found on to [`reopen_on`], which
+/// then need not read it again.
+pub fn kept_here(address: &RecordAddress, data_home: &Path) -> Option<Option<RecordCheckout>> {
     let root = profile_root(data_home, address.room, &address.app_id);
-    root.is_dir()
-        && NativeProfile::open(&root, Some(&address.room.to_string())).is_ok_and(|profile| {
-            transfer::read_by_id(
-                profile.store(),
-                &address.app_id,
-                profile.workspace_id(),
-                &address.record,
-            )
-            .is_ok()
-        })
+    if !root.is_dir() {
+        return Some(None);
+    }
+    let Some(profile) = open_profile(&root, address.room) else {
+        return Some(None);
+    };
+    match transfer::read_by_id(
+        profile.store(),
+        &address.app_id,
+        profile.workspace_id(),
+        &address.record,
+    ) {
+        Ok(doc) => Some(ui::record::identity(&doc)),
+        Err(error) if error.is_opening() => None,
+        Err(_) => Some(None),
+    }
 }
 
 #[cfg(test)]
@@ -484,9 +663,9 @@ mod tests {
     /// A holder device whose profile keeps one large record of the room.
     fn holder(workspace: &Workspace) -> (tempfile::TempDir, RecordCheckout, String) {
         let home = tempfile::tempdir().unwrap();
-        let root = profile_root(home.path(), workspace.room, APP);
+        let root = profile_root(home.path(), workspace.room(), APP);
         std::fs::create_dir_all(&root).unwrap();
-        let profile = NativeProfile::open(&root, Some(&workspace.room.to_string())).unwrap();
+        let profile = NativeProfile::open(&root, Some(&workspace.room().to_string())).unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), ui::record::RecordKind::new("test"));
         let records = ui::record::RecordOwners::new(root)
             .open(APP, profile.workspace_id())
@@ -541,7 +720,7 @@ mod tests {
             asked: Mutex::new(Vec::new()),
         });
         let address = RecordAddress {
-            room: workspace.room,
+            room: workspace.room(),
             app_id: APP.into(),
             record: checkout.id.clone(),
         };
@@ -560,7 +739,7 @@ mod tests {
         );
 
         let here = tempfile::tempdir().unwrap();
-        assert!(!kept_here(&address, here.path()));
+        assert_eq!(kept_here(&address, here.path()), Some(None));
         assert!(
             keep(
                 &RecordAddress {
@@ -573,11 +752,17 @@ mod tests {
             .is_err(),
             "bytes are kept only as the record they prove to be"
         );
-        assert_eq!(keep(&address, here.path(), &bytes).unwrap(), checkout);
-        assert!(kept_here(&address, here.path()));
+        assert_eq!(
+            keep(&address, here.path(), &bytes).unwrap(),
+            Some(checkout.clone())
+        );
+        assert_eq!(
+            kept_here(&address, here.path()),
+            Some(Some(checkout.clone()))
+        );
         let profile = NativeProfile::open(
-            &profile_root(here.path(), workspace.room, APP),
-            Some(&workspace.room.to_string()),
+            &profile_root(here.path(), workspace.room(), APP),
+            Some(&workspace.room().to_string()),
         )
         .unwrap();
         let doc = transfer::read_by_id(profile.store(), APP, profile.workspace_id(), &checkout.id)
@@ -589,7 +774,7 @@ mod tests {
             },
             Some(body.len())
         );
-        reopen_on(&address, here.path(), 44, None);
+        assert!(reopen_on(&address, here.path(), 44, None));
         assert_eq!(
             profile.saved_view(44).unwrap().map(|view| view.record_id),
             Some(checkout.id.as_str().to_owned()),
@@ -603,7 +788,7 @@ mod tests {
         workspace.set_owner(hex::encode([7; 32]));
         let (home, checkout, _) = holder(&workspace);
         let query = RecordQuery {
-            room: workspace.room.to_string(),
+            room: workspace.room().to_string(),
             app: APP.into(),
             record: checkout.id.as_str().into(),
             offset: 0,
@@ -663,7 +848,7 @@ mod tests {
     #[test]
     fn record_hydration_waiting_counter_tracks_entries() {
         let home = tempfile::tempdir().unwrap();
-        let room = Workspace::new(crate::shell::state::WorkspaceId(2), "Shared").room;
+        let room = Workspace::new(crate::shell::state::WorkspaceId(2), "Shared").room();
         let address = || RecordAddress {
             room,
             app_id: APP.into(),

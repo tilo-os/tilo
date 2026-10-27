@@ -345,6 +345,7 @@ impl FileView {
 
     // --- scaled metrics ---------------------------------------------------
 
+    #[cfg(test)]
     fn row_h(&self) -> f64 {
         self.geo.row * self.scale
     }
@@ -842,6 +843,9 @@ pub(super) fn paint_file_visual(
     rect: Rect,
     entry: &Entry,
 ) -> Rect {
+    if let Some(painted) = paint_entry_artwork(scene, transform, visual, rect, entry) {
+        return painted;
+    }
     if !entry.is_dir
         && let Some(ctx) = visual.thumbs
     {
@@ -859,15 +863,47 @@ pub(super) fn paint_file_visual(
         }
     }
     let glyph = Rect::from_center_size(rect.center(), (visual.glyph_px, visual.glyph_px));
+    let icon = if crate::applications::is_app(&entry.path) {
+        Icon::AppWindow
+    } else {
+        icon_for_path(&entry.path, entry.is_dir)
+    };
     draw_icon(
         scene,
         transform,
         glyph,
-        icon_for_path(&entry.path, entry.is_dir),
+        icon,
         visual.glyph_color,
         LUCIDE_DEFAULT_STROKE_PX * visual.scale.max(1.0),
     );
     glyph
+}
+
+/// Paint the artwork standing for `entry` (an app's icon), as large as fits
+/// `rect` and centred, once the preview service has read it off the UI
+/// thread. `None` while it has none, or none ready: the caller paints the
+/// glyph.
+fn paint_entry_artwork(
+    scene: &mut Scene,
+    transform: Affine,
+    visual: &VisualPaint<'_>,
+    rect: Rect,
+    entry: &Entry,
+) -> Option<Rect> {
+    let icon = entry.app.as_ref()?.icon.as_ref()?;
+    let ctx = visual.thumbs?;
+    let key = ThumbKey::of_path_meta(icon, 0, 0, ctx.service.edge());
+    let ThumbState::Ready(rgba) = ctx
+        .service
+        .request_file(key, FileCategory::Image, icon.clone())
+    else {
+        return None;
+    };
+    let img = FileView::thumb_peniko(ctx, key, &rgba);
+    let edge = rect.width().min(rect.height());
+    let square = Rect::from_center_size(rect.center(), (edge, edge));
+    ui::image_store::paint_image_contain(scene, transform, square, &img, 0.0);
+    Some(square)
 }
 
 /// Paint the sync-state emblem of a workspace file (cloud / downloading /
@@ -996,7 +1032,7 @@ impl Widget for FileView {
             && let Some(&table) = children.first()
         {
             let base = Point::new(self.rect.x0, self.rect.y0);
-            if self.list.apply_layout(taffy, table, base, self.row_h()) {
+            if self.list.apply_layout(taffy, table, base) {
                 self.rebuild = true;
             }
         }
@@ -1330,7 +1366,9 @@ fn accessible_entry_description(entry: &Entry) -> String {
         use fs_protocol::ProjectedReplicaEvidence;
         use fs_protocol::Residency;
         use fs_protocol::TransferPhase;
-        if availability.transfer.last_error.is_some() {
+        if availability.unavailable() {
+            facts.push(t("files-a11y-unavailable"));
+        } else if availability.transfer.last_error.is_some() {
             facts.push(t("files-a11y-transfer-failed"));
         } else {
             match availability.transfer.phase {
@@ -1598,6 +1636,7 @@ mod tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -1967,6 +2006,7 @@ mod tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         };
@@ -2049,6 +2089,7 @@ mod tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -2438,6 +2479,25 @@ mod tests {
             true,
         );
         assert_eq!(availability_badge(&failed, &theme).0, Icon::Ban);
+
+        // A file whose bytes no device delivered is unavailable while that
+        // device is offline; any other failure stays a failed transfer.
+        let mut unavailable = failed.clone();
+        unavailable.transfer.last_error = Some(fs_protocol::NO_PEER_DELIVERED_ERROR.into());
+        let described = |availability: AvailabilityProjectionV1| {
+            let mut entry = ent("report.pdf", false);
+            entry.availability = Some(availability);
+            accessible_entry_description(&entry)
+        };
+        let offline = described(unavailable);
+        assert!(
+            offline.contains("Unavailable until a device that keeps it is online"),
+            "{offline}"
+        );
+        assert!(!offline.contains("Transfer failed"), "{offline}");
+        let broken = described(failed);
+        assert!(broken.contains("Transfer failed"), "{broken}");
+        assert!(!broken.contains("Unavailable"), "{broken}");
     }
 
     fn dragging_a_directory_row_begins_a_pin_drag() {

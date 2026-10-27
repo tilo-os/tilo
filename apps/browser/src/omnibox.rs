@@ -1,18 +1,24 @@
-//! The address bar's brain: what a typed string means, which visited pages
-//! it recalls, which searches the engine offers, and the one ranked list of
-//! rows that results.
+//! The address bar's brain: what a typed string means, which visited and
+//! saved pages it recalls, which searches the engine offers, and the one
+//! ranked list of rows that results.
 //!
 //! Everything here is pure and synchronous so it can run inside a frame:
 //!
 //! * [`HistoryIndex`] normalises the visited pages once per history change
 //!   and answers each keystroke incrementally: a query that extends the last
 //!   one only rescans that query's matches, never the whole history.
+//! * [`BookmarkIndex`] holds the pages the person saved, matched the same
+//!   way a visited page is — comparing folded text, so case and diacritics
+//!   do not have to be typed (`annual` recalls "Annual report", `strasse`
+//!   recalls "Straße").
 //! * Matches are ordered by [`Tier`] first (a URL or host prefix beats a
 //!   word prefix beats a substring) and by *frecency* (visit count weighted
 //!   by recency) within a tier, so `you` recalls `youtube.com` before a page
 //!   that merely mentions "you" in its title however often it was opened.
-//! * [`build_rows`] merges the typed intent, history and the engine's search
-//!   suggestions into one deduplicated list of [`Row`]s.
+//!   A saved page and a visited one rank together; inside a tier the saved
+//!   page wins.
+//! * [`build_rows`] merges the typed intent, the saved and visited pages and
+//!   the engine's search suggestions into one deduplicated list of [`Row`]s.
 //! * [`Debounce`] decides when a search-suggestion fetch may start and which
 //!   result is still wanted, so typing never waits on the network.
 
@@ -22,8 +28,9 @@ use crate::history::HistoryEntry;
 
 /// Rows the dropdown shows at most.
 pub const MAX_ROWS: usize = 8;
-/// History rows a query may take before search suggestions fill the rest.
-const MAX_HISTORY_ROWS: usize = 4;
+/// Page rows (a saved or visited page) a query may take before search
+/// suggestions fill the rest.
+const MAX_PAGE_ROWS: usize = 4;
 /// Quiet time after the last keystroke before the engine is asked.
 pub const DEBOUNCE: Duration = Duration::from_millis(140);
 /// A frecency half-life: a visit loses half its pull every week.
@@ -39,7 +46,6 @@ pub enum Tier {
     Prefix,
     /// The host contains the text (`you` or `tube` in `m.youtube.com`).
     HostWord,
-    /// A word of the title or address starts with the text.
     Word,
     /// The text occurs inside the title or address.
     Substring,
@@ -54,8 +60,13 @@ pub enum RowKind {
     Search,
     /// A page visited before.
     History,
+    /// A page the person saved (a bookmark).
+    Bookmark,
     /// A search the engine suggests.
     Suggestion,
+    /// After an extension's keyword: what Enter sends it, or one of its
+    /// suggestions (`chrome.omnibox`).
+    Extension,
 }
 
 /// One line of the dropdown.
@@ -64,10 +75,14 @@ pub struct Row {
     pub kind: RowKind,
     /// The primary line: a page title, a query, or the address to open.
     pub title: String,
-    /// The secondary line: a page's address, or nothing.
+    /// The secondary line: a page's address (for [`RowKind::Go`] the one it
+    /// opens), or nothing.
     pub detail: String,
-    /// What choosing the row opens: an address for [`RowKind::Go`] and
-    /// [`RowKind::History`], the query for the search kinds.
+    /// What choosing the row opens: the address as typed for
+    /// [`RowKind::Go`], so a scheme the Browser chose for it stays its
+    /// choice ([`address_target`]); the address for [`RowKind::History`] and
+    /// [`RowKind::Bookmark`], the query for the search kinds, the keyword and
+    /// what it sends for [`RowKind::Extension`].
     pub url: String,
 }
 
@@ -76,11 +91,18 @@ impl Row {
     pub fn history(entry: &HistoryEntry) -> Self {
         Self {
             kind: RowKind::History,
-            title: if entry.title.trim().is_empty() {
-                display_url(&entry.url)
-            } else {
-                entry.title.clone()
-            },
+            title: page_title(&entry.title, &entry.url),
+            detail: display_url(&entry.url),
+            url: entry.url.clone(),
+        }
+    }
+
+    /// A saved page as a row: its title (its address when it has none) over
+    /// the address it opens.
+    pub fn bookmark(entry: &BookmarkMatch) -> Self {
+        Self {
+            kind: RowKind::Bookmark,
+            title: page_title(&entry.title, &entry.url),
             detail: display_url(&entry.url),
             url: entry.url.clone(),
         }
@@ -93,6 +115,16 @@ impl Row {
             detail: String::new(),
             url: query.to_owned(),
         }
+    }
+}
+
+/// What a page's row says first: its title, or its address when it has no
+/// title to show.
+fn page_title(title: &str, url: &str) -> String {
+    if title.trim().is_empty() {
+        display_url(url)
+    } else {
+        title.to_owned()
     }
 }
 
@@ -288,6 +320,105 @@ fn single_tier(item: &Indexed, q: &str) -> Option<Tier> {
     None
 }
 
+/// Text folded the way every query is read: case- and diacritic-insensitive
+/// (`ui::search::fold_search_text`), so a person types `strasse` for
+/// "Straße" and `grosse` for "Große".
+fn fold(text: &str) -> String {
+    ui::search::fold_search_text(text)
+}
+
+/// A saved page that matches, and how well.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookmarkMatch {
+    pub url: String,
+    pub title: String,
+    pub tier: Tier,
+}
+
+/// The pages the person saved (their bookmarks), prepared for per-keystroke
+/// matching the way [`HistoryIndex`] prepares the visited ones: rebuilt when
+/// the bookmarks change, matched against folded text so neither case nor
+/// diacritics have to be typed.
+///
+/// Unlike a visit, a bookmark carries no frecency: it was saved once, on
+/// purpose, and is ranked inside its [`Tier`] by the shorter, then the
+/// alphabetically first address — a deterministic order that does not move
+/// as pages are opened.
+#[derive(Default)]
+pub struct BookmarkIndex {
+    /// The saved pages, one per address, as they are shown.
+    entries: Vec<(String, String)>,
+    /// The same pages as matching reads them: folded address and title.
+    indexed: Vec<Indexed>,
+}
+
+impl BookmarkIndex {
+    /// Index `pages` — each a saved page's address and title — replacing
+    /// everything held. Call when the bookmarks changed, not per keystroke.
+    /// Two saves of one address are one row: the first wins.
+    pub fn rebuild<'a>(&mut self, pages: impl IntoIterator<Item = (&'a str, &'a str)>) {
+        self.entries.clear();
+        self.indexed.clear();
+        for (url, title) in pages {
+            let key = fold(&normalize_url(url));
+            if self.indexed.iter().any(|held| held.key == key) {
+                continue;
+            }
+            self.indexed.push(Indexed {
+                key,
+                title: fold(title),
+            });
+            self.entries.push((url.to_owned(), title.to_owned()));
+        }
+    }
+
+    /// How many saved pages are indexed, for tests and frame-budget checks.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether no page is saved.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The saved pages matching `query`, best first, at most `limit`.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<BookmarkMatch> {
+        let folded = fold(query.trim());
+        let folded = folded.strip_prefix("www.").unwrap_or(&folded);
+        let folded = folded.split_once("://").map_or(folded, |(_, rest)| rest);
+        if folded.is_empty() {
+            return Vec::new();
+        }
+        let terms: Vec<&str> = folded.split_whitespace().collect();
+        let mut ranked: Vec<(usize, Tier)> = self
+            .indexed
+            .iter()
+            .enumerate()
+            .filter_map(|(at, item)| tier_of(item, &terms).map(|tier| (at, tier)))
+            .collect();
+        let entries = &self.entries;
+        let url = |at: usize| entries.get(at).map_or("", |(url, _)| url.as_str());
+        ranked.sort_unstable_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then(url(a.0).len().cmp(&url(b.0).len()))
+                .then(url(a.0).cmp(url(b.0)))
+        });
+        ranked.truncate(limit);
+        ranked
+            .into_iter()
+            .filter_map(|(at, tier)| {
+                let (url, title) = entries.get(at)?;
+                Some(BookmarkMatch {
+                    url: url.clone(),
+                    title: title.clone(),
+                    tier,
+                })
+            })
+            .collect()
+    }
+}
+
 /// Whether `text` is meant as an address rather than a search.
 pub fn looks_like_address(text: &str) -> bool {
     let text = text.trim();
@@ -302,14 +433,41 @@ pub fn looks_like_address(text: &str) -> bool {
         })
 }
 
-/// The address a typed address row opens.
-fn address_target(text: &str) -> String {
+/// The address a typed address opens: as typed when it names its scheme;
+/// otherwise `http://` for an address on this machine or the local network
+/// (a development server, a router, a printer), which serve no TLS, and
+/// `https://` for any other site.
+pub(crate) fn address_target(text: &str) -> String {
     let text = text.trim();
     if text.contains("://") {
         text.to_owned()
+    } else if local_address(text) {
+        format!("http://{text}")
     } else {
         format!("https://{text}")
     }
+}
+
+/// Whether a typed address without a scheme names this machine (`localhost`),
+/// a device announced on the local network (`printer.local`) or an IP address.
+fn local_address(text: &str) -> bool {
+    let authority = text.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(literal) = authority.strip_prefix('[') {
+        return literal
+            .split_once(']')
+            .is_some_and(|(ip, _)| ip.parse::<std::net::Ipv6Addr>().is_ok());
+    }
+    let host = authority
+        .rsplit_once(':')
+        .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()))
+        .map_or(authority, |(host, _)| host)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let top_level = host.rsplit('.').next().unwrap_or_default();
+    matches!(top_level, "localhost" | "local") || host.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 /// The text to show with the untyped remainder selected, when the best
@@ -361,12 +519,18 @@ pub fn inline_completion(typed: &str, best: Option<&Match>) -> Option<String> {
 /// * A typed address leads with a "go to" row; typed words lead with a
 ///   "search for" row, unless the best history match completes the text, in
 ///   which case the page leads.
-/// * History comes next, then the engine's suggestions.
-/// * Rows naming the same address or query appear once, and the page the
-///   window already shows is not offered back.
+/// * Saved and visited pages come next, ranked together: the typed text has
+///   to match a page the same way whether it was bookmarked or merely
+///   visited, and inside a [`Tier`] a page the person saved ranks above one
+///   the browser remembers for them, then the more frequent and recent visit
+///   first. Then the engine's suggestions.
+/// * Rows naming the same address or query appear once — a saved page stands
+///   for its address, visited or not — and the page the window already shows
+///   is not offered back.
 pub fn build_rows(
     typed: &str,
     history: &[Match],
+    bookmarks: &[BookmarkMatch],
     remote: &[String],
     current_uri: &str,
     limit: usize,
@@ -387,19 +551,55 @@ pub fn build_rows(
         go = Some(Row {
             kind: RowKind::Go,
             title: display_url(&url),
-            detail: url.clone(),
-            url,
+            detail: url,
+            url: typed.to_owned(),
         });
     }
-    let mut pages: Vec<Row> = Vec::new();
+    // One pool of page rows, best first: what matched decides the tier, and
+    // a saved page beats a visited one inside a tier. A page the person saved
+    // is shown as the saved page, whatever the visit's title makes of the
+    // same address.
+    let saved_keys: Vec<String> = bookmarks
+        .iter()
+        .map(|found| destination_key(&found.url))
+        .collect();
+    let mut pool: Vec<(Tier, bool, f64, &str, Row)> = Vec::new();
     for found in history {
-        let key = destination_key(&found.entry.url);
-        if seen_urls.contains(&key) {
+        if saved_keys.contains(&destination_key(&found.entry.url)) {
             continue;
         }
-        seen_urls.push(key);
-        pages.push(Row::history(&found.entry));
-        if pages.len() == MAX_HISTORY_ROWS {
+        pool.push((
+            found.tier,
+            false,
+            found.frecency,
+            found.entry.url.as_str(),
+            Row::history(&found.entry),
+        ));
+    }
+    for found in bookmarks {
+        pool.push((
+            found.tier,
+            true,
+            0.0,
+            found.url.as_str(),
+            Row::bookmark(found),
+        ));
+    }
+    pool.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(b.1.cmp(&a.1))
+            .then(b.2.total_cmp(&a.2))
+            .then(a.3.len().cmp(&b.3.len()))
+            .then(a.3.cmp(b.3))
+    });
+    let mut pages: Vec<Row> = Vec::new();
+    for (_, _, _, url, row) in pool {
+        if seen_urls.iter().any(|seen| *seen == destination_key(url)) {
+            continue;
+        }
+        seen_urls.push(destination_key(url));
+        pages.push(row);
+        if pages.len() == MAX_PAGE_ROWS {
             break;
         }
     }
@@ -439,16 +639,18 @@ pub fn lead_with_address(rows: &mut Vec<Row>, address: &str) {
     let url = address_target(address);
     let shown = display_url(&url);
     let key = destination_key(&url);
-    rows.retain(|row| {
-        !matches!(row.kind, RowKind::Go | RowKind::History) || destination_key(&row.url) != key
+    rows.retain(|row| match row.kind {
+        RowKind::Go => destination_key(&address_target(&row.url)) != key,
+        RowKind::History | RowKind::Bookmark => destination_key(&row.url) != key,
+        RowKind::Search | RowKind::Suggestion | RowKind::Extension => true,
     });
     rows.insert(
         0,
         Row {
             kind: RowKind::Go,
             title: shown,
-            detail: url.clone(),
-            url,
+            detail: url,
+            url: address.trim().to_owned(),
         },
     );
     rows.truncate(MAX_ROWS);
@@ -734,9 +936,17 @@ mod tests {
     fn typed_address_leads_and_pages_are_not_repeated() {
         let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
         let hits = idx.search("youtube.com", 8, NOW);
-        let rows = build_rows("youtube.com", &hits, &[], "https://other.test/", MAX_ROWS);
+        let rows = build_rows(
+            "youtube.com",
+            &hits,
+            &[],
+            &[],
+            "https://other.test/",
+            MAX_ROWS,
+        );
         assert_eq!(rows[0].kind, RowKind::Go);
-        assert_eq!(rows[0].url, "https://youtube.com");
+        assert_eq!(rows[0].url, "youtube.com", "opened as typed");
+        assert_eq!(rows[0].detail, "https://youtube.com");
         // The visited page is the address typed: shown once, as "go to".
         assert_eq!(
             rows.iter().filter(|r| r.kind == RowKind::History).count(),
@@ -749,7 +959,7 @@ mod tests {
     fn words_lead_with_search_unless_a_page_completes_them() {
         let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
         let hits = idx.search("you", 8, NOW);
-        let rows = build_rows("you", &hits, &["you tube".into()], "", MAX_ROWS);
+        let rows = build_rows("you", &hits, &[], &["you tube".into()], "", MAX_ROWS);
         assert_eq!(rows[0].kind, RowKind::History);
         assert_eq!(rows[0].title, "YouTube");
         assert_eq!(rows[1].kind, RowKind::Search);
@@ -761,7 +971,7 @@ mod tests {
             NOW,
         )]);
         let hits = idx.search("rust", 8, NOW);
-        let rows = build_rows("rust", &hits, &[], "", MAX_ROWS);
+        let rows = build_rows("rust", &hits, &[], &[], "", MAX_ROWS);
         assert_eq!(rows[0].kind, RowKind::Search);
         assert_eq!(rows[1].kind, RowKind::History);
     }
@@ -771,7 +981,7 @@ mod tests {
         let remote: Vec<String> = ["Rust", "rust lang", "RUST LANG", "rust book", " "]
             .map(String::from)
             .to_vec();
-        let rows = build_rows("rust", &[], &remote, "", MAX_ROWS);
+        let rows = build_rows("rust", &[], &[], &remote, "", MAX_ROWS);
         let kinds: Vec<_> = rows.iter().map(|r| (r.kind, r.title.as_str())).collect();
         assert_eq!(
             kinds,
@@ -782,14 +992,17 @@ mod tests {
             ]
         );
         let many: Vec<String> = (0..20).map(|i| format!("rust {i}")).collect();
-        assert_eq!(build_rows("rust", &[], &many, "", MAX_ROWS).len(), MAX_ROWS);
+        assert_eq!(
+            build_rows("rust", &[], &[], &many, "", MAX_ROWS).len(),
+            MAX_ROWS
+        );
     }
 
     #[test]
     fn current_page_is_not_offered_back() {
         let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
         let hits = idx.search("you", 8, NOW);
-        let rows = build_rows("you", &hits, &[], "https://YOUTUBE.com:443", MAX_ROWS);
+        let rows = build_rows("you", &hits, &[], &[], "https://YOUTUBE.com:443", MAX_ROWS);
         assert!(rows.iter().all(|r| r.kind != RowKind::History));
     }
 
@@ -803,7 +1016,7 @@ mod tests {
         ];
         let mut idx = index(&urls.map(|url| entry(url, "Report", 1, NOW)));
         let hits = idx.search("report", 8, NOW);
-        let mut rows = build_rows("report", &hits, &[], "", MAX_ROWS);
+        let mut rows = build_rows("report", &hits, &[], &[], "", MAX_ROWS);
         for url in urls {
             assert!(rows.iter().any(|row| row.url == url), "missing {url}");
         }
@@ -811,11 +1024,154 @@ mod tests {
         for url in urls {
             assert_eq!(rows.iter().filter(|row| row.url == url).count(), 1, "{url}");
         }
-        let rows = build_rows("report", &hits, &[], urls[0], MAX_ROWS);
+        let rows = build_rows("report", &hits, &[], &[], urls[0], MAX_ROWS);
         assert!(!rows.iter().any(|row| row.url == urls[0]));
         for url in &urls[1..] {
             assert!(rows.iter().any(|row| row.url == *url), "missing {url}");
         }
+    }
+
+    /// The saved pages `pages` that match `query`, as the bar's index finds
+    /// them.
+    fn saved(pages: &[(&str, &str)], query: &str) -> Vec<BookmarkMatch> {
+        let mut index = BookmarkIndex::default();
+        index.rebuild(pages.iter().copied());
+        index.search(query, MAX_ROWS)
+    }
+
+    /// The worst of what the audit found: a page the person saved was not in
+    /// the address bar's list at all.
+    #[test]
+    fn a_saved_page_is_suggested_and_leads_a_visited_one() {
+        let mut idx = index(&[
+            entry(
+                "https://news.example.test/annual-report",
+                "Annual report",
+                90,
+                NOW,
+            ),
+            entry(
+                "https://blog.example.test/",
+                "The annual report explained",
+                90,
+                NOW,
+            ),
+        ]);
+        let hits = idx.search("annual", 8, NOW);
+        let bookmarks = saved(
+            &[("https://reports.example.test/yearly", "Annual report")],
+            "annual",
+        );
+        assert_eq!(
+            bookmarks.len(),
+            1,
+            "the bookmark is recalled: {bookmarks:?}"
+        );
+        let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
+        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                RowKind::Search,
+                RowKind::Bookmark,
+                RowKind::History,
+                RowKind::History
+            ],
+            "{rows:?}"
+        );
+        let bookmark = &rows[1];
+        assert_eq!(bookmark.title, "Annual report");
+        assert_eq!(bookmark.detail, "reports.example.test/yearly");
+        assert_eq!(bookmark.url, "https://reports.example.test/yearly");
+    }
+
+    /// Within a match tier a saved page comes before a merely visited one,
+    /// however often that page was opened; a better match still wins.
+    #[test]
+    fn a_saved_page_ranks_within_its_tier() {
+        let mut idx = index(&[
+            entry("https://annual.test/", "Home", 500, NOW),
+            entry("https://news.example.test/", "Annual report", 500, NOW),
+        ]);
+        let hits = idx.search("annual", 8, NOW);
+        let bookmarks = saved(
+            &[("https://reports.example.test/yearly", "Annual report")],
+            "annual",
+        );
+        let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
+        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+        // The address `annual.test` is a prefix match, so the pages lead the
+        // search row; the saved page (a word match) comes before the visited
+        // page of the same tier.
+        assert_eq!(
+            kinds,
+            [
+                RowKind::History,
+                RowKind::Bookmark,
+                RowKind::History,
+                RowKind::Search
+            ],
+            "{rows:?}"
+        );
+        assert_eq!(rows[0].url, "https://annual.test/");
+        assert_eq!(rows[1].url, "https://reports.example.test/yearly");
+    }
+
+    /// A page that is both saved and visited is one row, the saved one.
+    #[test]
+    fn one_address_is_one_saved_row() {
+        let url = "https://example.test/Annual";
+        for history_title in ["Annual report", "Notes"] {
+            let mut idx = index(&[entry(url, history_title, 9, NOW)]);
+            let hits = idx.search("annual", 8, NOW);
+            let bookmarks = saved(&[(url, "Annual report")], "annual");
+            let rows = build_rows("annual", &hits, &bookmarks, &[], "", MAX_ROWS);
+            let pages: Vec<&Row> = rows
+                .iter()
+                .filter(|row| !matches!(row.kind, RowKind::Search | RowKind::Suggestion))
+                .collect();
+            assert_eq!(pages.len(), 1, "{history_title}: {rows:?}");
+            assert_eq!(pages[0].kind, RowKind::Bookmark);
+            assert_eq!(pages[0].title, "Annual report");
+        }
+    }
+
+    /// Matching a saved page reads case and diacritics the way the platform's
+    /// own search does.
+    #[test]
+    fn saved_pages_match_without_case_or_diacritics() {
+        let pages = [
+            ("https://example.test/strasse", "Große Straße"),
+            ("https://example.test/other", "Unrelated"),
+        ];
+        for query in ["grosse", "Große", "strasse", "STRASSE", "straße"] {
+            let found = saved(&pages, query);
+            assert_eq!(
+                found.iter().map(|hit| hit.url.as_str()).collect::<Vec<_>>(),
+                vec!["https://example.test/strasse"],
+                "{query}"
+            );
+        }
+        assert!(
+            saved(&pages, "  ").is_empty(),
+            "an empty query recalls nothing"
+        );
+        assert!(saved(&pages, "zzz").is_empty());
+    }
+
+    /// Two libraries saving one page are one suggestion.
+    #[test]
+    fn the_same_page_saved_twice_is_one_row() {
+        let mut index = BookmarkIndex::default();
+        index.rebuild([
+            ("https://example.test/air", "Annual report"),
+            ("https://example.test/air", "Annual report (workspace)"),
+            ("https://www.example.test/air", "Annual report"),
+        ]);
+        assert_eq!(index.len(), 1, "one address, one saved page");
+        let found = index.search("annual", MAX_ROWS);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "Annual report", "the first save wins");
     }
 
     #[test]
@@ -833,7 +1189,8 @@ mod tests {
         assert_eq!(completion, "example.test/Reports/Annual?token=AbC");
         let mut rows = Vec::new();
         lead_with_address(&mut rows, &completion);
-        assert_eq!(rows[0].url, url);
+        assert_eq!(rows[0].detail, url);
+        assert_eq!(address_target(&rows[0].url), url);
         assert_eq!(display_url(url), "example.test/Reports/Annual?token=AbC");
         let hits = index.search("example.test/re", 8, NOW);
         assert_eq!(inline_completion("example.test/re", hits.first()), None);
@@ -868,6 +1225,29 @@ mod tests {
         assert!(!looks_like_address("rust lang"));
         assert!(!looks_like_address("you"));
         assert!(!looks_like_address("what is e.g. this"));
+    }
+
+    #[test]
+    fn a_local_address_opens_over_http_and_a_site_over_https() {
+        for (typed, opened) in [
+            ("localhost:3000", "http://localhost:3000"),
+            ("localhost", "http://localhost"),
+            (
+                "app.localhost:8080/login",
+                "http://app.localhost:8080/login",
+            ),
+            ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("192.168.1.1", "http://192.168.1.1"),
+            ("[::1]:8443", "http://[::1]:8443"),
+            ("printer.local/status", "http://printer.local/status"),
+            ("example.com", "https://example.com"),
+            ("localhost.example.com", "https://localhost.example.com"),
+            ("1.2.3.4.example", "https://1.2.3.4.example"),
+            ("http://intranet.example", "http://intranet.example"),
+            ("https://localhost:3000", "https://localhost:3000"),
+        ] {
+            assert_eq!(address_target(typed), opened, "{typed}");
+        }
     }
 
     #[test]
@@ -934,9 +1314,8 @@ mod tests {
         assert!(d.due(t0 + Duration::from_secs(1), DEBOUNCE).is_none());
     }
 
-    #[test]
-    fn matching_ten_thousand_pages_fits_a_frame() {
-        let entries: Vec<HistoryEntry> = (0..10_000)
+    fn ten_thousand_pages() -> Vec<HistoryEntry> {
+        (0..10_000)
             .map(|i| {
                 entry(
                     &format!("https://site{i}.example.com/p/{i}"),
@@ -945,16 +1324,42 @@ mod tests {
                     NOW - u64::from(i),
                 )
             })
-            .collect();
-        let mut idx = index(&entries);
+            .collect()
+    }
+
+    /// Each keystroke over a large history examines only what the previous
+    /// one matched and hands back only the rows shown.
+    #[test]
+    fn matching_ten_thousand_pages_narrows_per_keystroke() {
+        let mut idx = index(&ten_thousand_pages());
+        for q in ["s", "si", "sit", "site"] {
+            assert_eq!(idx.search(q, MAX_ROWS, NOW).len(), MAX_ROWS);
+        }
+        assert_eq!(idx.scanned, 10_000, "every page still matches `site`");
+        assert_eq!(idx.search("site1", MAX_ROWS, NOW).len(), MAX_ROWS);
+        assert_eq!(idx.scanned, 10_000);
+        // `site1`, `site10`..`site19`, `site100`..`site199`, `site1000`..`site1999`.
+        assert_eq!(idx.search("site12", MAX_ROWS, NOW).len(), MAX_ROWS);
+        assert_eq!(
+            idx.scanned,
+            1 + 10 + 100 + 1000,
+            "only `site1` matches are examined"
+        );
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture"]
+    fn matching_ten_thousand_pages_fits_a_frame() {
+        let mut idx = index(&ten_thousand_pages());
         let start = Instant::now();
         for q in ["s", "si", "sit", "site", "site1"] {
             idx.search(q, MAX_ROWS, NOW);
         }
+        let took = start.elapsed();
+        println!("five keystrokes over 10k pages: {took:?}");
         assert!(
-            start.elapsed() < Duration::from_millis(250),
-            "five keystrokes over 10k pages took {:?}",
-            start.elapsed()
+            took < Duration::from_millis(250),
+            "five keystrokes over 10k pages took {took:?}"
         );
     }
 }

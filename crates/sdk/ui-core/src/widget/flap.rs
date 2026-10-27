@@ -182,6 +182,11 @@ impl FlapState {
         } else if (self.openness.target() - target).abs() > f64::EPSILON {
             // The resolved state moved without a choice (a layout default).
             self.openness.snap(target);
+        } else if motion.reduced() && self.openness.is_moving(now) {
+            // Reduced motion turned on while a slide was under way: nothing
+            // moves any more, so the slide lands where it was going instead
+            // of finishing on the pace it started with.
+            self.openness.snap(target);
         }
         self.drawn = self.openness.get(now).clamp(0.0, 1.0);
         self.drawn_at = Some(now);
@@ -291,6 +296,29 @@ mod tests {
         assert!(!flap.is_animating(layout));
     }
 
+    /// Reduced motion turned on mid-slide lands the slide on the next frame:
+    /// a panel never keeps moving after the person asked for nothing to
+    /// move, and what is laid out over it (a drawer's rows) is where it is
+    /// drawn.
+    #[test]
+    fn a_slide_under_way_lands_when_motion_is_reduced() {
+        let layout = SplitLayout::Docked;
+        let mut flap = FlapState::closed_by_default();
+        flap.reconcile(layout);
+        flap.open();
+        let (toggled, _) = flap.asked.expect("a choice starts the slide");
+        let first_frame = toggled + Duration::from_millis(11);
+        assert!(flap.advance(layout, first_frame, motion()), "sliding");
+        assert!(flap.reveal() < 1.0);
+        let reduced = EffectiveMotion::new(Motion::default(), true);
+        assert!(
+            !flap.advance(layout, first_frame + Duration::from_millis(11), reduced),
+            "the next frame under reduced motion is at rest"
+        );
+        assert_eq!(flap.reveal(), 1.0);
+        assert!(!flap.is_animating(layout));
+    }
+
     /// The panel slide is the same gesture both ways: closing no longer
     /// starts slowly and slams shut (the old curve was an ease-out played
     /// backwards, an ease-in).
@@ -351,6 +379,8 @@ mod tests {
             assert!(!flap.is_animating(layout));
             assert_eq!(flap.reveal_in(layout), 1.0);
             flap.close();
+            // Asked for on the frame it settled at, not on the real clock.
+            flap.asked = Some((later, MotionSource::Pointer));
             assert!(!flap.advance(layout, later + Duration::from_secs(2), motion()));
             assert!(!flap.is_animating(layout));
             assert_eq!(flap.reveal_in(layout), 0.0);

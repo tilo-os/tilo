@@ -81,6 +81,7 @@ pub mod seg_choice;
 pub mod status_log;
 pub mod step_indicator;
 pub mod timezones;
+pub mod unattended;
 pub mod windows_hint_source;
 
 pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};

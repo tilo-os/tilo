@@ -28,7 +28,7 @@ uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.37.0", features = ["bundled", "hooks"] }
 # Network drivers. Both are synchronous, matching the sync `rusqlite`
 # path so the whole engine layer stays blocking (the `postgres` crate wraps
 # `tokio-postgres` behind a private runtime; `mysql` is natively sync). TLS

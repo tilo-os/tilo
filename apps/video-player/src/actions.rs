@@ -29,7 +29,7 @@ pub enum VideoEffect {
     ///
     /// Opens a video file or stream on this device and answers once its
     /// first picture has decoded.
-    #[effect(job, kind = "read", device_only)]
+    #[effect(job, kind = "read")]
     OpenVideo {
         #[param(
             "A video's path or stream URL on this device; omit to choose with the file picker"
@@ -40,7 +40,7 @@ pub enum VideoEffect {
     ///
     /// Opens a video of this device's queue or recent videos and answers
     /// once its first picture has decoded.
-    #[effect(row, job, kind = "read", device_only)]
+    #[effect(row, job, kind = "read")]
     PlayQueued {
         #[param("The queue or recent video's item id")]
         item: String,
@@ -221,6 +221,8 @@ pub struct PlayerRows<'a> {
     pub chapters: &'a [ChapterState],
     pub queue: Vec<LocalMediaItemState>,
     pub recent: Vec<LocalMediaItemState>,
+    /// Whether the open video is playing rather than paused.
+    pub playing: bool,
 }
 
 /// A compact, deterministic token for a row id. The raw identity is resolved
@@ -397,7 +399,11 @@ fn chapter_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> +
 
 fn queue_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + 'a {
     rows.queue.iter().map(|item| {
-        let suffix = if item.current { " is playing" } else { "" };
+        let suffix = match (item.current, rows.playing) {
+            (true, true) => " is playing",
+            (true, false) => " is paused",
+            (false, _) => "",
+        };
         LiveRow::new(
             queue_item_resource_id(&item.id),
             "media.queue-item",

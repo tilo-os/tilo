@@ -31,7 +31,6 @@ use crate::actions::PhotosEffect;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::ImageData;
 
-use ui::a11y::Role;
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{
@@ -104,6 +103,18 @@ const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
 const LIBRARY_PAGE_SIZE: usize = 24;
+
+/// How many seconds a photograph is shown before the slide show moves on:
+/// enough to look at it, and short enough that a room does not wait. It is the
+/// content's own pace, not a motion's, so it is a number of seconds and not a
+/// duration constant: a slide show dwell is a preference waiting to be a
+/// setting, and a duration here reads as animation timing to anyone scanning.
+const SLIDE_SHOW_SECONDS: u64 = 5;
+
+/// The levels the open photograph zooms through, from smaller than its frame
+/// to eight times it, with its own size (fitted to the frame) where `Ctrl+0`
+/// returns. A photograph's scale is the picture's, never the window's text.
+const PHOTO_ZOOM_LEVELS: [f32; 10] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0];
 /// People, places, and albums are projected one bounded page at a time. The
 /// backing vectors retain the full collection so “Browse all” is real rather
 /// than a prettier name for truncation.
@@ -224,10 +235,16 @@ enum Hit {
     PlacesList,
     PlacesZoomIn,
     PlacesZoomOut,
+    /// Zoom the open photograph (its own size is `Ctrl+0`, never the map's).
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    /// Show the photograph full screen, and leave.
+    Present,
+    /// Run the slide show, and stop it.
+    SlideShow,
     Selection(SelectionHit),
     PeopleHidden,
-    Search,
-    More,
     PreviousPage,
     NextPage,
 }
@@ -513,18 +530,32 @@ pub struct PhotosApp {
     /// (hit-testing and accessibility bounds).
     layout_theme: Theme,
     pending: Rc<Cell<Option<Hit>>>,
-    /// Where the last export went, or why it failed. Shown once in the status
-    /// bubble so an action is never silent.
+    /// Where the last export went, or why it failed. Said in the window's
+    /// bar so an action is never silent.
     notice: Option<String>,
+    /// [`Self::notice`] in the window's bar for a while once it changes.
+    notice_said: ui::widget::toast::Transient<String>,
+    /// The notice last said, so only a change is news.
+    notice_last: Option<String>,
     /// The last copy, whose outcome can arrive after its notice.
     pub(crate) copy: ui::CopyWatch,
-    status_bubble: ui::StatusBubble,
-    /// The empty state's one action, where it was painted.
+    /// What the content column shows while it has nothing to lay out.
     empty_state: Option<EmptyState>,
-    empty_state_key: Option<(String, String, bool)>,
+    /// What the empty state shows, and whether the framework's door was
+    /// attached to bind its action.
+    empty_state_key: Option<(EmptyShown, bool)>,
     rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
+    /// Whether the open photograph has the screen (`FullscreenProvider`):
+    /// showing photographs to a room is what full screen is for.
+    presenting: bool,
+    /// When the slide show moves on, while it runs; `None` when it is off.
+    /// The window wakes at that instant (`Widget::next_wake_deadline`).
+    slide_show: Option<ui::time::Instant>,
+    /// The open photograph's zoom, over the toolkit's model: one set of steps
+    /// and one percentage for every app whose content has a size of its own.
+    viewer_zoom: ui::content_zoom::ZoomModel,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
     /// The chooser that delivers chosen files' contents, where files have no
@@ -743,6 +774,10 @@ pub struct PhotosApp {
     /// A visible Clear command resolves the otherwise ambiguous empty mixed
     /// field without magic sentinel text.
     metadata_force_clear: [bool; 5],
+    /// The draft fields as the editor opened, in field order (folder,
+    /// people, tags, captured, place, latitude, longitude): Save has
+    /// something to save once a field differs from these.
+    metadata_seed: [String; 7],
     metadata_editor_section: MetadataEditorSection,
     /// Tab order within the active section plus Cancel and Save.
     metadata_editor_focus: usize,
@@ -909,7 +944,7 @@ impl PhotosApp {
             Rc::new(Cell::new(None));
         let directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>> =
             Rc::new(Cell::new(None));
-        let chrome = chrome::Chrome::new(&pending);
+        let chrome = chrome::Chrome::new();
 
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
@@ -932,13 +967,17 @@ impl PhotosApp {
             layout_theme: Theme::dark(),
             pending,
             notice: None,
+            notice_said: ui::widget::toast::Transient::new(),
+            notice_last: None,
             copy: ui::CopyWatch::default(),
-            status_bubble: ui::StatusBubble::new(),
             empty_state: None,
             empty_state_key: None,
             rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
+            presenting: false,
+            slide_show: None,
+            viewer_zoom: ui::content_zoom::ZoomModel::stepping(PHOTO_ZOOM_LEVELS, 1.0),
             picker: None,
             contents_picker: None,
             directory_picker: None,
@@ -1096,6 +1135,7 @@ impl PhotosApp {
             metadata_location_from_map: false,
             metadata_mixed: [false; 5],
             metadata_force_clear: [false; 5],
+            metadata_seed: Default::default(),
             metadata_editor_section: MetadataEditorSection::Organize,
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
@@ -1125,7 +1165,8 @@ impl PhotosApp {
             selection_destination_hits: Vec::new(),
             library_cards: Vec::new(),
             pointer: Point::ZERO,
-            library_mode: false,
+            // A window opens on the Timeline; showing a photograph leaves it.
+            library_mode: true,
             presented: Rc::default(),
             presented_revision: 0,
             open_photo: None,
@@ -1175,7 +1216,17 @@ impl PhotosApp {
         let Some(scenario) = self.staged.take() else {
             return;
         };
+        // A capture is of the content, on a window that shows one column
+        // at a time too.
+        if let Some(bar) = &self.chrome.bar {
+            bar.stage_pane(ui::widget::NavPane::Content);
+        }
         self.open_photo = crate::sample::opened(&scenario);
+        // A scenario that names a photograph shows it; the library views
+        // below switch back to the library themselves.
+        if self.open_photo.is_some() {
+            self.library_mode = false;
+        }
         match scenario.as_str() {
             "albums" => self.show_albums(),
             "selection" => self.show_selection_for_shot(),
@@ -1281,46 +1332,22 @@ impl PhotosApp {
         self.canvas_rect
     }
 
-    /// The header row's rect.
-    pub fn toolbar_rect(&self) -> Rect {
-        self.chrome.header
-    }
-
     /// The status bar's rect; zero height when it has nothing to show.
     pub fn status_rect(&self) -> Rect {
         self.status_rect
     }
 
-    /// Every control of the header row as `(accessible name, rect)`, in
-    /// order: the back button while a photograph is open, the commands the
-    /// toolbar shows (and its More button when some moved there) and the
-    /// search launcher.
-    pub fn toolbar_item_rects(&self) -> Vec<(String, Rect)> {
-        let mut items = Vec::new();
-        if self.header_back_visible() {
-            items.push((tr("photos-library"), self.chrome.back.get_rect()));
-        }
-        if let Some(toolbar) = self.chrome.toolbar.accessibility() {
-            for node in toolbar.children {
-                if !matches!(node.role, Role::Button | Role::ToggleButton) {
-                    continue;
-                }
-                items.push((
-                    node.name.unwrap_or_default(),
-                    node.bounds
-                        .map_or(Rect::ZERO, ui::a11y::AccessBounds::to_rect),
-                ));
-            }
-        }
-        items.push((
-            self.chrome
-                .search
-                .accessibility()
-                .and_then(|node| node.name)
-                .unwrap_or_default(),
-            self.chrome.search.get_rect(),
-        ));
-        items
+    /// The names of what the window bar offers for what is shown, in
+    /// order: Back while a photograph or a person is open, then the
+    /// commands, those the bar's row has no room for in its menu.
+    pub fn window_bar_names(&self) -> Vec<String> {
+        let toolbar = self.window_bar();
+        toolbar
+            .leading
+            .iter()
+            .chain(&toolbar.actions)
+            .map(|action| action.name.clone())
+            .collect()
     }
 
     /// Measured library-card geometry for screenshot and interaction
@@ -1545,9 +1572,26 @@ impl PhotosApp {
                 .filter(|refused| refused.action == share)
                 .map(|refused| refused.reason.clone())
         });
+        // What this window said it did, once the room kept it
+        // ([`Self::say_when_kept`]); a refusal, said after it, wins.
+        let said = dispatch.said();
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.notice = Some(text);
+        }
         if let Some(reason) = reason {
             refused.set(None);
             self.notice = Some(reason);
+        }
+    }
+
+    /// Say `text` of a library change just submitted once it is kept: at
+    /// once in a library nobody else decides, once the room accepts it in a
+    /// shared one, and never when the room refuses it.
+    fn say_when_kept(&mut self, text: String) {
+        match &self.dispatch {
+            Some(dispatch) => dispatch.say_when_kept(text),
+            None => self.notice = Some(text),
         }
     }
 
@@ -1745,46 +1789,116 @@ impl PhotosApp {
 
     /// What the library shows when it has no photographs to lay out: still
     /// searching, nothing imported yet, or no match for the query.
-    fn library_empty_state_text() -> (String, String) {
-        (
-            tr("photos-library-empty-title"),
-            tr("photos-library-empty-body"),
-        )
+    fn library_empty_state_text(&self) -> (String, String) {
+        // An empty collection is not an empty library: Favorites or a new
+        // album say what fills them, and offer no "Open a photo" they lack.
+        let (title, body) = if self.active_favorites {
+            (
+                "photos-favorites-empty-title",
+                "photos-favorites-empty-body",
+            )
+        } else if self.active_album.is_some() {
+            ("photos-album-empty-title", "photos-album-empty-body")
+        } else if !self.timeline_unfiltered() {
+            ("photos-filter-empty-title", "photos-filter-empty-body")
+        } else {
+            ("photos-library-empty-title", "photos-library-empty-body")
+        };
+        (tr(title), tr(body))
     }
 
-    /// Keep the actual shared empty-state control mounted before painting,
-    /// so keyboard, accessibility and automation reach the same import door.
-    fn refresh_empty_state(&mut self, doc: &AutoCommit) {
-        let key = self.content_offers_open().then(|| {
-            let (title, body) = if self.library_mode {
-                Self::library_empty_state_text()
-            } else {
-                self.empty_state_text()
-            };
-            (
-                title,
-                body,
-                self.canvas_state == CanvasState::Error && !self.library_mode,
-            )
-        });
-        if key != self.empty_state_key {
-            self.empty_state = key.as_ref().map(|(title, body, error)| {
-                let resource = ui::tilo_resource::publish::<crate::model::PhotoLibrary>(
-                    "photos.library",
-                    &tr("photos-act-photo-library"),
-                    &<PhotoLibrary as ui::tilo_resource::Resource>::read(doc).unwrap_or_default(),
-                );
-                let empty = if *error {
-                    EmptyState::error(title, body)
-                } else {
-                    EmptyState::new(title).with_message(body)
+    /// What the content column shows when it has nothing to lay out, if
+    /// that is the case: the open photograph's absence, an empty timeline,
+    /// no albums or no places.
+    fn empty_shown(&self) -> Option<EmptyShown> {
+        let (title, body, icon, action) = if self.library_mode {
+            match self.library_destination {
+                _ if self.people_mode => return None,
+                LibraryDestination::Albums if self.library_albums.is_empty() => {
+                    // While an album is being made, its editor stands for
+                    // New album.
+                    let new_album = (!self.album_editor).then_some(EmptyAction::NewAlbum);
+                    (
+                        tr("photos-albums-empty-title"),
+                        tr("photos-albums-empty-body"),
+                        Icon::GalleryVerticalEnd,
+                        new_album,
+                    )
                 }
-                .with_icon(Icon::Image)
-                .with_action(tr("photos-open"))
-                .with_action_id("photos-empty-open");
-                match tilo_actions::ActionBinding::unit_for(&resource, "import") {
-                    Ok(binding) => empty.on_action(binding),
-                    Err(_) => empty,
+                LibraryDestination::Places if self.places_items.is_empty() => (
+                    tr("photos-places-empty-title"),
+                    tr("photos-places-empty-body"),
+                    Icon::Globe,
+                    None,
+                ),
+                LibraryDestination::Timeline if self.library_items.is_empty() => {
+                    let (title, body) = self.library_empty_state_text();
+                    let open = self.content_offers_open().then_some(EmptyAction::Open);
+                    (title, body, Icon::Image, open)
+                }
+                _ => return None,
+            }
+        } else if self.viewer.is_none() {
+            let (title, body) = self.empty_state_text();
+            let open = self.content_offers_open().then_some(EmptyAction::Open);
+            (title, body, Icon::Image, open)
+        } else {
+            return None;
+        };
+        Some(EmptyShown {
+            title,
+            body,
+            icon,
+            error: !self.library_mode && self.canvas_state == CanvasState::Error,
+            action,
+        })
+    }
+
+    /// Keep the shared empty state mounted as a retained child whenever the
+    /// content column is empty, so keyboard, accessibility and automation
+    /// reach its action through the same door as a click.
+    fn refresh_empty_state(&mut self, doc: &AutoCommit) {
+        let key = self
+            .empty_shown()
+            .map(|shown| (shown, self.actions.is_some()));
+        if key != self.empty_state_key {
+            self.empty_state = key.as_ref().map(|(shown, _)| {
+                let empty = if shown.error {
+                    EmptyState::error(&shown.title, &shown.body)
+                } else {
+                    EmptyState::new(&shown.title).with_message(&shown.body)
+                }
+                .with_icon(shown.icon);
+                // Import and a new album are effects of the app, not actions
+                // of the library record: they bind through the framework's
+                // door, as the header's Open does.
+                let (label, id, effect) = match shown.action {
+                    None => return empty,
+                    // After a failure, Open says it is for another photo:
+                    // the one that failed stays failed.
+                    Some(EmptyAction::Open) => (
+                        tr(if shown.error {
+                            "photos-open-another"
+                        } else {
+                            "photos-open"
+                        }),
+                        "photos-empty-open",
+                        PhotosEffect::Import { path: None },
+                    ),
+                    Some(EmptyAction::NewAlbum) => (
+                        tr("photos-new-album"),
+                        "photos-empty-new-album",
+                        PhotosEffect::NewAlbum,
+                    ),
+                };
+                let empty = empty.with_action(label).with_action_id(id);
+                match self
+                    .actions
+                    .as_ref()
+                    .and_then(|actions| actions.effect(&effect))
+                {
+                    Some(binding) => empty.on_action(binding),
+                    None => empty,
                 }
             });
             self.empty_state_key = key;
@@ -1794,6 +1908,23 @@ impl PhotosApp {
             empty.sync(doc, &automerge::ROOT);
         }
     }
+}
+
+/// What the empty content column says and offers.
+#[derive(Clone, Debug, PartialEq)]
+struct EmptyShown {
+    title: String,
+    body: String,
+    icon: Icon,
+    error: bool,
+    action: Option<EmptyAction>,
+}
+
+/// The one way forward an empty content column offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmptyAction {
+    Open,
+    NewAlbum,
 }
 
 /// How far a wheel turn scrolls, in pixels: a line notch moves three lines
@@ -2016,8 +2147,7 @@ fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
 
 impl PhotosApp {
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
-        let mut buttons = vec![&mut self.chrome.back, &mut self.chrome.search];
-        buttons.extend(self.chrome.history.button_mut());
+        let mut buttons: Vec<&mut Button> = Vec::new();
         buttons.extend(
             self.directory_import_buttons
                 .iter_mut()

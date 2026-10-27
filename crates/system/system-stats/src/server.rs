@@ -274,6 +274,25 @@ impl Connection<'_> {
                     Err(refusal) => Reply::Refused { request, refusal },
                 });
             }
+            Request::Storage { request } => {
+                if let Err(refusal) = self.require(Grant::SystemInfo) {
+                    self.reply(Reply::Refused { request, refusal });
+                    return;
+                }
+                // Read on the hub's storage thread; this connection goes on
+                // serving the app's other requests meanwhile.
+                let replies = self.replies.clone();
+                self.hub.read_storage(Box::new(move |result| {
+                    let reply = match result {
+                        Ok(storage) => Reply::Storage {
+                            request,
+                            storage: Box::new(storage),
+                        },
+                        Err(refusal) => Reply::Refused { request, refusal },
+                    };
+                    answer_without_waiting(&replies, reply);
+                }));
+            }
         }
     }
 
@@ -307,5 +326,26 @@ impl Connection<'_> {
             .hub
             .subscribe(Spec::every(interval_ms, processes), self.grants, sink);
         self.subscriptions.insert(subscription, live);
+    }
+}
+
+/// Queue `reply` for a connection's writer without waiting on it: an app
+/// that stops reading fills its queue, and the thread answering must not
+/// wait for that app. A full queue hands the reply to a thread of its own,
+/// which waits instead (and ends with the connection).
+fn answer_without_waiting(replies: &mpsc::SyncSender<Reply>, reply: Reply) {
+    match replies.try_send(reply) {
+        Ok(()) | Err(mpsc::TrySendError::Disconnected(_)) => {}
+        Err(mpsc::TrySendError::Full(reply)) => {
+            let replies = replies.clone();
+            let spawned = std::thread::Builder::new()
+                .name("tilo-system-stats-answer".into())
+                .spawn(move || {
+                    let _ = replies.send(reply);
+                });
+            if let Err(error) = spawned {
+                tracing::warn!(%error, "system information answer dropped");
+            }
+        }
     }
 }

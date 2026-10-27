@@ -201,17 +201,11 @@ impl MetadataProjectionV1 {
             .map_err(|_| "invalid file properties")
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when validation, serialization, or the size bound fails.
     pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, ProjectionError> {
         self.validate().map_err(ProjectionError::Invalid)?;
         encode(self, MAX_METADATA_XATTR_BYTES)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when decoding, validation, or the size bound fails.
     pub fn parse_xattr(bytes: &[u8]) -> Result<Self, ProjectionError> {
         let value: Self = decode(bytes, MAX_METADATA_XATTR_BYTES)?;
         value.validate().map_err(ProjectionError::Invalid)?;
@@ -294,17 +288,10 @@ fn strictly_ascending(records: &[RecordIndexEntryV1]) -> bool {
 impl RecordIndexManifestV2 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
-    ///
-    /// # Errors
-    /// Returns the schema error for malformed JSON.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(bytes)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when a peer-supplied manifest violates the bounded
-    /// page protocol or contains a non-canonical revision.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V2_VERSION
             || !valid_record_index_revision(&self.revision)
@@ -320,17 +307,10 @@ impl RecordIndexManifestV2 {
 impl RecordIndexPageV2 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
-    ///
-    /// # Errors
-    /// Returns the schema error for malformed JSON.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(bytes)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when a peer-supplied page exceeds its bounds or could
-    /// mix non-canonical identities/paths into an authority generation.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V2_VERSION
             || !valid_record_index_revision(&self.revision)
@@ -361,16 +341,10 @@ impl RecordIndexPageV2 {
 impl RecordIndexExactV2 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
-    ///
-    /// # Errors
-    /// Returns the schema error for malformed JSON.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(bytes)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when an exact authority projection is malformed.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V2_VERSION
             || !valid_record_index_revision(&self.revision)
@@ -385,16 +359,10 @@ impl RecordIndexExactV2 {
 impl RecordIndexManifestV3 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
-    ///
-    /// # Errors
-    /// Returns the schema error for malformed JSON.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(bytes)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when an opaque authority manifest is malformed.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V3_VERSION
             || !valid_record_index_revision(&self.revision)
@@ -410,16 +378,10 @@ impl RecordIndexManifestV3 {
 impl RecordIndexPageV3 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
-    ///
-    /// # Errors
-    /// Returns the schema error for malformed JSON.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(bytes)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when an opaque authority page is malformed.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V3_VERSION
             || !valid_record_index_revision(&self.revision)
@@ -512,6 +474,12 @@ pub struct AvailabilityProjectionV1 {
     pub freshness: ProjectedFreshness,
 }
 
+/// The [`ProjectedTransfer::last_error`] of a file whose bytes no device
+/// delivered: a fetch, or a read that waited its bound, found no peer that
+/// had them. Files shows such a file as unavailable until a device that
+/// keeps it is back online.
+pub const NO_PEER_DELIVERED_ERROR: &str = "No available replica could provide this file";
+
 /// Bounded transfer status for the xattr/UI boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -543,17 +511,11 @@ pub struct ProjectedFreshness {
 }
 
 impl AvailabilityProjectionV1 {
-    /// # Errors
-    ///
-    /// Returns an error when validation, serialization, or the size bound fails.
     pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, ProjectionError> {
         self.validate()?;
         encode(self, MAX_AVAILABILITY_XATTR_BYTES)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when decoding, validation, or the size bound fails.
     pub fn parse_xattr(bytes: &[u8]) -> Result<Self, ProjectionError> {
         let projection: Self = decode(bytes, MAX_AVAILABILITY_XATTR_BYTES)?;
         projection.validate()?;
@@ -595,6 +557,14 @@ impl AvailabilityProjectionV1 {
     /// At least one durable replica acknowledged the current version.
     pub fn safely_replicated(&self) -> bool {
         matches!(self.replicas, ProjectedReplicaEvidence::Known { durable, .. } if durable > 0)
+    }
+
+    /// Bytes of the current payload are missing here and no device
+    /// delivered them when they were last asked for: the device that keeps
+    /// the file is offline, so opening it would fail.
+    pub fn unavailable(&self) -> bool {
+        !matches!(self.residency, Residency::Resident { .. })
+            && self.transfer.last_error.as_deref() == Some(NO_PEER_DELIVERED_ERROR)
     }
 }
 
@@ -662,19 +632,11 @@ impl ShareGrantStatus {
 }
 
 impl ShareProjectionV1 {
-    /// # Errors
-    ///
-    /// Returns an error for inconsistent state, JSON failure, or a projection
-    /// above the byte bound.
     pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, ProjectionError> {
         self.validate()?;
         encode(self, MAX_SHARE_PROJECTION_BYTES)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error for oversized/malformed JSON, unsupported schema, or
-    /// inconsistent/duplicate grant state.
     pub fn parse_xattr(bytes: &[u8]) -> Result<Self, ProjectionError> {
         let projection: Self = decode(bytes, MAX_SHARE_PROJECTION_BYTES)?;
         projection.validate()?;
@@ -740,18 +702,10 @@ pub struct HistoryProjectionV1 {
 }
 
 impl HistoryProjectionV1 {
-    /// # Errors
-    ///
-    /// Returns an error when JSON encoding fails or the result exceeds the
-    /// projection byte limit.
     pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, ProjectionError> {
         encode(self, MAX_HISTORY_PROJECTION_BYTES)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error for oversized or malformed JSON, unsupported schema,
-    /// invalid records/conflicts, or an inconsistent record id/count.
     pub fn parse_xattr(bytes: &[u8]) -> Result<Self, ProjectionError> {
         let value: Self = decode(bytes, MAX_HISTORY_PROJECTION_BYTES)?;
         if value.schema_version != HISTORY_PROJECTION_VERSION {
@@ -886,7 +840,6 @@ mod tests {
     )]
     #[test]
     fn projections_are_bounded_and_self_validating() {
-        // Metadata round-trips and is bounded.
         {
             let projection = MetadataProjectionV1 {
                 schema_version: METADATA_PROJECTION_VERSION,
@@ -928,7 +881,6 @@ mod tests {
             assert_eq!(SyncState::from_xattr(b"bogus"), None);
             assert_eq!(SyncState::from_xattr(&[0xff, 0xfe]), None);
         }
-        // Unknown replica evidence stays distinct from a known zero.
         {
             let unknown = AvailabilityProjectionV1::parse_xattr(&availability_json(
                 &serde_json::json!({"state": "unknown"}),
@@ -957,7 +909,6 @@ mod tests {
                 .is_err()
             );
         }
-        // Share and history projections decode the daemon's JSON.
         {
             let share = serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,

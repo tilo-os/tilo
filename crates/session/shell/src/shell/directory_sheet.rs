@@ -41,7 +41,6 @@ use tilo_relay_protocol::rooms::RoomRole;
 const TARGET_PREFIX: &str = "directory:";
 /// The tallest the sheet grows.
 const MAX_HEIGHT: f64 = ui::tokens::Metrics::BASE.sheet_max_height as f64;
-/// One listing's row.
 const ROW_H: f64 = ui::tokens::Metrics::BASE.listing_row_height as f64;
 /// The workspace's mark at a row's start.
 const MARK: f64 = ui::tokens::Metrics::BASE.avatar_row as f64;
@@ -114,7 +113,6 @@ enum Target {
     Close,
 }
 
-/// The directory sheet.
 #[derive(Default)]
 pub struct DirectorySheet {
     open: bool,
@@ -140,6 +138,11 @@ pub struct DirectorySheet {
     rect: Rect,
     pose: Option<ui::motion::Pose>,
     targets: Vec<(Target, Rect)>,
+    /// What the pointer is over: a row lifts, and its button lifts with it.
+    hover: Option<Target>,
+    /// The row under the pointer, and where each row was last painted.
+    hover_row: Option<usize>,
+    row_rects: Vec<(usize, Rect)>,
 }
 
 /// The key a listing is joined and found again by.
@@ -375,12 +378,15 @@ impl DirectorySheet {
                 let Some(point) = cursor.map(|point| self.to_local(point)) else {
                     return DirectoryOutcome::consumed();
                 };
-                let hit = self
-                    .targets
-                    .iter()
-                    .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
-                    .map(|(target, _)| target.clone());
+                let hit = self.target_at(point);
                 match hit {
+                    Some(Target::Search) => {
+                        // The field looks like a text field; clicking it
+                        // places a caret and dragging selects, through the
+                        // same editor that paints it.
+                        self.field_pointer(event, cursor, modifiers);
+                        DirectoryOutcome::consumed()
+                    }
                     Some(target) => self.activate(&target),
                     // A press outside the sheet closes it, as a press
                     // outside any sheet does.
@@ -390,6 +396,14 @@ impl DirectorySheet {
                     }
                     None => DirectoryOutcome::consumed(),
                 }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                self.field_pointer(event, cursor, modifiers);
+                DirectoryOutcome::consumed()
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let down = match delta {
@@ -404,11 +418,72 @@ impl DirectorySheet {
                 };
                 DirectoryOutcome::consumed()
             }
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } => {
+            WindowEvent::CursorMoved { .. } => {
+                self.field_pointer(event, cursor, modifiers);
+                // What the pointer is over lifts, as everywhere else in the
+                // shell: the rows and the buttons on them had no hover at
+                // all.
+                let local = cursor.map(|point| self.to_local(point));
+                self.hover = local.and_then(|point| self.target_at(point));
+                self.hover_row = local.and_then(|point| {
+                    self.row_rects
+                        .iter()
+                        .find(|(_, rect)| rect.contains(point))
+                        .map(|(index, _)| *index)
+                });
                 DirectoryOutcome::consumed()
             }
+            WindowEvent::MouseInput { .. } => DirectoryOutcome::consumed(),
             _ => DirectoryOutcome::ignored(),
         }
+    }
+
+    /// The target under `point`, in the sheet's own space.
+    fn target_at(&self, point: Point) -> Option<Target> {
+        self.targets
+            .iter()
+            .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
+            .map(|(target, _)| target.clone())
+    }
+
+    /// Whether the pointer is over `target`.
+    fn hovered(&self, target: &Target) -> bool {
+        self.hover.as_ref() == Some(target)
+    }
+
+    /// Let the painted search field take a pointer event and copy its
+    /// selection back into the query the drawer owns.
+    fn field_pointer(
+        &mut self,
+        event: &WindowEvent,
+        cursor: Option<Point>,
+        modifiers: Modifiers,
+    ) -> bool {
+        // The field was laid out in the sheet's local space; the event
+        // carries a desktop position. Move the caret with a local cursor
+        // first, then hand the event itself to the editor.
+        let local =
+            cursor
+                .map(|point| self.to_local(point))
+                .map(|point| WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                });
+        let Some(input) = self.input.as_mut() else {
+            return false;
+        };
+        let mut took = false;
+        if let Some(local) = local.as_ref() {
+            took |= input.handle_chrome_pointer(local, 1.0, modifiers);
+        }
+        if !matches!(event, WindowEvent::CursorMoved { .. }) {
+            took |= input.handle_chrome_pointer(event, 1.0, modifiers);
+        }
+        if took {
+            let (anchor, cursor) = input.selection_anchor_focus_or_caret();
+            self.query_selection = ui::text_selection::Selection { anchor, cursor };
+        }
+        took
     }
 
     fn handle_key(&mut self, key: &Key, mods: ModifiersState) -> DirectoryOutcome {
@@ -424,7 +499,10 @@ impl DirectorySheet {
             Key::Named(NamedKey::ArrowDown) => {
                 let count = self.shown().len();
                 if count > 0 {
-                    self.selected = Some(self.selected.map_or(0, |at| (at + 1).min(count - 1)));
+                    self.selected = Some(
+                        self.selected
+                            .map_or(0, |at| at.saturating_add(1).min(count.saturating_sub(1))),
+                    );
                     self.keep_selection_in_view();
                 }
                 DirectoryOutcome::consumed()
@@ -432,24 +510,15 @@ impl DirectorySheet {
             Key::Named(NamedKey::ArrowUp) => {
                 self.selected = match self.selected {
                     Some(0) | None => None,
-                    Some(at) => Some(at - 1),
+                    Some(at) => Some(at.saturating_sub(1)),
                 };
                 self.keep_selection_in_view();
                 DirectoryOutcome::consumed()
             }
-            Key::Named(NamedKey::Enter) => match self.selected {
-                Some(row) => self.activate(&Target::Row(row)),
-                None => match typed_request(&self.query) {
-                    Some(DirectoryRequest::Fetch { site }) => {
-                        self.status = Status::Loading;
-                        DirectoryOutcome::request(DirectoryRequest::Fetch { site })
-                    }
-                    Some(request) => DirectoryOutcome::request(request),
-                    // One workspace answers the search: Enter joins it.
-                    None if self.shown().len() == 1 => self.activate(&Target::Row(0)),
-                    None => DirectoryOutcome::consumed(),
-                },
-            },
+            Key::Named(NamedKey::Enter) => {
+                self.trace_enter();
+                self.enter()
+            }
             // Everything else edits the search, as in every field.
             _ => {
                 let before = self.query.clone();
@@ -466,6 +535,43 @@ impl DirectorySheet {
                 DirectoryOutcome::consumed()
             }
         }
+    }
+
+    /// Enter: the chosen row, else what was typed, else the one row the
+    /// search leaves.
+    fn enter(&mut self) -> DirectoryOutcome {
+        match self.selected {
+            Some(row) => self.activate(&Target::Row(row)),
+            None => match typed_request(&self.query) {
+                Some(DirectoryRequest::Fetch { site }) => {
+                    self.status = Status::Loading;
+                    DirectoryOutcome::request(DirectoryRequest::Fetch { site })
+                }
+                Some(request) => DirectoryOutcome::request(request),
+                // One workspace answers the search: Enter joins it.
+                None if self.shown().len() == 1 => self.activate(&Target::Row(0)),
+                None => DirectoryOutcome::consumed(),
+            },
+        }
+    }
+
+    /// Say what Enter will do with the search, never what was typed: a
+    /// pasted invitation is a secret.
+    fn trace_enter(&self) {
+        let typed = match typed_request(&self.query) {
+            Some(DirectoryRequest::LinkOrCode(_)) => "link or code",
+            Some(DirectoryRequest::Fetch { .. }) => "site",
+            Some(_) => "other",
+            None if self.query.trim().is_empty() => "nothing",
+            None => "search words",
+        };
+        tracing::info!(
+            typed,
+            typed_chars = self.query.chars().count(),
+            selected = ?self.selected,
+            shown = self.shown().len(),
+            "directory sheet: Enter on the join field"
+        );
     }
 
     /// Text an input method committed into the search.
@@ -493,8 +599,8 @@ impl DirectorySheet {
         let rows = self.rows_fitting();
         if row < self.scroll {
             self.scroll = row;
-        } else if rows > 0 && row >= self.scroll + rows {
-            self.scroll = row + 1 - rows;
+        } else if rows > 0 && row >= self.scroll.saturating_add(rows) {
+            self.scroll = row.saturating_add(1).saturating_sub(rows);
         }
     }
 
@@ -520,7 +626,7 @@ impl DirectorySheet {
                     // Joining already: say so, and that it opens by itself.
                     self.note = Some(t_args(
                         "directory-already-joining",
-                        &[("name", listing.entry.name.clone().into())],
+                        &[("name", listing.entry.name.into())],
                     ));
                     return DirectoryOutcome::consumed();
                 }
@@ -566,6 +672,7 @@ impl DirectorySheet {
     ) {
         self.appearing.follow(self.open, theme.motion());
         self.targets.clear();
+        self.row_rects.clear();
         if !self.visible() {
             self.rect = Rect::ZERO;
             self.pose = None;
@@ -628,9 +735,10 @@ impl DirectorySheet {
         theme: &Theme,
     ) {
         let rect = self.rect;
+        let painted = ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
+        let theme = &painted.theme;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let _ = ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
         let pad = f64::from(tokens.spacing.s4);
         let gap = f64::from(tokens.spacing.s2);
         let control_h = f64::from(tokens.metrics.min_pointer_target);
@@ -685,14 +793,14 @@ impl DirectorySheet {
             transform,
             paint.text,
             theme,
-            &button_face(link, &link_label, false),
+            &button_face(link, &link_label, false).hovered(self.hovered(&Target::LinkOrCode)),
         );
         ui::widget::Button::paint(
             paint.scene,
             transform,
             paint.text,
             theme,
-            &button_face(close, &close_label, false),
+            &button_face(close, &close_label, false).hovered(self.hovered(&Target::Close)),
         );
         self.targets.push((Target::LinkOrCode, link));
         self.targets.push((Target::Close, close));
@@ -730,12 +838,12 @@ impl DirectorySheet {
             Status::Ready => None,
         };
         if let Some(empty) = empty {
-            let line = paint
+            let shown = paint
                 .text
                 .elide_to_width_style(&empty, f32_of_f64(avail), &caption);
             paint.text.draw_style(
                 paint.scene,
-                &line,
+                &shown,
                 colors.text_dim,
                 transform.pre_translate((rect.x0 + pad, y + gap).into()),
                 None,
@@ -755,14 +863,17 @@ impl DirectorySheet {
             if y + ROW_H > list_bottom + 0.5 {
                 break;
             }
-            let index = self.scroll + offset;
+            let index = self.scroll.saturating_add(offset);
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + ROW_H);
-            if self.selected == Some(index) {
+            self.row_rects.push((index, row));
+            let chosen = self.selected == Some(index);
+            let hovered = self.hover_row == Some(index);
+            if chosen || hovered {
                 ui::chrome::shell::paint_row_selection(
                     paint.scene,
                     transform,
                     row,
-                    ui::chrome::SelectionState::active(true),
+                    ui::chrome::SelectionState::new(chosen, hovered, false),
                     ground,
                     theme,
                 );
@@ -803,10 +914,12 @@ impl DirectorySheet {
                 transform,
                 paint.text,
                 theme,
-                &button_face(button, &label, primary).disabled(
-                    (self.joining.is_some() && !self.is_joining(listing) && !listing.joined)
-                        || self.progress(listing) == Some(&JoinProgress::Joining),
-                ),
+                &button_face(button, &label, primary)
+                    .hovered(self.hovered(&Target::Row(index)))
+                    .disabled(
+                        (self.joining.is_some() && !self.is_joining(listing) && !listing.joined)
+                            || self.progress(listing) == Some(&JoinProgress::Joining),
+                    ),
             );
             self.targets.push((Target::Row(index), button));
             // Who is here now, before the button.
@@ -870,19 +983,19 @@ impl DirectorySheet {
                     None,
                     &style,
                 );
-                let line = f64::from(style.line_height_px()).max(line_h);
+                let step = f64::from(style.line_height_px()).max(line_h);
                 if index == 0
                     && let Some(tag) = tag.as_deref()
                 {
                     let tag_x =
                         text_x + f64::from(paint.text.measure_style(&shown, None, &style).0) + gap;
                     ui::widget::BadgeFace::new(
-                        Rect::new(tag_x, line_y, tag_x + tag_w, line_y + line),
+                        Rect::new(tag_x, line_y, tag_x + tag_w, line_y + step),
                         tag,
                     )
                     .paint(paint.scene, transform, paint.text, theme);
                 }
-                line_y += line;
+                line_y += step;
             }
             y += ROW_H;
         }
@@ -967,6 +1080,9 @@ impl DirectorySheet {
                                 &[("error", reason.clone().into())]
                             )
                         ),
+                        Some(JoinProgress::NeedsJoinAgain) => {
+                            format!(" {}", t("workspace-needs-join-again"))
+                        }
                         None => String::new(),
                     };
                     AccessNode::new(Role::Button)
@@ -1164,7 +1280,6 @@ mod tests {
         typed(&mut sheet, "rust");
         let names: Vec<_> = sheet.shown().iter().map(|l| l.entry.name.clone()).collect();
         assert_eq!(names, ["Rust Club"]);
-        // Enter with one answer joins it.
         let outcome = sheet.handle_event(
             &key(Key::Named(NamedKey::Enter)),
             Modifiers::default(),

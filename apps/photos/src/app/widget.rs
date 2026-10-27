@@ -21,43 +21,100 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{
     AlbumEditorHit, COLLECTION_PAGE_SIZE, LibraryDestination, LibraryItem, PeopleIntent,
-    PeopleSelection, PhotosApp, PlaceItem, PlacesHit, capture_day, card_action_controls, chrome,
+    PeopleSelection, PhotosApp, PlaceItem, PlacesHit, capture_day, card_action_controls,
     wheel_pixels,
 };
 
+/// The open photograph's own scale, for `Ctrl+=` / `Ctrl+-` / `Ctrl+0`,
+/// `Ctrl+scroll` and a pinch: the picture zooms, not the window's text. In the
+/// library the gesture is left to the window, which is what a grid wants.
+impl ui::content_zoom::ContentZoom for PhotosApp {
+    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
+        if self.library_mode || self.viewer.is_none() {
+            return None;
+        }
+        Some(self.zoom_photo(step))
+    }
+}
+
+/// Showing photographs to a room: the window goes full screen while the
+/// person presents, and leaving full screen any other way ends it.
+impl ui::widget::FullscreenProvider for PhotosApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        Some(self.presenting)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if !active {
+            self.presenting = false;
+            self.slide_show = None;
+        }
+    }
+}
+
 impl Widget for PhotosApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::content_zoom::ContentZoom,
+        dyn ui::widget::FullscreenProvider
+    );
+
+    /// The system's back gesture lowers or puts away an editor's sheet
+    /// before anything navigates ([`PhotosApp::sheet_back`]).
+    fn on_nav_gesture(
+        &mut self,
+        dir: ui::gesture::NavDirection,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        if dir == ui::gesture::NavDirection::Back && self.sheet_back() {
+            return true;
+        }
+        self.children_mut()
+            .into_iter()
+            .any(|child| child.on_nav_gesture(dir, state, path))
+    }
+
+    fn nav_availability(&self) -> ui::gesture::NavAvailability {
+        let own = ui::gesture::NavAvailability {
+            back: self.editor_sheet_shown(),
+            forward: false,
+        };
+        self.children()
+            .into_iter()
+            .fold(own, |seen, child| seen.or(child.nav_availability()))
+    }
 
     /// Shared controls remain retained children even in the painted media
     /// surface, with their own focus, action custody and accessibility.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.chrome.search, &self.chrome.toolbar];
-        if self.header_back_visible() {
-            children.push(&self.chrome.back);
+        self.empty_state
+            .as_ref()
+            .map(|empty| empty as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    /// Every widget the canvas may give a layout node: the empty state, the
+    /// photograph, and the People surface's name field and buttons. The
+    /// buttons live outside this widget, in a list, so the retained layout
+    /// check reaches them only through this walk.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if let Some(empty) = &self.empty_state {
+            visitor(empty);
         }
-        children.extend(
-            self.chrome
-                .history
-                .button()
-                .map(|button| button as &dyn Widget),
-        );
-        children.extend(self.empty_state.as_ref().map(|empty| empty as &dyn Widget));
-        children
+        if let Some(viewer) = &self.viewer {
+            visitor(viewer);
+        }
+        visitor(&self.people_name_input);
+        for control in &self.people_controls {
+            visitor(&control.button);
+        }
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let back_visible = self.header_back_visible();
-        let mut children: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.chrome.search, &mut self.chrome.toolbar];
-        if back_visible {
-            children.push(&mut self.chrome.back);
-        }
-        children.extend(
-            self.chrome
-                .history
-                .button_mut()
-                .map(|button| button as &mut (dyn Widget + '_)),
-        );
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         children.extend(
             self.empty_state
                 .as_mut()
@@ -89,14 +146,30 @@ impl Widget for PhotosApp {
 
     fn needs_animation_frame(&self) -> bool {
         let now = ui::time::now();
-        self.chrome.drawer.is_animating()
-            || self.chrome.inspector.is_animating()
-            || self.status_bubble.needs_frame(now)
+        self.chrome.inspector.is_animating()
             || (!self.places_motion_reduced
                 && (self
                     .places_camera_feedback
                     .is_some_and(|feedback| feedback.is_moving(now))
                     || self.people_detail_transition.is_moving(now)))
+            || self
+                .directory_import_details_scroll
+                .needs_animation_frame(&self.layout_theme)
+            || self
+                .selection_album_scroll
+                .needs_animation_frame(&self.layout_theme)
+    }
+
+    /// The modal lists glide on after a flick, as the wheel scrolls them;
+    /// that changes no model.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.directory_import_details_scroll.advance();
+        self.selection_album_scroll.advance();
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -127,7 +200,14 @@ impl Widget for PhotosApp {
         if self.copy.failed() {
             self.notice = Some(tr("photos-copy-failed"));
         }
-        Widget::sync(&mut self.chrome.toolbar, doc, path);
+        // The slide show moves on to the next photograph while the window is
+        // awake for it, and the picture's own wheel zoom is what the bar says.
+        self.tick_slide_show();
+        if let Some(viewer) = self.viewer.as_ref() {
+            self.viewer_zoom.adopt(viewer.zoom());
+        }
+        self.apply_window_toolbar();
+        self.open_chosen_places();
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.follow_cancellations();
         self.open_launched();
@@ -241,6 +321,7 @@ impl Widget for PhotosApp {
             .values()
             .filter(|photo| matches_filter(photo))
             .count();
+        self.library_photo_count = library.photos.len();
         self.library_favorite_count = library
             .photos
             .values()
@@ -466,11 +547,39 @@ impl Widget for PhotosApp {
             }
             thumbnail_sources.truncate(40);
         }
+        // The sidebar shows each album by its cover, whatever is open.
+        for cover in self
+            .library_albums
+            .iter()
+            .filter_map(|(id, _, _)| self.library_album_covers.get(id)?.first())
+            .take(24)
+        {
+            if thumbnail_sources.iter().all(|photo| &photo.id != cover)
+                && let Some(photo) = library.photo(cover).cloned()
+            {
+                thumbnail_sources.push(photo);
+            }
+        }
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
         self.refresh_chrome_text(doc);
-        self.refresh_toolbar();
         self.refresh_empty_state(doc);
+        self.publish_notice();
+        // A narrow window shows the places on a screen of their own, where
+        // the library is not drawn: they come with what the library holds,
+        // not with its frame.
+        self.show_places();
+    }
+
+    /// The slide show is a timed presentation: the window sleeps until the
+    /// next photograph is due rather than repainting while it waits.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .chain(self.notice_said.deadline())
+            .chain(self.slide_show)
+            .min()
     }
 
     fn composition_follows_allocation(&self) -> bool {
@@ -488,54 +597,35 @@ impl Widget for PhotosApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        self.chrome.history.tree_rebuilt();
-        self.chrome.drawer.scale_for(theme);
-        // A docked sidebar or inspector takes its column beside the content;
-        // in a narrow window each floats over it and takes nothing.
+        // A docked inspector takes its column beside the content; in a
+        // narrow window it floats over it and takes nothing. The sidebar is
+        // the shell's, beside this window's content.
         self.chrome.inspector.scale_for(theme);
         self.sync_inspector();
-        let content = self.chrome.drawer.resolve(self.rect);
-        let sidebar_inset = (content.x0 - self.rect.x0).max(0.0);
         let beside = self.chrome.inspector.resolve(self.rect);
-        let inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
-        self.refresh_toolbar();
+        let mut inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
+        // A sheet keeps the foot it rests on clear: the timeline scrolls
+        // every photograph into view above it.
+        let sheet_inset = (self.rect.y1 - beside.y1).max(0.0);
+        // A panel floating over an empty view would hide what the empty
+        // state offers (Open, on an empty library): it stands in the part
+        // the panel leaves, where that still holds it.
+        if self.empty_state.is_some()
+            && self.chrome.inspector.is_overlay()
+            && !self.chrome.inspector.rises_as_sheet()
+            && self.chrome.inspector.is_open()
+        {
+            let covered =
+                self.chrome.inspector.resolved_overlay_width() + f64::from(theme.tokens.spacing.s2);
+            if self.rect.width() - covered >= f64::from(theme.tokens.metrics.grid_min_width) {
+                inspector_inset = covered;
+            }
+        }
         // The layout tree points at the People buttons, and the framework
         // syncs again before it measures; rebuilding them only here keeps
         // those pointers alive until the next tree replaces them.
         self.refresh_people_controls();
 
-        // The painted header still needs admitted layout owners for its
-        // retained controls: accessibility invokes their actual action doors.
-        let mut header_controls = vec![
-            self.chrome.search.build_layout(taffy, theme, node_map),
-            self.chrome.toolbar.build_layout(taffy, theme, node_map),
-        ];
-        if self.header_back_visible() {
-            header_controls.push(self.chrome.back.build_layout(taffy, theme, node_map));
-        }
-        if let Some(history) = self.chrome.history.button_mut() {
-            header_controls.push(history.build_layout(taffy, theme, node_map));
-        }
-        for &control in &header_controls {
-            if let Ok(style) = taffy.style(control) {
-                let mut style = style.clone();
-                style.position = taffy::Position::Absolute;
-                let _ = taffy.set_style(control, style);
-            }
-        }
-        let header = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(chrome::header_height(theme) as f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &header_controls,
-            )
-            .unwrap();
         let canvas = self.build_canvas_node(taffy, theme, node_map);
         let status = self.build_status_node(taffy, theme);
 
@@ -543,14 +633,15 @@ impl Widget for PhotosApp {
             flex_direction: FlexDirection::Column,
             size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
-                left: LengthPercentage::length(sidebar_inset as f32),
+                left: LengthPercentage::length(0.0),
                 right: LengthPercentage::length(inspector_inset as f32),
                 top: LengthPercentage::length(0.0),
-                bottom: LengthPercentage::length(0.0),
+                bottom: LengthPercentage::length(sheet_inset as f32),
             },
             ..Default::default()
         };
-        taffy.widget_node(style, &[header, canvas, status], node_map, self)
+        // The toolbar is the window bar's: the canvas starts at the top.
+        taffy.widget_node(style, &[canvas, status], node_map, self)
     }
 
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
@@ -560,10 +651,7 @@ impl Widget for PhotosApp {
         let child_rect = |child: NodeId| ui::widget::layout_rect(taffy, child, here);
 
         let children = taffy.children(node).unwrap();
-        if let Some(&header) = children.first() {
-            self.chrome.header = child_rect(header);
-        }
-        if let Some(&canvas) = children.get(1) {
+        if let Some(&canvas) = children.first() {
             self.canvas_rect = child_rect(canvas);
             let canvas_origin = Point::new(self.canvas_rect.x0, self.canvas_rect.y0);
             let people_surface = self.library_mode
@@ -611,7 +699,7 @@ impl Widget for PhotosApp {
                 v.apply_layout(taffy, canvas, here);
             }
         }
-        if let Some(&status) = children.get(2) {
+        if let Some(&status) = children.get(1) {
             self.status_rect = child_rect(status);
         }
     }
@@ -625,12 +713,10 @@ impl Widget for PhotosApp {
         presence: &PresenceCtx,
     ) {
         // No window ground: the framework paints `surfaces.content` under
-        // the app, and the sidebar paints its own region.
-        self.chrome.drawer.tick(theme);
-        self.chrome.drawer.resolve(self.rect);
+        // the app; the sidebar is the shell's.
         self.chrome.inspector.tick(theme);
         self.chrome.inspector.resolve(self.rect);
-        self.place_chrome(text_renderer, theme);
+        self.place_chrome();
 
         if self.library_mode {
             if self.library_destination == LibraryDestination::Albums {
@@ -659,15 +745,13 @@ impl Widget for PhotosApp {
             v.draw(scene, transform, text_renderer, theme, presence);
             self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
-            let (title, body) = self.empty_state_text();
-            self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
+            self.draw_empty_state(scene, transform, text_renderer, theme);
         }
 
         self.draw_directory_import_status(scene, transform, text_renderer, theme);
         self.paint_status(scene, transform, text_renderer, theme);
-        self.paint_header(scene, transform, text_renderer, theme, presence);
-        // The inspector comes after the header: floating in a narrow window
-        // it stands over the header row, never under it.
+        // The inspector comes last: floating in a narrow window it stands
+        // over everything else.
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         if self.library_mode
             && !self.people_mode
@@ -675,21 +759,6 @@ impl Widget for PhotosApp {
         {
             self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
         }
-        let now = ui::time::now();
-        if let Some(notice) = self.notice.as_deref() {
-            self.status_bubble.show(notice, now);
-        }
-        self.status_bubble
-            .pointer_moved(self.canvas_rect, self.pointer, text_renderer, theme, now);
-        self.status_bubble.paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.canvas_rect,
-            now,
-        );
-        self.paint_sidebar(scene, transform, text_renderer, theme);
     }
 
     fn draw_overlay(
@@ -700,9 +769,6 @@ impl Widget for PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.chrome
-            .toolbar
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if self.library_mode && self.selection_album_chooser {
             self.draw_selection_destination_sheet(scene, transform, text_renderer, theme, presence);
         }
@@ -733,6 +799,19 @@ impl Widget for PhotosApp {
                 ));
             }
             self.pointer = next;
+        }
+        // The inspector's sheet takes a drag on its grip and the arrow keys
+        // on it; the timeline above it stays live.
+        self.chrome.inspector.resolve(self.rect);
+        let motion = self.layout_theme.motion();
+        if self
+            .chrome
+            .inspector
+            .handle_sheet_event(event, ctx, motion)
+            .taken()
+        {
+            *ctx.handled = true;
+            return;
         }
         if self.directory_import_details_open {
             let theme = self.layout_theme.clone();
@@ -788,7 +867,7 @@ impl Widget for PhotosApp {
                 return;
             }
         }
-        if !self.selection_album_chooser && self.handle_chrome_event(event, ctx) {
+        if !self.selection_album_chooser && self.handle_chrome_event(ctx) {
             self.drain_pending();
             return;
         }
@@ -1476,6 +1555,48 @@ impl Widget for PhotosApp {
             *ctx.handled = true;
             return;
         }
+        // The photograph has the screen: the keys that show it to a room are
+        // here, where the picture is — full screen, the slide show, and
+        // stepping through the collection. Ctrl+= / Ctrl+- / Ctrl+0 reach the
+        // picture through `ContentZoom` before any widget sees them.
+        if !self.library_mode
+            && self.viewer.is_some()
+            && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+            && !ctx.modifiers.state().control_key()
+            && !ctx.modifiers.state().alt_key()
+            && !ctx.modifiers.state().super_key()
+        {
+            match &key.logical_key {
+                Key::Named(NamedKey::ArrowRight | NamedKey::PageDown) => {
+                    self.step_photo(true);
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowLeft | NamedKey::PageUp) => {
+                    self.step_photo(false);
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Character(value) if value.eq_ignore_ascii_case("f") => {
+                    self.toggle_presentation();
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Character(value) if value == " " || value.eq_ignore_ascii_case("p") => {
+                    self.toggle_slide_show();
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Escape) if self.slide_show_running() || self.presenting => {
+                    self.slide_show = None;
+                    self.presenting = false;
+                    *ctx.handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if let (Some(v), Some(&canvas)) = (self.viewer.as_mut(), children.get(1)) {
             v.handle_event(event, &mut ctx.reborrow(ctx.path, canvas));
@@ -1516,7 +1637,12 @@ impl Widget for PhotosApp {
         {
             return true;
         }
-        if self.perform_chrome_semantic_action(target, action, state, path) {
+        let motion = self.layout_theme.motion();
+        if self
+            .chrome
+            .inspector
+            .perform_sheet_action(target, action, motion)
+        {
             return true;
         }
         let (state, _) = ui::doc::document(state, path);
@@ -1534,13 +1660,6 @@ impl Widget for PhotosApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::widget::WindowHeader for PhotosApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.chrome.history.set_control(control);
-        self.structure_dirty |= self.chrome.history.take_rebuilt();
     }
 }
 
@@ -1574,5 +1693,24 @@ impl ui::widget::AppWidget for PhotosApp {
 
     fn permission_hint(&self) -> Option<ui::widget::AppKind> {
         Some(ui::widget::AppKind::Editor)
+    }
+}
+
+impl PhotosApp {
+    /// A new notice is said in the window's bar for a while.
+    fn publish_notice(&mut self) {
+        if self.notice != self.notice_last {
+            self.notice_last.clone_from(&self.notice);
+            match self.notice.clone() {
+                Some(notice) => self.notice_said.show(notice),
+                None => {
+                    self.notice_said.dismiss();
+                }
+            }
+        }
+        self.notice_said.expire();
+        self.notice_said.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 }

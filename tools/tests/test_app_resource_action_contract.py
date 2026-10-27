@@ -797,6 +797,28 @@ class AppResourceActionContractTests(unittest.TestCase):
                 self.assertIn("tilo-app", reasons)
                 self.assertIn("Widget::resources", reasons)
 
+    def test_a_part_crate_publishes_through_the_one_app_that_links_it(self):
+        facade = 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+
+        def part_reasons(linked: bool) -> list[str]:
+            root = self.fixture("pub fn pane() {}\n", app_name="sample-parts")
+            owner = root / "apps" / "sample"
+            (owner / "src").mkdir(parents=True)
+            (owner / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (owner / "tilo-app.toml").write_text('[package]\nid="so.tilo.sample"\n', encoding="utf-8")
+            link = 'sample-parts={path="../sample-parts"}\n' if linked else ""
+            (owner / "Cargo.toml").write_text(
+                '[package]\nname="sample"\nversion="0.1.0"\n[dependencies]\n' + facade + link,
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            return [item.reason for item in violations if "sample-parts" in str(item.path)]
+
+        with self.subTest(phase="linked by a launched app, the app's contract covers it"):
+            self.assertEqual(part_reasons(True), [])
+        with self.subTest(phase="linked by no app, it must publish its own surface"):
+            self.assertIn("app does not implement Widget::resources", part_reasons(False))
+
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):
             root = self.fixture(
@@ -1404,6 +1426,51 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "// a field that was `Json<T>` moves with `evolution::retype_json`\n"
             )
             self.assertEqual(banned(new), [])
+
+
+class PublicSurfaceTests(unittest.TestCase):
+    def fixture(self, *, main: str, manifest: str = "", surface: bool = False) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        app = root / "apps" / "sample"
+        (app / "src").mkdir(parents=True)
+        (app / "src" / "main.rs").write_text(main, encoding="utf-8")
+        (app / "tilo-app.toml").write_text(
+            '[package]\nid = "so.example.sample"\n' + manifest, encoding="utf-8"
+        )
+        if surface:
+            (app / "surface.toml").write_text("", encoding="utf-8")
+        return root
+
+    def reported(self, root: Path) -> list[str]:
+        return [v.reason for v in contract.audit_public_surfaces(root)]
+
+    def test_a_windowed_app_without_its_surface_is_reported(self):
+        root = self.fixture(main="ui::main!(sample::App);\n", manifest='[entrypoint]\ntype = "gui"\n')
+        self.assertEqual(len(self.reported(root)), 1)
+        self.assertIn("commits its public surface", self.reported(root)[0])
+
+    def test_a_windowed_app_committing_its_surface_passes(self):
+        root = self.fixture(
+            main="ui::main!(sample::App);\n",
+            manifest='[entrypoint]\ntype = "gui"\n',
+            surface=True,
+        )
+        self.assertEqual(self.reported(root), [])
+
+    def test_a_shared_definition_is_no_surface_of_its_own(self):
+        # `ui::main!(definition = ..)` registers a definition the browser
+        # draws: the windowed host that runs it commits the surface.
+        root = self.fixture(
+            main="ui::main!(definition = sample::definition);\n",
+            manifest='[entrypoint]\ntype = "gui"\n',
+        )
+        self.assertEqual(self.reported(root), [])
+
+    def test_an_app_without_a_window_publishes_nothing(self):
+        root = self.fixture(main="fn main() { run_batch(); }\n", manifest='[entrypoint]\ntype = "cli"\n')
+        self.assertEqual(self.reported(root), [])
 
 
 if __name__ == "__main__":

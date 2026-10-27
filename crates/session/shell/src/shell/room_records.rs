@@ -250,11 +250,12 @@ impl RoomRecords {
     /// `root`, as an app's sandbox writes it.
     #[cfg(test)]
     pub(crate) fn room_document_path_for_test(
-        root: &Path,
+        data_root: &Path,
         package_id: &str,
         room: RoomId,
     ) -> PathBuf {
-        root.join(launcher::appdir::ROOMS_DIR)
+        data_root
+            .join(launcher::appdir::ROOMS_DIR)
             .join(room.to_string())
             .join(package_id)
             .join(&*SANDBOX_DATA_SUBDIR)
@@ -510,6 +511,15 @@ impl RoomRecords {
                 saver.flush();
             }
         }
+    }
+
+    /// Whether [`Self::replicate_with`] has anything to do with `tree`: an
+    /// index changed since it last published, or a peer referenced records.
+    /// Read through a shared reference, so the pump that finds nothing takes
+    /// no write to the tree and announces none.
+    pub fn replication_due(&self, tree: &crate::shell::state::WorkspaceTree) -> bool {
+        self.replicated_generation != Some(self.generation)
+            || !tree.desktop.room_records_inbound.is_empty()
     }
 
     /// Exchange this machine's room indexes with the peer-replication
@@ -776,15 +786,15 @@ impl LocalRecordReader {
     /// undo see what was done in it. Lists the disk: never on the
     /// compositor loop.
     pub(crate) fn room_documents(&self, room: RoomId) -> Vec<RoomDocument> {
-        let Some(root) = self.scan.lock().ok().and_then(|scan| scan.root.clone()) else {
+        let Some(data_root) = self.scan.lock().ok().and_then(|scan| scan.root.clone()) else {
             return Vec::new();
         };
-        let Ok(scan_root) = root.canonicalize() else {
+        let Ok(scan_root) = data_root.canonicalize() else {
             return Vec::new();
         };
         let room_key = room.to_string();
         let Ok(packages) =
-            std::fs::read_dir(root.join(launcher::appdir::ROOMS_DIR).join(&room_key))
+            std::fs::read_dir(data_root.join(launcher::appdir::ROOMS_DIR).join(&room_key))
         else {
             return Vec::new();
         };
@@ -888,7 +898,6 @@ pub(crate) fn room_document_id(room: RoomId, package_id: &str) -> Option<RecordI
     RecordId::parse(&format!("uuid:{id}"))
 }
 
-/// Read an app's room document from its validated location.
 fn read_room_document(location: &ValidatedRecordLocation) -> Option<AutoCommit> {
     let current = validate_record_location(&location.scan_root, &location.document)?;
     let bytes = std::fs::read(&current.document).ok()?;
@@ -984,7 +993,7 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
     tree.desktop
         .workspaces
         .iter()
-        .find(|w| w.room == room)
+        .find(|w| w.room() == room)
         .map(|w| w.name.clone())
 }
 
@@ -1000,7 +1009,6 @@ mod tests {
 
     #[test]
     fn rooms_hold_distinct_recognisable_references_to_untouched_records() {
-        // Phase `a_room_holds_references_and_the_record_is_untouched`.
         {
             let mut rr = RoomRecords::in_memory();
             let a = room();
@@ -1025,7 +1033,6 @@ mod tests {
             assert!(rr.holds(b, &id), "the record is still in the other room");
         }
 
-        // Phase `known_keeps_equal_record_ids_in_different_rooms_distinct`.
         {
             let mut rr = RoomRecords::in_memory();
             let home = room();
@@ -1064,7 +1071,6 @@ mod tests {
             assert_eq!(referenced.title(), "report.odt");
         }
 
-        // Phase `titles_name_the_thing_a_person_would_recognise`.
         {
             let file = RecordId::for_file("/home/q/books/dune.epub");
             assert_eq!(record_title(&file, &RecordKind::new("book")), "dune.epub");
@@ -1091,7 +1097,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn record_index_answers_fresh_stays_in_memory_and_refuses_exhausted_generations() {
-        // Phase `every_change_is_visible_in_the_next_answer`.
         {
             let mut rr = RoomRecords::in_memory();
             let a = room();
@@ -1139,7 +1144,6 @@ mod tests {
             );
         }
 
-        // Phase `an_unchanged_index_hands_back_the_same_corpus`.
         {
             let mut rr = RoomRecords::in_memory();
             rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
@@ -1156,7 +1160,6 @@ mod tests {
             );
         }
 
-        // Phase `an_in_memory_index_never_reaches_the_disk`.
         {
             let rr = RoomRecords::in_memory();
             assert!(
@@ -1166,7 +1169,6 @@ mod tests {
             assert!(rr.known().is_empty());
         }
 
-        // Phase `exhausted_generations_refuse_mutations_and_scan_replacements`.
         {
             let mut rr = RoomRecords::in_memory();
             let room = room();
@@ -1206,7 +1208,6 @@ mod tests {
             assert_eq!(scan.revision, u64::MAX);
         }
 
-        // Phase `validated_cold_load_is_read_only_and_checks_record_identity`.
         {
             let temp = tempfile::tempdir().unwrap();
             let record_dir = temp.path().join("records").join("one");

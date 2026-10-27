@@ -379,15 +379,16 @@ impl EnrollmentView {
         }
         content = self.sim_panel(content, actions, &state);
         // One row per service, each saying what linking it takes. Without
-        // the messaging service on this device none can start, and the
-        // section says so instead of offering rows that do nothing.
-        let available = self.client.is_some() && !state.pending && state.account.is_none();
-        let mut rows: Vec<Element> = Vec::new();
+        // the messaging service on this device none can start: the section
+        // says why instead of offering rows that do nothing.
         if self.client.is_none() {
-            rows.push(Box::new(
-                Text::new(&CATALOG.t("messages-setup-service-missing")).dimmed(),
-            ));
+            return content.push(Box::new(Section::titled(
+                CATALOG.t("messages-setup-link-heading"),
+                vec![Box::new(Text::new(&CATALOG.t("messages-setup-service-missing"))) as Element],
+            )));
         }
+        let available = !state.pending && state.account.is_none();
+        let mut rows: Vec<Element> = Vec::new();
         for (id, service, title, hint, icon) in [
             (
                 "messages.first-whatsapp",

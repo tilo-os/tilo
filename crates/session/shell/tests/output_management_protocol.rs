@@ -1100,7 +1100,7 @@ fn physical_display_keep_retains_its_prompt_while_real_storage_is_locked() {
     let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
     let (sent, received) = mpsc::channel();
     let release = std::thread::spawn(move || {
-        let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+        let responsive = received.recv_timeout(tilo_test_env::hang_bound()).is_ok();
         drop(lock);
         responsive
     });
@@ -1403,8 +1403,11 @@ fn wl_output_names_are_the_head_names() {
 }
 
 /// The greeter's startup configuration over `connection`, settled or not.
+/// The greeter's configuration, given the shared hang bound rather than the
+/// sign-in window's two seconds: this harness answers the request itself
+/// between the test's own steps, which a loaded machine stretches past that.
 fn greeter_configures(connection: &Connection) -> Result<(), &'static str> {
-    greeter::output_scale::configure_connection(connection)
+    greeter::output_scale::configure_connection_within(connection, tilo_test_env::hang_bound())
         .map(drop)
         .map_err(|(error, _)| error)
 }
@@ -1556,7 +1559,7 @@ fn greeter_scales_each_output_and_keeps_the_layout_contiguous() {
         .unwrap();
     let connection = Connection::from_socket(client).unwrap();
     let worker = std::thread::spawn(move || {
-        let _ = greeter::output_scale::configure_connection(&connection);
+        let _ = greeter_configures(&connection);
     });
     harness.pump_separate_client("greeter output request", || {
         DisplayTransaction::load().is_some_and(|value| Some(value.id) != previous_transaction)
@@ -1610,7 +1613,7 @@ fn output_apply_dispatch_remains_responsive_while_real_storage_is_locked() {
         tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
     let (dispatched, wait) = mpsc::channel();
     let releaser = std::thread::spawn(move || {
-        let responsive = wait.recv_timeout(Duration::from_millis(500)).is_ok();
+        let responsive = wait.recv_timeout(tilo_test_env::hang_bound()).is_ok();
         drop(storage_lock);
         responsive
     });

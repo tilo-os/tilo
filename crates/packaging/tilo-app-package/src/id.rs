@@ -123,6 +123,33 @@ pub enum Kind {
     /// [`Kind::EnvRuntime`] package, named by `[image].runtime`. An image,
     /// never launched.
     Tool,
+    /// One language's catalogues for every app and the toolkit: the files
+    /// `<locale>/<catalogue>.ftl`, data for every architecture, which the
+    /// runtime reads when a person's language is that locale. Its id is
+    /// [`LANGUAGE_PACK_ID_PREFIX`] and the locale, lowercased. Never
+    /// launched.
+    LanguagePack,
+}
+
+/// The package id of a language pack is this and its locale in lower case
+/// (`so.tilo.language-pack.de-de`).
+pub const LANGUAGE_PACK_ID_PREFIX: &str = "so.tilo.language-pack.";
+
+/// The locale a language pack's package id names, lowercased (`de-de`), or
+/// `None` for an id that names none.
+#[must_use]
+pub fn language_pack_locale(package_id: &str) -> Option<&str> {
+    package_id
+        .strip_prefix(LANGUAGE_PACK_ID_PREFIX)
+        .filter(|locale| {
+            !locale.is_empty()
+                && locale.len() <= 35
+                && locale
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !locale.starts_with('-')
+                && !locale.ends_with('-')
+        })
 }
 
 impl Kind {
@@ -136,6 +163,7 @@ impl Kind {
             Kind::Runtime => "runtime",
             Kind::EnvRuntime => "env-runtime",
             Kind::Tool => "tool",
+            Kind::LanguagePack => "language-pack",
         }
     }
 

@@ -4,8 +4,8 @@
 //! The trail takes the width it is given. When its segments do not fit, it
 //! truncates the middle: keeps the first segment, puts the
 //! [`Icon::MoreHorizontal`] glyph in place of the hidden ones, keeps the
-//! last two. A trail of 4 or fewer segments never truncates (the truncated
-//! form wouldn't be shorter).
+//! last two, then fewer. What still does not fit ends the current
+//! segment's label in an ellipsis.
 //!
 //! An optional root icon ([`Breadcrumb::root_icon`]) leads the first
 //! segment (a drive, Home). A trail that doubles as an editable path
@@ -139,45 +139,86 @@ impl Breadcrumb {
     }
 
     /// Compute the list of visible labels for the given available width.
-    /// Falls back to `self.segments` when everything fits; otherwise
-    /// applies the keep-first / `...` / keep-last-two rule. Pure function
-    /// — does not mutate `self`. Exposed for tests that want to pin the
-    /// truncation behaviour without running a full layout pass.
+    /// The whole trail when it fits; otherwise the first segment, `...`
+    /// and the last two; then the first, `...` and the last; and at the
+    /// narrowest `...` and the last (for a trail of two as well). The
+    /// current folder always shows.
+    /// Pure function — does not mutate `self`. Exposed for tests that want
+    /// to pin the truncation behaviour without running a full layout pass.
     pub fn visible_segments(
         &self,
         available_width: f64,
         theme: &Theme,
         tr: &mut TextRenderer,
     ) -> Vec<String> {
-        if self.segments.is_empty() {
-            return Vec::new();
-        }
-        let full_width =
-            measure_total_width(&self.segments, self.role, theme, tr) + self.root_width(theme);
-        if full_width <= available_width {
-            return self.segments.clone();
-        }
+        self.labels_of(&self.visible_origins(available_width, theme, tr))
+    }
 
-        // The truncated form is no shorter than the full form here, so
-        // truncating would only make the render worse.
-        if self.segments.len() <= 4 {
-            return self.segments.clone();
+    /// The segments shown at `available_width`, by original index; `None`
+    /// is the `...` standing in for the hidden ones.
+    fn visible_origins(
+        &self,
+        available_width: f64,
+        theme: &Theme,
+        tr: &mut TextRenderer,
+    ) -> Vec<Option<usize>> {
+        let n = self.segments.len();
+        let full: Vec<Option<usize>> = (0..n).map(Some).collect();
+        if n < 2 {
+            return full;
         }
+        let last = n - 1;
+        let mut candidates = vec![full];
+        if n > 3 {
+            candidates.push(vec![Some(0), None, Some(last - 1), Some(last)]);
+        }
+        if n > 2 {
+            candidates.push(vec![Some(0), None, Some(last)]);
+        }
+        candidates.push(vec![None, Some(last)]);
+        let narrowest = candidates.pop().unwrap_or_default();
+        candidates
+            .into_iter()
+            .find(|origins| self.width_of(origins, theme, tr) <= available_width)
+            .unwrap_or(narrowest)
+    }
 
-        // At least 5 segments here (the `<= 4` guard above), so this slice
-        // pattern always matches — reading first/second-last/last through
-        // it keeps the lookup indexing-free rather than computing `n - 1`
-        // / `n - 2` and indexing with them.
-        if let [first, .., second_last, last] = self.segments.as_slice() {
-            vec![
-                first.clone(),
-                ELLIPSIS.to_string(),
-                second_last.clone(),
-                last.clone(),
-            ]
-        } else {
-            self.segments.clone()
+    fn labels_of(&self, origins: &[Option<usize>]) -> Vec<String> {
+        origins
+            .iter()
+            .map(|origin| match origin {
+                Some(index) => self.segments.get(*index).cloned().unwrap_or_default(),
+                None => ELLIPSIS.to_string(),
+            })
+            .collect()
+    }
+
+    /// One shown segment's width: its label, the `...` icon, and the root
+    /// icon before the first segment.
+    fn segment_width(&self, origin: Option<usize>, theme: &Theme, tr: &mut TextRenderer) -> f64 {
+        let style = theme.text(self.role);
+        match origin {
+            None => f64::from(theme.tokens.metrics.icon_sm),
+            Some(index) => {
+                let label = self.segments.get(index).map_or("", String::as_str);
+                f64::from(tr.measure_style(label, None, &style).0)
+                    + if index == 0 {
+                        self.root_width(theme)
+                    } else {
+                        0.0
+                    }
+            }
         }
+    }
+
+    /// The width the trail takes showing `origins`, chevrons included.
+    fn width_of(&self, origins: &[Option<usize>], theme: &Theme, tr: &mut TextRenderer) -> f64 {
+        let sep_block = separator_width(theme) + f64::from(theme.tokens.spacing.s2) * 2.0;
+        let labels: f64 = origins
+            .iter()
+            .map(|origin| self.segment_width(*origin, theme, tr))
+            .sum();
+        labels + sep_block * origins.len().saturating_sub(1) as f64
     }
 
     /// Recompute `cached_visible`, `segment_rects`, and `visible_origin`
@@ -186,48 +227,41 @@ impl Breadcrumb {
     /// draw pass operate on the same geometry.
     fn rebuild_rects(&mut self, theme: &Theme, tr: &mut TextRenderer) {
         let available = self.rect.width().max(0.0);
-        let labels = self.visible_segments(available, theme, tr);
-        // Unambiguous: when truncation fires we know exactly which
-        // originals survive (first + last two); otherwise each visible
-        // index equals the original index.
-        let n = self.segments.len();
-        let truncated = labels.len() == 4 && n > 4 && labels.get(1).is_some_and(|l| l == ELLIPSIS);
-        let mut origin = Vec::with_capacity(labels.len());
-        if truncated {
-            origin.push(Some(0));
-            origin.push(None); // ellipsis is non-clickable
-            origin.push(Some(n.saturating_sub(2)));
-            origin.push(Some(n.saturating_sub(1)));
-        } else {
-            for i in 0..labels.len() {
-                origin.push(Some(i));
-            }
-        }
-
+        let origin = self.visible_origins(available, theme, tr);
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
         // The root icon leads the first segment's rect.
-        let style = theme.text(self.role);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         let sep_w = separator_width(theme);
-        let mut rects = Vec::with_capacity(labels.len());
+        let mut rects = Vec::with_capacity(origin.len());
         let mut cursor_x = self.rect.x0;
-        let pill_y0 = self.rect.y0;
-        let pill_y1 = self.rect.y1;
-        for (i, label) in labels.iter().enumerate() {
-            let w = if label == ELLIPSIS && origin.get(i).copied().flatten().is_none() {
-                f64::from(theme.tokens.metrics.icon_sm)
-            } else {
-                f64::from(tr.measure_style(label, None, &style).0)
-            } + if i == 0 { self.root_width(theme) } else { 0.0 };
-            let r = Rect::new(cursor_x, pill_y0, cursor_x + w, pill_y1);
-            rects.push(r);
+        for (i, shown) in origin.iter().enumerate() {
+            let w = self.segment_width(*shown, theme, tr);
+            rects.push(Rect::new(
+                cursor_x,
+                self.rect.y0,
+                cursor_x + w,
+                self.rect.y1,
+            ));
             cursor_x += w;
-            if i.saturating_add(1) < labels.len() {
+            if i.saturating_add(1) < origin.len() {
                 cursor_x += sep_pad + sep_w + sep_pad;
             }
         }
-
+        let mut labels = self.labels_of(&origin);
+        // Where even `...` and the current segment overrun the width, the
+        // current segment's label ends in an ellipsis inside it.
+        if let (Some(rect), Some(label)) = (rects.last_mut(), labels.last_mut())
+            && rect.x1 > self.rect.x1
+        {
+            rect.x1 = self.rect.x1.max(rect.x0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a segment's width is a bounded on-screen size, far inside f32"
+            )]
+            let room = rect.width() as f32;
+            *label = tr.elide_to_width_style(label, room, &theme.text(self.role));
+        }
         self.cached_visible = labels;
         self.segment_rects = rects;
         self.visible_origin = origin;
@@ -304,30 +338,6 @@ impl Breadcrumb {
     }
 }
 
-/// Sum the widths of all `labels` + interleaved separators (with `s2`
-/// padding on each side of each separator). Used by
-/// [`Breadcrumb::visible_segments`] to decide whether the full path
-/// fits. A free function (not a method) since it touches no `self` field.
-fn measure_total_width(
-    labels: &[String],
-    role: TextRole,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-) -> f64 {
-    let style = theme.text(role);
-    let sep_pad = f64::from(theme.tokens.spacing.s2);
-    let sep_block = separator_width(theme) + sep_pad * 2.0;
-    let mut total = 0.0_f64;
-    for (i, label) in labels.iter().enumerate() {
-        let (w, _) = tr.measure_style(label, None, &style);
-        total += f64::from(w);
-        if i.saturating_add(1) < labels.len() {
-            total += sep_block;
-        }
-    }
-    total
-}
-
 impl Widget for Breadcrumb {
     fn build_layout(
         &mut self,
@@ -386,7 +396,11 @@ impl Widget for Breadcrumb {
 
         let labels = self.cached_visible.clone();
         let n = labels.len();
-        if let (Some(icon), Some(first)) = (self.root_icon, self.segment_rects.first()) {
+        if let (Some(icon), Some(first), Some(Some(0))) = (
+            self.root_icon,
+            self.segment_rects.first(),
+            self.visible_origin.first(),
+        ) {
             let edge = f64::from(theme.tokens.metrics.icon_sm);
             let hovered = self.hover_idx == Some(0) && active_origin != 0;
             icon.draw(
@@ -625,22 +639,63 @@ mod tests {
             let bc = Breadcrumb::new(segments);
             let mut tr = TextRenderer::new();
             let theme = Theme::dark();
-
-            // 200px at `sm` (12px text) fits the four-label fallback but
-            // rejects the ten-label full path.
-            let visible = bc.visible_segments(200.0, &theme, &mut tr);
+            let labels =
+                |shown: &[&str]| shown.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+            let first_two_last = [Some(0), None, Some(8), Some(9)];
+            let first_last = [Some(0), None, Some(9)];
+            let wide = bc.width_of(&first_two_last, &theme, &mut tr);
             assert_eq!(
-                visible,
-                vec![
-                    "segment_00".to_string(),
-                    ELLIPSIS.to_string(),
-                    "segment_08".to_string(),
-                    "segment_09".to_string(),
-                ],
-                "long path must collapse to first + ellipsis + last two segments"
+                bc.visible_segments(wide, &theme, &mut tr),
+                labels(&["segment_00", ELLIPSIS, "segment_08", "segment_09"]),
+                "a long path collapses to the first, `...` and the last two"
+            );
+            let middling = bc.width_of(&first_last, &theme, &mut tr);
+            assert!(middling < wide);
+            assert_eq!(
+                bc.visible_segments(middling, &theme, &mut tr),
+                labels(&["segment_00", ELLIPSIS, "segment_09"]),
+                "narrower, the second-last goes too"
+            );
+            assert_eq!(
+                bc.visible_segments(middling - 1.0, &theme, &mut tr),
+                labels(&[ELLIPSIS, "segment_09"]),
+                "at the narrowest the current folder still shows"
+            );
+            assert!(
+                bc.width_of(&[None, Some(9)], &theme, &mut tr) <= middling - 1.0,
+                "and fits"
             );
         }
 
+        fn breadcrumb_of_two_long_segments_stays_inside_its_width() {
+            let mut bc = Breadcrumb::new(vec![
+                "Samsung SSD 990 PRO 1TB".to_string(),
+                "system partition".to_string(),
+            ]);
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let both = bc.width_of(&[Some(0), Some(1)], &theme, &mut tr);
+            assert_eq!(
+                bc.visible_segments(both - 1.0, &theme, &mut tr),
+                vec![ELLIPSIS.to_string(), "system partition".to_string()],
+                "a trail of two too wide for its room keeps the current segment"
+            );
+            let rect = Rect::new(10.0, 0.0, 70.0, 24.0);
+            bc.set_rect(rect);
+            bc.rebuild_rects(&theme, &mut tr);
+            let end = bc.segment_rects.last().map(|r| r.x1).unwrap_or_default();
+            assert!(end <= rect.x1, "the trail ends at {end}, inside {rect:?}");
+            let shown = bc.cached_visible.last().cloned().unwrap_or_default();
+            let style = theme.text(bc.role);
+            let (shown_w, _) = tr.measure_style(&shown, None, &style);
+            let last = bc.segment_rects.last().copied().unwrap_or(Rect::ZERO);
+            assert!(
+                shown != "system partition" && f64::from(shown_w) <= last.width() + 0.5,
+                "the current segment's label is cut to its room: {shown}"
+            );
+        }
+
+        breadcrumb_of_two_long_segments_stays_inside_its_width();
         breadcrumb_with_one_segment_paints_no_separator();
         breadcrumb_labels_and_chevrons_centre_their_measured_line();
         breadcrumb_with_long_path_truncates_middle_segments();

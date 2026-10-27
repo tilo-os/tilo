@@ -7,11 +7,12 @@
 
 pub mod bridge;
 pub mod effects;
+pub mod emoji;
+pub mod emoji_sync;
 pub mod guard;
 pub mod import;
 pub mod inbound;
 pub mod layout;
-pub mod link;
 pub mod locales;
 pub mod outbound;
 pub mod record;
@@ -21,9 +22,11 @@ pub mod setup;
 pub mod slug;
 pub mod tilo;
 pub mod token;
+pub mod voice;
 
+pub use discord_wire::event;
 pub use record::{
-    DChannel, DRole, Guild, Link, LinkFailure, MappedKind, Mapping, Origin, Ownership, PendingLink,
+    Connect, DChannel, DRole, Guild, Link, LinkOffer, MappedKind, Mapping, Origin, Ownership,
     map_key,
 };
 

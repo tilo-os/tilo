@@ -6,7 +6,7 @@ constructor chooses its size from the host's online CPU count rather than the
 admitted two-CPU affinity. The CLI has a supported explicit thread option; the
 published native C API does not expose it. No budget was relaxed.
 
-[Exact artifacts and measurements](dictation-whistle-thread-review.json) extend
+[Exact artifacts and measurements](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-thread-review.json) extend
 the [release and paced-input review](dictation-whistle-paced-review.md). The
 runtime identity remains [Needle3 revision 2ae11323](https://huggingface.co/Cactus-Compute/needle3/tree/2ae11323dc000f5e70c49f7403efa6af12ba9e67):
 the earlier static archive and the distinct 3.2.0 shared library selected by the

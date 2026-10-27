@@ -285,7 +285,7 @@ fn negotiation_keeps_the_existing_privacy_gate_and_motion_coalescing_boundary() 
         lease_nonce: lease.nonce,
         acknowledgement: false,
     };
-    assert!(!ContinuityPolicySnapshot::default().permits_action(&action));
+    assert!(!ContinuityPolicySnapshot::OFF.permits_action(&action));
     let document = serde_json::json!({"continuity":{"enabled":true,"display_input":true}});
     assert!(
         ContinuityPolicySnapshot::from_document(document.as_object().unwrap())

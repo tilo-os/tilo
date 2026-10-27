@@ -13,6 +13,11 @@
 //! [`Action`]; `handle_event` drains the queue, submits library edits and
 //! effects through the framework dispatcher, changes what this window shows
 //! and flags a structural rebuild.
+//!
+//! The window's other subjects sit beside it: the watch page's player
+//! (`playback`), the network worker it asks (`requests`), what a still, a bench
+//! run or a test stages (`staging`), the bar's slots (`window_bar`), and the
+//! suite (`tests`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -34,22 +39,24 @@ use ui::widget::{FullscreenProvider, NavItem, NavList, NavSection, NavShell, Vid
 
 use crate::action::{self, Action, ActionBus};
 use crate::actions::TubeEffect;
-use crate::api::{Request, Update, Worker};
+use crate::api::{Request, Worker};
 use crate::history::WatchHistory;
-use crate::i18n::{arg, t, t_args};
+use crate::i18n::t;
 use crate::model::{Route, TubeModel};
 use crate::resource::Library;
 use crate::screens;
 use crate::widgets::SharedPlayer;
 use ui::tilo_resource::{Edit, Invoke};
 
+mod playback;
+mod requests;
+mod staging;
+mod window_bar;
+
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
-/// Pull the frames the player's engine decoded into its surface, as the
-/// player's own `sync` does every frame; it reads no document.
-fn pump_player(player: &mut VideoPlayer) {
-    player.sync(&(), &());
-}
+/// The playback speeds the player's menu offers, slowest first.
+pub(crate) const PLAYBACK_SPEEDS: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
 
 /// A view's persisted `(x, y)` scroll offset, shared with its `Scrollable`.
 type ScrollCell = Rc<Cell<(f32, f32)>>;
@@ -86,8 +93,7 @@ pub struct TubeApp {
     #[cfg(feature = "grayjay-sync")]
     device_sync_seeded: bool,
 
-    /// The window shell: the navigation rail, the header row and the current
-    /// screen. It lives as long as the app, so the person's sidebar choice
+    /// The window shell: the navigation rail and the current screen. It lives as long as the app, so the person's sidebar choice
     /// and its motion survive navigation; `build_layout` swaps the screen
     /// into it when the structure, theme or width changed.
     shell: NavShell,
@@ -111,6 +117,12 @@ pub struct TubeApp {
     /// accessibility and keyboard shortcuts) without creating an Automerge
     /// object that another collaborator could overwrite.
     search_query: ui::LocalState<String>,
+    /// What the platform search last asked this window for, so its results
+    /// can offer to search `YouTube` for it.
+    palette_query: String,
+    /// What `YouTube` answered for the platform search's query, shown under
+    /// the row that searches it.
+    suggested: crate::suggest::Suggested,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -149,12 +161,23 @@ pub struct TubeApp {
     /// so we open a source exactly once per resolution and can mirror the engine
     /// playhead back onto the model only while it's the open video.
     player_video: Option<String>,
+    /// Where the stream that is about to load should start, in milliseconds:
+    /// the place the person left this video. Taken when the resolution lands,
+    /// because a seek before the source exists would be lost.
+    resume_at_ms: Option<u64>,
+    /// The last position written to the person's watch history, as
+    /// `(video, whole seconds)`: writes are throttled to a few seconds apart so
+    /// a two-hour video is not two hours of history edits, and the final
+    /// position is still written when playback stops or the page closes.
+    progress_written: Option<(String, u64)>,
 
     /// Async image loader/cache for real thumbnails / avatars / banners, keyed
     /// by URL. `Some` when online (or seeded for a real-image `--shots` proof);
     /// `None` on the hermetic offline path, where every image lookup returns
     /// `None` and the procedural gradient/initials fallback shows.
     images: Option<ui::ImageStore>,
+    /// When the videos the screens wait for were first waited for.
+    waiting: screens::Waiting,
 
     /// End (seconds) of the show-mode `SponsorBlock` segment the playhead is
     /// currently inside, if any. The on-video "Skip" overlay is shown for it.
@@ -224,6 +247,8 @@ impl TubeApp {
             rect: Rect::ZERO,
             structure_dirty: false,
             search_query: ui::LocalState::new(String::new()),
+            palette_query: String::new(),
+            suggested: crate::suggest::Suggested::default(),
             sidebar_open: None,
             force_sidebar_open_shot: false,
             online: false,
@@ -232,7 +257,10 @@ impl TubeApp {
             // No engine until something plays: see `playing_player`.
             player: Rc::new(RefCell::new(VideoPlayer::new())),
             player_video: None,
+            resume_at_ms: None,
+            progress_written: None,
             images: None,
+            waiting: screens::Waiting::default(),
             show_skip_end: None,
             mpris_started: false,
             nav: ui::NavStack::new(Route::Home),
@@ -254,8 +282,8 @@ impl TubeApp {
         changed
     }
 
-    /// The window shell: a docked icon rail of destinations beside the
-    /// screen, with the screen's title and actions in the header row, and
+    /// The window shell: a docked sidebar of destinations beside the
+    /// screen, the screen's title and actions in the window's bar, and
     /// the shell's Back for the pages reached by browsing (a video, its
     /// creator, a playlist). Escape, Alt+Left, the mouse back button and an
     /// edge swipe do the same.
@@ -275,6 +303,7 @@ impl TubeApp {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Grid)
             .with_id("tube_shell")
+            .with_window_toolbar()
             .on_back(move || can.get(), move || action::push(&bus, Action::Back))
     }
 
@@ -304,6 +333,7 @@ impl TubeApp {
                 self.shell.toggle_sidebar();
             }
             TubeEffect::OpenVideo { video } => {
+                self.adopt_suggested(&video);
                 if self.model.video(&video).is_none() {
                     return Err("That video is no longer available".into());
                 }
@@ -326,9 +356,33 @@ impl TubeApp {
                 self.dismiss_overlay_rail();
                 self.request_live(Request::PlaylistPage(playlist));
             }
+            TubeEffect::Search { query } => {
+                let query = query.trim();
+                if query.is_empty() {
+                    return Err("Say what to search for".into());
+                }
+                self.search_query.set(query.to_owned());
+                self.apply(Action::SubmitSearch);
+                self.dismiss_overlay_rail();
+            }
             TubeEffect::TogglePlayback => {
                 self.player.borrow_mut().toggle_play();
                 self.model.playing = self.player.borrow().is_playing();
+            }
+            TubeEffect::Seek { seconds } => {
+                let duration = self
+                    .current_duration()
+                    .ok_or("Open a video to seek in it")?;
+                if !seconds.is_finite() || seconds < 0.0 {
+                    return Err("Say a moment from the start of the video, in seconds".into());
+                }
+                self.seek_to(seconds.min(duration));
+            }
+            TubeEffect::SkipSegment => {
+                let end = self
+                    .current_show_skip_end()
+                    .ok_or("No segment to skip is playing")?;
+                self.skip_to(end);
             }
             TubeEffect::Share { video } => {
                 tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share effect entered");
@@ -426,6 +480,7 @@ impl TubeApp {
                 .map_err(|error| error.to_string())
         } else {
             let shown = &self.model.history;
+            let positions = &self.model.history_positions;
             let replica = self.local_history.get_or_insert_with(|| {
                 let mut replica = ui::tilo_resource::Replica::<WatchHistory>::new();
                 let count = shown.len();
@@ -435,6 +490,13 @@ impl TubeApp {
                     .map(|(at, video)| (video.clone(), u64::try_from(count - at).unwrap_or(0)))
                     .collect();
                 let _ = replica.apply(WatchHistory::IMPORT.with(watched));
+                // A window opened on a history that already knows where each
+                // video was left keeps those places, so continuing works here
+                // too.
+                for (video, position) in positions {
+                    let _ =
+                        replica.apply(WatchHistory::PROGRESS.with((video.clone(), *position, 0)));
+                }
                 replica
             });
             let applied = replica
@@ -452,6 +514,7 @@ impl TubeApp {
             Ok(videos) => {
                 self.model.history_notice = None;
                 self.model.history = videos;
+                self.model.history_positions = self.history_positions();
                 self.structure_dirty = true;
                 true
             }
@@ -465,17 +528,34 @@ impl TubeApp {
         }
     }
 
-    /// Show the history another window or device stored.
+    /// Show the history another window or device stored, including where
+    /// each video was left: continuing a video on this device continues from
+    /// the minute another one stopped at.
     fn follow_history(&mut self) -> bool {
         let Some(history) = &self.history else {
             return false;
         };
         let stored = history.with(WatchHistory::videos);
-        if stored == self.model.history {
+        let positions = history.with(WatchHistory::positions);
+        if stored == self.model.history && positions == self.model.history_positions {
             return false;
         }
         self.model.history = stored;
+        self.model.history_positions = positions;
         true
+    }
+
+    /// Where each video the history knows about was left, from the person's
+    /// record or (in a capture or a test) the window's own replica.
+    fn history_positions(&self) -> std::collections::BTreeMap<String, u64> {
+        match (&self.history, &self.local_history) {
+            (Some(record), _) => record.with(WatchHistory::positions),
+            (None, Some(replica)) => replica
+                .state()
+                .map(|state| state.positions())
+                .unwrap_or_default(),
+            (None, None) => std::collections::BTreeMap::new(),
+        }
     }
 
     /// Bring in what an approved Grayjay device sent: its subscriptions as
@@ -605,131 +685,6 @@ impl TubeApp {
         self
     }
 
-    fn play_demo(&mut self) {
-        let id = self
-            .model
-            .videos
-            .first()
-            .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
-        self.model.route = Route::Watch(id.clone());
-        {
-            let mut p = self.player.borrow_mut();
-            // Pin the deterministic synthesized-frame backend for the shot: the
-            // `media` feature (real GStreamer decode) is compiled in by default,
-            // so `MediaEngine::new()` would otherwise build a real pipeline and
-            // contact the placeholder `demo.local` host. The synthesized engine
-            // seeds the same surface without a pipeline or network. (The real
-            // decode path is exercised by `with_live_frame_for_shot` under the
-            // separate `--live-shots` hook.)
-            p.set_engine(media::MediaEngine::new_synthesized());
-            p.open(media::Source::Remote {
-                url: "https://demo.local/clip.mp4".into(),
-            });
-            // Seed a colourful mid-stream frame for the still, then pump the
-            // engine so the frame lands in the surface. The offscreen renderer
-            // syncs the app exactly once — *before* this player is mounted in the
-            // tree — so without pumping here the single shot would draw an empty
-            // (never-pumped) surface. A live run pumps every frame, so this is
-            // shots-only.
-            p.seek_to_ms(45_000);
-            p.play();
-            p.reveal_controls();
-            pump_player(&mut p);
-        }
-        self.player_video = Some(id);
-    }
-
-    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
-        match scenario {
-            "empty" => self.show_empty_home(),
-            "loading" => self.show_loading_home(),
-            #[cfg(feature = "grayjay-sync")]
-            "device-sync" => self.show_device_sync_sample(),
-            "play-demo" => self.play_demo(),
-            "narrow" => {
-                self.force_sidebar_open_shot = true;
-                self.shell.open_sidebar();
-                self.shell.snap();
-            }
-            "trending" => self.show_route(Route::Trending),
-            "subscriptions" => self.show_route(Route::Subscriptions),
-            "queue" => self.show_route(Route::Queue),
-            "history" => self.show_route(Route::History),
-            "settings" => self.show_route(Route::Settings),
-            "search" => self.show_route(Route::Search("rust".into())),
-            "watch" => self.show_route(Route::Watch("vid_donut".into())),
-            _ => {}
-        }
-        self.structure_dirty = true;
-        self.shell_stale = true;
-    }
-    /// Test/shots hook: attach an image store so an offscreen `--shots` render
-    /// can paint fetched thumbnails, avatars, and banners. The live app gets
-    /// its store via [`Self::online`].
-    #[must_use]
-    pub fn with_image_store(mut self, store: ui::ImageStore) -> Self {
-        self.images = Some(store);
-        self
-    }
-
-    /// Test/shots hook: replace the model wholesale (e.g. a channel page built
-    /// from real yt-dlp data) so an offscreen render shows real content.
-    #[must_use]
-    pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
-        self.stage_model_for_test(model);
-        self
-    }
-
-    /// Supply a deterministic catalogue in a hosted test without changing its
-    /// dispatcher, effect admission, or shared library. Live launch stays empty.
-    ///
-    /// A live window has already spawned its fetch worker on its first frame.
-    /// Retire it with the live catalogue: its startup notes, its status and
-    /// the feed it fetched would otherwise land whenever the network answers,
-    /// rebuild the staged page and drop a click made in between.
-    pub fn stage_model_for_test(&mut self, model: TubeModel) {
-        self.search_query.set(model.search_query.clone());
-        self.model = model;
-        self.online = false;
-        self.worker = None;
-        self.shell_stale = true;
-    }
-
-    /// Wake this window through `wake` when the fetch worker posts a result.
-    pub(crate) fn wake_with(&mut self, wake: ui::WakeHandle) {
-        self.wake = wake;
-    }
-
-    /// Test hook: fetch nothing, and fold the results the returned sender
-    /// sends as the network's, whenever the test lands one.
-    #[doc(hidden)]
-    pub fn script_worker_for_test(&mut self) -> crate::api::Updates {
-        let (worker, results) = crate::api::Worker::scripted(self.wake.clone());
-        self.worker = Some(worker);
-        results
-    }
-
-    /// Open on the results for `query`, as typing it into the search field
-    /// and pressing Enter does: a launch from desktop search (`Search
-    /// YouTube for cats`). The search runs on the first frame, once the
-    /// window can be woken by its results.
-    #[must_use]
-    pub fn searching(self, query: &str) -> Self {
-        self.search_query.set(query.to_owned());
-        action::push(&self.bus, Action::SubmitSearch);
-        self
-    }
-
-    #[must_use]
-    pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {
-        self.model.search_query = query.to_string();
-        self.model.search_hits_query = query.to_string();
-        self.model.search_hits = video_ids;
-        self.model.route = Route::Search(query.to_string());
-        self.nav.push(Route::Search(query.to_string()));
-        self
-    }
-
     /// Show the shared library the resource holds: likes, the queue,
     /// subscriptions and comment likes. Every presentation is the
     /// whole library, so an emptied one (everything unliked, the queue
@@ -807,172 +762,6 @@ impl TubeApp {
         self.follow_history();
     }
 
-    fn show_loading_home(&mut self) {
-        self.model = TubeModel::default();
-        self.model.feed_loading = true;
-        self.model.route = Route::Home;
-    }
-
-    fn show_empty_home(&mut self) {
-        self.model = TubeModel::default();
-        self.model.data_source.label = "offline — network unavailable".into();
-        self.model.route = Route::Home;
-    }
-
-    /// `--shots` builder: record the render viewport up front so the first
-    /// frame sizes the width-driven watch player from the true width. The
-    /// live app learns its width from `apply_layout` each frame.
-    #[must_use]
-    pub fn with_viewport(mut self, w: f64, h: f64) -> Self {
-        self.rect = Rect::new(0.0, 0.0, w.max(0.0), h.max(0.0));
-        self
-    }
-
-    /// `--shots` builder: start on a specific [`Route`] so each screen can be
-    /// captured for self-inspection. Pure presentation override — the live app
-    /// starts from the sample/persisted route instead.
-    #[must_use]
-    pub fn with_route_shot(mut self, route: Route) -> Self {
-        self.show_route(route);
-        self
-    }
-
-    fn show_route(&mut self, route: Route) {
-        if let Route::Search(q) = &route {
-            q.clone_into(&mut self.model.search_query);
-            self.search_query.set(q.clone());
-        }
-        // The shell uses `NavStack` as the navigation authority (Back state,
-        // keyboard handling and the top bar all consult it), while the model
-        // mirrors its current route.  A deterministic screenshot must seed
-        // both sides together; changing only the presentation model created a
-        // state that a user or an agent could never actually navigate to.
-        // A page reached by browsing (a video, a creator, a playlist) is
-        // opened from Home, so Back has somewhere to return to.
-        if matches!(
-            route,
-            Route::Watch(_) | Route::Channel(_) | Route::Playlist(_)
-        ) {
-            self.nav = ui::NavStack::new(Route::Home);
-            self.nav.push(route.clone());
-        } else {
-            self.nav = ui::NavStack::new(route.clone());
-        }
-        self.model.route = route;
-    }
-
-    #[cfg(feature = "grayjay-sync")]
-    fn show_device_sync_sample(&mut self) {
-        self.model.route = Route::Settings;
-        self.device_sync = crate::sync::DeviceSync::visual_sample();
-        // Scroll to the end of the form: the device section is the last one.
-        self.scroll_cells
-            .borrow_mut()
-            .insert("settings".into(), Rc::new(Cell::new((0.0, f32::MAX))));
-    }
-
-    /// `--live-shots` hook: open the shared player on a real, directly-playable
-    /// stream `url` and pump the media engine until a real frame decodes
-    /// (bounded), so an offscreen still captures the ACTUAL decoded picture — the
-    /// same `VideoPlayer` + `media::MediaEngine` the live app streams through.
-    /// Needs the `media` decode backend to produce a real frame; if none arrives
-    /// within the budget the surface stays as-is (the poster/backdrop shows).
-    #[must_use]
-    pub fn with_live_frame_for_shot(mut self, video_id: &str, url: String) -> Self {
-        use ui::time::Duration;
-        self.model.route = Route::Watch(video_id.to_string());
-        {
-            let mut p = self.playing_player();
-            p.open(media::Source::Remote { url });
-            p.play();
-            p.reveal_controls();
-            // The offscreen renderer syncs the app only once — before this player
-            // is mounted in the tree — so the frame must already be in hand before
-            // the shot draws. Poll at the live app's ~16ms cadence: the engine's
-            // appsink pull is non-blocking and the sink paces/drops frames to the
-            // clock, so a slow poll misses them.
-            let pump = |p: &mut ui::widget::VideoPlayer,
-                        until: &dyn Fn(&ui::widget::VideoPlayer) -> bool,
-                        budget: Duration| {
-                let deadline = ui::time::now() + budget;
-                while ui::time::now() < deadline {
-                    pump_player(p);
-                    if until(p) {
-                        return true;
-                    }
-                    let _ = ui::rt::sleep_thread(Duration::from_millis(15));
-                }
-                false
-            };
-            // Wait for the first decoded frame before capturing the player.
-            pump(
-                &mut p,
-                &|p| p.latest_frame().is_some(),
-                Duration::from_secs(25),
-            );
-            // Seek past the typical fade-from-black intro for a useful capture.
-            if p.duration_ms() > 40_000 {
-                p.seek_to_ms(32_000);
-                pump(
-                    &mut p,
-                    &|p| p.engine().map_or(0, media::MediaEngine::position_ms) >= 30_000,
-                    Duration::from_secs(15),
-                );
-            }
-        }
-        self.player_video = Some(video_id.to_string());
-        self
-    }
-
-    /// Bench hook: put the app on a watch page with a **synthesized, paused-but-
-    /// loaded** player — a real decoded frame sitting in the surface, playback
-    /// paused. This reproduces the scroll-perf scenario (`--bench-scroll --watch
-    /// --loaded`): the scroll loop re-syncs each frame, pumping the engine, so the
-    /// bench measures the true per-frame cost of a loaded-but-paused watch page.
-    #[must_use]
-    pub fn with_bench_loaded_watch(mut self, video_id: &str) -> Self {
-        self.model.route = Route::Watch(video_id.to_string());
-        self.player = Rc::new(RefCell::new(
-            VideoPlayer::new().with_engine(media::MediaEngine::new_synthesized()),
-        ));
-        {
-            let mut p = self.player.borrow_mut();
-            p.open(media::Source::Remote {
-                url: "https://demo.local/clip.mp4".into(),
-            });
-            p.seek_to_ms(30_000);
-            // Pull the first frame into the surface, then pause so it is
-            // "loaded-but-paused" (the reported jank condition).
-            pump_player(&mut p);
-            p.pause();
-        }
-        self.player_video = Some(video_id.to_string());
-        self
-    }
-
-    /// Whether the shared player has built its media engine yet.
-    #[doc(hidden)]
-    pub fn media_engine_started_for_test(&self) -> bool {
-        self.player.borrow().engine().is_some()
-    }
-
-    /// Test accessor: the current route (read-only).
-    pub fn route_for_test(&self) -> &Route {
-        &self.model.route
-    }
-
-    /// Test accessor: whether the navigation stack has somewhere to go back to.
-    pub fn can_go_back_for_test(&self) -> bool {
-        self.nav.can_go_back()
-    }
-
-    /// Test accessor: read-only view of the model, so integration tests can
-    /// assert on real state (likes, notices, settings, playhead) after driving
-    /// the widget tree.
-    pub fn model_for_test(&self) -> &TubeModel {
-        &self.model
-    }
-
     /// Crate-internal read-only model view, so [`crate::actions`] can publish the
     /// open-resource tree (the playing video + its comments) for Ctrl+K.
     pub(crate) fn model_ref(&self) -> &TubeModel {
@@ -997,12 +786,6 @@ impl TubeApp {
         &UNAVAILABLE
     }
 
-    /// Test accessor: whether the navigation rail is currently shown (resolves
-    /// the session preference against the layout default).
-    pub fn sidebar_open_for_test(&self) -> bool {
-        self.shell.is_sidebar_open()
-    }
-
     /// The UI context the screens are built from.
     fn ui<'a>(&'a self, theme: &'a Theme) -> screens::Ui<'a> {
         screens::Ui {
@@ -1011,11 +794,19 @@ impl TubeApp {
             bus: &self.bus,
             imgs: crate::images::Imgs(self.images.as_ref()),
             content_width: self.content_width(theme),
+            waiting: &self.waiting,
         }
     }
 
     /// The current screen, ready for the shell's content column.
     fn build_screen(&self, theme: &Theme) -> Box<dyn Widget> {
+        self.waiting.begin_build();
+        let screen = self.build_route(theme);
+        self.waiting.end_build();
+        screen
+    }
+
+    fn build_route(&self, theme: &Theme) -> Box<dyn Widget> {
         let ui = self.ui(theme);
         let content = match &self.model.route {
             Route::Home => screens::home(ui),
@@ -1052,7 +843,9 @@ impl TubeApp {
         Box::new(content.with_persisted_offset(self.scroll_cell_for(&self.model.route)))
     }
 
-    /// The navigation rail: Tube's destinations, the current one selected.
+    /// The navigation sidebar: Tube's destinations, the current one
+    /// selected. The shell shows them as a rail by default and as a list
+    /// once the person widens it.
     /// Choosing one invokes the same published navigation action an agent or
     /// the palette uses.
     fn build_rail(&self) -> NavList {
@@ -1075,7 +868,6 @@ impl TubeApp {
                 item(&Route::Settings, &t("tube-nav-settings"), Icon::Settings),
             ],
         )])
-        .rail()
         .with_id("tube_rail")
         .with_accessible_name(t("tube-nav-name"))
         .on_select({
@@ -1089,9 +881,6 @@ impl TubeApp {
     /// Put the current screen, the rail and the header into the shell.
     fn rebuild_shell(&mut self, theme: &Theme) {
         let screen = self.build_screen(theme);
-        let title = screens::title(&self.model.route);
-        let actions = screens::header_actions(self.ui(theme));
-        self.shell.set_content_header(title, actions);
         self.can_go_back.set(self.nav.can_go_back());
         self.shell.set_can_go_back(self.nav.can_go_back());
         // Catalogue updates may arrive between pointer motion and press.
@@ -1182,224 +971,6 @@ impl TubeApp {
         self.images.as_ref().is_some_and(|s| s.pending() > 0)
     }
 
-    /// If the current route is a watch page we haven't started playing yet, ask
-    /// the worker to resolve + decode a real stream for it — exactly once per
-    /// watch-open. Online-only, so the offline `--shots`/test paths never spawn
-    /// the worker or reach the network. Opening a *different* video re-arms this
-    /// and drops the previous video's frame so the poster shows until the new
-    /// stream decodes.
-    fn ensure_playback(&mut self) {
-        if !self.online {
-            return;
-        }
-        match self.model.route.clone() {
-            Route::Watch(id) => {
-                if self.playing_id.as_deref() == Some(id.as_str()) {
-                    return;
-                }
-                self.playing_id = Some(id.clone());
-                // A fresh resolution is pending; drop the previously-loaded
-                // source so a new video starts clean once its URL lands.
-                self.player_video = None;
-                self.player.borrow_mut().pause();
-                // The decoder starts up while the stream URL resolves.
-                media::MediaEngine::prepare_in_background();
-                self.request_live(Request::PlayVideo(id));
-            }
-            // Left the watch page: pause the engine so audio stops and it isn't
-            // still streaming a video the user is no longer watching.
-            _ => {
-                if self.playing_id.take().is_some() {
-                    self.player_video = None;
-                    self.player.borrow_mut().pause();
-                }
-            }
-        }
-    }
-
-    /// Per-frame playback bookkeeping: mirror the engine's playhead onto the
-    /// model (so `SponsorBlock` auto-skip + autoplay-next key off the real
-    /// position), auto-skip enabled segments by seeking the engine, and advance
-    /// to the next recommendation when the stream ends. Returns `true` only when
-    /// something *visible* changed (a skip notice or an autoplay navigation) so
-    /// it never dirties the tree merely because the playhead advanced. A no-op
-    /// off the watch route or before a stream has loaded.
-    fn tick_playback(&mut self) -> bool {
-        let Route::Watch(id) = self.model.route.clone() else {
-            return false;
-        };
-        if self.player_video.as_deref() != Some(id.as_str()) {
-            return false;
-        }
-        // Until a source is open the engine has no playhead to follow: an
-        // auto-skip from the zero position would seek nowhere and fire again
-        // on every frame.
-        if !self.player.borrow().has_media() {
-            return false;
-        }
-        // Short borrow: read the engine's position/duration/playing, then drop
-        // the borrow before any seek (auto-skip re-borrows).
-        let (pos_ms, dur_ms, playing) = {
-            let p = self.player.borrow();
-            (p.position_ms(), p.duration_ms(), p.is_playing())
-        };
-        self.model.playhead = pos_ms as f64 / 1000.0;
-        self.model.playing = playing;
-
-        // Auto-skip runs against the real playhead and seeks the engine.
-        let mut changed = self.apply_auto_skip();
-        // On-video "Skip" overlay visibility: recompute which (if any) show-mode
-        // segment the playhead sits in. A transition (enter/leave) must rebuild
-        // the tree so the overlay appears/dismisses — the advancing playhead by
-        // itself never dirties it.
-        let show_end = self.current_show_skip_end();
-        if show_end != self.show_skip_end {
-            self.show_skip_end = show_end;
-            changed = true;
-        }
-        // Reaching the end advances to the next "up next" when autoplay is on.
-        // `duration_ms` is the media duration once known; treat within 250ms of
-        // the end (or an explicitly non-playing engine at the end) as finished.
-        let known_dur = dur_ms > 0;
-        let at_end = known_dur && pos_ms + 250 >= dur_ms;
-        if at_end && self.maybe_autoplay_next() {
-            changed = true;
-        }
-        changed
-    }
-
-    /// Apply one player-setting interaction drained from the shared player. The
-    /// resolution choice round-trips into the model's preferred quality; other
-    /// settings are ignored for now. This is the production drain path (called
-    /// from `sync`), factored out so it is directly testable.
-    fn apply_player_setting_event(&mut self, ev: ui::widget::video_player::PlayerSettingEvent) {
-        use ui::widget::video_player::PlayerSettingEvent as E;
-        match ev {
-            E::Chose { id, index }
-                if id == "resolution"
-                    && QUALITIES
-                        .get(index)
-                        .is_some_and(|q| self.model.settings.preferred_quality != *q) =>
-            {
-                if let Some(q) = QUALITIES.get(index) {
-                    self.change_preferences(|settings| {
-                        settings.preferred_quality = (*q).to_string();
-                    });
-                }
-            }
-            E::Activated { id } if id == screens::SKIP_SETTING => {
-                if let Some(end) = self.current_show_skip_end() {
-                    self.skip_to(end);
-                    self.structure_dirty = true;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Load a resolved, directly-playable stream URL into the shared player
-    /// engine and start it — the real path both the worker's
-    /// [`Update::StreamResolved`] and the transport tests take. A resolution for
-    /// a video that is no longer the open watch page is dropped (returns `false`)
-    /// so audio never bleeds across pages.
-    fn load_resolved_stream(
-        &mut self,
-        video: String,
-        url: String,
-        has_audio: bool,
-        quality: &str,
-    ) -> bool {
-        if !matches!(&self.model.route, Route::Watch(id) if *id == video) {
-            return false;
-        }
-        // Now-playing metadata for the desktop media widget (MPRIS): title,
-        // channel and the real thumbnail, built before we take the player borrow.
-        let now_playing = self.model.video(&video).map(|v| {
-            let dearrow = self.model.settings.dearrow_titles_on();
-            ui::widget::video_player::NowPlaying {
-                track_id: v.id.clone(),
-                title: v.display_title(dearrow).to_string(),
-                artist: v.channel_name.clone(),
-                art_url: v.thumbnail_url.clone(),
-            }
-        });
-        {
-            let mut p = self.playing_player();
-            p.open(media::Source::Remote { url });
-            p.play();
-            if let Some(np) = now_playing {
-                p.set_now_playing(np);
-            }
-        }
-        // Bring up MPRIS once, in the live app, so media keys + the system media
-        // widget can drive this player and show its now-playing.
-        if self.online && !self.mpris_started {
-            self.player
-                .borrow_mut()
-                .enable_mpris("tilo-tube", "Tilo Tube");
-            self.mpris_started = true;
-        }
-        self.player_video = Some(video);
-        self.model.playing = true;
-        // No debug text under the player — the picture playing IS the feedback.
-        // Quality/audio provenance is a developer diagnostic, so it goes to the
-        // log, not an on-screen toast.
-        tracing::debug!(%quality, has_audio, "stream loaded into player");
-        true
-    }
-
-    /// The shared player, with its media engine built if this is the first
-    /// thing it plays. Tube builds no engine with its window: the first one
-    /// starts `GStreamer`, which took 0.8 s of the window's first frame
-    /// whether or not anything was ever watched.
-    fn playing_player(&self) -> std::cell::RefMut<'_, VideoPlayer> {
-        let mut player = self.player.borrow_mut();
-        player.ensure_engine(media::MediaEngine::new);
-        player
-    }
-
-    /// Resolve the current watch video's duration, if any.
-    fn current_duration(&self) -> Option<f64> {
-        match &self.model.route {
-            Route::Watch(id) => self.model.video(id).map(|v| f64::from(v.duration)),
-            _ => None,
-        }
-    }
-
-    /// The end (seconds) of the show-mode `SponsorBlock` segment the playhead is
-    /// currently inside, if any — what the on-video "Skip" overlay offers.
-    /// `None` off the watch route, when `SponsorBlock` is off, or when no show-mode
-    /// segment contains the playhead.
-    fn current_show_skip_end(&self) -> Option<f64> {
-        if !self.model.settings.sponsorblock_enabled {
-            return None;
-        }
-        let Route::Watch(id) = &self.model.route else {
-            return None;
-        };
-        let v = self.model.video(id)?;
-        v.sponsor
-            .iter()
-            .find(|s| {
-                self.model.settings.should_show_skip(s.category) && s.contains(self.model.playhead)
-            })
-            .map(|s| s.end)
-    }
-
-    /// Skip a segment by hand: jump the model and engine playhead to `to` and
-    /// confirm with a toast.
-    fn skip_to(&mut self, to: f64) {
-        if let Some(d) = self.current_duration() {
-            let to = to.clamp(0.0, d);
-            self.model.playhead = to;
-            self.player.borrow_mut().seek_to_ms((to * 1000.0) as u64);
-            self.model.push_notice(t_args(
-                "tube-notice-skipped-to",
-                &[arg("time", crate::util::clock(to))],
-            ));
-        }
-    }
-
     /// Show a notice pushed since the last frame as the shell's toast.
     fn show_new_notices(&mut self) {
         use std::hash::{Hash, Hasher};
@@ -1413,128 +984,6 @@ impl TubeApp {
             }
             self.toasted = current;
         }
-    }
-
-    /// If the playhead sits inside an enabled `SponsorBlock` segment, jump the
-    /// engine (and the model) to its end and log the skip. Returns `true` when a
-    /// skip actually happened. Runs both as the user scrubs and each frame from
-    /// [`Self::tick_playback`] against the real engine playhead.
-    fn apply_auto_skip(&mut self) -> bool {
-        if !self.model.settings.sponsorblock_enabled {
-            return false;
-        }
-        let Route::Watch(id) = self.model.route.clone() else {
-            return false;
-        };
-        let (seg_end, label) = {
-            let Some(v) = self.model.video(&id) else {
-                return false;
-            };
-            let mut found = None;
-            for s in &v.sponsor {
-                // Only Auto-skip-mode categories skip on their own; Show-mode
-                // segments wait for the manual skip button.
-                if self.model.settings.should_auto_skip(s.category)
-                    && s.contains(self.model.playhead)
-                {
-                    found = Some((
-                        s.end,
-                        t_args(
-                            "tube-notice-skipped-segment",
-                            &[
-                                arg("segment", s.category.label()),
-                                arg("start", crate::util::clock(s.start)),
-                                arg("end", crate::util::clock(s.end)),
-                            ],
-                        ),
-                    ));
-                    break;
-                }
-            }
-            match found {
-                Some(f) => f,
-                None => return false,
-            }
-        };
-        self.model.playhead = seg_end;
-        // Seek the real stream past the segment (no-op when no source is loaded).
-        self.player
-            .borrow_mut()
-            .seek_to_ms((seg_end * 1000.0) as u64);
-        self.model.push_notice(label);
-        true
-    }
-
-    /// Open a video's watch page: record history, route to it, reset the
-    /// playhead and start playing, and kick off metadata/branding fetches.
-    /// Shared by the card and search-result open paths and by autoplay-next so they stay
-    /// in lockstep.
-    fn open_video(&mut self, id: String) {
-        let watched_at_ms = ui::time::unix_now_ms();
-        self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
-        self.navigate_to(Route::Watch(id.clone()));
-        self.model.playhead = 0.0;
-        self.model.playing = true;
-        // SponsorBlock, DeArrow and dislikes come from the network, so an
-        // offline window (a capture, a staged test) asks for none of them.
-        self.request_live(Request::Branding(id.clone()));
-        // Fetch the uploader's real avatar + subscriber count when we only hold a
-        // name stub (feed/search items don't carry the channel's avatar or subs),
-        // so the watch-page channel row shows a real photo + count rather than an
-        // initials chip and "0 subscribers".
-        if let Some(cid) = self.model.video(&id).map(|v| v.channel_id.clone()) {
-            self.request_channel_if_stub(&cid);
-        }
-        self.request_live(Request::VideoMeta(id));
-    }
-
-    /// Ask the worker for a channel page (avatar + subscriber count + uploads)
-    /// when the store only holds a bare name stub for it. Online-only.
-    fn request_channel_if_stub(&mut self, channel_id: &str) {
-        if channel_id.is_empty() || self.requested_channels.contains(channel_id) {
-            return;
-        }
-        let stub = self
-            .model
-            .channel(channel_id)
-            .is_none_or(|c| c.avatar_url.is_empty() || c.subscribers == 0);
-        if stub {
-            self.requested_channels.insert(channel_id.to_string());
-            self.request_live(Request::Channel(channel_id.to_string()));
-        }
-    }
-
-    /// If autoplay is on and the playhead has reached the end of the current
-    /// video, advance to the first "up next" recommendation — the real code
-    /// path that consumes the [`Settings::autoplay`] flag. Reaching the end
-    /// happens when the engine's stream runs out (mirrored each frame by
-    /// [`Self::tick_playback`]) or when a test seeks the playhead to the finish.
-    /// Returns `true` when it navigated to a new video.
-    fn maybe_autoplay_next(&mut self) -> bool {
-        if !self.model.settings.autoplay {
-            return false;
-        }
-        let Route::Watch(id) = self.model.route.clone() else {
-            return false;
-        };
-        let Some(dur) = self.model.video(&id).map(|v| f64::from(v.duration)) else {
-            return false;
-        };
-        if self.model.playhead < dur - 0.001 {
-            return false;
-        }
-        let next = self
-            .model
-            .related_display(&id)
-            .first()
-            .map(|v| v.id.clone());
-        if let Some(next) = next
-            && next != id
-        {
-            self.open_video(next);
-            return true;
-        }
-        false
     }
 
     /// Apply one drained action. Returns true if the model changed enough to
@@ -1566,28 +1015,17 @@ impl TubeApp {
             }
             Action::Seek(frac) => {
                 if let Some(d) = self.current_duration() {
-                    self.model.playhead = (frac * d).clamp(0.0, d);
-                    // Seek the real stream (no-op when no source is loaded yet).
-                    self.player
-                        .borrow_mut()
-                        .seek_to_ms((self.model.playhead * 1000.0) as u64);
-                    self.apply_auto_skip();
-                    self.maybe_autoplay_next();
+                    self.seek_to((frac * d).clamp(0.0, d));
                 }
             }
             Action::TogglePlay => {
                 let _ = self.perform(TubeEffect::TogglePlayback);
             }
-            Action::SkipSegment(to) => {
-                // Manual skip button for a Show-mode segment: jump the model +
-                // engine playhead to the segment end and confirm with a toast.
-                if let Some(d) = self.current_duration() {
-                    let to = to.clamp(0.0, d);
-                    self.model.playhead = to;
-                    self.player.borrow_mut().seek_to_ms((to * 1000.0) as u64);
-                    self.model
-                        .push_notice(format!("Skipped to {}", crate::util::clock(to)));
-                }
+            Action::RetryPlayback => {
+                // Forget the attempt, so the page asks for the stream anew.
+                self.model.unplayable = None;
+                self.playing_id = None;
+                self.ensure_playback();
             }
             Action::SubmitSearch => {
                 let q = self.search_query.get();
@@ -1635,355 +1073,6 @@ impl TubeApp {
         }
         true
     }
-
-    /// Start a bounded background request without ever stalling UI input.
-    /// Returns false only when the worker could not accept the newest intent;
-    /// in that case [`Self::request_rejected`] has already made the outcome
-    /// visible and cleared any misleading loading state.
-    fn request(&mut self, req: Request) -> bool {
-        if self.worker.is_none() {
-            self.worker = Some(Worker::spawn(self.wake.clone()));
-        }
-        if let Some(w) = &self.worker
-            && let Err(error) = w.request(req)
-        {
-            let (rejected, stopped) = match error {
-                std::sync::mpsc::TrySendError::Full(request) => (request, false),
-                std::sync::mpsc::TrySendError::Disconnected(request) => (request, true),
-            };
-            self.request_rejected(&rejected, stopped);
-            return false;
-        }
-        true
-    }
-
-    /// Make bounded-worker saturation explicit. This is a local, retryable
-    /// condition, not an offline/network failure, so never falsify the source
-    /// provenance while reporting it.
-    fn request_rejected(&mut self, request: &Request, stopped: bool) {
-        const BUSY: &str = "Too many requests are pending. Please try again.";
-        const STOPPED: &str = "Tube can't reach its sources here; it is offline.";
-        let message = if stopped { STOPPED } else { BUSY };
-        if stopped {
-            self.model.data_source = crate::model::DataSource {
-                live: false,
-                label: "offline".into(),
-            };
-        }
-        match request {
-            Request::Search { query } => {
-                if self.model.search_query == *query {
-                    self.model.search_loading = false;
-                    self.model.search_error = Some(message.to_string());
-                }
-            }
-            Request::Feed => {
-                self.model.feed_loading = false;
-                self.model.feed_error = Some(message.to_string());
-            }
-            Request::Branding(_)
-            | Request::VideoMeta(_)
-            | Request::Channel(_)
-            | Request::PlaylistPage(_)
-            | Request::PlayVideo(_) => self.model.push_notice(message),
-        }
-        self.structure_dirty = true;
-    }
-
-    /// Request live `InnerTube` data (feed / video detail / channel), but only
-    /// when this instance is online. The offline `--shots` and test paths call
-    /// through the same navigation code, so gating here keeps them from ever
-    /// spawning the worker or reaching the network.
-    fn request_live(&mut self, req: Request) {
-        if self.online {
-            self.request(req);
-        }
-    }
-
-    /// Fold any worker results into the model. Returns true if anything
-    /// changed (→ rebuild).
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per worker Update variant; the length is the number of \
-                  update kinds, not accidental complexity in any one arm"
-    )]
-    fn pump(&mut self) -> bool {
-        let Some(worker) = &self.worker else {
-            return false;
-        };
-        let updates = worker.poll();
-        if updates.is_empty() {
-            return false;
-        }
-        let mut changed = false;
-        // Channels whose real avatar + subscriber count we still need to fetch
-        // (a video-detail response tells us the uploader id but not its photo).
-        // Collected here and fired after the borrow of `self.worker` ends.
-        let mut fetch_channels: Vec<String> = Vec::new();
-        for u in updates {
-            match u {
-                // Segments, dislikes and comments show only on their video's
-                // own page; anywhere else a rebuild would redraw nothing new.
-                Update::Sponsor(id, segs) => {
-                    let shown = watching(&self.model.route, &id);
-                    if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == id) {
-                        v.sponsor = segs;
-                        changed |= shown;
-                    }
-                }
-                Update::DeArrow {
-                    video,
-                    title,
-                    thumbnail_url,
-                } => {
-                    if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video) {
-                        if title.is_some() {
-                            v.dearrow_title = title;
-                        }
-                        v.dearrow_thumb = thumbnail_url.is_some();
-                        changed = true;
-                    }
-                    if let Some(url) = thumbnail_url
-                        && !url.is_empty()
-                    {
-                        self.model.dearrow_thumb_url.insert(video, url);
-                        changed = true;
-                    }
-                }
-                Update::Dislikes { video, count } => {
-                    changed |= watching(&self.model.route, &video);
-                    self.model.dislikes.insert(video, count);
-                }
-                Update::Comments { video, comments } => {
-                    let shown = watching(&self.model.route, &video);
-                    if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video) {
-                        v.comments = comments;
-                        changed |= shown;
-                    }
-                }
-                Update::SearchResults {
-                    query,
-                    videos,
-                    playlists,
-                    channels,
-                } => {
-                    // A response landed (possibly empty) — drop the skeleton.
-                    self.model.search_loading = false;
-                    self.model.search_error = None;
-                    // Record the backend's exact ordered result set for this
-                    // query (so the search screen renders it verbatim), and
-                    // fold the videos + uploader stubs into the catalogue.
-                    let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
-                    for nv in videos {
-                        self.model
-                            .ensure_channel_stub(&nv.channel_id, &nv.channel_name);
-                        self.model.adopt_channel_avatar(
-                            &nv.channel_id,
-                            &nv.channel_name,
-                            &nv.channel_avatar_url,
-                        );
-                        self.model.upsert_video(nv);
-                    }
-                    let playlist_ids: Vec<String> =
-                        playlists.iter().map(|p| p.id.clone()).collect();
-                    for p in playlists {
-                        self.model
-                            .ensure_channel_stub(&p.channel_id, &p.channel_name);
-                        self.model.upsert_playlist(p);
-                    }
-                    // Creator rows: fold in without clobbering a richer channel
-                    // record (a full channel page carries a banner a search row
-                    // doesn't), taking the avatar / subs / handle when missing.
-                    let channel_ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
-                    for c in channels {
-                        // A creator row's avatar also belongs to every video card by
-                        // that creator (matched by id OR normalized name) — stamp it
-                        // there so the dominant channel's cards get the photo even
-                        // when the video items didn't carry it.
-                        self.model
-                            .adopt_channel_avatar(&c.id, &c.name, &c.avatar_url);
-                        if let Some(ex) = self.model.channels.iter_mut().find(|x| x.id == c.id) {
-                            if ex.avatar_url.is_empty() {
-                                ex.avatar_url = c.avatar_url;
-                            }
-                            if ex.subscribers == 0 {
-                                ex.subscribers = c.subscribers;
-                            }
-                            if ex.handle == ex.id && !c.handle.is_empty() {
-                                ex.handle = c.handle;
-                            }
-                            ex.verified = ex.verified || c.verified;
-                        } else {
-                            self.model.channels.push(c);
-                        }
-                    }
-                    // Bridge any two records describing the same creator so every
-                    // card resolves an avatar one of them carries.
-                    self.model.reconcile_channel_avatars();
-                    query.clone_into(&mut self.model.search_hits_query);
-                    self.model.search_hits = ids;
-                    self.model.search_playlist_hits = playlist_ids;
-                    self.model.search_channel_hits = channel_ids;
-                    if matches!(&self.model.route, Route::Search(_)) {
-                        self.model.route = Route::Search(query);
-                    }
-                    // Progressive avatar coverage: for a bounded set of result
-                    // uploaders that still lack a real avatar, pull their channel
-                    // page (avatar + subs) so cards fill in real creator photos over
-                    // the next frames. Guarded (`request_channel_if_stub`) so it
-                    // never re-requests, and capped so a search can't fan out into
-                    // dozens of channel fetches.
-                    let mut seen = HashSet::new();
-                    let stub_cids: Vec<String> = self
-                        .model
-                        .search_hits
-                        .iter()
-                        .filter_map(|id| self.model.video(id))
-                        .map(|v| v.channel_id.clone())
-                        .filter(|cid| {
-                            !cid.is_empty()
-                                && seen.insert(cid.clone())
-                                && self
-                                    .model
-                                    .channel(cid)
-                                    .is_none_or(|c| c.avatar_url.is_empty())
-                        })
-                        .take(6)
-                        .collect();
-                    for cid in stub_cids {
-                        fetch_channels.push(cid);
-                    }
-                    changed = true;
-                }
-                Update::PlaylistPage { playlist, videos } => {
-                    for v in videos {
-                        self.model
-                            .ensure_channel_stub(&v.channel_id, &v.channel_name);
-                        self.model
-                            .note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
-                        self.model.upsert_video(v);
-                    }
-                    self.model
-                        .ensure_channel_stub(&playlist.channel_id, &playlist.channel_name);
-                    self.model.upsert_playlist(*playlist);
-                    changed = true;
-                }
-                Update::Feed(vids) => {
-                    // Real home/trending catalogue — replace whatever was there.
-                    self.model.adopt_live_catalogue(vids, "live (rustypipe)");
-                    self.model.feed_loading = false;
-                    self.model.feed_error = None;
-                    changed = true;
-                }
-                Update::VideoMeta { video, related } => {
-                    let id = video.id.clone();
-                    let channel_id = video.channel_id.clone();
-                    self.model
-                        .ensure_channel_stub(&video.channel_id, &video.channel_name);
-                    self.model.adopt_channel_avatar(
-                        &video.channel_id,
-                        &video.channel_name,
-                        &video.channel_avatar_url,
-                    );
-                    self.model.upsert_video(*video);
-                    // Now that we know the uploader, pull its avatar + subs if we
-                    // only have a name stub (drives the watch-page channel row).
-                    if !channel_id.is_empty()
-                        && self
-                            .model
-                            .channel(&channel_id)
-                            .is_none_or(|c| c.avatar_url.is_empty() || c.subscribers == 0)
-                    {
-                        fetch_channels.push(channel_id);
-                    }
-                    let ids: Vec<String> = related.iter().map(|v| v.id.clone()).collect();
-                    for rv in related {
-                        self.model
-                            .ensure_channel_stub(&rv.channel_id, &rv.channel_name);
-                        self.model.adopt_channel_avatar(
-                            &rv.channel_id,
-                            &rv.channel_name,
-                            &rv.channel_avatar_url,
-                        );
-                        self.model.upsert_video(rv);
-                    }
-                    self.model.reconcile_channel_avatars();
-                    if !ids.is_empty() {
-                        self.model.related_of = id;
-                        self.model.related_hits = ids;
-                    }
-                    changed = true;
-                }
-                Update::ChannelPage { channel, uploads } => {
-                    // Stamp the fetched avatar onto every record for this creator
-                    // (matched by id OR normalized name) BEFORE upsert, so the
-                    // video cards resolve it even when the channel page's returned
-                    // id differs from the search item's channel_id — the exact
-                    // reason the dominant channel kept showing initials.
-                    self.model.adopt_channel_avatar(
-                        &channel.id,
-                        &channel.name,
-                        &channel.avatar_url,
-                    );
-                    self.model.upsert_channel(*channel);
-                    for uv in uploads {
-                        self.model
-                            .ensure_channel_stub(&uv.channel_id, &uv.channel_name);
-                        self.model.adopt_channel_avatar(
-                            &uv.channel_id,
-                            &uv.channel_name,
-                            &uv.channel_avatar_url,
-                        );
-                        self.model.upsert_video(uv);
-                    }
-                    self.model.reconcile_channel_avatars();
-                    changed = true;
-                }
-                Update::Status { live, label } => {
-                    // A terminal offline/failure status means no live feed is
-                    // coming — stop showing the Home skeleton and let the empty
-                    // state explain it. "connecting…" keeps the skeleton up.
-                    if !live && label.to_lowercase().contains("offline") {
-                        self.model.feed_loading = false;
-                        self.model.search_loading = false;
-                    }
-                    if self.model.data_source.live != live || self.model.data_source.label != label
-                    {
-                        self.model.data_source = crate::model::DataSource { live, label };
-                        changed = true;
-                    }
-                }
-                Update::StreamResolved {
-                    video,
-                    url,
-                    has_audio,
-                    quality,
-                } => {
-                    if self.load_resolved_stream(video, url, has_audio, &quality) {
-                        changed = true;
-                    }
-                }
-                Update::Note(n) => {
-                    // Worker status notes (backend ready, stream host, seed
-                    // failures, …) are developer diagnostics — log them, don't
-                    // clutter the watch page with debug toasts. Genuine
-                    // user-facing feedback (auto-skip, link copied) is pushed
-                    // as a notice directly from its action, not via `Note`.
-                    tracing::debug!(note = %n, "tube worker note");
-                }
-            }
-        }
-        // Fire the deferred channel fetches now the `self.worker` borrow is done.
-        for cid in fetch_channels {
-            self.request_channel_if_stub(&cid);
-        }
-        changed
-    }
-}
-
-/// Whether `route` is the watch page of `video`.
-fn watching(route: &Route, video: &str) -> bool {
-    matches!(route, Route::Watch(open) if open == video)
 }
 
 impl FullscreenProvider for TubeApp {
@@ -2004,7 +1093,75 @@ impl TubeApp {
     /// The videos, creators, playlists and watch history shown here, as
     /// search entries.
     pub(crate) fn search_entries_of_model(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        crate::search_type::model_entries(&self.model)
+        let suggested = self.suggested.videos_for(&self.palette_query);
+        let mut entries = crate::search_type::model_entries(&self.model);
+        // A video `YouTube` offers for the query shows once, under it.
+        entries.retain(|entry| {
+            !suggested.iter().any(|video| {
+                entry.anchor.as_deref() == Some(&*crate::search_type::video_anchor(&video.id))
+            })
+        });
+        entries.extend(crate::search_type::query_entry(&self.palette_query));
+        entries.extend(crate::search_type::suggested_entries(
+            &self.palette_query,
+            suggested,
+            self.model.settings.dearrow_titles_on(),
+        ));
+        entries
+    }
+
+    /// Take the platform search's latest query, and ask `YouTube` for its
+    /// top videos when this window is live.
+    pub(crate) fn follow_palette_query(&mut self, query: &str) {
+        query.trim().clone_into(&mut self.palette_query);
+        if !self.online || crate::search_type::query_entry(&self.palette_query).is_none() {
+            self.suggested.awaiting = false;
+            return;
+        }
+        if self.suggested.answered(&self.palette_query) {
+            self.suggested.awaiting = false;
+            return;
+        }
+        if self.worker.is_none() {
+            self.worker = Some(crate::api::Worker::spawn(self.wake.clone()));
+        }
+        self.suggested.awaiting = self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.suggest(&self.palette_query));
+    }
+
+    /// Whether `YouTube` has yet to answer the platform search's query.
+    pub(crate) fn suggestions_pending(&self) -> bool {
+        self.suggested.awaiting
+    }
+
+    /// Take `YouTube`'s answer for `query`; one for a query since replaced
+    /// is dropped, so it never stands in for the newer one's.
+    pub(crate) fn take_suggestions(&mut self, query: String, videos: Vec<crate::model::Video>) {
+        if query != self.palette_query {
+            return;
+        }
+        self.suggested = crate::suggest::Suggested {
+            query,
+            videos,
+            awaiting: false,
+        };
+    }
+
+    /// Bring a video the platform search offered from `YouTube` into the
+    /// catalogue, so opening it finds it.
+    fn adopt_suggested(&mut self, video: &str) {
+        if self.model.video(video).is_some() {
+            return;
+        }
+        let Some(found) = self.suggested.videos.iter().find(|v| v.id == video) else {
+            return;
+        };
+        let found = found.clone();
+        self.model
+            .ensure_channel_stub(&found.channel_id, &found.channel_name);
+        self.model.upsert_video(found);
     }
 }
 
@@ -2012,6 +1169,7 @@ impl Widget for TubeApp {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.take_window_toolbar_events();
         if self.follow_history() | self.refresh_preferences() {
             self.structure_dirty = true;
         }
@@ -2067,6 +1225,7 @@ impl Widget for TubeApp {
         if self.tick_playback() {
             self.structure_dirty = true;
         }
+        self.declare_window_toolbar();
     }
 
     fn composition_follows_allocation(&self) -> bool {
@@ -2211,7 +1370,6 @@ impl Widget for TubeApp {
             *ctx.handled = true;
         }
 
-        // Drain & apply queued actions.
         let mut changed = self.apply_queued();
         // If a just-applied action opened a watch page, kick off real playback
         // (resolve + decode) for it — once. No-op off the watch route / offline.
@@ -2344,830 +1502,4 @@ impl Widget for TubeApp {
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
-mod tests {
-    use super::*;
-    use crate::model::Category;
-    use automerge::{AutoCommit, ReadDoc};
-    use ui::tilo_resource::Resource as _;
-
-    fn fresh() -> (TubeApp, AutoCommit) {
-        (TubeApp::new(), AutoCommit::new())
-    }
-
-    /// A fresh app whose player uses the deterministic **synthesized** media
-    /// engine, so the transport-wiring tests behave identically whether or not
-    /// the `media` (real `GStreamer`) backend is compiled in — a real pipeline
-    /// can't preroll/seek the fake test URLs, so its position would stay 0.
-    fn fresh_synth() -> (TubeApp, AutoCommit) {
-        let (app, doc) = fresh();
-        app.player
-            .borrow_mut()
-            .set_engine(media::MediaEngine::new_synthesized());
-        (app, doc)
-    }
-
-    #[test]
-    fn player_quality_choice_survives_settings_refresh_and_reopen() {
-        use crate::model::Settings;
-        use crate::resource::TubeShell;
-        use ui::framework::testing::TestApp;
-        use ui::widget::video_player::PlayerSettingEvent;
-
-        let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
-        let preferences = app.settings::<Settings>();
-        let index = QUALITIES
-            .iter()
-            .position(|quality| *quality != preferences.get().preferred_quality)
-            .unwrap();
-        let quality = QUALITIES[index];
-        app.surface_mut::<TubeApp>()
-            .apply_player_setting_event(PlayerSettingEvent::Chose {
-                id: "resolution".into(),
-                index,
-            });
-        assert_eq!(preferences.get().preferred_quality, quality);
-        let surface = app.surface_mut::<TubeApp>();
-        surface.refresh_preferences();
-        assert_eq!(surface.model.settings.preferred_quality, quality);
-        let app = app.reopen().unwrap();
-        assert_eq!(app.settings::<Settings>().get().preferred_quality, quality);
-    }
-
-    #[test]
-    fn a_worker_result_wakes_the_window() {
-        // The network answers while nobody touches Tube: the result wakes
-        // the window, which shows it without waiting for input or an
-        // animation.
-        let mut scope = ui::wake::WakeScope::new();
-        let (woke, wakes) = std::sync::mpsc::channel();
-        scope
-            .bind(move |event| {
-                let _ = woke.send(event.requires_sync());
-            })
-            .unwrap();
-        let mut app = TubeApp::new();
-        app.wake_with(scope.handle());
-        let results = app.script_worker_for_test();
-        assert!(wakes.try_recv().is_err(), "nothing has arrived yet");
-        results
-            .send(Update::Status {
-                live: true,
-                label: "live".into(),
-            })
-            .unwrap();
-        assert_eq!(
-            wakes.try_recv(),
-            Ok(true),
-            "the result woke the window to sync"
-        );
-        assert!(Widget::take_structure_dirty(&mut app), "and it folds in");
-    }
-
-    #[test]
-    fn a_window_with_its_fetch_worker_asks_for_no_idle_syncs() {
-        // The worker lives as long as the window and wakes it per result;
-        // an idle sync for as long as it existed was a busy loop in a
-        // collaborative window.
-        let mut app = TubeApp::new();
-        let _results = app.script_worker_for_test();
-        assert!(!Widget::needs_idle_sync(&app));
-    }
-
-    #[test]
-    fn a_staged_catalogue_retires_the_live_worker_and_fetches_nothing() {
-        // A live window has spawned its fetch worker by its first frame.
-        let mut app = TubeApp::new().online();
-        app.worker = Some(Worker::spawn(ui::WakeHandle::detached()));
-        app.stage_model_for_test(crate::sample::model());
-        assert!(
-            app.worker.is_none(),
-            "a staged catalogue must not keep the live worker, whose late results rebuild the page"
-        );
-        app.open_video("vid_rust_async".into());
-        assert!(
-            matches!(&app.model.route, Route::Watch(id) if id == "vid_rust_async"),
-            "the staged watch page opens"
-        );
-        assert!(
-            app.worker.is_none(),
-            "an offline watch page asks the network for no SponsorBlock or DeArrow branding"
-        );
-    }
-
-    #[test]
-    fn a_fresh_share_notice_replaces_the_previous_toast() {
-        let (mut app, _doc) = fresh();
-        app.model.route = Route::Watch("vid_donut".into());
-        app.shell.toast("Previous notice", ToastKind::Info);
-        app.perform(TubeEffect::Share {
-            video: "vid_donut".into(),
-        })
-        .unwrap();
-        app.show_new_notices();
-        assert!(
-            app.shell
-                .toast_text()
-                .is_some_and(|text| text.contains("Link copied") && text.contains("vid_donut")),
-            "the fresh share notice replaces the previous one"
-        );
-    }
-
-    #[test]
-    fn controls_without_a_document_change_act_on_this_window() {
-        // Opening a video shows it, starts it from the top and records it in
-        // the watch history.
-        {
-            let mut app = TubeApp::new();
-            app.apply(Action::OpenVideo("vid_donut".into()));
-            assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
-            assert_eq!(
-                app.model.history.first().map(String::as_str),
-                Some("vid_donut")
-            );
-            assert_eq!(app.model.playhead, 0.0);
-            // Forgetting and clearing change the history shown.
-            app.perform(TubeEffect::ForgetWatched {
-                video: "vid_donut".into(),
-            })
-            .unwrap();
-            assert!(!app.model.history.iter().any(|id| id == "vid_donut"));
-            app.perform(TubeEffect::ClearHistory).unwrap();
-            assert!(app.model.history.is_empty());
-        }
-        // Share copies a link for the open video and likes nothing.
-        {
-            let mut app = TubeApp::new();
-            app.apply(Action::OpenVideo("vid_donut".into()));
-            app.apply(Action::Share("vid_donut".into()));
-            assert!(!app.model.is_liked("vid_donut"));
-            assert!(
-                app.model
-                    .notices
-                    .iter()
-                    .any(|notice| notice.contains("youtu.be/vid_donut"))
-            );
-        }
-        // A screen an effect names opens; one it does not is refused.
-        {
-            let mut app = TubeApp::new();
-            app.perform(TubeEffect::ShowScreen {
-                screen: "settings".into(),
-            })
-            .unwrap();
-            assert_eq!(app.model.route, Route::Settings);
-            assert!(
-                app.perform(TubeEffect::ShowScreen {
-                    screen: "attic".into()
-                })
-                .is_err()
-            );
-            assert!(
-                app.perform(TubeEffect::OpenVideo {
-                    video: "no-such-video".into()
-                })
-                .is_err()
-            );
-        }
-        // The player forwards its fullscreen intent to the root.
-        {
-            let (app, _) = fresh_synth();
-            assert_eq!(FullscreenProvider::fullscreen_intent(&app), None);
-            app.player.borrow_mut().toggle_fullscreen();
-            assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(true));
-        }
-    }
-
-    #[test]
-    fn an_emptied_library_shows_empty() {
-        let mut app = TubeApp::new();
-        let mut library = Library::default();
-        library.likes.insert("vid_donut".into());
-        library.queue.insert("vid_donut".into());
-        library.comment_likes.insert("vid_donut#1".into());
-        app.present_library(&library);
-        assert!(app.model.is_liked("vid_donut") && app.model.is_queued("vid_donut"));
-        assert!(app.model.comment_likes.contains("vid_donut#1"));
-
-        // A collaborator unliked and unqueued everything.
-        library.likes.remove(&"vid_donut".into());
-        library.queue.remove(&"vid_donut".into());
-        app.present_library(&library);
-        assert!(app.model.liked.is_empty(), "an emptied library is shown");
-        assert!(app.model.queue.is_empty());
-    }
-
-    // --- media-engine transport wiring (the real playback path) ---
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn resolved_streams_drive_the_playback_engine() {
-        // Case `resolved_stream_opens_and_plays_the_engine`.
-        {
-            // The worker's `StreamResolved` path (factored into `load_resolved_stream`)
-            // must open the rangeable URL into the shared player's media engine and
-            // start it — the exact code path the live app runs.
-            let (mut app, _doc) = fresh_synth();
-            app.model.route = Route::Watch("vid_donut".into());
-            let ok = app.load_resolved_stream(
-                "vid_donut".into(),
-                "https://inv.example/latest_version?id=vid_donut&itag=18&local=true".into(),
-                true,
-                "360p",
-            );
-            assert!(ok, "the resolved stream loaded for the open watch video");
-            assert!(
-                app.player.borrow().is_playing(),
-                "the engine is playing the stream"
-            );
-            let src = app
-                .player
-                .borrow()
-                .engine()
-                .and_then(|e| e.source().cloned());
-            match src {
-                Some(media::Source::Remote { url }) => {
-                    assert!(
-                        url.contains("local=true"),
-                        "opened the rangeable proxy URL: {url}"
-                    );
-                }
-                other => panic!("expected a remote source on the engine, got {other:?}"),
-            }
-        }
-        // Case `resolved_stream_for_a_different_video_is_dropped`.
-        {
-            // A late resolution for a since-closed video must not hijack the engine.
-            let (mut app, _doc) = fresh_synth();
-            app.model.route = Route::Watch("vid_donut".into());
-            let ok = app.load_resolved_stream(
-                "some_other_id".into(),
-                "https://inv.example/x?local=true".into(),
-                true,
-                "360p",
-            );
-            assert!(!ok, "a stream for a non-open video is dropped");
-            assert!(
-                app.player
-                    .borrow()
-                    .engine()
-                    .and_then(|e| e.source())
-                    .is_none()
-            );
-        }
-        // Case `toggle_play_drives_the_engine`.
-        {
-            let (mut app, _) = fresh_synth();
-            app.model.route = Route::Watch("vid_donut".into());
-            app.load_resolved_stream(
-                "vid_donut".into(),
-                "https://inv.example/x?local=true".into(),
-                true,
-                "360p",
-            );
-            assert!(app.player.borrow().is_playing());
-            app.apply(Action::TogglePlay);
-            assert!(
-                !app.player.borrow().is_playing(),
-                "TogglePlay paused the engine"
-            );
-            assert!(!app.model.playing, "the model mirrors the paused engine");
-            app.apply(Action::TogglePlay);
-            assert!(
-                app.player.borrow().is_playing(),
-                "TogglePlay resumed the engine"
-            );
-            assert!(app.model.playing, "the model mirrors the playing engine");
-        }
-        // Case `opening_a_watch_page_arms_stream_resolution_on_open`.
-        {
-            // The resolve/buffer must start when the watch page OPENS — not on a
-            // later Play click. `ensure_playback` (run right after the open action
-            // drains, and on the boot-into-watch sync) arms it; `playing_id`
-            // latching to the opened video proves the `PlayVideo` resolve request
-            // went out, so playback is loading before any Play is pressed.
-            let (mut app, _) = fresh_synth();
-            app.online = true; // online so `ensure_playback` actually resolves
-            assert!(app.playing_id.is_none(), "nothing armed before opening");
-            app.apply(Action::OpenVideo("vid_donut".into()));
-            app.ensure_playback();
-            assert_eq!(
-                app.playing_id.as_deref(),
-                Some("vid_donut"),
-                "opening a watch page arms stream resolution (no Play click needed)"
-            );
-        }
-        // Case `watch_animates_while_resolving_then_idles_once_paused_and_loaded`.
-        {
-            // While the stream is still resolving (armed but no source loaded) the
-            // loop must keep pumping so `StreamResolved` folds in. Once a source is
-            // loaded and the video is PAUSED, the app must let the event loop idle
-            // rather than spin at 60fps forever — the needless busy-loop that made
-            // scrolling on a paused-but-loaded watch page feel heavy.
-            let (mut app, _doc) = fresh_synth();
-            app.online = true;
-            app.model.route = Route::Watch("vid_donut".into());
-            app.playing_id = Some("vid_donut".into());
-
-            // Resolving: no source loaded yet → keep pumping.
-            app.player_video = None;
-            assert!(
-                app.needs_animation_frame(),
-                "while the stream is resolving the loop keeps pumping so it folds in"
-            );
-
-            // Loaded + paused → the loop may idle (the paused player asks for none).
-            let ok = app.load_resolved_stream(
-                "vid_donut".into(),
-                "https://inv.example/x?local=true".into(),
-                true,
-                "360p",
-            );
-            assert!(
-                ok && app.player_video.as_deref() == Some("vid_donut"),
-                "source loaded"
-            );
-            app.player.borrow_mut().pause();
-            app.model.playing = false;
-            assert!(!app.player.borrow().is_playing(), "precondition: paused");
-            assert!(
-                !app.needs_animation_frame(),
-                "a paused, loaded watch page lets the event loop idle"
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn sponsor_segments_and_autoplay_steer_the_engine() {
-        // Case `auto_skip_seeks_the_engine_past_a_sponsor_segment`.
-        {
-            // Auto-skip runs against the real playhead and must seek the engine (not
-            // just the model). vid_rust_async has a Sponsor segment 1440..1570.
-            let (mut app, _doc) = fresh_synth();
-            app.model.route = Route::Watch("vid_rust_async".into());
-            app.load_resolved_stream(
-                "vid_rust_async".into(),
-                "https://inv.example/x?local=true".into(),
-                true,
-                "360p",
-            );
-            // Playhead inside the sponsor band.
-            app.model.playhead = 1500.0;
-            let skipped = app.apply_auto_skip();
-            assert!(skipped, "a skip happened");
-            assert!(
-                app.model.playhead >= 1570.0,
-                "model playhead jumped past the segment"
-            );
-            // The seek reached the engine (its position advanced off the start). The
-            // synthesized test engine caps its duration, so the exact target clamps —
-            // proving it moved is the honest real-path assertion.
-            let engine_pos = app
-                .player
-                .borrow()
-                .engine()
-                .map_or(0, media::MediaEngine::position_ms);
-            assert!(
-                engine_pos > 0,
-                "the auto-skip seeked the engine (pos={engine_pos})"
-            );
-            assert!(app.model.notices.iter().any(|n| n.contains("Sponsor")));
-        }
-        // Case `seek_into_sponsor_auto_skips_to_segment_end`.
-        {
-            let (mut app, _) = fresh();
-            // vid_rust_async has a Sponsor segment 1440..1570.
-            app.apply(Action::OpenVideo("vid_rust_async".into()));
-            let dur = f64::from(app.model.video("vid_rust_async").unwrap().duration);
-            // Seek to ~1500s (inside the sponsor segment).
-            app.apply(Action::Seek(1500.0 / dur));
-            // Auto-skip should jump the playhead to the segment end (1570).
-            assert!(
-                app.model.playhead >= 1570.0,
-                "playhead was {}",
-                app.model.playhead
-            );
-            assert!(app.model.notices.iter().any(|l| l.contains("Sponsor")));
-        }
-        // Case `autoplay_advances_to_next_when_the_video_ends`.
-        {
-            // Autoplay is on by default; seeking to the very end must advance to
-            // the first "up next" recommendation — the real code path that
-            // consumes the autoplay flag.
-            let (mut app, _) = fresh();
-            assert!(app.model.settings.autoplay, "autoplay defaults on");
-            app.apply(Action::OpenVideo("vid_rust_async".into()));
-            app.apply(Action::Seek(1.0));
-            match app.route_for_test() {
-                Route::Watch(id) => assert_ne!(
-                    id, "vid_rust_async",
-                    "autoplay advanced to a different video"
-                ),
-                other => panic!("expected a watch route, got {other:?}"),
-            }
-        }
-        // Case `autoplay_off_parks_at_the_end_without_advancing`.
-        {
-            let (mut app, _) = fresh();
-            app.model.settings.autoplay = false;
-            app.apply(Action::OpenVideo("vid_rust_async".into()));
-            app.apply(Action::Seek(1.0));
-            assert_eq!(
-                app.route_for_test(),
-                &Route::Watch("vid_rust_async".into()),
-                "with autoplay off, reaching the end stays on the same video"
-            );
-        }
-        // Case `choosing_a_category_mode_sets_it`.
-        {
-            use crate::model::SkipMode;
-            let (mut app, _) = fresh();
-            assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
-            app.perform(TubeEffect::SetSegmentHandling {
-                category: Category::Intro.api_key().into(),
-                mode: SkipMode::Show.key().into(),
-            })
-            .unwrap();
-            assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Show);
-            app.perform(TubeEffect::SetSegmentHandling {
-                category: Category::Intro.api_key().into(),
-                mode: SkipMode::Disabled.key().into(),
-            })
-            .unwrap();
-            assert_eq!(
-                app.model.settings.mode_of(Category::Intro),
-                SkipMode::Disabled
-            );
-        }
-        // Case `show_mode_segment_does_not_auto_skip_but_manual_skip_seeks`.
-        {
-            use crate::model::SkipMode;
-            let (mut app, _doc) = fresh_synth();
-            app.model.route = Route::Watch("vid_rust_async".into());
-            app.load_resolved_stream(
-                "vid_rust_async".into(),
-                "https://inv.example/x?local=true".into(),
-                true,
-                "360p",
-            );
-            // Put the Sponsor category into Show mode, then park inside its segment.
-            app.model
-                .settings
-                .categories
-                .insert(Category::Sponsor.api_key().to_string(), SkipMode::Show);
-            app.model.playhead = 1500.0;
-            assert!(!app.apply_auto_skip(), "Show mode must NOT auto-skip");
-            assert_eq!(
-                app.model.playhead, 1500.0,
-                "playhead untouched by auto-skip"
-            );
-            // The manual skip button jumps to the segment end.
-            app.apply(Action::SkipSegment(1570.0));
-            assert!(
-                app.model.playhead >= 1570.0,
-                "manual skip advanced the playhead"
-            );
-        }
-        // Case `the_player_offers_skip_inside_a_show_mode_segment_and_toasts_it`.
-        {
-            use crate::model::SkipMode;
-            let (mut app, _doc) = fresh_synth();
-            app.model.route = Route::Watch("vid_rust_async".into());
-            app.load_resolved_stream(
-                "vid_rust_async".into(),
-                "https://inv.example/x?local=true".into(),
-                true,
-                "360p",
-            );
-            app.model
-                .settings
-                .categories
-                .insert(Category::Sponsor.api_key().to_string(), SkipMode::Show);
-            app.model.playhead = 1500.0;
-            let theme = Theme::dark();
-            let _ = app.build_screen(&theme);
-            assert!(
-                app.player.borrow().setting(screens::SKIP_SETTING).is_some(),
-                "inside a Show-mode segment the player offers Skip"
-            );
-            app.apply_player_setting_event(
-                ui::widget::video_player::PlayerSettingEvent::Activated {
-                    id: screens::SKIP_SETTING.into(),
-                },
-            );
-            assert!(app.model.playhead >= 1570.0, "Skip jumps past the segment");
-            app.show_new_notices();
-            assert!(
-                app.shell.toast_text().is_some(),
-                "the skip is confirmed by a toast"
-            );
-            app.shell.dismiss_toast();
-            app.show_new_notices();
-            assert!(app.shell.toast_text().is_none(), "a notice is toasted once");
-            let _ = app.build_screen(&theme);
-            assert!(
-                app.player.borrow().setting(screens::SKIP_SETTING).is_none(),
-                "past the segment the Skip command is gone"
-            );
-        }
-        // Case `show_mode_segment_drives_the_in_video_skip_overlay`.
-        {
-            use crate::model::{Category, SkipMode};
-            // The on-video "Skip" overlay is settings-driven: it appears only for a
-            // Show-mode segment the playhead is inside, never for Auto-skip (which
-            // jumps on its own) or Off, and never when SponsorBlock is disabled.
-            let (mut app, _doc) = fresh();
-            app.model.route = Route::Watch("vid_rust_async".into()); // Sponsor 1440..1570
-            let key = Category::Sponsor.api_key().to_string();
-
-            app.model
-                .settings
-                .categories
-                .insert(key.clone(), SkipMode::Skip);
-            app.model.playhead = 1500.0;
-            assert_eq!(
-                app.current_show_skip_end(),
-                None,
-                "auto-skip shows no manual overlay"
-            );
-
-            app.model.settings.categories.insert(key, SkipMode::Show);
-            assert_eq!(
-                app.current_show_skip_end(),
-                Some(1570.0),
-                "show-mode offers a Skip to the end"
-            );
-
-            app.model.playhead = 100.0;
-            assert_eq!(
-                app.current_show_skip_end(),
-                None,
-                "no overlay outside the segment"
-            );
-
-            app.model.playhead = 1500.0;
-            app.model.settings.sponsorblock_enabled = false;
-            assert_eq!(
-                app.current_show_skip_end(),
-                None,
-                "master off suppresses the overlay"
-            );
-        }
-    }
-
-    #[test]
-    fn library_and_queries_keep_shared_and_local_state_apart() {
-        // Case `library_edits_reconcile_without_serializing_device_ui_state`.
-        {
-            let (mut app, mut doc) = fresh();
-            app.model.route = Route::Watch("vid_donut".into());
-            app.model.playhead = 42.0;
-            ui::framework::testing::dispatcher::<Library>("tube.library")
-                .submit_now(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    Library::like("vid_donut", true),
-                )
-                .expect("structured library action applies");
-            app.present_library(&Library::read(&doc).unwrap());
-            Widget::sync(&mut app, &doc, &automerge::ROOT);
-            assert!(app.model.liked.iter().any(|id| id == "vid_donut"));
-            assert!(
-                doc.get(&automerge::ROOT, "tube_state")
-                    .expect("document read")
-                    .is_none(),
-                "route, playback and fetched catalogue are never mirrored into collaboration"
-            );
-        }
-        // Case `search_query_stays_local_to_each_tube_instance`.
-        {
-            let (mut first, doc) = fresh();
-            first.search_query.set("rust async".into());
-            Widget::sync(&mut first, &doc, &automerge::ROOT);
-
-            assert!(
-                doc.get(&automerge::ROOT, "search_query")
-                    .expect("document read")
-                    .is_none()
-            );
-
-            let mut second = TubeApp::new();
-            Widget::sync(&mut second, &doc, &automerge::ROOT);
-            assert!(second.search_query.get().is_empty());
-            assert_eq!(first.search_query.get(), "rust async");
-
-            // A document holding a search key must not hand its value to a new
-            // app merely because a collaborator's client emitted it.
-            let mut legacy_doc = AutoCommit::new();
-            ui::tilo_resource::write_key(
-                &mut legacy_doc,
-                &automerge::ROOT,
-                "search_query",
-                &ui::tilo_resource::Atom("remote query".into()),
-            )
-            .expect("legacy search seed");
-            let mut third = TubeApp::new();
-            Widget::sync(&mut third, &legacy_doc, &automerge::ROOT);
-            assert!(third.search_query.get().is_empty());
-        }
-    }
-
-    // --- navigation rail ---
-
-    #[test]
-    fn the_rail_adapts_and_navigates_through_published_actions() {
-        // Case `route_shot_seeds_the_navigation_authority_with_the_visible_route`.
-        {
-            let app = TubeApp::new().with_route_shot(Route::Trending);
-            assert_eq!(app.model.route, Route::Trending);
-            assert_eq!(app.nav.current(), &Route::Trending);
-            assert!(
-                !app.can_go_back_for_test(),
-                "a direct screenshot route has no fabricated prior destination"
-            );
-        }
-        // Case `choosing_a_destination_invokes_its_navigation_action`.
-        {
-            let mut app = ui::prelude::TestApp::<crate::resource::TubeShell>::new().unwrap();
-            app.effect(&TubeEffect::ShowScreen {
-                screen: "settings".into(),
-            })
-            .unwrap();
-            app.settle();
-            app.with_surface::<TubeApp, _>(|viewer| {
-                assert_eq!(viewer.model.route, Route::Settings);
-                assert!(viewer.can_go_back_for_test(), "Back returns to Home");
-            })
-            .expect("the viewer is mounted");
-        }
-        // The shared shell docks the rail while the grid keeps its minimum
-        // width beside it; narrower, the rail is a screen of its own.
-        {
-            use ui::widget::SidebarPlacement::{Docked, Screen};
-            for (width, placement) in [(1280, Docked), (800, Docked), (560, Docked), (420, Screen)]
-            {
-                let mut framed = ui::headless::Framed::new(
-                    ui::State::new(),
-                    TubeApp::new(),
-                    (width, 800),
-                    Theme::dark(),
-                );
-                assert_eq!(
-                    framed.shell.geometry().sidebar,
-                    placement,
-                    "the shared shell adapts the rail at {width} px"
-                );
-                if placement == Screen && !framed.sidebar_open_for_test() {
-                    ui::headless::Framed::harness_mut(&mut framed)
-                        .click_named("nav-shell-sidebar")
-                        .expect("the sidebar control goes back to the narrow rail");
-                }
-                assert!(
-                    framed.sidebar_open_for_test(),
-                    "the rail is reachable at {width} px"
-                );
-            }
-        }
-    }
-
-    // --- no fabricated content + loading states ---
-
-    #[test]
-    fn framework_launch_mounts_the_live_app() {
-        // The installed binary launches through the framework, so the surface
-        // it mounts must be the online app: no bundled sample catalogue, and
-        // a first `sync` that fetches the real feed.
-        let app = crate::resource::TubeShell::surface(ui::framework::RunMode::Live);
-        assert!(
-            app.online,
-            "the framework launch must reach the live backend"
-        );
-        assert!(
-            app.model.videos.is_empty() && app.model.channels.is_empty(),
-            "the framework launch must not show the bundled sample catalogue"
-        );
-        assert!(app.model.feed_loading, "cold Home shows a loading skeleton");
-    }
-
-    #[test]
-    fn online_catalogue_starts_empty_and_tracks_requests() {
-        // Case `online_starts_empty_with_no_fabricated_sample`.
-        {
-            // The real (online) app must NOT present the bundled sample catalogue as
-            // if it were real data — it starts empty and shows a loading skeleton.
-            let app = TubeApp::new().online();
-            assert!(
-                app.model.videos.is_empty(),
-                "online start must seed no sample videos"
-            );
-            assert!(
-                app.model.channels.is_empty(),
-                "online start must seed no sample channels"
-            );
-            assert!(app.model.subscriptions.is_empty());
-            assert!(
-                app.model.feed_loading,
-                "cold Home shows a loading skeleton, not a blank page"
-            );
-        }
-        // Case `rejected_newest_request_settles_search_and_explains_retry`.
-        {
-            let mut app = TubeApp::empty();
-            app.model.search_query = "rust".into();
-            app.model.search_loading = true;
-            app.request_rejected(
-                &Request::Search {
-                    query: "rust".into(),
-                },
-                false,
-            );
-            assert!(
-                !app.model.search_loading,
-                "a refused search must not leave the results waiting"
-            );
-            assert!(
-                app.model
-                    .search_error
-                    .as_deref()
-                    .is_some_and(|message| message.contains("try again"))
-            );
-
-            app.model.feed_loading = true;
-            app.request_rejected(&Request::Feed, false);
-            assert!(!app.model.feed_loading, "do not leave Home loading forever");
-            assert!(
-                app.model
-                    .feed_error
-                    .as_deref()
-                    .is_some_and(|message| message.contains("try again"))
-            );
-        }
-        // Case `a_palette_search_asks_the_worker`.
-        {
-            let mut app = TubeApp::new();
-            app.online = true;
-            app.kicked_off = true;
-            app.search_query.set("rust".into());
-            app.apply(Action::SubmitSearch);
-            assert!(
-                app.worker.is_some(),
-                "the submitted query reaches the background worker"
-            );
-            assert!(
-                app.model.search_loading,
-                "the outstanding result is represented as loading"
-            );
-            assert_eq!(app.model.search_query, "rust");
-            assert_eq!(app.model.route, Route::Search("rust".into()));
-        }
-        // Case `channel_stub_qualifies_for_an_uploader_fetch`.
-        {
-            // The watch page's creator avatar + subscriber count come from a channel
-            // fetch kicked off when we only hold a name stub. Prove the gate: a bare
-            // `ensure_channel_stub` record has no avatar and 0 subscribers (so it
-            // qualifies), while a fetched channel would not.
-            let mut m = crate::model::TubeModel::default();
-            m.ensure_channel_stub("c1", "Chan");
-            let stub = m.channel("c1").expect("stub inserted");
-            assert!(
-                stub.avatar_url.is_empty() && stub.subscribers == 0,
-                "a name stub must be recognised as needing an avatar/subs fetch",
-            );
-        }
-        // Case `image_loads_do_not_force_a_structural_rebuild`.
-        {
-            // Thumbnails / avatars / banners resolve their decoded image LAZILY in
-            // their own `sync` and repaint via `needs_redraw` when it lands, so an
-            // in-flight image load must NOT make the app report a structural
-            // rebuild (a whole-tree rebuild + layout re-solve on every one of
-            // ~160 image completions would make the grids churn).
-            use std::sync::Arc;
-            use std::time::Duration;
-            // A fetcher that blocks briefly so a load is deterministically in
-            // flight (pending ≥ 1) when we poll.
-            let fetcher: ui::image_store::Fetcher = Arc::new(|_: &str| {
-                std::thread::sleep(Duration::from_millis(200));
-                None
-            });
-            let store = ui::ImageStore::new(&fetcher);
-            let _ = store.get("http://x/a.png");
-            assert!(store.pending() >= 1, "a load is in flight");
-
-            let mut app = TubeApp::new().with_image_store(store);
-            let doc = AutoCommit::new();
-            // The first frame builds the shell; image loads arrive after it.
-            let _ = Widget::take_structure_dirty(&mut app);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(
-                !Widget::take_structure_dirty(&mut app),
-                "an in-flight image load must NOT queue a whole-tree rebuild — images \
-             fold in lazily via sync + redraw, not via a structural rebuild",
-            );
-        }
-    }
-}
+mod tests;

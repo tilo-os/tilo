@@ -667,9 +667,6 @@ pub(super) fn run(
 
 /// Explicit developer qualification entry, not a model operation or production
 /// host registration route. Private input and a new private receipt are required.
-///
-/// # Errors
-/// Returns unsafe input, invalid registration, supervision or receipt failures.
 pub fn developer_probe(
     config: &Path,
     receipt: &Path,
@@ -679,9 +676,6 @@ pub fn developer_probe(
 }
 
 /// Qualify the existing owned guest path with informational report observation.
-///
-/// # Errors
-/// Returns the same private input and supervision failures as [`developer_probe`].
 pub fn developer_probe_with_reports(
     config: &Path,
     receipt: &Path,
@@ -726,9 +720,6 @@ fn reported_environment(prepared: &Prepared) -> Vec<(String, String)> {
 
 /// Internal trusted host entry: waits for the supervisor's cgroup gate, then
 /// enters the existing ush sandbox. No model-facing request accepts this path.
-///
-/// # Errors
-/// Returns unsafe configuration, missing gate, changed helper or sandbox setup.
 pub fn run_guest(config: &Path) -> Result<i32, String> {
     let config_bytes = read_private(config)?;
     let prepared: Prepared = serde_json::from_slice(&config_bytes).map_err(|e| e.to_string())?;
@@ -784,6 +775,7 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         command,
         shell: "/usr/bin/sh".into(),
         runs: None,
+        shell_rc: false,
         term: "dumb".into(),
         env: reported_environment(&prepared),
         resolver: Some(String::new()),
@@ -822,9 +814,6 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
 
 /// Internal guest entry. All subsequent commands inherit fully enforced
 /// Landlock; image startup files and guest management brokers never run.
-///
-/// # Errors
-/// Returns missing fixed argv, incomplete confinement or program exec failure.
 pub fn run_init(args: &[String]) -> Result<i32, String> {
     let Some((program, rest)) = args
         .strip_prefix(&["--".into()])

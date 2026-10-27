@@ -5,7 +5,7 @@ Description=Retire sandbox system view %i once no sandbox uses it
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/tilo-launcher sandbox-view retire %i
+ExecStart=/usr/libexec/tilo/tilo-launcher sandbox-view retire %i
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=yes

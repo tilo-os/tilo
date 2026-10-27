@@ -1,8 +1,3 @@
-//! Smoke test for `file-explorer --shots PATH`.
-//!
-//! Invokes the freshly-built binary with `--shots <tmp>` and asserts the
-//! resulting file exists and starts with the canonical PNG magic header.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

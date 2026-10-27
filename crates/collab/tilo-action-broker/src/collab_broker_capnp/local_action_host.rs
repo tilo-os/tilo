@@ -370,13 +370,20 @@ impl CapnpBrokerState {
 pub struct CertifiedActionLifecycle(Arc<CertifiedLocalActionHost>);
 
 impl CertifiedActionLifecycle {
+    /// The owner this session's invocations are read and cancelled under: the
+    /// person, or the agent their device delegated this session to. An
+    /// admission that cannot name it reads nothing: never the person's.
+    fn owner(&self) -> Option<super::InvocationOwner> {
+        self.0.admission.owner().ok()
+    }
+
     pub fn statuses(&self) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
-        let Ok(admitted) = self.0.check(&self.0.caller) else {
+        let (Ok(admitted), Some(owner)) = (self.0.check(&self.0.caller), self.owner()) else {
             return Vec::new();
         };
         self.0
             .state
-            .invocation_statuses_for_owner(&self.0.admission.owner())
+            .invocation_statuses_for_owner(&owner)
             .into_iter()
             .filter(|(id, update)| self.permitted_job(*id, update.invocation(), &admitted))
             .collect()
@@ -384,10 +391,8 @@ impl CertifiedActionLifecycle {
 
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         let admitted = self.0.check(&self.0.caller).ok()?;
-        let update = self
-            .0
-            .state
-            .invocation_status_for_owner(id, &self.0.admission.owner())?;
+        let owner = self.owner()?;
+        let update = self.0.state.invocation_status_for_owner(id, &owner)?;
         self.permitted_job(id, update.invocation(), &admitted)
             .then_some(update)
     }
@@ -395,19 +400,23 @@ impl CertifiedActionLifecycle {
     pub fn can_cancel(&self, id: u64) -> bool {
         self.status(id).is_some()
             && self
-                .0
-                .state
-                .can_cancel_for_owner(id, &self.0.admission.owner())
+                .owner()
+                .is_some_and(|owner| self.0.state.can_cancel_for_owner(id, &owner))
     }
 
+    /// Answered once the request is durable: blocks the calling thread for
+    /// that write, so never call it on the broker's loop.
+    ///
     /// # Errors
     /// Refuses revoked custody, foreign ownership and non-cancellable jobs.
     pub fn cancel(&self, id: u64) -> Result<(), String> {
         self.status(id)
             .ok_or("the invocation is unavailable in this session")?;
+        let owner = self.owner().ok_or("the session cannot name its owner")?;
         self.0
             .state
-            .request_cancellation_for_owner(id, &self.0.admission.owner())
+            .request_cancellation_for_owner(id, &owner)?
+            .wait_blocking()
     }
 
     fn permitted_job(
@@ -422,10 +431,13 @@ impl CertifiedActionLifecycle {
         let Ok(Some(journal)) = guard.as_ref() else {
             return false;
         };
+        let Some(owner) = self.owner() else {
+            return false;
+        };
         let key = super::InvocationKey {
             host: journal.host(),
             room: self.0.admission.room.clone(),
-            owner: self.0.admission.owner(),
+            owner,
             invocation,
         };
         let in_room = journal
@@ -738,15 +750,21 @@ impl ActionHost for CertifiedLocalActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        self.check(caller)?;
-        let job = self
-            .state
-            .remote_job(&self.effective, id)
-            .ok_or(ActionHostError::UnknownInvocation)?;
-        self.state
-            .request_cancellation_for_owner(job, &self.admission.owner())
-            .map_err(|reason| ActionHostError::NotCancellable { reason })
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        let staged = self.check(caller).and_then(|_| {
+            let job = self
+                .state
+                .remote_job(&self.effective, id)
+                .ok_or(ActionHostError::UnknownInvocation)?;
+            let owner = self
+                .admission
+                .owner()
+                .map_err(|_| ActionHostError::NotPermitted)?;
+            self.state
+                .request_cancellation_for_owner(job, &owner)
+                .map_err(|reason| ActionHostError::NotCancellable { reason })
+        });
+        super::action_host::answered_when_durable(staged)
     }
 }
 
@@ -815,7 +833,6 @@ mod tests {
         assert!(certified_provider(&provider));
         let (allowed, blocked) = workspace_targets();
         for address in allowed {
-            // Both invocation and confirmation use this exact target gate.
             assert!(certified_target(&provider, &address), "{address:?}");
         }
         for address in blocked {

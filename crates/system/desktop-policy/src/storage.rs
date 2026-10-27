@@ -468,7 +468,6 @@ mod tests {
 
     #[test]
     fn cleanup_removes_only_selected_items_whose_preview_still_matches() {
-        // Phase `cleanup_requires_preview_and_rejects_replaced_target`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let cache = tmp.path().join("cache");
@@ -482,7 +481,6 @@ mod tests {
                 Err(CleanupError::Changed(_))
             ));
         }
-        // Phase `cleanup_rejects_directory_payload_changed_after_preview`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let cache = tmp.path().join("cache");
@@ -499,7 +497,6 @@ mod tests {
             ));
             assert!(target.exists(), "changed cache must not be deleted");
         }
-        // Phase `cleanup_rejects_directory_file_count_changed_after_preview`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let cache = tmp.path().join("cache");
@@ -516,7 +513,6 @@ mod tests {
             ));
             assert!(target.exists(), "changed cache must not be deleted");
         }
-        // Phase `only_selected_preview_items_are_removed`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let cache = tmp.path().join("cache");

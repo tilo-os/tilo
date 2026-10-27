@@ -72,6 +72,8 @@ pub struct ViewModel {
     pub pending_sql: String,
     /// Name of the active connection, for the window header.
     pub active_name: String,
+    /// The result row the person chose, as an index into the result's rows.
+    pub selected_row: Option<usize>,
 }
 
 impl Default for ViewModel {
@@ -96,6 +98,7 @@ impl Default for ViewModel {
             dialog: None,
             pending_sql: String::new(),
             active_name: String::new(),
+            selected_row: None,
         }
     }
 }
@@ -103,7 +106,6 @@ impl Default for ViewModel {
 /// What a view asks the controller to do.
 #[derive(Clone, Debug)]
 pub enum Intent {
-    /// Make a saved connection the active one and open it.
     Connect(Uuid),
     /// Open a saved connection or saved query a search hit or an agent
     /// names.
@@ -125,6 +127,14 @@ pub enum Intent {
     LoadSnippet(usize),
     /// Clear the error the last action ended with.
     DismissStatus,
+    /// Stop the query in flight.
+    Cancel,
+    /// Copy the row selected in the result table.
+    CopyRow,
+    /// Copy the whole result.
+    CopyResult,
+    /// Choose a row of the result table.
+    SelectRow(Option<usize>),
     /// Show the previous or next page of the open table's rows.
     PreviousPage,
     NextPage,
@@ -153,12 +163,10 @@ impl Link {
         Self::default()
     }
 
-    /// Publish a new model.
     pub fn publish(&self, model: ViewModel) {
         self.inner.borrow_mut().model = model;
     }
 
-    /// Read the model.
     pub fn read<R>(&self, read: impl FnOnce(&ViewModel) -> R) -> R {
         read(&self.inner.borrow().model)
     }

@@ -119,10 +119,6 @@ pub fn encode(pairs: &[PairRecord<FileRecordId>], now: SystemTime) -> Vec<u8> {
 /// The pairs in a kept file as of `now`, or why the whole file is refused.
 /// Pairs older than [`MAX_AGE`] are dropped; a pair stamped in the future
 /// (the clock moved back) counts as just seen.
-///
-/// # Errors
-///
-/// Returns [`Corrupt`] for any file [`encode`] could not have written.
 pub fn decode(bytes: &[u8], now: SystemTime) -> Result<Vec<PairRecord<FileRecordId>>, Corrupt> {
     let (body, checksum) = bytes
         .split_at_checked(bytes.len().saturating_sub(CHECKSUM_BYTES))
@@ -187,7 +183,6 @@ struct FileState {
     /// Bumped by every [`KeptHistory::clear`]: a flush that began before a
     /// clear must not write what the clear removed.
     epoch: u64,
-    /// The history revision the file holds.
     written_revision: u64,
 }
 

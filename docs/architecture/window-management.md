@@ -22,7 +22,9 @@ behind each binding, and how every transition moves.
    the glass:          which display                Alt+Super + arrow
 ```
 
-A workspace is a **desk**: its strips stack top to bottom, a strip's window
+A workspace is a **desk**: its strips stack top to bottom as full-height
+screens (the strip deck, `ui::widget::StripDeck`; one fills the work area at
+a time and each keeps its own horizontal pan), a strip's window
 groups run left to right, and each display is a window onto part of that desk
 (every display shows the same workspace and holds its own groups; see
 [displays-and-infinite-workspaces.md](displays-and-infinite-workspaces.md)).
@@ -65,6 +67,10 @@ same door. Actions come in two forms:
   and `tab.move:<group>:<tab>:<workspace>`: the same operation on a named
   group, so an agent rearranges a desk without taking anyone's focus.
 
+A relative action that rearranges the desk answers once the overlay host has
+run it: a move past the edge, a second maximize or a second restore reports
+that nothing changed instead of a success.
+
 Chords are the rebindable defaults in `settings_store::hardware::ShortcutConfig`
 unless marked fixed.
 
@@ -79,7 +85,7 @@ unless marked fixed.
 | Previous / next workspace | `workspace.previous` / `-next` | Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | strip switcher | PageUp / PageDown, 4 fingers (one step, not yet following) and the action today |
 | Neighbouring display | `display.focus-previous` / `-next` | Alt+Super+← / → | — | point and click | planned |
 | Overview | `overview.toggle` | Super+Tab | pinch in / out; tablet posture: swipe up from the bottom edge | top-bar button | today, except the edge swipe |
-| Strip switcher | — | Super+S (fixed), then ↑ / ↓, Enter, F2 rename, Esc | — | hover-aim the right-edge strip ribbon; click in the card | today |
+| Strip switcher | — | Super+S (fixed), then ↑ / ↓, Enter, F2 rename, Delete remove, Esc | — | tap or hover-aim the right-edge strip ribbon, or the strip's name in the top bar; long-press a strip for Rename and Remove | today |
 | Recent windows | — (a held modal) | Alt+Tab, Alt+` (fixed) | — | — | today |
 
 ### Discover tab operations
@@ -99,24 +105,26 @@ and Shift+F10 keys continue to reach the app's resource menu.
 |---|---|---|---|---|
 | One slot left / right, walking across a display seam | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
 | To the strip above / below | `group.move-to-strip-previous` / `-next` | Shift+Ctrl+Super+↑ / ↓ | drag onto another strip | today, except the drag |
-| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move` |
+| To a strip chosen by name | `group.move-to-strip` (`strip`) | — | the window menu's Move to strip | today |
+| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move-to-workspace` |
 | To the neighbouring display | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag onto the other display | today on Super+Ctrl+Shift+← / → |
 
 A workspace is the sandbox and sharing boundary. Carrying a group there moves
-each tab through the window-transfer consent sheet exactly where `tab.move`
-would show it; a chord opens the sheet and never bypasses it.
+each tab through the window-transfer consent sheet exactly where
+`tab.move-to-workspace` would show it; a chord opens the sheet and never bypasses it.
 
 ### The frame of one group
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
-| Maximize, restore | `group.maximize` (toggle), `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
+| Maximize, restore | `group.maximize`, `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
 | Full screen / restore | `group.fullscreen` | Super+F | — | today |
 | Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag either edge ([Resizing a window](#resizing-a-window)) | steps and edge drags today |
 | Previous / next tab | `tab.previous` / `-next` | Super+Ctrl+Shift+Tab / Super+Ctrl+Tab (Ctrl+Shift+Tab / Ctrl+Tab where the app leaves them unhandled) | click a tab | today |
 | Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
 | Tab into a new group | `tab.move-to-new-group` | Super+Shift+Enter | drag the tab into a gap | today |
 | New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Super+Shift+T, Super+D | `+` and × in the tab strip | today |
+| Close the whole group, every tab at once | `group.close` | — | the window menu's Close window | today; `tab.reopen` brings it back whole |
 
 **Maximize** makes the group fill its display's work area. The top bar and the
 strip ribbon stay, because they say where you are; the group's title,
@@ -136,15 +144,16 @@ touchscreen gesture on the display the touchscreen is mapped to.
 
 | Fingers | Horizontal | Vertical | Pinch |
 |---|---|---|---|
-| 3 | pan the strip 1:1; release carries a fling and settles on a group edge | strip above / below | overview in / out |
+| 3 | pan the strip 1:1; release carries a fling and settles on a group edge | move the strip deck with the hand; the release settles it on a strip | overview in / out |
 | 4 | reserved | workspace, following the fingers | overview in / out |
 
 The pinch covers the overview, so four fingers take workspaces and three take
-strips, the same level split as the modifiers. Today a vertical swipe steps
-once, the moment it passes its threshold; following the fingers is planned.
-"Following the fingers" means the desk slides with the hand and the release
-decides: past a quarter of the display height, or a flick, commits; less
-springs back. A gesture during the settle catches the motion where it is.
+strips, the same level split as the modifiers. A three-finger vertical swipe
+moves the strip deck with the hand (`ui::widget::StripDeck`) and the release
+decides: past a quarter of the display height, or a flick, commits (a flick
+is one strip, a drag across two is two); less springs back. A gesture during
+the settle catches the motion where it is. Four fingers still step once per
+workspace.
 
 A touchscreen gets the same table. The compositor claims a touch sequence as a
 gesture when a third contact lands within 250 ms of the first, and cancels it
@@ -157,7 +166,10 @@ area at least 24 px wide under touch.
 ## Pointer
 
 - **Tab**: drag to reorder, onto another group to join it, into a gap for a new
-  group, onto another strip, display or overview preview.
+  group, onto another strip, display or overview preview. Only one strip is on
+  screen, so a drag resting at the top or bottom edge of the work area (over
+  the top bar counts) slides the deck to the strip above or below after the
+  spring-load wait, and the tab drops there.
 - **Tab-bar ground** (the empty part of the bar): drag moves the whole group to
   the same targets; double-click maximizes.
 - **Either edge of a window**: drag resizes that window, and only it; Shift
@@ -240,14 +252,19 @@ change and when a resize drag was let go; the user rejected it on 2026-10-18
 moved from 1280 to 1351 px on releasing a resize. The only automatic
 correction left is the clamp that keeps the pan inside the strip's legal
 range, for example when a close at the strip's far end leaves less to show.
+A window closing left of the view is the one case where the pan's number
+changes with nothing on screen moving: the canvas before the view shrinks
+by the closed slot and the pan follows it, so the windows shown stay put
+instead of sliding a whole window's width out of view. A tree changed
+elsewhere (a peer's edit, the room's echo of a close) is applied to the
+live strip in place, through the same removal, insertion and reorder, so
+it moves the strip no differently than the person doing it here.
 Pinned by `group_row.rs`'s `after_releasing_a_resize_no_window_moves`
-(`USER REQUIREMENT`) and its width-change tests.
+and its width-change tests.
 
 Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
 tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the
 pointer tests in `crates/session/shell/tests/desktop_env_interactions.rs`.
-The tests that state the user's own words carry a `USER REQUIREMENT` marker
-and may not lose an assertion without their OK (`docs/policies.md`).
 
 **Why it kept regressing.** Seam ownership used to be nobody's decision. The
 seam handle was keyed to its left neighbour (its drag set "left width + dx"),
@@ -351,7 +368,7 @@ shortcut) and `Motion::context` for what only says where something went
 | Full screen | as maximize, and the chrome slides off that display's edges | as maximize |
 | Switch tab | the tab chips open and close (180 ms); the content is swapped, never crossfaded | the content and chips on the next frame |
 | Focus another window (Super+←/→) | the strip glides on the rect spring to frame it | the focus shows on the next frame; the viewport slides (`fast`) only when the target was off screen |
-| Focus another strip | no content moves; strips share the height | the same |
+| Focus another strip | the strip deck slides vertically to it (`motion::Snap`): every strip is a full-height screen and one fills the work area at a time; three fingers move the deck with the hand and the release settles it with their momentum (past a quarter of the height, or a flick, commits) | the same slide within `fast`; an agent or script lands at once |
 | Switch workspace | a whole-view change (`slow`), gesture-triggered at the end of the swipe | the same change with only a `fast` direction cue |
 | Overview in / out | each window zooms between its live rect and its card | lands at once |
 

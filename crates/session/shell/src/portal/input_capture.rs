@@ -534,20 +534,27 @@ impl InputCaptureBackend {
                 app_id: app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
+            // Closing the request takes its consent sheet back, so a person
+            // answering late cannot start capture for a request that is gone.
+            let prompts = self.ctx.prompts.clone();
+            let withdrawn = request.clone();
             self.lifecycle
                 .with_request(
                     &self.connection,
                     &request,
                     entry,
-                    |_: &LifecycleEntry| {},
+                    move |_: &LifecycleEntry| {
+                        prompts.cancel_request(&withdrawn);
+                    },
                     async {
-                        let allowed = flow::resolve(
+                        let allowed = flow::resolve_for_request(
                             &self.ctx,
                             auth.caller.clone(),
                             CapabilityKind::InputCapture,
                             Capability::RemoteDesktop {
                                 scope: Expiry::AfterUse,
                             },
+                            request.clone(),
                         )
                         .await
                         .is_allowed();
@@ -1319,7 +1326,6 @@ mod tests {
             insert_value(&mut options, "persist_mode", Value::U32(3));
             assert_eq!(requested_persist_mode(&options), Err(()));
         }
-        // Phase `clipboard_request_is_bound_to_an_active_capture_only`.
         {
             let handle = InputCaptureCompositorHandle::native(Vec::new());
             let session = "/org/freedesktop/portal/desktop/session/tilo/clipboard".to_string();
@@ -1351,7 +1357,6 @@ mod tests {
     }
     #[test]
     fn only_edge_barriers_activate_capture_once() {
-        // Phase `edge_barrier_activates_once`.
         {
             let handle = InputCaptureCompositorHandle::native(vec![CaptureZone {
                 width: 100,
@@ -1391,7 +1396,6 @@ mod tests {
                 [PortalSignal::Activated { barrier_id: 7, .. }]
             ));
         }
-        // Phase `interior_barrier_is_rejected`.
         assert!(!valid_barrier(
             &PointerBarrier {
                 id: 1,

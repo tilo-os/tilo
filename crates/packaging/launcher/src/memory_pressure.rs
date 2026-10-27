@@ -170,7 +170,6 @@ pub struct Unit {
     pub footprint: u64,
     /// Everything charged to it (`memory.current`): what a reclaim works on.
     pub charged: u64,
-    /// Its own pressure.
     pub pressure: Psi,
 }
 
@@ -424,12 +423,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM crashing
-    // or blocking login is a bug to fix, never normal" and "running out of
-    // memory must never freeze or crash the system; handle it cleanly":
-    // rising pressure reclaims from the background first, and pressure that
-    // stays critical ends the one unit growing out of control within a few
-    // samples, never by size, never the session.
     #[test]
     fn rising_pressure_reclaims_from_the_background_and_never_from_the_focused_app() {
         let units = vec![
@@ -467,9 +460,6 @@ mod tests {
         assert!(policy.tick(RISING, &[starved]).is_empty());
     }
 
-    // USER REQUIREMENT (2026-10-19): "end the app growing out of control
-    // (largest growth, not largest size), with a clear notification naming it
-    // and why"; "never freeze the session".
     #[test]
     fn critical_pressure_ends_the_unit_growing_fastest_not_the_largest() {
         // The browser is the largest and steady; the language server grows

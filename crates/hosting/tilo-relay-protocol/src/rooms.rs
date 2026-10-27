@@ -16,6 +16,8 @@
 //! challenge ([`join_proof_digest`]) and waits until the room's owner admits
 //! or declines it.
 
+pub mod private;
+
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
@@ -48,11 +50,9 @@ pub struct JoinChallengeView {
     pub room: String,
     /// The room's relay workspace.
     pub workspace_id: u64,
-    /// The device governing the room.
     pub authority_device_public_key: [u8; 32],
     /// The joining person.
     pub user_public_key: [u8; 32],
-    /// The joining device.
     pub device_public_key: [u8; 32],
     /// The device's request.
     pub request_id: [u8; 32],
@@ -65,7 +65,6 @@ pub struct JoinChallengeView {
 /// What a member may do in a room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoomRole {
-    /// Reads.
     Viewer,
     /// Reads and comments.
     Commenter,
@@ -86,7 +85,6 @@ pub struct RoomMember {
     pub name: Option<String>,
     /// Their role.
     pub role: RoomRole,
-    /// They own the room.
     pub owner: bool,
     /// They were removed.
     pub removed: bool,
@@ -99,7 +97,6 @@ pub struct Room {
     pub room: String,
     /// The relay workspace carrying it.
     pub workspace_id: u64,
-    /// Its name.
     pub name: String,
     /// Its committed governance generation.
     pub generation: u64,
@@ -149,7 +146,6 @@ pub const MAX_PRE_ADMISSION_LABEL_CHARS: usize = 128;
 pub struct PreAdmission {
     /// The room's UUID.
     pub room: String,
-    /// The role the person gets.
     pub role: RoomRole,
     /// SHA-256 of the token the person presents.
     pub token_sha256: [u8; 32],
@@ -212,10 +208,6 @@ impl PreAdmission {
     }
 
     /// Whether the key it names signed it and its label is printable.
-    ///
-    /// # Errors
-    ///
-    /// Returns why it does not verify.
     pub fn verify(&self) -> Result<(), String> {
         let label = self.label.trim();
         if label.is_empty()
@@ -251,7 +243,6 @@ pub enum RoomNotice {
         label: String,
         /// Their role.
         role: RoomRole,
-        /// When.
         at_ns: u64,
     },
     /// Someone reported the public workspace through its door
@@ -261,7 +252,6 @@ pub enum RoomNotice {
         user_public_key: [u8; 32],
         /// What they said is wrong.
         reason: String,
-        /// When.
         at_ns: u64,
     },
 }
@@ -281,22 +271,18 @@ pub struct PendingInvite {
 /// the room as it is after it, except as noted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoomsRequest {
-    /// Every room the host governs.
     List,
     /// Create a governed workspace named `name` (1–80 characters).
     Create {
-        /// Its name.
         name: String,
     },
     /// Admit the calling device to `room` as its owner.
     Enter {
-        /// The room.
         room: String,
     },
     /// Issue an invitation anyone holding it may redeem; the owner admits
     /// each redemption.
     Invite {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key; never zero.
         request_id: [u8; 32],
@@ -307,11 +293,15 @@ pub enum RoomsRequest {
         /// How the inviting person names themself; the invitation records
         /// it with their user root.
         inviter_name: Option<String>,
+        /// The wait-list entry ([`WaitListEntry::request_id`]) the invitation
+        /// answers: the entry shows it was invited, and leaves the list
+        /// once someone joins with the invitation.
+        #[serde(default)]
+        wait_list_entry: Option<[u8; 32]>,
     },
     /// Cancel an invitation not yet redeemed: answered with
     /// [`RoomsReply::Pending`].
     Cancel {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -320,42 +310,35 @@ pub enum RoomsRequest {
     },
     /// The invitations to `room` still redeemable.
     Pending {
-        /// The room.
         room: String,
     },
     /// The people waiting to join `room`.
     Requests {
-        /// The room.
         room: String,
     },
     /// Admit a waiting person.
     Admit {
-        /// The room.
         room: String,
         /// Their request.
         request_id: [u8; 32],
     },
     /// Decline a waiting person: answered with [`RoomsReply::Requests`].
     Decline {
-        /// The room.
         room: String,
         /// Their request.
         request_id: [u8; 32],
     },
     /// Change a member's role.
     SetRole {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
         /// The member.
         user_public_key: [u8; 32],
-        /// Their new role.
         role: RoomRole,
     },
     /// Remove a member and every device of theirs.
     Remove {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -365,7 +348,6 @@ pub enum RoomsRequest {
     /// Remove a person, when a member, and keep them out until unbanned.
     /// The owner, and a Moderator for members ranked below Moderator.
     Ban {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -374,7 +356,6 @@ pub enum RoomsRequest {
     },
     /// Let a banned person be admitted again.
     Unban {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -394,7 +375,6 @@ pub enum RoomsRequest {
     },
     /// What happened in `room` without the owner deciding it then.
     Notices {
-        /// The room.
         room: String,
     },
     /// Whether the calling device's person may make an undoable change at
@@ -402,11 +382,68 @@ pub enum RoomsRequest {
     /// with [`RoomsReply::Permits`]. A page asks before it offers what only
     /// some members may do, such as acting on what other people made.
     Permits {
-        /// The room.
         room: String,
         /// A node of the room's published tree, in its text form
         /// (`room:<id>/app:<app>/…`).
         node: String,
+    },
+    /// The requests left at `room`'s door, oldest first: answered with
+    /// [`RoomsReply::WaitList`]. Whoever may invite.
+    WaitList {
+        room: String,
+    },
+    /// Take a request left at `room`'s door off its wait list, when it is
+    /// not to be invited: answered with [`RoomsReply::WaitList`]. An entry
+    /// invited ([`RoomsRequest::Invite`]'s `wait_list_entry`) leaves the
+    /// list by itself once someone joins with that invitation.
+    Unlist {
+        room: String,
+        /// The entry.
+        request_id: [u8; 32],
+    },
+    /// Mail the invitation `link` to the wait-list entry `wait_list_entry`
+    /// it was issued for ([`RoomsRequest::Invite`]'s `wait_list_entry`):
+    /// answered with [`RoomsReply::WaitList`], or refused where the room
+    /// sends no mail, when the page shares the link itself.
+    MailInvite {
+        room: String,
+        /// The confirmed entry.
+        wait_list_entry: [u8; 32],
+        /// The invitation's web link: the room's own door, with the signed
+        /// invitation in its `invite` query parameter.
+        link: String,
+    },
+    /// Share one record, or one item of it, with `room`'s members, as the
+    /// calling device's person: answered with [`RoomsReply::Shared`], how
+    /// many grants the share holds. The members below the owner get what
+    /// `access` gives, never more than the sharer holds there.
+    Share {
+        room: String,
+        /// The share's id, such as the message that shares it: 1 to 128
+        /// letters, digits or `.` `_` `:` `-`.
+        share: String,
+        /// The record or item, as a node of the room's tree in its text
+        /// form (`room:<id>/app:<app>/kind:<kind>/resource:<id>[/item:<id>]`;
+        /// `resource:*` names an item of the app's own record).
+        node: String,
+        /// `view` or `edit`.
+        access: String,
+    },
+    /// End the share `share` in `room`: answered with
+    /// [`RoomsReply::Shared`], how many of its grants were revoked (its
+    /// sharer's, or any for a person who may govern revoking).
+    Unshare {
+        room: String,
+        share: String,
+    },
+    /// How the calling device's person names themself in `room` from now
+    /// on, a display name ([`tilo_user_identity::display_name`]): the name
+    /// the room's member list and every person list show for them.
+    /// Answered with [`RoomsReply::Named`]. A page sends it as it joins and
+    /// whenever its person renames themself.
+    Name {
+        room: String,
+        name: String,
     },
 }
 
@@ -415,7 +452,6 @@ pub enum RoomsRequest {
 pub enum RoomsReply {
     /// Every governed room.
     Rooms(Vec<Room>),
-    /// The room as it is now.
     Room(Room),
     /// The issued invitation.
     Invitation {
@@ -434,6 +470,13 @@ pub enum RoomsReply {
     Notices(Vec<RoomNotice>),
     /// Whether the caller may, for [`RoomsRequest::Permits`].
     Permits(bool),
+    /// The requests left at the door, oldest first.
+    WaitList(Vec<WaitListEntry>),
+    /// How many grants a [`RoomsRequest::Share`] holds, or a
+    /// [`RoomsRequest::Unshare`] revoked.
+    Shared(u32),
+    /// The room names the caller as asked, for [`RoomsRequest::Name`].
+    Named,
 }
 
 /// One `/join` step.
@@ -449,7 +492,6 @@ pub enum JoinStep {
     Ask {
         /// The signed invitation.
         invitation: Vec<u8>,
-        /// The joining device.
         device_cert: DeviceCert,
         /// The device's request, random and kept until it is answered.
         request_id: [u8; 32],
@@ -470,7 +512,6 @@ pub enum JoinStep {
     Status {
         /// The device's request.
         request_id: [u8; 32],
-        /// The joining device.
         device_public_key: [u8; 32],
     },
     /// [`JoinStep::Prove`] with the one-time token of the owner's
@@ -484,7 +525,6 @@ pub enum JoinStep {
         /// How the person names themself: a display name
         /// ([`tilo_user_identity::display_name`]).
         name: String,
-        /// The token.
         token: Vec<u8>,
     },
 }
@@ -498,7 +538,6 @@ pub enum JoinReply {
         room: String,
         /// Its relay workspace.
         workspace_id: u64,
-        /// Its name.
         name: String,
         /// The role it grants.
         role: RoomRole,
@@ -521,15 +560,116 @@ pub enum JoinReply {
         room: String,
         /// Its relay workspace.
         workspace_id: u64,
-        /// Its name.
         name: String,
-        /// The role it holds.
         role: RoomRole,
     },
     /// The owner declined.
     Declined,
     /// Refused, and why.
     Refused(String),
+}
+
+// Requests left at the door. A room that takes people by invitation also
+// keeps the requests of people who asked at its door without one, each an
+// address to be invited at ([`WaitListEntry`]).
+
+/// The longest address a request left at the door gives ([`WaitListEntry`]):
+/// the longest an email address can be.
+pub const MAX_CONTACT_CHARS: usize = 254;
+
+/// `text` as the address a request left at a room's door keeps
+/// ([`WaitListEntry`]): an email address, trimmed and otherwise as typed,
+/// since that is how its owner writes it. One address is one request
+/// however it was typed: requests are told apart by [`contact_key`].
+///
+/// # Errors
+///
+/// Anything that is not one plausible email address of at most
+/// [`MAX_CONTACT_CHARS`] characters: one `@` with something before it and a
+/// dotted domain after it, and no space or control character.
+pub fn contact_address(text: &str) -> Result<String, &'static str> {
+    let address = text.trim().to_owned();
+    if address.chars().count() > MAX_CONTACT_CHARS {
+        return Err("an email address is at most 254 characters");
+    }
+    let plausible = address.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && !domain.contains('@')
+            && domain
+                .split('.')
+                .all(|label| !label.is_empty() && !label.starts_with('-'))
+            && domain.contains('.')
+    }) && !address
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'));
+    if plausible {
+        Ok(address)
+    } else {
+        Err("that is not an email address")
+    }
+}
+
+/// The longest invitation link a door mails: an invitation carries its
+/// signed certificate chain, a few KiB once encoded.
+pub const MAX_INVITATION_LINK: usize = 16 * 1024;
+
+/// Whether `link` is an invitation on the web entry `door` (a URL ending
+/// in `/`): under it, with an `invite=` parameter, no longer than
+/// [`MAX_INVITATION_LINK`] and without spaces or control characters. Only
+/// such a link is mailed to an address on a wait list for a member.
+#[must_use]
+pub fn invitation_on_door(door: &str, link: &str) -> bool {
+    door.ends_with('/')
+        && link.len() <= MAX_INVITATION_LINK
+        && link
+            .strip_prefix(door)
+            .is_some_and(|rest| rest.contains("invite="))
+        && !link.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// What tells two addresses ([`contact_address`]) apart: lowercased, so
+/// `Ada@Example.org` and `ada@example.org` are one request.
+#[must_use]
+pub fn contact_key(address: &str) -> String {
+    address.trim().to_lowercase()
+}
+
+/// The language mails to an address left at the door are in, for the
+/// language tag its page was read in: `de` for German, otherwise `en`.
+#[must_use]
+pub fn mail_language(tag: &str) -> &'static str {
+    let primary = tag.split(['-', '_']).next().unwrap_or_default();
+    if primary.eq_ignore_ascii_case("de") {
+        "de"
+    } else {
+        "en"
+    }
+}
+
+/// The bytes of the secret that takes a request left at a room's door off
+/// its wait list again: random, handed only to whoever left it. The room
+/// keeps only its SHA-256.
+pub const WAIT_LIST_REMOVAL_BYTES: usize = 32;
+
+/// A request left at the door of a room that takes people by invitation:
+/// someone who has no invitation, and so no identity the room knows yet,
+/// left an address to be invited at. Someone who may invite sends an
+/// invitation of their own there ([`RoomsRequest::Invite`] naming the
+/// entry), and the entry leaves the list once someone joins with it; or
+/// they take it off the list ([`RoomsRequest::Unlist`]). Whoever left it
+/// takes it off themselves with the secret they were handed
+/// ([`WAIT_LIST_REMOVAL_BYTES`]). Unlike a [`JoinRequest`] it names no person
+/// or device: it is not anyone to admit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitListEntry {
+    /// The entry, for [`RoomsRequest::Unlist`].
+    pub request_id: [u8; 32],
+    /// The address ([`contact_address`]).
+    pub contact: String,
+    /// When it was left.
+    pub added_at_ns: u64,
+    /// When it was last invited, so nobody invites it twice.
+    pub invited_at_ns: Option<u64>,
 }
 
 #[cfg(test)]
@@ -542,5 +682,42 @@ mod tests {
         assert_eq!(digest, join_proof_digest(b"challenge"));
         assert_ne!(digest, join_proof_digest(b"challengf"));
         assert_ne!(digest, *blake3::hash(b"challenge").as_bytes());
+    }
+
+    #[test]
+    fn a_contact_is_one_email_address_however_it_was_typed() {
+        assert_eq!(
+            contact_address("  Ada@Example.ORG "),
+            Ok("Ada@Example.ORG".to_owned())
+        );
+        assert_eq!(contact_key("Ada@Example.ORG"), "ada@example.org");
+        assert_eq!(mail_language("de-AT"), "de");
+        assert_eq!(mail_language("en-US"), "en");
+        assert_eq!(mail_language("fr"), "en");
+        assert_eq!(
+            contact_key(" ada@example.org"),
+            contact_key("ADA@example.org")
+        );
+        assert_eq!(
+            contact_address("ada+tilo@mail.example.co.uk"),
+            Ok("ada+tilo@mail.example.co.uk".to_owned())
+        );
+        for typed in [
+            "",
+            "ada",
+            "ada@",
+            "@example.org",
+            "ada@example",
+            "ada@example.",
+            "ada@.org",
+            "ada@@example.org",
+            "a da@example.org",
+            "ada@example.org, bob@example.org",
+            "Ada <ada@example.org>",
+        ] {
+            assert!(contact_address(typed).is_err(), "{typed:?}");
+        }
+        let long = format!("{}@example.org", "a".repeat(MAX_CONTACT_CHARS));
+        assert!(contact_address(&long).is_err());
     }
 }

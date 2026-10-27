@@ -68,7 +68,7 @@ together. Set an orchestration timeout because an ephemeral registration which
 never receives a job does not expire on its own.
 
 Pull requests and unrelated `main` changes retain the affected-package tests
-and release invariants in `check.yml`. Installer, profile-tool, workspace manifest,
+and release invariants t runs on every push. Installer, profile-tool, workspace manifest,
 lockfile and release-workflow changes on `main` additionally enter the existing
 native release queue, without reserving runners or dispatching OS builds.
 Manual rehearsals receive no signing lease. Do not put a persistent private key
@@ -245,17 +245,12 @@ and `/usr/share/tilo/tpm2-pcr-signing.public.pem` for PCR authorization.
 The signer and every parent directory must be root-owned and not group/world
 writable, and it must not live in the checkout or runner temporary directory.
 Tagged releases fail closed when this protected variable is absent.
-The same direct signer is also used by both native `Release / OS` publication
-lanes before their child manifests can enter the multi-architecture index. Its
-server-side OIDC policy must therefore accept either the protected
-`release-imager.yml` semantic-tag identity above or `build-image.yml` on a
-protected `vMAJOR.MINOR.PATCH` tag, an authorized publishing dispatch from
-`main`, the nightly scheduled run on protected `main`, or an enabled continuous
-publication push to protected `main`. Reject all pull requests, branch
-rehearsals, non-main dispatches, and other workflows. Tag lanes run on the
-`imager-linux-*` hosts; `main` publication lanes run on `runner-disk-100g` and
-`runner-disk-100g-arm64`, so the wrapper must be installed at the same
-canonical path on those runner images too.
+OS releases on t sign the same two inputs with the same keys in KMS directly
+(`sign-os-boot-<arch>`, tools/signing/boot-signer.sh) as the release signing
+role, which t's identity tokens get only for `stable` and `v*` tags. Its
+server-side OIDC policy must accept only the protected `release-imager.yml`
+semantic-tag identity above. Reject all pull requests, branch rehearsals,
+dispatches and other workflows. Tag lanes run on the `imager-linux-*` hosts.
 
 For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one
@@ -449,8 +444,8 @@ administrators):
 | `WINGET_GITHUB_USER` | dedicated GitHub submission bot login |
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
 | `IMAGER_INTERNAL_BUNDLE` | optional: unset (default) skips the internal installer bundle; `export` tests and exports it on every run; `publish` also publishes it for tags and requires it in the catalog. See [Internal installer bundle](#internal-installer-bundle) |
-| `IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER` | with `publish`: absolute broker path on both native Linux runner images, platform `internal-bundle` |
-| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` generic package; omit for `tilo` |
+| `IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER` | with `publish`: absolute broker path on both native Linux runner images, platform `internal-bundle`; the same exchange writes the `tilo-target-policy` package on tag releases |
+| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` and `tilo-target-policy` generic packages; omit for `tilo` |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.tilo.so`, where board (Lenovo) target images stay private; the generic
@@ -512,6 +507,49 @@ installation cycles:
    (`purpose: tilo-internal-installer`, `layout: internal-bundle-v2`). The
    GitHub and Forgejo release publishers skip these catalog inputs.
 
+   A release that wants source-host TPM preparation also publishes a small
+   target policy bundle: `target-policy-catalog-<ARCH>.json` plus the exact
+   `tilo-target-policy-<ARCH>.tar` it names. The archive contains only
+   `tilo-target.efi` and one `predictions/generation-<N>.json` with its
+   `.uki.sig`, all signed by the release authority whose public key is embedded
+   in the shipped Imager. The tag `target_policy` job resolves the exact child
+   of the verified `TILO_INSTALLER_OS_IMAGE`, requires that child's
+   `org.opencontainers.image.revision` label to equal the release's source
+   commit, verifies its release signature and SLSA provenance, and reads only
+   `/boot/tilo-target` from it. `apps/imager/packaging/export-target-policy.py`
+   checks the PE architecture and both the target-UKI signature and the
+   generation prediction against `keys/tpm2-pcr-signing.public.pem`, then writes
+   the deterministic archive and fragment. `publish-target-policy.sh` uploads
+   the archive first and the fragment last to the `tilo-target-policy` generic
+   package, then downloads both anonymously and compares their digests and
+   sizes. It reuses the existing `internal-bundle` broker exchange, so no new
+   issuer, channel or package scope is needed; if that broker is not
+   configured, the tag job is skipped and the catalog omits the entry rather
+   than naming a package nobody published. `build-release-catalog.sh`
+   verifies the fragment and its archive with the same producer before merging
+   the `tilo-target-policy` / `target-policy-bundle-v1` entry. Until such an
+   entry is published, the source installer honestly defers destination-bound
+   TPM protection instead of treating an arbitrary local bundle as a qualified
+   artifact. The GitHub and Forgejo release publishers skip both target-policy
+   inputs; they are package bytes, not release downloads.
+
+   To inspect a bundle by hand, or to rehearse without release authority:
+
+   ```sh
+   apps/imager/packaging/export-target-policy.py export \
+     --image registry.tilo.so/tilo/tilo@sha256:<published-child> \
+     --arch x86_64 --release-id imager-vX.Y.Z \
+     --expected-source <40-hex-commit> --output dist/tilo-target-policy
+   apps/imager/packaging/export-target-policy.py verify \
+     --bundle dist/tilo-target-policy --release-id imager-vX.Y.Z
+   ```
+
+   `export ... --diagnostic` writes only
+   `tilo-target-policy-<ARCH>.diagnostic.tar`; it checks the bundle shape but
+   neither signatures nor image authority, and it never writes a catalog
+   fragment. A rehearsal can therefore inspect diagnostic bytes without
+   populating an empty catalog or passing a release gate.
+
 Why a Forgejo package on `code.tilo.so` rather than a release attachment:
 the Imager accepts internal manifests from that origin only
 (`trusted_catalog_url` in `apps/imager/src/release.rs`); each architecture
@@ -535,27 +573,24 @@ listed in the header of `os/dev/internal-bundle.py`.
 
 ## Kernel buildroot snapshot credentials
 
-`build-buildroots.yml` authenticates, signs and lands its pins exactly
-like `build-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
-variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
+t's kernel buildroot chain (`image-kernel-buildroot-<arch>`, `sign-kernel-buildroot`,
+`publish-kernel-buildroot`, `pin-kernel-buildroot`; `tools/ci/publish/kernel-buildroot.sh`)
+authenticates, signs and lands its pins like the RPM snapshot and kernel chains; it
+needs no stored secret of its own:
 
-- The job token (`secrets.GITHUB_TOKEN`, logged in with
-  `docker/login-action`) pushes `tilo/tilo-kernel-buildroot` to
-  `registry.tilo.so`; the mirrored base is anonymously readable there.
-- `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
-  buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
-  preflight job refuses to start the multi-hour builds unless the KMS public
-  key equals `keys/cosign.pub`.
-- The job token pushes an `automation/kernel-buildroot-snapshot-<digest>` branch
-  and `RELEASE_TOKEN` opens the protected-main pull request through
-  `os/dev/open-snapshot-pr.py`.
+- The builds hold no credentials. Each architecture builds natively and must carry a
+  matching `/usr/lib/tilo/kernel-buildroot-arch` marker and base, a recorded package
+  list, exactly one signature-checked kernel SRPM and no remaining yum repositories.
+- `sign-kernel-buildroot`, on stable, exchanges a t identity token for the KMS signing
+  role (`os/dev/configure-cosign-kms.sh`) and signs both digests with a transparency
+  log entry; `publish-kernel-buildroot` pushes them with a `registry.tilo.so` identity
+  token and sets the `kernel-buildroot` pointer.
+- `pin-kernel-buildroot`, on main, pins stable's buildroots only when main would build
+  the same ones (the inputs digest in the pointer), verifies both signatures with
+  `keys/cosign.pub`, writes `os/kernel-buildroot-snapshot.env` through
+  `os/dev/open-snapshot-pr.py pins`, and t commits and pushes it.
 
-Each architecture builds on its native runner with `no-cache`, publishes by
-digest, and must carry a matching `/usr/lib/tilo/kernel-buildroot-arch` marker,
-a recorded package list, and no remaining yum repositories. Both signatures
-are verified with `keys/cosign.pub` before either reference is recorded, and
-promotion refuses to proceed if any snapshot input changed on main while the
-builds ran. Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
+Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
 
 ## Package indexes
 
@@ -574,11 +609,14 @@ by `microsoft/winget-pkgs`. Configure:
   user token described above; the workflow accepts no repository token fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
-The `Release / imager WinGet acceptance` workflow runs every six hours and can also be
-dispatched manually. It reads the release already published by the landing
-page, refuses to select another version, and uses
-`IMAGER_SITE_CREDENTIAL_BROKER` to advance `submitted` to `available` only
-after Microsoft's public index serves the exact identifier and version.
+t's check `imager-winget-acceptance` runs every six hours on main's head and with
+`t dispatch imager-winget-acceptance`. It reads the release already published by
+the landing page, refuses to select another version, keeps that release's download
+root and signing fingerprint, and advances `submitted` to `available` only after
+Microsoft's public index serves the exact identifier and version. It pushes the
+site with `TILO_SITE_TOKEN`, a token of the website bot that may push the site
+repository, which t's server config gives to runs on main; without it the check
+fails.
 
 After first publication users install with:
 

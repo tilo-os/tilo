@@ -5,6 +5,7 @@ use super::{
     Transactable, ValueRef, Work, escaped_bytes, field, object_fingerprint, validate_limits,
 };
 use std::ops::ControlFlow;
+use tilo_sort::CompactSort as _;
 
 /// Maximum operations a projected document may hold.
 const MAX_OPERATIONS: u64 = 1_000_000;
@@ -68,7 +69,7 @@ impl<'a> Source<'a> {
         let count = self.heads.len();
         let heads = heads.get_mut(..count).ok_or(ReadError::Limit)?;
         heads.copy_from_slice(self.heads);
-        heads.sort_unstable();
+        heads.compact_sort();
         if heads
             .windows(2)
             .any(|pair| matches!(pair, [left, right] if left == right))
@@ -224,7 +225,7 @@ impl<'a> Source<'a> {
         }
         Ok(())
     }
-    /// A bounded text fragment from `position` (see [`super::text_fragment`]).
+    /// A bounded text fragment from `position`.
     ///
     /// Elements are addressed by their text index, so the read seeks straight to the cursor and
     /// never visits mark boundaries, which occupy no text index.

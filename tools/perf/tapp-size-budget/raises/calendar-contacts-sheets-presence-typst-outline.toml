@@ -1,0 +1,8 @@
+reason = "features that landed since the budgets were measured on 2026-10-15, found by comparing the symbols of aarch64 builds of 28fe888fa3 and of main (d16b0322d3). The accidental growth is fixed in the same change: workspace-hack handed every app serde_json's round-trip float parser from the model gateway's Rig (13 to 28 KB per app). The sizes below are measured with that fix; the symbol growth is before it. Calendar invites people from shared Contacts (7380f0ef17): the contact directory's people and endpoints as record collections with their table codecs, the attendee picker and live replica invocation (its symbols grew 60,712 B); 2,073,088 B on aarch64 and 2,272,768 B on x86_64 against 2,031,616 B and 2,228,224 B. Sheets shows peers' cell selections and plot-first chart cards (b5900a5ef6: presence payloads and their decoding, the plot with its sorted quantiles, the annotation dock) and reads its cells as content (18490aa394) (its symbols grew 51,764 B); 1,516,544 B and 1,667,072 B against 1,507,328 B and 1,638,400 B. Typst gained the outline of the document's headings (1c3f34fbb7: the outline and its tree view) and opens and saves by contents (d33744a5d2, 7234f2e42f) (its symbols grew 22,672 B); 922,112 B on aarch64 against 917,504 B (x86_64 is within). Each app also carries 2 to 11 KB more of the record framework's generics and imports from the shared runtime. These add each overage with the ratchet's headroom"
+run = "r3f98003a25"
+
+[apps."so.tilo.calendar"]
+aarch64 = 65536
+
+[apps."so.tilo.sheets"]
+aarch64 = 65536

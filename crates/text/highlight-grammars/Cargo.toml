@@ -3,7 +3,7 @@ name = "tilo-highlight-grammars"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "Tilo's grammar set for syntax highlighting: syntect as a tokenizer over two-face's extended syntax set."
@@ -13,13 +13,14 @@ name = "tilo_highlight_grammars"
 path = "src/lib.rs"
 
 [features]
-# two-face's grammars (about 0.9 MB of data). Without it every language
-# highlights as plain text; the browser toolkit core leaves it out.
-syntax-definitions = ["dep:two-face"]
+# two-face's grammars (about 0.9 MB of data) and syntect to run them.
+# Without it every language highlights as plain text and neither is linked;
+# the browser toolkit core leaves it out.
+syntax-definitions = ["dep:syntect", "dep:two-face"]
 
 [dependencies]
 tilo-highlight = { version = "0.1.0", path = "../highlight" }
-syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"], optional = true }
 two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

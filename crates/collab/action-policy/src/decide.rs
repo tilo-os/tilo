@@ -83,6 +83,11 @@ pub struct Party<'g> {
     /// Nodes owned structurally: everything under them is allowed, whatever
     /// the grants say.
     pub owns: Vec<TreePath>,
+    /// Denies no more specific grant lifts: the room's ban or restriction
+    /// of this person. A grant to their role (a share of one item with the
+    /// room, a role's rule on comments) speaks for the role, not for a
+    /// decision about them.
+    pub held_off: Vec<&'g Grant>,
 }
 
 impl<'g> Party<'g> {
@@ -92,12 +97,25 @@ impl<'g> Party<'g> {
             subjects,
             grants: grants.into_iter().collect(),
             owns: Vec::new(),
+            held_off: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn owning(mut self, node: TreePath) -> Self {
         self.owns.push(node);
+        self
+    }
+
+    /// The same party, with `denies` held over every more specific grant
+    /// (see [`Self::held_off`]). Grants that are not denies hold nothing off.
+    #[must_use]
+    pub fn held_off_by(mut self, denies: impl IntoIterator<Item = &'g Grant>) -> Self {
+        self.held_off.extend(
+            denies
+                .into_iter()
+                .filter(|grant| grant.answer == Answer::Deny),
+        );
         self
     }
 
@@ -109,12 +127,29 @@ impl<'g> Party<'g> {
         self
     }
 
+    /// The same party, known as `subject` too: an agent's run of an issue
+    /// is the agent and the issue, so grants naming either decide for it,
+    /// the most specific first.
+    #[must_use]
+    pub fn also_as(mut self, subject: Subject) -> Self {
+        self.subjects.push(subject);
+        self
+    }
+
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         if self.owns.iter().any(|owned| owned.covers(node)) {
             return Decision {
                 answer: Answer::Allow,
                 basis: Basis::Owner,
+            };
+        }
+        if let Some(deny) = self.held_off.iter().copied().find(|grant| {
+            grant.kinds.contains(kind) && grant.node.covers(node) && grant.is_live(cx)
+        }) {
+            return Decision {
+                answer: Answer::Deny,
+                basis: Basis::Grant(deny),
             };
         }
         decide(self.grants.iter().copied(), &self.subjects, node, kind, cx)
@@ -138,7 +173,6 @@ impl<'g> Authority<'g> {
         }
     }
 
-    /// Bounds the authority by a delegation.
     #[must_use]
     pub fn bounded_by(mut self, bound: Party<'g>) -> Self {
         self.bounds.push(bound);

@@ -80,7 +80,7 @@ fn owner_revision(
             // Retain completed transfers so an away-and-back transfer also
             // invalidates an approval minted before the transfer.
             revision = serde_json::to_vec(&(
-                &current.room,
+                &current.room(),
                 current.owner(),
                 &current.ownership_transfer_audit,
             ))
@@ -147,7 +147,7 @@ impl WorkspaceGovernanceServices for MediaImport {
     }
 
     fn descriptors(&self, workspace: &Workspace) -> Vec<ActionDescriptor> {
-        if !self.workspace.governs() || workspace.room.to_string() != self.workspace.room() {
+        if !self.workspace.governs() || workspace.room().to_string() != self.workspace.room() {
             return Vec::new();
         }
         vec![ActionDescriptor {
@@ -166,7 +166,6 @@ impl WorkspaceGovernanceServices for MediaImport {
                 result: tilo_actions::ResultSpec::Json {
                     schema: serde_json::json!({"type": "object", "properties": {"imported_bytes": {"type": "integer", "minimum": 0}}, "required": ["imported_bytes"], "additionalProperties": false}),
                 },
-                tags: vec![tilo_actions::contract::LOCAL_DEVICE_ONLY.into()],
                 ..Default::default()
             },
             input: tilo_actions::door::InputSpec::None,

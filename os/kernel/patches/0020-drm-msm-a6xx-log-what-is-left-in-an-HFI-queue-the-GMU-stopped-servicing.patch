@@ -1,0 +1,89 @@
+From: Tilo <tilo@tilo.so>
+Subject: drm/msm/a6xx: log what is left in an HFI queue the GMU stopped servicing
+
+When the GMU stops answering, a6xx_hfi_stop() reports "HFI queue N is not
+empty" and resets the queue, discarding its contents. For the command
+queue those are the commands the GMU never consumed; for the debug queue
+(2) they are the firmware's own messages from just before it stopped.
+Kernels built without devcoredump and debugfs have no other way to see
+either, so a GMU that wedges leaves nothing behind that says why.
+
+On an X1E laptop the GMU wedged on GX_BW_PERF_VOTE and every one of the
+following ~150 stops reported the debug queue as not empty; all of it was
+thrown away.
+
+Print up to four packets of each non-empty queue before it is reset,
+with their id and sequence number. The queue memory is shared with a GMU
+in an unknown state, so nothing read from it is trusted: indices wrap
+within the queue the host allocated, a packet is at most 16 dwords, and a
+queue header with an impossible size or index is not walked.
+
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_hfi.c b/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
+index 186a73c..67305bd 100644
+--- a/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
+@@ -1008,6 +1008,52 @@ int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state)
+ 	return 0;
+ }
+ 
++/*
++ * Log what is left in a queue the GMU stopped servicing before it is thrown
++ * away: the commands it never consumed, and on the debug queue the firmware's
++ * own messages from just before it stopped. Without them a GMU that wedges
++ * leaves nothing behind that says why.
++ *
++ * The queue is shared with a GMU that may be in any state, so nothing read
++ * from it is trusted: indices wrap within the queue the host allocated, at
++ * most a few packets are printed, and each at most 16 dwords.
++ */
++static void a6xx_hfi_dump_queue(struct a6xx_gmu *gmu,
++		struct a6xx_hfi_queue *queue, int id)
++{
++	struct a6xx_hfi_queue_header *header = queue->header;
++	u32 size = header->size;
++	u32 index = READ_ONCE(header->read_index);
++	u32 write = READ_ONCE(header->write_index);
++	int packet;
++
++	if (!size || size > SZ_4K / sizeof(u32) || index >= size || write >= size)
++		return;
++
++	for (packet = 0; packet < 4 && index != write; packet++) {
++		u32 data[16];
++		u32 hdr = queue->data[index];
++		u32 dwords = clamp_t(u32, HFI_HEADER_SIZE(hdr), 1, ARRAY_SIZE(data));
++		u32 i;
++
++		for (i = 0; i < dwords; i++) {
++			data[i] = queue->data[index];
++			index = (index + 1) % size;
++			if (index == write) {
++				i++;
++				break;
++			}
++		}
++
++		DRM_DEV_ERROR(gmu->dev, "HFI queue %d id %u seq %u: %*ph\n", id,
++			      HFI_HEADER_ID(hdr), HFI_HEADER_SEQNUM(hdr),
++			      (int)(i * sizeof(u32)), data);
++
++		if (!gmu->legacy && index != write)
++			index = ALIGN(index, 4) % size;
++	}
++}
++
+ void a6xx_hfi_stop(struct a6xx_gmu *gmu)
+ {
+ 	int i;
+@@ -1018,8 +1064,10 @@ void a6xx_hfi_stop(struct a6xx_gmu *gmu)
+ 		if (!queue->header)
+ 			continue;
+ 
+-		if (queue->header->read_index != queue->header->write_index)
++		if (queue->header->read_index != queue->header->write_index) {
+ 			DRM_DEV_ERROR(gmu->dev, "HFI queue %d is not empty\n", i);
++			a6xx_hfi_dump_queue(gmu, queue, i);
++		}
+ 
+ 		queue->header->read_index = 0;
+ 		queue->header->write_index = 0;

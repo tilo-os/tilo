@@ -2026,11 +2026,17 @@ impl Actor {
     fn handle_net_report_report(&mut self, mut report: Option<net_report::Report>) {
         if let Some(ref mut r) = report {
             self.sock.ipv6_reported.store(r.udp_v6, Ordering::Relaxed);
-            if r.preferred_relay.is_none()
-                && let Some(my_relay) = self.sock.my_relay()
-            {
-                r.preferred_relay.replace(my_relay);
-            }
+            // TILO PATCH: a report started before a relay left the map (an
+            // `Endpoint::remove_relay` while it probed) still names that
+            // relay, and would make it home again after the map emptied and
+            // the home relay was released: nothing would ever release it
+            // again. Only a relay still in the map can become or stay home.
+            let relays = &self.direct_addr_update_state.relay_map;
+            r.preferred_relay = r
+                .preferred_relay
+                .take()
+                .filter(|url| relays.contains(url))
+                .or_else(|| self.sock.my_relay().filter(|url| relays.contains(url)));
 
             // Notify all transports
             self.transports_network_change.on_network_change(r);

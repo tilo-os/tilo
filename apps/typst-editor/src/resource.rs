@@ -93,20 +93,22 @@ impl Workspace {
         Ok(())
     }
 
-    /// Load a file from disk into this one.
+    /// Load a chosen file into this one.
     ///
-    /// Its source becomes what the file holds, and it lives at the file's
-    /// path.
+    /// Its source becomes what the file holds, and it takes the file's name;
+    /// it lives at the file's path where files have one, else nowhere until
+    /// saved.
     #[action]
     pub fn load(
         &mut self,
         file: &Id,
-        #[param("Where the file was read from")] path: String,
+        #[param("The chosen file's name")] name: String,
+        #[param("Where the file was read from, where files have paths")] path: Option<String>,
         #[param("What it holds")] source: String,
     ) -> Result<(), Refusal> {
         let file = self.files.get_mut(file).ok_or("no such file")?;
-        file.name = Atom(file_name(&path));
-        file.path = Some(Atom(path));
+        file.name = Atom(path.as_deref().map_or(name, file_name));
+        file.path = path.map(Atom);
         file.source = source;
         Ok(())
     }
@@ -176,6 +178,8 @@ pub struct TypstEditorShell;
 impl ResourceApp for TypstEditorShell {
     type Resource = Workspace;
     const ID: &'static str = "so.tilo.typst-editor";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Typst";
     const ICON: Option<&'static str> = Some("typst-editor");
     /// The narrow-window scenarios are captured at a phone width.
@@ -294,3 +298,26 @@ impl ResourceSurface<Workspace, crate::actions::TypstEffect> for TypstApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::TypstEditorShell::scenarios() {
+            let mut app = TestApp::<super::TypstEditorShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

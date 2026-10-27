@@ -50,7 +50,8 @@
 //! removed, so both sides can move independently.
 
 pub mod appstream;
-pub mod block;
+/// The block list, which apps reach through the registry vocabulary.
+pub use registry_types::block;
 pub mod catalogue;
 pub mod entry;
 pub mod flathub;

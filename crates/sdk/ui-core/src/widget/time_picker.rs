@@ -959,7 +959,6 @@ mod tests {
 
     #[test]
     fn time_values_clamp_and_are_announced() {
-        // Case `accessibility_reports_combobox_role_and_hhmm_value`.
         {
             use crate::a11y::Role;
             let tp = TimePicker::new(9, 5);
@@ -971,7 +970,6 @@ mod tests {
             assert_eq!(node.state.expanded, None, "spinners render inline");
         }
 
-        // Case `accessibility_value_includes_seconds_when_enabled`.
         {
             let mut tp = TimePicker::new(9, 5).with_seconds(7);
             Widget::set_focus(&mut tp, true);
@@ -998,7 +996,6 @@ mod tests {
 
     #[test]
     fn time_cells_take_focus_digits_and_scroll() {
-        // Case `time_picker_scroll_up_increments_minutes`.
         {
             let mut tp = TimePicker::new(10, 30);
             picker_with_layout(&mut tp);
@@ -1069,7 +1066,6 @@ mod tests {
             assert_eq!(tp.digit_buffer(), "5");
         }
 
-        // Case `time_picker_tab_cycles_cells`.
         {
             let mut tp = TimePicker::new(12, 30).with_seconds(45);
             Widget::set_focus(&mut tp, true);
@@ -1099,7 +1095,6 @@ mod tests {
 
     #[test]
     fn time_changes_sync_bound_state_and_callbacks() {
-        // Case `local_state_keeps_time_pickers_in_sync`.
         {
             let state = crate::LocalState::new(TimeValue::new(8, 30));
             let mut left = TimePicker::from_state(&state);
@@ -1113,7 +1108,6 @@ mod tests {
             assert_eq!(right.value(), expected);
         }
 
-        // Case `semantic_time_change_updates_state_and_callback`.
         {
             use std::cell::RefCell;
             use std::rc::Rc;

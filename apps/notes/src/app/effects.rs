@@ -44,11 +44,15 @@ impl NotesApp {
                 })))
             }
             NotesEffect::ExportMarkdown { page } => self.export_markdown(&state, page, cx),
+            NotesEffect::ExportMarkdownContent { page, title } => self
+                .export_markdown_content(&state, page, title.as_deref())
+                .map(Effected::value),
             NotesEffect::InsertImage { page } => {
                 state.get(page).ok_or("the note no longer exists")?;
                 Ok(Self::choose_image(page, cx))
             }
             NotesEffect::OpenLink { url } => Self::open_link(url, cx),
+            NotesEffect::OpenResource { href } => Self::open_resource(&href, cx),
             NotesEffect::CopyLink { page } => {
                 self.copy_link(&state, page).map(|()| Effected::done())
             }
@@ -214,7 +218,7 @@ impl NotesApp {
         {
             return Err("the clipboard is unavailable".into());
         }
-        self.transfer_toasts.push(
+        self.notify(
             ui::i18n::I18nManager::format(
                 "notes-link-copied",
                 &[("title", ui::i18n::ArgValue::from(label.to_string()))],
@@ -233,7 +237,7 @@ impl NotesApp {
             |app: &mut Self, opened, _| {
                 if let Err(error) = &opened {
                     tracing::warn!(%error, "notes: the link did not open");
-                    app.transfer_toasts.push(
+                    app.notify(
                         ui::i18n!("notes-link-open-failed"),
                         ui::widget::toast::ToastKind::Error,
                     );
@@ -241,6 +245,21 @@ impl NotesApp {
                 opened.map(|()| Effected::done())
             },
         ))
+    }
+
+    /// Open what a link in a note names, through the address it carries: the
+    /// app that keeps that resource shows it, started first when no window
+    /// does. The same door a chip uses, so a link written by hand and one an
+    /// app put in a note land in the same place.
+    fn open_resource(href: &str, cx: &Cx) -> EffectAnswer {
+        if actions::resource_address_in(href).is_none() {
+            return Err(ui::i18n!("notes-resource-link-invalid"));
+        }
+        cx.dispatcher().open_link(href).map_err(|reason| {
+            tracing::warn!(%reason, "notes: the linked resource could not be opened");
+            ui::i18n!("notes-resource-link-open-failed")
+        })?;
+        Ok(Effected::done())
     }
 
     fn choose_markdown(cx: &mut Cx) -> Effected {
@@ -290,7 +309,7 @@ impl NotesApp {
             }),
         );
         self.open_when_present(page);
-        self.transfer_toasts.push(
+        self.notify(
             ui::i18n::I18nManager::format(
                 "notes-imported",
                 &[("title", ui::i18n::ArgValue::from(title.to_string()))],
@@ -301,7 +320,7 @@ impl NotesApp {
     }
 
     fn import_failed(&mut self, error: &str) {
-        self.transfer_toasts.push(
+        self.notify(
             ui::i18n::I18nManager::format(
                 "notes-import-failed",
                 &[("error", ui::i18n::ArgValue::from(error.to_string()))],
@@ -337,6 +356,66 @@ impl NotesApp {
         )
     }
 
+    /// A note, or every note in notebook order, as one portable Markdown
+    /// file kept in the window's content store: its address, title, how
+    /// many notes it holds and its size.
+    fn export_markdown_content(
+        &self,
+        state: &Workspace,
+        page: Option<PageId>,
+        title: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let chosen = match (page, title.map(str::trim).filter(|title| !title.is_empty())) {
+            (Some(page), _) => Some(state.get(page).ok_or("the note no longer exists")?.id),
+            (None, Some(title)) => Some(actions::page_titled(&state.data.pages, title)?),
+            (None, None) => None,
+        };
+        let (name, markdown, notes) = match chosen {
+            Some(page) => {
+                let title = state.get(page).map_or("", |meta| meta.title.trim());
+                let body = actions::page_markdown(state, page);
+                // The file starts with the note's title, as the notebook's
+                // sections do, unless its body already opens with it.
+                let titled = if title.is_empty()
+                    || body.trim_start().lines().next() == Some(format!("# {title}").as_str())
+                {
+                    body
+                } else if body.trim().is_empty() {
+                    format!("# {title}\n")
+                } else {
+                    format!("# {title}\n\n{body}")
+                };
+                (title.to_owned(), titled, 1)
+            }
+            None => (
+                ui::i18n!("notes-title"),
+                actions::notebook_markdown(state),
+                state.data.pages.len(),
+            ),
+        };
+        let assets = self
+            .canonical_assets
+            .read()
+            .map(|assets| assets.clone())
+            .unwrap_or_default();
+        let portable = super::inline_images(&markdown, &assets);
+        let store = ui::tilo_resource::content::current()
+            .ok_or("this window keeps no content to export into")?;
+        let hash = store
+            .put(portable.as_bytes())
+            .map_err(|error| format!("the export could not be kept: {error}"))?;
+        let content =
+            tilo_actions::content_resource(&hash).ok_or("the export has no content address")?;
+        Ok(serde_json::json!({
+            "content": content,
+            "name": export_name(&name),
+            "title": name,
+            "notes": notes,
+            "bytes": portable.len(),
+            "format": "markdown",
+        }))
+    }
+
     fn choose_image(page: PageId, cx: &mut Cx) -> Effected {
         let request = PickRequest::open(
             &ui::i18n!("notes-insert-image-title"),
@@ -355,7 +434,7 @@ impl NotesApp {
                 return Ok(Effected::done());
             };
             if let Err(error) = super::check_image(&file.bytes) {
-                app.transfer_toasts.push(
+                app.notify(
                     format!("Image import failed: {error}"),
                     ui::widget::toast::ToastKind::Error,
                 );
@@ -369,7 +448,7 @@ impl NotesApp {
             cx.submit(app.image_insertion(page, alt.trim(), file.bytes));
             app.bound_page = None;
             app.self_dirty = true;
-            app.transfer_toasts.push(
+            app.notify(
                 ui::i18n!("notes-image-inserted"),
                 ui::widget::toast::ToastKind::Success,
             );

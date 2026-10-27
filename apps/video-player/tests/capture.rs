@@ -14,7 +14,7 @@ fn an_unreadable_video_cannot_produce_a_successful_capture() {
     let missing_path = output_path.with_extension("missing-video");
     assert!(!output_path.exists());
     assert!(!missing_path.exists());
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_video-player"));
+    let mut command = std::process::Command::new(tilo_test_env::package_binary!("video-player"));
     command.arg("--shots").arg(&output_path).arg(missing_path);
     #[cfg(windows)]
     {

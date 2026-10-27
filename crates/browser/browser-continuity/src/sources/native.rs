@@ -34,9 +34,6 @@ pub struct GrantedProfile {
 impl GrantedProfile {
     /// Retain precisely the granted directory; reject foreign or writable-by-
     /// others namespaces without changing their permissions.
-    ///
-    /// # Errors
-    /// Returns an error if the handle is not an owner-controlled directory.
     pub fn from_directory(file: File) -> io::Result<Self> {
         let owner = file.metadata()?.uid();
         let directory = StorageDirectory::from_file(file)?;

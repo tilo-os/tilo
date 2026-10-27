@@ -288,7 +288,7 @@ mod tests {
         ] {
             let result = PortalFilePicker
                 .open_file(request)
-                .recv_timeout(std::time::Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
             assert!(matches!(result, OpenFileOutcome::Failed(reason)
                 if reason.contains("single-file Open")));
@@ -313,9 +313,7 @@ mod tests {
                     .unwrap();
                 let _entry = scope.enter();
                 let outcomes = PortalFilePicker.launch(LaunchRequest::open("relative/file.txt"));
-                let event = wakes
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 assert!(matches!(
                     outcomes.try_recv().unwrap(),

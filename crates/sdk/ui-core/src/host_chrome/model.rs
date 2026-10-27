@@ -28,7 +28,6 @@ pub(crate) enum CommandGroup {
     Search,
     /// The app's own document and effect actions.
     AppActions,
-    /// The app's own view actions.
     AppViews,
     /// Show or hide History, and compare selected changes.
     History,
@@ -143,7 +142,7 @@ pub(crate) fn host_commands(
         .filter(|resource| is_app_resource(resource))
     {
         for spec in &resource.actions {
-            if spec.is_programmatic() {
+            if !spec.reaches_people() {
                 continue;
             }
             let group = if spec.kind == OperationKind::View {

@@ -326,7 +326,6 @@ mod tests {
                 assert_eq!(check(line), None, "{line}");
             }
             assert_eq!(guarded_write(&[]), None);
-            // Split into words, as `vm ssh -- systemctl status x` passes them.
             let words = ["systemctl", "status", "tilo-vmd", "--no-pager"].map(str::to_owned);
             assert_eq!(guarded_write(&words), None);
         }

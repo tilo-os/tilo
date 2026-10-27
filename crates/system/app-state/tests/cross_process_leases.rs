@@ -4,8 +4,10 @@
 
 use std::io::{BufRead, Write as _};
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use app_state::FsStore;
+use app_state::{DocOwner, DocWriter, FsStore};
+use automerge::transaction::Transactable as _;
 use durable_store::{DurableStore, Lease, StorageKey, StoreError};
 use tempfile::TempDir;
 
@@ -83,4 +85,62 @@ fn leases_exclude_across_processes_and_release_on_exit() {
             }
         }
     }
+}
+
+/// A second window of one app is a second instance of the same process tree
+/// opening the same room document: it joins as a secondary writer under an
+/// actor of its own, and the first window keeps the stored author, its own
+/// values and its own compatibility with what it wrote.
+#[test]
+fn a_second_window_writes_beside_the_first_without_taking_its_author() {
+    let tmp = TempDir::new().unwrap();
+    // Two stores over one profile directory: two instances of the app.
+    let first_instance: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
+    let second_instance: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
+    let key = key();
+
+    let first_owner =
+        Rc::new(DocOwner::acquire_shared(Rc::clone(&first_instance), key.clone()).unwrap());
+    assert!(
+        first_owner.is_primary(),
+        "the first window is the stored author"
+    );
+    let mut first_doc = first_owner.new_document().unwrap();
+    first_doc.put(automerge::ROOT, "window", "first").unwrap();
+    let first = DocWriter::start_new(&first_owner, &mut first_doc).unwrap();
+    first.try_flush().unwrap();
+    let author = first_owner.actor().clone();
+
+    let second_owner =
+        Rc::new(DocOwner::acquire_shared(Rc::clone(&second_instance), key.clone()).unwrap());
+    assert!(
+        !second_owner.is_primary(),
+        "a second window found the stored author taken and writes as a secondary"
+    );
+    assert_ne!(second_owner.actor(), &author, "its actor is its own");
+    let mut second_doc = second_owner.new_document().unwrap();
+    second_doc.put(automerge::ROOT, "window", "second").unwrap();
+    let second = DocWriter::start_new(&second_owner, &mut second_doc).unwrap();
+    second.try_flush().unwrap();
+
+    // The first window is undisturbed: it holds its own value and still the
+    // stored author, and the shared document merged both windows' writes.
+    assert_eq!(first_owner.actor(), &author);
+    assert!(
+        first_owner
+            .stored()
+            .unwrap()
+            .is_some_and(|stored| !stored.bytes.is_empty()),
+        "the first window's document is still readable"
+    );
+    drop((first, second, first_owner, second_owner));
+
+    let reopened: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
+    let reopened = DocOwner::acquire_shared(reopened, key).unwrap();
+    assert!(reopened.is_primary());
+    assert_eq!(
+        reopened.actor(),
+        &author,
+        "the stored author survived a whole second window's session"
+    );
 }

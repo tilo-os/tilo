@@ -384,7 +384,6 @@ pub struct FrameSummary {
     pub span_us: u64,
     /// Painted frames per second over `span_us`; zero when the span is degenerate.
     pub fps: f64,
-    /// Cadence of *every* tick.
     pub tick_period: Percentiles,
     /// Cadence of painted ticks only — the number a display sees.
     pub paint_period: Percentiles,

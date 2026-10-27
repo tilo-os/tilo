@@ -34,17 +34,30 @@ use serde::{Deserialize, Serialize};
 pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
 /// Encoded operation of [`APPLICATION_ACTIVATE_ACTION`].
 pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
+/// Encoded operation of the shared view action that shows the item at an
+/// anchor, as picking that item's search hit does.
+pub const APPLICATION_OPEN_TYPE: &str = "tilo.app.open";
 
 mod catalogue;
+mod content_put;
+pub mod crash_records;
 pub mod feedback;
+mod nodes;
 pub mod own_device;
 mod pending;
 mod wait;
+pub mod workspace_activity;
 
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
+};
+pub use content_put::{
+    CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
+};
+pub use nodes::{
+    NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
@@ -75,7 +88,6 @@ pub enum CallerPrincipal {
     /// the hex encoding of the user root its certificate chains to, so two
     /// devices of one person are the same principal.
     Person(String),
-    /// A delegated agent, by its agent id.
     Agent(String),
     /// An application, by its package id, acting under its own identity
     /// rather than borrowing the authority of the person using it.
@@ -425,7 +437,6 @@ impl Caller {
         self.user_public_key.as_ref()
     }
 
-    /// Whether the caller acts from a foreign device.
     #[must_use]
     pub const fn is_foreign_device(&self) -> bool {
         self.foreign
@@ -469,7 +480,6 @@ impl RemoteActionTarget {
     }
 }
 
-/// The id of the room `room`'s governance resource.
 #[must_use]
 pub fn room_governance_resource(room: &str) -> String {
     format!("{ROOM_GOVERNANCE_KIND}:{room}")
@@ -493,8 +503,13 @@ pub mod device_pairing {
     pub const APPROVE: &str = "approve";
     /// Forget a discovered device and stop approving it (`device`).
     pub const REJECT: &str = "reject";
+    /// The devices another of the person's devices found, asking here to be
+    /// the person; answers each with the `ask` that names it.
+    pub const ASKING: &str = "asking";
+    /// Approve or decline one of them (`ask`, `approve`, `confirm`), as its
+    /// notification does.
+    pub const ANSWER: &str = "answer";
 
-    /// The target of pairing step `step`.
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {
         RemoteActionTarget {
@@ -502,6 +517,16 @@ pub mod device_pairing {
             address: ActionAddress::new(RESOURCE, step),
         }
     }
+}
+
+/// The person's settings, kept by the host whether or not the app that shows
+/// them is open: each section a record published with its field edits and
+/// verbs (`settings:<kind>`), changed through them as that app's window
+/// changes them. It is answered under the host's provider for the person at
+/// this device in the room their connection was admitted to.
+pub mod settings_records {
+    /// The provider the host answers the person's settings under.
+    pub const PROVIDER: &str = "tilo.settings";
 }
 
 /// Administering the person's identities and the devices trusted under
@@ -550,7 +575,6 @@ pub mod identity_admin {
         HOME_PEER_RETRY,
     ];
 
-    /// The target of identity step `step`.
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {
         RemoteActionTarget {
@@ -568,7 +592,6 @@ pub mod identity_admin {
         pub key_hex: String,
         /// The key's short form people compare between screens.
         pub fingerprint: String,
-        /// Whether it is the device answering.
         pub current: bool,
         /// Whether its trust was revoked.
         pub revoked: bool,
@@ -694,7 +717,6 @@ impl InvokeRequest {
 /// Explicit confirmation carried with an invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confirmation {
-    /// The caller confirmed the action.
     Confirmed,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
@@ -715,6 +737,10 @@ pub const WORKSPACE_PROVIDER: &str = "workspace";
 
 /// Resource prefix of a workspace's "open this application" actions.
 pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
+
+/// Resource kind of an installed Tilo application a workspace lists, which
+/// a catalogue query's `resource_name` answers whole.
+pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
 
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
@@ -865,7 +891,7 @@ impl ApplicationLaunch {
         description: &str,
     ) -> crate::ActionSpec {
         let app_id = app_id.to_owned();
-        crate::ActionSpec::typed_operation(
+        let spec = crate::ActionSpec::typed_operation(
             id,
             label,
             description,
@@ -888,7 +914,19 @@ impl ApplicationLaunch {
                     }
                 })
             },
-        )
+        );
+        Self::launched_here(spec)
+    }
+
+    /// Opening an app is what the launcher does for whoever is at this
+    /// desktop: it opens a window of their own and reaches no one else, so
+    /// a room's grants have nothing to consent to ([`crate::OWN_DEVICE_SCOPE`]).
+    fn launched_here(mut spec: crate::ActionSpec) -> crate::ActionSpec {
+        spec.type_mut()
+            .contract
+            .tags
+            .push(crate::OWN_DEVICE_SCOPE.to_owned());
+        spec
     }
 
     /// This launch as the action `id` an app offers on a resource of its
@@ -902,7 +940,7 @@ impl ApplicationLaunch {
                     payload: Vec::new(),
                 }
             });
-        crate::ActionSpec::typed_operation(
+        Self::launched_here(crate::ActionSpec::typed_operation(
             id,
             label,
             description,
@@ -910,7 +948,7 @@ impl ApplicationLaunch {
             Self::TYPE,
             Vec::new(),
             move |_| encoded.clone(),
-        )
+        ))
     }
 }
 
@@ -935,15 +973,47 @@ pub fn application_action_target(
     }
 }
 
+/// [`application_action_target`] in `app_id`'s record `record`: the host
+/// delivers to the app showing that record, or launches the app on it.
+/// Opening a reference is the resource's `open` on this target.
+#[must_use]
+pub fn application_record_target(
+    room: &str,
+    app_id: &str,
+    record: &str,
+    resource: impl Into<String>,
+    action: impl Into<String>,
+) -> RemoteActionTarget {
+    let mut target = application_action_target(room, app_id, resource, action);
+    target.provider = format!("{}:{record}", target.provider);
+    target
+}
+
 /// The room and application an [`application_action_target`] provider
 /// token names, or `None` for any other provider.
 #[must_use]
 pub fn application_provider(provider: &str) -> Option<(&str, &str)> {
-    let (room, app_id) = provider
+    application_parts(provider).map(|(room, app_id, _)| (room, app_id))
+}
+
+/// The record an [`application_record_target`] provider token names, or
+/// `None` when it names none.
+#[must_use]
+pub fn application_provider_record(provider: &str) -> Option<&str> {
+    application_parts(provider).and_then(|(_, _, record)| record)
+}
+
+fn application_parts(provider: &str) -> Option<(&str, &str, Option<&str>)> {
+    let (room, rest) = provider
         .strip_prefix(APPLICATION_PROVIDER)?
         .strip_prefix(':')?
         .split_once(':')?;
-    (!room.is_empty() && !app_id.is_empty() && !app_id.contains(':')).then_some((room, app_id))
+    let (app_id, record) = match rest.split_once(':') {
+        Some((app_id, record)) => (app_id, Some(record)),
+        None => (rest, None),
+    };
+    (!room.is_empty() && !app_id.is_empty() && record.is_none_or(|record| !record.is_empty()))
+        .then_some((room, app_id, record))
 }
 
 /// Where an invocation stands, as reported to its caller.
@@ -1232,13 +1302,14 @@ pub trait ActionHost {
         None
     }
 
-    /// Ask a running invocation to stop.
+    /// Ask a running invocation to stop, answered once the host has kept
+    /// the request as durably as it keeps the invocation.
     ///
     /// # Errors
     ///
     /// Returns [`ActionHostError::UnknownInvocation`] for an id this caller
     /// does not own, or [`ActionHostError::NotCancellable`].
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError>;
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>>;
 
     /// Ask the person `caller` acts for to confirm `request` on their own
     /// device, as the host shows it to them. The answer is a
@@ -1252,6 +1323,12 @@ pub trait ActionHost {
     ) -> Pending<Result<Confirmation, ActionHostError>> {
         let _ = (caller, request);
         Pending::ready(Err(ActionHostError::ConfirmationRequired))
+    }
+
+    /// Where this host's callers put content into their room's content
+    /// store ([`ContentPuts`]); `None` for a host without one.
+    fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        None
     }
 }
 
@@ -1286,7 +1363,7 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         (**self).next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
         (**self).cancel(caller, id)
     }
 
@@ -1296,6 +1373,10 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         request: &InvokeRequest,
     ) -> Pending<Result<Confirmation, ActionHostError>> {
         (**self).confirm(caller, request)
+    }
+
+    fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        (**self).content_puts()
     }
 }
 
@@ -1384,7 +1465,6 @@ pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordQuery {
-    /// The room the record belongs to.
     pub room: String,
     /// The application whose record it is.
     pub app: String,
@@ -1527,11 +1607,6 @@ impl RemoteActionFrame {
     /// Decode bytes from a transport. The version is checked before the
     /// message, so a frame from a newer peer is refused by version rather
     /// than misread.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RemoteFrameError`] for oversized, unknown-version or
-    /// malformed input.
     pub fn decode(bytes: &[u8]) -> Result<Self, RemoteFrameError> {
         #[derive(Deserialize)]
         struct Version {
@@ -1615,12 +1690,9 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
                 state: host.observe(caller, &invocation),
             })
         }
-        RemoteActionMessage::Cancel { invocation } => {
-            Pending::ready(RemoteActionMessage::CancelResponse {
-                invocation,
-                result: host.cancel(caller, &invocation),
-            })
-        }
+        RemoteActionMessage::Cancel { invocation } => host
+            .cancel(caller, &invocation)
+            .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
         // A record is read by the device that keeps it, never through an
         // action host; a host asked for one says so.
         RemoteActionMessage::RecordRequest { correlation, .. } => {
@@ -2035,6 +2107,25 @@ mod tests {
         Caller::authenticated([9; 32], [8; 32])
     }
 
+    /// Camera's "Open Photos" opens a window of the person's own, as the
+    /// launcher does: a room's grants have nothing to consent to, so a guest
+    /// is not asked first.
+    #[test]
+    fn opening_an_app_needs_no_room_consent() {
+        for spec in [
+            ApplicationLaunch::app("so.tilo.photos").spec("open-photos", "Open Photos", ""),
+            ApplicationLaunch::content_spec("so.tilo.photos", "open-capture", "Open", ""),
+        ] {
+            assert!(spec.contract.is_own_device(), "{}", spec.id);
+            assert_eq!(
+                spec.contract.need().kind,
+                crate::ActionKind::Read,
+                "{}",
+                spec.id
+            );
+        }
+    }
+
     #[test]
     fn application_launch_action_preserves_destination_and_never_falls_back_to_open() {
         let launch = ApplicationLaunch::with_action(
@@ -2096,10 +2187,23 @@ mod tests {
             "application:room-1",
             "application::so.tilo.chat",
             "application:room-1:",
-            "application:room-1:a:b",
+            "application:room-1:a:",
         ] {
             assert_eq!(application_provider(other), None, "{other}");
         }
+        assert_eq!(application_provider_record(&target.provider), None);
+
+        let target =
+            application_record_target("room-1", "so.tilo.notes", "uuid:7", "notes.page:1", "open");
+        assert_eq!(
+            application_provider(&target.provider),
+            Some(("room-1", "so.tilo.notes"))
+        );
+        assert_eq!(
+            application_provider_record(&target.provider),
+            Some("uuid:7")
+        );
+        assert_eq!(target.address, ActionAddress::new("notes.page:1", "open"));
     }
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
@@ -2145,6 +2249,29 @@ mod tests {
                     output: ActionOutput::default(),
                 };
             }
+        }
+    }
+
+    impl CountingHost {
+        fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+            let ledger = self.ledger.lock().unwrap();
+            let mut update = ledger
+                .get(caller, id)
+                .ok_or(ActionHostError::UnknownInvocation)?
+                .lock()
+                .unwrap();
+            if update.is_terminal() {
+                return Err(ActionHostError::NotCancellable {
+                    reason: "finished".into(),
+                });
+            }
+            *update = InvocationUpdate::Cancelled {
+                invocation: *id,
+                message: None,
+            };
+            drop(update);
+            drop(ledger);
+            Ok(())
         }
     }
 
@@ -2194,25 +2321,12 @@ mod tests {
                 .map(|update| InvocationState::new(*id, update.lock().unwrap().clone()))
         }
 
-        fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-            let ledger = self.ledger.lock().unwrap();
-            let mut update = ledger
-                .get(caller, id)
-                .ok_or(ActionHostError::UnknownInvocation)?
-                .lock()
-                .unwrap();
-            if update.is_terminal() {
-                return Err(ActionHostError::NotCancellable {
-                    reason: "finished".into(),
-                });
-            }
-            *update = InvocationUpdate::Cancelled {
-                invocation: *id,
-                message: None,
-            };
-            drop(update);
-            drop(ledger);
-            Ok(())
+        fn cancel(
+            &self,
+            caller: &Caller,
+            id: &InvocationId,
+        ) -> Pending<Result<(), ActionHostError>> {
+            Pending::ready(self.cancel_now(caller, id))
         }
     }
 
@@ -2538,7 +2652,7 @@ mod tests {
         );
         assert_eq!(host.observe(&second, &id), None);
         assert_eq!(
-            host.cancel(&second, &id),
+            now(host.cancel(&second, &id)),
             Err(ActionHostError::UnknownInvocation)
         );
         let retained = first.clone();
@@ -2599,7 +2713,7 @@ mod tests {
         );
         assert_eq!(host.observe(&mallory(), &id), None);
         assert_eq!(
-            host.cancel(&mallory(), &id),
+            now(host.cancel(&mallory(), &id)),
             Err(ActionHostError::UnknownInvocation)
         );
         assert_eq!(host.runs(), 1);

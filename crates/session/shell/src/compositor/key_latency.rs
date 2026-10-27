@@ -141,7 +141,7 @@ impl KeyLatency {
     }
 
     /// `surface` committed a new buffer at `at`. Returns the keys that waited
-    /// past [`UNANSWERED_AFTER`] and were dropped, by app.
+    /// past `UNANSWERED_AFTER` and were dropped, by app.
     pub fn surface_committed(&mut self, surface: u64, at: Instant) -> Vec<String> {
         let mut unanswered = Vec::new();
         self.pending.retain(|&id, (app, key_at)| {
@@ -257,7 +257,6 @@ mod tests {
     fn a_typed_key_is_timed_from_delivery_to_the_flip_that_shows_its_answer() {
         let t0 = Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
-        // Phase `the_first_commit_after_a_key_answers_it_and_the_retiring_frame_presents_it`.
         {
             let mut latency = KeyLatency::default();
             latency.key_delivered(7, "so.tilo.notes", 30, t0);
@@ -279,7 +278,6 @@ mod tests {
                 "the earliest unanswered key is the one timed"
             );
         }
-        // Phase `modifiers_start_nothing_and_ignored_keys_expire`.
         {
             let mut latency = KeyLatency::default();
             latency.key_delivered(7, "so.tilo.notes", 42, t0);

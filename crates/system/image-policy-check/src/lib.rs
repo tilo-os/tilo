@@ -265,10 +265,6 @@ fn anchor_problem(key_path: Option<&Json>, fulcio: Option<&Json>, trust: &Trust)
 }
 
 /// Why a requirement is not the release signature, or `None`.
-///
-/// # Errors
-/// A `signedIdentity` type that is a list or an object, which the original
-/// could not even compare (an unhashable value).
 fn signed_requirement_problem(requirement: &Json, trust: &Trust) -> Result<Option<String>, String> {
     let Json::Object(fields) = requirement else {
         return Ok(Some("requirement is not an object".to_owned()));
@@ -384,7 +380,6 @@ fn scope_problem(
     Ok(None)
 }
 
-/// Whether `scope` of `transport` may accept anything.
 fn may_accept(transport: &str, scope: &str) -> bool {
     if transport == "docker" {
         USER_CHOSEN_REGISTRIES.iter().any(|registry| {

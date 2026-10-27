@@ -38,7 +38,10 @@ use crate::widget::{
 };
 
 /// What a find runs over: text, or a byte view's hex digits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum FindMode {
     #[default]
     Text,
@@ -48,12 +51,69 @@ pub enum FindMode {
     Regex,
 }
 
-/// The options the bar's chips set.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// The options a find runs under: the bar's chips, the window search's
+/// options.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
 pub struct FindOptions {
     pub match_case: bool,
     pub whole_word: bool,
     pub mode: FindMode,
+}
+
+/// What a document's find offers beyond matching text under Match case and
+/// Whole word: replacing matches, a regular expression, a byte view's hex
+/// digits. The find's options offer just these.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct FindAbilities {
+    pub replace: bool,
+    pub regex: bool,
+    pub hex: bool,
+}
+
+impl FindAbilities {
+    /// What `target` offers.
+    #[must_use]
+    pub fn of(target: &dyn Findable) -> Self {
+        Self {
+            replace: target.supports_replace(),
+            regex: target.supports_regex(),
+            hex: target.supports_hex(),
+        }
+    }
+
+    /// What the first [`Findable`] in `root`'s subtree offers; nothing
+    /// beyond matching when there is none.
+    #[must_use]
+    pub fn of_root(root: &mut dyn Widget) -> Self {
+        with_findable(root, &mut |target| Self::of(target)).unwrap_or_default()
+    }
+
+    /// Whether it offers nothing beyond matching text.
+    #[must_use]
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `options` as this find can run them: a mode it does not offer falls
+    /// back to text.
+    #[must_use]
+    pub fn allow(self, mut options: FindOptions) -> FindOptions {
+        let offered = match options.mode {
+            FindMode::Text => true,
+            FindMode::Hex => self.hex,
+            FindMode::Regex => self.regex,
+        };
+        if !offered {
+            options.mode = FindMode::Text;
+        }
+        options
+    }
 }
 
 /// One match, as a span of the findable's own content (a byte range of its
@@ -71,6 +131,18 @@ impl FindMatch {
     }
 }
 
+/// A find a view ran on its own rather than through the window's search: an
+/// action went to a match of `query` (an agent's "go to result"). The
+/// window's search shows it: its field holds the query, and it steps on from
+/// match `current`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnFind {
+    pub query: String,
+    pub options: FindOptions,
+    /// The 0-based match the view shows.
+    pub current: usize,
+}
+
 /// A view whose content can be searched in place.
 pub trait Findable {
     /// Every match of `query` under `options`, in reading order, and keep
@@ -80,6 +152,18 @@ pub trait Findable {
     /// Make match `index` the current one: scroll it into view and paint it
     /// emphasised (see [`paint_find_match`]).
     fn reveal(&mut self, index: usize);
+
+    /// Paint match `index` emphasised without moving the view: the content
+    /// changed under the find and the current match kept its place. A view
+    /// that keeps its current match across [`Self::find`] needs nothing.
+    fn mark_current(&mut self, _index: usize) {}
+
+    /// What of the view the window's search covers while its options stand
+    /// open over it, in the view's own coordinates (`None`: nothing). A
+    /// view that scrolls reveals its current match clear of it, scrolling
+    /// past its start where the match stands too near it; the search shows
+    /// the current match again whenever the cover changes.
+    fn set_find_cover(&mut self, _cover: Option<Rect>) {}
 
     /// The bar closed: stop painting matches.
     fn clear_find(&mut self) {
@@ -100,6 +184,13 @@ pub trait Findable {
     /// Replace every match; returns how many changed.
     fn replace_all(&mut self, _with: &str) -> usize {
         0
+    }
+
+    /// Whether a replacement this view took is written later, through its
+    /// host's edit path (on its next frame), rather than at once. The find
+    /// then runs again once the content moved, to show the next match.
+    fn replaces_later(&self) -> bool {
+        false
     }
 
     /// Whether this view shows bytes, so the bar offers a text/hex mode.
@@ -130,7 +221,25 @@ pub trait Findable {
     fn content_revision(&self) -> u64 {
         0
     }
+
+    /// Where a view whose engine finds on its own (see [`Self::step`]) says
+    /// its matches are, when it said so since the last call: `(total,
+    /// current)`, `current` 0-based. The bar's counter follows on its next
+    /// [`FindBar::drive`].
+    fn take_engine_results(&mut self) -> Option<(usize, Option<usize>)> {
+        None
+    }
+
+    /// The find this view ran on its own since the last call ([`OwnFind`]),
+    /// which the window's search takes over: it shows the query and keeps
+    /// the match the view went to.
+    fn take_own_find(&mut self) -> Option<OwnFind> {
+        None
+    }
 }
+
+/// Width of the outline that tells the current match from the others.
+const CURRENT_MATCH_OUTLINE: f64 = 1.5;
 
 /// Paint one match highlight over `rect`, the span of the matched glyphs —
 /// never a whole line or block. Every match is a wash of the searcher's own
@@ -147,21 +256,27 @@ pub fn paint_find_match(
         return;
     }
     let intent = &theme.tokens.colors.intent;
-    let shape = RoundedRect::from_rect(
-        rect.inflate(1.0, 0.0),
-        f64::from(theme.tokens.radii.detail) / 2.0,
-    );
+    // Exactly the matched glyphs' span: a padded box runs into the glyph
+    // after the match.
+    let radius = f64::from(theme.tokens.radii.detail) / 2.0;
+    let shape = RoundedRect::from_rect(rect, radius);
     if current {
         use crate::color_compat::ColorCompat;
         let strong = intent.selection_tint.with_alpha_factor(2.0);
         scene.fill(Fill::NonZero, transform, strong, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.5),
-            transform,
-            intent.accent_ink,
-            None,
-            &shape,
-        );
+        // The outline lies inside the span, so it never reaches past it.
+        let half = CURRENT_MATCH_OUTLINE / 2.0;
+        if rect.width() > CURRENT_MATCH_OUTLINE && rect.height() > CURRENT_MATCH_OUTLINE {
+            let outline =
+                RoundedRect::from_rect(rect.inflate(-half, -half), (radius - half).max(0.0));
+            scene.stroke(
+                &Stroke::new(CURRENT_MATCH_OUTLINE),
+                transform,
+                intent.accent_ink,
+                None,
+                &outline,
+            );
+        }
     } else {
         scene.fill(
             Fill::NonZero,
@@ -248,6 +363,9 @@ pub struct FindSession {
     searched_revision: u64,
     /// The view reports its own results ([`Self::set_results`]).
     engine_results: bool,
+    /// A replacement the view applies later, through its host's edit path:
+    /// the next find, once the content moved, shows the current match.
+    reveal_after_edit: bool,
 }
 
 impl FindSession {
@@ -295,6 +413,7 @@ impl FindSession {
         options: FindOptions,
         keep: Option<usize>,
     ) {
+        self.reveal_after_edit = false;
         if self.find(target, query, options, keep)
             && let Some(current) = self.current
         {
@@ -303,10 +422,47 @@ impl FindSession {
     }
 
     /// Find `query` again without moving the view, keeping the current
-    /// match: the content changed under the find.
+    /// match: the content changed under the find. After a replacement the
+    /// view applied later, the match now current is shown as after any
+    /// replacement.
     pub fn refresh(&mut self, target: &mut dyn Findable, query: &str, options: FindOptions) {
         let keep = self.current;
-        let _ = self.find(target, query, options, keep);
+        if self.reveal_after_edit {
+            self.search(target, query, options, keep);
+            return;
+        }
+        if self.find(target, query, options, keep)
+            && let Some(current) = self.current
+        {
+            target.mark_current(current);
+        }
+    }
+
+    /// Replace the current match of `query` under `options` with `with`, or
+    /// every match (`all`), then show the match that is current after it:
+    /// the one that followed the replaced match. A view that applies the
+    /// edit later is found again once its content moved. Returns whether the
+    /// view took the replacement.
+    pub fn replace(
+        &mut self,
+        target: &mut dyn Findable,
+        query: &str,
+        options: FindOptions,
+        with: &str,
+        all: bool,
+    ) -> bool {
+        let current = self.current;
+        let changed = if all {
+            target.replace_all(with) > 0
+        } else {
+            current.is_some_and(|current| target.replace(current, with))
+        };
+        if changed && target.replaces_later() {
+            self.reveal_after_edit = true;
+        } else {
+            self.search(target, query, options, current);
+        }
+        changed
     }
 
     /// Run the find; whether it produced results to show (an engine that
@@ -328,6 +484,15 @@ impl FindSession {
         self.current =
             (self.matches > 0).then(|| keep.unwrap_or(0).min(self.matches.saturating_sub(1)));
         true
+    }
+
+    /// Show the current match again (what covers the view changed);
+    /// whether there was one to show.
+    pub fn reveal_current(&self, target: &mut dyn Findable) -> bool {
+        if let Some(current) = self.current {
+            target.reveal(current);
+        }
+        self.current.is_some()
     }
 
     /// Make the next (or previous) match current, wrapping, and show it.
@@ -607,21 +772,10 @@ impl FindBar {
         let stale = self.session.is_stale(&query, self.options);
         if let Some(request) = pending.replace {
             let with = self.replace_field.value().to_owned();
-            let current = self
+            let all = request == ReplaceRequest::All;
+            let _ = self
                 .session
-                .position()
-                .map(|(current, _)| current.saturating_sub(1));
-            match request {
-                ReplaceRequest::One => {
-                    if let Some(current) = current {
-                        target.replace(current, &with);
-                    }
-                }
-                ReplaceRequest::All => {
-                    target.replace_all(&with);
-                }
-            }
-            self.session.search(target, &query, self.options, current);
+                .replace(target, &query, self.options, &with, all);
         } else if pending.search || stale {
             self.session.search(target, &query, self.options, Some(0));
         } else if pending.refresh || self.session.content_moved(target) {
@@ -631,6 +785,9 @@ impl FindBar {
         }
         if let Some(step) = pending.step {
             self.session.step(target, step == Step::Next);
+        }
+        if let Some((total, current)) = target.take_engine_results() {
+            self.session.set_results(total, current);
         }
         self.update_count();
     }
@@ -1203,10 +1360,23 @@ pub fn with_findable<R>(
 
 /// Content with find: a [`FindBar`] that Ctrl+F (⌘F) opens as a band at the
 /// top of the content, driving the first [`Findable`] inside it.
+///
+/// Opened from a menu or by a pointer, the band discloses
+/// (`motion::Disclosure`): while it moves it stands over the content, which
+/// keeps the whole scope (its larger extent) and moves with the band's edge
+/// by transform; the content is laid out under the band once, at rest.
+/// Ctrl+F and Escape land at once; the close button collapses the band.
 pub struct FindScope {
     bar: FindBar,
     content: Element,
     open: bool,
+    /// How much of the band is drawn while it opens or closes.
+    disclosure: crate::motion::Disclosure,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
+    /// The layout was built with the band on its way: over the content,
+    /// which keeps the whole scope. Built again once it rests.
+    laid_sliding: bool,
     structure_dirty: bool,
     rect: Rect,
     /// The pointer, for which side of the band a press lands on.
@@ -1225,6 +1395,9 @@ impl FindScope {
             bar: FindBar::new(),
             content,
             open: false,
+            disclosure: crate::motion::Disclosure::closed(),
+            motion: crate::tokens::EffectiveMotion::default(),
+            laid_sliding: false,
             structure_dirty: false,
             rect: Rect::ZERO,
             pointer: Point::ZERO,
@@ -1281,7 +1454,6 @@ impl FindScope {
         &mut self.bar
     }
 
-    /// The content the scope wraps.
     #[must_use]
     pub fn content(&self) -> &dyn Widget {
         self.content.as_ref()
@@ -1305,6 +1477,7 @@ impl FindScope {
         if !self.open {
             self.open = true;
             self.structure_dirty = true;
+            self.disclosure.show(true, self.motion);
         }
         self.bar.focus_query();
     }
@@ -1325,8 +1498,24 @@ impl FindScope {
             if self.open {
                 self.open = false;
                 self.structure_dirty = true;
+                self.disclosure.show(false, self.motion);
             }
         }
+    }
+
+    /// How far below its laid-out place the content is drawn now: as far
+    /// as the band shows while the layout keeps the content at the top of
+    /// the scope. Zero at rest.
+    fn content_offset(&self) -> f64 {
+        if !self.laid_sliding {
+            return 0.0;
+        }
+        self.disclosure.reveal(self.bar.get_rect().height()).height
+    }
+
+    /// The layout no longer matches the band: it started or stopped moving.
+    fn layout_stale(&self) -> bool {
+        self.laid_sliding != self.disclosure.is_sliding()
     }
 
     fn is_find_shortcut(&self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
@@ -1376,9 +1565,26 @@ impl Widget for FindScope {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let mut children = Vec::new();
-        self.bar_node = if self.open {
+        // On its way the band stands over the content, out of the layout:
+        // the content keeps the whole scope and moves by transform.
+        self.laid_sliding = self.disclosure.is_sliding();
+        self.bar_node = if self.open || self.laid_sliding {
             let node = self.bar.build_layout(taffy, theme, node_map);
+            if self.laid_sliding
+                && let Ok(style) = taffy.style(node)
+            {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                style.inset = taffy::Rect {
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                };
+                let _ = taffy.set_style(node, style);
+            }
             children.push(node);
             Some(node)
         } else {
@@ -1419,13 +1625,13 @@ impl Widget for FindScope {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
+        let own = std::mem::take(&mut self.structure_dirty) || self.layout_stale();
         let content = self.content.take_structure_dirty();
         own || content
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.content.is_layout_dirty()
+        self.structure_dirty || self.layout_stale() || self.content.is_layout_dirty()
     }
 
     fn draw(
@@ -1436,10 +1642,61 @@ impl Widget for FindScope {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.content.draw(scene, transform, text, theme, presence);
-        if self.open {
-            self.bar.draw(scene, transform, text, theme, presence);
+        self.motion = theme.motion();
+        if !self.laid_sliding {
+            self.content.draw(scene, transform, text, theme, presence);
+            if self.open {
+                self.bar.draw(scene, transform, text, theme, presence);
+            }
+            return;
         }
+        // The band opens or closes from the top: the content, laid out once
+        // over the whole scope, follows the band's edge by transform,
+        // clipped to the scope; the band's controls fade in over the second
+        // half.
+        let reveal = self.disclosure.reveal(self.bar.get_rect().height());
+        let offset = self.content_offset();
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &self.rect,
+        );
+        self.content.draw(
+            scene,
+            transform * Affine::translate((0.0, offset)),
+            text,
+            theme,
+            presence,
+        );
+        let band = self.bar.get_rect();
+        if reveal.height > 0.0 && reveal.opacity > 0.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                reveal.opacity,
+                transform,
+                &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
+            );
+            self.bar.draw(scene, transform, text, theme, presence);
+            scene.pop_layer();
+        }
+        scene.pop_layer();
+    }
+
+    /// Frames while the band opens or closes, and one more to lay it out
+    /// at rest; none after.
+    fn needs_animation_frame(&self) -> bool {
+        self.disclosure.is_moving()
+            || self.layout_stale()
+            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.disclosure.is_moving()
+            || self.layout_stale()
+            || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1495,8 +1752,14 @@ impl Widget for FindScope {
             }
         }
         let content = self.content_node.unwrap_or(ctx.node_id);
+        // While the band moves, the content is hit where it is drawn.
+        let event = super::event_offset(
+            event,
+            vello::kurbo::Vec2::new(0.0, self.content_offset()),
+            ctx.scale_factor,
+        );
         self.content
-            .handle_event(event, &mut ctx.reborrow(ctx.path, content));
+            .handle_event(&event, &mut ctx.reborrow(ctx.path, content));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1539,6 +1802,53 @@ impl Widget for FindScope {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
+
+    /// A match highlight paints the matched span and nothing past it: the
+    /// glyph after a match keeps its own ground, the current match's outline
+    /// included.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_match_highlight_paints_exactly_the_matched_span() {
+        let theme = Theme::dark();
+        let (w, h) = (64_u32, 32_u32);
+        let span = Rect::new(10.0, 8.0, 40.0, 24.0);
+        for current in [false, true] {
+            let mut scene = Scene::new();
+            paint_find_match(&mut scene, Affine::IDENTITY, span, current, &theme);
+            let mut pixels = vec![0_u8; (w * h * 4) as usize];
+            {
+                let mut target = tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4)
+                    .expect("a target");
+                tilo_cpu_raster::CpuRasterizer::default().render(
+                    scene.encoding(),
+                    &mut target,
+                    None,
+                    tilo_cpu_raster::color::AlphaColor::from_rgba8(0, 0, 0, 255),
+                );
+            }
+            let painted = |x: u32, y: u32| {
+                let at = ((y * w + x) * 4) as usize;
+                pixels[at..at + 3].iter().any(|channel| *channel != 0)
+            };
+            assert!(painted(25, 16), "the span is painted (current: {current})");
+            for y in 0..h {
+                for x in [9, 40] {
+                    assert!(
+                        !painted(x, y),
+                        "nothing is painted beside the span at ({x}, {y}) (current: {current})"
+                    );
+                }
+            }
+            for x in 0..w {
+                for y in [7, 24] {
+                    assert!(
+                        !painted(x, y),
+                        "nothing is painted above or below the span at ({x}, {y}) (current: {current})"
+                    );
+                }
+            }
+        }
+    }
 
     /// A text a find runs over: case-folding and whole-word aware, keeping
     /// what it found and which match is current.
@@ -1732,7 +2042,6 @@ mod tests {
         let _ = send(&mut scope, &ctrl_f(), ctrl);
         assert!(scope.is_open());
         assert!(scope.take_structure_dirty(), "the band joins the layout");
-        // Lay out again with the band, then check it sits above the content.
         let focus = send(&mut scope, &WindowEvent::Focused(true), plain);
         assert!(focus.is_none());
         assert!(scope.bar.get_rect().height() > 0.0);
@@ -1746,6 +2055,168 @@ mod tests {
 
         let _ = send(&mut scope, &escape(), plain);
         assert!(!scope.is_open(), "Escape closes the bar");
+    }
+
+    fn page_scope() -> FindScope {
+        let page = Page {
+            doc: Doc {
+                text: "one two one".into(),
+                ..Doc::default()
+            },
+            rect: Rect::ZERO,
+        };
+        let mut scope = FindScope::new(Box::new(page));
+        scope.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+        scope
+    }
+
+    fn lay_out(scope: &mut FindScope) {
+        let _ = send(
+            scope,
+            &WindowEvent::Focused(true),
+            winit::event::Modifiers::default(),
+        );
+        let _ = scope.take_structure_dirty();
+    }
+
+    fn pointer_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    #[test]
+    fn opened_from_a_menu_the_band_discloses_over_content_laid_out_at_its_larger_extent() {
+        let mut scope = page_scope();
+        lay_out(&mut scope);
+        // A menu item clicked: the host opens the bar. The frame's instant
+        // is held, so the test reads the motion where it starts.
+        let _frame = crate::motion::pin_frame();
+        crate::motion::note_input(&pointer_press());
+        scope.open();
+        lay_out(&mut scope);
+        assert!(scope.disclosure.is_moving(), "the band discloses");
+        assert!(Widget::needs_animation_frame(&scope));
+        let band = scope.bar.get_rect();
+        let laid = scope.content.get_rect();
+        assert!(band.height() > 0.0, "the band is laid out at its height");
+        assert!(
+            (laid.y0 - scope.rect.y0).abs() < 0.5 && (laid.y1 - scope.rect.y1).abs() < 0.5,
+            "the content keeps the whole scope while the band moves, so nothing under it is bare"
+        );
+        assert!(
+            scope.content_offset().abs() < 0.5,
+            "and is drawn where it stood, moving down with the band's edge"
+        );
+        // A frame of the motion moves only the drawing: nothing asks for a
+        // new layout and the content's box stays put.
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        scope.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert!(!scope.structure_dirty);
+        assert_eq!(scope.content.get_rect(), laid);
+
+        // Once it rests, one more frame lays the content out under the
+        // band; then it costs nothing.
+        let _settled = crate::motion::testing::settled();
+        assert!(!scope.disclosure.is_moving());
+        assert!(
+            Widget::needs_animation_frame(&scope) && Widget::is_layout_dirty(&scope),
+            "the layout takes the band in once, at rest"
+        );
+        lay_out(&mut scope);
+        let band = scope.bar.get_rect();
+        assert!(scope.content.get_rect().y0 >= band.y1 - 0.5);
+        assert!(scope.content_offset().abs() < f64::EPSILON);
+        assert!(!Widget::needs_animation_frame(&scope));
+        assert!(!scope.layout_stale(), "and lays out nothing more");
+    }
+
+    #[test]
+    fn ctrl_f_and_escape_land_and_the_close_button_collapses_the_band() {
+        let mut scope = page_scope();
+        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let plain = winit::event::Modifiers::default();
+        lay_out(&mut scope);
+
+        crate::motion::note_input(&ctrl_f());
+        let _ = send(&mut scope, &ctrl_f(), ctrl);
+        assert!(scope.is_open());
+        assert!(!scope.disclosure.is_moving(), "Ctrl+F lands at once");
+        lay_out(&mut scope);
+        assert!(scope.content_offset().abs() < f64::EPSILON);
+
+        crate::motion::note_input(&escape());
+        let _ = send(&mut scope, &escape(), plain);
+        assert!(!scope.is_open());
+        assert!(!scope.disclosure.is_moving(), "Escape lands at once");
+
+        crate::motion::note_input(&ctrl_f());
+        let _ = send(&mut scope, &ctrl_f(), ctrl);
+        lay_out(&mut scope);
+        let full = scope.bar.get_rect().height();
+        // The close button, pressed.
+        let _frame = crate::motion::pin_frame();
+        crate::motion::note_input(&pointer_press());
+        scope.bar.toggle(Part::Close);
+        scope.drive();
+        assert!(!scope.is_open(), "the bar is closed at once for input");
+        assert!(scope.disclosure.is_moving(), "and its band collapses");
+        lay_out(&mut scope);
+        assert!(
+            (scope.content_offset() - full).abs() < 0.5,
+            "the content, laid out at the top, is drawn under the closing band"
+        );
+        assert!(
+            scope.content.get_rect().y0 - scope.rect.y0 < 0.5,
+            "laid out once over the whole scope"
+        );
+        assert!(Widget::needs_animation_frame(&scope));
+    }
+
+    #[test]
+    fn under_reduced_motion_the_band_lands_and_its_controls_fade_in() {
+        let mut scope = page_scope();
+        lay_out(&mut scope);
+        scope.motion = Theme::dark().with_reduce_motion(true).motion();
+        let _frame = crate::motion::pin_frame();
+        crate::motion::note_input(&pointer_press());
+        scope.open();
+        lay_out(&mut scope);
+        let full = scope.bar.get_rect().height();
+        let reveal = scope.disclosure.reveal(full);
+        assert!(
+            (reveal.height - full).abs() < f64::EPSILON,
+            "the height lands"
+        );
+        assert!(reveal.opacity < 1.0, "the controls fade in");
+        assert!(scope.content_offset().abs() < f64::EPSILON, "nothing moves");
+    }
+
+    #[test]
+    fn content_moving_with_the_band_is_hit_where_it_is_drawn() {
+        let pointer = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: (10.0, 50.0).into(),
+        };
+        let moved = super::super::event_offset(&pointer, vello::kurbo::Vec2::new(0.0, -20.0), 2.0);
+        let WindowEvent::CursorMoved { position, .. } = moved.as_ref() else {
+            panic!("a pointer move stays a pointer move");
+        };
+        assert_eq!((position.x, position.y), (10.0, 90.0));
+        let key = escape();
+        assert!(matches!(
+            super::super::event_offset(&key, vello::kurbo::Vec2::new(0.0, -20.0), 2.0),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -1929,6 +2400,8 @@ mod host_driven_tests {
     struct Engine {
         steps: Vec<bool>,
         queries: Vec<String>,
+        /// What the engine said since the bar last asked.
+        reported: Option<(usize, Option<usize>)>,
     }
 
     impl Findable for Engine {
@@ -1940,6 +2413,9 @@ mod host_driven_tests {
         fn step(&mut self, forward: bool) -> bool {
             self.steps.push(forward);
             true
+        }
+        fn take_engine_results(&mut self) -> Option<(usize, Option<usize>)> {
+            self.reported.take()
         }
     }
 
@@ -2053,6 +2529,29 @@ mod host_driven_tests {
     }
 
     #[test]
+    fn an_engine_says_where_it_landed_through_the_view() {
+        let mut page = Engine::default();
+        let mut bar = FindBar::new();
+        bar.set_query("tilo");
+        bar.drive(&mut page);
+        assert_eq!(bar.position(), None, "nothing known until the engine says");
+        page.reported = Some((4, Some(0)));
+        bar.drive(&mut page);
+        assert_eq!(bar.position(), Some((1, 4)));
+        bar.next();
+        page.reported = Some((4, Some(1)));
+        bar.drive(&mut page);
+        assert_eq!(page.steps, [true]);
+        assert_eq!(bar.position(), Some((2, 4)));
+        bar.drive(&mut page);
+        assert_eq!(
+            bar.position(),
+            Some((2, 4)),
+            "a quiet engine changes nothing"
+        );
+    }
+
+    #[test]
     fn options_are_toggles_and_a_strip_and_the_bar_has_one_close_control() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -2088,9 +2587,7 @@ mod host_driven_tests {
             Rect::ZERO,
             "the field has no X of its own"
         );
-        // The band follows the host's content edge.
         assert!((bar.field.get_rect().x0 - 40.0).abs() < 1e-9);
-        // Text and Hex share one strip.
         let text_rect = bar.parts.iter().find(|(p, _)| *p == Part::Text).unwrap().1;
         let hex_rect = bar.parts.iter().find(|(p, _)| *p == Part::Hex).unwrap().1;
         assert!(
@@ -2164,5 +2661,101 @@ mod host_driven_tests {
         assert!(!quiet.is_open());
         quiet.open();
         assert!(quiet.is_open(), "the host opens it");
+    }
+
+    /// A document whose host writes a replacement on its next frame, as the
+    /// block editor's does; it forgets its current match on every find.
+    #[derive(Default)]
+    struct Deferred {
+        text: String,
+        found: Vec<FindMatch>,
+        queued: Option<(usize, String)>,
+        revision: u64,
+        current: Option<usize>,
+        /// Each match scrolled into view, in order.
+        revealed: Vec<usize>,
+    }
+
+    impl Deferred {
+        /// The host's frame: write the queued replacement.
+        fn write(&mut self) {
+            if let Some((index, with)) = self.queued.take() {
+                let found = self.found[index].clone();
+                self.text.replace_range(found.start..found.end, &with);
+                self.revision += 1;
+            }
+        }
+    }
+
+    impl Findable for Deferred {
+        fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+            self.current = None;
+            self.found = Log {
+                text: self.text.clone(),
+                ..Log::default()
+            }
+            .find(query, options);
+            self.found.clone()
+        }
+        fn reveal(&mut self, index: usize) {
+            self.current = Some(index);
+            self.revealed.push(index);
+        }
+        fn mark_current(&mut self, index: usize) {
+            self.current = Some(index);
+        }
+        fn supports_replace(&self) -> bool {
+            true
+        }
+        fn replace(&mut self, index: usize, with: &str) -> bool {
+            self.queued = Some((index, with.to_owned()));
+            true
+        }
+        fn replaces_later(&self) -> bool {
+            true
+        }
+        fn content_revision(&self) -> u64 {
+            self.revision
+        }
+    }
+
+    #[test]
+    fn after_a_replacement_written_later_the_next_match_is_current_and_shown() {
+        let mut doc = Deferred {
+            text: "a1 a2 a3".into(),
+            ..Deferred::default()
+        };
+        let options = FindOptions::default();
+        let mut session = FindSession::default();
+        session.search(&mut doc, "a", options, Some(0));
+        session.step(&mut doc, true);
+        assert_eq!(session.position(), Some((2, 3)));
+        assert!(session.replace(&mut doc, "a", options, "b", false));
+        doc.write();
+        assert!(session.content_moved(&doc));
+        session.refresh(&mut doc, "a", options);
+        assert_eq!(doc.text, "a1 b2 a3");
+        assert_eq!(session.position(), Some((2, 2)), "a3 is current");
+        assert_eq!(doc.current, Some(1), "the document paints it as current");
+        assert_eq!(doc.revealed.last(), Some(&1), "and scrolls it into view");
+    }
+
+    #[test]
+    fn an_edit_from_elsewhere_keeps_the_current_match_painted_without_scrolling() {
+        let mut doc = Deferred {
+            text: "a1 a2".into(),
+            ..Deferred::default()
+        };
+        let options = FindOptions::default();
+        let mut session = FindSession::default();
+        session.search(&mut doc, "a", options, Some(0));
+        session.step(&mut doc, true);
+        let shown = doc.revealed.len();
+        doc.text.push_str(" a3");
+        doc.revision += 1;
+        session.refresh(&mut doc, "a", options);
+        assert_eq!(session.position(), Some((2, 3)));
+        assert_eq!(doc.current, Some(1), "the current match stays emphasised");
+        assert_eq!(doc.revealed.len(), shown, "the view stays where it was");
     }
 }

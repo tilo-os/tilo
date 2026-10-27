@@ -31,10 +31,6 @@ impl UiDocument {
     }
 
     /// Parse and validate a graph before it can reach the widget tree.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JSON decoding or graph-validation error.
     pub fn from_json(source: &str) -> Result<Self, UiGraphError> {
         let document: Self = serde_json::from_str(source)?;
         document.validate()?;
@@ -42,10 +38,6 @@ impl UiDocument {
     }
 
     /// Serialize the validated graph in a stable, human-readable form.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph-validation or JSON encoding error.
     pub fn to_json_pretty(&self) -> Result<String, UiGraphError> {
         self.validate()?;
         Ok(serde_json::to_string_pretty(self)?)
@@ -122,11 +114,6 @@ impl UiDocument {
     ///
     /// A container's single required child cannot be removed; replace that
     /// child or remove the container instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for the root, an unknown node, or a container's
-    /// required child. A failure leaves the graph unchanged.
     pub fn remove_node(&mut self, id: &str) -> Result<UiNode, UiGraphError> {
         if self.root.id() == id {
             return Err(UiGraphError::CannotRemoveRoot);
@@ -793,7 +780,6 @@ mod tests {
 
     #[test]
     fn structural_edits_and_components_round_trip_or_leave_the_document_intact() {
-        // Phase `structural_edits_round_trip_through_the_wire_format`.
         {
             let mut document = sample();
             document
@@ -826,7 +812,6 @@ mod tests {
                 ["root", "title", "create", "actions"]
             );
         }
-        // Phase `app_component_nodes_round_trip_props_and_validate_factory_names`.
         {
             let document = UiDocument::from_json(
                 r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"account_id":42,"compact":true}}}"#,
@@ -860,7 +845,6 @@ mod tests {
                 ));
             }
         }
-        // Phase `every_failed_structural_edit_preserves_the_document`.
         {
             let mut document = sample();
             let original = document.clone();
@@ -879,7 +863,6 @@ mod tests {
 
     #[test]
     fn navigation_and_form_labels_validate_their_targets_and_sources() {
-        // Phase `navigation_round_trips_and_rejects_blank_destinations`.
         {
             let mut document = sample();
             document
@@ -912,7 +895,6 @@ mod tests {
                 Err(UiGraphError::InvalidBinding { .. })
             ));
         }
-        // Phase `form_labels_are_single_visible_and_accessible_sources`.
         {
             let mut document = sample();
             document

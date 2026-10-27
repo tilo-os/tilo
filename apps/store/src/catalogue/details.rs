@@ -546,10 +546,6 @@ pub fn load(id: &str, locale: &str) -> Option<AppDetails> {
 }
 
 /// Keep `details` for the next time the page opens.
-///
-/// # Errors
-///
-/// Returns why they could not be written.
 pub fn save(details: &AppDetails) -> Result<(), String> {
     let path = path(&details.id).ok_or_else(|| "no cache directory".to_owned())?;
     let bytes = serde_json::to_vec(details).map_err(|error| error.to_string())?;

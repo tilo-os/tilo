@@ -25,9 +25,6 @@ impl std::fmt::Debug for MappedFile {
 
 impl MappedFile {
     /// Map (or read) the whole file at `path`, following symbolic links.
-    ///
-    /// # Errors
-    /// Preserves the error opening, inspecting or mapping the file.
     pub fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
             bytes: Bytes::open(path)?,

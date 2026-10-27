@@ -14,6 +14,7 @@ use crate::model::{
     AppStatus, ApplianceState, Catalogue, Confidence, Grant, Route, VmInstallConfirmation,
     WindowsApp,
 };
+use crate::strings::{self, format_all};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -37,17 +38,8 @@ pub trait CompatibilityProvider: Send {
     }
     fn catalogue(&mut self) -> Catalogue;
     /// Queue a local launch of a server-owned managed entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the entry is not in the authenticated snapshot or
-    /// the service worker is unavailable.
     fn launch(&mut self, app_id: &str) -> Result<(), String>;
     /// Queue the separately authorized VM fallback action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the VM is unavailable or the entry is unknown.
     fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String>;
     /// Open one portal-selected document in a published VM application.
     ///
@@ -64,27 +56,11 @@ pub trait CompatibilityProvider: Send {
     ///
     /// Returns an error when the worker cannot accept the descriptor.
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns an error if the confirmed portal descriptor is unavailable.
     fn confirm_capsule_install(&mut self) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns an error if the confirmed portal descriptor or appliance is unavailable.
     fn confirm_vm_install(&mut self) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns an error if the server-owned candidate is unavailable.
     fn publish_vm_candidate(&mut self, entry_id: &str) -> Result<(), String>;
-    /// # Errors
-    ///
-    /// Returns an error if the server-owned guest uninstaller is unavailable.
     fn vendor_uninstall_vm(&mut self, entry_id: &str) -> Result<(), String>;
     /// Retry setup from the retained digest-pinned installer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the capsule is unavailable or unauthorized.
     fn retry_install(&mut self, capsule_id: &str) -> Result<(), String>;
     /// Explicitly replays a retained, digest-pinned portal installer in the
     /// one Windows appliance. This does not accept a new file or a guest path.
@@ -95,22 +71,10 @@ pub trait CompatibilityProvider: Send {
     /// escalated, or the appliance is unavailable.
     fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String>;
     /// Remove one launcher while retaining its installation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the launcher is unavailable or unauthorized.
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String>;
     /// Run the discovered vendor uninstaller inside its capsule.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no authorized vendor uninstaller exists.
     fn vendor_uninstall(&mut self, capsule_id: &str) -> Result<(), String>;
     /// Delete a managed installation and its private capsule data.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the capsule is unavailable or unauthorized.
     fn delete_data(&mut self, capsule_id: &str) -> Result<(), String>;
     fn take_notice(&mut self) -> Option<String> {
         None
@@ -118,17 +82,8 @@ pub trait CompatibilityProvider: Send {
     fn take_operation_result(&mut self) -> Option<Result<String, String>> {
         None
     }
-    /// Sets a user route override.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the service rejects the app or requested route.
     fn set_route_override(&mut self, app_id: &str, route: Route) -> Result<(), String>;
     /// Removes a user route override.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the service does not know the app.
     fn reset_route_override(&mut self, app_id: &str) -> Result<(), String>;
 }
 
@@ -1057,7 +1012,6 @@ fn catalogue_from_managed(
         .iter()
         .copied()
         .map(shared_session_grant_label)
-        .map(str::to_string)
         .collect::<Vec<_>>();
     let shared_session_contributors = vm_availability
         .shared_session
@@ -1165,7 +1119,7 @@ fn app_from_managed(
             // The service names the presentation it uses; the person needs
             // to know only that files can't reach this window yet.
             if application.presentation == Some(compat_service::VmPresentation::AppFocusedSpice) {
-                Some(FILES_CANT_REACH_WINDOW.to_owned())
+                Some(files_cannot_reach_window())
             } else {
                 application.portal_file_open_unavailable_reason.clone()
             }
@@ -1319,15 +1273,19 @@ fn can_escalate_install_to_vm(installation: &ManagedInstallation) -> bool {
         )
 }
 
-fn shared_session_grant_label(grant: compat_service::VmSharedSessionGrantKind) -> &'static str {
-    match grant {
-        compat_service::VmSharedSessionGrantKind::AudioPlayback => "Audio playback",
-        compat_service::VmSharedSessionGrantKind::Clipboard => "Clipboard",
-        compat_service::VmSharedSessionGrantKind::Microphone => "Microphone",
-        compat_service::VmSharedSessionGrantKind::NetworkEgress => "Network",
-        compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly => "Read-only files",
-        compat_service::VmSharedSessionGrantKind::PortalFilesReadWrite => "Writable files",
-    }
+fn shared_session_grant_label(grant: compat_service::VmSharedSessionGrantKind) -> String {
+    strings::t(match grant {
+        compat_service::VmSharedSessionGrantKind::AudioPlayback => "windows-grant-audio-playback",
+        compat_service::VmSharedSessionGrantKind::Clipboard => "windows-grant-clipboard",
+        compat_service::VmSharedSessionGrantKind::Microphone => "windows-grant-microphone",
+        compat_service::VmSharedSessionGrantKind::NetworkEgress => "windows-grant-network",
+        compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly => {
+            "windows-grant-read-only-files"
+        }
+        compat_service::VmSharedSessionGrantKind::PortalFilesReadWrite => {
+            "windows-grant-writable-files"
+        }
+    })
 }
 
 fn route_from_kind(route: RouteKind) -> Route {
@@ -1338,35 +1296,36 @@ fn route_from_kind(route: RouteKind) -> Route {
     }
 }
 
-const FILES_CANT_REACH_WINDOW: &str =
-    "This app's window can't receive files from this computer yet.";
+fn files_cannot_reach_window() -> String {
+    strings::t("windows-files-cannot-reach")
+}
 
 fn on_off(on: bool) -> String {
-    if on { "On" } else { "Off" }.into()
+    strings::t(if on { "windows-on" } else { "windows-off" })
 }
 
 /// How many places an app was given, in words.
 fn locations(count: usize) -> String {
     match count {
-        0 => "Off".into(),
-        1 => "1 location".into(),
-        n => format!("{n} locations"),
+        0 => strings::t("windows-off"),
+        1 => strings::t("windows-location-one"),
+        n => format_all("windows-locations", &[("count", n.to_string())]),
     }
 }
 
 /// The service's network shape in words: off, open, or the sites allowed.
 fn network_label(network: &str) -> String {
     match network {
-        "none" => "Off".into(),
-        "unrestricted" => "On".into(),
+        "none" => strings::t("windows-off"),
+        "unrestricted" => strings::t("windows-on"),
         other => other
             .strip_suffix(" approved host(s)")
             .and_then(|count| count.parse::<usize>().ok())
             .map_or_else(
                 || other.to_owned(),
                 |count| match count {
-                    1 => "1 approved site".into(),
-                    n => format!("{n} approved sites"),
+                    1 => strings::t("windows-approved-site-one"),
+                    n => format_all("windows-approved-sites", &[("count", n.to_string())]),
                 },
             ),
     }
@@ -1420,7 +1379,6 @@ mod tests {
 
     #[test]
     fn live_model_explains_vm_availability_and_setup_recovery() {
-        // Case `retained_failed_setup_can_continue_in_the_one_windows_appliance`.
         {
             assert!(can_escalate_install_to_vm(&retained_installation(
                 InstallationStatus::Failed
@@ -1438,7 +1396,6 @@ mod tests {
                 InstallationStatus::Uninstalled
             )));
         }
-        // Case `vm_and_audio_disabled_reasons_are_explicit_in_the_live_model`.
         {
             let app = app_from_managed(managed_vm(), None, None);
             assert!(!app.launch_available);
@@ -1456,7 +1413,7 @@ mod tests {
             assert!(!app.portal_file_open_available);
             assert_eq!(
                 app.portal_file_open_unavailable_reason.as_deref(),
-                Some(FILES_CANT_REACH_WINDOW),
+                Some(files_cannot_reach_window().as_str()),
                 "the person reads why files can't arrive, not the presentation's name"
             );
             assert!(
@@ -1464,7 +1421,6 @@ mod tests {
                 "each unavailable action explains itself where it is"
             );
         }
-        // Case `native_rail_is_the_only_vm_presentation_that_enables_open_file`.
         {
             let mut application = managed_vm();
             application.vm_launch_available = true;
@@ -1477,7 +1433,6 @@ mod tests {
             assert!(app.portal_file_open_available);
             assert_eq!(app.portal_file_open_unavailable_reason, None);
         }
-        // Case `ready_vm_is_reported_even_without_published_application_rows`.
         {
             let catalogue = catalogue_from_managed(
                 Vec::new(),
@@ -1538,7 +1493,6 @@ mod tests {
 
     #[test]
     fn vm_publications_and_session_access_are_explicit() {
-        // Case `shared_windows_session_access_names_the_effective_grants_and_apps`.
         {
             let mut availability = VmAvailability::ready("Ready");
             availability.shared_session = compat_service::VmSharedSessionLeaseSummary {
@@ -1561,7 +1515,6 @@ mod tests {
             assert_eq!(catalogue.vm.shared_session_contributors, ["Editor"]);
             assert_eq!(catalogue.vm.running_apps, 1);
         }
-        // Case `active_vm_discoveries_are_publish_only_rows`.
         {
             let catalogue = catalogue_from_managed(
                 Vec::new(),
@@ -1585,7 +1538,6 @@ mod tests {
             assert!(!app.launch_available);
             assert_eq!(app.capsule, "Shared Windows appliance");
         }
-        // Case `private_capsules_do_not_offer_an_unmapped_vm_fallback`.
         {
             let mut application = managed_vm();
             application.capsule_id = Some("private-capsule".into());
@@ -1609,7 +1561,6 @@ mod tests {
 
     #[test]
     fn vm_uninstall_refresh_and_disconnect_keep_the_cache_honest() {
-        // Case `running_vm_uninstall_keeps_the_launcher_visible_and_disables_actions`.
         {
             let mut application = managed_vm();
             application.vm_launch_available = true;
@@ -1634,7 +1585,6 @@ mod tests {
             assert!(!app.can_vendor_uninstall);
             assert!(app.fallback_detail.contains("uninstall is running"));
         }
-        // Case `failed_vm_uninstall_is_visible_and_can_be_retried`.
         {
             let mut application = managed_vm();
             application.vendor_uninstall_available = true;
@@ -1651,7 +1601,6 @@ mod tests {
             assert!(app.can_vendor_uninstall);
             assert!(app.fallback_detail.contains("retry is available"));
         }
-        // Case `invalid_or_disconnected_response_clears_the_live_cache`.
         {
             let (command_tx, _command_rx) = mpsc::channel();
             let (event_tx, event_rx) = mpsc::channel();
@@ -1674,7 +1623,6 @@ mod tests {
             assert!(catalogue.apps.is_empty());
             assert_eq!(catalogue.vm.detail, "invalid response");
         }
-        // Case `vm_install_destination_confirmation_survives_a_catalogue_refresh`.
         {
             let (command_tx, _command_rx) = mpsc::channel();
             let (event_tx, event_rx) = mpsc::channel();

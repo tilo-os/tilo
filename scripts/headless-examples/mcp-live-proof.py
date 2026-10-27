@@ -134,6 +134,9 @@ def main() -> int:
         "XDG_CACHE_HOME": os.path.join(state_dir, "cache"),
         "XDG_STATE_HOME": os.path.join(state_dir, "state"),
         "XDG_CONFIG_HOME": os.path.join(state_dir, "config"),
+        # Its own runtime directory: the desktop this runs beside keeps its
+        # sockets and session files.
+        "XDG_RUNTIME_DIR": tempfile.mkdtemp(prefix="tilo-rt-"),
     }
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)

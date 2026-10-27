@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # The publishing half of an image: push OUT/image.oci.tar (one image, or an index of them from
-# oci-index.py) to REPOSITORY with its digest unchanged, attach the signature oci-sign.sh made if
-# there is one, and point TAG... at it.
+# oci-index.py), or the layout OUT/oci, to REPOSITORY with its digest unchanged, attach the
+# signature oci-sign.sh made if there is one, and point TAG... at it.
 # Writes OUT/receipt.json, the digest receipt deployments pin. Logs in to the registry as `oidc`
 # with an identity token from t for the registry (`id_token = ["registry.tilo.so"]`), which the
-# registry accepts for this repository's main, stable and v* tags; never signing credentials.
+# registry accepts for this repository's main, stable and v* tags, or to the forge's registry
+# code.tilo.so with REGISTRY_TOKEN (lib.sh registry_login); never signing credentials.
 #
-# usage: oci-publish.sh dev|release|any REPOSITORY OUT TAG...
+# usage: oci-publish.sh dev|release|branch|any REPOSITORY OUT TAG...
 # The first argument is the channel the check publishes to; it must be this run's (lib.sh), so a
-# release check can never publish main's tree and a development check never stable's. With
+# release check can never publish main's tree and a development check never stable's. A branch's
+# build is published only signed, with the development key. With
 # `any` the check publishes on both, and each TAG says its channel: `dev:dev-{commit}`,
 # `release:sha-{commit}`; only the run's channel's tags are pushed, so one check, with its
 # signature as an optional need, pushes development tags from main and the signed release from
 # stable.
 # Tags may contain {commit}, replaced by T_COMMIT, on a release tag v<version> {version}, and
-# {rust}, the toolchain channel rust-toolchain.toml pins (the CI builder's), and {fingerprint},
-# OUT/fingerprint (the RPM snapshot's package-set fingerprint).
+# {rust}, the toolchain channel rust-toolchain.toml pins (the CI builder's), {fingerprint},
+# OUT/fingerprint (the RPM snapshot's package-set fingerprint), and {generation},
+# OUT/generation (the OS release's).
 #
 # With TILO_RELEASE_OUT=DIR a release publishes the archive, digest and signature in DIR instead
 # of OUT's: a product whose release is derived from its build (products.toml's `release_build`)
@@ -29,17 +32,19 @@
 # dry-run signer wrote (OUT/dry-run.pub) or keys/cosign.pub, and the receipt is written as for
 # a real publication. T_REF and T_COMMIT say what the run pretends to publish for.
 #
-# An OUT/attestation.json beside the signature (oci-attest.sh: signed SLSA provenance) is
-# attached too, and verified on the published image as its consumers verify it.
+# An OUT/attestation.json beside the signature (oci-attest.sh: signed SLSA provenance), and any
+# other OUT/<name>.attestation.json (the OS release's freshness statement), is attached too,
+# and verified on the published image as its consumers verify it. An OUT/sbom.spdx.json is
+# attached as the image's SBOM, and read back to be the same bytes.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-wanted=${1:?usage: oci-publish.sh dev|release|any REPOSITORY OUT TAG...}
+wanted=${1:?usage: oci-publish.sh dev|release|branch|any REPOSITORY OUT TAG...}
 repository=${2:?}
 out=${3:?}
 shift 3
 run_channel=$(channel)
 case $wanted in
-  dev | release)
+  dev | release | branch)
     [[ $run_channel == "$wanted" ]] || die "this check publishes to $wanted; the run is for ${T_REF:-}"
     for tag; do
       [[ $tag != dev:* && $tag != release:* ]] || die "a $wanted check's tags name no channel: $tag"
@@ -63,15 +68,15 @@ if [[ $run_channel == release && -n ${TILO_RELEASE_OUT:-} ]]; then
   out=$TILO_RELEASE_OUT
   [[ -s $out/image.oci.tar ]] || die "no release image in $out: the step deriving it did not run"
 fi
-[[ $run_channel == dev || -s $out/signature ]] || die 'a release is published signed only'
+[[ $run_channel == dev || -s $out/signature ]] || die "a $run_channel build is published signed only"
 (($#)) || die 'no tags'
 require_commit
 # Releases verify against the release key; a signed development candidate against the
 # development key (oci-sign.sh, TILO_DEV_SIGNING).
 verify_key=$repo_root/keys/cosign.pub
-[[ $run_channel == dev ]] && verify_key=$repo_root/keys/cosign-dev.pub
+[[ $run_channel == release ]] || verify_key=$repo_root/keys/cosign-dev.pub
 digest=$(cat "$out/digest")
-[[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] || die 'the archive is not the build'
+[[ $(built_digest "$out") == "$digest" ]] || die 'the image is not the build'
 registry=${repository%%/*}
 auth=$scratch/registry-auth.json
 # Where the image goes: the registry, or with TILO_PUBLISH_DRY_RUN a local OCI layout.
@@ -93,24 +98,19 @@ else
   export REGISTRY_AUTH_FILE=$auth DOCKER_CONFIG=$scratch/docker
   mkdir -p "$DOCKER_CONFIG"
 fi
-# Log in with a fresh identity token. It is the registry password and lasts minutes, so a push
-# that outlives it (a multi-GB image) fails to authenticate its next blob; copy() logs in again
-# and retries, and the blobs already pushed are not sent twice.
+# Log in afresh (lib.sh registry_login); copy() logs in again before each attempt
+# (lib.sh registry_copy).
 login() {
   [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]] && return
-  local password
-  password=$(id_token "$registry")
-  printf '%s' "$password" | skopeo login --authfile "$auth" -u oidc --password-stdin "$registry" >/dev/null
+  registry_login "$registry" "$auth"
   cp "$auth" "$DOCKER_CONFIG/config.json"
 }
 copy() {
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    login
-    skopeo copy --all --preserve-digests --retry-times 3 --authfile "$auth" "$@" && return
-    printf 'publish: copy attempt %s failed; logging in again\n' "$attempt" >&2
-  done
-  die "could not copy $1 to $2"
+  if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+    skopeo copy --all --preserve-digests --authfile "$auth" "$1" "$2" || die "could not copy $1 to $2"
+  else
+    registry_copy "$auth" "$1" "$2" --all
+  fi
 }
 login
 # A tag with its placeholders filled in.
@@ -126,6 +126,12 @@ fill() {
     [[ -n $rust ]] || die 'no channel in rust-toolchain.toml for {rust}'
     tag=${tag//\{rust\}/$rust}
   fi
+  if [[ $tag == *'{generation}'* ]]; then
+    local generation
+    generation=$(cat "$out/generation" 2>/dev/null) || die "{generation} needs $out/generation"
+    [[ $generation =~ ^[1-9][0-9]*$ ]] || die "not a generation: $generation"
+    tag=${tag//\{generation\}/$generation}
+  fi
   if [[ $tag == *'{fingerprint}'* ]]; then
     local fingerprint
     fingerprint=$(cat "$out/fingerprint" 2>/dev/null) || die "{fingerprint} needs $out/fingerprint"
@@ -137,8 +143,14 @@ fill() {
 # A tag written `once:TAG` never moves: where TAG exists already, nothing is published and the
 # receipt names the image TAG holds. The RPM snapshot is published once per fingerprint, and a
 # rebuild of the same package set would otherwise replace what earlier OS builds verified.
+# A tag written `final:TAG` is pushed only for a final version tag (v1.2.3, not v1.2.3-rc.1), so
+# a moving tag deployments follow by default, such as `latest`, never names a pre-release.
 tags=()
 for tag; do
+  if [[ $tag == final:* ]]; then
+    [[ ${T_REF:-} =~ ^tag:v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    tag=${tag#final:}
+  fi
   if [[ $tag == once:* ]]; then
     tag=$(fill "${tag#once:}")
     if skopeo inspect --raw --authfile "$auth" "$(target "$tag")" > "$scratch/held-manifest" 2>/dev/null; then
@@ -153,7 +165,7 @@ for tag; do
 done
 set -- "${tags[@]}"
 first=$(fill "$1")
-copy "oci-archive:$out/image.oci.tar" "$(target "$first")"
+copy "$(built_image "$out")" "$(target "$first")"
 pushed=$(skopeo inspect --raw --authfile "$auth" "$(pushed)" | sha256sum | cut -d' ' -f1)
 [[ sha256:$pushed == "$digest" ]] || die "the registry holds sha256:$pushed, not $digest"
 if [[ -s $out/signature && -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
@@ -194,27 +206,38 @@ elif [[ -s $out/signature ]]; then
     cosign verify --insecure-ignore-tlog=true --key "$verify_key" "$repository@$digest" >/dev/null
   fi
 fi
-if [[ -s $out/attestation.json ]]; then
-  # The provenance oci-attest.sh signed: its statement must be about this image, and it is
-  # attached so `cosign verify-attestation` finds it on the published digest.
+for envelope in "$out/attestation.json" "$out"/*.attestation.json; do
+  [[ -s $envelope ]] || continue
+  # What oci-attest.sh signed: its statement must be about this image, and it is attached so
+  # `cosign verify-attestation` finds it on the published digest.
   [[ -s $out/signature ]] || die 'an attestation is published only with its signature'
   use_cosign
-  statement=$(sed -n 's/.*"payload":"\([A-Za-z0-9+\/=]*\)".*/\1/p' "$out/attestation.json" | base64 -d)
-  [[ $statement == *"\"sha256\":\"${digest#sha256:}\""* && $statement == *"\"expectedReleaseDigest\":\"$digest\""* ]] \
-    || die 'the attestation is not about this image'
+  statement=$(sed -n 's/.*"payload":"\([A-Za-z0-9+\/=]*\)".*/\1/p' "$envelope" | base64 -d)
+  [[ $statement == *"\"sha256\":\"${digest#sha256:}\""* ]] || die "$envelope is not about this image"
+  type=$(sed -n 's/.*"predicateType":"\([^"]*\)".*/\1/p' <<< "$statement")
+  if [[ $envelope == "$out/attestation.json" ]]; then
+    [[ $statement == *"\"expectedReleaseDigest\":\"$digest\""* ]] || die 'the provenance is not about this image'
+    type=slsaprovenance1
+  fi
   if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
     key=$verify_key
     [[ -s $out/dry-run.pub ]] && key=$out/dry-run.pub
     cosign verify-blob-attestation --insecure-ignore-tlog=true --check-claims=false --key "$key" \
-      --type slsaprovenance1 --signature "$out/attestation.json"
+      --type "$type" --signature "$envelope"
   else
-    cosign attach attestation --attestation "$out/attestation.json" "$repository@$digest"
+    cosign attach attestation --attestation "$envelope" "$repository@$digest"
     # Entered in the transparency log (oci-attest.sh kept the entry): verified requiring it.
     tlog=(--insecure-ignore-tlog=true)
-    [[ -s $out/attestation.bundle.json ]] && tlog=()
-    cosign verify-attestation --key "$verify_key" --type slsaprovenance1 "${tlog[@]}" \
+    [[ -s ${envelope%.json}.bundle.json ]] && tlog=()
+    cosign verify-attestation --key "$verify_key" --type "$type" "${tlog[@]}" \
       "$repository@$digest" >/dev/null
   fi
+done
+if [[ -s $out/sbom.spdx.json && -z ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+  use_cosign
+  cosign attach sbom --type spdx --input-format json --sbom "$out/sbom.spdx.json" "$repository@$digest"
+  [[ $(cosign download sbom "$repository@$digest" | sha256sum) == "$(sha256sum < "$out/sbom.spdx.json")" ]] \
+    || die 'the registry holds another SBOM for this image'
 fi
 tags="\"$first\""
 for tag in "${@:2}"; do

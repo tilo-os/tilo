@@ -78,12 +78,14 @@ fn wait_ready<W: Widget + 'static>(view: &mut Framed<W>) {
         .expect("bounded fixture deadline");
     loop {
         Framed::harness_mut(view).relayout();
-        if view.ime_content().is_some() {
+        // The input method may serve a focused page field before its lease;
+        // the lease is what the field's stamp says.
+        if view.ime_edit_fingerprint(&[7; 32]).is_some() {
+            assert!(view.ime_content().is_some());
             assert!(
                 view.ime_requires_deferred_ack(),
                 "decorated field must retain its private acknowledgement contract"
             );
-            assert!(view.ime_edit_fingerprint(&[7; 32]).is_some());
             return;
         }
         assert!(
@@ -168,6 +170,7 @@ fn native_rich_baseline<W: Widget + 'static>(
                 key: KeyInput::Character(character.to_string()),
                 down,
                 modifiers: KeyModifiers::default(),
+                code: None,
             });
         }
     }
@@ -278,8 +281,8 @@ fn qualify_replacements<W: Widget + 'static>(
             .commit_deferred_text("日本語 café العربية")
             .expect("deferred native contract");
         assert!(
-            view.ime_content().is_none(),
-            "one-use lease must leave IME admission"
+            view.ime_edit_fingerprint(&[7; 32]).is_none(),
+            "one-use lease must leave deferred admission"
         );
         assert_eq!(finish(view, &receipt), Ok(()));
         let value = if target == "rich" {
@@ -445,7 +448,7 @@ fn qualify_activation<W: Widget + 'static>(view: &mut Framed<W>, engine: &Shared
     let old = view.start_deferred_text().unwrap();
     assert_eq!(finish(view, &old), Ok(()));
     old.cancel();
-    assert!(view.ime_content().is_none());
+    assert!(view.ime_edit_fingerprint(&[7; 32]).is_none());
     wait_ready(view);
     let fresh = view.start_deferred_text().unwrap();
     assert_eq!(finish(view, &fresh), Ok(()));

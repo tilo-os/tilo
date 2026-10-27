@@ -103,12 +103,6 @@ pub trait PrintSpooler: Send + Sync {
     fn destinations(&self) -> Vec<String>;
 
     /// Submit `job`. `Ok` carries the spooler's job id for the log.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` when `job.destination` is invalid, `job.document` is
-    /// empty, the print system is unavailable, or the underlying spool
-    /// command reports failure.
     fn submit(&self, job: PrintJobRequest) -> Result<String, String>;
 }
 
@@ -966,7 +960,6 @@ mod tests {
         assert_eq!(sanitise_title("quarterly\nreport"), "quarterly report");
         assert_eq!(sanitise_title("a\u{1b}[31mb"), "a [31mb");
         assert_eq!(sanitise_title("nul\0byte"), "nul byte");
-        // Phase `sanitise_title_strips_bidi_overrides`.
         {
             let spoofed = format!("invoice{}fdp.exe", '\u{202E}');
             let cleaned = sanitise_title(&spoofed);
@@ -975,16 +968,13 @@ mod tests {
                 "a right-to-left override must not survive into the queue listing: {cleaned:?}"
             );
         }
-        // Phase `sanitise_title_strips_leading_dashes`.
         assert_eq!(sanitise_title("--option-looking"), "option-looking");
         assert_eq!(sanitise_title("  -n 9999"), "n 9999");
-        // Phase `sanitise_title_truncates_to_the_ipp_name_limit`.
         {
             let long = "x".repeat(4096);
             let out = sanitise_title(&long);
             assert_eq!(out.len(), MAX_TITLE_BYTES);
         }
-        // Phase `sanitise_title_truncates_multibyte_on_a_char_boundary`.
         {
             // 'é' is two bytes; 255 is odd, so a naive byte slice would split the last one and panic.
             let long = "é".repeat(4096);
@@ -992,7 +982,6 @@ mod tests {
             assert!(out.len() <= MAX_TITLE_BYTES);
             assert!(out.chars().all(|c| c == 'é'));
         }
-        // Phase `sanitise_title_falls_back_when_nothing_survives`.
         assert_eq!(sanitise_title(""), fallback_title());
         assert_eq!(sanitise_title("\n\t  \r"), fallback_title());
         assert_eq!(sanitise_title("---"), fallback_title());
@@ -1002,7 +991,6 @@ mod tests {
 
     #[test]
     fn print_destinations_are_real_safe_printers() {
-        // Phase `valid_destination_rejects_argv_and_path_shapes`.
         assert!(valid_destination("Office_LaserJet"));
         assert!(valid_destination("front-desk.2"));
         assert!(!valid_destination(""));
@@ -1012,7 +1000,6 @@ mod tests {
         assert!(!valid_destination("a;rm -rf /"));
         assert!(!valid_destination("$(id)"));
         assert!(!valid_destination(&"a".repeat(128)));
-        // Phase `choose_destination_only_returns_printers_the_machine_has`.
         {
             let available = vec!["Office".to_string(), "Lab".to_string()];
             assert_eq!(
@@ -1030,7 +1017,6 @@ mod tests {
             assert_eq!(choose_destination(&available, Some("-o raw")), None);
             assert_eq!(choose_destination(&[], None), None);
         }
-        // Phase `null_spooler_reports_no_printers_rather_than_inventing_one`.
         {
             let h = PrintSpoolerHandle::null();
             assert!(h.destinations().is_empty());
@@ -1045,7 +1031,6 @@ mod tests {
                 .is_err()
             );
         }
-        // Phase `recording_spooler_captures_what_was_submitted`.
         {
             let rec = RecordingSpooler::with_destinations(vec!["Office".to_string()]);
             assert!(rec.jobs().is_empty());
@@ -1063,7 +1048,6 @@ mod tests {
 
     #[test]
     fn prepare_results_carry_bounded_copies_and_settings() {
-        // Phase `clamp_copies_bounds_the_request`.
         assert_eq!(clamp_copies(None), 1);
         assert_eq!(clamp_copies(Some(0)), 1);
         assert_eq!(clamp_copies(Some(3)), 3);
@@ -1086,7 +1070,6 @@ mod tests {
 
             assert_eq!(opt_copies(&HashMap::new()), None);
         }
-        // Phase `prepare_results_carry_settings_page_setup_and_token`.
         {
             let mut page_setup: HashMap<String, OwnedValue> = HashMap::new();
             page_setup.insert(
@@ -1095,7 +1078,6 @@ mod tests {
             );
             let results = prepare_results("Office", 3, 0xDEAD_BEEF, &page_setup);
 
-            // The three keys the frontend reads back.
             let token = u32::try_from(results.get("token").unwrap().try_clone().unwrap()).unwrap();
             assert_eq!(token, 0xDEAD_BEEF);
 
@@ -1123,7 +1105,6 @@ mod tests {
 
     #[test]
     fn spool_from_fd_reads_only_bounded_regular_documents() {
-        // Phase `spool_from_fd_reads_a_regular_file_from_the_start`.
         {
             let mut f = tempfile::NamedTempFile::new().unwrap();
             f.write_all(b"%PDF-1.7 hello").unwrap();
@@ -1135,7 +1116,6 @@ mod tests {
             let bytes = spool_from_fd(zbus::zvariant::OwnedFd::from(owned)).expect("spool");
             assert_eq!(bytes, b"%PDF-1.7 hello");
         }
-        // Phase `spool_from_fd_rejects_a_non_regular_descriptor`.
         {
             // A socket (or FIFO) with no writer blocks forever; requiring a regular file removes that as a hang vector.
             let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -1144,7 +1124,6 @@ mod tests {
                 .expect_err("a socket must not be spooled");
             assert!(err.contains("regular file"), "unexpected error: {err}");
         }
-        // Phase `spool_from_fd_refuses_an_oversize_document`.
         {
             let f = tempfile::NamedTempFile::new().unwrap();
             // Sparse: one byte past the cap, costing no disk.
@@ -1155,7 +1134,6 @@ mod tests {
                 .expect_err("over the cap must fail");
             assert!(err.contains("limit"), "unexpected error: {err}");
         }
-        // Phase `spool_from_fd_refuses_an_empty_document`.
         {
             let f = tempfile::NamedTempFile::new().unwrap();
             let file = std::fs::File::open(f.path()).unwrap();
@@ -1177,7 +1155,6 @@ mod tests {
 
     #[test]
     fn print_tokens_are_unique_bounded_and_redeemed_once() {
-        // Phase `tokens_are_non_zero_and_do_not_repeat`.
         {
             let ws = WorkspaceId(90);
             let backend = PreparedPrintJobs::default();
@@ -1191,7 +1168,6 @@ mod tests {
             }
             assert_eq!(backend.outstanding_tokens(), MAX_OUTSTANDING_TOKENS);
         }
-        // Phase `token_table_is_bounded`.
         {
             let ws = WorkspaceId(90);
             let backend = PreparedPrintJobs::default();
@@ -1205,7 +1181,6 @@ mod tests {
                 "an app must not be able to pin unbounded token state"
             );
         }
-        // Phase `a_foreign_token_is_refused_without_consuming_it`.
         {
             let ws = WorkspaceId(90);
             let backend = PreparedPrintJobs::default();
@@ -1227,7 +1202,6 @@ mod tests {
                 "app A's own token must still work after B's attempt"
             );
         }
-        // Phase `a_token_redeems_exactly_once`.
         {
             let ws = WorkspaceId(90);
             let backend = PreparedPrintJobs::default();
@@ -1246,7 +1220,6 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn lp_spooler_is_replaceable_and_refuses_unsafe_destinations() {
-        // Phase `lp_spooler_refuses_an_unsafe_destination_before_spawning`.
         {
             // Reaching `lp` at all with this would be the bug; the guard is the last check before the string becomes argv.
             let err = LpSpooler
@@ -1260,7 +1233,6 @@ mod tests {
                 .expect_err("unsafe destination must not reach lp");
             assert!(err.contains("unsafe destination"), "unexpected: {err}");
         }
-        // Phase `ctx_default_spooler_is_replaceable`.
         {
             // The backend reads the spooler off the context, so a test that
             // injects one must actually see it — guards against a future refactor hard-wiring `LpSpooler` inside the backend.

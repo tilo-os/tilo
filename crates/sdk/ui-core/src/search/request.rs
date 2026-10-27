@@ -33,7 +33,6 @@ use crate::i18n::I18nManager;
 pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
 /// The host search resource every framework host presents.
 pub(crate) const SEARCH_RESOURCE: &str = "tilo.host:search";
-/// The action on [`SEARCH_RESOURCE`] that opens search.
 pub(crate) const SEARCH_ACTION: &str = "open";
 
 const QUERY_PARAM: &str = "query";
@@ -123,7 +122,6 @@ impl SearchRequest {
         self
     }
 
-    /// The resource scope, when the request names one.
     #[must_use]
     pub fn resource_scope(&self) -> Option<&ScopeDecl> {
         match &self.scope {
@@ -415,12 +413,10 @@ mod tests {
         );
         assert_eq!(open_search_invocation(&request), invocation);
 
-        // The door builds the same request from the arguments.
         let resource = search_resource();
         let open = resource.actions.first().unwrap();
         let built = open.build_json(&request.arguments()).unwrap();
         assert_eq!(SearchRequest::decode(&built.payload).unwrap(), request);
-        // A menu or the shortcut opens it without asking anything.
         assert!(matches!(
             open.input(),
             tilo_actions::ActionInput::Immediate(Some(_))

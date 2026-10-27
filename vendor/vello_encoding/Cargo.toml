@@ -9,6 +9,11 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
+# Its own workspace, so its tests run from this directory however the
+# checkout is nested (tools/ci/test-vendored-crates.sh); Tilo's workspace
+# builds it as a path dependency either way.
+[workspace]
+
 [package]
 edition = "2024"
 rust-version = "1.88"

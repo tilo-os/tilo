@@ -132,7 +132,6 @@ pub fn profile(name: &str) -> Result<DeviceProfile, String> {
 }
 
 impl DeviceProfile {
-    /// The axis `code`, if the device has it.
     pub fn axis(&self, code: u16) -> Option<&AbsAxis> {
         self.abs.iter().find(|axis| axis.code == code)
     }
@@ -165,9 +164,6 @@ impl DeviceProfile {
 
     /// A profile must be one a uinput device can be made from, and its class's
     /// actions must have what they drive.
-    ///
-    /// # Errors
-    /// What is missing or out of range.
     pub fn check(&self) -> Result<(), String> {
         if self.name.is_empty() || self.name.len() > 79 {
             return Err("the name must be 1 to 79 bytes".into());
@@ -233,7 +229,6 @@ mod tests {
             (0x18, 0x048d, 0x8987)
         );
         assert!(keyboard.rep);
-        // The Fn row's and Copilot's keys sit above what the default keyboard advertises.
         assert!(keyboard.key.iter().any(|k| *k > crate::input::KEY_MAX_USED));
 
         let touchpad = profile("lenovo-83ed-touchpad").unwrap();

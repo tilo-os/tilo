@@ -8,8 +8,10 @@ fields = [
   { path = "pages", type = "Collection<Page>", stored = "collection" },
   { path = "pages.*.title", type = "String", label = true, readonly = true },
   { path = "pages.*.parent", type = "Option<Id>", readonly = true },
-  { path = "pages.*.body", type = "RichText", ops = "sha256:32d3007b3b137974" },
+  { path = "pages.*.body", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "pages.*.tags", type = "Set<Id>" },
+  { path = "pages.*.creator", type = "Option<Atom>", readonly = true },
+  { path = "pages.*.reactions", type = "Reactions" },
   { path = "tags", type = "Collection<Tag>", stored = "collection" },
   { path = "tags.*.name", type = "Atom", label = true },
   { path = "images", type = "Map<Bytes>", readonly = true },
@@ -118,7 +120,7 @@ params = [
 id = "keep-image"
 kind = "undoable"
 params = [
-  { name = "bytes", required = true, schema = { type = "array", items = { type = "integer", maximum = 255, minimum = 0 } } },
+  { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } },
 ]
 
 [[resources.verbs]]
@@ -126,7 +128,7 @@ id = "place-image"
 kind = "undoable"
 params = [
   { name = "page", required = true, schema = { type = "string" } },
-  { name = "bytes", required = true, schema = { type = "array", items = { type = "integer", maximum = 255, minimum = 0 } } },
+  { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } },
   { name = "alt", required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -144,7 +146,15 @@ kind = "undoable"
 params = [
   { name = "title", required = true, schema = { type = "string" } },
   { name = "markdown", required = true, schema = { type = "string" } },
-  { name = "images", required = true, schema = { type = "array", items = { type = "array", items = { type = "integer", maximum = 255, minimum = 0 } } } },
+  { name = "images", required = true, schema = { type = "array", items = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } } },
   { name = "note", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "append-to-note"
+kind = "undoable"
+params = [
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
+  { name = "markdown", required = true, schema = { type = "string" } },
 ]
 

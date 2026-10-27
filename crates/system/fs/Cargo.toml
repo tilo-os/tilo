@@ -27,7 +27,7 @@ default = ["filesystem"]
 # External licensed simulator; never enabled by ordinary filesystem tests.
 rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
 # The document-media capability over the content store, without the mount.
-document-media = ["dep:runtime-fs"]
+document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
 filesystem = [
     "dep:clap",
     "dep:iroh",
@@ -202,8 +202,9 @@ tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = fal
 # signal, for the same policy.
 tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 libc = { workspace = true, optional = true }
-rustix = { workspace = true, features = ["process"], optional = true }
+rustix = { workspace = true, features = ["fs", "process"], optional = true }
 moka.workspace = true
 serde.workspace = true
 serde_bytes = { workspace = true, optional = true }

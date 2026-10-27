@@ -53,6 +53,7 @@ struct RecordingLauncher(Mutex<Vec<(String, String)>>);
 impl LauncherServices for RecordingLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         vec![LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: "host:fixture".into(),
             display_name: "Fixture application".into(),
             unconfined: true,
@@ -69,7 +70,7 @@ impl LauncherServices for RecordingLauncher {
         self.0
             .lock()
             .unwrap()
-            .push((app.into(), workspace.room.to_string()));
+            .push((app.into(), workspace.room().to_string()));
         Ok(())
     }
     fn attest_process(&self, _pid: u32, _app: &str, _room: &str) -> bool {
@@ -88,7 +89,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::new(TestWorkspaceId(42), "Runtime doors");
     workspace.set_owner(actor.clone());
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
         ..WorkspaceTree::default()
@@ -168,5 +169,28 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     assert!(
         factory().is_err(),
         "a retired runtime cannot admit another run"
+    );
+}
+
+/// A room the runtime no longer holds is a confirmed custody change: the
+/// run ends for good, and the client is told that rather than to retry.
+#[tokio::test]
+async fn custody_the_runtime_no_longer_holds_ends_the_run() {
+    let (joined, _directory) = Joined::test_empty().await;
+    let room = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        joined.test_certificate().user_public_key,
+    );
+    let run = joined
+        .admit_mcp_execution(&room.to_string(), &room.to_string(), &actor)
+        .unwrap();
+    joined.owner.invalidate_identity(room);
+    let refusal = run.check(&joined).unwrap_err();
+    assert_eq!(refusal, super::Refusal::Ended);
+    assert!(!run.caller().execution_is_live());
+    assert_eq!(
+        tilo_actions::remote::ActionHostError::from(refusal),
+        tilo_actions::remote::ActionHostError::NotPermitted,
+        "an ended run says so and is not retried"
     );
 }

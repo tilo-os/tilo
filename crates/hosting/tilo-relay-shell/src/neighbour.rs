@@ -67,6 +67,7 @@ impl ShellPayloads for NeighbourPayloads {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert.clone()),
             revocations: Vec::new(),
+            successions: Vec::new(),
         };
         // Persisted: retained identity frames are keyed by this channel.
         let channel =

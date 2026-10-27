@@ -105,6 +105,7 @@ async fn a_native_client_over_https_shares_the_workspace_with_an_iroh_one() {
         RevocationList::new(),
     )
     .await;
+    drop(host);
     assert!(matches!(
         elsewhere,
         Err(tilo_relay_session::ClientError::Https(

@@ -14,7 +14,6 @@ use tilo_app_package::chunks::ObjectDir;
 use tilo_app_package::manifest::Arch;
 use tilo_app_package::{DiscardBlobs, Manifest, PackageId, Verification};
 
-/// The platform a build is for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Platform {
     /// Native Tilo OS thin app (`x86_64` or `aarch64`).
@@ -174,11 +173,6 @@ pub fn check_package_with(
 /// category, version come from inside the signed package, so a
 /// registry row cannot describe a package as something it is not.
 /// The entry keeps `previous`'s versions within `retention`.
-///
-/// # Errors
-///
-/// When the package fails [`check_package`], does not match `platform` or
-/// `arch`, or conflicts with `previous`.
 pub fn build_entry(
     tapp_bytes: &[u8],
     url: &str,
@@ -423,6 +417,23 @@ fn native_binding(
     checked: &Checked,
     arch: Option<&str>,
 ) -> Result<ArtifactBinding> {
+    // A language pack is data, the same bytes for every architecture.
+    if checked.manifest.package.kind == tilo_app_package::Kind::LanguagePack {
+        if arch.is_some_and(|arch| arch != registry_types::ANY_ARCHITECTURE) {
+            bail!("a language pack is built for every architecture, not {arch:?}");
+        }
+        return Ok(ArtifactBinding {
+            package_id: checked.id,
+            tapp_blake3_hex: blake3::hash(tapp_bytes).to_hex().to_string(),
+            target: registry_types::RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: registry_types::ANY_ARCHITECTURE.into(),
+                isa: registry_types::ANY_ARCHITECTURE.into(),
+                runtime: None,
+                interfaces: Vec::new(),
+            },
+        });
+    }
     let isa = &checked.manifest.package.isa;
     let declared: Vec<Arch> = [Arch::X86_64, Arch::AArch64]
         .into_iter()

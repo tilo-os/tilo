@@ -5,7 +5,7 @@
 #   TILO_DEV_DISK=0 TILO_DEV_BASE_BUILD=auto ./os/dev/build-dev-image.sh
 #                                        (what tilo-vm vm upgrade --from local runs)
 #
-# Pipeline, which CI runs too (.forgejo/workflows/build-image.yml, dev-disk.yml):
+# Pipeline, which CI runs too (t's os-dev-image-{arch}):
 #   0. with TILO_DEV_BASE_BUILD=auto or 1 only: the production base
 #      (os/dev/build-image.sh, TILO_IMAGE_ONLY=1). auto rebuilds it only when its
 #      inputs changed since it was built (see below).
@@ -45,12 +45,15 @@
 #   TILO_DEV_DISK     0 builds the container only (default 1)
 #   TILO_OUTPUT       disk output root (default os/output/dev)
 #   TILO_BUILD_ARGS   extra `podman build` flags, e.g. --no-cache
-#   TILO_DEV_COMPILER_CACHE  off (default) or shared: pass the existing runner
-#                     Actions cache as ephemeral secrets; never a new credential
-#   TILO_DEV_RUST_LTO thin or off; unset preserves Containerfile.dev default thin
-#   TILO_CARGO_FRESHNESS  content (default here): the dev binaries' compile keeps
-#                     its target cache and rebuilds only changed crates
-#                     (os/scripts/cargo-freshness.sh); clean: CI's clean compile
+#   TILO_COMPILED_DEV the dev components compiled already (os/image/compile.sh --dev,
+#                     t's os-compile-dev-<arch>); without it they are compiled here, in
+#                     the OS builder image, with the build directory and sccache kept
+#                     under os/output so a rebuild compiles only what changed
+#   TILO_DEV_ENV_RUNTIME  a sealed env-runtime directory (install-env-runtime.sh's
+#                     layout; `env-runtime.sh dev` in os-image.sh): what the dev image ships when
+#                     its base ships no published runtime. A dev image with neither
+#                     fails to build (os/scripts/ensure-dev-env-runtime.sh)
+#   TILO_DEV_RUST_LTO thin (default here) or off, for that compile
 #   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per
 #                     job, as far as memory holds out at 4 GiB a thin-LTO job)
 #   TILO_DISK_SIZE    the dev disk's size (default 64G, as the published dev
@@ -182,24 +185,6 @@ base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null |
 base_created="${TILO_DEV_BASE_CREATED:-$(tilo_image_source_time "$base")}"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
-# The caller opts in to the same repository-scoped compiler cache used by CI.
-# Values travel as ephemeral Podman secrets, never build arguments or labels.
-_dev_cache_args=()
-case "${TILO_DEV_COMPILER_CACHE:-off}" in
-  off) ;;
-  shared)
-    [ -n "${ACTIONS_CACHE_URL:-}" ] && [ -n "${ACTIONS_RUNTIME_TOKEN:-}" ] \
-      || die "shared dev compiler cache requires both runner cache variables"
-    _dev_cache_args+=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
-                     --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
-    ;;
-  *) die "TILO_DEV_COMPILER_CACHE must be off or shared" ;;
-esac
-_dev_profile_args=()
-if [ -n "${TILO_DEV_RUST_LTO:-}" ]; then
-  case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) die "TILO_DEV_RUST_LTO must be thin or off" ;; esac
-  _dev_profile_args+=(--build-arg "TILO_DEV_RUST_LTO=$TILO_DEV_RUST_LTO")
-fi
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
   SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
 fi
@@ -229,6 +214,36 @@ fi
 dev_compile_base="$(. "$TILO_OS_DIR/base-snapshot.env" && printf '%s' "${BASE_REF:-}")"
 [ -n "$dev_compile_base" ] || die "os/base-snapshot.env pins no BASE_REF"
 
+# The dev components, compiled outside the image build: os/image/compile.sh --dev in the OS
+# builder image, rootless, with cargo's home, the build directory and sccache kept under
+# os/output, so a rebuild compiles only what changed. TILO_COMPILED_DEV names a tree compiled
+# already (t's os-compile-dev-<arch>).
+if [ -z "${TILO_COMPILED_DEV:-}" ]; then
+  builder=localhost/tilo-os-builder:latest cache="$TILO_OUTPUT/compile-cache"
+  mkdir -p "$cache/cargo-home" "$cache/dev-target" "$cache/sccache" "$TILO_OUTPUT/compiled-dev"
+  "$TILO_OS_DIR/dev/cache-github-assets.sh" >/dev/null
+  podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" --target builder-base -t "$builder" \
+    --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
+    --build-arg "BASE_REF=$dev_compile_base" --build-arg "RPMS_REF=$rpms_ref" "$TILO_REPO"
+  podman run --rm --security-opt label=disable --userns=keep-id -v "$TILO_REPO:/src" -w /src \
+    -v "$cache/cargo-home:/cargo-home" -v "$cache/dev-target:/build-target" -v "$cache/sccache:/sccache" \
+    -v "$TILO_OUTPUT/compiled-dev:/compiled-dev" \
+    -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/build-target -e SCCACHE_DIR=/sccache -e RUSTC_WRAPPER=sccache \
+    -e TILO_DEV_RUST_LTO="${TILO_DEV_RUST_LTO:-thin}" \
+    -e CARGO_BUILD_JOBS="${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
+    "$builder" bash os/image/compile.sh --dev /compiled-dev
+  TILO_COMPILED_DEV="$TILO_OUTPUT/compiled-dev"
+fi
+
+# The env-runtime the dev image ships when its base ships none; an empty directory gives none.
+if [ -n "${TILO_DEV_ENV_RUNTIME:-}" ]; then
+  dev_env_runtime="$(realpath "$TILO_DEV_ENV_RUNTIME")"
+else
+  dev_env_runtime="$TILO_OUTPUT/no-env-runtime"
+  rm -rf "$dev_env_runtime"
+  mkdir -p "$dev_env_runtime"
+fi
+
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
@@ -237,10 +252,9 @@ podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev"
   --build-arg "BASE_REF=$dev_compile_base" \
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
   --build-arg "TILO_BASE_CREATED=$base_created" \
-  --build-arg "TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" \
-  --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
+  --build-context "compiled-dev=$(realpath "$TILO_COMPILED_DEV")" \
+  --build-context "dev-env-runtime=$dev_env_runtime" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-  "${_dev_cache_args[@]}" "${_dev_profile_args[@]}" \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \
   "$TILO_REPO"

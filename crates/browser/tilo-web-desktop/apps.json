@@ -2,6 +2,13 @@
   "schema": 1,
   "applications": [
     {
+      "id": "so.tilo.activity",
+      "name": "Activity",
+      "category": "Office",
+      "version": "0.1.0",
+      "module": "activity"
+    },
+    {
       "id": "so.tilo.api-tester",
       "name": "API Tester",
       "category": "Development",
@@ -149,6 +156,13 @@
       "module": "photos"
     },
     {
+      "id": "so.tilo.poker",
+      "name": "Poker",
+      "category": "Game",
+      "version": "0.1.0",
+      "module": "poker"
+    },
+    {
       "id": "so.tilo.scratchpad",
       "name": "Scratchpad",
       "category": "Office",
@@ -191,6 +205,13 @@
       "module": "speed_test"
     },
     {
+      "id": "so.tilo.tasks",
+      "name": "Tasks",
+      "category": "Office",
+      "version": "0.1.0",
+      "module": "tasks"
+    },
+    {
       "id": "so.tilo.themes",
       "name": "Theme Studio",
       "category": "System",
@@ -199,7 +220,7 @@
     },
     {
       "id": "so.tilo.totp",
-      "name": "TOTP",
+      "name": "Authenticator",
       "category": "Utility",
       "version": "0.1.0",
       "module": "totp"
@@ -427,14 +448,6 @@
       "platforms": [
         "linux",
         "macos"
-      ]
-    },
-    {
-      "id": "so.tilo.vpn",
-      "name": "VPN Studio",
-      "category": "Network",
-      "platforms": [
-        "tilo-os"
       ]
     },
     {

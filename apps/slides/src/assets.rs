@@ -309,11 +309,15 @@ fn decode(content: &ContentStore, path: &str) -> ImageState {
         return ImageState::Failed;
     }
     let Some(bytes) = read_asset(content, path) else {
-        // Bytes another device holds, which this device's store is fetching,
-        // are still on their way: the picture is loading, not broken.
-        let arriving = path
-            .strip_prefix(ASSET_PREFIX)
-            .is_some_and(|hash| content.state(hash) == tilo_content::ContentState::Pending);
+        // Bytes another device holds, which this device's store is fetching
+        // or will fetch once that device connects, are still on their way:
+        // the picture is loading, not broken.
+        let arriving = path.strip_prefix(ASSET_PREFIX).is_some_and(|hash| {
+            matches!(
+                content.state(hash),
+                tilo_content::ContentState::Pending | tilo_content::ContentState::Waiting
+            )
+        });
         return if arriving {
             ImageState::Loading
         } else {

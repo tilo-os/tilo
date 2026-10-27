@@ -71,10 +71,6 @@ impl Worktree {
     /// store this user cannot read (an unprivileged user's worktree of a
     /// root-owned CI clone) still answers. A checkout's HEAD always names a
     /// commit, and that id is the identity: peeling it adds no guarantee.
-    ///
-    /// # Errors
-    ///
-    /// What git said when it could not resolve HEAD here.
     pub fn checkout_commit(&self) -> Result<String, String> {
         git_said(&self.root, &["rev-parse", "--verify", "HEAD"])
     }

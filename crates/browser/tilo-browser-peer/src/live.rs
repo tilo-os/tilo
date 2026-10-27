@@ -177,10 +177,6 @@ impl LiveState {
 
     /// Merge a local presence update and encode the frame to publish.
     /// `update` receives the current presence to modify.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the result violates the wire bounds.
     pub fn publish_presence(
         &mut self,
         now_ms: u64,
@@ -190,6 +186,9 @@ impl LiveState {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq: 0,
             sent_at_ms: 0,
             focus: None,
@@ -243,7 +242,10 @@ mod tests {
         let pointer = LiveState::default()
             .publish_presence(1, |presence| {
                 presence.focus = Some(record());
-                presence.pointer = Some([10.0, 20.0]);
+                presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+                    strip: 1,
+                    at: [10.0, 20.0],
+                });
             })
             .unwrap();
         receiver.receive(from, &pointer, 1);
@@ -256,19 +258,29 @@ mod tests {
         let mut sender = LiveState::default();
         let mut receiver = LiveState::default();
         let first = sender
-            .publish_presence(1, |p| p.pointer = Some([1.0, 1.0]))
+            .publish_presence(1, |p| {
+                p.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+                    strip: 1,
+                    at: [1.0, 1.0],
+                });
+            })
             .unwrap();
         let second = sender
-            .publish_presence(2, |p| p.pointer = Some([2.0, 2.0]))
+            .publish_presence(2, |p| {
+                p.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
+                    strip: 1,
+                    at: [2.0, 2.0],
+                });
+            })
             .unwrap();
         let from = [4; 32];
         assert!(receiver.receive(from, &second, 10).is_some());
         assert!(receiver.receive(from, &first, 11).is_none(), "older frame");
         assert_eq!(
-            receiver.remote(12)[0]
-                .presence
+            receiver.remote(12)[0].presence.as_ref().and_then(|p| p
+                .pointer
                 .as_ref()
-                .and_then(|p| p.pointer),
+                .map(tilo_relay_protocol::live::LivePointer::at)),
             Some([2.0, 2.0])
         );
 

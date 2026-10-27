@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use ui_core::widget::{AppModel, ModelPath, StructureChange};
+use ui_core::widget::{AppModel, ModelPath, Remount, StructureChange};
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -25,17 +25,11 @@ use super::live::Live;
 use super::reactive::{Gate, Updaters};
 
 /// One entry of a row's context menu: an action published on the row's item.
-enum MenuEntry {
-    Action {
-        address: tilo_actions::ActionAddress,
-        /// Whether the action still takes arguments once the item is bound;
-        /// those open in the action palette, which asks for them.
-        prompts: bool,
-    },
-    /// Ask the desktop's agent about this row: its item, in its resource.
-    AskAgent(Box<ui_core::shared_selection::SharedSelection>),
-    /// The rule above it, which the menu counts as a row.
-    Separator,
+struct MenuEntry {
+    address: tilo_actions::ActionAddress,
+    /// Whether the action still takes arguments once the item is bound;
+    /// those open in the action palette, which asks for them.
+    prompts: bool,
 }
 
 /// The context menu of a row: the actions offered on its item.
@@ -129,6 +123,10 @@ const MIN_OVERSCAN: f64 = 160.0;
 /// may ask for, so rows whose measured heights keep moving the window cannot
 /// keep a frame from settling.
 const MAX_REMOUNTS_PER_FRAME: u8 = 3;
+/// The height a mounted row is laid out in, the same at any list length:
+/// out of flow, a row is otherwise given the list's whole height, which
+/// changes with every item added and lays every row out again.
+const ROW_SPACE: f32 = 1.0e6;
 
 /// Rows for the items of a collection, in collection order, built by
 /// [`ViewCx::each`](super::ViewCx::each).
@@ -180,17 +178,24 @@ pub struct Each<R: Resource> {
     /// Width the measured heights hold for.
     width: f64,
     node: Option<NodeId>,
+    /// The node the mounted rows are placed in: [`ROW_SPACE`] tall whatever
+    /// the list's height, so a row's layout does not depend on how many
+    /// items there are and stays cached as items come and go.
+    track: Option<NodeId>,
     rect: Rect,
     /// The span of the list a scroll view shows, in list coordinates, as of
     /// the last layout; `None` when nothing clips the list.
     visible: Option<(f64, f64)>,
     laid_out: bool,
     remounts: u8,
-    /// The structure change the list has to report: a rebuild when rows it
-    /// showed left it or moved among the others, a described one when it
-    /// only mounted the rows a scroll brought near and let go of the ones it
-    /// took away, which the frame's damage describes.
+    /// The structure change the list has to report beside a remount: a
+    /// rebuild when rows it showed left it or moved among the others.
     structure: StructureChange,
+    /// The rows to mount changed while every row stayed alive (a scroll
+    /// brought rows near or took them away, an item was added): a change
+    /// the list carries out in place ([`StructureChange::Children`]),
+    /// reported until it is carried out, in place or by a rebuild.
+    remount: bool,
     geometry_dirty: bool,
 }
 
@@ -222,11 +227,13 @@ impl<R: Resource> Each<R> {
             gap: 0.0,
             width: 0.0,
             node: None,
+            track: None,
             rect: Rect::ZERO,
             visible: None,
             laid_out: false,
             remounts: 0,
             structure: StructureChange::None,
+            remount: false,
             geometry_dirty: false,
         };
         each.reconcile();
@@ -320,6 +327,27 @@ impl<R: Resource> Each<R> {
     fn build_all(&mut self) {
         for index in 0..self.rows.len() {
             self.ensure_built(index);
+        }
+    }
+
+    /// Make `window` (ascending indices) the rows that follow changes,
+    /// building the rows it mounts for the first time: rows leaving it stop
+    /// following, and rows entering it catch up with the changes they
+    /// missed before they are laid out.
+    fn open_window(&mut self, window: &[usize]) {
+        for &index in window {
+            self.ensure_built(index);
+        }
+        for (index, row) in self.rows.iter().enumerate() {
+            let Some(view) = row.view.as_ref() else {
+                continue;
+            };
+            let shown = window.binary_search(&index).is_ok();
+            view.gate.set_mounted(shown);
+            if shown {
+                self.live
+                    .with(|state| self.updaters.catch_up(&view.gate, state));
+            }
         }
     }
 
@@ -538,35 +566,32 @@ impl<R: Resource> Each<R> {
                 MenuItem::action(spec.label.clone(), || {})
             };
             menu.push(entry.with_enabled(!read_only));
-            entries.push(MenuEntry::Action {
+            entries.push(MenuEntry {
                 address: tilo_actions::ActionAddress::new(resource.id.as_str(), spec.id.as_str()),
                 prompts: !spec.params().is_empty(),
             });
         }
-        if entries.is_empty() {
-            return false;
+        // The row's item, in its resource, is what the menu acts on: what
+        // "Tell an agent…" attaches.
+        let mut about = ui_core::shared_selection::SharedSelection::of_text(&resource.label)
+            .at(tilo_actions::SelectionPlace::item(item.as_str()))
+            .in_resource(tilo_actions::ActionResource {
+                id: resource.id.0.clone(),
+                kind: resource.kind.clone(),
+                label: resource.label.clone(),
+            });
+        if let Some((_, view)) = self.mounted().find(|(id, _)| *id == item) {
+            about = about.within(view.widget.get_rect());
         }
-        if ui_core::shared_selection::agent_host_available() {
-            let selection = ui_core::shared_selection::SharedSelection::of_text(&resource.label)
-                .at(tilo_actions::SelectionPlace::item(item.as_str()))
-                .in_resource(tilo_actions::ActionResource {
-                    id: resource.id.0.clone(),
-                    kind: resource.kind.clone(),
-                    label: resource.label.clone(),
-                });
-            menu.push(MenuItem::separator());
-            entries.push(MenuEntry::Separator);
-            menu.push(MenuItem::action(
-                ui_core::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
-                || {},
-            ));
-            entries.push(MenuEntry::AskAgent(Box::new(selection)));
-        }
+        menu.set_about(Some(about));
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a menu anchor is a logical pixel position on screen"
         )]
         menu.open_at([at.x as f32, at.y as f32]);
+        if menu.items().is_empty() {
+            return false;
+        }
         self.menu.menu = menu;
         self.menu.entries = entries;
         true
@@ -575,19 +600,14 @@ impl<R: Resource> Each<R> {
     /// Act on the menu entry the user chose: invoke it, or hand it to the
     /// palette when it still needs arguments.
     fn choose(&mut self, index: usize) {
-        match self.menu.entries.get(index) {
-            Some(MenuEntry::Action { address, prompts }) => {
-                if *prompts {
-                    self.menu.palette = Some(address.clone());
-                } else {
-                    self.dispatch
-                        .invoke_at(address.clone(), serde_json::Map::new());
-                }
-            }
-            Some(MenuEntry::AskAgent(selection)) => {
-                ui_core::shared_selection::ask_agent(Some(selection.as_ref().clone()));
-            }
-            Some(MenuEntry::Separator) | None => {}
+        let Some(MenuEntry { address, prompts }) = self.menu.entries.get(index) else {
+            return;
+        };
+        if *prompts {
+            self.menu.palette = Some(address.clone());
+        } else {
+            self.dispatch
+                .invoke_at(address.clone(), serde_json::Map::new());
         }
     }
 
@@ -646,6 +666,18 @@ impl<R: Resource> Each<R> {
         }
         false
     }
+}
+
+/// Place a row's layout `node` in the list: out of flow, as wide as the
+/// list, `top` below its top.
+fn place_row(taffy: &mut TaffyTree<()>, node: NodeId, top: f32) {
+    let mut style = taffy.style(node).cloned().unwrap_or_default();
+    style.position = taffy::Position::Absolute;
+    style.inset.left = length(0.0_f32);
+    style.inset.right = length(0.0_f32);
+    style.inset.top = length(top);
+    style.size.width = taffy::Dimension::auto();
+    let _ = taffy.set_style(node, style);
 }
 
 /// Whether `widget` or a descendant holds keyboard focus.
@@ -724,23 +756,7 @@ impl<R: Resource> Widget for Each<R> {
         let window = self.window();
         // Only mounted rows hold a node.
         self.for_each_mounted(|view| view.node = None);
-        // A row mounted for the first time is built now.
-        for &index in &window {
-            self.ensure_built(index);
-        }
-        // Rows leaving the window stop following changes; rows entering it
-        // catch up with the changes they missed before they are laid out.
-        for (index, row) in self.rows.iter().enumerate() {
-            let Some(view) = row.view.as_ref() else {
-                continue;
-            };
-            let shown = window.binary_search(&index).is_ok();
-            view.gate.set_mounted(shown);
-            if shown {
-                self.live
-                    .with(|state| self.updaters.catch_up(&view.gate, state));
-            }
-        }
+        self.open_window(&window);
         let mut nodes = Vec::with_capacity(window.len());
         for &index in &window {
             let top = px(self.tops.get(index).copied().unwrap_or_default());
@@ -751,17 +767,48 @@ impl<R: Resource> Widget for Each<R> {
             // it is built fresh here.
             let _ = row.widget.take_structure_dirty();
             let child = row.widget.build_layout(taffy, theme, node_map);
-            let mut style = taffy.style(child).cloned().unwrap_or_default();
-            style.position = taffy::Position::Absolute;
-            style.inset.left = length(0.0_f32);
-            style.inset.right = length(0.0_f32);
-            style.inset.top = length(top);
-            style.size.width = taffy::Dimension::auto();
-            let _ = taffy.set_style(child, style);
+            place_row(taffy, child, top);
             row.node = Some(child);
             nodes.push(child);
         }
         self.mounted = window;
+        let track = taffy.parent_node(
+            Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                },
+                size: taffy::Size {
+                    width: taffy::Dimension::auto(),
+                    height: length(ROW_SPACE),
+                },
+                ..Default::default()
+            },
+            &nodes,
+        );
+        // The track is taller than the list: it stands in a box as tall as
+        // the list that clips what it adds to the list's content, so a
+        // scroll view around the list scrolls the list's own height.
+        let clip = taffy.parent_node(
+            Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
+                },
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Visible,
+                    y: taffy::Overflow::Clip,
+                },
+                ..Default::default()
+            },
+            &[track],
+        );
         let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -770,12 +817,67 @@ impl<R: Resource> Widget for Each<R> {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &nodes);
+        let node = taffy.parent_node(style, &[clip]);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
+        self.track = Some(track);
         self.structure = StructureChange::None;
+        self.remount = false;
         self.geometry_dirty = false;
         node
+    }
+
+    // The rows to mount changed and every row is still alive: let go of the
+    // nodes of rows leaving the window, mount the rows entering it, and keep
+    // the others' nodes, with their cached layout, where they are.
+    fn remount_children(&mut self, remount: &mut Remount<'_>) -> bool {
+        let mut applied = true;
+        if !self.remount {
+            self.for_each_mounted(|view| {
+                applied = applied && view.widget.remount_children(remount);
+            });
+            return applied;
+        }
+        let (Some(node), Some(track)) = (self.node, self.track) else {
+            return false;
+        };
+        let window = self.window();
+        for &index in &self.mounted {
+            if window.binary_search(&index).is_err()
+                && let Some(child) = self
+                    .rows
+                    .get_mut(index)
+                    .and_then(|row| row.view.as_mut())
+                    .and_then(|view| view.node.take())
+            {
+                remount.unmount(child);
+            }
+        }
+        self.open_window(&window);
+        let mut nodes = Vec::with_capacity(window.len());
+        for &index in &window {
+            let top = px(self.tops.get(index).copied().unwrap_or_default());
+            let Some(row) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) else {
+                continue;
+            };
+            let child = if let Some(child) = row.node {
+                applied = applied && row.widget.remount_children(remount);
+                child
+            } else {
+                let _ = row.widget.take_structure_dirty();
+                let child = remount.mount(node, row.widget.as_mut());
+                place_row(remount.taffy(), child, top);
+                row.node = Some(child);
+                child
+            };
+            nodes.push(child);
+        }
+        self.mounted = window;
+        self.remount = false;
+        // The retained rows' offsets and the list's height, as the measured
+        // heights put them.
+        self.push_geometry(remount.taffy());
+        applied && remount.set_children(track, &nodes).is_ok()
     }
 
     // Measured rows move the rows after them: read what Taffy measured and
@@ -851,7 +953,7 @@ impl<R: Resource> Widget for Each<R> {
         self.laid_out = true;
         if self.window_stale() && self.remounts < MAX_REMOUNTS_PER_FRAME {
             self.remounts = self.remounts.saturating_add(1);
-            self.structure = self.structure.join(StructureChange::Described);
+            self.remount = true;
         }
     }
 
@@ -966,17 +1068,21 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
+        let mut dirty = std::mem::take(&mut self.structure).rebuilds() || self.remount;
         self.for_each_mounted(|row| dirty |= row.widget.take_structure_dirty());
         dirty
     }
 
-    /// Mounting the rows a scroll brought near, and letting go of the ones
-    /// it took away, is described: they came and went outside what the view
-    /// shows, or where the scroll exposed it, and a mounted row draws itself
-    /// whole. Rows that left the list or moved among the others are not.
+    /// Mounting the rows a scroll or an added item brought near, and letting
+    /// go of the ones it took away, is carried out in place: every row stays
+    /// alive, they came and went outside what the view shows or where the
+    /// scroll exposed it, and a mounted row draws itself whole. Rows that
+    /// left the list or moved among the others rebuild the tree.
     fn take_structure_change(&mut self) -> StructureChange {
         let mut change = std::mem::take(&mut self.structure);
+        if self.remount {
+            change = change.join(StructureChange::Children);
+        }
         self.for_each_mounted(|view| change = change.join(view.widget.take_structure_change()));
         change
     }

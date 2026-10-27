@@ -21,7 +21,6 @@ impl Route {
             return None;
         }
         let alias = node.widget_taffy_id?;
-        // Dispatch converts this exact admitted alias into an AccessKit id.
         alias.checked_add(1)?;
         let target = node.semantic_target.as_deref()?;
         if target.starts_with("ordinary-confirmation:") {

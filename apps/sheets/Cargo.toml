@@ -41,6 +41,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -1,18 +1,138 @@
 use super::{
     AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, PortalIntent, Project, Session,
-    TreeId, disk, explorer, source_filter,
+    TreeId, disk, source_filter,
 };
 
-impl CodeApp {
-    // ---- saving -----------------------------------------------------------
+/// What follows a write once it landed.
+pub(crate) enum AfterSave {
+    Nothing,
+    /// Close the tab, opening `then_open` in its place.
+    Close(Option<TreeId>),
+    /// Answer the file effect that asked for the save.
+    Effect,
+}
 
-    /// Write one buffer to its file.
+impl AfterSave {
+    fn landed(self, app: &mut CodeApp, node: TreeId) {
+        match self {
+            Self::Nothing => {}
+            Self::Close(then_open) => app.close_node(node, then_open),
+            Self::Effect => app.finish_file_effect(Ok(())),
+        }
+    }
+
+    /// A write that did not land: a tab to close stays open (a conflict
+    /// prompt, now showing, is answered first).
+    fn failed(self, app: &mut CodeApp) {
+        if matches!(self, Self::Effect) {
+            app.finish_file_effect(Err("file could not be saved".into()));
+        }
+    }
+}
+
+impl CodeApp {
+    /// Read a disk-backed file into its buffer the first time this session
+    /// opens it. The document may already hold text for it — a collaborator's
+    /// or a previous session's unsaved edits, which are not ours to discard —
+    /// so the seed only creates text that is missing; the file's bytes and
+    /// stamp become the comparison a save is checked against either way.
+    ///
+    /// A read failure closes the tab again: a file that opened as a silently
+    /// empty buffer would be written back empty by the next Ctrl+S.
+    pub(super) fn seed_buffer(&mut self, node: TreeId) {
+        let Some(buffer) = self.session.buffer_of(node) else {
+            return;
+        };
+        let Some(path) = self.session.project.disk_path_of(node) else {
+            return;
+        };
+        if buffer.stamp.is_some() || !self.disk_work.seeding.insert(node) {
+            return;
+        }
+        let name = buffer.name.clone();
+        self.on_disk(
+            "code-read-file",
+            move || {
+                let loaded = crate::disk::load(&path);
+                (path, loaded)
+            },
+            move |app, (path, loaded)| app.seeded(node, &name, path, loaded),
+        );
+    }
+
+    /// Fold in reading folder `id`, expanded in the tree.
+    pub(super) fn read_folder(
+        &mut self,
+        id: TreeId,
+        listing: std::io::Result<crate::model::Listing>,
+    ) {
+        match listing {
+            Ok(listing) => self.session.project.adopt_listing(id, listing),
+            Err(e) => {
+                let name = self
+                    .session
+                    .project
+                    .get(id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_default();
+                self.note(format!("Could not read {name}: {e}"), true);
+            }
+        }
+        self.invalidate_search_projection();
+        self.explorer.show(&self.session.project);
+    }
+
+    /// Fold in reading `node`'s file for its tab.
+    fn seeded(
+        &mut self,
+        node: TreeId,
+        name: &str,
+        path: std::path::PathBuf,
+        loaded: Result<crate::disk::Loaded, crate::disk::LoadError>,
+    ) {
+        self.disk_work.seeding.remove(&node);
+        match loaded {
+            Ok(loaded) => {
+                // The text itself is recorded by the next settlement
+                // ([`Self::record_missing_text`]), as the person's own edit.
+                if let Some(buffer) = self.session.buffer_of_mut(node) {
+                    buffer.path = Some(path);
+                    buffer.mark_saved(loaded.text, Some(loaded.stamp));
+                    self.bound_node = None;
+                }
+            }
+            Err(error) => {
+                if self.session.buffer_of(node).is_some() {
+                    self.session.close_file(node);
+                    self.invalidate_search_projection();
+                }
+                self.note(format!("Could not open {name}: {error}"), true);
+                self.bound_node = None;
+            }
+        }
+    }
+
+    /// Write one buffer to its file. Whether it landed by the time this
+    /// returns: on the frame loop the write runs on a background thread and
+    /// its outcome is folded in later (`Self::save_buffer_then`).
     ///
     /// `force` is the user having answered "overwrite anyway" to a conflict; it
     /// is the only way to skip the freshness check, and it is never set by the
     /// app on its own.
     pub fn save_buffer(&mut self, doc: &AutoCommit, node: TreeId, force: bool) -> bool {
+        self.save_buffer_then(doc, node, force, AfterSave::Nothing)
+    }
+
+    /// [`Self::save_buffer`], doing `then` once the write landed.
+    pub(super) fn save_buffer_then(
+        &mut self,
+        doc: &AutoCommit,
+        node: TreeId,
+        force: bool,
+        then: AfterSave,
+    ) -> bool {
         if self.session.buffer_of(node).is_none() {
+            then.failed(self);
             return false;
         }
         let Some(path) = self.session.buffer_of(node).and_then(|b| b.path.clone()) else {
@@ -27,33 +147,58 @@ impl CodeApp {
         } else {
             self.session.buffer_of(node).and_then(|b| b.stamp.clone())
         };
+        let landed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let noted = std::rc::Rc::clone(&landed);
+        self.on_disk(
+            "code-save-file",
+            move || {
+                let saved = disk::save(&path, &text, expected.as_ref());
+                (text, saved)
+            },
+            move |app, (text, saved)| noted.set(app.saved(node, text, saved, then)),
+        );
+        landed.get()
+    }
 
-        match disk::save(&path, &text, expected.as_ref()) {
+    /// Fold in the outcome of writing `node`: whether it landed.
+    fn saved(
+        &mut self,
+        node: TreeId,
+        text: String,
+        saved: Result<disk::Stamp, disk::SaveError>,
+        then: AfterSave,
+    ) -> bool {
+        match saved {
             Ok(stamp) => {
                 // The tab's unsaved mark clears; saving where the file
                 // lives says nothing more.
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, Some(stamp));
                 }
-                self.refresh_header();
                 // Tell the language server the file is on disk now; rustc-based
                 // diagnostics only refresh on save.
                 if let (Some(c), Some(uri)) = (self.lsp.as_mut(), self.lsp_uri.clone()) {
                     c.did_save(&uri);
                 }
+                then.landed(self, node);
                 true
             }
             Err(disk::SaveError::Conflict) => {
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.stale = true;
                 }
-                self.conflict = Some(Conflict {
-                    node,
-                    name: self
-                        .session
-                        .buffer_of(node)
-                        .map_or_else(String::new, |b| b.name.clone()),
-                });
+                // One question at a time: a conflict already asked about is
+                // answered first, and this file stays marked as changed.
+                if self.conflict.is_none() {
+                    self.conflict = Some(Conflict {
+                        node,
+                        name: self
+                            .session
+                            .buffer_of(node)
+                            .map_or_else(String::new, |b| b.name.clone()),
+                    });
+                }
+                then.failed(self);
                 false
             }
             Err(e) => {
@@ -62,6 +207,7 @@ impl CodeApp {
                     .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
                 self.note(format!("Could not save {name}: {e}"), true);
+                then.failed(self);
                 false
             }
         }
@@ -95,7 +241,30 @@ impl CodeApp {
         if self.session.buffer_of(node).is_none() {
             return;
         }
-        match self.session.project.file_seed(node) {
+        if let Some(path) = self.session.project.disk_path_of(node) {
+            self.on_disk_editing(
+                "code-reload-file",
+                doc,
+                move || disk::load(&path).map(|loaded| (loaded.text, Some(loaded.stamp))),
+                move |app, doc, seed| app.reloaded(doc, node, seed),
+            );
+        } else {
+            let seed = self.session.project.file_seed(node);
+            self.reloaded(doc, node, seed);
+        }
+    }
+
+    /// Take `seed`, what `node`'s file holds, over the buffer's edits.
+    fn reloaded(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        node: TreeId,
+        seed: Result<(String, Option<disk::Stamp>), disk::LoadError>,
+    ) {
+        if self.session.buffer_of(node).is_none() {
+            return;
+        }
+        match seed {
             Ok((text, stamp)) => {
                 let name = self
                     .session
@@ -115,7 +284,6 @@ impl CodeApp {
                 }
                 self.note(format!("Reloaded {name} from disk"), false);
                 self.bound_node = None;
-                self.refresh_header();
             }
             Err(e) => {
                 let name = self
@@ -129,15 +297,42 @@ impl CodeApp {
 
     /// Notice files that changed on disk since we read them, so a tab can warn
     /// before the user tries to save over someone else's work.
+    ///
+    /// One look at a time. On the frame loop the look runs on a background
+    /// thread and wakes the window only when the file did change, so an idle
+    /// window is not kept awake looking.
     pub(super) fn check_disk_staleness(&mut self) {
-        if let Some(buf) = self.session.buffer.as_mut() {
-            let (Some(path), Some(stamp)) = (buf.path.as_ref(), buf.stamp.as_ref()) else {
-                return;
-            };
-            if !buf.stale && disk::changed_on_disk(path, stamp) {
-                buf.stale = true;
-            }
+        if self.staleness_looking {
+            return;
         }
+        let Some(buf) = self.session.buffer.as_ref() else {
+            return;
+        };
+        let (Some(path), Some(stamp)) = (buf.path.clone(), buf.stamp.clone()) else {
+            return;
+        };
+        if buf.stale {
+            return;
+        }
+        let node = buf.node;
+        self.staleness_looking = true;
+        let looked = stamp.clone();
+        self.on_disk_waking(
+            "code-file-changed",
+            |changed| *changed,
+            move || disk::changed_on_disk(&path, &stamp),
+            move |app, changed| {
+                app.staleness_looking = false;
+                // A save that landed meanwhile moved the stamp: the look was
+                // against what the file held before it.
+                if changed
+                    && let Some(buf) = app.session.buffer_of_mut(node)
+                    && buf.stamp.as_ref() == Some(&looked)
+                {
+                    buf.stale = true;
+                }
+            },
+        );
     }
 
     /// Answer an open conflict.
@@ -160,8 +355,6 @@ impl CodeApp {
             }
         }
     }
-
-    // ---- the file picker --------------------------------------------------
 
     /// Ask the host desktop for a folder to open as the project.
     ///
@@ -250,8 +443,15 @@ impl CodeApp {
             }
         };
         let result = match intent {
-            Some(PortalIntent::OpenFolder) => self.open_project_dir(&path),
-            Some(PortalIntent::OpenFile) => self.open_disk_file(&path),
+            Some(PortalIntent::OpenFolder) => match self.open_project_dir(&path) {
+                Some(answer) => answer,
+                // Answered once the folder is read.
+                None => return,
+            },
+            Some(PortalIntent::OpenFile) => match self.open_disk_file(&path) {
+                Some(answer) => answer,
+                None => return,
+            },
             Some(PortalIntent::SaveAs(node)) => {
                 if self.session.buffer_of(node).is_none() {
                     self.finish_file_effect(Err("the buffer is no longer open".into()));
@@ -264,36 +464,58 @@ impl CodeApp {
                 // Keep the original destination and conflict stamp until the
                 // new file exists. A failed Save As must not redirect Save or
                 // Reload away from the file the person was editing.
-                match disk::save(&path, &text, None) {
-                    Ok(stamp) => {
-                        let name = path.file_name().map_or_else(
-                            || "untitled".to_string(),
-                            |s| s.to_string_lossy().to_string(),
-                        );
-                        self.session.project.set_file_path(node, &path, &name);
-                        if let Some(buf) = self.session.buffer_of_mut(node) {
-                            buf.path = Some(path.clone());
-                            buf.name.clone_from(&name);
-                            buf.language = crate::model::Language::from_path(&name);
-                            buf.mark_saved(text, Some(stamp));
-                        }
-                        explorer::refresh(&mut self.sidebar, &self.session.project);
-                        self.invalidate_search_projection();
-                        self.bound_node = None;
-                        self.reset_language_server();
-                        self.refresh_header();
-                        Ok(())
-                    }
-                    Err(error) => {
-                        let message = format!("Could not save {}: {error}", path.display());
-                        self.note(&message, true);
-                        Err(message)
-                    }
+                let answer = self.on_disk_answering(
+                    "code-save-file-as",
+                    move || {
+                        let saved = disk::save(&path, &text, None);
+                        (path, text, saved)
+                    },
+                    move |app, (path, text, saved)| app.saved_as(node, &path, text, saved),
+                );
+                match answer {
+                    Some(answer) => answer,
+                    // Answered once the file is written.
+                    None => return,
                 }
             }
             None => Ok(()),
         };
         self.finish_file_effect(result);
+    }
+
+    /// Fold in writing `node` to the new destination `path`.
+    fn saved_as(
+        &mut self,
+        node: TreeId,
+        path: &std::path::Path,
+        text: String,
+        saved: Result<disk::Stamp, disk::SaveError>,
+    ) -> Result<(), String> {
+        match saved {
+            Ok(stamp) => {
+                let name = path.file_name().map_or_else(
+                    || "untitled".to_string(),
+                    |s| s.to_string_lossy().to_string(),
+                );
+                self.session.project.set_file_path(node, path, &name);
+                if let Some(buf) = self.session.buffer_of_mut(node) {
+                    buf.path = Some(path.to_path_buf());
+                    buf.name.clone_from(&name);
+                    buf.language = crate::model::Language::from_path(&name);
+                    buf.mark_saved(text, Some(stamp));
+                }
+                self.explorer.show(&self.session.project);
+                self.invalidate_search_projection();
+                self.bound_node = None;
+                self.reset_language_server();
+                Ok(())
+            }
+            Err(error) => {
+                let message = format!("Could not save {}: {error}", path.display());
+                self.note(&message, true);
+                Err(message)
+            }
+        }
     }
 
     /// Answer the effect that opened a picker or asked for a save, if one is
@@ -304,24 +526,42 @@ impl CodeApp {
         }
     }
 
-    /// Replace the project with the directory at `path`.
-    pub(super) fn open_project_dir(&mut self, path: &std::path::Path) -> Result<(), String> {
-        match Project::from_dir(path) {
+    /// Replace the project with the directory at `path`. Its answer, or
+    /// `None` while the folder is read on a background thread (the file
+    /// effect waiting is answered then).
+    pub(super) fn open_project_dir(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Option<Result<(), String>> {
+        let path = path.to_path_buf();
+        self.on_disk_answering(
+            "code-open-folder",
+            move || {
+                let project = Project::from_dir(&path);
+                (path, project)
+            },
+            |app, (path, project)| app.adopt_project_dir(&path, project),
+        )
+    }
+
+    fn adopt_project_dir(
+        &mut self,
+        path: &std::path::Path,
+        project: std::io::Result<Project>,
+    ) -> Result<(), String> {
+        match project {
             Ok(project) => {
-                let name = project.name.clone();
                 self.session = Session::new(project);
                 self.adopt_presented();
                 self.invalidate_search_projection();
-                explorer::refresh(&mut self.sidebar, &self.session.project);
-                explorer::set_current(&mut self.sidebar, None);
+                self.explorer.show(&self.session.project);
+                self.explorer.set_current(None);
                 self.bound_node = None;
                 self.editor.unbind();
                 self.reset_language_server();
                 self.clear_search();
                 self.search_symbols.clear();
                 self.symbol_projection_revision = None;
-                self.refresh_header();
-                self.note(format!("Opened {name}"), false);
                 Ok(())
             }
             Err(e) => {
@@ -334,30 +574,90 @@ impl CodeApp {
 
     /// Show a real file, revealing it in the tree when it lives
     /// under the open project and adopting it as a one-file project when not.
-    pub(super) fn open_disk_file(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let path = disk::canonical(path);
-        if let Some(node) = self.session.project.reveal_path(&path) {
-            explorer::refresh(&mut self.sidebar, &self.session.project);
-            self.open_node(node);
-            return Ok(());
-        }
-        match Project::open_single_file(&path) {
+    /// Its answer, or `None` while the disk is read on a background thread
+    /// (the file effect waiting is answered then).
+    pub(super) fn open_disk_file(&mut self, path: &std::path::Path) -> Option<Result<(), String>> {
+        let path = path.to_path_buf();
+        let root = self.session.project.root_path();
+        self.on_disk_answering(
+            "code-open-file",
+            move || {
+                let path = disk::canonical(&path);
+                let along = root
+                    .filter(|root| path.starts_with(root))
+                    .map(|root| crate::model::read_folders_along(&root, &path));
+                // A file the tree does not reach opens on its own.
+                let single = Project::open_single_file(&path);
+                (path, along, single)
+            },
+            |app, (path, along, single)| {
+                if let Some(along) = along {
+                    app.session.project.adopt_folders(along);
+                    if let Some(node) = app.session.project.reveal_read(&path) {
+                        app.explorer.show(&app.session.project);
+                        app.open_node(node);
+                        return Ok(());
+                    }
+                }
+                app.adopt_single_file(&path, single)
+            },
+        )
+    }
+
+    fn adopt_single_file(
+        &mut self,
+        path: &std::path::Path,
+        single: std::io::Result<(Project, TreeId)>,
+    ) -> Result<(), String> {
+        match single {
             Ok((project, node)) => {
                 self.session = Session::new(project);
                 self.adopt_presented();
                 self.invalidate_search_projection();
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
                 self.bound_node = None;
                 self.reset_language_server();
                 self.open_node(node);
                 Ok(())
             }
             Err(e) => {
-                let message = could_not_open(&path, &e);
+                let message = could_not_open(path, &e);
                 self.note(&message, true);
                 Err(message)
             }
         }
+    }
+
+    /// Reveal the file at `path` in the tree, reading the folders on the way
+    /// where it may wait on the disk and on a background thread on the frame
+    /// loop, then `then` with its node (`None` where the tree has no file
+    /// there).
+    pub(super) fn reveal_on_disk(
+        &mut self,
+        path: std::path::PathBuf,
+        then: impl FnOnce(&mut Self, Option<TreeId>) + 'static,
+    ) {
+        if let Some(node) = self.session.project.node_for_path(&path) {
+            then(self, Some(node));
+            return;
+        }
+        let Some(root) = self.session.project.root_path() else {
+            then(self, None);
+            return;
+        };
+        self.on_disk(
+            "code-reveal-file",
+            move || {
+                let along = crate::model::read_folders_along(&root, &path);
+                (path, along)
+            },
+            move |app, (path, along)| {
+                app.session.project.adopt_folders(along);
+                let node = app.session.project.reveal_read(&path);
+                app.invalidate_search_projection();
+                then(app, node);
+            },
+        );
     }
 }
 

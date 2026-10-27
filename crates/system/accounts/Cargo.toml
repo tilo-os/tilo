@@ -13,6 +13,9 @@ name = "accounts"
 path = "src/lib.rs"
 
 [dependencies]
+# Whether the calling thread may wait on the disk: the compositor's frame
+# loop commits the vault on a thread of its own.
+durable-store = { version = "0.1.0", path = "../durable-store" }
 hex.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

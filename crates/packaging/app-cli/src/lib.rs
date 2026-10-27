@@ -18,7 +18,10 @@
 //! This crate never decides whether bytes are safe to extract:
 //! [`install::install`] downloads to a staging file and hands the
 //! path to `tilo-install`, which checks the publisher signature
-//! fail-closed before extracting anything; `--allow-self-signed` is never passed.
+//! fail-closed before extracting anything; for a repository's package
+//! `--allow-self-signed` is never passed. Only a package file or link the
+//! person installs by hand (`app install <file>`) may come from an
+//! unverified publisher, and only once they have said yes to it.
 
 #![cfg_attr(
     test,
@@ -63,6 +66,9 @@ pub fn entry_to_app_for_channel(
     registry_name: &str,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> Option<CatalogueApp> {
+    // A runtime comes with the apps that need it. A language pack is
+    // offered like an app, so its updates come the way an app's do; the
+    // Store does not list it among apps.
     if !v.trust.is_offerable() || registry_types::is_runtime_package_id(&v.entry.package_id) {
         return None;
     }
@@ -98,7 +104,9 @@ fn installable_versions_on<'a>(
     channel: tilo_app_package::version::ReleaseChannel,
     provided: Option<&'a registry_types::ProvidedInterfaces>,
 ) -> impl Iterator<Item = &'a registry_types::RegistryVersion> {
-    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
+    // A runtime package is a runtime and a language pack binds none.
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id)
+        || registry_types::is_language_pack_package_id(&entry.package_id);
     // Only versions that bind a tapp: a bot entry's program is never an app.
     entry.versions.iter().filter(move |version| {
         version.tapp().is_some_and(|tapp| {
@@ -138,7 +146,8 @@ fn awaiting_developer_on(
     {
         return false;
     }
-    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id)
+        || registry_types::is_language_pack_package_id(&entry.package_id);
     entry
         .versions
         .iter()
@@ -275,6 +284,108 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
     Ok(None)
 }
 
+/// A language pack the enabled repositories offer: its locale (`de-DE`) and
+/// the newest version this device can install.
+#[derive(Clone, Debug)]
+pub struct LanguagePackOffer {
+    /// The locale as a BCP 47 tag, the pack's id suffix in its usual case.
+    pub locale: String,
+    /// The package to install.
+    pub offer: CatalogueApp,
+}
+
+/// `lower` (`de-de`, `zh-hant-tw`) in the usual case of a BCP 47 tag
+/// (`de-DE`, `zh-Hant-TW`): the language lower, a script title-cased, a
+/// region upper.
+#[must_use]
+pub fn locale_tag(lower: &str) -> String {
+    lower
+        .split('-')
+        .enumerate()
+        .map(|(index, part)| match (index, part.len()) {
+            (0, _) => part.to_ascii_lowercase(),
+            (_, 2) => part.to_ascii_uppercase(),
+            (_, 4) => {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+                })
+            }
+            _ => part.to_ascii_lowercase(),
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Every language pack the enabled repositories offer, by locale, the first
+/// repository that offers a locale answering for it.
+///
+/// # Errors
+///
+/// Returns the first repository's error when none could be read.
+pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
+    let registries = config::load_registries();
+    let mut offers: Vec<LanguagePackOffer> = Vec::new();
+    let mut first_error = None;
+    let mut read_any = false;
+    for registry in registries.enabled() {
+        let snapshot = match client::fetch_snapshot(registry) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                first_error.get_or_insert_with(|| error.to_string());
+                continue;
+            }
+        };
+        read_any = true;
+        let packs: Vec<String> = snapshot
+            .entries()
+            .into_iter()
+            .map(|listed| listed.entry.package_id.clone())
+            .filter(|id| registry_types::is_language_pack_package_id(id))
+            .collect();
+        for package_id in packs {
+            let Some(lower) = tilo_app_package::language_pack_locale(&package_id) else {
+                continue;
+            };
+            let locale = locale_tag(lower);
+            if offers.iter().any(|known| known.locale == locale) {
+                continue;
+            }
+            let Ok(verified) = client::all_versions_in(registry, &snapshot, &package_id) else {
+                continue;
+            };
+            if let Some(offer) = installable_versions(&verified.entry, registry.channel)
+                .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
+                .and_then(|version| app_for_version(&verified, version, &registry.name))
+            {
+                offers.push(LanguagePackOffer { locale, offer });
+            }
+        }
+    }
+    if !read_any && let Some(error) = first_error {
+        return Err(error);
+    }
+    offers.sort_by(|a, b| a.locale.cmp(&b.locale));
+    Ok(offers)
+}
+
+/// The package id of `locale`'s language pack.
+#[must_use]
+pub fn language_pack_id(locale: &str) -> String {
+    format!(
+        "{}{}",
+        tilo_app_package::LANGUAGE_PACK_ID_PREFIX,
+        locale.to_ascii_lowercase()
+    )
+}
+
+/// The version of the language pack installed for `locale`, if one is: the
+/// package store's record, as for any package.
+#[must_use]
+pub fn installed_language_pack(locale: &str) -> Option<String> {
+    installed_version(&language_pack_id(locale)).ok().flatten()
+}
+
 /// The catalogue row offering exactly `version` of a verified entry.
 fn app_for_version(
     v: &VerifiedEntry,
@@ -349,6 +460,10 @@ pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<Catal
 
 fn target_supported(tapp: &registry_types::TappArtifact) -> bool {
     let target = &tapp.target;
+    // Data for every architecture: a language pack.
+    if target.platform == registry_types::TILO_OS_PLATFORM && target.is_any_architecture() {
+        return true;
+    }
     if target.platform != registry_types::TILO_OS_PLATFORM
         || target.architecture != std::env::consts::ARCH
     {
@@ -416,8 +531,18 @@ pub struct InstalledApp {
     pub version: String,
     /// Where the running copy came from: `image` (the system image installed
     /// it), `user` (installed or updated since), or `held` (rolled back
-    /// below the image's version on purpose).
+    /// below the image's version on purpose). For an application Tilo did
+    /// not package, which kind of app it is, the same answer search and
+    /// Files give: `flatpak`, `appimage`, `program` (one the person
+    /// downloaded or put in their own applications directory) or `system`.
     pub from: String,
+    /// The app's name, for an application Tilo did not package (whose id is
+    /// a desktop-file id, not a name).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// A downloaded program whose file is gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
 }
 
 /// Every installed app, the system image's included, as the copy that runs.
@@ -442,8 +567,42 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, String> {
             }
             .into(),
             package_id: entry.id,
+            name: String::new(),
+            missing: false,
         })
         .collect())
+}
+
+/// The applications Tilo did not package, as the desktop's applications
+/// model has them (the same desktop entries search and the launcher list):
+/// Flatpaks, the system's own, and downloaded programs the person added.
+/// One a Tilo package answers for is left out, as the desktop leaves it out.
+pub fn host_apps(installed: &[InstalledApp]) -> Vec<InstalledApp> {
+    let packaged: std::collections::HashSet<String> = installed
+        .iter()
+        .map(|app| app.package_id.to_ascii_lowercase())
+        .collect();
+    let person_applications = tilo_paths::xdg::data_home().map(|home| home.join("applications"));
+    desktop_entry::scan()
+        .entries
+        .into_iter()
+        .filter(|entry| !packaged.contains(&entry.id.to_ascii_lowercase()))
+        .map(|entry| {
+            let from = match entry.kind(person_applications.as_deref()) {
+                desktop_entry::EntryKind::Flatpak => "flatpak",
+                desktop_entry::EntryKind::AppImage => "appimage",
+                desktop_entry::EntryKind::Program => "program",
+                desktop_entry::EntryKind::System => "system",
+            };
+            InstalledApp {
+                missing: entry.downloaded.as_ref().is_some_and(|d| !d.present),
+                package_id: entry.id,
+                version: String::new(),
+                from: from.into(),
+                name: entry.name,
+            }
+        })
+        .collect()
 }
 
 /// The version of `package_id` the system image ships, when the user's copy
@@ -658,7 +817,18 @@ pub fn resolve_offer<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
+
+    /// A language pack's id names its locale in lower case; the picker shows
+    /// the tag in its usual case.
+    #[test]
+    fn a_language_packs_locale_reads_as_a_tag() {
+        assert_eq!(locale_tag("de-de"), "de-DE");
+        assert_eq!(locale_tag("pt-br"), "pt-BR");
+        assert_eq!(locale_tag("zh-hant-tw"), "zh-Hant-TW");
+        assert_eq!(locale_tag("fr"), "fr");
+    }
 
     fn native_baseline_isa() -> &'static str {
         #[cfg(target_arch = "x86_64")]
@@ -777,7 +947,6 @@ mod tests {
         assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_app_whose_newest_build_is_behind_waits_for_its_developer() {
         let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);

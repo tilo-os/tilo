@@ -34,8 +34,9 @@ use tilo_browser_peer::{
     SignFuture,
 };
 use tilo_relay_protocol::live::{
-    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveObject, LiveParticipant, LiveReaction,
-    LiveRecord, OpsFrame, ParticipantKind, PresenceFrame, PreviewOp,
+    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveLayout, LiveObject, LiveParticipant,
+    LiveReaction, LiveRecord, LiveWave, LiveWindow, OpsFrame, ParticipantKind, PresenceFrame,
+    PreviewOp,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
@@ -277,6 +278,9 @@ impl HttpClient for PageHttp {
     }
 }
 
+/// The store a peer replicates its room into, and where it lives.
+type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectConfig {
@@ -337,10 +341,6 @@ struct JsHostInfo {
 /// origin), the origin to dial WebTransport at when it is not the page's
 /// and, for a development certificate, its SHA-256 for
 /// `serverCertificateHashes`. Resolves to JSON.
-///
-/// # Errors
-///
-/// Rejects when the host is unreachable or answers badly.
 #[wasm_bindgen(js_name = hostInfo)]
 pub async fn host_info(post: Function) -> Result<String, JsError> {
     let info: tilo_relay_protocol::web::HostInfo =
@@ -358,10 +358,6 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the
 /// request. Resolves to `{cert, hostCert}` JSON for [`WasmPeer::start`].
-///
-/// # Errors
-///
-/// Rejects when the request is denied, expires, or the host misbehaves.
 #[wasm_bindgen(js_name = certifyDevice)]
 #[allow(
     clippy::arc_with_non_send_sync,
@@ -486,10 +482,6 @@ fn request_id(text: &str) -> Result<[u8; 32], JsError> {
 /// What `invitation` (the signed invitation's bytes) offers at the host
 /// `post` reaches: `{kind: 'invitation', room, workspaceId, name, role,
 /// expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves to JSON.
-///
-/// # Errors
-///
-/// Rejects when the host is not reached or answers badly.
 #[wasm_bindgen(js_name = inspectInvitation)]
 pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
     let reply = tilo_browser_peer::invite::join(
@@ -508,11 +500,6 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
 /// once. Resolves to JSON
 /// `{reply, cert}`: the host's answer (`waiting`, `admitted`, `declined`,
 /// `refused`) and the device certificate the page then connects with.
-///
-/// # Errors
-///
-/// Rejects when the host is not reached, answers badly, or a key does not
-/// sign.
 #[wasm_bindgen(js_name = askToJoin)]
 pub async fn ask_to_join(
     post: Function,
@@ -549,10 +536,6 @@ pub async fn ask_to_join(
 /// [`ask_to_join`] as a device already certified elsewhere (`certificate`,
 /// `{cert}` JSON as `certifyDevice` resolves to: a device a person paired
 /// from another of theirs) rather than by a root the page holds.
-///
-/// # Errors
-///
-/// As [`ask_to_join`], and when `custody` does not hold the certified key.
 #[wasm_bindgen(js_name = askToJoinAs)]
 pub async fn ask_to_join_as(
     post: Function,
@@ -625,10 +608,6 @@ async fn ask_as(
 
 /// Where join request `requestIdHex` of device `devicePublicKeyHex` stands:
 /// JSON as [`ask_to_join`]'s `reply`.
-///
-/// # Errors
-///
-/// Rejects when the host is not reached or answers badly.
 #[wasm_bindgen(js_name = joinStatus)]
 pub async fn join_status(
     post: Function,
@@ -649,10 +628,6 @@ pub async fn join_status(
 
 /// The canonical encoding of a certificate (JSON in): what a native device
 /// keeps on disk.
-///
-/// # Errors
-///
-/// Throws for JSON that is not a certificate.
 #[wasm_bindgen(js_name = deviceCertCanonical)]
 pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
     let cert: DeviceCert = serde_json::from_str(cert_json).map_err(js_error)?;
@@ -662,10 +637,6 @@ pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
 /// Certify this page's device key (`custody`) with the user root the page
 /// holds, for the host at `post`, whose certificate must be a host of that
 /// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
-///
-/// # Errors
-///
-/// Rejects when the host is unreachable or not a host of this root.
 #[wasm_bindgen(js_name = certifyWithRoot)]
 pub async fn certify_with_root(
     post: Function,
@@ -691,10 +662,6 @@ pub async fn certify_with_root(
 /// invite, requestedAtMs, country}]` JSON, keys, digest and invite as hex
 /// (`invite` null for a request no invite asked for, `country` null when the
 /// host does not know it).
-///
-/// # Errors
-///
-/// Rejects when the host is unreachable or refuses.
 #[wasm_bindgen(js_name = pendingPairings)]
 pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
@@ -724,10 +691,6 @@ pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, J
 /// Pair (`approved`) or turn away the waiting device `digest_hex` at the
 /// host at `post`, with the member root the page holds. Resolves to the
 /// certificate issued (JSON), or null when turned away.
-///
-/// # Errors
-///
-/// Rejects when the request is gone, or the host is unreachable or refuses.
 #[wasm_bindgen(js_name = answerPairing)]
 pub async fn answer_pairing(
     post: Function,
@@ -792,7 +755,9 @@ struct JsPresence {
     seq: u64,
     sent_at_ms: u64,
     focus: Option<JsRecord>,
-    pointer: Option<[f32; 2]>,
+    /// Relative to what it is over: `{window: {app, record}, at}` or
+    /// `{strip, at}` ([`crate::browser::pointers::JsPointer`]).
+    pointer: Option<crate::browser::pointers::JsPointer>,
     selection: Option<JsSelection>,
     drag: Option<JsDrag>,
     #[serde(default)]
@@ -805,6 +770,74 @@ struct JsPresence {
     /// The latest reaction: `{seq, emoji}`.
     #[serde(default)]
     reaction: Option<JsReaction>,
+    /// The latest wave: `{seq, target}`, `target` the waved-at member's
+    /// publisher.
+    #[serde(default)]
+    wave: Option<JsWave>,
+    /// Where the windows are: `{size, windows: [{app, record, rect,
+    /// focused}]}`, `record` the 16-hex short digest of its live record.
+    #[serde(default)]
+    layout: Option<JsLayout>,
+    /// Whose view this member follows: their publisher.
+    #[serde(default)]
+    following: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsLayout {
+    size: [u16; 2],
+    windows: Vec<JsWindow>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsWindow {
+    app: String,
+    record: String,
+    rect: [u16; 4],
+    focused: bool,
+}
+
+fn layout_from_js(layout: JsLayout) -> Result<LiveLayout, JsError> {
+    let windows = layout
+        .windows
+        .into_iter()
+        .map(|window| {
+            let record = <[u8; 8]>::try_from(hex::decode(&window.record).map_err(js_error)?)
+                .map_err(|_| js_error("a layout window's record is 8 bytes"))?;
+            Ok(LiveWindow {
+                app: window.app,
+                record,
+                rect: window.rect,
+                focused: window.focused,
+            })
+        })
+        .collect::<Result<_, JsError>>()?;
+    Ok(LiveLayout {
+        size: layout.size,
+        windows,
+    })
+}
+
+fn layout_to_js(layout: LiveLayout) -> JsLayout {
+    JsLayout {
+        size: layout.size,
+        windows: layout
+            .windows
+            .into_iter()
+            .map(|window| JsWindow {
+                app: window.app,
+                record: hex::encode(window.record),
+                rect: window.rect,
+                focused: window.focused,
+            })
+            .collect(),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsWave {
+    seq: u32,
+    target: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -862,8 +895,10 @@ enum JsPreviewOp {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum JsDecoded {
+    // Boxed: a presence frame (pointer layout and all) is several times the
+    // size of the other variants.
     Presence {
-        frame: JsPresence,
+        frame: Box<JsPresence>,
     },
     Preview {
         record: JsRecord,
@@ -926,7 +961,11 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
         seq: value.seq,
         sent_at_ms: value.sent_at_ms,
         focus: value.focus.map(record_from_js),
-        pointer: value.pointer,
+        pointer: value
+            .pointer
+            .map(crate::browser::pointers::JsPointer::into_live)
+            .transpose()
+            .map_err(js_error)?,
         selection: value
             .selection
             .map(|selection| {
@@ -957,6 +996,12 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             seq: reaction.seq,
             emoji: reaction.emoji,
         }),
+        wave: value.wave.map(|wave| LiveWave {
+            seq: wave.seq,
+            target: wave.target,
+        }),
+        layout: value.layout.map(layout_from_js).transpose()?,
+        following: value.following,
     })
 }
 
@@ -965,7 +1010,9 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
         seq: frame.seq,
         sent_at_ms: frame.sent_at_ms,
         focus: frame.focus.map(record_to_js),
-        pointer: frame.pointer,
+        pointer: frame
+            .pointer
+            .map(crate::browser::pointers::JsPointer::from_live),
         selection: frame.selection.map(|(anchor, head)| JsSelection {
             anchor: hex::encode(anchor.cursor),
             head: hex::encode(head.cursor),
@@ -989,6 +1036,12 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             seq: reaction.seq,
             emoji: reaction.emoji,
         }),
+        wave: frame.wave.map(|wave| JsWave {
+            seq: wave.seq,
+            target: wave.target,
+        }),
+        layout: frame.layout.map(layout_to_js),
+        following: frame.following,
     }
 }
 
@@ -1073,15 +1126,11 @@ pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
 
 /// Decode and validate one relayed live frame to JSON
 /// (`{kind: 'presence'|'preview'|'previewEnd', …}`).
-///
-/// # Errors
-///
-/// Throws for a frame that is not canonical or out of bounds.
 #[wasm_bindgen(js_name = decodeLiveFrame)]
 pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
     let decoded = match LiveFrame::decode(frame).map_err(js_error)? {
         LiveFrame::Presence(presence) => JsDecoded::Presence {
-            frame: presence_to_js(presence),
+            frame: Box::new(presence_to_js(presence)),
         },
         LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => JsDecoded::Preview {
             record: record_to_js(record),
@@ -1136,6 +1185,7 @@ struct JsHerePerson {
     sources: Vec<String>,
     generated: bool,
     updated_ms: u64,
+    profile_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -1172,15 +1222,35 @@ impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
 
 /// One call participant: device and person as hex.
 #[derive(Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own field the page reads: publishes, camera, screen, muted, deafened"
+)]
 struct JsVoiceParticipant {
     device: String,
     user: String,
     namespace: String,
     publishes: bool,
-    /// Its camera is on.
     camera: bool,
     /// It shares a screen.
     screen: bool,
+    /// Its microphone is off, or it may not publish.
+    muted: bool,
+    /// It hears nothing of the call.
+    deafened: bool,
+    /// Who a bridge's participation stands for; absent for everyone else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridged: Option<JsBridged>,
+}
+
+/// `tilo_relay_protocol::voice::Bridged`, the linked member as hex.
+#[derive(Serialize)]
+struct JsBridged {
+    service: String,
+    account: Option<String>,
+    name: String,
+    avatar: Option<String>,
+    linked: Option<String>,
 }
 
 fn voice_participants(
@@ -1195,6 +1265,15 @@ fn voice_participants(
             publishes: participant.publishes,
             camera: participant.showing.camera,
             screen: participant.showing.screen,
+            muted: participant.showing.muted,
+            bridged: participant.bridged.map(|bridged| JsBridged {
+                service: bridged.service,
+                account: bridged.account,
+                name: bridged.name,
+                avatar: bridged.avatar,
+                linked: bridged.linked.map(hex::encode),
+            }),
+            deafened: participant.showing.deafened,
         })
         .collect()
 }
@@ -1508,9 +1587,29 @@ pub struct WasmPeer {
     /// Joined rooms by workspace, to name them in call events.
     voice_rooms: RefCell<std::collections::HashMap<u64, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
-    /// The profile's store and a queue opened at start, until a room is
-    /// joined and replicated ([`crate::replication`]).
-    replication: RefCell<Option<(PeerEvents, Rc<durable_store::MemoryStore>)>>,
+    /// Where the room's documents are kept (the profile's store, or memory
+    /// for a peer in no profile) and a queue opened at start, until a room
+    /// is joined and replicated ([`crate::replication`]).
+    replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
+    /// The room the person takes part in through this page, once joined
+    /// as a person rather than a spectator: the one that names them.
+    person_room: RefCell<Option<String>>,
+}
+
+/// Tell `room` its member, the page's person, goes by `name` from now on:
+/// what its member list and everyone's person lists show for them. Asked
+/// as the page joins and whenever the person renames themself, so a name
+/// the room recorded earlier is corrected on the next visit. A person who
+/// chose no name keeps the one they were admitted with.
+fn name_in_room(handle: &PeerHandle, room: &str, name: &str) {
+    if name.trim().is_empty() {
+        return;
+    }
+    let request = tilo_relay_protocol::rooms::RoomsRequest::Name {
+        room: room.to_owned(),
+        name: name.to_owned(),
+    };
+    let _ = handle.rooms_then(request, Box::new(|_| {}));
 }
 
 #[wasm_bindgen]
@@ -1592,7 +1691,18 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
-        let replication = profile_store.map(|store| (handle.events(), store));
+        // Every peer replicates the room it joins, so a desktop mounted
+        // through it always has a replica to attach to. A peer kept in no
+        // profile (a watching page's, whose device lives only in memory)
+        // keeps the room's documents in memory for as long as the page.
+        let replication_store = match profile_store {
+            Some(store) => (store, crate::replication::Kept::InProfile),
+            None => (
+                Rc::new(durable_store::MemoryStore::new()),
+                crate::replication::Kept::InPage,
+            ),
+        };
+        let replication = RefCell::new(Some((handle.events(), replication_store)));
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
@@ -1627,7 +1737,8 @@ impl WasmPeer {
             voice_rooms: RefCell::default(),
             handle,
             listeners,
-            replication: RefCell::new(replication),
+            replication,
+            person_room: RefCell::default(),
         })
     }
 
@@ -1669,10 +1780,6 @@ impl WasmPeer {
     }
 
     /// Join a room (uuid).
-    ///
-    /// # Errors
-    ///
-    /// Throws for a room that is not a uuid, or a closed session.
     #[wasm_bindgen(js_name = joinRoom)]
     pub fn join_room(&self, room: &str) -> Result<(), JsError> {
         let workspace_id = workspace(room)?;
@@ -1684,6 +1791,15 @@ impl WasmPeer {
             let device = hex::encode(self.device_key);
             crate::replication::open(self.id, device, self.handle.clone(), events, room, store)
                 .map_err(js_error)?;
+            // The room the page replicates is the one its person talks in
+            // privately; a page that only watches has no conversations.
+            if !self.handle.watching() {
+                crate::person_chat::install(self.handle.clone(), room);
+                if let Some(identity) = ui::local_identity::load() {
+                    name_in_room(&self.handle, room, &identity.display_name);
+                }
+                *self.person_room.borrow_mut() = Some(room.to_owned());
+            }
         }
         Ok(())
     }
@@ -1706,11 +1822,6 @@ impl WasmPeer {
     /// Administer the host's rooms as this device: `request` is a
     /// `RoomsRequest` as JSON (serde's external tagging, byte arrays as
     /// arrays of numbers); resolves to the `RoomsReply` as JSON.
-    ///
-    /// # Errors
-    ///
-    /// Rejects for a malformed request, without a connection, or when the
-    /// host is not reached.
     pub async fn rooms(&self, request: String) -> Result<String, JsError> {
         let request: tilo_relay_protocol::rooms::RoomsRequest =
             serde_json::from_str(&request).map_err(js_error)?;
@@ -1750,6 +1861,23 @@ impl WasmPeer {
             .map_err(|_| js_error("peer session closed"))?
             .map_err(js_error)?
             .map(hex::encode))
+    }
+
+    /// The session token the host's fetch proxy (`/peer/v1/fetch`) takes,
+    /// while this page is connected to a host that serves one; `undefined`
+    /// otherwise. It changes when the page reconnects, so the page's fetch
+    /// proxy global reads it for every request.
+    #[wasm_bindgen(js_name = fetchProxySession)]
+    pub fn fetch_proxy_session(&self) -> Option<String> {
+        self.handle.fetch_proxy_session()
+    }
+
+    /// The token of the host session this page runs now, `undefined`
+    /// between sessions: the page sends it to the host's session end as it
+    /// leaves, so the room stops counting it then, not when its polls stop.
+    #[wasm_bindgen(js_name = sessionToken)]
+    pub fn session_token(&self) -> Option<String> {
+        self.handle.session_token()
     }
 
     /// Pre-admit whoever redeems the invitation this issues and presents
@@ -1943,18 +2071,35 @@ impl WasmPeer {
     }
 
     /// Show this session's camera (`camera`) or a shared screen (`screen`)
-    /// besides its voice in the call of `room`, or stop: everyone in the
-    /// call learns it from the room.
+    /// besides its voice in the call of `room`, or stop, whether its
+    /// microphone is off (`muted`) and whether it hears the call
+    /// (`deafened`): everyone in the call learns it from the room.
     ///
     /// # Errors
     ///
     /// Throws for a malformed room or a closed session.
     #[wasm_bindgen(js_name = voiceShow)]
-    pub fn voice_show(&self, room: &str, camera: bool, screen: bool) -> Result<(), JsError> {
+    #[allow(
+        clippy::fn_params_excessive_bools,
+        reason = "the page's call says each of what it shows as its own flag, as `Showing` holds them"
+    )]
+    pub fn voice_show(
+        &self,
+        room: &str,
+        camera: bool,
+        screen: bool,
+        muted: bool,
+        deafened: bool,
+    ) -> Result<(), JsError> {
         self.handle
             .voice_show(
                 workspace(room)?,
-                tilo_relay_protocol::voice::Showing { camera, screen },
+                tilo_relay_protocol::voice::Showing {
+                    camera,
+                    screen,
+                    muted,
+                    deafened,
+                },
             )
             .map_err(js_error)
     }
@@ -1983,11 +2128,6 @@ impl WasmPeer {
     /// only) and resolve to who is here there: a JSON array of `{device,
     /// user, label, window, status, recent, sources, generated, updated_ms}` with keys and
     /// ids in hex. An empty array only fetches.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed or out-of-bounds actions, or when the host is not
-    /// reached or this device is not admitted to `room`.
     #[wasm_bindgen(js_name = here)]
     pub async fn here(
         &self,
@@ -2052,6 +2192,7 @@ impl WasmPeer {
                 sources: person.sources.iter().map(hex::encode).collect(),
                 generated: person.generated,
                 updated_ms: person.updated_ms,
+                profile_ms: person.profile_ms,
             })
             .collect();
         serde_json::to_string(&people).map_err(js_error)
@@ -2062,11 +2203,6 @@ impl WasmPeer {
     /// `surface` (16 hex) that `publisher` (64 hex) streams in `room`. With
     /// no events it only asks whether this device may drive the window.
     /// Resolves `false` when it may not.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed arguments, or when the host is not reached, the
-    /// window is gone or its session is not reachable.
     #[wasm_bindgen(js_name = legacyInput)]
     pub async fn legacy_input(
         &self,
@@ -2108,11 +2244,6 @@ impl WasmPeer {
     /// array of `SurfaceStreamStart` labels such as `["h264","vp9"]`), so
     /// sessions stream their legacy windows in `room` in one every member
     /// plays. Resolves `false` when the host predates codec adverts.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed arguments, or when the host is not reached or
-    /// refuses the advert.
     #[wasm_bindgen(js_name = legacyCodecs)]
     pub async fn legacy_codecs(&self, room: String, codecs: String) -> Result<bool, JsError> {
         let request = tilo_relay_protocol::legacy_window::CodecsRequest {
@@ -2222,6 +2353,13 @@ impl WasmPeer {
         crate::replication::has_record(self.id, app, record)
     }
 
+    /// The name of the workspace in front on the room's shared desktop, as
+    /// its people last set it; `undefined` until the room delivered it.
+    #[wasm_bindgen(js_name = workspaceName)]
+    pub fn workspace_name(&self) -> Option<String> {
+        crate::replication::workspace_name(self.id)
+    }
+
     /// The room's records this page holds, as JSON `[{app, record}]`, so a
     /// page can hand a guest the record its desktop created.
     #[wasm_bindgen(js_name = roomRecords)]
@@ -2255,10 +2393,6 @@ impl WasmPeer {
     }
 
     /// Resolve once every published document is durable on the host.
-    ///
-    /// # Errors
-    ///
-    /// Rejects when the host refused a change or the session closed.
     pub async fn flush(&self) -> Result<(), JsError> {
         let (reply, receipt) = tokio::sync::oneshot::channel();
         self.handle
@@ -2273,19 +2407,18 @@ impl WasmPeer {
     }
 
     /// Reconnect now (also after a failure).
-    ///
-    /// # Errors
-    ///
-    /// Throws once the session is closed.
     pub fn reconnect(&self) -> Result<(), JsError> {
         self.handle.reconnect().map_err(js_error)
     }
 
+    /// The network is back: a session waiting to reconnect tries now; a
+    /// connected one stays as it is.
+    #[wasm_bindgen(js_name = retryNow)]
+    pub fn retry_now(&self) -> Result<(), JsError> {
+        self.handle.retry_now().map_err(js_error)
+    }
+
     /// Ask the host for the joined rooms' shared state again.
-    ///
-    /// # Errors
-    ///
-    /// Throws once the session is closed.
     pub fn refresh(&self) -> Result<(), JsError> {
         self.handle.refresh().map_err(js_error)
     }
@@ -2325,6 +2458,9 @@ impl WasmPeer {
     /// (empty for none).
     #[wasm_bindgen(js_name = setDisplayName)]
     pub fn set_display_name(&self, name: String) {
+        if let Some(room) = self.person_room.borrow().as_deref() {
+            name_in_room(&self.handle, room, &name);
+        }
         install_identity(&self.reporter_cert, name);
     }
 
@@ -2333,6 +2469,7 @@ impl WasmPeer {
         self.listeners.borrow_mut().clear();
         self.handle.close();
         crate::replication::close(self.id);
+        crate::person_chat::uninstall();
         ui::local_identity::install_source(None);
     }
 }

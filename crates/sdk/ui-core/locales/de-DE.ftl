@@ -2,6 +2,8 @@ counter = Wert: { $count }
 tab-modified = Nicht gespeicherte Änderungen
 tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
+tab-controls-desktop = Steuert deinen Desktop
+tab-dev-build = Entwicklungsversion von { $installer }
 
 standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…
@@ -24,6 +26,9 @@ host-undo = Widerrufen
 host-undo-named = { $change } widerrufen
 host-redo = Wiederholen
 host-redo-named = { $change } wiederholen
+host-zoom-in = Vergrößern
+host-zoom-out = Verkleinern
+host-zoom-reset = Originalgröße
 host-history-show = Verlauf einblenden
 host-history-hide = Verlauf ausblenden
 host-history-compare = Auswahl vergleichen
@@ -54,8 +59,17 @@ window-toolbar-back = Zurück
 window-toolbar-forward = Vorwärts
 window-toolbar-go = Öffnen
 window-toolbar-more = Weitere Aktionen
+window-toolbar-views = Ansicht
+window-toolbar-suggestions = Vorschläge
+window-toolbar-edited = Bearbeitet
+window-toolbar-view-only = Nur ansehen
+segmented-choose = Auswählen
 window-toolbar-show-sidebar = Seitenleiste einblenden
 window-toolbar-hide-sidebar = Seitenleiste ausblenden
+window-toolbar-show-inspector = Inspektor einblenden
+window-toolbar-hide-inspector = Inspektor ausblenden
+window-share-to-channel = In Kanal teilen…
+window-stop-sharing-in = Teilen in { $place } beenden
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
@@ -109,8 +123,7 @@ history-mode-pending-held-unnamed = Eine Aktion wurde angehalten, während der V
 history-mode-continue = Fortfahren
 history-mode-confirm = Bestätigen
 history-mode-cancel = Abbrechen
-history-mode-confirmation-unavailable = Bestätigung nicht verfügbar
-history-mode-type-to-confirm = Gib { $phrase } ein, um zu bestätigen
+history-mode-type-to-confirm = Gib „{ $phrase }“ ein, um zu bestätigen
 history-mode-owner-gone = Der Besitzer des Verlaufs ist nicht mehr verfügbar
 history-mode-custody-lost = Die ursprüngliche Komponente konnte während des Verlaufs nicht wiederhergestellt werden
 history-mode-control-owner-closed = Der ursprünglich registrierte Besitzer des Steuerelements ist geschlossen
@@ -184,23 +197,54 @@ history-selection-count = { $count ->
    *[other] { $count } Änderungen ausgewählt
 }
 history-selection-name = Benennen
+history-band-name = Benennen
+history-band-rename = Umbenennen
+history-band-undo = Rückgängig
+history-band-restore = Wiederherstellen
+history-entry-revert = Zurücknehmen
+history-entry-copy = Kopieren
+history-band-open = noch offen
+history-band-shown = { $shown } von { $total } angezeigt
+history-redacted = Entfernt von { $who } { $when }: { $reason }
+history-empty = Noch keine Aktivität
+history-empty-filtered = Keine Aktivität passt zu diesen Filtern
+history-empty-hidden = { $count ->
+    [one] Eine Änderung ist geladen, keine wird angezeigt
+   *[other] { $count } Änderungen sind geladen, keine wird angezeigt
+}
+history-empty-hidden-by = { $count ->
+    [one] Eine Änderung ist ausgeblendet durch { $filters }
+   *[other] { $count } Änderungen sind ausgeblendet durch { $filters }
+}
+history-filter-dates = einen Zeitraum
+history-filters-clear = Filter zurücksetzen
+history-entries = Verlaufseinträge
+history-author-anyone = Alle
 history-work-task = Aufgabe
-history-work-agent-run = Agentenlauf
+history-work-agent-run = Lauf
 history-work-shortcut = Kurzbefehl
 history-selection-clear = Aufheben
 history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
+arriving-loading = Wird geladen
+arriving-from = Von { $source }
+arriving-received-of = { $received } von { $total }
+arriving-received = { $received } empfangen
+arriving-failed = Konnte nicht geladen werden
+arriving-retry = Erneut versuchen
+content-unavailable = Keines der verbundenen Geräte hat es
 room-sync-connecting = Verbinde mit { $workspace }…
 room-sync-connecting-unnamed = Verbinde…
 room-sync-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren
 room-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisiert. Deine Änderungen bleiben auf diesem Gerät und erreichen ihn danach.
 room-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
 room-sync-device-needs-update-body = Die Aktualisierung kommt. Bis dahin bleiben deine Änderungen auf diesem Gerät.
-history-local-action-unconfirmed = Das Teilen dieser Änderung wurde nicht bestätigt.
-history-local-action-unsigned = Für diese Änderung gibt es keinen authentifizierten Teilungsverlauf.
-history-local-action-pending = Der Aktionsverlauf wartet auf Bestätigung.
+room-sync-shell-gone = Dieses Fenster hat die Verbindung zu Tilo verloren, daher kann der Inhalt dieses Raums es nicht erreichen. Öffne es erneut.
+history-local-action-not-saved = Diese Änderung konnte nicht in deinem Verlauf gespeichert werden.
+history-local-action-retry = Erneut versuchen
+history-local-action-unrecorded = Deine Änderungen in diesem Fenster sind gespeichert, aber dein Verlauf zeichnet sie nicht auf.
 
 history-sync-refused = Synchronisierung angehalten: Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Deine Änderungen bleiben auf diesem Gerät.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
@@ -287,11 +331,6 @@ table-add-row = Zeile hinzufügen
 table-add-column = Spalte hinzufügen
 
 block-editor-empty = Etwas schreiben…
-block-editor-find-placeholder = In Notiz suchen
-block-editor-find-no-results = Keine Ergebnisse
-block-editor-find-previous = Vorheriger Treffer
-block-editor-find-next = Nächster Treffer
-block-editor-find-close = Suche schließen
 block-editor-change-type = Blocktyp ändern
 block-editor-copy-code-hint = Code kopieren
 
@@ -319,9 +358,10 @@ widget-filepicker-name-placeholder = Dateiname …
 widget-filepicker-name-invalid = Das ist kein Dateiname.
 widget-filepicker-name-no-folder = Es gibt keinen Ordner „{ $folder }“.
 widget-filepicker-name-not-allowed = Diese App kann nicht in „{ $folder }“ speichern.
-widget-filepicker-column-name = Name
-widget-filepicker-column-size = Größe
-widget-filepicker-column-modified = Geändert
+widget-filetable-column-name = Name
+widget-filetable-column-size = Größe
+widget-filetable-column-modified = Geändert
+widget-filetable-column-kind = Art
 widget-filepicker-empty = Dieser Ordner ist leer
 widget-filepicker-place-home = Persönlicher Ordner
 widget-filepicker-place-documents = Dokumente
@@ -329,6 +369,20 @@ widget-filepicker-place-downloads = Downloads
 widget-filepicker-place-pictures = Bilder
 widget-filepicker-place-music = Musik
 widget-filepicker-place-videos = Videos
+widget-filepicker-place-recent = Zuletzt
+widget-filepicker-search = Suchen
+widget-filepicker-search-results = Suchergebnisse
+widget-filepicker-location = Ort
+widget-filepicker-recent-empty = Hier wurde noch nichts ausgewählt
+widget-filepicker-no-matches = Keine Treffer
+widget-filepicker-wants-open-file = { $app } möchte eine Datei öffnen
+widget-filepicker-wants-open-files = { $app } möchte Dateien öffnen
+widget-filepicker-wants-save-file = { $app } möchte eine Datei speichern
+widget-filepicker-wants-choose-folder = { $app } möchte einen Ordner verwenden
+widget-filepicker-title-open-file = Datei öffnen
+widget-filepicker-title-open-files = Dateien öffnen
+widget-filepicker-title-save-file = Datei speichern
+widget-filepicker-title-choose-folder = Ordner auswählen
 
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
@@ -344,6 +398,26 @@ tree-move-outdent = Aus dem übergeordneten Element verschieben
 # The show/hide control inside every password field.
 text-input-show-password = Passwort anzeigen
 text-input-hide-password = Passwort verbergen
+
+# The password prompt every secret in Tilo is asked by.
+secret-prompt-continue = Weiter
+secret-prompt-cancel = Abbrechen
+secret-prompt-username = Benutzername
+secret-prompt-password = Passwort
+secret-prompt-pin = PIN
+secret-prompt-puk = PUK
+secret-prompt-new-pin = Neue PIN
+secret-prompt-confirm-pin = Neue PIN bestätigen
+secret-prompt-caps-lock = Feststelltaste ist aktiv
+secret-prompt-pin-length = { $min } bis { $max } Ziffern
+secret-prompt-pin-length-exact = { $count } Ziffern
+secret-prompt-attempts-left = { $count ->
+    [one] Noch ein Versuch
+   *[other] Noch { $count } Versuche
+}
+secret-prompt-pins-differ = Die neuen PINs stimmen nicht überein
+secret-prompt-keypad-delete = Löschen
+secret-prompt-keypad-enter = Fertig
 
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Willkommen zurück
@@ -562,13 +636,11 @@ history-day-earlier = Früher
 
 save-status-stalled = Noch nicht gespeichert. Neuer Versuch…
 save-status-not-saved = Nicht gespeichert
-save-status-not-saved-detail = Deine Änderungen sind noch da.
 save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
 save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
 save-status-retry = Erneut versuchen
-save-status-dismiss = Schließen
 
 # Suchleiste: das Band oben in einem Dokument, das darin sucht.
 find-bar-name = Suchen
@@ -591,18 +663,16 @@ widget-mention-shortcut = Kurzbefehl
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
+mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
+mention-notice-channel = { $name } hat dich in { $channel } erwähnt
+mention-notice = { $name } hat dich erwähnt
+mention-notice-someone = Jemand
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
 
 widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
 widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
-
-block-editor-replace-placeholder = Ersetzen durch
-block-editor-replace = Ersetzen
-
-block-editor-replace-all = Alle ersetzen
-block-editor-replace-all-help = Umschalt+Enter im Ersetzungsfeld ersetzt alle
 
 block-callout-note = Hinweis
 block-callout-tip = Tipp
@@ -634,6 +704,11 @@ filter-menu-no-matches = Keine Treffer
 
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
+widget-inspector = Inspektor
+widget-sheet-height = Höhe
+widget-sheet-peek = Abgesenkt
+widget-sheet-half = Halbe Höhe
+widget-sheet-full = Volle Höhe
 
 dictation-record-once = Einmal aufnehmen
 dictation-finish = Fertig
@@ -649,10 +724,10 @@ host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Be
 
 # Shared native screen topology canvas
 display-arrangement-name = Bildschirmanordnung
-display-arrangement-description = Zieh einen Bildschirm neben einen anderen, um ihn dort zu platzieren. Das Positionsmenü jedes Bildschirms erledigt dasselbe per Tastatur.
+display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl einen aus, und die Pfeiltasten verschieben ihn.
 display-arrangement-empty = Keine Bildschirme zum Anordnen
 display-arrangement-item = Bildschirm { $number }: { $name }
-display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär
+display-arrangement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
 display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 
 device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
@@ -674,6 +749,8 @@ framework-unreadable = Dies kann nicht geöffnet werden
 framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier gespeichert ist. Es wurde nichts verändert; ein Update der App kann es öffnen.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+file-open-drop-hint = Oder eine Datei hier ablegen
+file-open-release = Zum Öffnen loslassen
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.
@@ -683,24 +760,22 @@ display-arrangement-offline-excluded = Offline, nicht in der Anordnung
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status } · { $name }
 
-# Suche: Einstiegsgruppen in der leeren Anwendungsliste
-search-apps-group-start-here = Zum Einstieg
-search-apps-group-everyday = Alltag
-search-apps-group-work = Arbeit
-search-apps-group-media = Medien
-search-apps-group-system-tools = Systemwerkzeuge
-search-apps-group-more-apps = Weitere Apps
-search-apps-group-developer-tools = Entwicklerwerkzeuge
+# Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
+search-show-all = Alle { $count } zeigen
+search-no-matches = Keine Treffer
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot
+author-via-chip = über { $service }
+author-from-service = Aus { $service }
+author-from-service-as = Aus { $service } als { $handle }
 author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name } · { $service }
 
-# Context menu entry: ask the desktop agent about what is selected here.
-ask-agent-about-selection = Agent fragen…
+# Context menu entry: tell an agent to do something with what the menu is about.
+tell-agent = Einem Agenten sagen…
 
 widget-screenshot-saved = Gespeichert
 widget-screenshot-copied = Kopiert
@@ -710,41 +785,64 @@ widget-screenshot-edit = Bearbeiten
 widget-screenshot-open = Öffnen
 widget-screenshot-reveal = In Dateien zeigen
 widget-screenshot-send = Senden…
+widget-capture-title = Erfassen
 widget-capture-dismiss = Schließen
 widget-capture-mode-screenshot = Bildschirmfoto
 widget-capture-mode-recording = Aufnahme
-widget-capture-mode-pip = Bild im Bild
-widget-capture-source-region = Bereich
+widget-capture-mode-pip = BiB
+widget-capture-mode-pip-name = Bild im Bild
+widget-capture-source-region = Auswahl
 widget-capture-source-window = Fenster
 widget-capture-source-display = Bildschirm
-widget-capture-source-several = Mehrere
-widget-capture-extent-visible = Sichtbarer Teil
-widget-capture-extent-full-app = Ganze App
-widget-capture-extent-strip = Ganze Leiste
+widget-capture-source-strip = Leiste
+widget-capture-options = Optionen
+widget-capture-delay = Verzögerung
+widget-capture-delay-none = Ohne Verzögerung
+widget-capture-delay-choice = { $seconds } Sekunden
+widget-capture-pointer = Zeiger zeigen
+widget-capture-system-audio = Systemton
+widget-capture-microphone = Mikrofon
+widget-capture-keep-recent = Letzte 30 s behalten
+widget-capture-combine = Auswahlen kombinieren
 widget-capture-layout-auto = Angeordnet
 widget-capture-layout-grid = Raster
 widget-capture-layout-stack = Gestapelt
-widget-capture-pointer = Zeiger
-widget-capture-system-audio = Systemton
-widget-capture-microphone = Mikrofon
-widget-capture-delay-off = Ohne Verzögerung
-widget-capture-delay-seconds = { $seconds } s Verzögerung
-widget-capture-delay-none = Ohne Verzögerung
-widget-capture-delay-choice = { $seconds } Sekunden
-widget-capture-pin = Anheften
-widget-capture-keep-recent = Letzte 30 s behalten
 widget-capture-take = Bildschirmfoto aufnehmen
 widget-capture-record = Aufnahme starten
+widget-capture-stop = Aufnahme beenden
 widget-capture-create-pip = Bild im Bild erstellen
-widget-capture-hint-mode = Modus
-widget-capture-hint-source = Quelle
-widget-capture-hint-delay = Verzögerung
-widget-capture-hint-close = Schließen
-widget-capture-offscreen-app = { $app } (nicht sichtbar)
 widget-capture-remove-selection = Diese Auswahl entfernen
+widget-recording-saved = Aufnahme gespeichert
+widget-recording-play = Abspielen
+widget-replay-save = Letzte 30 s speichern
+widget-replay-stop = Letzte 30 s nicht mehr behalten
 widget-screenshot-send-workspace = In den Dateien dieses Arbeitsbereichs speichern
 widget-screenshot-send-no-device = Kein anderes Gerät ist online
 widget-screenshot-send-device = An { $device } senden
+widget-markup-title = Markieren
+widget-markup-close = Schließen
+widget-markup-undo = Rückgängig
+widget-markup-redo = Wiederholen
+widget-markup-tools-pen = Stiftwerkzeuge
+widget-markup-tools-highlighter = Markerwerkzeuge
+widget-markup-tools-arrow = Pfeilwerkzeuge
+widget-markup-tools-rectangle = Formwerkzeuge
+widget-markup-tools-redact = Schwärzungswerkzeuge
+widget-markup-tool-pen = Stift
+widget-markup-tool-highlighter = Marker
+widget-markup-tool-arrow = Pfeil
+widget-markup-tool-rectangle = Rechteck
+widget-markup-tool-redact = Schwärzen
+widget-markup-fit = Bild einpassen
+widget-markup-colors = Farben
+widget-markup-color-red = Rot
+widget-markup-color-yellow = Gelb
+widget-markup-color-blue = Blau
+widget-markup-color-green = Grün
+widget-markup-color-white = Weiß
+widget-markup-open = In App öffnen
+widget-markup-copy = Kopieren
+widget-markup-save = Kopie speichern
 
 ## Block editor
 block-a11y-formula-source = Quelltext-Editor
@@ -761,6 +859,7 @@ block-a11y-table-row = Zeile { $row }
 block-a11y-table = Tabelle
 block-a11y-open-link = Verlinkte Notiz öffnen
 block-a11y-open-external = Weblink öffnen
+block-a11y-open-resource = { $label } öffnen
 block-a11y-block = { $kind }-Block { $position }
 block-a11y-level = Ebene { $level }
 block-a11y-document = Ziehe den Griff eines Blocks, um ihn zu verschieben. Alt+Pfeil hoch und Alt+Pfeil runter verschieben den fokussierten Block. Tab rückt ihn unter den Block darüber ein, Umschalt+Tab wieder aus; Escape, dann Tab, verlässt den Editor.
@@ -784,15 +883,15 @@ block-embed-missing = Die verlinkte Notiz wurde gelöscht.
 block-kind-code-short = Code
 block-table-add-cell = Zelle hinzufügen
 
-window-search-open = Suchen
 window-search-name = In diesem Fenster suchen
 window-search-placeholder = Suchen
 window-search-app = In { $app } suchen
 window-search-this-app = In dieser App suchen
 window-search-everywhere = Überall suchen
 window-search-close = Suche schließen
+window-search-options = Suchoptionen
+window-search-replace-options = Suchoptionen und Ersetzen
 history-panel-title = Verlauf
-history-panel-close = Verlauf schließen
 history-panel-selected-changes = { $count } Änderungen
 history-mode-restore-change = Nur diese Änderung wiederherstellen
 history-panel-name = Diese Änderungen benennen
@@ -807,3 +906,136 @@ workspace-identity-required-choose = Identität wählen
 date-field-none = Kein Datum
 date-field-calendar = Kalender
 date-field-clear = Datum entfernen
+
+# Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
+text-menu-cut = Ausschneiden
+text-menu-copy = Kopieren
+text-menu-paste = Einfügen
+text-menu-paste-plain = Ohne Formatierung einfügen
+text-menu-select-all = Alles auswählen
+text-menu-bold = Fett
+text-menu-italic = Kursiv
+text-menu-underline = Unterstrichen
+text-menu-strikethrough = Durchgestrichen
+text-menu-bulleted-list = Aufzählung
+text-menu-numbered-list = Nummerierte Liste
+
+# A reference to something another app keeps, shown as a chip; $label is its name.
+reference-open = { $label } öffnen
+
+# A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
+signal-meter-unknown = Signalstärke unbekannt
+signal-meter-weak = Schwaches Signal
+signal-meter-fair = Mittleres Signal
+signal-meter-good = Gutes Signal
+signal-meter-strong = Starkes Signal
+
+reaction-strip-add = Reaktion hinzufügen
+reaction-strip-react = Reaktion { $emoji } hinzufügen
+reaction-strip-unreact = Reaktion { $emoji } entfernen
+reaction-strip-count = { $count ->
+    [one] Eine Reaktion
+   *[other] { $count } Reaktionen
+}
+reaction-strip-you = Du
+reaction-strip-reacted-one = { $first } hat mit { $emoji } reagiert
+reaction-strip-reacted-two = { $first } und { $second } haben mit { $emoji } reagiert
+reaction-strip-reacted-three = { $first }, { $second } und { $third } haben mit { $emoji } reagiert
+reaction-strip-reacted-more = { $first }, { $second } und { $others ->
+    [one] eine weitere Person
+   *[other] { $others } weitere
+} haben mit { $emoji } reagiert
+
+emoji-chooser-title = Emoji
+emoji-chooser-search = Emoji suchen
+emoji-chooser-groups = Emoji-Kategorien
+emoji-chooser-workspace = Arbeitsbereich
+emoji-chooser-recent = Zuletzt verwendet
+emoji-chooser-results = Passende Emoji
+emoji-chooser-no-results = Keine Emoji gefunden
+emoji-chooser-arriving = Weitere Emoji kommen gleich
+emoji-chooser-add = Emoji hinzufügen
+emoji-chooser-add-failed = Das Bild konnte nicht hinzugefügt werden: { $reason }
+emoji-chooser-tones = Hauttöne
+emoji-chooser-tone-hint = Hautton wählen
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = heller Hautton
+emoji-chooser-tone-medium-light = mittelheller Hautton
+emoji-chooser-tone-medium = mittlerer Hautton
+emoji-chooser-tone-medium-dark = mitteldunkler Hautton
+emoji-chooser-tone-dark = dunkler Hautton
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Emoji hinzufügen
+workspace-emoji-choose-accept = Hinzufügen
+workspace-emoji-image-files = Bilder
+workspace-emoji-loading = die Bildwerkzeuge laden noch
+workspace-emoji-not-a-picture = es ist kein PNG, JPEG oder WebP
+workspace-emoji-too-detailed = es ist zu detailreich für ein Emoji
+workspace-emoji-unavailable = die Emoji dieses Arbeitsbereichs sind nicht verfügbar
+workspace-emoji-not-allowed = du darfst hier keine Emoji hinzufügen
+# Der Gesprächs-Grundbaustein: Zustellvokabular und die Anhangsleiter.
+conversation-delivery-queued = In der Warteschlange
+conversation-delivery-sending = Wird gesendet
+conversation-delivery-submitted = Übermittelt
+conversation-delivery-sent = Gesendet
+conversation-delivery-delivered = Zugestellt
+conversation-delivery-read = Gelesen
+conversation-delivery-failed = Nicht gesendet
+conversation-delivery-uncertain = Status unklar
+conversation-attachment-open = Öffnen
+conversation-attachment-open-full-size = In voller Größe öffnen
+conversation-attachment-save = Speichern
+conversation-attachment-save-as = Speichern unter …
+conversation-attachment-open-saved = Gespeicherte Kopie öffnen
+conversation-attachment-no-access = Diese Datei ist nicht für dich freigegeben
+conversation-attachment-unavailable = Diese Datei ist nicht auf diesem Gerät
+conversation-attachment-uploading = Wird hochgeladen
+conversation-attachment-cancel-upload = Cancel upload
+conversation-attachment-upload-cancelled = Upload cancelled
+conversation-attachment-saved = eine Kopie auf diesem Gerät
+conversation-attachment-save-failed = Couldn’t save the file
+conversation-attachment-image = Image
+conversation-attachment-video = Video
+conversation-attachment-file = File
+conversation-draft = Draft
+conversation-draft-preview = Draft: {$text}
+conversation-unread = Unread message
+conversation-day-earlier = {$date}
+# Jobs: what is running. A job's row says what it is doing and how far.
+jobs-starting = Wird gestartet
+jobs-phase-of = { $phase }: { $done } von { $total }
+jobs-phase-seen = { $phase }: { $seen }
+jobs-percent = { $percent } %
+jobs-bar-of = { $done } von { $total }
+jobs-failed = Nicht fertig geworden: { $reason }
+jobs-stopped = Angehalten
+jobs-stop = Anhalten
+jobs-stopping = Wird angehalten
+jobs-show-me = Zeigen
+jobs-read = Gelesen
+jobs-more = Noch { $count }
+jobs-running-heading = Läuft
+jobs-finished-heading = Beendet
+jobs-none = Es läuft nichts
+jobs-none-message = Alles, was länger dauert, steht währenddessen da und sagt, wie es geendet hat.
+
+jobs-files-one = { $count } Datei
+jobs-files = { $count } Dateien
+jobs-items-one = { $count } Element
+jobs-items = { $count } Elemente
+jobs-steps-one = { $count } Schritt
+jobs-steps = { $count } Schritte
+
+# Needs you: what wants a person.
+attention-blocking = Jetzt
+attention-waiting = Wartet
+attention-noted = Gut zu wissen
+attention-none = Nichts braucht dich
+attention-none-message = Was auf deine Entscheidung wartet, wartet weiter.
+attention-because = { $about }, { $because }
+attention-defer = Für später beiseitelegen
+attention-deferred-one = { $count } beiseitegelegt
+attention-deferred = { $count } beiseitegelegt
+attention-pill-one = { $count } wartet
+attention-pill = { $count } warten

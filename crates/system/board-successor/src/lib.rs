@@ -90,9 +90,6 @@ impl std::error::Error for Error {}
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// `require(condition, message)`.
-///
-/// # Errors
-/// `message` when `condition` is false.
 pub fn require(condition: bool, message: impl Into<String>) -> Result<()> {
     if condition {
         Ok(())
@@ -155,10 +152,6 @@ pub fn json_loads_bytes(bytes: &[u8]) -> Result<Value> {
 
 /// The installed profile when this is an official release image of the
 /// board this helper serves; `None` for any other image.
-///
-/// # Errors
-/// A profile the hardware-profile reader refuses, or a board image whose
-/// update origin is not an official immutable release.
 pub fn installed_profile(root: &Root) -> Result<Option<Map<String, Value>>> {
     let Some(profile) = read_profile(root)? else {
         return Ok(None);

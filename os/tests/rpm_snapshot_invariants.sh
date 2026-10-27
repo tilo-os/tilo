@@ -4,10 +4,12 @@
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-workflow="$repo/.forgejo/workflows/build-rpms.yml"
+# t builds, signs and publishes the snapshot (t.toml's image-rpms-<arch>, image-rpms,
+# provenance-rpms, sign-rpms, publish-rpms, generated from tools/ci/products.toml).
+t_toml="$repo/t.toml"
+rpms_build="$repo/tools/ci/publish/rpms-build.sh"
+rpms_provenance="$repo/tools/ci/publish/rpms-provenance.sh"
 snapshot="$repo/os/Containerfile.rpms"
-image_workflow="$repo/.forgejo/workflows/build-image.yml"
-relay_workflow="$repo/.forgejo/workflows/release-relay.yml"
 build_script="$repo/os/dev/build-image.sh"
 asset_manifest="$repo/os/external-assets/github-assets.tsv"
 derive="$repo/os/dev/derive-rpm-package-set.py"
@@ -19,6 +21,32 @@ has() {
   local file="$1" needle="$2" message="$3"
   grep -Fq -- "$needle" "$file" && ok "$message" || bad "$message"
 }
+# A t check's field, one value per line (a string as itself, an array per element, a table as
+# key=value); fails when
+# t.toml declares no such check, so a renamed check cannot pass unobserved.
+tcheck() {
+  python3 - "$t_toml" "$1" "$2" <<'PY'
+import sys, tomllib
+config = tomllib.load(open(sys.argv[1], "rb"))
+for check in config.get("check", []):
+    if check.get("name") == sys.argv[2]:
+        value = check.get(sys.argv[3], [])
+        if isinstance(value, dict):
+            value = [f"{key}={item}" for key, item in value.items()]
+        print("\n".join(map(str, value)) if isinstance(value, list) else value)
+        sys.exit(0)
+sys.exit(f"t.toml declares no check {sys.argv[2]}")
+PY
+}
+# has_t CHECK FIELD LINE MESSAGE: the field has LINE as one of its values (an array) or one of
+# its lines (a run script).
+has_t() {
+  local values
+  values="$(tcheck "$1" "$2")" && grep -Fxq -- "$3" <<<"$values" && ok "$4" || bad "$4"
+}
+for check in image-rpms-{arch} image-rpms provenance-rpms sign-rpms publish-rpms rpm-snapshot; do
+  tcheck "$check" name >/dev/null || bad "t.toml declares $check"
+done
 
 # Checks read job text from here-strings, not `printf | grep -q`: under
 # pipefail, grep exiting at its first match can SIGPIPE the writer.
@@ -39,7 +67,8 @@ for file in "${frozen_consumers[@]}"; do
   grep -Fxq "$relative" <<<"$("$derive" --sources)" \
     && ok "$relative contributes packages to the snapshot parser" \
     || bad "$relative consumes frozen RPMs but is absent from the snapshot parser"
-  has "$workflow" "- $relative" "$relative changes retrigger the RPM snapshot"
+  has_t image-rpms-{arch} inputs "$relative" "$relative changes rebuild the RPM snapshot"
+  has_t provenance-rpms inputs "$relative" "$relative changes the snapshot's fingerprint and provenance"
 done
 
 # Exercise the workflow's package grammar over its declared sources. Apart
@@ -81,59 +110,67 @@ if grep -Fxq edk2-aarch64 <<<"$arm_packages" \
 else
   bad 'Windows VM firmware package selection crosses architectures'
 fi
-has "$workflow" "--arch '\${{ matrix.arch }}'" \
-  'snapshot package selection uses the explicit native matrix architecture'
-
-has "$workflow" './os/dev/derive-rpm-package-set.py' \
-  'snapshot workflow uses the invariant-tested package parser'
-has "$workflow" 'runner: runner-arm64' \
-  'snapshot builds ARM64 dependencies on a native runner'
-snapshot_job=$(awk '/^  snapshot:/{p=1} p && /^  promote-snapshot:/{exit} p' "$workflow")
-if grep -Fq 'Install and check native snapshot host tools' <<<"$snapshot_job" \
-  && grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' <<<"$snapshot_job" \
-  && [[ $(printf '%s\n' "$snapshot_job" | grep -nF 'Install and check native snapshot host tools' | head -1 | cut -d: -f1) -lt $(printf '%s\n' "$snapshot_job" | grep -nF 'Ensure the digest-pinned base is mirrored' | head -1 | cut -d: -f1) ]]; then
-  ok 'native RPM snapshot installs and checks host tools before accessing the base'
-else
-  bad 'native RPM snapshot may access the base without its required host tools'
-fi
-has "$workflow" 'platforms: ${{ matrix.platform }}' \
+has "$rpms_build" 'packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch"' \
+  'snapshot package selection uses the invariant-tested parser for the explicit native architecture'
+# Each architecture's snapshot is built on a node of that architecture, and refuses any other.
+has_t image-rpms-{arch} requires 'arch={arch}' \
+  'snapshot builds each architecture on a native node'
+has "$rpms_build" '[[ $(uname -m) == "$arch" ]] || die' \
+  'snapshot build refuses a foreign architecture'
+has "$rpms_build" '--platform "$platform"' \
   'snapshot explicitly selects each native OCI platform'
-has "$workflow" 'needs: [fingerprint, snapshot]' \
-  'snapshot promotion waits for every native build'
-has "$workflow" 'needs: [fingerprint, signing-preflight]' \
-  'expensive native snapshot builds wait for signing-authority preflight'
-has "$workflow" 'python3 os/dev/promote-native-index.py' \
-  'snapshot promotion verifies signed native children'
-has "$workflow" 'python3 os/dev/rpm-snapshot-fingerprint.py' \
-  'snapshot workflow computes the package-set fingerprint'
-has "$workflow" './os/dev/resolve-rpm-snapshot.sh' \
-  'snapshot workflow resolves the fingerprint tag to a verified digest'
-if ! grep -Fq 'workflow_call:' "$workflow"; then
-  ok 'snapshot signing runs only in standalone workflows with OIDC'
+has_t image-rpms needs 'image-rpms-x86_64' 'the snapshot index waits for the x86-64 build'
+has_t image-rpms needs 'image-rpms-aarch64' 'the snapshot index waits for the ARM64 build'
+for need in image-rpms image-rpms-x86_64 image-rpms-aarch64 provenance-rpms; do
+  has_t sign-rpms needs "$need" "snapshot signing waits for $need"
+done
+has_t publish-rpms needs sign-rpms 'snapshot publication waits for its signatures'
+# The signing check signs both native children and the index, each against the digest its
+# build recorded, and verifies each signature against keys/cosign.pub before anything publishes.
+for out in x86_64 aarch64 index; do
+  has_t sign-rpms run "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/$out" \
+    "snapshot signing signs the $out image"
+done
+has "$repo/tools/ci/publish/oci-sign.sh" '[[ $actual == "$expected" ]] || die' \
+  'signing refuses any digest but the one the build produced'
+has "$repo/tools/ci/publish/oci-sign.sh" 'public_key=$repo_root/keys/cosign.pub' \
+  'release signatures are verified against the pinned public key'
+has "$rpms_provenance" 'fingerprint=$(python3 os/dev/rpm-snapshot-fingerprint.py)' \
+  'snapshot provenance computes the package-set fingerprint'
+has_t rpm-snapshot run 'bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot' \
+  'snapshot consumers resolve it through rpm-snapshot-ref.sh'
+has "$repo/tools/ci/publish/rpm-snapshot-ref.sh" 'ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh")' \
+  'snapshot consumers resolve the fingerprint tag to a verified digest'
+# Signing holds the identity token only on stable, never on main or a working tree.
+has_t sign-rpms on stable 'snapshot signing runs on stable only'
+[ "$(tcheck sign-rpms on)" = stable ] && ok 'snapshot signing runs on no other reference' \
+  || bad 'snapshot signing runs on a reference other than stable'
+has_t sign-rpms id_token sts.amazonaws.com 'snapshot signing exchanges its own identity token for the signing role'
+has_t publish-rpms run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/index 'once:set-{fingerprint}'" \
+  'snapshot publication publishes the set-<fingerprint> tag once'
+rpms_chain="$(for check in image-rpms-{arch} image-rpms provenance-rpms sign-rpms publish-rpms; do tcheck "$check" run; done)"
+if ! grep -Eq 'open-snapshot-pr\.py|reconcile-snapshot-pins\.py|rpms-snapshot\.env' \
+     <<<"$rpms_chain" "$rpms_build" "$rpms_provenance" \
+   && grep -Fq 'once:set-{fingerprint}' <<<"$rpms_chain"; then
+  ok 'snapshot publishes by fingerprint tag with no pin pull request'
 else
-  bad 'snapshot signing is exposed through a reusable workflow without OIDC'
+  bad 'snapshot still opens or reconciles a hand-kept pin'
 fi
-has "$workflow" '--tag "$FINGERPRINT_TAG"' \
-  'snapshot promotion publishes the set-<fingerprint> tag'
-has "$workflow" 'needs: [fingerprint, signing-preflight]' \
-  'expensive native snapshot builds wait for fingerprint and signing preflight'
-if ! grep -Eq 'open-snapshot-pr\.py|reconcile-snapshot-pins\.py|rpms-snapshot\.env' "$workflow" \
-   && grep -Fq 'set-' "$workflow"; then
-  ok 'snapshot workflow publishes by fingerprint tag with no pin pull request'
-else
-  bad 'snapshot workflow still opens or reconciles a hand-kept pin'
-fi
-kernel_workflow="$repo/.forgejo/workflows/build-kernel.yml"
-if ! grep -Eq 'RPMS_REF|rpms-snapshot\.env|resolve-rpm-snapshot' "$kernel_workflow" \
-   && ! grep -Eq 'from=rpms|RPMS_REF' "$repo/os/kernel/Containerfile"; then
+kernel_sources=(
+  "$repo/tools/ci/publish/kernel.sh"
+  "$repo/tools/ci/publish/kernel-buildroot.sh"
+  "$repo/tools/ci/publish/kernel-acceptance.sh"
+  "$repo/os/kernel/Containerfile"
+)
+kernel_needs=""
+for check in image-kernel-{arch} image-kernel-buildroot-{arch} kernel-acceptance-{arch} provenance-kernel; do
+  kernel_needs+="$(tcheck "$check" needs)"$'\n' || bad "t.toml declares $check"
+done
+if ! grep -Eq 'from=rpms|RPMS_REF|rpms-snapshot\.env|resolve-rpm-snapshot' "${kernel_sources[@]}" \
+   && ! grep -Eq '^(rpm-snapshot|image-rpms.*|publish-rpms)$' <<<"$kernel_needs"; then
   ok 'the kernel remains independent of the frozen RPM snapshot'
 else
   bad 'the kernel still depends on the frozen RPM snapshot'
-fi
-if grep -Fq 'actions/workflows/build-image.yml/dispatches' "$workflow"; then
-  bad 'snapshot promotion dispatches an image build before resolve completes'
-else
-  ok 'snapshot promotion leaves image builds to their ensure-rpms dependency'
 fi
 has "$repo/os/dev/configure-cosign-kms.sh" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
@@ -142,8 +179,10 @@ if COSIGN_KEY_REF='cosign.key' sh -c '. "$1"' fixture "$repo/os/dev/configure-co
 else
   ok 'every signing step refuses a key outside a KMS/HSM'
 fi
-has "$workflow" '. os/dev/configure-cosign-kms.sh' \
+has "$repo/tools/ci/publish/oci-sign.sh" '. "$repo_root/os/dev/configure-cosign-kms.sh"' \
   'snapshot signing configures the KMS provider from its trusted key reference'
+grep -q '^COSIGN_KEY_REF=awskms:///' <<<"$(tcheck sign-rpms env)" \
+  && ok 'snapshot signing names a KMS key' || bad 'snapshot signing names no KMS key'
 oidc_fixture="$(mktemp -d)"
 printf '{"value":"e30.eyJpc3MiOiJodHRwczovL2ZvcmdlLmV4YW1wbGUvYXBpL2FjdGlvbnMiLCJhdWQiOiJ0aWxvLXJlbGVhc2Utc2lnbmluZyIsInN1YiI6InRlc3Qtc3ViamVjdCJ9.signature"}\n' \
   > "$oidc_fixture/token&audience=tilo-release-signing"
@@ -202,19 +241,21 @@ if COSIGN_KEY_REF='awskms:///not-an-arn' \
 else
   ok 'malformed AWS KMS key references fail closed'
 fi
-if grep -Fq 'run: os/dev/require-cosign-authority.sh' "$workflow" \
-   && grep -Fq 'needs: [fingerprint, signing-preflight]' "$workflow"; then
-  ok 'snapshot construction starts only after KMS authority matches the pinned public key'
-else
-  bad 'snapshot construction can start before its signing authority is identity-bound'
-fi
-has "$workflow" 'https://tilo.sh/buildtypes/frozen-rpm-index/v1' \
+has "$rpms_provenance" '"buildType": "https://tilo.sh/buildtypes/frozen-rpm-index/v1"' \
   'snapshot provenance binds the package-set build type'
-has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
+has "$rpms_provenance" '"internalParameters": {"expectedReleaseDigest": digest}' \
+  'snapshot provenance binds the index digest'
+has_t sign-rpms run 'bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index' \
+  'snapshot signing attests the index provenance'
+has "$repo/tools/ci/publish/oci-attest.sh" 'type=${4:-slsaprovenance1}' \
+  'snapshot provenance is attested as SLSA provenance'
+has "$repo/tools/ci/publish/oci-attest.sh" 'args=(--yes --type "$type" --predicate "$predicate"' \
   'snapshot publishes signed SLSA provenance'
-has "$workflow" 'if type == "array" then .[] else . end' \
-  'snapshot verification accepts current object and legacy array Cosign output'
+has "$repo/tools/ci/publish/oci-attest.sh" 'die "the provenance predicate is not for $expected"' \
+  'attestation refuses a predicate for another digest'
 resolve_script="$repo/os/dev/resolve-rpm-snapshot.sh"
+has "$resolve_script" 'if type == "array" then .[] else . end' \
+  'snapshot verification accepts current object and legacy array Cosign output'
 has "$resolve_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'fingerprint resolve verifies exact RPM snapshot provenance'
 has "$resolve_script" 'derive-rpm-package-set.py" --arch x86_64' \
@@ -223,32 +264,28 @@ has "$resolve_script" 'derive-rpm-package-set.py" --arch aarch64' \
   'fingerprint resolve derives the explicit ARM64 RPM package set'
 has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' \
   'fingerprint resolve verifies architecture-specific RPM package-set provenance'
-has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
-  'OS CI resolves RPMS_REF by fingerprint before building'
-has "$repo/os/dev/await-rpm-snapshot.sh" 'resolve="$repo/os/dev/resolve-rpm-snapshot.sh"' \
-  'waiting for an in-flight snapshot still resolves through the verified resolver'
-for consumer in "$image_workflow" "$relay_workflow"; do
-  resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$consumer")
-  if grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' <<<"$resolver_job" \
-    && grep -Fq './os/dev/await-rpm-snapshot.sh' <<<"$resolver_job" \
-    && grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' <<<"$resolver_job" \
-    && ! grep -Fq 'uses: ./.forgejo/workflows/build-rpms.yml' <<<"$resolver_job" \
-    && ! grep -Fq 'enable-openid-connect: true' <<<"$resolver_job"; then
-    ok "$(basename "$consumer") resolves the signed RPM fingerprint without reusable OIDC"
-  else
-    bad "$(basename "$consumer") may sign in a reusable job or accept an unverified RPM snapshot"
-  fi
-done
+# The relay image installs only from the snapshot rpm-snapshot resolved and verified.
+has_t image-relay needs rpm-snapshot 'the relay image builds from the verified RPM snapshot'
+# It takes the published snapshot only as a digest-pinned reference; a build of a package set
+# stable has not published (the run's own image-rpms) records so and is never signed.
+has "$repo/tools/ci/publish/relay-build.sh" 'snapshot_for_build "$snapshot" "$rpms" x86_64' \
+  'the relay image installs from the snapshot rpm-snapshot named'
+has "$repo/tools/ci/publish/lib.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' \
+  'the relay image accepts only a digest-pinned published RPM snapshot'
+has "$repo/tools/ci/publish/oci-sign.sh" 'require_published_snapshot "$out/rpms-source"' \
+  'an image built from an unpublished RPM snapshot is never signed'
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
-has "$workflow" '- os/dev/derive-rpm-package-set.py' \
-  'package parser changes retrigger the snapshot'
+has_t image-rpms-{arch} inputs 'os/dev/derive-rpm-package-set.py' \
+  'package parser changes rebuild the snapshot'
+has_t provenance-rpms inputs 'os/dev/derive-rpm-package-set.py' \
+  'package parser changes the snapshot fingerprint'
 
-has "$workflow" '- os/external-assets/github-assets.tsv' \
-  'pinned external asset changes retrigger the snapshot'
-has "$workflow" 'uses: ./.forgejo/actions/cache-github-assets' \
-  'snapshot materializes checksum-verified external inputs'
-has "$workflow" 'github-assets=os/external-assets/cache' \
+has_t image-rpms-{arch} inputs 'os/external-assets/github-assets.tsv' \
+  'pinned external asset changes rebuild the snapshot'
+has "$rpms_build" 'assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)' \
+  'snapshot takes the checksum-verified external input from os-assets'
+has "$rpms_build" '--build-context "github-assets=$assets"' \
   'snapshot receives only the materialized external-input cache'
 has "$snapshot" '/tilo-assets/virtio-win-0.1.302-1.noarch.rpm' \
   'snapshot caches the content-pinned virtio RPM for selective extraction'
@@ -291,26 +328,18 @@ has "$snapshot" 'dnf upgrade -y --best --store=/tmp/tilo-upgrade' \
   'snapshot includes upgrades of installed direct specs and their reverse dependencies'
 has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
   'snapshot proves the best frozen transaction resolves offline without skipped specs'
-has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"' \
-  'production CI rejects a stale frozen package manifest before building'
 has "$resolve_script" 'registry.tilo.so/tilo/rpms@$digest' \
   'fingerprint resolve returns a digest-pinned RPM registry path'
-has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"' \
-  'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'
 has "$build_script" '^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
   'local builds accept only the real digest-pinned RPM registry path'
 
 if grep -Rqs --exclude-dir=output --include='Containerfile*' 'DROP_RPMDB_WAL' \
-  "$repo/os" || grep -Fq 'DROP_RPMDB_WAL' "$workflow"; then
+  "$repo/os" || grep -Fq 'DROP_RPMDB_WAL' "$rpms_build"; then
   bad 'obsolete DROP_RPMDB_WAL workaround remains'
 else
   ok 'obsolete DROP_RPMDB_WAL workaround is absent'
 fi
-
-python3 "$repo/os/tests/test_rpm_snapshot_fingerprint.py" \
-  && ok "fingerprint resolution preserves package-set addressing without a hand-kept pin" \
-  || bad "fingerprint resolution regression"
 
 exit "$fail"

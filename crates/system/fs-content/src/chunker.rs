@@ -391,12 +391,6 @@ fn reusable_chunk(
 
 /// Chunks `len` bytes read from `reader` in bounded memory. The result
 /// equals [`build`] over the same bytes.
-///
-/// # Errors
-///
-/// Returns the reader's error, or `UnexpectedEof`/`InvalidData` when the
-/// reader yields fewer or more than `len` bytes (the source changed while it
-/// was read).
 pub fn build_reader(
     mut reader: impl Read,
     len: u64,

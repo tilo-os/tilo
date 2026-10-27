@@ -291,6 +291,22 @@ pub struct ProbeHost {
 }
 impl ProbeHost {
     pub fn new() -> Self {
+        Self::over(RecordOwners::new)
+    }
+
+    /// A host whose record store writes nothing until a test flushes it:
+    /// a test can hold a save under way for as long as it checks what a
+    /// pending save does, however slowly a loaded machine runs it.
+    pub fn holding_writes() -> Self {
+        Self::over(|root| {
+            RecordOwners::with_store(std::rc::Rc::new(app_state::FsStore::with_debounce(
+                root,
+                std::time::Duration::from_secs(3600),
+            )))
+        })
+    }
+
+    fn over(owners: impl FnOnce(std::path::PathBuf) -> RecordOwners) -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
         COMMITTED_ACTION.set(None);
@@ -301,7 +317,7 @@ impl ProbeHost {
         NATIVE_LIFECYCLE.with_borrow_mut(Vec::clear);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
-        let mut owners = RecordOwners::new(root.clone());
+        let mut owners = owners(root.clone());
         let records = owners.open(APP, ROOM).unwrap();
         let views = Rc::new(InstanceViewStore::new(root, DEVICE, ROOM).unwrap());
         Self {
@@ -539,7 +555,8 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
         dyn tilo_ui::undo::UndoPoints,
-        dyn tilo_ui::undo::CommittedActions
+        dyn tilo_ui::undo::CommittedActions,
+        dyn tilo_ui::host_operation::ResourceOperations
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -550,52 +567,6 @@ impl Widget for ProbeRoot {
         });
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["probe.view", "probe.effect", "probe.pending"]
-    }
-    fn start_operation(
-        &mut self,
-        op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut tilo_ui::widget::Edits<'_>,
-        _: &ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
-        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
-        if !self.local_resource_operation_handlers().contains(&type_id) {
-            return Ok(None);
-        }
-        if type_id == "probe.pending" {
-            self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(
-                tilo_ui::host_operation::ResourceOperationStart::Accepted,
-            ));
-        }
-        self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ),
-        ))
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancel: bool,
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if !cancel {
-            return None;
-        }
-        assert!(!self.local.writer().try_set("cancelled after close".into()));
-        self.operations.borrow_mut().push("cancelled".into());
-        Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: None,
-        })
-    }
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         assert!(self.operational, "construction must project read-only");
         self.local_snapshot = self.local.with(Clone::clone);
@@ -647,6 +618,57 @@ impl Widget for ProbeRoot {
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+    }
+}
+
+impl tilo_ui::host_operation::ResourceOperations for ProbeRoot {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["probe.view", "probe.effect", "probe.pending"]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _: &mut tilo_ui::widget::Edits<'_>,
+        _: &ObjId,
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
+        if !tilo_ui::host_operation::local_resource_operation_handlers(self).contains(&type_id) {
+            return Ok(None);
+        }
+        if type_id == "probe.pending" {
+            self.operations.borrow_mut().push("pending".into());
+            return Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Accepted,
+            ));
+        }
+        self.operations.borrow_mut().push(format!("{kind:?}"));
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancel: bool,
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !cancel {
+            return None;
+        }
+        assert!(!self.local.writer().try_set("cancelled after close".into()));
+        self.operations.borrow_mut().push("cancelled".into());
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        })
     }
 }
 
@@ -814,10 +836,10 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         &ProbeAction("confirmed".into()),
                     )
                     .unwrap()
+                    // A question one Confirm answers: a typed name is only
+                    // for an irreversible action, and names what it loses.
                     .with_contract(tilo_actions::ActionContract {
-                        confirmation: tilo_actions::ConfirmationPolicy::Phrase {
-                            phrase: "JA".into(),
-                        },
+                        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..tilo_actions::ActionContract::default()
                     }),
                 ),

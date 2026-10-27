@@ -140,8 +140,9 @@ fn a_path_argument_opens_the_record_of_that_path() {
         "{frame}"
     );
 
+    // A launch naming nothing opens the workspace's one record.
     let mut plain = TestApp::<SketchApp>::new().unwrap();
-    assert_eq!(plain.record(), &RecordId::room_default());
+    assert_eq!(plain.record(), &RecordId::package_primary());
     assert_eq!(plain.state().source, "");
     let frame = plain.harness().inspection_json().unwrap();
     assert!(
@@ -535,7 +536,7 @@ fn a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches() {
 #[test]
 fn a_window_opens_another_record_in_its_own_place() {
     let mut app = TestApp::<SketchApp>::new().unwrap();
-    assert_eq!(app.record(), &RecordId::room_default());
+    assert_eq!(app.record(), &RecordId::package_primary());
     app.invoke(Sketch::NOTE.with("on the default")).unwrap();
 
     app.open_here(&["/pictures/harbour.png"]).unwrap();
@@ -574,10 +575,17 @@ fn a_window_opens_another_record_in_its_own_place() {
     let harbour_again = app.relaunch(&["/pictures/harbour.png"]).unwrap();
     assert_eq!(harbour_again.record(), &harbour);
     assert_eq!(harbour_again.state().notes.len(), 1);
-    // A bare launch reopens the record the window showed last.
+    // A bare launch opens the workspace's one record, which every window
+    // of the app opens, with what was noted on it.
     let bare = harbour_again.relaunch(&[]).unwrap();
-    assert_eq!(bare.record(), &harbour);
-    assert_eq!(bare.state().notes.len(), 1);
+    assert_eq!(bare.record(), &RecordId::package_primary());
+    let notes: Vec<String> = bare
+        .state()
+        .notes
+        .values()
+        .map(|note| note.text.clone())
+        .collect();
+    assert_eq!(notes, ["on the default"]);
 }
 
 /// A sketch whose record of a path starts traced over that path in its

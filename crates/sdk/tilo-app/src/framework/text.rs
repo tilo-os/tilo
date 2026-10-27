@@ -22,7 +22,6 @@ pub trait EditsText: Widget {
     fn take_edited(&mut self) -> Option<String>;
     /// Show `text`, which is not a user edit.
     fn reset_text(&mut self, text: &str);
-    /// The text shown.
     fn shown_text(&self) -> &str;
 }
 
@@ -199,7 +198,6 @@ impl<W: EditsText, R: Resource> TextControl<W, R> {
         self.dispatch = Some(dispatcher);
     }
 
-    /// The control.
     pub fn control(&self) -> &W {
         &self.control
     }

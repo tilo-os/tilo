@@ -758,7 +758,6 @@ mod tests {
 
     #[test]
     fn every_prompt_kind_builds_a_layout_with_honest_copy() {
-        // Phase `the_headline_names_the_device`.
         {
             let v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
             assert!(
@@ -767,7 +766,6 @@ mod tests {
                 v.title()
             );
         }
-        // Phase `six_digits_are_split_for_comparison`.
         {
             assert_eq!(spaced("424242"), "424 242");
             assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
@@ -782,7 +780,6 @@ mod tests {
                 v.explanation()
             );
         }
-        // Phase `every_prompt_builds_a_layout`.
         {
             let prompts = [
                 PairingPrompt::ConfirmPasskey { passkey: 424_242 },
@@ -833,7 +830,6 @@ mod tests {
 
     #[test]
     fn prompt_answers_are_exact_and_refuse_rather_than_guess() {
-        // Phase `accepting_a_comparison_answers_accept`.
         {
             let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
             let doc = AutoCommit::new();
@@ -841,7 +837,6 @@ mod tests {
             v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.take_answer(), Some(PairingReply::Accept));
         }
-        // Phase `declining_answers_reject`.
         {
             let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
             let doc = AutoCommit::new();
@@ -859,7 +854,6 @@ mod tests {
             v.sync(&doc, &automerge::ROOT);
             assert_eq!(v.take_answer(), Some(PairingReply::Reject));
         }
-        // Phase `a_typed_passkey_is_parsed_and_returned`.
         {
             assert_eq!(
                 accept_with(PairingPrompt::RequestPasskey, "654321"),
@@ -878,7 +872,6 @@ mod tests {
                 );
             }
         }
-        // Phase `a_typed_pin_is_returned_verbatim`.
         {
             assert_eq!(
                 accept_with(PairingPrompt::RequestPinCode, "0000"),
@@ -890,7 +883,6 @@ mod tests {
                 "longer than Bluetooth's PIN"
             );
         }
-        // Phase `a_displayed_code_has_nothing_to_accept`.
         {
             assert_eq!(
                 accept_with(
@@ -903,7 +895,6 @@ mod tests {
                 Some(PairingReply::Reject)
             );
         }
-        // Phase `the_typed_code_never_enters_the_document`.
         {
             let mut v = view(PairingPrompt::RequestPinCode);
             type_entry(&v, "1234");
@@ -943,7 +934,6 @@ mod tests {
         overlay.view_mut().unwrap().sync(&doc, &automerge::ROOT);
         assert_eq!(overlay.view_mut().unwrap().take_answer(), None);
 
-        // A typed digit updates the dialog in place.
         let (reply, _) = PairingReplySender::channel();
         handle.post(
             PairingRequest {

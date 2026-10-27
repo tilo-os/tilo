@@ -37,8 +37,7 @@ impl WordProcessorWidget {
         handled: &mut bool,
     ) {
         if self.rect.contains(self.pointer) {
-            let tb_h = self.tool_band.height();
-            let over_body = self.pointer.y >= self.rect.y0 + tb_h
+            let over_body = self.pointer.y >= self.rect.y0
                 && self.pointer.y <= self.rect.y1 - self.layout_bar_height
                 && !(self.view.styles_panel_visible && self.panel_rect.contains(self.pointer))
                 && !self.outline.contains(self.pointer);
@@ -83,7 +82,7 @@ impl WordProcessorWidget {
             }
             return;
         }
-        let new = (self.scroll_y - dy).clamp(0.0, self.max_scroll);
+        let new = (self.scroll_y - dy).clamp(self.scroll_floor(), self.max_scroll);
         // Exact-change check (not "close enough"): any scroll delta, however
         // tiny, should mark the frame dirty, so bit-compare rather than use a
         // tolerance that could mask a real change.
@@ -94,7 +93,7 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Track the pointer, update toolbar hover feedback, and continue
+    /// Track the pointer, update hover feedback, and continue
     /// whichever live drag is active (style-field scrub, ruler marker, layout
     /// guide, or a text-selection extend) — scrub takes priority, since a
     /// scrub in progress should never fall through to selection.
@@ -103,11 +102,9 @@ impl WordProcessorWidget {
         x: f64,
         y: f64,
         scale_factor: f64,
-        tb_h: f64,
         handled: &mut bool,
     ) {
         self.pointer = Point::new(x / scale_factor, y / scale_factor);
-        let _ = tb_h;
         // Hover lifts on the chrome the editor paints itself.
         let hover_changed = self.outline.pointer_moved(self.pointer)
             | self.review.pointer_moved(self.pointer)
@@ -149,21 +146,67 @@ impl WordProcessorWidget {
             self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
             self.lifecycle.dirty = true; // repaint every move so the preview is live
             *handled = true;
-        } else if self.drag.drag().is_some() {
+        } else if let Some(granularity) = self.drag.drag() {
             // Extend the selection: keep the anchor, move the caret. The
             // `Laid` rects are unscaled, so hit-test in content space.
             self.caret_from_pointer(self.pointer_to_content(self.pointer), true);
+            if granularity != Granularity::Char {
+                self.extend_by_units(granularity);
+            }
             // Claim the move so the host App repaints (its redraw is gated
             // behind `handled`).
             *handled = true;
         }
     }
 
+    /// After a double- or triple-click, a drag (even the pointer's first
+    /// jitter, which lands inside the clicked word) selects whole words or
+    /// paragraphs and keeps the clicked one: the caret `caret_from_pointer`
+    /// just placed is widened to the unit under it, on the far side of the
+    /// clicked unit, as every toolkit text field does.
+    fn extend_by_units(&mut self, granularity: Granularity) {
+        let Some((start, end)) = self.drag_unit.clone() else {
+            return;
+        };
+        let raw = self.inner.caret.clone();
+        let order = |block: &str| self.laid.iter().position(|laid| laid.id == block);
+        let (Some(start_block), Some(raw_block)) = (order(&start.block), order(&raw.block)) else {
+            return;
+        };
+        let Some(end_block) = order(&end.block) else {
+            return;
+        };
+        let Some(text) = self.laid.get(raw_block).map(|laid| laid.text.as_str()) else {
+            return;
+        };
+        let (unit_start, unit_end) = match granularity {
+            Granularity::Word => ui::text_selection::word_boundaries_chars(text, raw.offset),
+            _ => (0, text.chars().count()),
+        };
+        let (anchor, cursor) = ui::text_selection::extend_span_drag(
+            (start_block, start.offset),
+            (end_block, end.offset),
+            (raw_block, raw.offset),
+            (raw_block, unit_start),
+            (raw_block, unit_end),
+        );
+        let anchor = if anchor == (start_block, start.offset) {
+            start
+        } else {
+            end
+        };
+        self.inner.selection_anchor = Some(anchor);
+        self.inner.caret = Caret {
+            block: raw.block,
+            offset: cursor.1,
+        };
+    }
+
     /// Right-click: open the style-management menu when it lands on a
     /// styles-panel chip, else the editing/spell-check context menu when it
     /// lands on the page body (chrome — toolbar/panel/status bar — ignores
     /// the right button; it only hit-tests the left one).
-    fn handle_right_press(&mut self, state: &AutoCommit, tb_h: f64, handled: &mut bool) {
+    fn handle_right_press(&mut self, state: &AutoCommit, handled: &mut bool) {
         if !self.rect.contains(self.pointer) {
             return;
         }
@@ -180,8 +223,7 @@ impl WordProcessorWidget {
             }
             return;
         }
-        let in_chrome = self.pointer.y < self.rect.y0 + tb_h
-            || self.pointer.y > self.rect.y1 - self.layout_bar_height
+        let in_chrome = self.pointer.y > self.rect.y1 - self.layout_bar_height
             || (self.view.styles_panel_visible && self.panel_rect.contains(self.pointer))
             || self.outline.contains(self.pointer);
         if !in_chrome {
@@ -203,7 +245,6 @@ impl WordProcessorWidget {
     fn handle_left_press(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        tb_h: f64,
         shift: bool,
         ctrl: bool,
         handled: &mut bool,
@@ -222,7 +263,7 @@ impl WordProcessorWidget {
         if self.handle_left_press_panels(state, handled) {
             return;
         }
-        if self.handle_left_press_find_ruler_toolbar(state, tb_h, handled) {
+        if self.handle_left_press_find_ruler_bars(state, handled) {
             return;
         }
         self.handle_left_press_body(state, shift, ctrl, handled);
@@ -252,9 +293,9 @@ impl WordProcessorWidget {
             return true;
         }
         // Likewise route the press to the "New" template picker when open.
-        if self.template_picker.is_open() {
-            if let Some(template) = self.template_picker.click(self.pointer) {
-                self.request_template(state, template);
+        if self.file_menu.is_open() {
+            if let Some(choice) = self.file_menu.click(self.pointer) {
+                self.apply_file_choice(state, choice);
             }
             self.lifecycle.dirty = true;
             *handled = true;
@@ -335,33 +376,18 @@ impl WordProcessorWidget {
         false
     }
 
-    /// The Find bar's fields, the ruler band, the toolbar (zoom stepper +
-    /// buttons), and the bottom layout bar — in that priority order. Returns
-    /// whether one of them claimed the press.
-    fn handle_left_press_find_ruler_toolbar(
+    /// The Find bar's fields, the ruler band and the bottom layout bar — in
+    /// that priority order. Returns whether one of them claimed the press.
+    fn handle_left_press_find_ruler_bars(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        tb_h: f64,
         handled: &mut bool,
     ) -> bool {
-        // Find bar (when open): dispatch clicks on its fields + controls.
-        // The recovery banner (when shown) sits above the find bar, so the
-        // find band starts below it.
-        if self.find.is_open() && self.find_band.contains(self.pointer) {
-            let _ = state;
-            self.lifecycle.dirty = true;
-            *handled = true;
-            return true;
-        }
         // Ruler band (when on): grab a marker to drag, else a click in the
         // page span adds a tab stop on the current paragraph.
         if self.view.ruler_visible && self.ruler.rect().contains(self.pointer) {
             self.ruler_press(state);
             self.lifecycle.dirty = true;
-            *handled = true;
-            return true;
-        }
-        if self.pointer.y < self.rect.y0 + tb_h {
             *handled = true;
             return true;
         }
@@ -508,6 +534,11 @@ impl WordProcessorWidget {
             Granularity::Line => self.select_all_in_block(state),
             Granularity::Char => {}
         }
+        self.drag_unit = (intent.granularity != Granularity::Char)
+            .then(|| self.inner.selection_anchor.clone())
+            .flatten()
+            .filter(|anchor| *anchor != self.inner.caret)
+            .map(|anchor| (anchor, self.inner.caret.clone()));
         self.lifecycle.dirty = true;
         *handled = true;
     }
@@ -802,9 +833,15 @@ impl WordProcessorWidget {
                 );
             }
             KeyPressEffect::Motion
-        } else if self.inner.tab_cell(state, !shift) {
-            KeyPressEffect::Motion
         } else {
+            self.sync_source(state.doc());
+            let body = self.kept_body();
+            if self
+                .inner
+                .with_kept_body(body, |inner| inner.tab_cell(state, !shift))
+            {
+                return KeyPressEffect::Motion;
+            }
             let text = if self.inner.caret_tab_stops(state).is_empty() {
                 "    "
             } else {
@@ -819,11 +856,11 @@ impl WordProcessorWidget {
         match key {
             NamedKey::ArrowLeft => {
                 self.extend_or_clear(shift);
-                self.inner.move_left(state);
+                self.with_kept_body(state, |inner| inner.move_left(state));
             }
             NamedKey::ArrowRight => {
                 self.extend_or_clear(shift);
-                self.inner.move_right(state);
+                self.with_kept_body(state, |inner| inner.move_right(state));
             }
             NamedKey::ArrowUp | NamedKey::ArrowDown => {
                 self.extend_or_clear(shift);
@@ -832,9 +869,11 @@ impl WordProcessorWidget {
                 } else {
                     -1
                 };
-                if !self.inner.cell_vertical(state, delta > 0) {
-                    self.inner.move_block_relative(state, delta);
-                }
+                self.with_kept_body(state, |inner| {
+                    if !inner.cell_vertical(state, delta > 0) {
+                        inner.move_block_relative(state, delta);
+                    }
+                });
             }
             NamedKey::Home => {
                 self.extend_or_clear(shift);
@@ -843,6 +882,12 @@ impl WordProcessorWidget {
             NamedKey::End => {
                 self.extend_or_clear(shift);
                 self.inner.move_end(state);
+            }
+            // One page down is the same place on the next sheet: the one app
+            // that paginates moves by pages, as every reader does.
+            NamedKey::PageUp | NamedKey::PageDown => {
+                self.extend_or_clear(shift);
+                self.move_page(matches!(key, NamedKey::PageDown), shift);
             }
             _ => return false,
         }
@@ -885,7 +930,7 @@ impl WordProcessorWidget {
         key: &Key,
         modifiers: Modifiers,
     ) -> bool {
-        if !self.lifecycle.focused || self.editing_field.is_some() || self.find.is_open() {
+        if !self.lifecycle.focused || self.editing_field.is_some() {
             return false;
         }
         let Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) = key else {
@@ -937,11 +982,13 @@ impl WordProcessorWidget {
         };
         self.extend_or_clear(mods.shift_key());
         if !line && destination == offset {
-            if left {
-                self.inner.move_left(state);
-            } else {
-                self.inner.move_right(state);
-            }
+            self.with_kept_body(state, |inner| {
+                if left {
+                    inner.move_left(state);
+                } else {
+                    inner.move_right(state);
+                }
+            });
         } else {
             self.inner.caret.offset = destination;
         }
@@ -977,11 +1024,11 @@ impl WordProcessorWidget {
         if matches!(logical_key, Key::Named(NamedKey::Escape))
             && (self.context_menu.is_open()
                 || self.style_menu.is_open()
-                || self.template_picker.is_open())
+                || self.file_menu.is_open())
         {
             self.context_menu.close();
             self.style_menu.close();
-            self.template_picker.close();
+            self.file_menu.close();
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
@@ -1042,16 +1089,6 @@ impl WordProcessorWidget {
         // Ctrl+O opens a document in place of the current one.
         if s.eq_ignore_ascii_case("o") {
             self.invoke_effect(&WordProcessorEffect::OpenDocument { path: None });
-            *handled = true;
-            return;
-        }
-        if s.eq_ignore_ascii_case("f") {
-            if self.find.is_open() {
-                self.close_find();
-            } else {
-                self.open_find(state);
-            }
-            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -1161,23 +1198,20 @@ impl WordProcessorWidget {
         // An open menu owns input until selection or dismissal. Forward
         // movement as well as presses so the shared menu can paint its hover;
         // keep navigation/typing from editing the document behind the popup.
-        if self.template_picker.is_open()
-            || self.context_menu.is_open()
-            || self.style_menu.is_open()
-        {
+        if self.file_menu.is_open() || self.context_menu.is_open() || self.style_menu.is_open() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.pointer = ctx.logical(position);
             }
-            let menu = if self.template_picker.is_open() {
-                self.template_picker.menu_mut()
+            let menu = if self.file_menu.is_open() {
+                self.file_menu.menu_mut()
             } else if self.style_menu.is_open() {
                 self.style_menu.menu_mut()
             } else {
                 &mut self.context_menu
             };
             menu.handle_event(event, ctx);
-            if let Some(template) = self.template_picker.take_selection() {
-                self.request_template(&mut ctx.state, template);
+            if let Some(choice) = self.file_menu.take_selection() {
+                self.apply_file_choice(&mut ctx.state, choice);
             }
             if let Some(action) = self.style_menu.take_selection() {
                 self.dispatch_style_menu(action, &mut ctx.state);
@@ -1240,70 +1274,13 @@ impl WordProcessorWidget {
         if comment_thread_handled {
             return;
         }
-        if !self.styles_panel_full_window() && self.route_toolbar_event(event, ctx) {
-            return;
-        }
         if self.route_hosted_fields(event, ctx) {
             return;
         }
         if self.route_styles_page_key(event, ctx) {
             return;
         }
-        let tb_h = self.tool_band.height();
 
-        // Find/replace embeds the shared TextInput rather than maintaining a
-        // second text editor. Feed it raw events first so IME, selection and
-        // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
-        // deliberately left for the editor-level toggle below.
-        let over_find = self.find.is_open()
-            && match event {
-                WindowEvent::MouseInput { .. } => self.find_band.contains(self.pointer),
-                _ => false,
-            };
-        // The bar takes typing while the editor has focus, the pointer over
-        // its band, and hover; the wheel and gestures stay the page's.
-        let for_find = match event {
-            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => self.lifecycle.focused,
-            WindowEvent::CursorMoved { .. } => true,
-            WindowEvent::MouseInput { .. } => over_find || self.lifecycle.focused,
-            _ => false,
-        };
-        if self.find.is_open() && for_find {
-            let mut find_handled = false;
-            self.find.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    handled: &mut find_handled,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-            self.drive_find(&mut ctx.state);
-            if over_find
-                && matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        ..
-                    }
-                )
-            {
-                self.lifecycle.focused = true;
-                self.find.set_host_focused(true);
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            if !self.find.is_open() {
-                self.lifecycle.dirty = true;
-            }
-            if find_handled || over_find {
-                self.lifecycle.dirty = true;
-                *ctx.handled = true;
-                // Cursor movement still feeds the editor below so its shared
-                // pointer coordinate remains current for subsequent clicks.
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
-                    return;
-                }
-            }
-        }
         match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // drop point (see `handle_dropped_file`).
@@ -1338,20 +1315,15 @@ impl WordProcessorWidget {
                             // Keep the document row beneath the gesture steady.
                             // Horizontal alignment remains the centered-page convention.
                             let pointer_y = self.pointer.y - self.zoom.anchor().y;
-                            self.scroll_y =
-                                (self.scroll_y + pointer_y / before - pointer_y / after).max(0.0);
+                            self.scroll_y = (self.scroll_y + pointer_y / before
+                                - pointer_y / after)
+                                .max(self.scroll_floor());
                         }
                     }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(
-                    position.x,
-                    position.y,
-                    ctx.scale_factor,
-                    tb_h,
-                    ctx.handled,
-                );
+                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, ctx.handled);
             }
             // Right (secondary) press opens the editing / spell-check context
             // menu on the page body. Toolbar / panel / status-bar chrome ignore
@@ -1362,7 +1334,7 @@ impl WordProcessorWidget {
                 ..
             } => {
                 let was_handled = *ctx.handled;
-                self.handle_right_press(&ctx.state, tb_h, ctx.handled);
+                self.handle_right_press(&ctx.state, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
@@ -1373,7 +1345,7 @@ impl WordProcessorWidget {
                 ..
             } => {
                 let was_handled = *ctx.handled;
-                self.handle_left_press(&mut ctx.state, tb_h, shift, ctrl, ctx.handled);
+                self.handle_left_press(&mut ctx.state, shift, ctrl, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }

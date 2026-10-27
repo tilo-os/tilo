@@ -307,17 +307,14 @@ mod tests {
             "the viewer's decoder limit reaches the host"
         );
 
-        // A newer list replaces the older one entirely.
         inbound.record(laptop, vec![view(9)], &[], start);
         let viewers = inbound.viewers(start);
         assert_eq!(viewers[&7].len(), 1);
         assert_eq!(viewers[&7][0].device, phone);
 
-        // An empty list ends that device's views at once.
         inbound.record(phone, Vec::new(), &[], start);
         assert!(!inbound.viewers(start).contains_key(&7));
 
-        // Silence ends them at expiry.
         assert!(inbound.viewers(start + EXPIRY / 2).contains_key(&9));
         assert!(inbound.viewers(start + EXPIRY).is_empty());
     }
@@ -336,7 +333,6 @@ mod tests {
             hosts
         };
 
-        // Nothing shown, nothing to say.
         assert!(outbound.due(BTreeMap::new(), start).is_empty());
 
         let sent = outbound.due(shown(&[(&desk, 5), (&tablet, 6)]), start);
@@ -357,7 +353,6 @@ mod tests {
         let sent = outbound.due(shown(&[(&desk, 5), (&desk, 7), (&tablet, 6)]), start);
         assert_eq!(sent, vec![(desk.clone(), vec![view(5), view(7)])]);
 
-        // Refreshes keep the streams alive.
         let later = start + REFRESH;
         assert_eq!(
             outbound

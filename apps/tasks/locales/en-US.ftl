@@ -1,0 +1,97 @@
+tasks-title = Tasks
+tasks-filters = Filters
+tasks-views = View
+tasks-place-list = Issues
+tasks-place-board = Board
+tasks-location-filtered = { $place }, { $filter }
+
+## What the sidebar narrows the list and the board to
+tasks-filter-all = All issues
+tasks-filter-mine = Mine
+tasks-filter-unassigned = Nobody's
+tasks-filter-agent = An agent's
+tasks-new-issue = New issue
+tasks-new-issue-placeholder = What needs doing
+tasks-new-sub-issue-placeholder = A sub-issue of this one
+tasks-empty-title = No issues yet
+tasks-empty-message = Write down what needs doing above; sub-issues go under an issue on its page.
+tasks-empty-filter-title = Nothing here yet
+tasks-empty-filter-message = Choose another filter in the sidebar to see the rest.
+
+tasks-status-backlog = Backlog
+tasks-status-todo = Todo
+tasks-status-in-progress = In progress
+tasks-status-in-review = In review
+tasks-status-done = Done
+tasks-status-cancelled = Cancelled
+tasks-status-with-progress = { $status }, { $closed } of { $total }
+tasks-progress = { $closed } of { $total } sub-issues closed
+tasks-lane-heading = { $status } { $count }
+
+tasks-field-title = Title
+tasks-field-status = Status
+tasks-field-assignee = Assignee
+tasks-assignee-nobody = Nobody
+tasks-issue-add-label = Add label
+tasks-issue-label-placeholder = Label
+tasks-issue-description = Description
+tasks-issue-gone-title = This issue was deleted
+tasks-issue-gone-message = Undo brings it back.
+tasks-sub-issues = Sub-issues
+tasks-links = Links
+
+tasks-run = Agent
+tasks-run-agent = { $agent }: { $phase }
+tasks-run-not-started = waits for you to start it
+tasks-run-approved = starting
+tasks-run-accepted = started
+tasks-run-planning = planning
+tasks-run-executing = working
+tasks-run-waiting = waiting for your answer
+tasks-run-done = done
+tasks-run-failed = could not finish
+tasks-run-stopped = stopped
+tasks-run-asks = The agent asks before it runs { $action }
+tasks-run-answer = Answer
+tasks-run-stop = Stop
+tasks-run-approve = Start
+
+tasks-thread = Thread
+tasks-thread-draft = Message
+tasks-thread-placeholder = Write a message
+tasks-thread-comment = Comment
+tasks-thread-to-run = Send to the agent
+tasks-message-to-run = To the agent
+tasks-message-read-by-run = Read by the agent
+tasks-message-from-run = From the agent
+
+## History
+
+tasks-create = Created { $title }
+tasks-move-under = Moved { $item }
+tasks-assign = Assigned { $item }
+tasks-place = Moved { $item } on the board
+tasks-comment = Commented on { $item }
+tasks-link = Linked { $label } to { $item }
+tasks-delete = Deleted { $item }
+tasks-approve-run = Started the agent on { $item }
+tasks-stop-run = Stopped the agent on { $item }
+tasks-set-execution-budget = Changed how long the agent may work on { $item }
+tasks-send-message = Sent the agent a message on { $item }
+tasks-report-run = Reported progress on { $item }
+tasks-incorporate = Read the messages on { $item }
+tasks-ask-confirmation = Asked before an action on { $item }
+tasks-answer-confirmation = Answered the agent on { $item }
+tasks-finish-run = Finished work on { $item }
+tasks-import = Brought over earlier tasks
+tasks-issue-title = Renamed { $item } to { $new }
+tasks-issue-status = Moved { $item } to { $new }
+tasks-issue-labels = Changed the labels of { $item }
+tasks-issue-links = Changed the links of { $item }
+tasks-settle-confirmation = Acted on the answer on { $item }
+tasks-add-label = Labelled { $item } { $label }
+tasks-choose-model = Chose the model for { $item }
+tasks-ask-agent = Asked an agent: { $title }
+tasks-field-model = Model
+tasks-model-own = The agent's own model
+tasks-model-of = { $model } ({ $provider })

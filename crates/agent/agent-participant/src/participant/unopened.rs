@@ -37,6 +37,7 @@
 //! document ([`Unopened::seed`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge_isolate::{Dependencies, Rejected};
@@ -57,7 +58,6 @@ const BATCH_BYTES: usize = 8 * 1024 * 1024;
 /// ceiling for changes of a few chunks each.
 const BATCH_CHANGES: usize = 4096;
 
-/// The shared desktop's route in `room`.
 pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
@@ -329,7 +329,48 @@ pub(crate) struct Unopened {
     held: BTreeMap<DocumentRoute, Packed>,
     /// When each record last changed, as a count of changes seen.
     arrived: HashMap<DocumentRoute, u64>,
+    /// What each record was called when last asked ([`Self::title`]), and
+    /// when it had last changed then: asked again only once it changed.
+    titles: HashMap<DocumentRoute, (u64, Option<String>)>,
+    /// The plain text of each record the planner searches
+    /// ([`crate::search::plain_text`]), and when it was read: read again
+    /// only once the record changed. Open records' too
+    /// ([`Self::open_text`]), as this holds what the participant reads of
+    /// its records.
+    texts: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
+    /// The messages of each message record news and waits read
+    /// ([`crate::message_lines::message_text`]), kept as [`Self::texts`].
+    messages: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
+    /// How many changes each record held when last asked
+    /// ([`Self::changes`]), and when it had last changed then.
+    counts: HashMap<DocumentRoute, (u64, u64)>,
     changes_seen: u64,
+}
+
+/// How a record's text is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Reading {
+    /// Its words, as search reads them ([`crate::search::plain_text`]).
+    Plain,
+    /// Its messages ([`crate::message_lines::message_text`]).
+    Messages,
+}
+
+impl Reading {
+    fn read(self, doc: &AutoCommit) -> Arc<str> {
+        match self {
+            Self::Plain => crate::search::plain_text(doc).into(),
+            Self::Messages => crate::message_lines::message_text(doc).into(),
+        }
+    }
+}
+
+/// When a record's text was read: at a change count of an unopened record,
+/// or at an open record's change and operation counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stamp {
+    Unopened(u64),
+    Open(u64, u64),
 }
 
 impl Unopened {
@@ -339,6 +380,10 @@ impl Unopened {
             desktop: None,
             held: BTreeMap::new(),
             arrived: HashMap::new(),
+            titles: HashMap::new(),
+            texts: HashMap::new(),
+            messages: HashMap::new(),
+            counts: HashMap::new(),
             changes_seen: 0,
         }
     }
@@ -399,8 +444,166 @@ impl Unopened {
         self.held.get_mut(route).map(Packed::seed)
     }
 
+    /// What the record at `route` is called, as `read` finds it in the
+    /// record's document (saved, admitted through the isolate). Read once
+    /// per change of the record: asked again with nothing new, the last
+    /// answer stands, a failed read included. `None` for a record the room
+    /// does not have, one whose app gives it no name, or one not read.
+    pub(super) fn title(
+        &mut self,
+        route: &DocumentRoute,
+        read: impl FnOnce(Vec<u8>) -> Result<Option<String>, String>,
+    ) -> Option<String> {
+        let changed = self.arrived.get(route).copied().unwrap_or(0);
+        if let Some((at, title)) = self.titles.get(route)
+            && *at == changed
+        {
+            return title.clone();
+        }
+        // The document read for its title gives its text too: one
+        // admission for both.
+        let seed = match self.held.get_mut(route) {
+            Some(packed) => packed
+                .document()
+                .map(|mut doc| {
+                    let text = crate::search::plain_text(&doc);
+                    self.texts
+                        .insert(route.clone(), (Stamp::Unopened(changed), text.into()));
+                    doc.save()
+                })
+                .map_err(not_admitted),
+            None => self.seed(route)?,
+        };
+        let title = match seed {
+            Ok(doc) => read(doc).unwrap_or_else(|reason| {
+                tracing::warn!(%reason, "agent: a record's title could not be read");
+                None
+            }),
+            Err(reason) => {
+                tracing::warn!(%reason, "agent: a record's title waits for the isolate");
+                return None;
+            }
+        };
+        self.titles.insert(route.clone(), (changed, title.clone()));
+        title
+    }
+
+    fn read_texts(&mut self, reading: Reading) -> &mut HashMap<DocumentRoute, (Stamp, Arc<str>)> {
+        match reading {
+            Reading::Plain => &mut self.texts,
+            Reading::Messages => &mut self.messages,
+        }
+    }
+
+    /// The text of the unopened record at `route`, read as `reading` says,
+    /// once per change of it. `None` for the shared desktop, a record the
+    /// room does not have, or one whose changes wait for the isolate.
+    pub(super) fn text(&mut self, route: &DocumentRoute, reading: Reading) -> Option<Arc<str>> {
+        let stamp = Stamp::Unopened(self.arrived.get(route).copied().unwrap_or(0));
+        if let Some((at, text)) = self.read_texts(reading).get(route)
+            && *at == stamp
+        {
+            return Some(Arc::clone(text));
+        }
+        let text = self.read(route, |doc| reading.read(doc))?;
+        self.read_texts(reading)
+            .insert(route.clone(), (stamp, Arc::clone(&text)));
+        Some(text)
+    }
+
+    /// `read` of the document of the unopened record at `route`. `None`
+    /// for the shared desktop, a record the room does not have, or one
+    /// whose changes wait for the isolate.
+    pub(super) fn read<T>(
+        &mut self,
+        route: &DocumentRoute,
+        read: impl FnOnce(&AutoCommit) -> T,
+    ) -> Option<T> {
+        match self.held.get_mut(route)?.document() {
+            Ok(doc) => Some(read(&doc)),
+            Err(reason) => {
+                tracing::warn!(%reason, "agent: a record's text waits for the isolate");
+                None
+            }
+        }
+    }
+
+    /// The text of `replica`, the open record at `route`, read as
+    /// `reading` says, again only once it changed.
+    pub(super) fn open_text(
+        &mut self,
+        route: &DocumentRoute,
+        replica: &crate::worker::ConfinedReplica,
+        reading: Reading,
+    ) -> Option<Arc<str>> {
+        replica.read(|doc| self.held_text(route, doc, reading))
+    }
+
+    /// The text of the part at `route`, held beside its open record in
+    /// `holder` ([`super::parts`]), read as `reading` says, again only once
+    /// it changed. `None` when `holder` does not hold it.
+    pub(super) fn part_text(
+        &mut self,
+        route: &DocumentRoute,
+        holder: &crate::worker::ConfinedReplica,
+        reading: Reading,
+    ) -> Option<Arc<str>> {
+        let record = ui::record::RecordId::parse(&route.record)?;
+        holder.read_record(&record, |doc| self.held_text(route, doc, reading))
+    }
+
+    fn held_text(&mut self, route: &DocumentRoute, doc: &AutoCommit, reading: Reading) -> Arc<str> {
+        let stats = doc.stats();
+        let stamp = Stamp::Open(stats.num_changes, stats.num_ops);
+        let texts = self.read_texts(reading);
+        match texts.get(route) {
+            Some((at, text)) if *at == stamp => Arc::clone(text),
+            _ => {
+                let text = reading.read(doc);
+                texts.insert(route.clone(), (stamp, Arc::clone(&text)));
+                text
+            }
+        }
+    }
+
+    /// How many changes the unopened record at `route` holds, counted once
+    /// per change of it: whether anyone wrote in it since its genesis.
+    /// `None` for the shared desktop, a record the room does not have, or
+    /// one whose changes wait for the isolate.
+    pub(super) fn changes(&mut self, route: &DocumentRoute) -> Option<u64> {
+        let changed = self.arrived.get(route).copied().unwrap_or(0);
+        if let Some((at, count)) = self.counts.get(route)
+            && *at == changed
+        {
+            return Some(*count);
+        }
+        let doc = match self.held.get_mut(route)?.document() {
+            Ok(doc) => doc,
+            Err(reason) => {
+                tracing::warn!(%reason, "agent: a record's changes wait for the isolate");
+                return None;
+            }
+        };
+        let count = doc.stats().num_changes;
+        self.counts.insert(route.clone(), (changed, count));
+        Some(count)
+    }
+
+    /// Drop the texts of records `keep` no longer holds.
+    pub(super) fn keep_texts(&mut self, keep: impl Fn(&DocumentRoute) -> bool) {
+        self.texts.retain(|route, _| keep(route));
+    }
+
+    /// When the record at `route` last changed, as a count of changes seen
+    /// (higher is later); `None` for a record not seen.
+    pub(super) fn changed(&self, route: &DocumentRoute) -> Option<u64> {
+        self.arrived.get(route).copied()
+    }
+
     /// Stop holding `route`: its replica holds it now.
     pub(crate) fn forget(&mut self, route: &DocumentRoute) {
+        self.titles.remove(route);
+        self.counts.remove(route);
         if *route == self.desktop_route {
             self.desktop = None;
         } else {
@@ -436,15 +639,16 @@ mod tests {
         };
         let mut workspace = Workspace::new(WorkspaceId(1), "Room");
         let mut strip = Strip::new(StripId(2), "Main");
-        let tabs: Vec<Tab> = (0..20)
+        let tabs: Vec<Tab> = (0..20_u64)
             .map(|id| Tab {
-                id: 100 + id,
+                id: id.saturating_add(100),
                 title: "Notes".into(),
                 tile: TileContent::LocalApp {
                     app_id: "so.tilo.notes".into(),
                     label: "Notes".into(),
                     note: String::new(),
                 },
+                app_title: None,
             })
             .collect();
         strip.window_groups.push(WindowGroup {
@@ -461,7 +665,9 @@ mod tests {
                 workspaces: vec![workspace],
                 ..tilo_desktop_model::DesktopTree::default()
             },
-            records: (0..20).map(|id| (100 + id, records(id))).collect(),
+            records: (0..20_u64)
+                .map(|id| (id.saturating_add(100), records(id)))
+                .collect(),
             authors: std::collections::BTreeMap::new(),
         }
     }
@@ -577,7 +783,6 @@ mod tests {
         );
         unopened.receive(desktop_route.clone(), desktop.change("seen"));
         assert_eq!(unopened.people_first()[0].record, "seen");
-        // Reloaded along the way, the desktop is still every change it took.
         let seed = unopened.seed(&desktop_route).unwrap().unwrap();
         assert_seeds(&seed, &mut desktop.doc);
     }
@@ -603,7 +808,6 @@ mod tests {
             unopened.receive(notes.clone(), change.clone());
             most = most.max(unopened.held[&notes].retained());
         }
-        // The tail is merged once a change takes it past the document.
         assert!(
             most <= document.saturating_mul(2).saturating_add(largest),
             "held up to {most} bytes for a {document}-byte document"
@@ -630,8 +834,76 @@ mod tests {
         assert!(unopened.routes().is_empty());
     }
 
+    /// A record's title is read from its document once per change of it:
+    /// asked again with nothing new, the last answer stands.
+    #[test]
+    fn a_title_is_read_once_per_change() {
+        let (changes, _) = history(2);
+        let notes = route("so.tilo.notes", "rec-notes");
+        let mut unopened = Unopened::new("room");
+        let reads = std::cell::Cell::new(0_u32);
+        let read = |doc: Vec<u8>| {
+            assert!(!doc.is_empty(), "the record's document is read");
+            reads.set(reads.get().saturating_add(1));
+            Ok(Some(format!("Plans {}", reads.get())))
+        };
+        assert_eq!(unopened.title(&notes, read), None, "no such record yet");
+        unopened.receive(notes.clone(), changes[0].clone());
+        assert_eq!(unopened.title(&notes, read).as_deref(), Some("Plans 1"));
+        assert_eq!(unopened.title(&notes, read).as_deref(), Some("Plans 1"));
+        assert_eq!(reads.get(), 1);
+        unopened.receive(notes.clone(), changes[1].clone());
+        assert_eq!(unopened.title(&notes, read).as_deref(), Some("Plans 2"));
+        unopened.forget(&notes);
+        assert_eq!(unopened.title(&notes, read), None);
+        assert_eq!(reads.get(), 2);
+    }
+
     /// A change that arrives before one it builds on is kept until that one
     /// arrives, merges included.
+    /// A record's text is read once per change of it, and the document
+    /// read for its title gives its text too.
+    #[test]
+    fn a_text_is_read_once_per_change() {
+        use automerge::transaction::Transactable as _;
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "body", "Q2 partner review")
+            .unwrap();
+        let first = doc.save();
+        doc.put(automerge::ROOT, "body", "Q3 partner review")
+            .unwrap();
+        let second = doc.save_incremental();
+        let brief = route("so.tilo.word-processor", "rec-brief");
+        let mut unopened = Unopened::new("room");
+        assert_eq!(
+            unopened.text(&brief, Reading::Plain),
+            None,
+            "no such record yet"
+        );
+        unopened.receive(brief.clone(), first);
+        let read = unopened.text(&brief, Reading::Plain).unwrap();
+        assert_eq!(&*read, "Q2 partner review");
+        assert!(
+            Arc::ptr_eq(&read, &unopened.text(&brief, Reading::Plain).unwrap()),
+            "kept"
+        );
+        unopened.receive(brief.clone(), second);
+        assert_eq!(
+            unopened
+                .title(&brief, |_| Ok(Some("Brief".into())))
+                .as_deref(),
+            Some("Brief")
+        );
+        let (at, text) = unopened.texts.get(&brief).cloned().unwrap();
+        assert_eq!((at, &*text), (Stamp::Unopened(2), "Q3 partner review"));
+        assert!(Arc::ptr_eq(
+            &text,
+            &unopened.text(&brief, Reading::Plain).unwrap()
+        ));
+        unopened.keep_texts(|_| false);
+        assert!(unopened.texts.is_empty());
+    }
+
     #[test]
     fn a_change_waiting_for_its_dependency_is_kept() {
         let (changes, mut doc) = history(1_000);
@@ -712,7 +984,6 @@ mod tests {
         let seed = unopened.seed(&desktop_route).unwrap().unwrap();
         assert_seeds(&seed, &mut desktop.doc);
 
-        // Room actions' holder of a room's desktop.
         let mut shared = SharedDesktop::new();
         let mut desktop = Desktop::default();
         shared.receive(desktop.change("first"));

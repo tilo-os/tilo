@@ -52,7 +52,6 @@ pub struct Metrics {
     subscriber_dropped: AtomicU64,
     /// Peer sessions ended because their outbound queue overflowed.
     subscriber_dropped_backpressure: AtomicU64,
-    /// Bytes written to peer sessions, all of them.
     bytes_sent: AtomicU64,
     /// Bytes of live fan-out frames written to peer sessions.
     bytes_sent_live: AtomicU64,
@@ -115,11 +114,9 @@ impl Metrics {
     pub fn inc_deltas_received(&self) {
         self.deltas_received.fetch_add(1, Ordering::Relaxed);
     }
-    /// Add to the queued-bytes counter.
     pub fn add_bytes_queued(&self, n: u64) {
         self.bytes_queued.fetch_add(n, Ordering::Relaxed);
     }
-    /// Add to the fanned-out counter.
     pub fn add_deltas_fanned_out(&self, n: u64) {
         self.deltas_fanned_out.fetch_add(n, Ordering::Relaxed);
     }

@@ -3,7 +3,7 @@
 //! [`measure`], [`wrap`] and [`paint_entry`] lay out and paint a legend
 //! from the theme: each entry is a series swatch and its `Caption` label,
 //! measured by the renderer so long labels never overlap. [`layout`] is the
-//! older renderer-free estimate. [`SeriesToggles`] is the legend's
+//! older renderer-free estimate. `SeriesToggles` is the legend's
 //! interactive half: which series people hid and where to click to toggle
 //! them.
 

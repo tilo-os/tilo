@@ -188,8 +188,6 @@ impl HexModel {
         }
     }
 
-    // --- edits and the resource's bytes ---------------------------------
-
     /// The edits made since the last call, in order.
     pub fn take_edits(&mut self) -> Vec<BufferEdit> {
         std::mem::take(&mut self.edits)
@@ -275,8 +273,6 @@ impl HexModel {
         self.top_row = self.top_row.min(self.row_count().saturating_sub(1));
     }
 
-    // --- read accessors -------------------------------------------------
-
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -359,8 +355,6 @@ impl HexModel {
         }
     }
 
-    // --- view configuration --------------------------------------------
-
     pub fn set_bytes_per_row(&mut self, n: usize) {
         self.bytes_per_row = n.max(1);
     }
@@ -389,8 +383,6 @@ impl HexModel {
         }
     }
 
-    // --- mode toggles ---------------------------------------------------
-
     pub fn toggle_column(&mut self) {
         self.column = self.column.toggle();
         self.pending_nibble = None;
@@ -412,8 +404,6 @@ impl HexModel {
     pub fn toggle_endian(&mut self) {
         self.endian = self.endian.toggle();
     }
-
-    // --- cursor movement ------------------------------------------------
 
     /// Move the cursor to an absolute offset, clamped to the buffer.
     /// `extend` keeps/creates the selection anchor; otherwise the
@@ -505,8 +495,6 @@ impl HexModel {
             self.cursor % self.bytes_per_row,
         )
     }
-
-    // --- editing --------------------------------------------------------
 
     /// Set the byte at `offset` to `value`, recording it as dirty.
     /// No-op (returns false) if `offset` is out of bounds.
@@ -711,7 +699,100 @@ impl HexModel {
         }
         self.pending_nibble = None;
     }
+
+    /// Replace each of `spans` (byte ranges in ascending order, as find
+    /// returns them) with `with`, recording the edits it made. A span that
+    /// overlaps the one before it is left as it is. Overwrite mode keeps the
+    /// buffer's length, so there a replacement of another length than its
+    /// span is refused and nothing changes. The cursor lands on the first
+    /// replacement. Returns how many spans changed.
+    ///
+    /// # Errors
+    /// [`ChangesLength`] in overwrite mode when `with` is not as long as
+    /// every span.
+    pub fn replace_spans(
+        &mut self,
+        spans: &[(usize, usize)],
+        with: &[u8],
+    ) -> Result<usize, ChangesLength> {
+        let mut kept: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        for &(start, end) in spans {
+            let after_last = kept.last().is_none_or(|&(_, last_end)| start >= last_end);
+            if start < end && end <= self.bytes.len() && after_last {
+                kept.push((start, end));
+            }
+        }
+        if self.mode == EditMode::Overwrite && kept.iter().any(|&(s, e)| e - s != with.len()) {
+            return Err(ChangesLength);
+        }
+        let mut changed = 0;
+        // Last to first: each edit's offset is where its span still is.
+        for &(start, end) in kept.iter().rev() {
+            if end - start == with.len() {
+                if self.overwrite_range(start, with) {
+                    changed += 1;
+                }
+            } else {
+                self.remove_range(start, end - start);
+                self.insert_range(start, with);
+                changed += 1;
+            }
+        }
+        if let Some(&(first, _)) = kept.first() {
+            self.anchor = None;
+            self.cursor = first;
+            self.pending_nibble = None;
+            self.clamp_cursor();
+        }
+        Ok(changed)
+    }
+
+    /// Overwrite the bytes at `offset` with `bytes` as one edit; whether any
+    /// byte changed.
+    fn overwrite_range(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        let Some(slots) = self.bytes.get_mut(offset..offset + bytes.len()) else {
+            return false;
+        };
+        if slots == bytes {
+            return false;
+        }
+        for (index, (slot, &value)) in slots.iter_mut().zip(bytes).enumerate() {
+            if *slot != value {
+                *slot = value;
+                self.dirty.insert(offset + index);
+            }
+        }
+        self.edits.push(BufferEdit::Overwrite {
+            offset,
+            bytes: Hex(bytes.to_vec()),
+        });
+        true
+    }
+
+    /// Insert `bytes` before `offset` as one edit, marking them changed.
+    fn insert_range(&mut self, offset: usize, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let at = offset.min(self.bytes.len());
+        let n = bytes.len();
+        self.bytes.splice(at..at, bytes.iter().copied());
+        self.dirty = self
+            .dirty
+            .iter()
+            .map(|&d| if d >= at { d + n } else { d })
+            .chain(at..at + n)
+            .collect();
+        self.edits.push(BufferEdit::Insert {
+            offset: at,
+            bytes: Hex(bytes.to_vec()),
+        });
+    }
 }
+
+/// A replacement in overwrite mode that would change the buffer's length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChangesLength;
 
 #[cfg(test)]
 mod tests {
@@ -756,7 +837,6 @@ mod tests {
 
     #[test]
     fn cursor_movement_clamps_and_selection_is_inclusive() {
-        // Cursor moves clamp to bounds.
         let mut m = model();
         m.move_left(false);
         assert_eq!(m.cursor(), 0);
@@ -765,7 +845,6 @@ mod tests {
         m.move_right(false);
         assert_eq!(m.cursor(), 63);
 
-        // Vertical movement uses the row width.
         let mut m = model();
         m.set_bytes_per_row(16);
         m.move_down(false);
@@ -773,14 +852,12 @@ mod tests {
         m.move_up(false);
         assert_eq!(m.cursor(), 0);
 
-        // Selection is inclusive and normalised.
         let mut m = model();
         m.move_to(10, false);
         m.move_to(5, true);
         assert_eq!(m.selection(), Some((5, 10)));
         assert_eq!(m.selection_len(), 6);
 
-        // Select-all spans the buffer.
         let mut m = model();
         m.select_all();
         assert_eq!(m.selection(), Some((0, 63)));
@@ -789,7 +866,6 @@ mod tests {
 
     #[test]
     fn byte_edits_overwrite_insert_delete_and_track_dirty_and_history() {
-        // Overwriting with two hex nibbles sets the byte and advances.
         let mut m = HexModel::new(vec![0x00, 0x00]);
         // Type "ff" over the first byte.
         assert!(m.input_hex_digit(0xF));
@@ -799,7 +875,6 @@ mod tests {
         assert_eq!(m.cursor(), 1); // advanced after completing the byte
         assert!(m.is_dirty(0));
 
-        // Every change is recorded as the edit that makes it.
         let mut edited = HexModel::new(vec![0x10, 0x20]);
         assert!(edited.set_byte(1, 0xAB));
         assert!(
@@ -821,7 +896,6 @@ mod tests {
         );
         assert!(edited.take_edits().is_empty());
 
-        // Insert-mode hex grows the buffer.
         let mut m = HexModel::new(vec![0xAA]);
         m.toggle_mode(); // -> Insert
         m.move_to(0, false);
@@ -829,14 +903,12 @@ mod tests {
         m.input_hex_digit(0x2);
         assert_eq!(m.bytes(), &[0x12, 0xAA]);
 
-        // ASCII input overwrites.
         let mut m = HexModel::new(vec![0x00, 0x00]);
         m.set_column(Column::Ascii);
         assert!(m.input_ascii_char('A'));
         assert_eq!(m.bytes()[0], b'A');
         assert_eq!(m.cursor(), 1);
 
-        // Deleting a selection removes the range.
         let mut m = model();
         m.move_to(2, false);
         m.move_to(5, true);
@@ -845,7 +917,6 @@ mod tests {
         // The byte originally at offset 6 is now at offset 2.
         assert_eq!(m.bytes()[2], 6);
 
-        // Insert shifts dirty markers.
         let mut m = HexModel::new(vec![0x10, 0x20, 0x30]);
         m.set_byte(2, 0x31); // dirty at 2
         assert!(m.is_dirty(2));
@@ -866,14 +937,12 @@ mod tests {
         assert_eq!(m.cursor(), 3);
         m.show_bytes(&saved, &saved);
         assert_eq!(m.dirty_count(), 0);
-        // A shorter buffer clamps the cursor and marks the changed span.
         m.show_bytes(&[0x10, 0x40], &saved);
         assert_eq!(m.cursor(), 1);
         assert_eq!(m.dirty_count(), 0, "a pure removal changes no byte left");
         m.show_bytes(&[0x10, 0x99, 0x40], &saved);
         assert!(m.is_dirty(1));
         assert!(!m.is_dirty(2));
-        // A load starts clean.
         m.load(vec![1, 2, 3]);
         assert_eq!(m.dirty_count(), 0);
         assert_eq!(m.cursor(), 0);
@@ -888,5 +957,68 @@ mod tests {
         assert_eq!(m.top_row(), 7); // 10 + 1 - 4
         m.scroll_into_view(2, 4);
         assert_eq!(m.top_row(), 2);
+    }
+
+    #[test]
+    fn overwrite_mode_replaces_spans_of_the_same_length_and_refuses_another_length() {
+        let mut m = HexModel::new(vec![0xde, 0xad, 0x00, 0xde, 0xad]);
+        assert_eq!(m.mode(), EditMode::Overwrite);
+        assert_eq!(
+            m.replace_spans(&[(0, 2), (3, 5)], &[0xbe]),
+            Err(ChangesLength),
+            "overwrite never changes the length"
+        );
+        assert_eq!(m.bytes(), &[0xde, 0xad, 0x00, 0xde, 0xad]);
+        assert!(
+            m.take_edits().is_empty(),
+            "a refused replacement edits nothing"
+        );
+
+        assert_eq!(m.replace_spans(&[(0, 2), (3, 5)], &[0xbe, 0xef]), Ok(2));
+        assert_eq!(m.bytes(), &[0xbe, 0xef, 0x00, 0xbe, 0xef]);
+        assert_eq!(m.dirty_count(), 4);
+        assert_eq!(m.cursor(), 0, "the cursor lands on the first replacement");
+        assert_eq!(
+            m.take_edits(),
+            vec![
+                BufferEdit::Overwrite {
+                    offset: 3,
+                    bytes: Hex(vec![0xbe, 0xef])
+                },
+                BufferEdit::Overwrite {
+                    offset: 0,
+                    bytes: Hex(vec![0xbe, 0xef])
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_mode_replaces_spans_with_bytes_of_another_length() {
+        let mut m = HexModel::new(b"aaXaa".to_vec());
+        m.toggle_mode();
+        // Overlapping spans (as find returns for "aa" in "aaa") keep the first.
+        assert_eq!(m.replace_spans(&[(0, 2), (1, 3), (3, 5)], b"bbb"), Ok(2));
+        assert_eq!(m.bytes(), b"bbbXbbb");
+        assert_eq!(m.replace_spans(&[(3, 4)], b""), Ok(1));
+        assert_eq!(m.bytes(), b"bbbbbb");
+        let mut replayed = b"aaXaa".to_vec();
+        for edit in m.take_edits() {
+            match edit {
+                BufferEdit::Insert { offset, bytes } => {
+                    replayed.splice(offset..offset, bytes.0);
+                }
+                BufferEdit::Delete { offset, len } => {
+                    replayed.drain(offset..offset + len);
+                }
+                BufferEdit::Overwrite { offset, bytes } => {
+                    replayed[offset..offset + bytes.0.len()].copy_from_slice(&bytes.0);
+                }
+            }
+        }
+        assert_eq!(
+            replayed, b"bbbbbb",
+            "the recorded edits make the same bytes"
+        );
     }
 }

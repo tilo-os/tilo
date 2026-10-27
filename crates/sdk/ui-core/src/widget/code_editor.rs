@@ -18,6 +18,7 @@
 
 use crate::widget::{AppModel, ModelPath};
 use std::ops::Range;
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -431,8 +432,6 @@ impl CodeEditor {
         self.inner.scroll_by(dy);
     }
 
-    // ---- geometry for host overlays (diagnostics, markers) -----------------
-
     /// A host uses this to align a gutter marker with a source line
     /// (`caret_rect(theme, line_start)`).
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
@@ -480,6 +479,26 @@ impl CodeEditor {
     /// shows its message in [`Self::draw_diagnostic_card`].
     pub fn set_pointer(&mut self, point: Option<Point>) {
         self.hover = point;
+    }
+
+    /// For an embedded host: this editor's damage since the frame on screen,
+    /// as part of `owner`, the widget in the tree it is drawn in
+    /// ([`TextInput::collect_damage_for`]).
+    pub fn collect_damage_for<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
+        self.inner.collect_damage_for(owner, regions);
+    }
+
+    /// For an embedded host's `mark_drawn`: the frame just drawn is on
+    /// screen.
+    pub fn mark_shown(&mut self) {
+        self.inner.mark_shown();
+    }
+
+    /// Whether the diagnostic under the pointer shows its message
+    /// ([`Self::draw_diagnostic_card`]).
+    pub fn shows_diagnostic_card(&self) -> bool {
+        self.hover
+            .is_some_and(|point| self.diagnostic_at(point).is_some())
     }
 
     /// For an embedded host: paint the message of the diagnostic under the
@@ -607,6 +626,27 @@ impl Widget for CodeEditor {
         self.draw_diagnostic_hover(scene, transform, text_renderer, theme, presence);
     }
 
+    /// The field's: the editor is its field and the diagnostics it marks.
+    fn needs_redraw(&self) -> bool {
+        Widget::needs_redraw(&self.inner)
+    }
+
+    /// The field's damage, as this widget's: a scroll is offered as a copy,
+    /// the lines and marks (the diagnostics among them) that changed
+    /// repaint where they were and are.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.inner.collect_damage_for(self, regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        Widget::mark_drawn(&mut self.inner);
+    }
+
+    /// The field's glide after the fingers lifted.
+    fn needs_animation_frame(&self) -> bool {
+        Widget::needs_animation_frame(&self.inner)
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.hover = Some(ctx.logical(position));
@@ -721,7 +761,8 @@ impl CodeEditor {
         );
         // Least severe first, so an error's squiggle and mark win.
         let mut order: Vec<&Diagnostic> = self.diagnostics.iter().collect();
-        order.sort_by_key(|d| d.severity);
+        order.compact_sort_by_key(|d| d.severity);
+        let mut marks = Vec::new();
         for d in order {
             let color = d.color(theme);
             let end = d
@@ -734,6 +775,7 @@ impl CodeEditor {
                 let x0 = row.x0.max(rect.x0 + gutter);
                 let x1 = row.x1.max(x0 + 4.0).min(rect.x1);
                 paint_diagnostic_underline(scene, transform, x0, x1, row.y1 - 1.0, color);
+                marks.push(Rect::new(x0, row.y0, x1, row.y1 + 2.0));
             }
             if gutter > 0.0 {
                 let caret = self.inner.caret_rect(theme, start);
@@ -743,17 +785,14 @@ impl CodeEditor {
                     caret.center().y,
                 );
                 if rect.contains(centre) {
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        color,
-                        None,
-                        &vello::kurbo::Circle::new(centre, d_px / 2.0),
-                    );
+                    let dot = vello::kurbo::Circle::new(centre, d_px / 2.0);
+                    scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &dot);
+                    marks.push(vello::kurbo::Shape::bounding_box(&dot).inflate(1.0, 1.0));
                 }
             }
         }
         scene.pop_layer();
+        self.inner.note_marks(marks);
     }
 
     /// The message of the diagnostic under the pointer, on a floating
@@ -1235,7 +1274,6 @@ mod tests {
             ));
             drive(&mut ed, &mut doc, &char_key("x"), mods(false, false));
             assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
-            // Shift+Tab removes one indent level.
             assert!(drive(
                 &mut ed,
                 &mut doc,
@@ -1572,7 +1610,6 @@ mod document_tests {
         let node = Widget::accessibility(&editor).unwrap();
         assert!(node.state.read_only);
         assert_eq!(node.name.as_deref(), Some("Response body"));
-        // JSON is highlighted.
         let spans = Language::Json
             .highlighter()
             .expect("JSON has a grammar")

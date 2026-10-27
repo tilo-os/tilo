@@ -59,14 +59,14 @@ tilo-actions = { path = "../../collab/actions" }
 os-actions = { path = "../../system/os-actions" }
 runtime-identity = { path = "../runtime-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-runtime-fs = { path = "../runtime-fs" }
+runtime-fs = { package = "tilo-fs-client", path = "../tilo-fs-client" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 accounts = { path = "../../system/accounts" }
 agent-provider-config = { path = "../../agent/provider-config" }
 # Only the gateway's client: its daemon (`service`) runs the models and the
 # provider clients, and no app process maps them.
-tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false }
+tilo-model-client = { path = "../../agent/model-client", default-features = false }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-files = { path = "../../platform/tilo-files" }
 # The rich-text document engine and its editor: the office apps, Notes, Chat,

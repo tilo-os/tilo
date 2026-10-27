@@ -6,25 +6,24 @@
 //! `quirc` algorithm) over an [`image`]-decoded greyscale buffer. No camera,
 //! no native libraries.
 //!
-//! [`decode_image_file`] reads the file and hands its greyscale buffer to the
-//! shared [`decode_luma`] core. The output is a single decoded payload string,
+//! [`decode_image_bytes`] decodes the chosen image's bytes and hands its
+//! greyscale buffer to the shared [`decode_luma`] core. The output is a single decoded payload string,
 //! which the panel hands to [`crate::model::parse_otpauth_uri`]. This module
 //! never touches the UI or the vault.
 
-use std::path::Path;
-
-/// Decode the first QR code found in an image file (PNG / JPEG / GIF / …).
+/// Decode the first QR code in an encoded image's bytes (PNG, JPEG, GIF, ...),
+/// as a chooser delivers them on every host, a browser page included.
 ///
 /// Returns the decoded payload string — for an authenticator export this is
-/// the `otpauth://` URI. `Err` carries a short, user-facing reason: the file
-/// couldn't be read/decoded as an image, or no QR code was found in it.
+/// the `otpauth://` URI.
 ///
 /// # Errors
-/// Returns `Err` with a short, user-facing reason when `path` can't be
-/// opened or decoded as an image, when no QR grid is found in it, or when a
-/// grid is found but its content can't be decoded.
-pub fn decode_image_file(path: &Path) -> Result<String, String> {
-    let img = image::open(path).map_err(|e| format!("Couldn\u{2019}t open image: {e}"))?;
+/// Returns `Err` with a short, user-facing reason when the bytes can't be
+/// decoded as an image, when no QR grid is found in it, or when a grid is
+/// found but its content can't be decoded.
+pub fn decode_image_bytes(bytes: &[u8]) -> Result<String, String> {
+    let img =
+        image::load_from_memory(bytes).map_err(|e| format!("Couldn\u{2019}t open image: {e}"))?;
     decode_luma(img.to_luma8())
 }
 
@@ -33,11 +32,6 @@ pub fn decode_image_file(path: &Path) -> Result<String, String> {
 /// The shared core of the ingestion path: the file importer feeds it a
 /// decoded screenshot. Returns the payload string, or a short reason when no
 /// readable QR grid is present.
-///
-/// # Errors
-/// Returns `Err` with a short, user-facing reason when no QR grid is
-/// detected in `luma`, or when every detected grid fails to decode (or
-/// decodes to an empty payload).
 pub fn decode_luma(luma: image::GrayImage) -> Result<String, String> {
     let mut prepared = rqrr::PreparedImage::prepare(luma);
     let grids = prepared.detect_grids();
@@ -74,7 +68,6 @@ mod tests {
             assert_eq!(decoded, uri);
         }
 
-        // Case `empty_image_reports_no_qr_found`.
         {
             // A blank white field has no finder patterns to detect.
             let blank = GrayImage::from_pixel(128, 128, Luma([255]));

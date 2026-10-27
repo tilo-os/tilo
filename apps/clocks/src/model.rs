@@ -381,6 +381,28 @@ impl Clocks {
         Ok(())
     }
 
+    /// Change an alarm's label, time and repeat days without recreating it.
+    ///
+    /// Its on/off state and the moment it was turned on stay as they were,
+    /// so moving an alarm from 07:30 to 08:00 adjusts the existing alarm
+    /// rather than replacing it and losing them.
+    #[action(item = alarms)]
+    pub fn edit_alarm(
+        &mut self,
+        alarm: Id,
+        #[param("What the alarm is for")] label: String,
+        #[param("Hour, 0 to 23")] hour: u8,
+        #[param("Minute, 0 to 59")] minute: u8,
+        #[param("Weekdays it repeats on (Mon … Sun); none rings once")] weekdays: Vec<WeekdayKey>,
+    ) -> Result<(), Refusal> {
+        let alarm = alarm_mut(self, &alarm)?;
+        alarm.label = bounded_label(&label, "Alarm");
+        alarm.hour = hour;
+        alarm.minute = minute;
+        alarm.repeat = repeat_mask(&weekdays.into_iter().collect());
+        Ok(())
+    }
+
     /// Remove alarm.
     #[action(item = alarms)]
     pub fn remove_alarm(&mut self, alarm: Id) -> Result<(), Refusal> {

@@ -2,8 +2,8 @@
 """The performance results store: append-only JSON-lines files.
 
 The store is the Forgejo generic package `tilo-perf-results`, read
-anonymously and written only by `.forgejo/workflows/perf-scheduled.yml` with
-the package token. Each package version is a UTC month (`2026-10`); each
+anonymously and written only by t's perf-scheduled check (tools/ci/perf-compare.sh)
+with the package token. Each package version is a UTC month (`2026-10`); each
 scheduled run adds one immutable file, `<started>-<run>-<attempt>.jsonl`, so
 runs never contend for a file and no record is ever rewritten. compare.py
 reads the newest months it needs and writes the next file.

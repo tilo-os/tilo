@@ -61,7 +61,6 @@ const PALETTE: [[u8; 3]; 6] = [
 /// root-signed delegation.
 #[derive(Clone)]
 pub struct AgentIdentity {
-    /// The agent's device key.
     pub key: SigningKey,
     /// Its root-signed certificate.
     pub cert: DeviceCert,
@@ -192,7 +191,6 @@ pub struct AgentControl {
 pub type Witness = Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>;
 
 impl AgentControl {
-    /// A starting agent under `delegation`.
     #[must_use]
     pub fn new(delegation: Delegation) -> Arc<Self> {
         Arc::new(Self {
@@ -245,7 +243,6 @@ impl AgentControl {
         })
     }
 
-    /// The room the agent works in.
     #[must_use]
     pub fn room(&self) -> Option<String> {
         self.state().room.clone()
@@ -347,7 +344,6 @@ impl AgentControl {
         self.witness.lock_recover().clone()
     }
 
-    /// The agent's delegation.
     #[must_use]
     pub const fn delegation(&self) -> &Delegation {
         &self.delegation
@@ -705,10 +701,6 @@ pub trait AgentHostLink: Send + Sync {
     /// `proposal` describes, in one consent step. Returns the pairing code
     /// the approver shows; `done` later receives the agent's certificate
     /// and root-signed delegation, or why there are none.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the request could not be queued.
     fn request_approval(
         &self,
         key: &SigningKey,
@@ -717,10 +709,6 @@ pub trait AgentHostLink: Send + Sync {
     ) -> Result<String, String>;
 
     /// Admit the agent device `cert` of `delegation` to its rooms.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the host refused the delegation.
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String>;
 
     /// Refuse the agent device from now on.
@@ -810,7 +798,6 @@ pub struct GrantRecord {
 /// Everything a supervisor needs to pick up where it was.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SupervisorSnapshot {
-    /// Every grant.
     pub grants: Vec<GrantRecord>,
     /// Every agent, as a browser sees it.
     pub agents: Vec<AgentInfo>,
@@ -834,7 +821,6 @@ pub struct AgentSupervisor {
 }
 
 impl AgentSupervisor {
-    /// A supervisor for the agents of `user_public_key`.
     #[must_use]
     pub fn new(user_public_key: [u8; 32], spawner: Spawner) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
@@ -903,10 +889,6 @@ impl AgentSupervisor {
 
     /// Ask the user's approver for a new grant as `request` describes.
     /// Returns the grant id and the pairing code the approver shows.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the request is malformed or could not be queued.
     pub fn request_grant(
         &self,
         request: &GrantRequest,
@@ -1142,7 +1124,6 @@ impl AgentSupervisor {
         Ok((grant.to_owned(), task_id))
     }
 
-    /// The control state of agent `id`.
     #[must_use]
     pub fn control(&self, id: &str) -> Option<Arc<AgentControl>> {
         self.state().agents.get(id).cloned()
@@ -1591,12 +1572,17 @@ impl ActionHost for SupervisorHost {
         self.0.ledger().get(caller, id).cloned()
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if self.0.ledger().get(caller, id).is_none() {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        Err(ActionHostError::NotCancellable {
-            reason: "agent control completes at once".into(),
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(if self.0.ledger().get(caller, id).is_none() {
+            Err(ActionHostError::UnknownInvocation)
+        } else {
+            Err(ActionHostError::NotCancellable {
+                reason: "agent control completes at once".into(),
+            })
         })
     }
 }

@@ -156,9 +156,6 @@ fn check_private_ownership(observed: Observed, current: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// # Errors
-/// Propagates directory creation errors, including an existing name, invalid
-/// path, insufficient permissions or unavailable storage.
 pub fn create_directory(parent: &File, name: &OsStr) -> io::Result<()> {
     let mut options = DirOptions::new();
     options.mode(0o700);
@@ -241,14 +238,12 @@ mod tests {
     /// Ancestor ownership, type and sticky-bit rules.
     #[test]
     fn ancestor_trust_requires_trusted_owner_directory_and_sticky_protection() {
-        // Phase `ancestors_owned_by_self_or_root_are_trusted`.
         {
             check_ownership(dir(ME, 0o755), None, false, ME).unwrap();
             check_ownership(dir(0, 0o755), Some(ME), false, ME).unwrap();
             check_ownership(dir(0, 0o755), Some(0), false, 0).unwrap();
         }
 
-        // Phase `ancestor_owned_by_another_account_is_refused`.
         {
             for owner in [OTHER, OVERFLOW] {
                 refused(
@@ -263,7 +258,6 @@ mod tests {
             );
         }
 
-        // Phase `non_directory_ancestor_is_refused`.
         {
             let file = Observed {
                 is_dir: false,
@@ -273,7 +267,6 @@ mod tests {
             refused(check_ownership(file, None, false, ME), "untrusted owner");
         }
 
-        // Phase `writable_ancestor_needs_the_sticky_bit`.
         {
             refused(
                 check_ownership(dir(0, 0o777), Some(ME), false, ME),
@@ -287,7 +280,6 @@ mod tests {
             check_ownership(dir(0, 0o1777), None, false, ME).unwrap();
         }
 
-        // Phase `sticky_ancestor_does_not_protect_a_foreign_child`.
         {
             for child in [OTHER, OVERFLOW] {
                 refused(

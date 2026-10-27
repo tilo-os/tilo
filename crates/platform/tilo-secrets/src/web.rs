@@ -48,9 +48,6 @@ extern "C" {
 /// Read or durably initialize custody under the browser's app lock.
 /// `None` forbids creation (for an existing encrypted vault). Concurrent
 /// creators receive the same committed value, never their losing candidate.
-///
-/// # Errors
-/// Returns storage, crypto, or missing-custody errors.
 pub async fn get_or_create(
     app: &str,
     key: &str,
@@ -77,9 +74,6 @@ pub fn pending() -> bool {
 /// None means pending: keep the credential local and retry on a later frame.
 /// Storage failures are returned without publishing a reference. A matching
 /// retry consumes the result once; calling again starts a new credential write.
-///
-/// # Errors
-/// Returns a storage error if durable custody or the in-memory mirror is unavailable.
 pub fn seal_blocking(app: &str, bytes: &[u8]) -> Result<Option<String>, SecretError> {
     let value = acknowledged_secret(app, bytes).map_err(|e| failed(&e))?;
     let id = value.as_string();
@@ -100,28 +94,6 @@ pub(crate) fn seal_at_blocking(
         remember(app, id, Some(bytes))?;
     }
     Ok(id)
-}
-
-/// Serialize reload/compare/merge/write of a JSON inventory in durable custody.
-/// Changes map entry ids to [original, replacement], with null for absence.
-/// False is explicitly pending, not success. Retry with the same arguments
-/// until the committed result or error is consumed. A later identical change
-/// starts a fresh durable merge rather than replaying the previous result.
-///
-/// # Errors
-/// Returns a storage error on conflicting edits, failed persistence, or unavailable custody.
-pub fn merge_json_blocking(
-    app: &str,
-    key: &str,
-    baseline: &str,
-    changes: &str,
-) -> Result<bool, SecretError> {
-    let value = acknowledged_merge(app, key, baseline, changes).map_err(|e| failed(&e))?;
-    let Some(json) = value.as_string() else {
-        return Ok(false);
-    };
-    remember(app, key, Some(json.as_bytes()))?;
-    Ok(true)
 }
 
 type Mirror = HashMap<(String, String), Secret>;

@@ -357,7 +357,6 @@ mod tests {
         assert_eq!(ac.correct("dont").as_deref(), Some("don't"));
         assert_eq!(ac.correct("Dont").as_deref(), Some("Don't"));
         assert_eq!(ac.correct("im").as_deref(), Some("I'm"));
-        // A word in its own right stays.
         assert_eq!(ac.correct("cant"), None);
     }
 

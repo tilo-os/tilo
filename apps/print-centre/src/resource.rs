@@ -113,7 +113,7 @@ impl PrintDefaults {
 /// What Print Centre does on this machine: the pages it shows, and the work
 /// it asks of CUPS and SANE.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "print-centre.effects", device_only)]
+#[effect(operation = "print-centre.effects")]
 pub enum PrintCentreEffect {
     /// Refresh printers and documents.
     #[effect(kind = "read")]
@@ -141,6 +141,9 @@ pub enum PrintCentreEffect {
     /// Run printer diagnostics.
     #[effect(view)]
     RunDiagnostics,
+    /// Open what wants a person.
+    #[effect(view)]
+    OpenNeeds,
     /// Print a document.
     ///
     /// Asks for the document, then shows its preview and printing options.
@@ -196,7 +199,7 @@ pub enum PrintCentreEffect {
     /// Confirm cancelling.
     ///
     /// Shows the document in the queue, asking whether to cancel it.
-    #[effect(view, programmatic)]
+    #[effect(view, audience = "agents")]
     ConfirmCancel {
         #[param("The print job's id")]
         job: String,
@@ -267,12 +270,12 @@ pub enum PrintCentreEffect {
     /// Export scanned page.
     ///
     /// Asks where to save the page under review as an image.
-    #[effect(job)]
+    #[effect(attended, job)]
     SaveScannedPage,
     /// Save scanned document.
     ///
     /// Asks where to save every scanned page as one PDF with its text.
-    #[effect(job)]
+    #[effect(attended, job)]
     SaveScannedDocument,
 }
 
@@ -454,5 +457,28 @@ mod tests {
                 "Recognizing German text from now on",
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::PrintCentreShell::scenarios() {
+            let mut app = TestApp::<super::PrintCentreShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

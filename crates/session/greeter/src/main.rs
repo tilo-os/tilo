@@ -4,15 +4,17 @@
 // Modes:
 //   * default — build a `GreeterApp`, hand it to `ui::App`, run the live
 //     winit event loop. Launched at the greetd VT under `cage`:
-//         cage -s -- /usr/bin/tilo-greeter
+//         cage -s -- /usr/libexec/tilo/tilo-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
-//   * `--shots <PATH> [--scenario <name>] [--direction split|poster]` plus
+//   * `--shots <PATH> [--scenario <name>] [--direction split|poster]
+//     [--displays WxH+WxH] [--input touch]` plus
 //     the standard capture options (`--viewport`, `--text-scale`, `--theme`,
 //     …, see `ui::launch::LaunchArgs`) — render one login-card state
 //     into a PNG at `<PATH>` and exit. No window, no event loop. Headless
 //     snapshot for CI / visual inspection (identical output to the live
-//     binary). `--scenario` names one of `SCENARIOS` and defaults to `form`.
+//     binary). `--scenario` names one of `SCENARIOS` and defaults to `form`;
+//     `--input touch` renders the card as a finger uses it.
 
 use std::sync::{Arc, OnceLock};
 
@@ -21,7 +23,6 @@ use greeter::greeter_app::AuthScenario;
 use ui::app::UserEvent;
 use winit::event_loop::EventLoopProxy;
 
-/// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// # Errors
@@ -35,7 +36,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
 
-    let args = ui::launch::LaunchArgs::from_env(&["--direction"])?;
+    let args = ui::launch::LaunchArgs::from_env(&["--direction", "--displays", "--input"])?;
     if let Some(out) = &args.shots {
         let scenario = match args.scenario.as_deref() {
             None => AuthScenario::Form,
@@ -52,13 +53,31 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             widget.seed_shot_password(password);
         }
         ui::clock::freeze_for_capture();
-        let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let mut viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        if let Some(spec) = args.value("--displays") {
+            let arrangement = shot_displays(spec)?;
+            if let Some(extent) = arrangement.extent() {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "display sizes parsed from u32 values"
+                )]
+                let size = (extent.width() as u32, extent.height() as u32);
+                viewport = size;
+            }
+            widget = widget.with_displays(greeter::output_scale::Displays::fixed(arrangement));
+        }
         let mut frame = ui::headless::FrameHarness::new_with_theme(
             ui::State::new(),
             Box::new(widget),
             viewport,
             ui::launch::shot_theme(&args),
         );
+        match args.value("--input") {
+            Some("touch") => frame.set_interaction_environment(ui::InteractionEnvironment::TOUCH),
+            Some("pointer") | None => {}
+            Some(other) => return Err(format!("unknown --input {other}: touch or pointer").into()),
+        }
         frame.settle_for_capture(ui::launch::CAPTURE_SETTLE_BOUND);
         frame.render_png(out);
         println!("tilo-greeter: wrote shot to {}", out.display());
@@ -69,6 +88,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and keep them configured (hotplug) for as long as the greeter runs.
     // Session and sign-in use the same physical panel-DPI policy.
     let displays = greeter::output_scale::start();
+    // Record, for the boot assessment, the first keyboard or touch screen
+    // the kiosk gives this window.
+    greeter::seat_input::start();
 
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
@@ -120,6 +142,28 @@ fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy
         ));
     });
     console.serve_discovered(greeter::greeter_app::CONSOLE_PROVIDER, &waker);
+}
+
+/// `--displays 1472x920+1920x1080`: the kiosk's outputs left to right, in
+/// logical pixels, the first a built-in panel. The shot's viewport becomes
+/// their span, as the kiosk stretches the window over them.
+fn shot_displays(spec: &str) -> Result<greeter::output_scale::Arrangement, String> {
+    let mut displays = Vec::new();
+    let mut x = 0.0;
+    for (index, size) in spec.split('+').enumerate() {
+        let (width, height) = size
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            .filter(|&(w, h)| w > 0 && h > 0)
+            .ok_or_else(|| format!("--displays {spec:?}: expected WxH+WxH..."))?;
+        let rect = vello::kurbo::Rect::new(x, 0.0, x + f64::from(width), f64::from(height));
+        x = rect.x1;
+        displays.push(greeter::output_scale::Display {
+            rect,
+            internal: index == 0,
+        });
+    }
+    Ok(greeter::output_scale::Arrangement { displays })
 }
 
 /// Every `--scenario` name and the login-card state it captures.

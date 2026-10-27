@@ -30,8 +30,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from acceptance import core, records, report  # noqa: E402
-from acceptance.checks import (agent, apps, basics, daily_apps, input_devices,  # noqa: E402,F401
-                               provenance, resources, search, startup, ui, window)
+from acceptance.checks import (agent, apps, basics, clock, daily_apps,  # noqa: E402,F401
+                               input_devices, provenance, resources, search, secrets, startup, ui,
+                               window)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
@@ -83,7 +84,7 @@ BUDGETS = {
     # host's GPU, both of which compile every render pipeline on the first frame: a cold
     # launch there is judged against a generous ceiling that still catches a stall of seconds.
     "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
-    # The installed-desktop gates build-image.yml runs on a KVM guest: kernel and userspace
+    # The installed-desktop gates os-acceptance-{arch} runs on a KVM guest: kernel and userspace
     # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
     # per-frame presentation and main-thread work on a software renderer.
     "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
@@ -105,7 +106,10 @@ DE_PASS = ("U03", "U04", "S03")
 # shares a workspace on a relay it starts for the run, so it comes late, but before R07, A16
 # and R05, which judge the apps it opens too. R08 signs the dev account in at seat0's
 # greeter, which starts a second compositor: it runs after every check that measures or
-# renders the slot's session.
+# renders the slot's session. K01 sets the VM's clock back and restarts the session, so it
+# runs after the checks that judge what the run opened, and before R08. C01 opens Notes, so it
+# runs before R05 judges the apps the run opened. C02 takes the account R08 signed in through first use and signs it
+# in again, so it follows R08.
 ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
@@ -113,8 +117,8 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06",
-         "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07",
-         "R09", "R07", "A16", "R05", "R08", "P03"]
+         "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07", "I08",
+         "C01", "R09", "R07", "A16", "R05", "K01", "R08", "C02", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -228,14 +232,7 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         args.append("--identity")
     if locale:
         args += ["--locale", locale]
-    try:
-        vm.run(*args, timeout=300, slot=False)
-    except VmError as exc:
-        # A slot whose compositor missed the display change is reapplied, as tilo-vm advises.
-        if "did not pick up the display change" not in str(exc):
-            raise
-        time.sleep(3)
-        vm.run(*args, timeout=300, slot=False)
+    vm.run(*args, timeout=300, slot=False)
 
 
 def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
@@ -553,6 +550,8 @@ def main() -> int:
             facts["provenance"]["swap"] = swapped
         time.sleep(5)
         facts["renderer"], facts["display"] = renderer(vm, without_3d=created and not args.gl)
+        # A VM this run created without --gl renders in software: no GPU for R05 to judge.
+        facts["software_rendering"] = created and not args.gl
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
         config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
@@ -565,6 +564,7 @@ def main() -> int:
         german = de
         main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
+            core.keep_awake(ctx)
             r = core.run_check(ctx, by_id[cid])
             results.append(r)
             print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
@@ -578,6 +578,7 @@ def main() -> int:
             except VmError as exc:
                 ctx.facts["locale_de:why"] = f"the session could not be restarted in German: {exc.reason()}"
             for cid in de_ids:
+                core.keep_awake(ctx)
                 r = core.run_check(ctx, by_id[cid])
                 results.append(r)
                 print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
@@ -614,8 +615,10 @@ def main() -> int:
                 # No file: the comparison then reports every KPI of the run as missing.
                 print(f"records: none written: {exc}", file=sys.stderr)
     expected = sum(r.status == "xfail" for r in results)
+    skipped = sum(r.status == "skip" for r in results)
     print(f"\n{doc['overall'].upper()}: {sum(r.status == 'pass' for r in results)}/{len(results)} checks pass"
-          + (f", {expected} expected failure(s)" if expected else ""))
+          + (f", {expected} expected failure(s)" if expected else "")
+          + (f", {skipped} skipped" if skipped else ""))
     print(f"report: {out / 'report.md'}")
     return 0 if doc["overall"] == "pass" else 1
 

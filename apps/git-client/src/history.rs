@@ -340,24 +340,120 @@ fn paint_row_text(
         ),
         None,
     );
-    let mut x = text_x + f64::from(hash_w) + gap;
-    for label in shown_refs(&commit.refs) {
-        let lead = ref_lead(theme, label, head);
-        let w = ChipFace::intrinsic_width(&label.name, lead, false, ctx.text, theme);
-        let room = right - x;
-        if room <= m.chip_h {
-            break;
-        }
-        let chip = Rect::new(x, line3.y0, x + w.min(room), line3.y1);
-        ChipFace::new(chip, &label.name).lead(lead).paint(
+    let line3 = Rect::new(text_x + f64::from(hash_w) + gap, line3.y0, right, line3.y1);
+    paint_refs(ctx, commit, line3, head);
+}
+
+/// The refs pointing at a row's commit as chips in `line`, as many as fit
+/// whole and a count chip for the rest.
+fn paint_refs(ctx: &mut PaintCtx<'_>, commit: &Commit, line: Rect, head: &str) {
+    let theme = ctx.theme;
+    let gap = f64::from(theme.tokens.spacing.s2);
+    let x = line.x0;
+    let refs: Vec<&RefLabel> = shown_refs(&commit.refs).collect();
+    let leads: Vec<ChipLead> = refs
+        .iter()
+        .map(|label| ref_lead(theme, label, head))
+        .collect();
+    let widths: Vec<f64> = refs
+        .iter()
+        .zip(&leads)
+        .map(|(label, lead)| ChipFace::intrinsic_width(&label.name, *lead, false, ctx.text, theme))
+        .collect();
+    let plan = plan_chips(&widths, line.x1 - x, gap, |hidden| {
+        ChipFace::intrinsic_width(&more_label(hidden), ChipLead::None, false, ctx.text, theme)
+    });
+    let mut x = x;
+    for ((label, lead), w) in refs.iter().zip(&leads).zip(&plan.widths) {
+        let chip = Rect::new(x, line.y0, x + w, line.y1);
+        ChipFace::new(chip, &label.name).lead(*lead).paint(
             ctx.scene,
             ctx.transform,
             ctx.text,
             theme,
         );
         x = chip.x1 + gap;
-        if w > room {
-            break;
+    }
+    if let Some(hidden) = plan.hidden {
+        let label = more_label(hidden);
+        let w = ChipFace::intrinsic_width(&label, ChipLead::None, false, ctx.text, theme);
+        ChipFace::new(Rect::new(x, line.y0, x + w, line.y1), &label).paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+        );
+    }
+}
+
+/// The chip that stands for the refs a row has no room for.
+fn more_label(hidden: usize) -> String {
+    t_args("git-more-refs", &[("count", hidden.into())])
+}
+
+/// Which of a row's ref chips stand whole in `room`, and how many a
+/// trailing count chip stands for.
+#[derive(Debug, PartialEq)]
+struct ChipPlan {
+    /// The width of each chip shown, in order; only the first is ever
+    /// narrower than it would be, elided when nothing else fits.
+    widths: Vec<f64>,
+    hidden: Option<usize>,
+}
+
+/// Lay out chips of `widths` with `gap` between them in `room`: as many as
+/// fit whole, then a count chip (`more_width` of the hidden count) for the
+/// rest. When not even the first fits beside the count, the first is elided
+/// to what is left, never below a minimum that still reads.
+fn plan_chips(
+    widths: &[f64],
+    room: f64,
+    gap: f64,
+    mut more_width: impl FnMut(usize) -> f64,
+) -> ChipPlan {
+    let total = |k: usize| widths.iter().take(k).sum::<f64>() + gap * k.saturating_sub(1) as f64;
+    if total(widths.len()) <= room {
+        return ChipPlan {
+            widths: widths.to_vec(),
+            hidden: None,
+        };
+    }
+    for shown in (1..widths.len()).rev() {
+        if total(shown) + gap + more_width(widths.len() - shown) <= room {
+            return ChipPlan {
+                widths: widths.iter().take(shown).copied().collect(),
+                hidden: Some(widths.len() - shown),
+            };
+        }
+    }
+    let Some(first) = widths.first() else {
+        return ChipPlan {
+            widths: Vec::new(),
+            hidden: None,
+        };
+    };
+    let rest = widths.len() - 1;
+    let count = if rest > 0 {
+        gap + more_width(rest)
+    } else {
+        0.0
+    };
+    let elided = (room - count).min(*first);
+    let readable = 3.0 * gap;
+    if elided >= readable {
+        ChipPlan {
+            widths: vec![elided],
+            hidden: (rest > 0).then_some(rest),
+        }
+    } else if more_width(widths.len()) <= room {
+        ChipPlan {
+            widths: Vec::new(),
+            hidden: Some(widths.len()),
+        }
+    } else {
+        ChipPlan {
+            widths: Vec::new(),
+            hidden: None,
         }
     }
 }
@@ -450,15 +546,31 @@ impl Facts {
             );
         }
         if !self.refs.is_empty() {
-            rows.push(PropertyRow::new(&self.refs_label, &self.refs));
+            // Branch names never break: an `-` inside one is no word end.
+            rows.push(
+                PropertyRow::new(&self.refs_label, &self.refs).with_kind(TextKind::Identifier),
+            );
         }
         rows
     }
 }
 
-/// Paint the selected commit into `area`, scrolled by `scroll`. Returns the
-/// height of everything, for clamping the scroll.
-pub fn paint_detail(ctx: &mut PaintCtx<'_>, area: Rect, commit: &Commit, scroll: f64) -> f64 {
+/// What one detail paint produced.
+pub struct DetailDraw {
+    /// Height of everything, for clamping the scroll.
+    pub height: f64,
+    /// The changed-file rows, top to bottom, at their painted places: what
+    /// the pointer and the keyboard choose to see that file's diff.
+    pub file_rows: Vec<Rect>,
+}
+
+/// Paint the selected commit into `area`, scrolled by `scroll`.
+pub fn paint_detail(
+    ctx: &mut PaintCtx<'_>,
+    area: Rect,
+    commit: &Commit,
+    scroll: f64,
+) -> DetailDraw {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
     let gutter = f64::from(s.s6);
@@ -540,19 +652,26 @@ pub fn paint_detail(ctx: &mut PaintCtx<'_>, area: Rect, commit: &Commit, scroll:
     }
 
     // The files it changed.
-    if !commit.files.is_empty() {
-        y = paint_files(ctx, commit, Rect::new(x, y, x + width, area.y1), y);
-    }
+    let file_rows = if commit.files.is_empty() {
+        Vec::new()
+    } else {
+        let (next, rows) = paint_files(ctx, commit, Rect::new(x, y, x + width, area.y1), y);
+        y = next;
+        rows
+    };
     ctx.scene.pop_layer();
-    y - top + gutter
+    DetailDraw {
+        height: y - top + gutter,
+        file_rows,
+    }
 }
 
 /// The "Changed files" group: a `Subheading` with its count over one row
-/// per file. Returns the `y` under it.
-fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> f64 {
+/// per file. Returns the `y` under it and each row's rect.
+fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> (f64, Vec<Rect>) {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
-    let pad = f64::from(s.s3);
+    let pad = ui::chrome::row_bleed(theme);
     let header_h = f64::from(
         ctx.text
             .measure_style("Ag", None, &theme.text(TextRole::Subheading))
@@ -595,6 +714,7 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> f
     // column's other text.
     let mut y = band.y1 + f64::from(s.s2);
     let count = commit.files.len();
+    let mut rows = Vec::with_capacity(count);
     for (i, file) in commit.files.iter().enumerate() {
         let counts = line_counts(file.additions, file.deletions);
         let dir = file.dir();
@@ -613,9 +733,10 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> f
         let h = face.height(ctx.text, theme);
         let rect = Rect::new(lane.x0 - pad, y, lane.x1 + pad, y + h);
         face.paint(ctx, rect);
+        rows.push(rect);
         y += h;
     }
-    y
+    (y, rows)
 }
 
 #[cfg(test)]
@@ -624,8 +745,6 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Affine;
 
-    /// Every commit row has the same height, grown with the text scale, and
-    /// the list reports a row for every visible commit.
     #[test]
     fn commit_rows_are_one_height_and_follow_the_text_scale() {
         let theme = Theme::dark();
@@ -697,6 +816,47 @@ mod tests {
             }
             assert!(line3 <= room, "{:?}: hash and refs fit", commit.summary);
         }
+    }
+
+    #[test]
+    fn chips_that_do_not_fit_are_counted_in_a_chip_of_their_own() {
+        let more = |hidden: usize| 20.0 + hidden as f64;
+        let widths = [40.0, 80.0, 120.0];
+        assert_eq!(
+            plan_chips(&widths, 260.0, 8.0, more),
+            ChipPlan {
+                widths: widths.to_vec(),
+                hidden: None
+            },
+            "all three fit"
+        );
+        assert_eq!(
+            plan_chips(&widths, 160.0, 8.0, more),
+            ChipPlan {
+                widths: vec![40.0, 80.0],
+                hidden: Some(1)
+            },
+            "the third is counted, never dropped"
+        );
+        assert_eq!(
+            plan_chips(&widths, 100.0, 8.0, more),
+            ChipPlan {
+                widths: vec![40.0],
+                hidden: Some(2)
+            }
+        );
+        let elided = plan_chips(&[200.0, 50.0], 120.0, 8.0, more);
+        assert_eq!(elided.hidden, Some(1), "the rest still counted");
+        assert!(elided.widths.len() == 1 && elided.widths[0] < 200.0);
+        assert!(elided.widths[0] + 8.0 + more(1) <= 120.0);
+        assert_eq!(
+            plan_chips(&[200.0, 50.0], 30.0, 8.0, more),
+            ChipPlan {
+                widths: Vec::new(),
+                hidden: Some(2)
+            },
+            "with room for the count alone, the count"
+        );
     }
 
     #[test]

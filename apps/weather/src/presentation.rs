@@ -23,8 +23,8 @@ type GlyphPainter = Box<dyn Fn(&mut PaintCtx<'_>, Rect)>;
 
 /// The text one saved-place row shows, owned so the row face can borrow it.
 pub(crate) struct PlaceRowText {
-    /// Paints the current sky's glyph; before the first forecast it paints
-    /// nothing, and the empty leading slot keeps the names lined up.
+    /// Paints the current sky's glyph; before the first forecast, a dim map
+    /// pin (as the overview's rail shows), so the slot never reads as a gap.
     glyph: GlyphPainter,
     secondary: String,
     temperature: Option<String>,
@@ -82,6 +82,15 @@ fn glyph(sky: Option<(Sky, bool)>) -> GlyphPainter {
     Box::new(move |ctx, slot| {
         if let Some((sky, is_day)) = sky {
             crate::icon::draw_icon(ctx.scene, ctx.transform, sky, is_day, slot, ctx.theme);
+        } else {
+            ui::icons::draw_icon(
+                ctx.scene,
+                ctx.transform,
+                slot,
+                ui::icons::Icon::MapPin,
+                ctx.theme.text_dim,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
     })
 }
@@ -140,5 +149,28 @@ pub(crate) fn morning_preview(
         detail: Some(detail),
         badge: Some(badge),
         preview: Some(preview),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_place_without_a_forecast_still_shows_a_leading_mark() {
+        let mut scene = vello::Scene::new();
+        let mut text = ui::TextRenderer::new();
+        let theme = ui::Theme::dark();
+        {
+            let mut ctx = ui::paint::PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            (super::glyph(None))(&mut ctx, vello::kurbo::Rect::new(0.0, 0.0, 20.0, 20.0));
+        }
+        assert!(
+            !scene.encoding().is_empty(),
+            "the row's leading slot is not a blank gap"
+        );
     }
 }

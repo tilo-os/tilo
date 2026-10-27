@@ -12,7 +12,13 @@ use crate::{
 };
 
 /// Everything that decides authority in one room.
+///
+/// The built-in roles' grants are the code's ([`roles::role_rules`]): a
+/// stored policy loads with them as defined now
+/// ([`Self::with_current_roles`]), so a room written before a role changed
+/// gets the role as it is. Grants given in the room stay as stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredRoomPolicy")]
 pub struct RoomPolicy {
     pub room: String,
     /// The owner, by person id. Structural: holds everything and cannot be
@@ -28,6 +34,31 @@ pub struct RoomPolicy {
     pub joined: BTreeMap<String, u64>,
     /// Every grant in the room, role presets included.
     pub grants: Vec<Grant>,
+}
+
+/// A [`RoomPolicy`] as written, before its built-in roles are brought to
+/// their current definition.
+#[derive(Deserialize)]
+struct StoredRoomPolicy {
+    room: String,
+    owner: Option<String>,
+    members: BTreeMap<String, Role>,
+    #[serde(default)]
+    joined: BTreeMap<String, u64>,
+    grants: Vec<Grant>,
+}
+
+impl From<StoredRoomPolicy> for RoomPolicy {
+    fn from(stored: StoredRoomPolicy) -> Self {
+        Self {
+            room: stored.room,
+            owner: stored.owner,
+            members: stored.members,
+            joined: stored.joined,
+            grants: stored.grants,
+        }
+        .with_current_roles()
+    }
 }
 
 /// A change to a room's authority. Each is one governance action.
@@ -131,6 +162,9 @@ pub enum Refusal {
     AlreadyAMember(String),
     UnknownGrant(GrantId),
     DuplicateGrant(GrantId),
+    /// A built-in role's grant: the role's rules are the code's, so a room
+    /// neither revokes nor gives one; it adjusts a role with grants of its own.
+    BuiltInRole(GrantId),
 }
 
 impl std::fmt::Display for Refusal {
@@ -162,6 +196,7 @@ impl std::fmt::Display for Refusal {
             Self::AlreadyAMember(person) => write!(f, "{person} is already a member"),
             Self::UnknownGrant(id) => write!(f, "no grant {id}"),
             Self::DuplicateGrant(id) => write!(f, "grant {id} already exists"),
+            Self::BuiltInRole(id) => write!(f, "{id} is part of a built-in role"),
         }
     }
 }
@@ -184,6 +219,15 @@ impl RoomPolicy {
         }
     }
 
+    /// Whether anyone besides `person` belongs to the room, its owner or a
+    /// member: what the room holds is shared with them whether or not they
+    /// are here right now.
+    #[must_use]
+    pub fn has_others(&self, person: &str) -> bool {
+        self.owner.as_deref().is_some_and(|owner| owner != person)
+            || self.members.keys().any(|member| member != person)
+    }
+
     /// A room with no owner yet and the role presets in place.
     #[must_use]
     pub fn unowned(room: impl Into<String>, presets_by: &Subject) -> Self {
@@ -196,6 +240,15 @@ impl RoomPolicy {
             joined: BTreeMap::new(),
             grants,
         }
+    }
+
+    /// The policy with each built-in role's grants as the code defines them
+    /// now ([`roles::current_role_grants`]). Whatever reads a stored policy
+    /// calls it, so stored copies of a role never decide.
+    #[must_use]
+    pub fn with_current_roles(mut self) -> Self {
+        self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
+        self
     }
 
     /// Move the policy to another room id: every grant on this room's nodes
@@ -269,7 +322,6 @@ impl RoomPolicy {
         }
     }
 
-    /// The grant that blocks `person`, given by `granted_by`.
     #[must_use]
     pub fn block(&self, person: &str, granted_by: Subject) -> Grant {
         roles::block_grant(&self.room, person, granted_by)
@@ -312,10 +364,22 @@ impl RoomPolicy {
         subjects
     }
 
-    /// A person's own authority in the room.
     #[must_use]
     pub fn party(&self, person: &str) -> Party<'_> {
-        let party = Party::new(self.subjects_of(person), &self.grants);
+        // The room's ban or restriction of the person is a decision about
+        // them: no grant to their role lifts it, however specific (an item
+        // shared with the room to edit included), as nobody but whoever may
+        // govern `unban` or `unrestrict` may.
+        let moderation = [
+            roles::block_grant_id(person),
+            roles::restriction_grant_id(person),
+        ];
+        let subject = Subject::Person(person.to_owned());
+        let held_off = self
+            .grants
+            .iter()
+            .filter(|grant| grant.subject == subject && moderation.contains(&grant.id));
+        let party = Party::new(self.subjects_of(person), &self.grants).held_off_by(held_off);
         if self.is_owner(person) {
             party.owning(self.node())
         } else {
@@ -342,27 +406,6 @@ impl RoomPolicy {
         } else {
             authority
         }
-    }
-
-    /// The answer task `task`'s own grant set gives for an action of `kind`
-    /// at `node`, or `None` when the task carries no grant set.
-    #[must_use]
-    pub fn task_answer(
-        &self,
-        task: &str,
-        node: &TreePath,
-        kind: ActionKind,
-        cx: &Context<'_>,
-    ) -> Option<Answer> {
-        let subject = Subject::Task(task.to_owned());
-        self.grants
-            .iter()
-            .any(|grant| grant.subject == subject)
-            .then(|| {
-                Authority::person(self.party_of(subject))
-                    .decide(node, kind, cx)
-                    .answer
-            })
     }
 
     /// The room's grants naming a delegation subject (an agent, an app, a
@@ -453,20 +496,6 @@ impl RoomPolicy {
         Ok(())
     }
 
-    /// Drop the grants that lapsed with their task
-    /// ([`Grant::lapsed_with_tasks`]). The ids dropped.
-    pub fn lapse_tasks(&mut self, open: impl Fn(&str) -> bool) -> Vec<GrantId> {
-        let mut lapsed = Vec::new();
-        self.grants.retain(|grant| {
-            let keep = !grant.lapsed_with_tasks(&open);
-            if !keep {
-                lapsed.push(grant.id.clone());
-            }
-            keep
-        });
-        lapsed
-    }
-
     /// Drop the `Once` grants among `spent`: an action ran on them. Any other
     /// grant named stays. Returns whether anything was dropped.
     pub fn spend(&mut self, spent: &[GrantId]) -> bool {
@@ -478,9 +507,6 @@ impl RoomPolicy {
 
     /// Whether `actor_person` (acting through `actor`) may invite someone with
     /// `role`. An invite never carries more than the inviter's role.
-    ///
-    /// # Errors
-    /// When the invite action is not granted or `role` exceeds the inviter's.
     pub fn check_invite(
         &self,
         actor_person: &str,
@@ -706,6 +732,9 @@ impl RoomPolicy {
                 self.check_reach(actor_person, person, true)
             }
             Change::Grant(grant) => {
+                if roles::is_role_grant(grant) {
+                    return Err(Refusal::BuiltInRole(grant.id.clone()));
+                }
                 if grant.node.room_id() != Some(self.room.as_str()) {
                     return Err(Refusal::OutsideRoom(grant.node.clone()));
                 }
@@ -715,7 +744,10 @@ impl RoomPolicy {
                 Self::check_within(actor, grant, cx)
             }
             Change::Revoke(id) => {
-                if self.grants.iter().any(|grant| &grant.id == id) {
+                if let Some(grant) = self.grants.iter().find(|grant| &grant.id == id) {
+                    if roles::is_role_grant(grant) {
+                        return Err(Refusal::BuiltInRole(id.clone()));
+                    }
                     Ok(())
                 } else {
                     Err(Refusal::UnknownGrant(id.clone()))

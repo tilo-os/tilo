@@ -30,11 +30,6 @@ const BACKLIGHT: &str = "/sys/class/backlight";
 const IIO_DEVICES: &str = "/sys/bus/iio/devices";
 
 /// Set the backlight brightness to `pct` percent, clamped to `[0, 100]`.
-///
-/// # Errors
-///
-/// Returns an error message if the sysfs write fails and the `brightnessctl` fallback is
-/// either not installed or also fails.
 pub fn set_brightness(pct: f32) -> Result<(), String> {
     let clamped = pct.clamp(0.0, 100.0);
     match set_brightness_in(Path::new(BACKLIGHT), clamped) {
@@ -102,6 +97,19 @@ fn backlight_state_in(root: &Path) -> Option<String> {
         field("actual_brightness"),
         field("bl_power"),
     ))
+}
+
+/// Whether the panel backlight is powered, as the kernel holds it:
+/// `Some(true)` for `bl_power` 0 (`FB_BLANK_UNBLANK`), `Some(false)` for any
+/// blank level, `None` when there is no backlight or it says nothing. A wake
+/// that leaves the backlight blanked has not lit the panel, whatever the CRTC
+/// scans out.
+pub fn backlight_powered() -> Option<bool> {
+    backlight_powered_in(Path::new(BACKLIGHT))
+}
+
+fn backlight_powered_in(root: &Path) -> Option<bool> {
+    read_u32(&preferred_device(root)?, "bl_power").map(|power| power == 0)
 }
 
 /// Whether this machine has a controllable backlight at all. Desktops and most VMs do not,
@@ -361,6 +369,23 @@ mod tests {
     }
 
     #[test]
+    fn the_backlight_is_powered_only_while_bl_power_is_unblank() {
+        let dir = tree(&[("dp_aux_backlight", 2047, 2047)]);
+        let dev = dir.path().join("dp_aux_backlight");
+        assert_eq!(
+            backlight_powered_in(dir.path()),
+            None,
+            "no bl_power says nothing"
+        );
+        fs::write(dev.join("bl_power"), "4\n").unwrap();
+        assert_eq!(backlight_powered_in(dir.path()), Some(false));
+        fs::write(dev.join("bl_power"), "0\n").unwrap();
+        assert_eq!(backlight_powered_in(dir.path()), Some(true));
+        let none = tempfile::tempdir().unwrap();
+        assert_eq!(backlight_powered_in(none.path()), None);
+    }
+
+    #[test]
     fn a_refused_sysfs_write_asks_logind_for_the_same_raw_level() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dev = dir.path().join("nvidia_wmi_ec_backlight");
@@ -403,23 +428,19 @@ mod tests {
 
     #[test]
     fn backlight_devices_are_chosen_read_and_written_within_bounds() {
-        // Phase `brightness_is_the_raw_value_over_max`.
         {
             let t = tree(&[("intel_backlight", 4800, 24000)]);
             let v = get_brightness_in(t.path()).unwrap();
             assert!((v - 0.20).abs() < 1e-6, "4800/24000 = 20%, got {v}");
         }
-        // Phase `setting_a_percentage_writes_the_scaled_raw_value`.
         {
             let t = tree(&[("intel_backlight", 0, 24000)]);
             set_brightness_in(t.path(), 75.0).unwrap();
             let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
             assert_eq!(raw, "18000", "75% of 24000");
-            // And it round-trips through the getter.
             let v = get_brightness_in(t.path()).unwrap();
             assert!((v - 0.75).abs() < 1e-4);
         }
-        // Phase `a_native_device_is_preferred_over_the_firmware_one`.
         {
             let t = tree(&[("acpi_video0", 5, 10), ("intel_backlight", 100, 1000)]);
             let dev = preferred_device(t.path()).unwrap();
@@ -431,12 +452,10 @@ mod tests {
             let v = get_brightness_in(t.path()).unwrap();
             assert!((v - 0.10).abs() < 1e-6, "read from the native device");
         }
-        // Phase `a_firmware_only_machine_still_works`.
         {
             let t = tree(&[("acpi_video0", 5, 10)]);
             assert!((get_brightness_in(t.path()).unwrap() - 0.5).abs() < 1e-6);
         }
-        // Phase `a_nonzero_percentage_never_writes_a_hard_zero`.
         {
             // 0.4% of 100 rounds to 0, which on some panels is "off".
             let t = tree(&[("intel_backlight", 50, 100)]);
@@ -444,14 +463,12 @@ mod tests {
             let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
             assert_eq!(raw, "1", "a dim request must stay visible, not go dark");
         }
-        // Phase `an_explicit_zero_is_honoured`.
         {
             let t = tree(&[("intel_backlight", 50, 100)]);
             set_brightness_in(t.path(), 0.0).unwrap();
             let raw = fs::read_to_string(t.path().join("intel_backlight/brightness")).unwrap();
             assert_eq!(raw, "0");
         }
-        // Phase `a_nonsense_percentage_never_writes_past_the_device_maximum`.
         {
             // The kernel rejects a value above max_brightness with EINVAL, so an out-of-range request
             // must saturate rather than fail the whole write and leave the panel where it was.
@@ -463,14 +480,12 @@ mod tests {
                 "saturates at max_brightness"
             );
         }
-        // Phase `a_machine_with_no_backlight_reports_so_rather_than_guessing`.
         {
             let t = tree(&[]);
             assert!(!has_backlight_in(t.path()));
             assert!(get_brightness_in(t.path()).is_err());
             assert!(set_brightness_in(t.path(), 50.0).is_err());
         }
-        // Phase `a_directory_missing_max_brightness_is_not_a_backlight`.
         {
             let dir = tempfile::tempdir().unwrap();
             let d = dir.path().join("bogus");
@@ -486,24 +501,20 @@ mod tests {
 
     #[test]
     fn brightnessctl_machine_output_parses_to_a_clamped_fraction() {
-        // Phase `parse_brightness_machine_returns_fraction`.
         {
             let s = "acpi_video0,backlight,4,40%,10";
             let v = parse_brightness_machine(s).unwrap();
             assert!((v - 0.40).abs() < 1e-6);
         }
-        // Phase `parse_brightness_machine_handles_zero`.
         {
             let s = "acpi_video0,backlight,0,0%,10";
             assert!(parse_brightness_machine(s).unwrap().abs() < f32::EPSILON);
         }
-        // Phase `parse_brightness_machine_clamps_above_one`.
         {
             // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
             let s = "x,backlight,11,110%,10";
             assert!((parse_brightness_machine(s).unwrap() - 1.0).abs() < f32::EPSILON);
         }
-        // Phase `parse_brightness_machine_empty_is_err`.
         {
             assert!(parse_brightness_machine("").is_err());
         }
@@ -537,7 +548,6 @@ mod tests {
 
     #[test]
     fn ambient_light_is_read_from_iio_and_smoothed() {
-        // Phase `ambient_sensor_accepts_processed_and_scaled_iio_forms`.
         {
             let root = tempfile::tempdir().unwrap();
             let d = root.path().join("iio:device0");
@@ -548,7 +558,6 @@ mod tests {
             fs::write(d.join("in_illuminance_input"), "42.5\n").unwrap();
             assert_eq!(ambient_lux_from(root.path()), Some(42.5));
         }
-        // Phase `ambient_controller_smooths_and_ignores_small_changes`.
         {
             let mut c = AmbientBrightnessController::default();
             let first = c.update(100.0).unwrap();

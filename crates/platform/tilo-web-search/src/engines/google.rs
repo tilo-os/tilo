@@ -39,7 +39,6 @@ pub struct Token {
     experiments: String,
 }
 
-/// The request for a fresh [`Token`].
 pub(crate) fn token_request() -> Option<EngineRequest> {
     let mut request =
         EngineRequest::get("https://cse.google.com/cse/cse.js", &[("cx", ENGINE_ID)])?;

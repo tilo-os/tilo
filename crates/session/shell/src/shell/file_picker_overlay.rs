@@ -2,15 +2,20 @@
 //!
 //! This component owns the dialog's lifecycle: queued portal requests, the
 //! active picker and its reply channel, security-scoped mounting, painting,
-//! and event routing. The chooser is a sheet on the window that asked: it
-//! hangs from the top of that window's app area, dims that window and closes
-//! it to input, and leaves every other window and the shell usable. Only a
-//! request no window of the app can answer for is modal for the desktop.
-//! The shell overlay host says where the asking window is this frame
-//! ([`PickerPlace`]) and where this sheet sits in the global z-order.
+//! and event routing. The chooser is a system surface, not part of the app:
+//! the shell paints it as a system sheet centred on the display the asking
+//! window is on, at the sheet's own size whatever that window's size
+//! ([`file_picker_rect`]), with the asking window dimmed behind it. It is
+//! modal for that window only: the window is closed to input while the
+//! sheet waits, every other window and workspace stays usable, and the
+//! sheet goes out of sight and comes back with its window. Only a request
+//! no window of the app can answer for is modal for the desktop. The shell
+//! overlay host says where the asking window is this frame ([`PickerPlace`])
+//! and where this sheet sits in the global z-order.
 
 pub(crate) mod actions;
 
+use crate::shell::input_policy::{InputCapture, PointerCapture};
 use crate::shell::state::WorkspaceAuthority as _;
 use taffy::TaffyTree;
 use vello::Scene;
@@ -27,22 +32,30 @@ use crate::shell::chrome_state::Chrome;
 /// The portal file chooser's complete on-screen state.
 #[derive(Default)]
 pub(crate) struct FilePickerOverlay {
-    queue: Option<crate::portal::FilePickerQueue>,
+    queue: Option<crate::portal::prompt::PromptQueue>,
     active: Option<Box<ActiveFilePicker>>,
     actions: actions::PickerActions,
     /// A press the sheet took is followed to its release, wherever the
     /// pointer has gone by then.
     grabbed: bool,
+    /// The session's file index, which the chooser searches every place
+    /// the person can reach with; `None` where the session keeps none.
+    search: Option<std::rc::Rc<crate::shell::search::providers::FilesProvider>>,
+    /// Operations the chooser took while it was still reading (a listing,
+    /// the check before confirming): each is answered with what the
+    /// chooser shows once its worker is done, never with what it showed
+    /// before.
+    parked: Vec<(uuid::Uuid, actions::Reply)>,
 }
 
 /// Where the chooser sits this frame, as the overlay host sees the window
 /// that asked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PickerPlace {
-    /// A sheet on the asking window. `window` is the whole window group,
-    /// dimmed and closed to input; `content` the app area the sheet hangs
-    /// from; `display` the display it must stay on; `focused` while that
-    /// window holds the keyboard.
+    /// A sheet for the asking window. `window` is the whole window group,
+    /// dimmed and closed to input; `content` its app area; `display` the
+    /// display that window is on, which the sheet centres on; `focused`
+    /// while that window holds the keyboard.
     Window {
         window: Rect,
         content: Rect,
@@ -59,12 +72,9 @@ pub(crate) enum PickerPlace {
 }
 
 impl PickerPlace {
-    /// The dialog's own rect, if it is on screen.
     pub(crate) fn dialog_rect(self) -> Option<Rect> {
         match self {
-            Self::Window {
-                content, display, ..
-            } => Some(file_picker_sheet_rect(content, display)),
+            Self::Window { display, .. } => Some(file_picker_rect(display)),
             Self::Hidden => None,
             Self::Display(viewport) => Some(file_picker_rect(viewport)),
         }
@@ -72,12 +82,53 @@ impl PickerPlace {
 }
 
 impl FilePickerOverlay {
+    /// The file or folder the open chooser draws at `at`: its name, its
+    /// path, and whether it is a folder.
+    pub(crate) fn entry_at(&self, at: Point) -> Option<(String, std::path::PathBuf, bool)> {
+        let entry = self.active.as_ref()?.widget.entry_at(at)?;
+        Some((entry.name.clone(), entry.path.clone(), entry.is_dir))
+    }
+
     pub(crate) fn actions(&self) -> actions::PickerActions {
         self.actions.clone()
     }
 
-    pub(crate) fn set_queue(&mut self, queue: crate::portal::FilePickerQueue) {
+    pub(crate) fn set_queue(&mut self, queue: crate::portal::prompt::PromptQueue) {
         self.queue = Some(queue);
+    }
+
+    pub(crate) fn set_search(
+        &mut self,
+        files: std::rc::Rc<crate::shell::search::providers::FilesProvider>,
+    ) {
+        self.search = Some(files);
+    }
+
+    /// What the open chooser holds back from the windows where `place`
+    /// puts it. A sheet holds the keyboard while its window is the focused
+    /// one and the pointer over itself and that window (anywhere while a
+    /// press it took is held); a chooser no window asked for holds both
+    /// everywhere. Everything else goes on as if no chooser were up.
+    pub(crate) fn capture(&self, place: PickerPlace) -> InputCapture {
+        if self.active.is_none() {
+            return InputCapture::NONE;
+        }
+        match place {
+            PickerPlace::Window {
+                window, focused, ..
+            } => InputCapture {
+                keyboard: focused,
+                pointer: if self.grabbed {
+                    PointerCapture::Everywhere
+                } else {
+                    PointerCapture::Within(
+                        std::iter::once(window).chain(place.dialog_rect()).collect(),
+                    )
+                },
+            },
+            PickerPlace::Hidden => InputCapture::NONE,
+            PickerPlace::Display(_) => InputCapture::ALL,
+        }
     }
 
     pub(crate) fn widget(&self) -> Option<&ui::widget::FilePicker> {
@@ -124,6 +175,12 @@ impl FilePickerOverlay {
         if self.active.is_none() {
             self.grabbed = false;
         }
+        // Recent and a search are read on a worker thread, which wakes the
+        // loop when they are in.
+        if let Some(active) = self.active.as_mut() {
+            dirty |= active.widget.poll_lookups();
+        }
+        dirty |= self.answer_parked();
 
         if let Some(active) = self.active.as_mut()
             && let Some(outcome) = active.widget.take_outcome()
@@ -144,7 +201,7 @@ impl FilePickerOverlay {
         let Some(queue) = self.queue.as_ref() else {
             return dirty;
         };
-        for request in queue.drain() {
+        for request in queue.take_pickers() {
             if self.active.is_some() {
                 let _ = request.reply.send(None);
                 continue;
@@ -162,7 +219,24 @@ impl FilePickerOverlay {
                     named,
                 )
             });
-            let active = ActiveFilePicker::mount(request, scope, asking);
+            // The chooser runs the search on its worker thread, which opens
+            // and reads the index there.
+            let search = self.search.as_ref().map(|files| {
+                let indexes = files.searcher();
+                let search: ui::widget::file_picker::PickerSearch =
+                    std::sync::Arc::new(move |query: &str| {
+                        indexes.paths_matching(query, ui::widget::file_picker::SEARCH_LIMIT)
+                    });
+                search
+            });
+            let active = ActiveFilePicker::mount(
+                request,
+                Mounting {
+                    scope,
+                    asking,
+                    search,
+                },
+            );
             tracing::info!(
                 app = %active.app_id,
                 dir = %active.widget.current_dir().display(),
@@ -184,31 +258,74 @@ impl FilePickerOverlay {
         let commands = self.actions.drain();
         let dirty = !commands.is_empty();
         for command in commands {
-            let result = self.active.as_mut().filter(|active| {
-                active.id == command.subject && active.reply.as_ref().is_some_and(|reply| !reply.is_closed())
-            }).ok_or_else(|| crate::shell::i18n::t("file-picker-expired")).and_then(|active| {
-                let subject = actions::Subject { id: active.id, workspace: active.workspace, app: active.app_id.clone() };
-                if !chrome.is_some_and(|chrome| crate::shell::search::providers::file_picker::authorized(&chrome.borrow(), &subject)) {
-                    return Err(crate::shell::i18n::t("file-picker-owner-required"));
-                }
-                active.widget.perform_semantic(command.state.as_deref(), command.operation).and_then(|mut value| {
-                    let Some(fields) = value.as_object_mut() else {
-                        return Err(ui::widget::file_picker::semantic::PickerRefusal::Unavailable);
+            let result = self
+                .active
+                .as_mut()
+                .filter(|active| {
+                    active.id == command.subject
+                        && active
+                            .reply
+                            .as_ref()
+                            .is_some_and(|reply| !reply.is_closed())
+                })
+                .ok_or_else(|| crate::shell::i18n::t("file-picker-expired"))
+                .and_then(|active| {
+                    let subject = actions::Subject {
+                        id: active.id,
+                        workspace: active.workspace,
+                        app: active.app_id.clone(),
                     };
-                    fields.insert("request_id".into(), serde_json::json!(active.id));
-                    fields.insert("application".into(), serde_json::json!(active.app_id));
-                    Ok(value)
-                }).map_err(|error| crate::shell::i18n::t(match error {
-                    ui::widget::file_picker::semantic::PickerRefusal::Stale => "file-picker-expired",
-                    ui::widget::file_picker::semantic::PickerRefusal::InvalidPage => "file-picker-page-unavailable",
-                    ui::widget::file_picker::semantic::PickerRefusal::UnavailableEntry => "file-picker-entry-unavailable",
-                    ui::widget::file_picker::semantic::PickerRefusal::OutsideScope => "file-picker-outside-scope",
-                    ui::widget::file_picker::semantic::PickerRefusal::Unavailable => "file-picker-operation-unavailable",
-                }))
-            });
-            *command.reply.borrow_mut() = Some(result);
+                    if !chrome.is_some_and(|chrome| {
+                        crate::shell::search::providers::file_picker::authorized(
+                            &chrome.borrow(),
+                            &subject,
+                        )
+                    }) {
+                        return Err(crate::shell::i18n::t("file-picker-owner-required"));
+                    }
+                    active
+                        .widget
+                        .perform_semantic(command.state.as_deref(), command.operation)
+                        .and_then(|value| active.answer_with(value))
+                        .map_err(refusal_text)
+                });
+            let reading = self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id == command.subject && active.widget.reading());
+            if result.is_ok() && reading {
+                self.parked.push((command.subject, command.reply));
+            } else {
+                *command.reply.borrow_mut() = Some(result);
+            }
         }
         dirty
+    }
+
+    /// Answer the operations that waited for the chooser's worker, once it
+    /// has nothing left to read; a chooser that went away answers that it
+    /// has.
+    fn answer_parked(&mut self) -> bool {
+        if self.parked.is_empty()
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.widget.reading())
+        {
+            return false;
+        }
+        for (subject, reply) in std::mem::take(&mut self.parked) {
+            let answer = match self.active.as_ref().filter(|active| active.id == subject) {
+                Some(active) => active
+                    .widget
+                    .semantic_inspection(0)
+                    .and_then(|value| active.answer_with(value))
+                    .map_err(refusal_text),
+                None => Err(crate::shell::i18n::t("file-picker-expired")),
+            };
+            *reply.borrow_mut() = Some(answer);
+        }
+        true
     }
 
     pub(crate) fn draw(
@@ -255,24 +372,21 @@ impl FilePickerOverlay {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
+        let capture = self.capture(place);
         let Some(active) = self.active.as_mut() else {
             return false;
         };
         let Some(rect) = place.dialog_rect() else {
             return false;
         };
-        if let PickerPlace::Window {
-            window, focused, ..
-        } = place
-        {
+        if let PickerPlace::Window { .. } = place {
             let at = match event {
                 WindowEvent::Touch(touch) => Some(ctx.logical(touch.location)),
                 _ => pointer,
             };
-            let over = at.is_some_and(|at| window.contains(at) || rect.contains(at));
             let takes = match sheet_input(event) {
-                SheetInput::Pointer => over || self.grabbed,
-                SheetInput::Keys => focused && !ctx.modifiers.state().super_key(),
+                SheetInput::Pointer => at.is_some_and(|at| capture.pointer.at(at)),
+                SheetInput::Keys => capture.keyboard && !ctx.modifiers.state().super_key(),
                 SheetInput::Other => false,
             };
             if !takes {
@@ -338,27 +452,12 @@ const fn sheet_input(event: &WindowEvent) -> SheetInput {
     }
 }
 
-/// The chooser as a sheet on the window that asked: centred on the
-/// window's app area and hanging from its top edge, as wide and tall as the
-/// window allows within the toolkit's sheet sizes, and kept wholly on the
-/// display even when the window runs past it.
-pub fn file_picker_sheet_rect(content: Rect, display: Rect) -> Rect {
-    let metrics = ui::tokens::Metrics::BASE;
-    let inset = f64::from(ui::tokens::Spacing::BASE.s6);
-    let sheet = f64::from(metrics.panel_width_sheet);
-    let w = (content.width() - 2.0 * inset)
-        .clamp(sheet, sheet * 1.6)
-        .min(display.width());
-    let h = (content.height() - inset)
-        .clamp(f64::from(metrics.panel_width_list), sheet * 1.15)
-        .min(display.height());
-    let x0 = (content.center().x - w / 2.0).clamp(display.x0, display.x1 - w);
-    let y0 = content.y0.clamp(display.y0, display.y1 - h);
-    Rect::new(x0, y0, x0 + w, y0 + h)
-}
-
-/// Centre the file chooser in `viewport`, clamping its fraction so it stays
-/// usable on a small output without walling a large one.
+/// The chooser's sheet, centred on the display `viewport`: a fraction of the
+/// display clamped to the toolkit's sheet sizes, so it is usable on a small
+/// output without walling a large one. It does not depend on the asking
+/// window: a chooser asked for by a small window is as roomy as one asked
+/// for by a large one. On a display too small for a sheet it fills the
+/// display, as every system sheet does there.
 pub fn file_picker_rect(viewport: Rect) -> Rect {
     // The dialog's size comes from the toolkit's panel metrics: a sheet wide
     // enough for the sidebar plus a readable list, tall enough for a dozen
@@ -408,9 +507,6 @@ fn picker_scope_for(
     let Some(chrome) = chrome else {
         return base;
     };
-    // Scoped so the `RefCell` borrow guard drops before
-    // `with_granted_paths` runs, rather than lingering to the end of the
-    // function for data it no longer needs.
     let granted: Vec<std::path::PathBuf> = {
         let state = chrome.borrow();
         let tree = state.tree();
@@ -446,16 +542,44 @@ struct ActiveFilePicker {
     reply: Option<tokio::sync::oneshot::Sender<Option<Vec<std::path::PathBuf>>>>,
 }
 
+/// What an agent is told when the chooser refuses an operation.
+fn refusal_text(error: ui::widget::file_picker::semantic::PickerRefusal) -> String {
+    use ui::widget::file_picker::semantic::PickerRefusal;
+    crate::shell::i18n::t(match error {
+        PickerRefusal::Stale => "file-picker-expired",
+        PickerRefusal::InvalidPage => "file-picker-page-unavailable",
+        PickerRefusal::UnavailableEntry => "file-picker-entry-unavailable",
+        PickerRefusal::OutsideScope => "file-picker-outside-scope",
+        PickerRefusal::Unavailable => "file-picker-operation-unavailable",
+    })
+}
+
 impl ActiveFilePicker {
-    fn mount(
-        request: crate::portal::FilePickerRequest,
-        scope: crate::portal::PickerScope,
-        asking: Option<crate::shell::state::TabId>,
-    ) -> Self {
+    /// An operation's answer, naming the request and the app it is for.
+    fn answer_with(
+        &self,
+        mut value: serde_json::Value,
+    ) -> Result<serde_json::Value, ui::widget::file_picker::semantic::PickerRefusal> {
+        let Some(fields) = value.as_object_mut() else {
+            return Err(ui::widget::file_picker::semantic::PickerRefusal::Unavailable);
+        };
+        fields.insert("request_id".into(), serde_json::json!(self.id));
+        fields.insert("application".into(), serde_json::json!(self.app_id));
+        Ok(value)
+    }
+
+    fn mount(request: crate::portal::FilePickerRequest, mounting: Mounting) -> Self {
         use ui::widget::file_picker::FileFilter;
         use ui::widget::{FilePicker, FilePickerMode};
+        let Mounting {
+            scope,
+            asking,
+            search,
+        } = mounting;
 
-        let mut filters = request
+        // The widget offers a type menu only when the app named more than
+        // one type, with All files after them.
+        let filters = request
             .filters
             .iter()
             .filter(|filter| !filter.is_catch_all())
@@ -468,7 +592,6 @@ impl ActiveFilePicker {
                 FileFilter::new(filter.label.clone(), &extensions)
             })
             .collect::<Vec<_>>();
-        filters.push(FileFilter::all());
 
         let mode = if request.save {
             FilePickerMode::Save
@@ -477,12 +600,18 @@ impl ActiveFilePicker {
         } else {
             FilePickerMode::Open
         };
+        // The chooser lists, checks and searches on a worker, which wakes
+        // the compositor loop when it answers.
         let mut widget = FilePicker::new(request.display_title(), &scope.initial_dir, scope.roots)
+            .with_waker(Some(crate::shell::search::invocation_wake::waker()))
             .with_mode(mode)
             .with_multiple(request.multiple)
             .with_accept_label(Some(request.confirm_label()))
             .with_home(scope.home)
-            .with_filters(filters);
+            .with_filters(filters)
+            .with_requester(requester(&request.caller.app_id))
+            .with_search(search)
+            .with_recent(request.recent);
         if let Some(name) = request.current_name.as_deref() {
             widget = widget.with_filename(name);
         }
@@ -506,6 +635,27 @@ impl ActiveFilePicker {
             let _ = reply.send(picked);
         }
     }
+}
+
+/// What the shell decided about a request before mounting it: where the
+/// dialog may go, the window it is a sheet on, and the search it offers.
+struct Mounting {
+    scope: crate::portal::PickerScope,
+    asking: Option<crate::shell::state::TabId>,
+    search: Option<ui::widget::file_picker::PickerSearch>,
+}
+
+/// The app asking, as the sheet names it: its name and its icon. `None`
+/// when the shell does not know its name; the sheet then says only what is
+/// asked.
+fn requester(app_id: &str) -> Option<ui::widget::file_picker::Requester> {
+    let name = crate::shell::launcher::display_name_for_app_id_without_waiting(app_id)
+        .filter(|name| !name.trim().is_empty())?;
+    Some(ui::widget::file_picker::Requester {
+        name,
+        glyph: ui::icons::app_glyph(app_id, None),
+        image: crate::app_icons::for_window_app_id(app_id),
+    })
 }
 
 fn constrain_selection(
@@ -534,6 +684,9 @@ mod tests {
 
     #[test]
     fn mounted_portal_picker_is_declared_in_the_normal_action_catalogue() {
+        // Who owns the workspace is read from the identity the environment
+        // names; hold it still while the picker is driven.
+        let _env = tilo_test_env::ScopedEnv::new();
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("genuine.tapp"), b"public fixture bytes").unwrap();
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -558,6 +711,7 @@ mod tests {
                 roots: vec![temp.path().into()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut host =
@@ -637,7 +791,17 @@ mod tests {
         };
         assert!(ticket().ok()?.is_none(), "accepted is not completed");
         assert!(host.pump_file_picker());
-        let receipt = ticket().ok()?.expect("actual chooser operation completed");
+        // An operation that leaves the chooser reading (a listing, the
+        // check before confirming) completes once its worker has answered.
+        let receipt =
+            tilo_test_env::wait_for("the chooser operation to complete", || match ticket() {
+                Ok(Some(receipt)) => Some(Some(receipt)),
+                Ok(None) => {
+                    host.pump_file_picker();
+                    None
+                }
+                Err(_) => Some(None),
+            })?;
         let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
             panic!("completed receipt");
         };
@@ -650,6 +814,9 @@ mod tests {
 
     #[test]
     fn semantic_picker_select_confirm_replies_to_the_actual_portal_and_rejects_stale_state() {
+        // Who owns the workspace is read from the identity the environment
+        // names; hold it still while the picker is driven.
+        let _env = tilo_test_env::ScopedEnv::new();
         let temp = tempfile::tempdir().unwrap();
         let public = temp.path().join("genuine.tapp");
         std::fs::write(&public, b"public fixture").unwrap();
@@ -743,6 +910,7 @@ mod tests {
                 roots: vec![root.into()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut host =
@@ -773,6 +941,9 @@ mod tests {
 
     #[test]
     fn semantic_picker_refuses_escape_and_revokes_closed_request() {
+        // Who owns the workspace is read from the identity the environment
+        // names; hold it still while the picker is driven.
+        let _env = tilo_test_env::ScopedEnv::new();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("permitted");
         let outside = temp.path().join("outside");
@@ -829,6 +1000,9 @@ mod tests {
 
     #[test]
     fn semantic_picker_queue_is_bounded_and_rechecks_owner_lock() {
+        // Who owns the workspace is read from the identity the environment
+        // names; hold it still while the picker is driven.
+        let _env = tilo_test_env::ScopedEnv::new();
         let temp = tempfile::tempdir().unwrap();
         let (mut host, chrome, mut received, subject) = semantic_fixture(temp.path(), false, false);
         let actions = host.file_picker_actions_for_test();
@@ -873,6 +1047,9 @@ mod tests {
 
     #[test]
     fn semantic_picker_pages_are_bounded() {
+        // Who owns the workspace is read from the identity the environment
+        // names; hold it still while the picker is driven.
+        let _env = tilo_test_env::ScopedEnv::new();
         let temp = tempfile::tempdir().unwrap();
         for index in 0..35 {
             std::fs::write(temp.path().join(format!("file-{index:02}")), b"public").unwrap();
@@ -910,6 +1087,9 @@ mod tests {
 
     #[test]
     fn semantic_picker_save_requires_normal_replacement_confirmation() {
+        // Who owns the workspace is read from the identity the environment
+        // names; hold it still while the picker is driven.
+        let _env = tilo_test_env::ScopedEnv::new();
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("file-00"), b"public").unwrap();
         let (mut host, chrome, mut received, subject) = semantic_fixture(temp.path(), true, false);
@@ -970,6 +1150,9 @@ mod tests {
 
     #[test]
     fn semantic_picker_directory_select_returns_the_actual_folder() {
+        // Who owns the workspace is read from the identity the environment
+        // names; hold it still while the picker is driven.
+        let _env = tilo_test_env::ScopedEnv::new();
         let temp = tempfile::tempdir().unwrap();
         let child = temp.path().join("folder");
         std::fs::create_dir(&child).unwrap();
@@ -1000,41 +1183,39 @@ mod tests {
     }
 
     #[test]
-    fn a_sheet_hangs_from_its_window_and_stays_on_the_display() {
-        let display = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+    fn a_picker_requested_by_a_small_window_opens_at_the_sheet_size_centred_on_its_output() {
+        let output = Rect::new(1920.0, 0.0, 1920.0 + 2560.0, 1440.0);
         let sheet = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
-
-        let content = Rect::new(200.0, 80.0, 1400.0, 1000.0);
-        let rect = file_picker_sheet_rect(content, display);
-        assert_eq!(rect.y0, content.y0, "hangs from the window's top");
-        assert_eq!(rect.center().x, content.center().x, "centred on the window");
-        assert_eq!(rect.width(), sheet * 1.6, "no wider than a sheet");
-
-        let narrow = Rect::new(800.0, 80.0, 1100.0, 1000.0);
-        let rect = file_picker_sheet_rect(narrow, display);
-        assert_eq!(
-            rect.width(),
-            sheet,
-            "a narrow window still gets a usable sheet"
-        );
-        assert_eq!(rect.center().x, narrow.center().x);
-
-        let off_the_edge = Rect::new(1700.0, 80.0, 2600.0, 1000.0);
-        let rect = file_picker_sheet_rect(off_the_edge, display);
-        assert_eq!(
-            rect.x1, display.x1,
-            "kept on the display the window runs off"
-        );
-
-        let place = PickerPlace::Window {
-            window: content,
-            content,
-            display,
-            focused: false,
+        let place = |window: Rect| PickerPlace::Window {
+            window,
+            content: window,
+            display: output,
+            focused: true,
         };
+
+        let small = Rect::new(2000.0, 100.0, 2400.0, 400.0);
+        let rect = place(small).dialog_rect().expect("the sheet is on screen");
+        assert!(
+            rect.width() >= sheet
+                && rect.height() >= f64::from(ui::tokens::Metrics::BASE.panel_width_list),
+            "a 400x300 window still gets the sheet size, not its own: {rect:?}"
+        );
+        assert!(
+            rect.width() > small.width() && rect.height() > small.height(),
+            "the sheet is not squeezed into the window: {rect:?}"
+        );
+        assert_eq!(rect.center(), output.center(), "centred on its output");
         assert_eq!(
-            place.dialog_rect(),
-            Some(file_picker_sheet_rect(content, display))
+            rect,
+            file_picker_rect(output),
+            "the system sheet's own size"
+        );
+
+        let large = Rect::new(1940.0, 20.0, 4400.0, 1400.0);
+        assert_eq!(
+            place(large).dialog_rect(),
+            Some(rect),
+            "the same sheet whatever the window's size"
         );
         assert_eq!(PickerPlace::Hidden.dialog_rect(), None);
     }
@@ -1101,18 +1282,20 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply,
             });
 
             let mut overlay = FilePickerOverlay::default();
-            overlay.set_queue(queue);
+            overlay.set_queue(queue.prompts().clone());
             assert!(overlay.pump(Some(&chrome)));
+            settle(&mut overlay, &chrome);
             let widget = overlay.widget_mut().expect("mounted picker");
             assert_eq!(widget.confirm_label(), "Attach folder");
             assert_eq!(widget.entries().len(), 1, "files must be hidden");
             assert!(widget.select_by_path(&child));
             widget.click_open();
-            assert!(overlay.pump(Some(&chrome)));
+            settle(&mut overlay, &chrome);
 
             assert_eq!(received.try_recv().unwrap(), Some(vec![child]));
         }
@@ -1147,10 +1330,11 @@ mod tests {
             current_name: None,
             filters: Vec::new(),
             scope: None,
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
         let picker = overlay.widget_mut().unwrap();
         assert_eq!(
@@ -1169,6 +1353,17 @@ mod tests {
         picker.click_cancel();
         assert!(overlay.pump(Some(&chrome)));
         assert_eq!(received.try_recv().unwrap(), None);
+    }
+
+    /// Pump the overlay until the chooser's worker has answered everything
+    /// it was asked, as the compositor does each time the worker wakes it.
+    fn settle(overlay: &mut FilePickerOverlay, chrome: &Chrome) {
+        tilo_test_env::wait_until("the chooser's worker to answer", || {
+            overlay.pump(Some(chrome));
+            !overlay
+                .widget()
+                .is_some_and(ui::widget::FilePicker::reading)
+        });
     }
 
     /// Every key the overlay sees, as the compositor hands it over.
@@ -1233,15 +1428,17 @@ mod tests {
                 roots: vec![root.clone()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
+        settle(&mut overlay, &chrome);
 
         let none = Modifiers::default();
         press(&mut overlay, &Key::Named(NamedKey::Enter), none);
-        overlay.pump(Some(&chrome));
+        settle(&mut overlay, &chrome);
         assert!(received.try_recv().is_err(), "the app hears nothing yet");
         assert_eq!(
             overlay.widget().and_then(|w| w.replace_prompt()),
@@ -1271,7 +1468,7 @@ mod tests {
             Some("edit.jpg")
         );
         press(&mut overlay, &Key::Named(NamedKey::Enter), none);
-        assert!(overlay.pump(Some(&chrome)));
+        settle(&mut overlay, &chrome);
         assert_eq!(
             received.try_recv().unwrap(),
             Some(vec![root.join("edit.jpg")])
@@ -1310,16 +1507,19 @@ mod tests {
                 roots: vec![root],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
+        settle(&mut overlay, &chrome);
         let none = Modifiers::default();
         press(&mut overlay, &Key::Named(NamedKey::Enter), none);
+        settle(&mut overlay, &chrome);
         press(&mut overlay, &Key::Named(NamedKey::Tab), none);
         press(&mut overlay, &Key::Named(NamedKey::Enter), none);
-        assert!(overlay.pump(Some(&chrome)));
+        settle(&mut overlay, &chrome);
         assert_eq!(received.try_recv().unwrap(), Some(vec![photo]));
     }
 
@@ -1363,11 +1563,13 @@ mod tests {
                 roots: vec![granted.clone()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
+        settle(&mut overlay, &chrome);
         let widget = overlay.widget_mut().expect("mounted picker");
         assert_eq!(widget.current_dir(), granted.as_path());
         assert!(widget.select_by_path(&granted.join("x.xlsx")));

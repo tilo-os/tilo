@@ -37,29 +37,36 @@ pub(crate) fn file_history_witness<A: ResourceApp>() -> &'static HistoryDefiniti
     // The definition table is not reentrant: read the whole definition first.
     let definition = history_definition::<A>();
     leaked(TypeId::of::<FileWitnessKey<A>>(), || {
-        let scopes: &'static [HistoryScopeDefinition] = Box::leak(
-            definition
-                .scopes
-                .iter()
-                .filter(|scope| scope.key == FILE_SCOPE)
-                .map(|scope| HistoryScopeDefinition {
-                    key: scope.key,
-                    title: scope.title,
-                    presentation: match scope.presentation {
-                        HistoryPresentation::CheckedFiles { create } => {
-                            HistoryPresentation::CheckedFiles { create }
-                        }
-                        _ => unreachable_scope(),
-                    },
-                    content_schema: None,
-                })
-                .collect::<Box<[_]>>(),
-        );
-        HistoryDefinition {
-            app_id: super::app::hooks::<A>().id(),
-            scopes,
-        }
+        file_witness(definition)
     })
+}
+
+/// [`file_history_witness`] of the app whose History is `definition`. Not
+/// generic, so it is compiled once rather than for every app.
+#[inline(never)]
+fn file_witness(definition: &HistoryDefinition) -> HistoryDefinition {
+    let scopes: &'static [HistoryScopeDefinition] = Box::leak(
+        definition
+            .scopes
+            .iter()
+            .filter(|scope| scope.key == FILE_SCOPE)
+            .map(|scope| HistoryScopeDefinition {
+                key: scope.key,
+                title: scope.title,
+                presentation: match scope.presentation {
+                    HistoryPresentation::CheckedFiles { create } => {
+                        HistoryPresentation::CheckedFiles { create }
+                    }
+                    _ => unreachable_scope(),
+                },
+                content_schema: None,
+            })
+            .collect::<Box<[_]>>(),
+    );
+    HistoryDefinition {
+        app_id: definition.app_id,
+        scopes,
+    }
 }
 
 #[allow(
@@ -77,31 +84,44 @@ const FILE_SCOPE: &str = "file";
 /// The History mode registration of `A`: one scope, previewed by its view.
 pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition {
     leaked(TypeId::of::<HistoryKey<A>>(), || {
-        // A file of the mounted filesystem the app shows is a scope beside
-        // the resource's; History moves to it when the app opens a file's.
-        let file = A::FILE_HISTORY.map(|file| HistoryScopeDefinition {
-            key: FILE_SCOPE,
-            title: file.title,
-            presentation: HistoryPresentation::CheckedFiles {
-                create: file.preview,
-            },
-            content_schema: None,
-        });
-        let resource = HistoryScopeDefinition {
-            key: "resource",
-            title: <A::Resource as Resource>::LABEL,
-            presentation: HistoryPresentation::Domain {
-                create: preview::<A>,
-            },
-            content_schema: restore_schema::<A::Resource>(),
-        };
-        let scopes: &'static [HistoryScopeDefinition] =
-            Box::leak(std::iter::once(resource).chain(file).collect::<Box<[_]>>());
-        HistoryDefinition {
-            app_id: super::app::hooks::<A>().id(),
-            scopes,
-        }
+        history_definition_of(
+            super::app::hooks::<A>().id(),
+            A::FILE_HISTORY,
+            (<A::Resource as Resource>::LABEL, preview::<A>),
+            restore_schema::<A::Resource>(),
+        )
     })
+}
+
+/// [`history_definition`] of the app `app_id`: its resource's scope, called
+/// `label` and previewed by `create`, and the scope of `file` when it shows
+/// files. Not generic, so it is compiled once rather than for every app.
+#[inline(never)]
+fn history_definition_of(
+    app_id: &'static str,
+    file: Option<super::app::FileHistory>,
+    (label, create): (&'static str, ui_core::history_mode::PreviewFactory),
+    content_schema: Option<&'static HistoryRestoreSchema>,
+) -> HistoryDefinition {
+    // A file of the mounted filesystem the app shows is a scope beside
+    // the resource's; History moves to it when the app opens a file's.
+    let file = file.map(|file| HistoryScopeDefinition {
+        key: FILE_SCOPE,
+        title: file.title,
+        presentation: HistoryPresentation::CheckedFiles {
+            create: file.preview,
+        },
+        content_schema: None,
+    });
+    let resource = HistoryScopeDefinition {
+        key: "resource",
+        title: label,
+        presentation: HistoryPresentation::Domain { create },
+        content_schema,
+    };
+    let scopes: &'static [HistoryScopeDefinition] =
+        Box::leak(std::iter::once(resource).chain(file).collect::<Box<[_]>>());
+    HistoryDefinition { app_id, scopes }
 }
 
 /// The History restore schema of `R`, derived from its stored layout:
@@ -112,7 +132,19 @@ pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition
 /// field holds is accepted by type; the resource's own `read` is the validator,
 /// so a version is restorable exactly when the app can open it.
 fn restore_schema<R: Resource>() -> Option<&'static HistoryRestoreSchema> {
-    let Some(Shape::Record(fields)) = R::shape() else {
+    restore_schema_of(R::shape(), R::KIND, readable::<R>)
+}
+
+/// [`restore_schema`] of the resource `kind` stored as `shape`, which
+/// `readable` validates. Not generic, so it is compiled once rather than for
+/// every resource type.
+#[inline(never)]
+fn restore_schema_of(
+    shape: Option<Shape>,
+    kind: &'static str,
+    readable: fn(&AutoCommit) -> Result<(), String>,
+) -> Option<&'static HistoryRestoreSchema> {
+    let Some(Shape::Record(fields)) = shape else {
         return None;
     };
     if fields.is_empty() {
@@ -127,14 +159,14 @@ fn restore_schema<R: Resource>() -> Option<&'static HistoryRestoreSchema> {
         })
         .collect::<Vec<_>>();
     Some(Box::leak(Box::new(HistoryRestoreSchema {
-        id: R::KIND,
+        id: kind,
         version: 1,
         roots: &[],
         selectors: Box::leak(selectors.into_boxed_slice()),
         preserved_roots: &[],
         preserved: &[],
-        validate: readable::<R>,
-        validate_result: readable::<R>,
+        validate: readable,
+        validate_result: readable,
     })))
 }
 
@@ -205,14 +237,21 @@ fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
 }
 
 fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
+    preview_of(input, <A::Resource as Resource>::LABEL, &past_root::<A>)
+}
+
+/// [`preview`] of the app whose root over a past version `root` builds;
+/// `label` is its resource's [`Resource::LABEL`]. Not generic, so loading
+/// the version is compiled once rather than for every app.
+#[inline(never)]
+fn preview_of(
+    input: PreviewInput,
+    label: &'static str,
+    root: &dyn Fn(&AutoCommit) -> Result<ResourceRoot, String>,
+) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
-    let root = past_root::<A>(&doc)?;
-    Ok(open_preview(
-        root,
-        doc,
-        <A::Resource as Resource>::LABEL,
-        input.initial_view,
-    ))
+    let root = root(&doc)?;
+    Ok(open_preview(root, doc, label, input.initial_view))
 }
 
 /// History's preview of `root` drawing `doc`, opened at `view`. Not generic

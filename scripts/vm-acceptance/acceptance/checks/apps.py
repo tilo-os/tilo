@@ -13,8 +13,13 @@ from ..vm import VmError, wait_until
 AREA = "apps"
 
 CLOSE_GRACE_S = 20
-# A first frame whose luminance spread stays at or below this is a flat fill.
+# A first frame whose luminance spread stays at or below this is a flat fill...
 FLAT_STDDEV = 0.02
+# ...unless at least this many of its pixels stand off its background. A terminal
+# filling a 1920x1080 output with only its prompt drawn spreads too little to pass
+# the threshold above (foot: stddev 0.018), yet that prompt is a few hundred pixels
+# of text; a cursor alone is about a hundred.
+MIN_INK_PX = 256
 # A client can present a clear before its first real buffer: how long to wait for content.
 FIRST_FRAME_WAIT_S = 5.0
 LAUNCHER = "tilo-launcher"
@@ -111,6 +116,12 @@ def lingering(procs: dict, launch: AppLaunch, owned: dict) -> dict:
     return left
 
 
+def textured(stats) -> bool:
+    """Whether a sample of a window's pixels (`region_stats`, with `ink` from
+    `region_ink` when measured) shows something drawn rather than a flat fill."""
+    return stats["stddev"] > FLAT_STDDEV or stats.get("ink", 0) >= MIN_INK_PX
+
+
 def first_textured(sample, timeout: float, interval: float = 0.5,
                    clock=time.monotonic, sleep=time.sleep):
     """Sample a window's pixels until they are not a flat fill or `timeout` passes.
@@ -120,7 +131,7 @@ def first_textured(sample, timeout: float, interval: float = 0.5,
     while True:
         stats = sample()
         attempts += 1
-        if stats["stddev"] > FLAT_STDDEV or clock() >= deadline:
+        if textured(stats) or clock() >= deadline:
             return stats, attempts
         sleep(interval)
 
@@ -197,7 +208,8 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
                 ctx.vm.shot(shot)
             latest["fresh"] = False
             r = latest["frame"]["rect"]
-            return core.region_stats(core.load_image(shot), (r["x"], r["y"], r["w"], r["h"]))
+            img, rect = core.load_image(shot), (r["x"], r["y"], r["w"], r["h"])
+            return {**core.region_stats(img, rect), "ink": core.region_ink(img, rect)}
 
         stats, attempts = first_textured(sample, FIRST_FRAME_WAIT_S)
         r = latest["frame"]["rect"]
@@ -207,8 +219,9 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
         res.metrics["surface_pixels"] = stats
         res.metrics["first_frame_samples"] = attempts
         expect(core.rect_inside(rect, drect, slack=2), f"{label}'s surface {rect} lies inside its output {drect}")
-        expect(stats["stddev"] > FLAT_STDDEV,
-               f"{label}'s first frame is a flat fill (stddev {stats['stddev']}) "
+        expect(textured(stats),
+               f"{label}'s first frame is a flat fill (stddev {stats['stddev']}, "
+               f"{stats.get('ink', 0)} px off its background) "
                f"for {FIRST_FRAME_WAIT_S:g} s ({attempts} samples)")
     launch, app_procs, now = _app_procs(ctx, before, app_id)
     res.metrics["launchers"] = sorted(launch.roots)
@@ -353,16 +366,28 @@ def terminal(ctx, res):
     gid, procs, toasts0 = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
     ready = core.wait_new_terminal_shell(ctx, shells, SHELL_READY_S)
     res.metrics["seconds_to_shell"] = ready
+    if ready is None:
+        # Nothing reads what is typed now. Enter on a Terminal whose environment
+        # cannot start takes its offer of the device's own shell, which asks the
+        # person first, so typing would only raise that prompt.
+        ctx.shot("A01-terminal-no-shell")
+        ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
+        refusal = core.ush_environment_refusal(ctx)
+        said = None if refusal else core.ush_evidence(ctx)
+        raise CheckFailed(f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
+                          "of its window opening " + (f"(the shell runtime refused it: {refusal})"
+                                                      if refusal else
+                                                      f"({said})"
+                                                      if said else
+                                                      "(A01-ush.txt shows the shell runtime)"))
     probe = f"acc-term-{int(time.time())}"
     ctx.vm.control("type", f"echo ok > ~/{probe}")
     ctx.vm.control("key", "Enter")
     found = wait_until(lambda: core.terminal_probe(ctx, probe), 8, 1)
     ctx.shot("A01-terminal-command")
     res.metrics["shell_ran_command"] = bool(found)
-    if ready is None or not found:
+    if not found:
         ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
-    expect(ready is not None, f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
-                              "of its window opening (A01-ush.txt shows the shell runtime)")
     expect(found, "a command typed into Terminal (control-socket type + Enter) never ran")
     _close(ctx, res, "A01-terminal", gid, procs, toasts0)
     core.assert_terminal_shell_performance(ready)
@@ -392,17 +417,21 @@ def host_wayland(ctx, res):
 
 @check("A07", AREA, "An X11 app opens through Xwayland and exits on close")
 def x11(ctx, res):
-    cands = {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
-             if a["provider"] == "host-applications"}
+    def x11_clients():
+        return {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
+                if a["provider"] == "host-applications"}
+
+    cands = x11_clients()
     if not cands and not ctx.facts.get("apps_installed"):
         try:
             ctx.vm.run("slot", "apps", "install", "--set", "verification", timeout=900)
             ctx.facts["apps_installed"] = True
-            time.sleep(3)
+            # The install restarts the session, whose app catalogue lists the new
+            # packages only once its scan has run: wait for it, not a fixed pause.
+            cands = wait_until(lambda: x11_clients() or None, 30, 2.0) or {}
         except Exception as exc:  # noqa: BLE001
             res.metrics["verification_install_error"] = str(exc).splitlines()[:3]
-        cands = {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
-                 if a["provider"] == "host-applications"}
+            cands = x11_clients()
     app = next((i for i in ("xterm", "org.xfce.xterm", "xeyes") if i in cands), None) or next(iter(cands), None)
     if app is None:
         wine = [a["id"] for a in ctx.vm.actions("Wine File") if a["provider"] == "host-applications"]
@@ -411,10 +440,22 @@ def x11(ctx, res):
         raise Unobservable("no X11 app available: xterm/xeyes not installable and no Wine File entry")
     res.metrics["x11_app"] = app
     key = app.split("-")[-1].lower()
-    gid, procs, toasts0 = _lifecycle(ctx, res, app, "host-applications", "A07-x11", True,
-                                     match=lambda f: key in (f.get("app_id") or "").lower()
-                                     or "x11" in (f.get("app_id") or "").lower()
-                                     or f.get("app_id") not in (None, "", "so.tilo.settings"))
+    try:
+        gid, procs, toasts0 = _lifecycle(ctx, res, app, "host-applications", "A07-x11", True,
+                                         match=lambda f: key in (f.get("app_id") or "").lower()
+                                         or "x11" in (f.get("app_id") or "").lower()
+                                         or f.get("app_id") not in (None, "", "so.tilo.settings"))
+    except CheckFailed:
+        # Whether the program started, and what the launcher, the X11 bridge and
+        # the compositor said about it.
+        ctx.shot("A07-x11-no-window")
+        res.metrics["running"] = [c.cmd[:200] for c in _procs(ctx).values()
+                                  if key in c.cmd.lower() or "wine" in c.cmd.lower()][:6]
+        ctx.write("A07-x11-no-window.log", ctx.vm.exec(
+            "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+            f"| grep -aiE '{key}|{app}|wine|xwayland|x11' | tail -n 80 | cut -c1-400; "
+            "ls -ld \"$HOME/.wine\" 2>&1; true", check=False))
+        raise
     xw = [c.cmd for c in _procs(ctx).values() if "Xwayland" in c.cmd or "xwayland" in c.cmd]
     res.metrics["xwayland"] = xw[:2]
     expect(xw, "no Xwayland server is running while an X11 app is open")

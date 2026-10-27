@@ -31,7 +31,6 @@ use crate::widget::{InputHint, LegendConventions, TaffyTreeExt, Widget};
 
 pub struct ShortcutRecorder {
     id: String,
-    /// The chord shown.
     stored: BoxedBinding<String>,
     /// Whether the chord shown was refused.
     rejected: Option<BoxedBinding<bool>>,
@@ -519,7 +518,6 @@ mod tests {
 
     #[test]
     fn binding_display_names_keys_and_offers_reset_only_when_changed() {
-        // Case `reset_exists_only_for_a_changed_binding`.
         {
             let unchanged = recorder("Super+Left", "Super+Left");
             assert!(unchanged.reset_rect().is_none());
@@ -527,7 +525,6 @@ mod tests {
             assert!(changed.reset_rect().is_some());
         }
 
-        // Case `visual_binding_uses_readable_named_keys`.
         {
             let recorder = recorder("Super+Down", "Super+Left");
             assert_eq!(

@@ -49,7 +49,6 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
             "the drawer must start closed when a window becomes narrow"
         );
 
-        // The top-bar toggle opens the drawer.
         let btn = surface(&mut app, |notes| notes.menu_btn_center_for_test());
         app.harness().click_at(btn.x, btn.y);
         assert!(
@@ -62,7 +61,6 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
             "clicking the top-bar button must open the drawer"
         );
 
-        // Picking a page from the drawer selects it and closes the drawer.
         assert_eq!(
             surface(&mut app, |notes| notes.selected_for_test()),
             Some(other)
@@ -119,13 +117,12 @@ fn check_scaled_drawer_stays_inside_a_narrow_window() {
             surface(&mut app, |notes| notes.drawer_open_for_test()),
             "the toggle opens the drawer"
         );
-        // The open drawer's structure is laid out on the next settled pass.
         app.harness()
             .relayout_themed((u32::from(window_w), 900), theme.clone())
             .unwrap();
         assert!(
             app.harness()
-                .settle_for_capture(ui::time::Duration::from_secs(5)),
+                .settle_for_capture(tilo_test_env::hang_bound()),
             "the drawer's opening animation and the new note's save must settle before \
              measuring its controls"
         );

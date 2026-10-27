@@ -158,7 +158,6 @@ fn pq_tonemap_maps_black_gray_and_peak_and_its_wgsl_validates() {
     {
         let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("WGSL shader parses");
 
-        // Default validator config matches wgpu's own defaults.
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::default(),
@@ -169,7 +168,6 @@ fn pq_tonemap_maps_black_gray_and_peak_and_its_wgsl_validates() {
     // Phase `wgsl_shader_contains_expected_entry_point`.
     {
         let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("WGSL shader parses");
-        // The compute entry point drives PeerView's compute dispatch.
         let has_entry = module
             .entry_points
             .iter()

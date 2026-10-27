@@ -10,6 +10,12 @@
 //! record ids, the participant's public name, Automerge bytes and the read
 //! policy a caller already holds, and returns descriptors, outputs and
 //! unsigned Automerge bytes the supervisor admits before it signs them.
+//!
+//! Content a record references (a picture's bytes, named by hash) crosses
+//! one item at a time each way: the supervisor puts what an operation names
+//! and what the record refers to, and takes what the app stored and the
+//! hashes it asked for and lacked. What comes back is hashed again before
+//! the room keeps it.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::door::DoorError;
@@ -18,9 +24,17 @@ use wire_frame::Framing;
 /// Frames in either direction: a record's whole document, with room.
 pub(crate) const FRAMING: Framing = Framing::little_endian(64 * 1024 * 1024);
 
+/// Most bytes of one content item that cross in a frame, leaving the
+/// frame's encoding room.
+pub(crate) const MAX_CONTENT_ITEM_BYTES: usize = FRAMING.max_len().saturating_sub(64 * 1024);
+
+/// Most bytes of content one [`Reply::Content`] carries; the rest waits for
+/// the next take.
+pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
+
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 3;
+pub(crate) const PROTOCOL_VERSION: u32 = 5;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -33,6 +47,8 @@ pub(crate) enum Mode {
     Views,
     /// Mount one record's component to answer its registered reads.
     Read,
+    /// Shrink pictures to show a planning model ([`super::picture`]).
+    Picture,
 }
 
 impl Mode {
@@ -41,6 +57,7 @@ impl Mode {
             Self::Replica => "replica",
             Self::Views => "views",
             Self::Read => "read",
+            Self::Picture => "picture",
         }
     }
 
@@ -49,6 +66,7 @@ impl Mode {
             "replica" => Some(Self::Replica),
             "views" => Some(Self::Views),
             "read" => Some(Self::Read),
+            "picture" => Some(Self::Picture),
             _ => None,
         }
     }
@@ -105,6 +123,10 @@ pub(crate) enum Request {
     /// Load an existing document of `app_id` to discover its views
     /// ([`Mode::Views`]).
     ViewsLoad { app_id: String, doc: Vec<u8> },
+    /// What an existing document of `app_id` is called ([`Mode::Views`]):
+    /// [`crate::AppCatalogue::resource_title`]. The document is read for the
+    /// answer and dropped; the worker answers any number of these.
+    Title { app_id: String, doc: Vec<u8> },
     /// The views of one resource of the loaded document under `policy`.
     Views {
         /// JSON `ViewResourceQuery`.
@@ -137,6 +159,20 @@ pub(crate) enum Request {
     },
     /// Report what the confinement still lets the worker do at `path`.
     Probe { path: String },
+    /// Decode a picture and write it out again within `max_side` pixels a
+    /// side and `max_bytes` ([`Mode::Picture`]); answered with
+    /// [`Reply::Picture`].
+    Shrink {
+        bytes: Vec<u8>,
+        max_side: u32,
+        max_bytes: u64,
+    },
+    /// Keep one content item where the app's code reads it; answered with
+    /// [`Reply::Stored`].
+    PutContent(Vec<u8>),
+    /// What the app stored since the last take and what it asked for but
+    /// lacked; answered with [`Reply::Content`].
+    TakeContent,
 }
 
 /// A worker's replies.
@@ -161,12 +197,26 @@ pub(crate) enum Reply {
     RecordMutations(Vec<(String, bool, Vec<u8>)>),
     /// JSON `(LiveAnchor, LiveAnchor)`.
     Presence(Option<String>),
+    /// What a document is called, when its app names it.
+    Title(Option<String>),
+    /// A picture written out again as a PNG or JPEG. Not trusted: its
+    /// header is checked before it is shown to anyone.
+    Picture(Vec<u8>),
     /// The request was carried out.
     Done,
     /// The request could not be carried out.
     Failed(String),
     /// What a probe could do.
     Probe(ProbeReport),
+    /// The content was kept under this hash.
+    Stored(String),
+    /// Content the app stored since the last take, at most
+    /// [`CONTENT_BATCH_BYTES`] of it unless one item is larger, and the
+    /// hashes it asked for that the worker lacks. Neither is trusted.
+    Content {
+        offered: Vec<Vec<u8>>,
+        wanted: Vec<String>,
+    },
 }
 
 /// What the confinement let a probe do; every field must come back `false`.
@@ -178,7 +228,6 @@ pub(crate) enum Reply {
 pub struct ProbeReport {
     /// The file at the probed path could be opened for reading.
     pub opened_file: bool,
-    /// A file could be created next to it.
     pub created_file: bool,
     /// An internet socket could be bound or connected.
     pub inet_socket: bool,
@@ -281,7 +330,7 @@ mod tests {
 
     #[test]
     fn modes_round_trip_by_name() {
-        for mode in [Mode::Replica, Mode::Views, Mode::Read] {
+        for mode in [Mode::Replica, Mode::Views, Mode::Read, Mode::Picture] {
             assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(Mode::parse("other"), None);

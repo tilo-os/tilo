@@ -8,8 +8,11 @@ import subprocess
 import tempfile
 import tomllib
 import unittest
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("package_features", ROOT / "tools/ci/package_features.py")
 features = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(features)
@@ -49,7 +52,8 @@ class GatewayFeaturesTests(unittest.TestCase):
                     argv = json.loads(result.stdout)
                     self.assertEqual(argv[:5], ["cargo", "nextest", "run", "--locked", "-p"])
                     self.assertEqual(argv[5], package)
-                    self.assertEqual(argv[8:], features.arguments([package]))
+                    # Its tests' features come through workspace-unify, never as --features.
+                    self.assertEqual(argv[8:], ["-p", "workspace-unify"])
                     self.assertNotIn("--all-features", argv)
                     self.assertNotIn("--workspace", argv)
             command = ["cargo", "nextest", "run", "--locked", "-p", "chat",
@@ -57,25 +61,26 @@ class GatewayFeaturesTests(unittest.TestCase):
             result = subprocess.run(
                 ["bash", str(ci / "t-nextest.sh"), *command],
                 capture_output=True, text=True, check=True)
-            self.assertEqual(json.loads(result.stdout),
-                             command + features.arguments(["chat", "tilo-model-gateway"]))
+            self.assertEqual(json.loads(result.stdout), command + ["-p", "workspace-unify"])
+            anchor = tomllib.loads((ROOT / "crates/dev/workspace-unify/Cargo.toml").read_text())
+            for table in anchor["target"].values():
+                gateway = table.get("dependencies", {}).get("tilo-model-gateway")
+                if gateway is not None:
+                    self.assertLessEqual(set(features.NATIVE_TEST_FEATURES["tilo-model-gateway"]),
+                                         set(gateway["features"]))
             command = ["cargo", "check", "--locked", "-p", "tilo-model-gateway"]
             result = subprocess.run(
                 ["bash", str(ci / "t-nextest.sh"), *command],
                 capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), command)
-        workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
-        self.assertIn("bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests "
-                      "${{ matrix.test_packages }}", workflow)
-        self.assertIn("bash tools/ci/t-nextest.sh cargo nextest run",
-                      (ROOT / "tools/ci/local-affected.sh").read_text())
-        config = tomllib.loads((ROOT / "t.toml").read_text())
+        config = t_matrix.load(ROOT)
         test = next(family for family in config["cargo"] if family["name"] == "test")
         self.assertEqual(test["wrapper"], ["bash", "tools/ci/t-nextest.sh"])
         self.assertIn("tools/ci/package_features.py", test["inputs"])
 
     def test_os_release_builds_full_gateway_and_stages_http_binary(self):
-        containerfile = (ROOT / "os/Containerfile").read_text()
+        # The OS image's compile runs outside any image build.
+        containerfile = (ROOT / "os/image/compile.sh").read_text()
         # The release build names every feature in one list (the relay's
         # web feature rides in it too); the gateway's two must both be there.
         enabled = {feature for listed in re.findall(r"--features (\S+)", containerfile)

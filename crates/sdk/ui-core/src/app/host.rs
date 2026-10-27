@@ -15,12 +15,8 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
 /// draws with, the draw-pass duration for the perf log line, and what was
 /// painted outside the widgets' layout boxes (an overlay, history chrome, a
 /// dialog, the palette; the tooltip's bounds), which their damage does not
-/// cover.
-#[allow(
-    clippy::too_many_lines,
-    reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
-)]
-#[cfg(feature = "native")]
+/// cover. Tests draw through it; hosts through [`draw_frame_content_with`].
+#[cfg(all(feature = "native", test))]
 fn draw_frame_content(
     app: &mut App,
     scene: &mut Scene,
@@ -29,6 +25,37 @@ fn draw_frame_content(
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
 ) -> DrawnFrame {
+    draw_frame_content_with(
+        app,
+        scene,
+        (width, height),
+        scale_factor,
+        t_draw_start,
+        None,
+    )
+}
+
+/// [`draw_frame_content`], for a host that culls the frame
+/// ([`crate::draw_cull`]) when `culled` is given: the widgets then draw
+/// into its scene of their own and what is painted over them into its
+/// layers', leaving `scene` untouched, for the host to compose once it
+/// knows whether the widgets must be drawn again in full
+/// ([`redraw_culled_widgets`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
+)]
+#[cfg(feature = "native")]
+fn draw_frame_content_with(
+    app: &mut App,
+    scene: &mut Scene,
+    (width, height): (u32, u32),
+    scale_factor: f32,
+    t_draw_start: Option<crate::time::Instant>,
+    mut culled: Option<&mut crate::draw_cull::Scenes>,
+) -> DrawnFrame {
+    // Every motion this frame reads is read at this instant or later.
+    let motions_at = crate::motion::frame_now();
     app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.refresh_control_action_availability();
@@ -44,6 +71,9 @@ fn draw_frame_content(
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
     let (vp_w, vp_h) = crate::scale::logical_size((width, height), f64::from(scale_factor));
     let window_rect = KurboRect::new(0.0, 0.0, vp_w, vp_h);
+    // The window's own shape, where this scene draws it: what runs along
+    // its edges (a scroll bar) keeps out of its rounded corners.
+    app.theme.surface = app.window_surface(window_rect, transform);
     let prev_vp = app.presence_ctx.push_viewport(window_rect);
     // No GPU damage clip: vello allocates a fresh `target_texture` per
     // frame, so clipping out a static region would just paint background
@@ -94,17 +124,34 @@ fn draw_frame_content(
     let history_shown = history_changed || (app.history.is_some() && !app_live);
     if app_live {
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
+        let widgets: &mut Scene = match culled.as_deref_mut() {
+            Some(culled) => {
+                crate::backdrop::nest_scene(&culled.widgets);
+                crate::draw_cull::bind(&culled.widgets);
+                &mut culled.widgets
+            }
+            None => &mut *scene,
+        };
         app.presence_ctx
             .with_permissions(app.permission_ctx.clone(), || {
                 app.root_widget.draw(
-                    scene,
+                    widgets,
                     transform,
                     &mut app.text_renderer,
                     &app.theme,
                     &app.presence_ctx,
                 )
             });
+        crate::draw_cull::unbind();
     }
+    // Culled, what is painted over the widgets is drawn apart from them.
+    let scene: &mut Scene = match culled {
+        Some(culled) => {
+            crate::backdrop::nest_scene(&culled.layers);
+            &mut culled.layers
+        }
+        None => scene,
+    };
     // Everything from here on paints outside the widgets' layout boxes, where
     // their damage cannot describe it.
     let layer_start = scene.encoding().draw_tags.len();
@@ -207,10 +254,22 @@ fn draw_frame_content(
         .as_mut()
         .filter(|p| p.is_presented())
     {
-        let win_w = f64::from(width) / f64::from(scale_factor);
-        let card_w = (win_w * 0.6).clamp(360.0, 640.0);
-        let x0 = ((win_w - card_w) / 2.0).max(0.0);
-        let y0 = (f64::from(height) / f64::from(scale_factor) * 0.12).max(24.0);
+        // The window under its bar: the palette and its scrim leave the
+        // bar (the host's chrome, or outside a session the row of the
+        // window's slots) clear and live.
+        let surface = KurboRect::new(
+            0.0,
+            app.layout.safe_area.top + app.layout.slot_bar_inset,
+            f64::from(width) / f64::from(scale_factor),
+            f64::from(height) / f64::from(scale_factor),
+        );
+        let window = app
+            .actions
+            .palette_window
+            .map(|window| window.intersect(surface))
+            .filter(|window| window.width() > 0.0 && window.height() > 0.0)
+            .unwrap_or(surface);
+        let (Point { x: x0, y: y0 }, card_w) = ap.place_in(window, &app.theme);
         match app.palette_source {
             PaletteSource::Owned { .. } => ap.layout(&app.theme, Point::new(x0, y0), card_w),
             PaletteSource::Host => ap.layout_with_text(
@@ -229,6 +288,8 @@ fn draw_frame_content(
         );
     }
     painted(scene, "the action palette", &mut drawn);
+    // The content zoom's level, in the window's bar after it changed.
+    app.accessibility.zoom.publish();
     if tracked {
         crate::scene_parts::end(scene, window_bounds);
     }
@@ -239,6 +300,7 @@ fn draw_frame_content(
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
+    crate::motion::frame_drawn(motions_at);
     DrawnFrame {
         transform,
         window_rect,
@@ -269,6 +331,41 @@ struct DrawnFrame {
     /// a history overlay, a dialog, the palette, the tooltip), tracked in a
     /// damage part or not: a scroll copy would move it with the content.
     painted_over: bool,
+}
+
+/// Draw the widgets of a culled frame ([`draw_frame_content_with`]) again
+/// in full into `culled`'s scene of theirs, as that draw drew them with
+/// `drawn`'s transform: what the frame left out turned out to be repainted.
+#[cfg(feature = "native")]
+fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, drawn: &DrawnFrame) {
+    let widgets = &mut culled.widgets;
+    crate::backdrop::forget_nested(widgets);
+    widgets.reset();
+    crate::backdrop::nest_scene(widgets);
+    let prev_vp = app.presence_ctx.push_viewport(drawn.window_rect);
+    let secrets = crate::secret_paint::SecretPaint::begin();
+    app.presence_ctx
+        .with_permissions(app.permission_ctx.clone(), || {
+            app.root_widget.draw(
+                widgets,
+                drawn.transform,
+                &mut app.text_renderer,
+                &app.theme,
+                &app.presence_ctx,
+            )
+        });
+    app.presence_ctx.pop_viewport(prev_vp);
+    if secrets.finish() {
+        app.set_secret_on_screen(true);
+    }
+}
+
+/// Compose a culled frame's widgets and layers into `scene`, carrying
+/// any floating surface drawn into them.
+#[cfg(feature = "native")]
+fn compose_culled(scene: &mut Scene, culled: &crate::draw_cull::Scenes) {
+    crate::backdrop::append_nested(scene, &culled.widgets, Affine::IDENTITY);
+    crate::backdrop::append_nested(scene, &culled.layers, Affine::IDENTITY);
 }
 
 /// Paint the tooltip on screen, if any, and return every pixel it painted
@@ -575,7 +672,13 @@ fn run_layout_pass(
         CompositionFocus, composition_geometry, settle_widget_composition,
     };
     let _phase = tilo_resource::profiling::Phase::start("ui.layout");
-    let (content_origin, logical) = app.layout.safe_area.content(crate::scale::logical_size(
+    // The app's frame starts under the host's chrome and, outside a Tilo
+    // session, under the row of its window-bar slots.
+    let area = crate::scale::SafeArea {
+        top: app.layout.safe_area.top + app.layout.slot_bar_inset,
+        ..app.layout.safe_area
+    };
+    let (content_origin, logical) = area.content(crate::scale::logical_size(
         (width, height),
         f64::from(scale_factor),
     ));
@@ -632,6 +735,7 @@ fn run_layout_pass(
     };
     let must_compute = structure_rebuilt
         || app.layout.structure_dirty
+        || app.layout.remount
         || viewport_changed
         || scroll_opt_disabled()
         || app.root_widget.layout_needs_measure();
@@ -644,8 +748,23 @@ fn run_layout_pass(
             || crate::widget::layout::tree_composition_follows_allocation(
                 app.root_widget.as_ref(),
             ));
+    // What arrives in the window's first frame shows at rest.
+    let _window = crate::motion::laying_out_window(app.layout.root_node.is_some());
+    // Whether the last pass asked for another only to remount in place.
+    let mut remount_next = false;
+    let mut remounted = false;
     let result = settle_widget_composition(recompose_for_viewport, |rebuild| {
-        if rebuild || app.layout.structure_dirty {
+        let remount_only = rebuild && std::mem::take(&mut remount_next);
+        let in_place =
+            app.layout.remount && !app.layout.structure_dirty && (!rebuild || remount_only);
+        #[cfg(test)]
+        let remount_probe = crate::profiling::frame_probe::span("layout.remount");
+        let remounted_now = in_place && app.remount_in_place();
+        #[cfg(test)]
+        drop(remount_probe);
+        remounted |= remounted_now;
+        if (rebuild && !remount_only) || app.layout.structure_dirty || (in_place && !remounted_now)
+        {
             recomposed = true;
             // Capture before build replaces controls. Shared view hooks carry
             // root-owned scroll/mode; persisted Scrollable offsets also survive.
@@ -697,7 +816,9 @@ fn run_layout_pass(
                 .root_node
                 .ok_or(crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
         }
-        if must_compute || rebuild {
+        if must_compute || rebuild || remounted_now {
+            #[cfg(test)]
+            let _compute = crate::profiling::frame_probe::span("layout.compute");
             let start = crate::time::now();
             #[allow(
                 clippy::cast_possible_truncation,
@@ -720,19 +841,48 @@ fn run_layout_pass(
             t_compute_us = t_compute_us.saturating_add(start.elapsed().as_micros());
         }
         let start = crate::time::now();
-        app.apply_history_presentation(current_root);
+        #[cfg(test)]
+        let place_probe = crate::profiling::frame_probe::span("layout.place");
+        // Nothing was solved, built or remounted since the widgets were
+        // last placed, and focus stayed where it was: only views moved, and
+        // long collections place only what they show.
+        let again = !(must_compute || rebuild || remounted_now)
+            && app.layout.placed_all
+                == Some(runtime::PlacedAll {
+                    focus: app.focused_node,
+                })
+            && app.history.is_none()
+            && app.history_layout.is_none();
+        if again {
+            let tree = crate::widget::layout::TreeId::of(&app.layout.taffy);
+            crate::widget::layout::placing_again_in(tree, || {
+                app.apply_history_presentation(current_root);
+            });
+        } else {
+            app.apply_history_presentation(current_root);
+            app.layout.placed_all = Some(runtime::PlacedAll {
+                focus: app.focused_node,
+            });
+        }
+        app.layout.placed_partly = again;
         t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
+        #[cfg(test)]
+        drop(place_probe);
         let dirty = app.take_composition_dirty();
+        // Rows a layout brought into view are remounted by another pass.
+        remount_next = !dirty && app.layout.remount;
         // Translation-only frames avoid both composition and a tree snapshot.
         let geometry = if viewport_changed {
             composition_geometry(&app.layout.taffy, current_root)?
         } else {
             vec![]
         };
-        Ok((Some(geometry), dirty))
+        Ok((Some(geometry), dirty || remount_next))
     });
     if let Err(error) = result {
-        tracing::error!(?error, "widget layout did not settle; skipping frame");
+        if let Some(line) = app.layout.skipped_frames.skip(&error, crate::time::now()) {
+            tracing::error!("{line}");
+        }
         app.layout.layout_dirty = true;
         app.layout.last_layout_logical = None;
         return None;
@@ -749,7 +899,7 @@ fn run_layout_pass(
     }
     // NativeView measurement is independent of platform attachment. Mount only
     // the successfully settled tree; mount publishes its retained geometry.
-    if (structure_rebuilt || recomposed)
+    if (structure_rebuilt || recomposed || remounted)
         && app
             .history
             .as_ref()
@@ -767,7 +917,7 @@ fn run_layout_pass(
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
-    if must_compute || recomposed {
+    if must_compute || recomposed || remounted {
         app.update_focusable_order();
     }
     app.restore_history_focus();
@@ -794,11 +944,29 @@ fn run_layout_pass(
     // the publisher diffs the surface and checks broker connectivity.
     app.publish_action_surface();
     let geometry_changed = recomposed
+        || remounted
         || viewport_changed
         || geometry_before.is_none_or(|before| {
             before != crate::pointer_replay::widget_geometry(app.root_widget.as_ref())
         });
     Some((geometry_changed, t_compute_us, t_apply_us))
+}
+
+impl App {
+    /// Place every widget where the current layout puts it, after a frame
+    /// that placed only what long collections show
+    /// ([`crate::widget::placing_again`]): for what reads the bounds of
+    /// widgets far from any view (accessibility, the semantic tree).
+    pub(crate) fn place_all(&mut self) {
+        if !self.layout.placed_partly {
+            return;
+        }
+        #[cfg(feature = "native")]
+        if let Some(root) = self.layout.root_node {
+            self.apply_history_presentation(root);
+        }
+        self.layout.placed_partly = false;
+    }
 }
 
 #[cfg(test)]

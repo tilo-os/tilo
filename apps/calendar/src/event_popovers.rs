@@ -335,7 +335,6 @@ mod tests {
 
     #[test]
     fn picker_lifecycle_replaces_and_clears_and_the_guard_wins_hits() {
-        // Case `opening_a_picker_replaces_the_previous_one_and_close_clears_state`.
         {
             let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
             popovers.open(PopoverKind::StartDate, &event());
@@ -346,7 +345,6 @@ mod tests {
             assert!(!popovers.is_open());
             assert!(popovers.hits.is_empty());
         }
-        // Case `the_backing_guard_wins_over_the_dismiss_area`.
         {
             let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
             popovers

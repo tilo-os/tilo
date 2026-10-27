@@ -81,6 +81,7 @@ mod open_with_tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -1216,6 +1217,53 @@ mod command_path_tests {
         }
     }
 
+    /// The record catalogue of a workspace root whose watch sees every
+    /// change (a local folder, or the tilo-fs mount, which signals its
+    /// peers' edits) is checked when the root changes, not on a timer: an
+    /// idle window over it asks for no wake at all.
+    #[cfg(unix)]
+    #[test]
+    fn idle_files_over_a_watched_workspace_root_has_no_catalogue_poll() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        env.set("TILO_WORKSPACE_ROOTS", root.path());
+        let mut widget = FileExplorerWidget::new();
+        assert!(
+            widget.collaborative_record_pager.borrow().has_roots(),
+            "the root holds a record catalogue"
+        );
+        // The open folder is not the root, so only the catalogue's watch
+        // can report a change to the root.
+        widget.load(folder);
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        assert_ne!(
+            widget.catalog_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the catalogue's root is watched"
+        );
+        assert_watched_idle_window_needs_no_wake(&mut widget);
+
+        std::fs::write(root.path().join("new.txt"), b"new").unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let mut checked = false;
+        while !checked && ui::time::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // Where the watch sees every change nothing is polled, so only
+            // the watch can make this check.
+            #[cfg(target_os = "linux")]
+            assert_eq!(widget.next_metadata_refresh, None, "nothing is polled");
+            checked = widget.refresh_metadata_if_due(ui::time::now());
+        }
+        assert!(
+            checked,
+            "the root's change moved the catalogue's generation"
+        );
+        assert_watched_idle_window_needs_no_wake(&mut widget);
+    }
+
     /// A file another program creates in the open directory shows, read
     /// because the watch reported it, before any poll is due.
     #[cfg(unix)]
@@ -1228,11 +1276,11 @@ mod command_path_tests {
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
         let _ = widget.refresh_metadata_if_due(ui::time::now());
-        let created = ui::time::now();
         std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
         let shown =
             |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
-        while !shown(&widget) && created.elapsed() < std::time::Duration::from_secs(10) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !shown(&widget) && ui::time::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
             // The earliest moment a reported change may be read, which is
             // before any poll is due: only the watch can make this read.
@@ -1247,6 +1295,70 @@ mod command_path_tests {
         // would only measure the test machine's load.
         assert!(shown(&widget), "the new file is listed");
         assert!(!widget.directory_changed, "the reported change was read");
+    }
+
+    /// "a file put in a folder appears in Files without reopening the
+    /// folder": another process makes a multi-gigabyte (sparse) archive in
+    /// a sibling folder and moves it into a folder of about a hundred
+    /// entries that Files shows; it is listed, at its size, without the
+    /// folder being opened again.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_put_in_a_folder_appears_in_files_without_reopening_the_folder() {
+        const SIZE: u64 = 5 << 30;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("work");
+        let downloads = root.path().join("Downloads");
+        std::fs::create_dir(&work).unwrap();
+        std::fs::create_dir(&downloads).unwrap();
+        for i in 0..110 {
+            if i % 5 == 0 {
+                std::fs::create_dir(work.join(format!("project-{i:03}"))).unwrap();
+            } else {
+                std::fs::write(work.join(format!("notes-{i:03}.txt")), b"n").unwrap();
+            }
+        }
+        let mut widget = FileExplorerWidget::new();
+        widget.navigate(work.clone());
+        assert_eq!(widget.entries.len(), 110);
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+
+        let name = "factorio-space-age_linux-arm64_2.1.23.tar.xz";
+        let status = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"truncate -s "$3" "$1/$4" && mv "$1/$4" "$2/$4""#)
+            .arg("sh")
+            .arg(&downloads)
+            .arg(&work)
+            .arg(SIZE.to_string())
+            .arg(name)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let shown = |widget: &FileExplorerWidget| {
+            widget
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| (entry.size, entry.is_dir))
+        };
+        let deadline = tilo_test_env::hang_deadline();
+        while shown(&widget).is_none() && ui::time::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let readable = widget.last_directory_read
+                + metadata_refresh::change_read_gap(widget.entries.len());
+            let _ = widget.refresh_metadata_if_due(readable);
+        }
+        assert_eq!(
+            shown(&widget),
+            Some((SIZE, false)),
+            "the moved-in archive is listed as a file, at its size"
+        );
+        assert_eq!(widget.entries.len(), 111);
+        assert_eq!(widget.current_path, work, "the folder was never reopened");
     }
 
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
@@ -1293,6 +1405,7 @@ mod command_path_tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -1372,11 +1485,12 @@ mod command_path_tests {
             "{:?}",
             panel.lines
         );
+        let new_folder = match ui::platform::PlatformConventions::default().platform() {
+            ui::platform::Platform::MacOs => "New folder: ⌘⇧N",
+            _ => "New folder: Ctrl+Shift+N",
+        };
         assert!(
-            panel
-                .lines
-                .iter()
-                .any(|line| line == "New folder: Ctrl+Shift+N"),
+            panel.lines.iter().any(|line| line == new_folder),
             "{:?}",
             panel.lines
         );
@@ -1677,10 +1791,12 @@ mod command_path_tests {
         std::os::unix::fs::symlink(&mount, &alias).unwrap();
         app.invoke(crate::resource::FileExplorer::queueing("test-device", op).unwrap())
             .unwrap();
-        tilo_test_env::wait_until("the cloud import to settle", || {
+        let deadline = tilo_test_env::hang_deadline();
+        while app.state().ops.pending().next().is_some() {
+            assert!(std::time::Instant::now() < deadline);
             app.settle();
-            app.state().ops.pending().next().is_none()
-        });
+            std::thread::yield_now();
+        }
         let state = app.state();
         let outcome = state
             .ops
@@ -2016,14 +2132,24 @@ mod command_path_tests {
             FileCommand::Up,
             "trying again can't fix a permission; going up can"
         );
-        assert_eq!(w.folder_recovery_label(), t("files-open-enclosing"));
+        assert_eq!(recovery_label(&w), t("files-open-enclosing"));
 
         let odd = std::io::Error::from_raw_os_error(5).to_string();
         w.error = Some(t_args("files-directory-read-failed", &[arg("error", odd)]));
         let (_, detail, _) = w.state_surface_copy().expect("error state copy");
         assert!(!detail.contains("os error"), "{detail}");
         assert_eq!(w.folder_recovery_command(), FileCommand::Refresh);
-        assert_eq!(w.folder_recovery_label(), t("files-try-again"));
+        assert_eq!(recovery_label(&w), t("files-try-again"));
+    }
+
+    /// What the failed listing's button says, as the pane shows it.
+    fn recovery_label(w: &FileExplorerWidget) -> String {
+        let pane = w.build_content_pane(&ui::theme::Theme::dark());
+        let state = pane.accessibility().expect("the failure is a state");
+        let [action] = state.children.as_slice() else {
+            panic!("a failure offers one way on: {state:?}");
+        };
+        action.name.clone().unwrap_or_default()
     }
 
     fn retry_refresh_recovers_from_error_once_the_dir_exists() {
@@ -2041,6 +2167,66 @@ mod command_path_tests {
         assert!(
             w.error_message().is_none(),
             "retry succeeds once the dir exists"
+        );
+    }
+
+    /// A link to a folder lists as the folder it opens and a link to a file
+    /// as the file it opens: first among the folders, with the target's size,
+    /// and named as a folder to an agent. On Tilo's own image `/home`, `/opt`
+    /// and `/srv` are such links. A link to nothing stays a file.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_lists_as_what_it_opens() {
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let folder = elsewhere.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("inside.txt"), b"x").unwrap();
+        let file = elsewhere.path().join("file.txt");
+        std::fs::write(&file, vec![b'x'; 5000]).unwrap();
+        std::fs::write(d.path().join("a-plain.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(&folder, d.path().join("z-linked-folder")).unwrap();
+        std::os::unix::fs::symlink(&file, d.path().join("linked-file.txt")).unwrap();
+        std::os::unix::fs::symlink("missing-target", d.path().join("dangling")).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let shown = w.displayed_entries();
+        let names: Vec<&str> = shown.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "z-linked-folder",
+                "a-plain.txt",
+                "dangling",
+                "linked-file.txt"
+            ],
+            "the linked folder sorts with the folders"
+        );
+        let linked_folder = &shown[0];
+        assert!(linked_folder.is_dir, "a link to a folder is a folder");
+        let linked_file = shown
+            .iter()
+            .find(|entry| entry.name == "linked-file.txt")
+            .unwrap();
+        assert!(!linked_file.is_dir);
+        assert_eq!(
+            linked_file.size, 5000,
+            "a linked file shows its target's size"
+        );
+        let dangling = shown.iter().find(|entry| entry.name == "dangling").unwrap();
+        assert!(!dangling.is_dir, "a link to nothing stays a file");
+        // The row keeps the link's own identity: operations on it act on the
+        // link, never on what it points at.
+        let link_meta = std::fs::symlink_metadata(d.path().join("z-linked-folder")).unwrap();
+        assert_eq!(
+            linked_folder.observed,
+            host_fs::ObservedObject::from_metadata(&link_meta)
+        );
+        let answer = w.folder_answer().to_string();
+        assert!(
+            answer.contains("\"z-linked-folder/\""),
+            "an agent reads the linked folder as a folder: {answer}"
         );
     }
 
@@ -2271,7 +2457,7 @@ mod command_path_tests {
         );
         // The surface host answers the effect vocabulary beside the window's
         // own operations.
-        let mut handlers = Widget::resource_operation_handlers(&files);
+        let mut handlers = ui::widget::resource_operation_handlers(&files);
         handlers.insert(
             <crate::effects::FilesEffect as ui::tilo_resource::Effect>::OPERATION.to_owned(),
         );
@@ -3231,7 +3417,10 @@ mod command_path_tests {
         std::fs::create_dir(&work).unwrap();
 
         let (mut w, _cfg) = hermetic();
-        w.templates_dir = Some(d.path().to_path_buf());
+        w.templates = crate::templates::Catalog::new(
+            Some(d.path().to_path_buf()),
+            ui::WakeHandle::detached(),
+        );
         w.navigate(work.clone());
         w.apply_command(FileCommand::NewFromTemplate(tmpl));
         assert!(
@@ -3785,6 +3974,21 @@ mod command_path_tests {
             label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
         }));
 
+        // The row says it is unavailable to an agent before anyone opens it.
+        let resource = w.entry_resource(&w.entries[0]);
+        let presentation = resource.presentation.as_ref().expect("unavailable badge");
+        assert_eq!(presentation.badge.as_deref(), Some("Unavailable"));
+        assert!(presentation.is_valid());
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("open action");
+        assert_eq!(
+            open.description.as_deref(),
+            Some("Unavailable until a device that keeps it is online")
+        );
+
         w.apply_command(FileCommand::ShowAvailability);
         let panel = w.collab_panel.as_ref().expect("availability panel");
         assert!(panel.summary.contains("Not stored"));
@@ -3793,7 +3997,17 @@ mod command_path_tests {
             panel
                 .lines
                 .iter()
-                .any(|line| line.contains("No available replica"))
+                .any(|line| line == "Unavailable until a device that keeps it is online"),
+            "{:?}",
+            panel.lines
+        );
+        assert!(
+            !panel
+                .lines
+                .iter()
+                .any(|line| line.contains("No available replica")),
+            "the daemon's own wording never reaches the person: {:?}",
+            panel.lines
         );
     }
 
@@ -3977,7 +4191,7 @@ mod command_path_tests {
         else {
             panic!("Files hands the selected version to Workspace Activity");
         };
-        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.name, "Scribe · Software, for Ada Lovelace");
         assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
         let attribution = entry.author.attribution.expect("who acted for whom");
         assert_eq!(attribution.actor, "agent:scribe");
@@ -4675,6 +4889,8 @@ mod command_path_tests {
     }
 
     fn archives_browse_as_read_only_folders_and_extract_from_inside() {
+        // Opened members are copied under the private home's cache.
+        let _home = tilo_test_env::TestHome::new().expect("private test home");
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         std::fs::create_dir(&source).unwrap();
@@ -4690,6 +4906,7 @@ mod command_path_tests {
 
         let mut files = FileExplorerWidget::with_persistence(None, Some(temp.path().into()));
         files.navigate(archive);
+        files.wait_for_archive();
         assert_eq!(files.entries_snapshot().len(), 2);
         assert!(
             files
@@ -4712,6 +4929,15 @@ mod command_path_tests {
         files.open_entry(photos, &mut SystemRunner).unwrap();
         assert_eq!(files.entries_snapshot().len(), 1);
         assert_eq!(files.entries_snapshot()[0].name, "one.jpg");
+        // A file inside opens as a copy read off the window's thread.
+        files.open_queue.clear();
+        assert!(files.open_entry(0, &mut SystemRunner).unwrap());
+        files.wait_for_archive_members();
+        let copy = files
+            .open_queue
+            .pop_front()
+            .expect("the member's copy is opened");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"one");
 
         files.open_view_menu();
         let menu_labels: Vec<_> = files
@@ -4720,7 +4946,8 @@ mod command_path_tests {
             .iter()
             .filter_map(|item| item.label())
             .collect();
-        assert!(menu_labels.contains(&"Extract archive…"));
+        assert!(menu_labels.contains(&"Extract here"));
+        assert!(menu_labels.contains(&"Extract to…"));
         assert!(menu_labels.iter().all(|label| !label.starts_with('✓')));
         assert!(!menu_labels.contains(&"New folder"));
         assert!(!menu_labels.contains(&"Open terminal here"));
@@ -4779,6 +5006,7 @@ mod responsive_body_tests {
             let mut w = FileExplorerWidget::with_persistence(None, None);
             if let Some(d) = dir {
                 w.navigate(d.to_path_buf());
+                w.wait_for_archive();
             }
             Self::from_widget(w, width, height)
         }
@@ -4899,6 +5127,19 @@ mod responsive_body_tests {
             find(&self.w, name)
         }
 
+        /// The pane's empty state, as assistive technology reads it, and
+        /// where its action stands.
+        fn empty_state(&self) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
+            fn find(w: &dyn Widget) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
+                if w.name() == "EmptyState" {
+                    let action = w.synthetic_accessibility_rect(&[0]).unwrap_or_default();
+                    return w.accessibility().map(|node| (node, action));
+                }
+                w.children().into_iter().find_map(find)
+            }
+            find(&self.w)
+        }
+
         /// Run a real draw pass so immediate-mode children (the file view)
         /// publish their per-frame geometry — e.g. the in-place rename field's
         /// rect.
@@ -4949,8 +5190,7 @@ mod responsive_body_tests {
                 .handled
         }
 
-        /// Paint the window's top layer: the notice, the status bubble and
-        /// open menus.
+        /// Paint the window's top layer: open menus.
         fn draw_overlay(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
@@ -4966,11 +5206,13 @@ mod responsive_body_tests {
     }
 
     /// Feedback is quiet unless there is something to do about it: selecting
-    /// never pops the status bubble, a move to Trash is one notice whose Undo
+    /// says nothing in the bar, a move to Trash is one notice whose Undo
     /// asks the host for the window's Undo, and Ctrl+Z is the host's.
     #[test]
     fn changes_announce_once_with_the_windows_undo() {
+        let _serial = crate::files_app::serial();
         use crate::file_ops::Change;
+        ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
@@ -4981,7 +5223,7 @@ mod responsive_body_tests {
         h.w.select(Some(1));
         h.draw_overlay();
         assert!(
-            !h.w.status_bubble.is_visible(ui::time::now()) || ui::time::wall_frozen(),
+            !h.w.status_notice.is_shown(),
             "selecting a file is not news"
         );
 
@@ -5010,12 +5252,15 @@ mod responsive_body_tests {
             "one plain line, no meta text"
         );
         h.lay_out(1000.0, 720.0);
-        h.draw_overlay();
-        let undo = h.w.notice.action_rect();
-        assert!(undo.width() > 0.0, "the notice paints its Undo");
-        h.cursor(undo.center().x, undo.center().y);
-        h.left_press();
-        h.left_release();
+        // The change waits for the person, with Undo as its one action.
+        let waiting = ui::attention::items()
+            .into_iter()
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.title(), told);
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        h.w.needs.pressed(ui::attention::Press::Act(waiting.id()));
+        h.lay_out(1000.0, 720.0);
         assert_eq!(
             ui::undo::UndoControl::take_undo_request(&mut h.w),
             Some(ui::UndoRequest::Undo),
@@ -5048,6 +5293,52 @@ mod responsive_body_tests {
         let told = h.w.notice_line().expect("a failed rename is said");
         assert!(told.contains(&t("files-error-permission")), "{told}");
         assert!(!told.contains("os error"), "{told}");
+    }
+
+    /// A move to Trash's Undo is the one action of the row it waits on,
+    /// wherever the person is.
+    #[test]
+    fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
+        let _serial = crate::files_app::serial();
+        use crate::file_ops::Change;
+        ui::attention::clear();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, None);
+        files.navigate(dir.path().to_path_buf());
+        files.wait_for_archive();
+        let mut harness = ui::headless::FrameHarness::for_app(
+            ui::State::new(),
+            files,
+            (1280, 720),
+            Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        let gone = dir.path().join("a.txt").display().to_string();
+        let w = harness.root_mut::<FileExplorerWidget>();
+        ui::undo::UndoControl::set_undo_status(w, &mut || ui::UndoStatus {
+            can_undo: true,
+            ..ui::UndoStatus::default()
+        });
+        w.settle_op(
+            OpFollowUp::Trash { count: 1 },
+            &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
+                from: gone,
+                entry: Some("/trash/files/a.txt".into()),
+            }]),
+        );
+        harness.recompose().unwrap();
+        // The move waits for the person with one action, and its row is the
+        // same row at every width: it is not a notice with a lifetime and a
+        // strip of its own.
+        let waiting = ui::attention::items()
+            .into_iter()
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        assert_eq!(waiting.owner().name, "Files");
+        let harness = harness;
+        drop(harness);
     }
 
     /// Alt+Left, Alt+Right and Alt+Up go back, forward and up; typing the
@@ -5125,23 +5416,6 @@ mod responsive_body_tests {
         assert_eq!(rename_stem_end("photos.2024", true), None);
     }
 
-    fn first_scrollable_viewport(
-        widget: &mut dyn Widget,
-    ) -> Option<(vello::kurbo::Rect, vello::kurbo::Rect)> {
-        if let Some(scrollable) = widget
-            .as_any_mut()
-            .and_then(|value| value.downcast_mut::<Scrollable>())
-        {
-            return Some((scrollable.get_rect(), scrollable.content_viewport_rect()));
-        }
-        for child in widget.children_mut() {
-            if let Some(viewport) = first_scrollable_viewport(child) {
-                return Some(viewport);
-            }
-        }
-        None
-    }
-
     /// Wide/narrow body modes and the narrow places drawer, each phase on its
     /// own temp dir and harness.
     #[test]
@@ -5152,7 +5426,6 @@ mod responsive_body_tests {
         narrow_places_are_a_screen_of_their_own();
         narrow_places_screen_takes_input_the_files_do_not();
         narrow_navigation_returns_to_the_files();
-        floating_status_bubble_reserves_a_noninteractive_bottom_lane();
     }
 
     fn body_docks_wide_and_reflows_to_push_when_narrowed() {
@@ -5274,7 +5547,9 @@ mod responsive_body_tests {
         h.lay_out(390.0, 780.0);
         h.draw();
 
-        let retry = h.w.state_retry.get_rect();
+        let (_, retry) = h
+            .empty_state()
+            .expect("the failure is the pane's empty state");
         assert!(
             retry.width() >= 120.0 && retry.y0 > 0.0,
             "retry is a usable target: {retry:?}"
@@ -5406,6 +5681,13 @@ mod responsive_body_tests {
             "archive toolbar must not expose a one-item duplicate menu"
         );
         assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
+        assert!(
+            h.w.status_notice.get().cloned() == Some(t("files-archive-read-only"))
+                || ui::attention::entries()
+                    .iter()
+                    .any(|entry| entry.what() == t("files-archive-read-only")),
+            "entering an archive says it is read-only, and the record keeps it"
+        );
 
         h.lay_out(1200.0, 760.0);
         if h.w.take_structure_dirty() {
@@ -5449,28 +5731,6 @@ mod responsive_body_tests {
         assert!(
             (h.w.debug_content_rect().width() - 480.0).abs() <= f64::EPSILON,
             "the content pane spans the whole narrow window",
-        );
-    }
-
-    fn floating_status_bubble_reserves_a_noninteractive_bottom_lane() {
-        let dir = tempfile::tempdir().unwrap();
-        for index in 0..40 {
-            std::fs::write(dir.path().join(format!("item-{index}.txt")), b"x").unwrap();
-        }
-        let mut h = H::new(Some(dir.path()), 390.0, 720.0);
-        // The grid scrolls under the shared scrollable; the list is a table
-        // that scrolls itself and keeps the lane clear in its own layout (see
-        // `FileView`'s list tests).
-        h.w.set_view_mode(crate::model::ViewMode::Grid);
-        h.lay_out(390.0, 720.0);
-        let (scrollable, content_viewport) = first_scrollable_viewport(&mut h.w)
-            .expect("Files grid is wrapped in the shared scrollable");
-
-        assert!(
-            scrollable.y1 - content_viewport.y1
-                >= f64::from(status_bubble_safe_inset(&ui::Theme::dark())) - f64::EPSILON,
-            "the item/status pill has a dedicated bottom lane rather than overlaying files: \
-             scrollable={scrollable:?} viewport={content_viewport:?}"
         );
     }
 
@@ -5972,9 +6232,14 @@ mod accessibility_tests {
         let loading = Widget::accessibility(&widget).unwrap();
         assert!(loading.state.busy);
         assert!(loading.value.as_deref().unwrap().starts_with("Loading "));
-        assert_eq!(loading.children.len(), 1);
-        assert_eq!(loading.children[0].name.as_deref(), Some("Opening folder"));
-        assert_eq!(loading.children[0].live, Some(Politeness::Polite));
+        let theme = ui::theme::Theme::dark();
+        let pane = widget.build_content_pane(&theme);
+        let state = pane
+            .accessibility()
+            .expect("the pane says the folder is opening");
+        assert_eq!(state.name.as_deref(), Some("Opening folder"));
+        assert_eq!(state.live, Some(Politeness::Polite));
+        assert!(state.state.busy);
 
         widget.is_loading = false;
         widget.error = Some("permission denied".into());
@@ -5987,7 +6252,8 @@ mod accessibility_tests {
                 .unwrap()
                 .contains("permission denied")
         );
-        let state = error.children.first().expect("error state semantic group");
+        let pane = widget.build_content_pane(&theme);
+        let state = pane.accessibility().expect("error state semantic group");
         let name = widget
             .current_path()
             .file_name()
@@ -6000,7 +6266,7 @@ mod accessibility_tests {
         assert_eq!(state.live, Some(Politeness::Assertive));
         let retry = state.children.first().expect("retry semantic action");
         assert_eq!(retry.role, Role::Button);
-        assert_eq!(retry.action_target.as_deref(), Some("files-retry-folder"));
+        assert_eq!(retry.action_target.as_deref(), Some(RETRY_ROW));
     }
 
     fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {
@@ -7486,7 +7752,7 @@ fn a_file_inside_an_archive_opens_as_a_read_only_copy() {
     let member = crate::archive::list(&zip)
         .unwrap()
         .into_iter()
-        .find(|entry| !entry.is_dir)
+        .find(|entry| entry.kind == crate::archive::Kind::File)
         .expect("a file in the archive")
         .path;
     let copy = archive_member_copy(&zip, &member).unwrap();
@@ -7584,4 +7850,143 @@ fn a_listing_read_that_finds_nothing_asks_for_no_sync() {
         "a new file asks for the sync that shows it"
     );
     assert!(files.entries.iter().any(|entry| entry.name == "b.txt"));
+}
+
+/// Run `test` on a thread that is a frame loop's, where a window reads its
+/// folders on a worker, since that thread never waits on the disk.
+fn on_a_frame_loop(test: impl FnOnce() + Send) {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+                test();
+            })
+            .join()
+            .unwrap();
+    });
+}
+
+/// A hosted window showing `home`, as the compositor mounts one.
+fn hosted_window(home: &Path) -> FileExplorerWidget {
+    FileExplorerWidget::with_startup_inputs_and_services(
+        StartupInputs {
+            initial_dir: home.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
+        },
+        HostedFileServices {
+            thumbnails: None,
+            document_opener: DocumentOpenRoute::Unavailable,
+            open_with: None,
+            local_clipboard: false,
+        },
+    )
+}
+
+/// Apply the worker's read once it is done.
+fn settle_folder_read(files: &mut FileExplorerWidget) {
+    tilo_test_env::wait_until("the folder read to finish", || files.take_folder_read());
+}
+
+#[test]
+fn on_a_frame_loop_a_folder_shows_the_loading_state_until_its_worker_has_read_it() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("a.txt"), b"a").unwrap();
+    on_a_frame_loop(|| {
+        // Building the window lists nothing on this thread: a listing here
+        // would panic.
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        files.navigate(folder.clone());
+        assert!(files.is_loading(), "the folder is being read");
+        assert!(
+            files.entries().is_empty(),
+            "no rows of the folder left behind"
+        );
+        assert_eq!(files.current_path(), folder);
+        assert_eq!(files.current_place(), None, "not known to be a folder yet");
+        settle_folder_read(&mut files);
+        assert!(!files.is_loading());
+        assert_eq!(
+            files
+                .entries()
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a.txt"]
+        );
+        assert!(files.current_place().is_some(), "a folder read is a place");
+    });
+}
+
+#[test]
+fn on_a_frame_loop_a_read_replaced_by_a_newer_navigation_is_never_shown() {
+    let home = tempfile::tempdir().unwrap();
+    let first = home.path().join("first");
+    let second = home.path().join("second");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    std::fs::write(first.join("old.txt"), b"").unwrap();
+    std::fs::write(second.join("new.txt"), b"").unwrap();
+    on_a_frame_loop(|| {
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        files.navigate(first.clone());
+        files.navigate(second.clone());
+        settle_folder_read(&mut files);
+        assert_eq!(files.current_path(), second);
+        assert_eq!(
+            files
+                .entries()
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["new.txt"]
+        );
+        assert!(
+            !files.folder_reads.is_pending(),
+            "the first read is dropped"
+        );
+    });
+}
+
+#[test]
+fn on_a_frame_loop_the_shown_folder_keeps_its_rows_while_it_is_read_again() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("a.txt"), b"").unwrap();
+    on_a_frame_loop(|| {
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        let shown = files.entries().len();
+        std::fs::write(home.path().join("b.txt"), b"").unwrap();
+        files.refresh();
+        assert!(!files.is_loading(), "a refresh does not blank the folder");
+        assert_eq!(files.entries().len(), shown, "its rows stay until replaced");
+        settle_folder_read(&mut files);
+        assert_eq!(files.entries().len(), shown + 1);
+    });
+}
+
+#[test]
+fn on_a_frame_loop_reveal_in_folder_selects_the_item_once_its_folder_is_read() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(folder.join(name), b"").unwrap();
+    }
+    on_a_frame_loop(|| {
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        assert!(files.apply_reveal_in_folder(&folder.join("b.txt")));
+        settle_folder_read(&mut files);
+        let selected = files
+            .selected_index()
+            .map(|i| files.displayed_entries()[i].name.clone());
+        assert_eq!(selected.as_deref(), Some("b.txt"));
+    });
 }

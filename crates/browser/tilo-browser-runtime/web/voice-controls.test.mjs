@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createVoiceControls, createMediaPump, rostersOf, revisionOf, storedCallPreferences} from './voice-controls.mjs';
+import {callIdOf, createVoiceControls, createMediaPump, endedIssue, rostersOf, revisionOf, speakingOf} from './voice-controls.mjs';
 const CALL = 'c'.repeat(64);
-function fixture({joinMuted = true} = {}) {
+function fixture() {
   const operations = [];
   const state = {phase: 'idle', call: null, muted: true, inputId: null, participants: []};
   const call = {state, join(id, options) { operations.push(['join', id, options]); Object.assign(state, {phase: 'joining', call: id, muted: options.muted}); },
@@ -12,13 +12,9 @@ function fixture({joinMuted = true} = {}) {
   const opened = [];
   const voice = {call, calls: [], list: async () => [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}],
     async open({channel}) { opened.push(channel); if (channel !== 'standup') throw new Error('invalid media binding'); return {call: CALL, epoch: 1, active: true}; }};
-  // Most cases are a person who chose to join muted; joining with the
-  // microphone on has its own case.
-  let muted = joinMuted;
-  const preferences = {joinMuted: () => muted, remember(value) { muted = value; }};
-  const controls = createVoiceControls({voice, room: 'room-1', gesture: () => true, preferences});
+  const controls = createVoiceControls({voice, room: 'room-1', gesture: () => true});
   const request = command => ({app: 'so.tilo.chat', room: 'room-1', record: '', command: {version: 1, intent: 0, command}});
-  return {voice, controls, request, operations, opened, state, preferences};
+  return {voice, controls, request, operations, opened, state};
 }
 test('shared Chat commands join listening, mute, select an input and leave the governed call', async () => {
   const f = fixture();
@@ -44,12 +40,37 @@ test('leave supersedes a delayed call lookup and cannot reopen capture', async (
 test('foreign routes, absent calls and unmute without activation fail closed', async () => {
   const f = fixture();
   await assert.rejects(f.controls.execute({...f.request({op: 'status'}), room: 'other'}), /route/);
-  await assert.rejects(f.controls.execute(f.request({op: 'join', channel_id: 'absent'})), /binding/);
+  const refused = await f.controls.execute(f.request({op: 'join', channel_id: 'absent'}));
+  assert.equal(refused.state, 'ended');
+  assert.equal(refused.issue, 'unavailable');
   const controls = createVoiceControls({voice: f.voice, room: 'room-1', gesture: () => false});
   await assert.rejects(controls.execute(f.request({op: 'set_muted', muted: false})), /gesture/);
   assert.equal(f.state.muted, true);
 });
 
+test('a call the host cannot open, or never grants, ends with why; joining again clears it', async () => {
+  const f = fixture();
+  f.voice.open = async () => { throw new Error('exact admitted Chat is encrypted'); };
+  const refused = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  assert.equal(refused.state, 'ended');
+  assert.equal(refused.issue, 'unavailable');
+  assert.equal(refused.capture_active, false);
+  assert.equal((await f.controls.execute(f.request({op: 'status'}))).issue, 'unavailable', 'the reason stays until the person acts');
+  f.voice.open = async () => { throw new Error('not a member of the room'); };
+  assert.equal((await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}))).issue, 'denied');
+  f.voice.open = async () => ({call: CALL, epoch: 1, active: true});
+  const joining = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  assert.equal(joining.state, 'joining');
+  assert.equal(joining.issue, null);
+  Object.assign(f.state, {phase: 'ended', admitted: false, reason: 'no grant arrived in time'});
+  assert.equal((await f.controls.execute(f.request({op: 'status'}))).issue, 'unavailable');
+  assert.equal((await f.controls.execute(f.request({op: 'leave'}))).state, 'idle');
+});
+test('an ended call says whether it was refused or just ended', () => {
+  assert.equal(endedIssue({admitted: true, reason: 'the call has ended'}), 'session_ended');
+  assert.equal(endedIssue({admitted: false, reason: 'not a member of the room'}), 'denied');
+  assert.equal(endedIssue({admitted: false, reason: 'this relay serves no voice carrier'}), 'unavailable');
+});
 
 test('an active call polls the retained controls even when the canvas stops redrawing, and close removes the timer', async () => {
   const f = fixture();
@@ -143,17 +164,29 @@ test('activation alone cannot unmute before a publishing grant is live', async (
   assert.equal(f.operations.filter(op => op[0] === 'mute').length, 0);
 });
 
-test('joining a voice channel opens its call with the microphone on, and a mute is remembered', async () => {
-  const f = fixture({joinMuted: false});
+test('joining a voice channel opens its call muted, every time, and asks the browser for nothing', async () => {
+  const f = fixture();
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.deepEqual(f.opened, ['standup'], 'nobody has to start the call first');
-  assert.deepEqual(f.operations[0], ['join', CALL, {muted: false}]);
+  assert.deepEqual(f.operations[0], ['join', CALL, {muted: true}]);
   Object.assign(f.state, {phase: 'live', canPublish: true});
-  await f.controls.execute(f.request({op: 'set_muted', muted: true}));
-  assert.equal(f.preferences.joinMuted(), true);
+  await f.controls.execute(f.request({op: 'set_muted', muted: false}));
   await f.controls.execute(f.request({op: 'leave'}));
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.deepEqual(f.operations.at(-1), ['join', CALL, {muted: true}]);
+});
+
+test('a refused microphone answers with the call on, muted, and why', async () => {
+  const f = fixture();
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  Object.assign(f.state, {phase: 'live', canPublish: true});
+  // The call refuses as voice.mjs does: still live, muted, with the reason.
+  f.voice.call.setMuted = async () => { Object.assign(f.state, {muted: true, micIssue: 'permission_denied'}); };
+  const status = await f.controls.execute(f.request({op: 'set_muted', muted: false}));
+  assert.equal(status.state, 'live');
+  assert.equal(status.muted, true);
+  assert.equal(status.capture_active, false);
+  assert.equal(status.issue, 'permission_denied');
 });
 
 test('a voice channel shows who is in its call before joining, each person once', async () => {
@@ -170,15 +203,6 @@ test('a voice channel shows who is in its call before joining, each person once'
   const status = await f.controls.execute(f.request({op: 'status'}));
   assert.deepEqual(status.rosters, [{channel_id: 'voice', people: [ana, ben]}]);
   assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', 'other'), [{channel_id: 'voice', people: [ana]}]);
-});
-
-test('the remembered mute choice lives in the browser storage', () => {
-  const values = new Map();
-  const storage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value)};
-  const preferences = storedCallPreferences(storage);
-  assert.equal(preferences.joinMuted(), false, 'joining has the microphone on by default');
-  preferences.remember(true);
-  assert.equal(storedCallPreferences(storage).joinMuted(), true);
 });
 
 test('a watch answers when someone joins the room\'s call, and holds while nothing changes', async () => {
@@ -224,7 +248,31 @@ test('the camera and a shared screen turn on in a live call from a gesture, and 
   const ben = 'b'.repeat(64);
   f.voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true,
     participants: [{user: ana, camera: true}, {user: ben, screen: true}]}];
-  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}]);
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}], 'muted is written only when someone is');
+  f.voice.calls[0].participants[1].muted = true;
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben], muted: [ben]}]);
+  f.voice.calls[0].participants.push({user: ben});
+  assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].muted, undefined, 'heard on another device: not muted');
+  f.voice.calls[0].participants = [{user: ana, muted: true, deafened: true}, {user: ben, muted: true}];
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, [ana], 'the deafened, among the muted');
+  f.voice.calls[0].participants.push({user: ana, muted: true});
+  assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, undefined, 'hearing on another device: not deafened');
+});
+
+test('deafening is a command of the call: it needs one, and undeafening unmutes only from a gesture', async () => {
+  const f = fixture();
+  const deafens = [];
+  f.voice.call.setDeafened = async (value, options) => { deafens.push([value, options]); f.state.deafened = value; if (value) f.state.muted = true; };
+  await assert.rejects(f.controls.execute(f.request({op: 'set_deafened', deafened: true})), /call/);
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  Object.assign(f.state, {phase: 'live', canPublish: true});
+  const deafened = await f.controls.execute(f.request({op: 'set_deafened', deafened: true}));
+  assert.deepEqual([deafened.deafened, deafened.muted], [true, true]);
+  const heard = await f.controls.execute(f.request({op: 'set_deafened', deafened: false}));
+  assert.equal(heard.deafened, undefined, 'written only when set');
+  const quiet = createVoiceControls({voice: f.voice, room: 'room-1', gesture: () => false});
+  await quiet.execute(f.request({op: 'set_deafened', deafened: false}));
+  assert.deepEqual(deafens.map(([value, {unmute}]) => [value, unmute]), [[true, true], [false, true], [false, false]]);
 });
 
 test('the app says what it shows and collects the pictures as they arrive', async () => {
@@ -247,4 +295,91 @@ test('the app says what it shows and collects the pictures as they arrive', asyn
   assert.equal(answer.pictures.length, 1);
   assert.equal(answer.pictures_cursor, 1);
   assert.equal(answer.state, 'live');
+});
+
+test('a bridged call names the people it carries in as guests, never as the bridge\'s person', async () => {
+  const f = fixture();
+  const ana = 'a'.repeat(64);
+  const bridge = 'b'.repeat(64);
+  const own = {service: 'discord', account: null, name: 'Tilo', avatar: null, linked: null};
+  const dana = {service: 'discord', account: '80351110224678912', name: 'Dana', avatar: 'd'.repeat(64), linked: null};
+  const ben = {service: 'discord', account: '90351110224678912', name: 'Ben', avatar: null, linked: ana};
+  f.voice.calls = [
+    {app: 'so.tilo.chat', record: '', channel: 'voice', call: CALL, active: true, participants: [
+      {user: ana, device: '1'},
+      {user: bridge, device: '2', bridged: dana},
+      // Muted in Discord: everyone sees it.
+      {user: bridge, device: '2', bridged: ben, muted: true},
+      {user: bridge, device: '2', bridged: own},
+    ]},
+    // The bridge listening on its own, before anyone joins.
+    {app: 'so.tilo.chat', record: '', channel: 'lounge', call: CALL, active: true, participants: [{user: bridge, device: '2', bridged: own}]},
+  ];
+  const status = await f.controls.execute(f.request({op: 'status'}));
+  assert.deepEqual(status.rosters, [
+    {channel_id: 'lounge', people: [], bridges: ['discord']},
+    {channel_id: 'voice', people: [ana], bridges: ['discord'], guests: [
+      {id: 'discord:80351110224678912', name: 'Dana', service: 'discord', avatar: 'd'.repeat(64)},
+      {id: 'discord:90351110224678912', name: 'Ben', service: 'discord', linked: ana, muted: true},
+    ]},
+  ]);
+  assert.equal(callIdOf({user: bridge, bridged: own}), null, 'the bridge itself is nobody in the call');
+});
+
+test('the status names who the call hears talking, people and guests by id', async () => {
+  const f = fixture();
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  const ana = 'a'.repeat(64);
+  const bridge = 'b'.repeat(64);
+  const participants = [
+    {user: ana, self: true, speaking: true},
+    {user: ana, speaking: true},
+    {user: bridge, speaking: true, bridged: {service: 'discord', account: '7', name: 'Dana'}},
+    {user: bridge, speaking: true, bridged: {service: 'discord', account: null, name: 'Tilo'}},
+    {user: 'c'.repeat(64), speaking: false},
+  ];
+  assert.deepEqual(speakingOf(participants), [ana, 'discord:7']);
+  Object.assign(f.state, {phase: 'live', canPublish: true, participants});
+  assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [ana, 'discord:7']);
+  Object.assign(f.state, {phase: 'idle'});
+  assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [], 'nobody talks outside a call');
+});
+
+test('a participant\'s volume reaches this device\'s playback only', async () => {
+  const f = fixture();
+  const volumes = [];
+  f.voice.call.setVolume = (id, gain) => volumes.push([id, gain]);
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  await f.controls.execute(f.request({op: 'set_volume', participant: 'discord:7', percent: 0}));
+  await f.controls.execute(f.request({op: 'set_volume', participant: 'a'.repeat(64), percent: 150}));
+  assert.deepEqual(volumes, [['discord:7', 0], ['a'.repeat(64), 1.5]]);
+});
+
+test('the status names who the call hears talking, so the app can ring them', async () => {
+  const f = fixture();
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  const [ana, ben] = ['a'.repeat(64), 'b'.repeat(64)];
+  Object.assign(f.state, {phase: 'live', canPublish: true, participants: [
+    {namespace: `${CALL}/${'1'.repeat(64)}`, user: ben, self: false, publishes: true, speaking: true},
+    {namespace: `${CALL}/${'2'.repeat(64)}`, user: ana, self: true, publishes: true, speaking: true},
+    {namespace: `${CALL}/${'3'.repeat(64)}`, user: ben, self: false, publishes: true, speaking: true},
+    {namespace: `${CALL}/${'4'.repeat(64)}`, user: 'c'.repeat(64), self: false, publishes: true, speaking: false},
+  ]});
+  const talking = await f.controls.execute(f.request({op: 'status'}));
+  assert.deepEqual(talking.speaking, [ana, ben], 'each person once, sorted');
+  f.state.participants = f.state.participants.map(participant => ({...participant, speaking: false}));
+  const quiet = await f.controls.execute(f.request({op: 'status'}));
+  assert.deepEqual(quiet.speaking, []);
+  assert.notEqual(quiet.revision, talking.revision, 'a held watch wakes when who talks changes');
+});
+
+test('a browser that cannot carry calls is told so when it joins, and opens no call', async () => {
+  const f = fixture();
+  f.voice.call.unsupported = () => 'WebTransport is unavailable';
+  const answer = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  assert.equal(answer.state, 'ended');
+  assert.equal(answer.issue, 'unsupported');
+  assert.deepEqual(f.opened, []);
+  assert.deepEqual(f.operations, []);
+  assert.equal(endedIssue({admitted: false, unsupported: true, reason: 'WebTransport is unavailable'}), 'unsupported');
 });

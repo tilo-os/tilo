@@ -251,7 +251,8 @@ fn the_editor_roots_its_server_at_a_real_directory() {
     let missing = d.path().join("nope");
     let err = LspClient::start(Language::Rust, &missing)
         .err()
-        .expect("a path that is not a directory must be refused");
+        .expect("a path that is not a directory must be refused")
+        .to_string();
     assert!(err.contains("not a directory"), "got: {err}");
 
     // And a real one produces a real `file://` URI for its workspace root.
@@ -259,5 +260,35 @@ fn the_editor_roots_its_server_at_a_real_directory() {
     assert_eq!(
         std::fs::canonicalize(url::Url::parse(&uri).unwrap().to_file_path().unwrap()).unwrap(),
         std::fs::canonicalize(d.path()).unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_server_installed_in_the_persons_cargo_folder_is_found_and_starts() {
+    use code_editor::lsp::LspFailure;
+    use std::os::unix::fs::PermissionsExt;
+    use tilo_process::tools::ToolDirs;
+
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join(".cargo/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let server = bin.join("rust-analyzer");
+    std::fs::write(&server, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let nowhere = std::ffi::OsString::new();
+
+    let with_home = ToolDirs::of(Some(&nowhere), Some(home.path()), None);
+    let client = LspClient::start_with(Language::Rust, project.path(), &with_home)
+        .expect("the server in ~/.cargo/bin starts");
+    assert_eq!(client.server_name(), "rust-analyzer");
+
+    let without = ToolDirs::of(Some(&nowhere), None, None);
+    assert_eq!(
+        LspClient::start_with(Language::Rust, project.path(), &without).err(),
+        Some(LspFailure::NotInstalled {
+            server: "rust-analyzer".into()
+        })
     );
 }

@@ -1,4 +1,3 @@
-//! Signed joins and real RPC publication exercise both broker response paths.
 #![expect(
     clippy::future_not_send,
     reason = "real Cap'n Proto connections and the broker registry run on the test LocalSet"
@@ -70,6 +69,7 @@ impl Connection {
         let peer = state.next_peer_id();
         let service: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
             worker: None,
+            app_worker: None,
             state: state.clone(),
             directories: directories.clone(),
             peer_id: peer,
@@ -79,6 +79,7 @@ impl Connection {
                 directories: directories.clone(),
                 peer_id: peer,
             }),
+            holds: route_holds::ConnectionHolds::default(),
         });
         let (server, client) = tokio::net::UnixStream::pair().unwrap();
         let driver =
@@ -311,7 +312,7 @@ async fn bridge_query(
             ..CatalogueQuery::default()
         },
     );
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tilo_test_env::within("the directory disclosure", async {
         loop {
             state.drain_action_directory_bridge(directories);
             match pending.poll_ready() {
@@ -322,7 +323,6 @@ async fn bridge_query(
         }
     })
     .await
-    .unwrap()
 }
 
 struct Fixture {
@@ -352,7 +352,7 @@ impl Fixture {
         workspace.admit(viewer.id(), CapRole::Viewer);
         let route = CrdtRoute::record(
             "so.tilo.directory-test",
-            workspace.room.to_string(),
+            workspace.room().to_string(),
             "record",
         );
         let mut tree = crate::test_support::WorkspaceTree::default();

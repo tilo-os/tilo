@@ -71,7 +71,6 @@ mod tests {
 
     #[test]
     fn suggestions_are_near_bounded_ranked_and_case_insensitive() {
-        // Phase `suggests_the_for_teh`.
         {
             let d = Dictionary::from_words(["the", "they", "then", "tea", "hen"]);
             let s = suggest(&d, "teh", 5);
@@ -79,31 +78,26 @@ mod tests {
             // "the" (transposition, dist 1) should outrank longer dist-1/2 words.
             assert_eq!(s.first().map(String::as_str), Some("the"));
         }
-        // Phase `empty_inputs`.
         {
             let d = Dictionary::from_words(["word"]);
             assert!(suggest(&d, "", 5).is_empty());
             assert!(suggest(&d, "word", 0).is_empty());
         }
-        // Phase `does_not_suggest_itself`.
         {
             let d = Dictionary::from_words(["hello", "hella", "hullo"]);
             let s = suggest(&d, "hello", 5);
             assert!(!s.contains(&"hello".to_string()));
         }
-        // Phase `respects_max`.
         {
             let d = Dictionary::from_words(["cat", "bat", "rat", "hat", "mat", "pat"]);
             let s = suggest(&d, "cat", 3);
             assert_eq!(s.len(), 3);
         }
-        // Phase `far_words_excluded`.
         {
             let d = Dictionary::from_words(["cat", "elephant"]);
             let s = suggest(&d, "cot", 5);
             assert_eq!(s, vec!["cat".to_string()]);
         }
-        // Phase `case_insensitive_query`.
         {
             let d = Dictionary::from_words(["world"]);
             let s = suggest(&d, "Wrold", 5);

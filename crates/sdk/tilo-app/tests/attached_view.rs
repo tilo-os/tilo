@@ -268,3 +268,69 @@ fn a_grant_of_one_action_reaches_that_action_only() {
     );
     assert_eq!(count(&view), 1);
 }
+
+/// A bench whose view sits whoever opens it down: the mistake the attached
+/// view refuses in a record its participant joined.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Bench {
+    pub seated: i64,
+}
+
+#[resource(kind = "test.bench", label = "Bench")]
+impl Bench {
+    /// Sit down.
+    #[action]
+    pub fn sit(&mut self) {
+        self.seated = self.seated.saturating_add(1);
+    }
+}
+
+pub struct BenchApp;
+
+impl ResourceApp for BenchApp {
+    type Resource = Bench;
+    const ID: &'static str = "so.tilo.test-bench";
+    const TITLE: &'static str = "Bench";
+
+    fn view(cx: &mut ViewCx<Bench>) -> Element {
+        cx.dispatcher().submit(Bench::SIT.invoke());
+        Box::new(cx.button("Sit", Bench::SIT.invoke()))
+    }
+
+    fn label(_: &Bench) -> String {
+        "Bench".into()
+    }
+}
+
+/// Only a record's creator writes its initial content: a view that writes
+/// as it opens a record its participant joined is refused, naming the app,
+/// instead of keeping a change no peer would ever be sent.
+#[test]
+fn a_view_that_writes_as_it_opens_a_joined_record_is_refused() {
+    let app = TestApp::<BenchApp>::new().unwrap();
+    let definition = definition::<BenchApp>();
+    let open = |created| {
+        AttachedView::open(
+            definition,
+            "test-workspace",
+            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            app.read_document(|doc| doc.clone().save()),
+            AGENT,
+            PermissionContext::permissive(),
+            created,
+        )
+    };
+    let Err(refusal) = open(false) else {
+        panic!("a joined bench opened although its view sat the agent down");
+    };
+    assert!(refusal.contains(BenchApp::ID), "{refusal}");
+    assert!(refusal.contains("`sit`"), "{refusal}");
+    assert!(refusal.contains("joined"), "{refusal}");
+
+    // The record's creator writes what it starts with.
+    assert!(open(true).is_ok());
+
+    // A view that writes nothing on open joins as before.
+    let tally = TestApp::<TallyApp>::new().unwrap();
+    assert!(attached(&tally, writer()).take_changes().is_none());
+}

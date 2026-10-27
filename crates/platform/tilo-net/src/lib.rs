@@ -9,17 +9,15 @@
 //!   page, where the browser's cross-origin rules (CORS) apply. A host may
 //!   provide a same-origin [`proxy`] that relays cross-origin requests for
 //!   apps that opt in.
-//! - [`ws`]: WebSocket clients. tokio-websockets on the desktop, the page's
+//! - `ws`: WebSocket clients. tokio-websockets on the desktop, the page's
 //!   `WebSocket` on the web.
-//! - [`webtransport`]: WebTransport sessions with bidirectional and
+//! - `webtransport`: WebTransport sessions with bidirectional and
 //!   unidirectional streams and datagrams. web-transport-quinn on the
 //!   desktop, the browser's `WebTransport` where it has one.
 //! - [`status`]: whether the device is online, and whether the connection is
 //!   metered.
-//! - [`sockets`]: raw TCP, UDP and TLS over TCP. Desktop only; every call
+//! - `sockets`: raw TCP, UDP and TLS over TCP. Desktop only; every call
 //!   answers [`Unsupported`] in a page.
-//! - [`p2p`]: peer-to-peer frame streams between endpoints that dial each
-//!   other by ticket. iroh QUIC on the desktop; [`Unsupported`] in a page.
 //!
 //! What a target cannot provide is an [`Unsupported`] error at run time and an
 //! entry of its [`Feature`]'s targets, never a missing item.
@@ -37,8 +35,6 @@ mod caps;
 #[cfg(feature = "http")]
 mod client;
 mod error;
-#[cfg(feature = "p2p")]
-pub mod p2p;
 pub mod proxy;
 #[cfg(feature = "sockets")]
 pub mod sockets;
@@ -96,11 +92,6 @@ mod send_check {
 
     fn status(watch: &mut crate::status::Watch) {
         send(&watch.changed());
-    }
-
-    #[cfg(feature = "p2p")]
-    fn p2p() {
-        send(&crate::p2p::Endpoint::bind(b"", 1, 1, |_| Some(())));
     }
 }
 

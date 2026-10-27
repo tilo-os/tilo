@@ -51,15 +51,20 @@ impl ShellNetwork {
             | NeighbourMsg::ScrollbackResponse { .. }
             | NeighbourMsg::RecordContentWant { .. }
             | NeighbourMsg::RecordContentPiece { .. }
+            | NeighbourMsg::RecordContentLacks { .. }
             // A viewer asking for a keyframe of a stream it receives; the
             // owner checks it is one.
             | NeighbourMsg::SurfaceKeyframeRequest { .. }
+            // A member saying which of the receiver's windows it views: it
+            // may see the room's windows, and is streamed them read only.
+            | NeighbourMsg::SurfaceViewRequest { .. }
             // Ephemeral presence and liveness of a member who can see the
             // room; nothing is written to room state.
             | NeighbourMsg::PresenceMoved { .. }
             | NeighbourMsg::PresenceCleared { .. }
             | NeighbourMsg::Heartbeat { .. }
             | NeighbourMsg::AppPresenceV2 { .. }
+            | NeighbourMsg::LivePresence { .. }
             // The sender's own device certificate, which only the room
             // governor may promote into governance.
             | NeighbourMsg::IdentityAnnouncementV2 { .. }
@@ -80,6 +85,7 @@ impl ShellNetwork {
             | NeighbourMsg::PersonalContinuityRequest { .. }
             | NeighbourMsg::PersonalContinuityCheckpoint { .. }
             | NeighbourMsg::PersonalWorkspaces { .. }
+            | NeighbourMsg::RoomArchive { .. }
             // Retired generations, refused where they enter
             // (`NeighbourMsg::is_retired`).
             | NeighbourMsg::IdentityAnnouncement { .. }

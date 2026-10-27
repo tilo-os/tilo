@@ -1,10 +1,19 @@
 mod action_directory_identity;
+mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
+pub use disclosing::{Disclosing, Placement, event_offset};
+pub(crate) use disclosing::{
+    Ghosts, KeptBand, content_box, follower_shifts, place_bands, route_to_shifted_children,
+};
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
+pub use resource_operation::resource_operation_handlers;
 pub(crate) use resource_operation::start_without_document_writes;
-pub(crate) use resource_operation::{ResourceOperation, ResourceOperationStart, start_in_children};
+pub(crate) use resource_operation::{
+    ResourceOperation, ResourceOperationStart, ResourceOperations,
+    local_resource_operation_handlers, poll_resource_operation, start_in_children, start_operation,
+};
 
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -107,6 +116,19 @@ impl ControlBindingMetadata {
 pub fn semantic_action_bindings(
     semantics: Option<crate::a11y::AccessNode>,
 ) -> Vec<ControlBindingMetadata> {
+    let mut bindings = Vec::new();
+    if let Some(semantics) = semantics {
+        semantic_action_bindings_into(&semantics, &mut bindings);
+    }
+    bindings
+}
+
+/// [`semantic_action_bindings`] of `node`, appended to `out`: read in place,
+/// so a widget's kept rows are listed without copying them.
+pub(crate) fn semantic_action_bindings_into(
+    node: &crate::a11y::AccessNode,
+    out: &mut Vec<ControlBindingMetadata>,
+) {
     fn is_effect_role(role: crate::a11y::Role) -> bool {
         use crate::a11y::Role;
         matches!(
@@ -125,22 +147,38 @@ pub fn semantic_action_bindings(
         )
     }
 
-    fn visit(node: &crate::a11y::AccessNode, out: &mut Vec<ControlBindingMetadata>) {
-        if is_effect_role(node.role)
-            && let Some(target) = &node.action_target
-        {
-            out.push(ControlBindingMetadata::semantic(target.clone()));
-        }
-        for child in &node.children {
-            visit(child, out);
-        }
+    if is_effect_role(node.role)
+        && let Some(target) = &node.action_target
+    {
+        out.push(ControlBindingMetadata::semantic(target.clone()));
     }
+    for child in &node.children {
+        semantic_action_bindings_into(child, out);
+    }
+}
 
-    let mut bindings = Vec::new();
-    if let Some(semantics) = semantics {
-        visit(&semantics, &mut bindings);
+/// How readily `widget` takes the keyboard when its app does without a
+/// control of its own choosing (brought forward on the desktop, or used
+/// from the window's bar): its default keyboard control first (`Some(0)`),
+/// else one that takes typing, a field, an editor or a terminal
+/// (`Some(1)`). Never a button merely for being first (`None`): Enter
+/// would press it.
+pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
+    if widget.is_default_keyboard_focus() {
+        return Some(0);
     }
-    bindings
+    widget
+        .accessibility()
+        .is_some_and(|access| {
+            matches!(
+                access.role,
+                crate::a11y::Role::TextInput
+                    | crate::a11y::Role::MultilineTextInput
+                    | crate::a11y::Role::Document
+                    | crate::a11y::Role::Terminal
+            )
+        })
+        .then_some(1)
 }
 
 /// A laid-out box placed at `origin`, in absolute coordinates.
@@ -312,6 +350,10 @@ pub fn route_to_children(
 
 /// Draw `child` unless what it paints misses the viewport. Off-viewport
 /// widgets stay dirty, so they re-emit when scrolled back in.
+///
+/// A widget ends every layer it begins: the render service refuses a scene
+/// that leaves a clip open, and with it the whole frame. Debug builds check
+/// that here, naming the widget, so a test that draws it fails.
 pub fn draw_child(
     child: &mut (impl Widget + ?Sized),
     scene: &mut Scene,
@@ -321,7 +363,16 @@ pub fn draw_child(
     presence: &PresenceCtx,
 ) {
     if !presence.should_cull(child.paint_bounds()) {
+        #[cfg(debug_assertions)]
+        let open = scene.encoding().n_open_clips;
         child.draw(scene, transform, text_renderer, theme, presence);
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            scene.encoding().n_open_clips,
+            open,
+            "{} left a layer open (or ended one it did not begin) in its draw",
+            child.concrete_type_name()
+        );
     }
 }
 
@@ -782,6 +833,12 @@ pub enum StructureChange {
     /// Nothing was inserted or removed.
     #[default]
     None,
+    /// The widgets that reported it mount and unmount children of their own,
+    /// and every widget stays alive: they carry it out in the retained tree,
+    /// in place ([`Widget::remount_children`]), and their own damage this
+    /// frame covers every pixel that changed with it. A host that cannot
+    /// rebuilds its tree, as for [`Self::Described`].
+    Children,
     /// The host rebuilds its tree, but the frame's damage still describes it:
     /// the widget that reported it replaced only widgets of its own, and its
     /// own damage this frame covers every pixel that changed with them.
@@ -798,7 +855,8 @@ impl StructureChange {
         if dirty { Self::Rebuild } else { Self::None }
     }
 
-    /// Whether the host rebuilds its tree for it.
+    /// Whether the host rebuilds its tree for it, or (for
+    /// [`Self::Children`]) changes it in place.
     #[must_use]
     pub fn rebuilds(self) -> bool {
         self != Self::None
@@ -809,13 +867,24 @@ impl StructureChange {
     pub fn join(self, other: Self) -> Self {
         self.max(other)
     }
+
+    /// Every one of `children`'s changes, joined: for a container that adds
+    /// no structure of its own, so a change a child carries out in place
+    /// ([`Self::Children`]) stays one. Each child's change is taken, none
+    /// skipped.
+    #[must_use]
+    pub fn of_children(children: Vec<&mut (dyn Widget + '_)>) -> Self {
+        children.into_iter().fold(Self::None, |change, child| {
+            change.join(child.take_structure_change())
+        })
+    }
 }
 
 /// Optional cross-device continuation capability for an app root.
 ///
 /// Continuation is deliberately separate from [`Widget`]: ordinary controls
 /// have no resumable app state, while roots that do can expose this capability
-/// through [`Widget::continuable`] without weakening their UI integration.
+/// through [`Widget::provide`] without weakening their UI integration.
 pub trait Continuable {
     /// Return a compact, path-free projection of state that may be resumed on
     /// another device owned by the same person.
@@ -1172,6 +1241,23 @@ pub(crate) fn take_view_only_pan() -> bool {
     VIEW_ONLY_PAN.with(|pan| pan.replace(false))
 }
 
+thread_local! {
+    static PLACEMENT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From a widget's `update`: it moved what it lays out with no input asking
+/// (a glide, a jump in progress, a give springing back), so its children
+/// stand where the last layout put them. The host places its widgets again
+/// in the frame; it is no change of the model, and nothing syncs.
+pub fn note_placement_moved() {
+    PLACEMENT_MOVED.with(|moved| moved.set(true));
+}
+
+/// Whether [`note_placement_moved`] ran since the last call, clearing it.
+pub(crate) fn take_placement_moved() -> bool {
+    PLACEMENT_MOVED.with(|moved| moved.replace(false))
+}
+
 /// Host services associated with one retained widget event dispatch.
 pub struct EventCtx<'a> {
     pub scale_factor: f64,
@@ -1237,7 +1323,7 @@ impl EventCtx<'_> {
 pub struct ParticipantPresence {
     pub participant: tilo_actions::ParticipantId,
     /// Name to show beside the caret, when the host set one
-    /// ([`Widget::set_participant_label`]).
+    /// ([`crate::collaboration::participants::Participants::set_participant_label`]).
     pub label: Option<String>,
     pub key: PresenceKey,
     pub payload: crate::collaboration::PresencePayload,
@@ -1326,7 +1412,7 @@ pub trait Widget {
     /// runner's outer State. This is a compatibility check, never identity
     /// or authority for history access or restore.
     ///
-    /// A [`Self::record_intent`] alone does not qualify: the runner (or the
+    /// A [`crate::record::capability::RecordScoped::record_intent`] alone does not qualify: the runner (or the
     /// enclosing [`TileHost`], which reports its own binding) checks that
     /// record out as the very State this widget reads.
     fn has_separate_document_owner(&self) -> bool {
@@ -1474,6 +1560,7 @@ pub trait Widget {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId;
+
     fn measure(
         &mut self,
         _known: taffy::Size<Option<f32>>,
@@ -1547,36 +1634,45 @@ pub trait Widget {
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         defaults::for_each_child(self.children(), visitor);
     }
+    /// The children of [`Self::for_each_child`] that may paint inside the
+    /// [`layout_clip`] in effect: what a scroll view's damage and its copy
+    /// plan need to look at. Every child by default; a long column visits
+    /// only those near the clip, so a frame of a scroll costs what is shown,
+    /// not what the column holds.
+    fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        self.for_each_child(visitor);
+    }
+    /// Every child this widget's [`Self::build_layout`] gives a layout node,
+    /// also those [`Self::for_each_child`] keeps from routing (a hidden
+    /// pane, a title, a spacer). A retained layout is checked against this
+    /// walk before it is called through again, so a widget that replaced a
+    /// child without reporting it gets a new layout instead of a call into
+    /// freed memory. A child missing here cannot be checked, so debug builds
+    /// stop on it. A wrapper that stands for its inner widget's node visits
+    /// the inner widget itself.
+    ///
+    /// Returns whether it listed them; the default lists none and returns
+    /// `false`, so the walk uses [`Self::for_each_child`]. (A constant
+    /// default is one shared function, not one copy per widget type.)
+    fn for_each_layout_child(&self, _visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        false
+    }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![]
     }
 
-    /// Effect/view operation type ids this widget can actually dispatch.
-    ///
-    /// Implementors of [`Self::start_operation`] must list their locally
-    /// handled types here, beside it. The host combines these declarations
-    /// across the retained tree and refuses to publish an action whose type has
-    /// no handler, preventing a catalogue entry that can only fail at runtime.
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        if crate::undo::has_deferred_local_history(self) {
-            &[crate::undo::EDIT_OPERATION]
-        } else {
-            &[]
-        }
-    }
-
-    fn resource_operation_handlers(&self) -> HashSet<String> {
-        defaults::resource_operation_handlers(
-            self.local_resource_operation_handlers(),
-            self.semantic_readers(),
-            &|visit| self.for_each_child(visit),
-        )
-    }
     fn name(&self) -> &str;
     /// Stable id for the e2e test harness; `None` falls back to a path-based
     /// key. Must be unique across the live tree — the registry resolves on
     /// first match, so a duplicate shadows the second occurrence.
     fn test_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// This control as an action of the window's bar, sent back as `id`
+    /// ([`crate::window_toolbar::ToolbarAction`]): a button's icon and name.
+    /// `None` for anything that is not a button.
+    fn window_slot(&self, _id: String) -> Option<crate::window_toolbar::ToolbarAction> {
         None
     }
 
@@ -1589,6 +1685,14 @@ pub trait Widget {
     }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
+    }
+
+    /// Whether this widget is the one at `address`, or stands in the tree
+    /// for it: a [`Decorator`] stands for every widget it wraps, so a
+    /// scroller drawn inside one is found where the decorator is
+    /// ([`crate::scroll_copy::offer`]).
+    fn stands_for(&self, address: *const ()) -> bool {
+        std::ptr::from_ref(self).cast::<()>() == address
     }
 
     /// Context that should remain visible with a focused descendant, such
@@ -1665,6 +1769,24 @@ pub trait Widget {
     /// need not forward it.
     fn claims_raw_touch(&self, _point: vello::kurbo::Point) -> bool {
         false
+    }
+
+    /// What a one-finger contact that begins at `point` (logical coords)
+    /// means here, when a drag moves something rather than scrolling.
+    ///
+    /// [`TouchClaim::Drag`](crate::interaction::TouchClaim::Drag) where a
+    /// drag moves things at once (a canvas whose items are dragged, words
+    /// selected by dragging): past a tap's slop the contact is a left press
+    /// where it landed, a move per update and a release where it lifts.
+    /// [`TouchClaim::HoldDrag`](crate::interaction::TouchClaim::HoldDrag)
+    /// where a drag scrolls but a held item can be moved (pages in a list):
+    /// a still hold presses where the finger rests, and a drag after it
+    /// moves the item. Either way a tap still clicks, a hold still reaches
+    /// the context menu, and a second finger still pinches or pans (it
+    /// ends the drag with a release first). Hit-tested like
+    /// [`claims_raw_touch`](Self::claims_raw_touch), which wins over it.
+    fn touch_claim(&self, _point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+        crate::interaction::TouchClaim::Pointer
     }
 
     /// Revealed after a dwell over the widget's rect, via the toolkit's one
@@ -1762,6 +1884,26 @@ pub trait Widget {
         false
     }
 
+    /// Whether Tab and directional focus travel stay inside this subtree
+    /// while no trap holds focus: the content of the focused desktop window,
+    /// so keyboard travel cycles through the app the person is in and never
+    /// wanders onto the desktop's chrome (its bars, menus and window
+    /// titles), which the keyboard reaches through its own shortcuts. Unlike
+    /// [`Self::traps_focus`] it moves no focus when it starts or ends, and
+    /// pointer input is unaffected. Default `false`.
+    fn scopes_keyboard_focus(&self) -> bool {
+        false
+    }
+
+    /// One-shot (reading MUST clear it): the app instance the person just
+    /// brought forward (a window they opened, clicked or switched to), whose
+    /// keyboard focus the host restores, or puts on its default control, so
+    /// what they type next reaches it. Default forwards the first request
+    /// found among the children.
+    fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {
+        defaults::take_app_activation(self.children_mut())
+    }
+
     /// Role, name/description/value, and
     /// [`AccessState`](crate::a11y::AccessState). Default `None` means
     /// presentational: the node is skipped and children reparent onto the
@@ -1785,11 +1927,13 @@ pub trait Widget {
 
     /// Whether [`Self::accessibility`] reports this subtree hidden, for a
     /// host that asks it of every node to prune focus traversal. Widgets
-    /// whose node is costly to build (text values, per-block children) and is
-    /// never hidden answer without building it; any override must agree with
-    /// `accessibility()`.
+    /// whose node is costly to build (text values, per-block children, a
+    /// translated name) answer without building it: the focus walk asks
+    /// every widget in the window on every recomputation. Any override must
+    /// agree with `accessibility()`; debug builds check it in the walk.
     fn accessibility_hidden(&self) -> bool {
-        self.accessibility().is_some_and(|node| node.state.hidden)
+        self.accessibility_root()
+            .is_some_and(|node| node.state.hidden)
     }
 
     /// [`Self::accessibility`]'s own node with its `children` left empty:
@@ -1849,6 +1993,15 @@ pub trait Widget {
     /// for that child; assistive technology then sees one copy, not two.
     fn accessibility_represents_child(&self, _child_index: usize) -> bool {
         false
+    }
+
+    /// What describes one retained [`children`](Widget::children) entry to
+    /// assistive technology, when this widget holds the words for it: a
+    /// row's secondary line is its trailing switch's description. The
+    /// bridge sets it as that child's node's description unless the child
+    /// describes itself.
+    fn accessibility_child_description(&self, _child_index: usize) -> Option<String> {
+        None
     }
 
     /// Perform an accessibility [`Action`](crate::a11y::Action) on this
@@ -1930,6 +2083,18 @@ pub trait Widget {
         })
     }
 
+    /// Ordinary input-method commits (a composing keyboard IME, the on-screen
+    /// keyboard) cannot reach this field: its text arrives only through
+    /// deferred receipts (a browser page field), so hosts keep standard text
+    /// input closed outside a dictation session. A field that needs deferred
+    /// receipts for dictation but turns an ordinary commit into its own
+    /// acknowledged edit (Terminal's native editor) does not refuse them.
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        defaults::ime_refuses_ordinary_commits(self.ime_cursor_rect(), &|visit| {
+            self.for_each_child(visit);
+        })
+    }
+
     /// Begin one bounded deferred session after explicit host consent, preserving
     /// the existing original-field fingerprint. This grants no microphone access.
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
@@ -1982,19 +2147,34 @@ pub trait Widget {
         })
     }
 
-    /// Default `true`; the exception is a widget standing in for a process
-    /// that has started but not drawn. Must **latch**: once `true`, never
-    /// `false` again for the same content, or an un-presenting widget would
-    /// make a window vanish mid-resize. What shows meanwhile is decided by
-    /// [`Widget::opening`].
+    /// Default `true`; the exception is a widget standing in for a window's
+    /// content whose first frame is not drawn yet (a process that has started
+    /// but not drawn, a stream from another device before its first picture).
+    /// Must **latch**: once `true`, never `false` again for the same content,
+    /// or an un-presenting widget would make a window vanish mid-resize. What
+    /// shows meanwhile is the framework's ([`crate::arriving`]), timed from
+    /// [`Widget::arrives_from`].
     fn presented(&self) -> bool {
         true
     }
-    /// True once waiting long enough, while not yet
-    /// [`presented`](Widget::presented), that showing nothing would read as
-    /// broken. Delayed so a fast open never flashes an indicator.
-    fn opening(&self) -> bool {
-        false
+    /// Where this content's first frame comes from while it has not
+    /// [`presented`](Widget::presented): this device (an app starting here),
+    /// another device or a host. A frame from this device may hold the
+    /// window's first frame up to one frame budget; any other reserves the
+    /// window's place and says where it comes from after a while.
+    fn arrives_from(&self) -> crate::arriving::Source {
+        crate::arriving::Source::Local
+    }
+    /// How much of what this content's first frame waits on has come, when
+    /// that measures itself (its app downloaded before it starts).
+    fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+        None
+    }
+    /// The shape this content declares for the placeholder standing in for
+    /// its first frame. Undeclared, the placeholder is the ground alone:
+    /// nothing guesses what a window will show.
+    fn arrival_shape(&self) -> crate::widget::SkeletonShape {
+        crate::widget::SkeletonShape::Ground
     }
 
     /// `(caret_byte, text)`, byte offset on a char boundary. The host diffs
@@ -2051,11 +2231,11 @@ pub trait Widget {
         defaults::take_accessibility_request(self.children_mut())
     }
 
-    /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
+    /// Route history when this widget, or one it contains, is a [`Router`].
     ///
     /// Dev reload writes this beside the document so the same screen is showing
     /// after the process is replaced. Containers forward to the first child
-    /// that has one. A [`Router`](router::Router) reports its own stack and
+    /// that has one. A [`Router`] reports its own stack and
     /// does not look inside the current screen.
     fn dev_route(&self) -> Option<router::RouteSnapshot> {
         defaults::dev_route(self.children())
@@ -2106,69 +2286,6 @@ pub trait Widget {
         false
     }
 
-    /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
-    /// control dispatches the same [`tilo_actions`] action its
-    /// [`ActionSpec`](tilo_actions::ActionSpec) exports, it reports the
-    /// document heads captured **just before** here, so the host can record
-    /// one undo boundary the same way a palette dispatch does. Rising-edge:
-    /// reading MUST clear it.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        None
-    }
-
-    /// Whether the undo step this widget's last reported boundary opened
-    /// stays open for the actions that continue it — the rest of a word
-    /// typed a keystroke at a time. A hosted component then closes the step
-    /// at the widget's next boundary, or before an undo, a save or a merge,
-    /// instead of after this event. Answered by the widget itself, never its
-    /// children.
-    fn keeps_undo_step_open(&self) -> bool {
-        false
-    }
-
-    /// Host → widget: the live state of the undo history, published once per
-    /// frame to every laid-out widget.
-    ///
-    /// A widget receives a read-only document or an [`Edits`] action loan, which carries the
-    /// document but not its history — so without this a control could not tell
-    /// whether there was anything to undo, and every app was reduced to
-    /// printing the shortcut and hoping. Store the status (embed an
-    /// [`UndoAccess`](crate::undo::UndoAccess)) and read it back in `draw`, in
-    /// [`is_enabled`](Widget::is_enabled), and in
-    /// [`accessibility`](Widget::accessibility) — which only gets `&self`, and
-    /// is exactly where the disabled state must be reflected.
-    ///
-    /// The host sweeps its `node_map`, so this reaches a widget at any depth
-    /// with no container forwarding. Call the provider only when the widget
-    /// consumes status; deriving historical summaries can require a document
-    /// diff. Default: ignore the provider without evaluating it.
-    fn set_undo_status(&mut self, _status: &mut dyn FnMut() -> crate::undo::UndoStatus) {}
-
-    /// Widget → host: an undo or redo the user asked for.
-    ///
-    /// The host drains this after each event and performs it through
-    /// `App::perform_undo` /
-    /// `App::perform_redo` — the same methods
-    /// the Ctrl+Z key handler calls, so a button and the shortcut are one
-    /// implementation and cannot drift.
-    ///
-    /// Rising-edge: reading MUST clear it, so one activation is one undo.
-    /// Default: nothing requested.
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        None
-    }
-
-    /// Offer a host keyboard undo/redo shortcut to focused widget-local
-    /// history before the application document consumes it.
-    ///
-    /// The default recursively asks retained children. A component with its
-    /// own editing history should return `true` only while focus is inside
-    /// that component and it has consumed the request. Returning `false`
-    /// preserves the standard collaboration-safe document undo behavior.
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        defaults::handle_local_undo_request(self.children_mut(), request)
-    }
-
     /// Apply an action another app in this room published, if this app owns
     /// the document — lets an app address a document it doesn't hold by
     /// saying what should happen instead of writing bytes directly, keeping
@@ -2183,76 +2300,39 @@ pub trait Widget {
         false
     }
 
-    /// Admit an exported effect or view operation: the one entry every
-    /// handler implements. Document operations never enter it.
-    ///
-    /// Return `Ok(None)` to decline so routing continues;
-    /// [`ResourceOperationStart::Completed`] with the output the action's
-    /// `ActionContract` promises when the work is done on return; or
-    /// [`ResourceOperationStart::Accepted`] for work that later reports
-    /// through [`Self::poll_resource_operation`]. Declare every handled type
-    /// in [`Self::local_resource_operation_handlers`].
-    ///
-    /// Read the operation through [`ResourceOperation::unscoped`] unless the
-    /// handler honours a required invocation's custody; a custody-aware
-    /// handler reads it through [`ResourceOperation::with_custody`], retains
-    /// the scope with any job it starts and uses its checked callbacks at each
-    /// later effect or document mutation. Hand operations a widget does not
-    /// own to [`start_in_children`], which is also the default.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error.
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = crate::undo::start_local_history(self, op)? {
-            return Ok(Some(started));
-        }
-        start_in_children(self, op, doc, path)
-    }
-
-    /// Inert immutable-reader registrations owned by this actual widget.
-    /// Registration alone supplies no qualified owner frame or disclosure.
-    fn semantic_readers(
-        &self,
-    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
-        &[]
-    }
-
-    /// Poll one admitted operation without blocking the UI thread.
-    ///
-    /// `cancellation_requested` is a cooperative signal from the action
-    /// broker. Cancellable handlers should stop at a safe boundary and return
-    /// `Cancelled`; non-cancellable handlers may ignore it. The default
-    /// recursively polls retained children.
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(update) =
-            crate::undo::poll_local_history(self, invocation, cancellation_requested)
-        {
-            return Some(update);
-        }
-        defaults::poll_resource_operation(
-            self.children_mut(),
-            invocation,
-            cancellation_requested,
-            doc,
-            path,
-        )
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         false
     }
+
+    /// While this widget is a band on its way in or out
+    /// (`motion::Disclosure`: an in-window banner arriving or leaving), or a
+    /// content-sized container one moves in, how far what follows it is
+    /// drawn from where it is laid out. A moving band stands out of the
+    /// layout; its container places it ([`Self::place_disclosing`]) and
+    /// draws the widgets after it lower by transform, so they move with the
+    /// band's edge instead of being laid out again every frame. `None` at
+    /// rest (the default).
+    fn disclosing(&self) -> Option<Disclosing> {
+        None
+    }
+
+    /// Where a band on its way ([`Disclosing::Band`]) stands while it is
+    /// out of the layout: its slot's top and width (`slot`'s height is
+    /// zero), set by its container after each layout.
+    fn place_disclosing(&mut self, _slot: vello::kurbo::Rect) {}
+
+    /// A band that comes and goes (an in-window banner): when its view
+    /// stops building it, its column draws it leaving
+    /// (`widget::Disclosing`). Its column leaves it out of its identity
+    /// across rebuilds.
+    fn is_band(&self) -> bool {
+        false
+    }
+
+    /// Where a band stands in its column, set by the column after each
+    /// layout: what it leaves when dropped, so the column a rebuild makes
+    /// can draw it leaving.
+    fn note_placement(&mut self, _placement: Placement) {}
 
     /// Why this widget itself asks for animation frames, for diagnostics
     /// that name a desktop which keeps painting. `None` when it has nothing
@@ -2273,6 +2353,16 @@ pub trait Widget {
     /// for filesystem/status polling rather than animation.
     fn next_wake_deadline(&self) -> Option<Instant> {
         defaults::next_wake_deadline(&|visit| self.for_each_child(visit))
+    }
+
+    /// Until when the frame that would show this subtree waits for data it
+    /// reads from this device ([`crate::arriving`]): a local read that has
+    /// not answered and is still inside its frame budget. The host keeps
+    /// the frame on screen until then, or until the data lands, so the
+    /// person never sees the space empty and then filled. Containers
+    /// forward (the default does).
+    fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        defaults::holds_frame_until(&|visit| self.for_each_child(visit), now)
     }
 
     /// A deadline this subtree asked for ([`Self::next_wake_deadline`]) is
@@ -2316,6 +2406,30 @@ pub trait Widget {
     /// this.
     fn take_structure_change(&mut self) -> StructureChange {
         StructureChange::of(self.take_structure_dirty())
+    }
+
+    /// This widget's own layout node while the widgets under it are laid
+    /// out again in place, in it, by the coming
+    /// [`Self::remount_children`]: it then names none of them through
+    /// [`Self::for_each_layout_child`], and the host lets go of every node
+    /// under this one, as their widgets may be gone. `None` (the default)
+    /// otherwise.
+    #[doc(hidden)]
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        None
+    }
+
+    /// Carry out a [`StructureChange::Children`] this widget or one under it
+    /// reported, in the retained layout tree, through `remount` (see
+    /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
+    /// carried out in place: the host then rebuilds its tree, and the change
+    /// is carried out by [`Self::build_layout`]. A widget reports such a
+    /// change until either has carried it out. The default carries out its
+    /// children's.
+    fn remount_children(&mut self, remount: &mut Remount<'_>) -> bool {
+        self.children_mut()
+            .into_iter()
+            .all(|child| child.remount_children(remount))
     }
 
     /// Work already requested by this view whose completion will replace a
@@ -2903,20 +3017,24 @@ pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
+pub mod remount;
+pub use remount::Remount;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
-    AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
-    insets_xy, layout_clip, text_control_height, with_layout_clip,
+    AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
+    insets_all, insets_xy, layout_clip, placing_again, text_control_height, with_layout_clip,
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
+pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors, focus_ring_reach};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
 mod checkbox;
-pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
+#[cfg(test)]
+mod control_hand_on_tests;
+pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
@@ -2939,9 +3057,12 @@ pub use manual::{
 };
 mod row;
 pub use row::Row;
+mod face_motions;
+pub use face_motions::FaceMotions;
 mod toggle;
 pub use toggle::{
-    Toggle, ToggleColors, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors,
+    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract,
+    toggle_accessibility, toggle_face_colors,
 };
 mod stack;
 pub use stack::Stack;
@@ -2952,17 +3073,23 @@ pub use router::{RouteError, RouteHandle, RouteSnapshot, Router};
 mod document_view;
 pub use document_view::ModelView;
 mod divider;
-pub use divider::{Divider, DividerAxis};
+pub use divider::{Divider, DividerAxis, RuleEdge, paint_rule};
 mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
 mod flap;
 pub use flap::{FlapState, SplitLayout};
+mod bottom_sheet;
+pub use bottom_sheet::{BottomSheet, SheetDetent, SheetFrame, SheetGeometry, SheetInput};
 mod sidebar;
 pub use sidebar::{
     DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
     SidebarSide,
 };
 mod nav_shell;
+/// Remember the sidebar widths of the shells this thread builds in an app's
+/// settings on this device (`nav_shell::memory`).
+#[cfg(feature = "native")]
+pub(crate) use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
 
 /// The narrowest the window `root` lays out still works at
 /// ([`Widget::minimum_window_width`]): the first widget in the tree with an
@@ -2989,21 +3116,22 @@ pub mod window_controls;
 pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
-    ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
-    SidebarPlacement,
+    ContentKind, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
+    NavShell, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
 };
 pub use window_header::{
-    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowBar, WindowBarSlot,
-    WindowHeader, WindowHistory,
+    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
+    StatusAction, WindowBar, WindowBarSlot, WindowHeader, WindowHistory, WindowStatus,
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
+    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavPerson, NavSearchTerm,
+    NavSection,
 };
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
-    DocumentViewport, PAN_SLOP, SmallContentAlign, ViewportState,
+    DocumentViewport, PAN_SLOP, SmallContentAlign, ViewportState, ViewportZoom,
 };
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
@@ -3024,11 +3152,11 @@ pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
 pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
-pub use slider::{Slider, SliderFace};
+pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_readout};
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
-    TextInputKind, paint_preedit_underline,
+    TextInputKind, paint_invalid_edge, paint_preedit_underline,
 };
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
@@ -3053,7 +3181,7 @@ pub mod paint_damage;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
     DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, SlashRequest,
-    TransclusionPreview, legacy_block_id,
+    TransclusionPreview, blocks_from_html, blocks_to_html, legacy_block_id,
 };
 mod filter_menu;
 pub use filter_menu::FilterMenu;
@@ -3083,6 +3211,8 @@ pub use date_indexed_scrollbar::{
     DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexPreview, DateIndexedScrollbar,
     ProjectedDateMarker,
 };
+pub mod board;
+pub use board::{Board, BoardDrop};
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
@@ -3093,8 +3223,7 @@ pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{
-    AppKind, OpeningCardText, TileContent, TileHost, opening_card_spinner, paint_opening_card,
-    record_unavailable_title,
+    AppKind, TileContent, TileHost, hold_windows, record_unavailable_title, release_windows,
 };
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
@@ -3112,16 +3241,21 @@ pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
-pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+pub use context_menu::{
+    ContextMenu, MenuButton, MenuItem, note_shift, shift_held, shift_skips_confirmation,
+};
 mod row_menu;
 pub use primitives::{
     BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
     FactsFace, FloatingPanel, FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint,
-    KeyHints, KeyHintsFace, Surface, SurfaceLevel, TextStack, TextStackFace, paint_surface,
+    KeyHints, KeyHintsFace, Surface, SurfaceLevel, TextStack, TextStackFace, paint_see_through,
+    paint_surface,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
-pub use context_menu_area::{ContextMenuArea, MenuEntry, ask_agent_entry};
+pub use context_menu_area::{ContextMenuArea, MenuEntry};
+mod pacer;
+pub use pacer::Pacer;
 pub(crate) mod block_editor_table;
 pub mod data_table;
 pub mod table {
@@ -3135,15 +3269,22 @@ pub use window_group::{
     WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
     merged_controls_width, min_group_px, permille_for_px,
 };
+pub mod cursor;
 pub mod edge_resize;
 pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
+mod overflow_door;
+pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,
-    TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
+    CrossStripDetach, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan,
+    STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, StripLane, TabDropTarget, WheelJumpAccum,
+    pan_within_canvas, wheel_jump_detents,
 };
+mod finger_path;
+mod strip_deck;
+pub use strip_deck::{StripDeck, StripDeckRelease};
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
 mod workspace_view;
@@ -3154,6 +3295,7 @@ pub mod permission_prompt;
 pub mod toast;
 pub use permission_prompt::{PROMPT_HEIGHT, PermissionPrompt, PromptChoice};
 pub mod file_picker;
+pub mod file_table;
 pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
 pub mod progress_bar;
@@ -3165,7 +3307,7 @@ pub use spinner::Spinner;
 pub mod date_field;
 pub mod date_picker;
 pub use date_field::DateField;
-pub use date_picker::{DatePicker, ExternalDatePickerHit};
+pub use date_picker::{DateFeed, DatePicker, DateShown, ExternalDatePickerHit};
 pub mod time_picker;
 pub mod timeline_density;
 pub use time_picker::{TimePicker, TimeValue};
@@ -3176,6 +3318,10 @@ pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
+pub mod emoji_picker;
+pub use emoji_picker::{EmojiPicker, PickerEvent};
+pub mod reaction_strip;
+pub use reaction_strip::{ReactionStrip, ReactionStripWidget, ReactionToggle, StripHit};
 pub mod modal_dialog;
 pub use modal_dialog::{
     ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
@@ -3188,6 +3334,11 @@ pub use native_view::{
 };
 pub mod modal_prompt;
 pub use modal_prompt::PromptBody;
+pub mod secret_prompt;
+pub use secret_prompt::{
+    FieldRole, FieldSpec, NoticeTone, Presentation, PromptOutcome, SecretAnswer, SecretKind,
+    SecretPrompt,
+};
 pub mod toolbar;
 pub use toolbar::Toolbar;
 pub mod undo_button;
@@ -3200,6 +3351,8 @@ pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
 pub use icon::{IconSize, IconWidget};
+pub mod signal_meter;
+pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
@@ -3277,7 +3430,7 @@ pub use tree_view::{
 };
 pub mod virtual_list;
 pub use virtual_list::{
-    DuplicateListKey, ListEdges, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
+    DuplicateListKey, ListEdges, ListModel, RowSelection, VecListModel, VirtualList,
 };
 mod activation;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
@@ -3290,10 +3443,25 @@ pub mod capture_button;
 pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod transport;
 pub use transport::{TransportControl, TransportFace};
+pub mod media_transport;
+pub use media_transport::{
+    MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
+    TransportState,
+};
+pub mod now_playing;
+pub use now_playing::{Scrub, Song, SongFace};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
+pub mod file_open;
+pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
 pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub mod arrival_failure;
+pub use arrival_failure::{WindowFailure, arrival_failure};
+pub mod arriving_rows;
+pub mod arriving_view;
+pub use arriving_rows::{ArrivingRows, RowFade};
+pub use arriving_view::{ArrivalFace, ArrivingView, NamedOnce, ReservedShape, Showing};
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;
@@ -3303,14 +3471,18 @@ pub use property_list::{
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
-    badge_column_width,
+    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus,
+    RowValue, SwipeAction, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
     Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
     SegmentedTouchResult, ToggleGroup, segment_colors,
 };
+pub mod view_tabs;
+pub use view_tabs::ViewTabs;
+pub mod quick_tile;
+pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
@@ -3319,8 +3491,8 @@ pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
 pub mod find_bar;
 pub use find_bar::{
-    FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable, paint_find_match,
-    with_findable,
+    FindAbilities, FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable,
+    OwnFind, paint_find_match, with_findable,
 };
 pub mod search_field;
 pub use search_field::{
@@ -3328,8 +3500,8 @@ pub use search_field::{
 };
 pub mod window_search;
 pub use window_search::{
-    InPlace, SearchDriver, SearchHandoff, SearchReach, SearchableWindow, WindowSearch,
-    WindowSearchRequest,
+    InPlace, Queryable, SearchDriver, SearchHandoff, SearchReach, SearchableWindow, WindowSearch,
+    WindowSearchRequest, with_queryable,
 };
 pub mod search_results;
 pub use search_results::SearchResultsView;
@@ -3339,6 +3511,13 @@ pub mod banner;
 pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
+pub mod conversation;
+pub use conversation::{
+    AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
+    ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
+    ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
+    DraftBook, ListFace, SavedCopy, UploadProgress,
+};
 pub mod card;
 mod tone;
 pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
@@ -3347,8 +3526,8 @@ mod section;
 pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
 pub mod capture_studio;
 pub use capture_studio::{
-    AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
-    CapturePreview, CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand,
+    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CapturePreview,
+    CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand, RegionAnchor,
     ReplayCommand, ScreenshotCommand, ScreenshotKept, ScreenshotSendDevice, ScreenshotSendTarget,
     SourceMode,
 };
@@ -3357,10 +3536,11 @@ pub mod selection_handles;
 pub use screenshot_markup::{
     MarkupExport, MarkupStroke, MarkupTool, ScreenshotMarkup, ScreenshotMarkupCommand,
 };
-pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
+pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
 pub mod activity_timeline;
 pub mod history;
+pub mod history_face;
 pub mod history_group;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
@@ -3369,6 +3549,7 @@ pub use history::{
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
     hue_to_rgb,
 };
+pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
 pub use collab_types::ArtifactKind;
@@ -3381,242 +3562,8 @@ pub use qr::QrWidget;
 mod a11y_tree_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    struct CollabProbe {
-        events: std::rc::Rc<std::cell::Cell<u32>>,
-        child: Option<Box<dyn Widget>>,
-    }
-
-    impl Collaborative for CollabProbe {
-        fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-            vec![crate::collaboration::CollabRequest::ClearContinuation {
-                app_id: "probe".into(),
-            }]
-        }
-
-        fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
-            self.events.set(self.events.get().saturating_add(1));
-        }
-    }
-
-    impl AudiencePresentationProvider for CollabProbe {
-        fn on_audience_presentation_changed(&mut self, _active: bool) {
-            self.events.set(self.events.get().saturating_add(1));
-        }
-    }
-
-    impl Widget for CollabProbe {
-        crate::provides!(dyn Collaborative, dyn AudiencePresentationProvider);
-
-        fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
-
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            _: &Theme,
-            _: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            taffy.leaf_node(taffy::Style::default())
-        }
-
-        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            let Some(child) = self.child.as_mut() else {
-                return Vec::new();
-            };
-            let child: &mut (dyn Widget + '_) = child.as_mut();
-            vec![child]
-        }
-
-        fn name(&self) -> &'static str {
-            "CollabProbe"
-        }
-    }
-
-    #[test]
-    fn widget_trait_defaults_and_native_input_probe_precedence() {
-        fn ordinary_window_close_defaults_to_immediate_exit() {
-            let mut spacer = Spacer::new();
-            assert_eq!(
-                crate::component_lifecycle::on_window_close_requested(&mut spacer),
-                WindowCloseAdmission::Allow
-            );
-            assert!(!crate::component_lifecycle::take_window_close_intent(
-                &mut spacer
-            ));
-        }
-
-        fn native_input_snapshot_defaults_to_none() {
-            let state = crate::State::new();
-            assert!(
-                Spacer::new()
-                    .native_input_snapshot(&state.doc, &state.root)
-                    .is_none()
-            );
-        }
-
-        fn native_input_snapshot_root_fallback_and_explicit_probe_precedence() {
-            struct Observed(std::rc::Rc<std::cell::Cell<usize>>);
-            impl Widget for Observed {
-                fn native_input_snapshot(
-                    &self,
-                    doc: &crate::widget::AppModel,
-                    path: &crate::widget::ModelPath,
-                ) -> Option<serde_json::Value> {
-                    use automerge::ReadDoc;
-                    let (doc, path) = crate::doc::document_ref(doc, path);
-                    self.0.set(self.0.get() + 1);
-                    Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
-                }
-                fn build_layout(
-                    &mut self,
-                    _: &mut TaffyTree<()>,
-                    _: &Theme,
-                    _: &mut HashMap<NodeId, *mut dyn Widget>,
-                ) -> NodeId {
-                    unreachable!()
-                }
-                fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {
-                    unreachable!()
-                }
-                fn draw(
-                    &mut self,
-                    _: &mut Scene,
-                    _: vello::kurbo::Affine,
-                    _: &mut TextRenderer,
-                    _: &Theme,
-                    _: &PresenceCtx,
-                ) {
-                    unreachable!()
-                }
-                fn handle_event(
-                    &mut self,
-                    _: &WindowEvent,
-                    _ctx: &mut crate::widget::EventCtx<'_>,
-                ) {
-                    unreachable!()
-                }
-                fn name(&self) -> &str {
-                    "Observed"
-                }
-            }
-            use automerge::transaction::Transactable;
-            let mut state = crate::State::new();
-            state
-                .doc
-                .put(&state.root, "fixture", "actual state")
-                .unwrap();
-            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-            let mut app = crate::App::new(state, Box::new(Observed(calls.clone())));
-            assert_eq!(
-                app.native_input_snapshot().unwrap()["keys"],
-                serde_json::json!(["fixture"])
-            );
-            assert_eq!(calls.get(), 1);
-            app.set_native_input_probe(|| serde_json::json!({"explicit": true}));
-            assert_eq!(
-                app.native_input_snapshot().unwrap(),
-                serde_json::json!({"explicit": true})
-            );
-            assert_eq!(
-                calls.get(),
-                1,
-                "explicit probe must suppress root observation"
-            );
-        }
-
-        /// Pinned so a future edit that removes the default blanket-breaks
-        /// every widget impl that hasn't opted into a stable test id.
-        fn widget_test_id_default_is_none() {
-            let s = Spacer::new();
-            assert!(
-                Widget::test_id(&s).is_none(),
-                "default Widget::test_id should be None"
-            );
-        }
-
-        ordinary_window_close_defaults_to_immediate_exit();
-        native_input_snapshot_defaults_to_none();
-        native_input_snapshot_root_fallback_and_explicit_probe_precedence();
-        widget_test_id_default_is_none();
-    }
-
-    #[test]
-    fn widget_capabilities_forward_through_the_tree_and_emitters_stay_bounded() {
-        fn collaboration_capabilities_are_discovered_through_the_widget_tree() {
-            let events = Rc::new(Cell::new(0));
-            let child = CollabProbe {
-                events: Rc::clone(&events),
-                child: None,
-            };
-            let mut root = CollabProbe {
-                events: Rc::clone(&events),
-                child: Some(Box::new(child)),
-            };
-
-            assert_eq!(take_collab_requests(&mut root).len(), 2);
-            handle_collab_event(
-                &mut root,
-                &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
-            );
-            assert_eq!(events.get(), 2);
-        }
-
-        fn audience_presentation_capability_forwards_through_dyn_widget() {
-            let events = Rc::new(Cell::new(0));
-            let mut widget: Box<dyn Widget> = Box::new(CollabProbe {
-                events: Rc::clone(&events),
-                child: None,
-            });
-
-            widget.on_audience_presentation_changed(true);
-            assert_eq!(events.get(), 1);
-        }
-
-        fn action_emitter_backlog_is_bounded_and_keeps_the_newest_intent() {
-            let mut emitter = ActionEmitter::new(test_bool_action_binding());
-            for _ in 0..ACTION_EMITTER_QUEUE_LIMIT.saturating_add(1) {
-                emitter.emit(false).expect("valid boolean intent");
-            }
-            emitter.emit(true).expect("valid boolean intent");
-            let mut count = 0;
-            let mut last = None;
-            while let Some(invocation) = emitter.take() {
-                count += 1;
-                last = invocation.arguments.get("value").cloned();
-            }
-            assert_eq!(count, ACTION_EMITTER_QUEUE_LIMIT);
-            assert_eq!(last, Some(serde_json::Value::Bool(true)));
-        }
-
-        collaboration_capabilities_are_discovered_through_the_widget_tree();
-        audience_presentation_capability_forwards_through_dyn_widget();
-        action_emitter_backlog_is_bounded_and_keeps_the_newest_intent();
-    }
-
-    #[test]
-    fn collaboration_capabilities_visit_parent_and_child_exactly_once() {
-        let events = std::rc::Rc::new(std::cell::Cell::new(0));
-        let child = CollabProbe {
-            events: std::rc::Rc::clone(&events),
-            child: None,
-        };
-        let mut root = CollabProbe {
-            events: std::rc::Rc::clone(&events),
-            child: Some(Box::new(child)),
-        };
-
-        assert_eq!(take_collab_requests(&mut root).len(), 2);
-        handle_collab_event(
-            &mut root,
-            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
-        );
-        assert_eq!(events.get(), 2);
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 pub(crate) mod control_result_probe {
@@ -3687,9 +3634,26 @@ pub(crate) mod control_result_probe {
     impl Widget for Probe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
         );
 
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn name(&self) -> &'static str {
+            "ControlResultProbe"
+        }
+    }
+
+    impl crate::widget::ResourceOperations for Probe {
         fn poll_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -3720,22 +3684,11 @@ pub(crate) mod control_result_probe {
                 }
             })
         }
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            _: &Theme,
-            map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree.new_leaf(taffy::Style::default()).unwrap();
-            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn name(&self) -> &'static str {
-            "ControlResultProbe"
-        }
+
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["test.control-result.run"]
         }
+
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,

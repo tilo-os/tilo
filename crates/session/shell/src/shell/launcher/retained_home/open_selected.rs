@@ -57,14 +57,20 @@ impl Dispatcher {
             return Err(refused());
         }
         *held = Some(observation);
+        drop(held);
         Ok(())
     }
     pub(super) fn track_proof(
         &self,
         proof: super::bootstrap::ProofCustody,
     ) -> io::Result<super::bootstrap::ProofCustody> {
-        let held = self.retirement.lock().map_err(|_| refused())?;
-        let observation = held.as_ref().ok_or_else(refused)?;
+        // Attached once and never replaced: the observation outlives the lock.
+        let observation = self
+            .retirement
+            .lock()
+            .map_err(|_| refused())?
+            .clone()
+            .ok_or_else(refused)?;
         Ok(proof.tracked(observation.track()?))
     }
     pub(super) fn bind(self: &Arc<Self>, launcher: Arc<ExecutingPeer>) -> io::Result<()> {
@@ -85,6 +91,7 @@ impl Dispatcher {
             return Err(io::Error::other("retained consumer registry at capacity"));
         }
         registry.push(Arc::downgrade(self));
+        drop(registry);
         Ok(())
     }
     fn matches(&self, room: &str, peer: &ExecutingPeer) -> io::Result<bool> {
@@ -117,7 +124,7 @@ impl Dispatcher {
     /// successful bootstrap alone does not mean either selected backend exists.
     pub(super) fn query_selected_support(
         &self,
-        request: runtime_collab::open_selected::discovery::QuerySelectedSupport,
+        request: &runtime_collab::open_selected::discovery::QuerySelectedSupport,
         authorize: &dyn Fn() -> Result<(), String>,
         deadline: Instant,
     ) -> io::Result<bool> {
@@ -139,7 +146,7 @@ impl Dispatcher {
             match self.stream.try_lock() {
                 Ok(value) => break value,
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    std::thread::sleep(Duration::from_millis(20))
+                    std::thread::sleep(Duration::from_millis(20));
                 }
                 Err(_) => return Err(refused()),
             }
@@ -164,8 +171,8 @@ impl Dispatcher {
             }
             match reply {
                 RootReply::Unavailable => Ok(false),
-                RootReply::Supported(value) if value.matches(&request, &self.operation) => Ok(true),
-                _ => Err(refused()),
+                RootReply::Supported(value) if value.matches(request, &self.operation) => Ok(true),
+                RootReply::Supported(_) => Err(refused()),
             }
         })();
         if result.is_err() {
@@ -174,18 +181,20 @@ impl Dispatcher {
         }
         result
     }
+    /// Hand root `request` and the selected `objects`; their descriptors
+    /// close once root holds its own.
     fn send(
         &self,
-        request: RootRequest,
+        request: &RootRequest,
         objects: Objects,
-        executing: Arc<ExecutingPeer>,
-        authorize: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-        v2: Option<runtime_collab::open_selected::v2::RootRequest>,
+        executing: &ExecutingPeer,
+        authorize: &(dyn Fn() -> Result<(), String> + Send + Sync),
+        v2: Option<&runtime_collab::open_selected::v2::RootRequest>,
     ) -> io::Result<RootReceipt> {
         if !request.valid()
             || v2
                 .as_ref()
-                .is_some_and(|v| !v.valid() || v.navigation() != request)
+                .is_some_and(|v| !v.valid() || v.navigation() != *request)
         {
             return Err(refused());
         }
@@ -195,17 +204,19 @@ impl Dispatcher {
             })
             .map_err(|_| io::Error::other("selected-open queue at capacity"))?;
         let _slot = QueuedRequest(&self.queued);
-        let deadline = Instant::now() + BUDGET;
+        let deadline = Instant::now()
+            .checked_add(BUDGET)
+            .unwrap_or_else(Instant::now);
         // Waiting for a previous request consumes the same absolute budget.
         let mut stream = loop {
-            self.check(authorize.as_ref())?;
+            self.check(authorize)?;
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             match self.stream.try_lock() {
                 Ok(stream) => break stream,
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    std::thread::sleep(Duration::from_millis(20))
+                    std::thread::sleep(Duration::from_millis(20));
                 }
                 Err(_) => return Err(refused()),
             }
@@ -214,7 +225,7 @@ impl Dispatcher {
             stream.set_read_timeout(Some(BUDGET))?;
             stream.set_write_timeout(Some(BUDGET))?;
             let _fence = IoFence::new(stream.try_clone()?, self.root.cancel.clone(), deadline)?;
-            let bytes = match &v2 {
+            let bytes = match v2 {
                 Some(request) => runtime_collab::open_selected::encode(
                     &runtime_collab::open_selected::v2::RootCommand::OpenSelected(request.clone()),
                 )?,
@@ -232,7 +243,7 @@ impl Dispatcher {
                 (82, objects.parent.as_fd()),
                 (83, objects.proof.as_fd()),
             ] {
-                self.check(authorize.as_ref())?;
+                self.check(authorize)?;
                 if !executing.current() {
                     return Err(refused());
                 }
@@ -248,7 +259,7 @@ impl Dispatcher {
                 .read(&mut *stream)
                 .map_err(io::Error::other)?
                 .ok_or_else(refused)?;
-            let reply = match &v2 {
+            let reply = match v2 {
                 Some(request) => {
                     runtime_collab::open_selected::v2::decode_admission(&bytes, request.access)?
                 }
@@ -257,26 +268,29 @@ impl Dispatcher {
             if reply.request_id() != request.request_id || Instant::now() >= deadline {
                 return Err(refused());
             }
-            self.check(authorize.as_ref())?;
+            self.check(authorize)?;
             Ok(reply)
         })();
+        drop(objects);
+        // Anything but an admission for this operation or a plain refusal
+        // retires the channel.
+        let answered = match &result {
+            Ok(RootReply::Admitted { receipt }) => receipt.source_operation == self.operation,
+            Ok(RootReply::Refused { .. }) => true,
+            _ => false,
+        };
+        if !answered {
+            self.retired.store(true, Ordering::Release);
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        drop(stream);
         match result {
-            Ok(RootReply::Admitted { receipt }) if receipt.source_operation == self.operation => {
-                Ok(receipt)
-            }
+            Ok(RootReply::Admitted { receipt }) if answered => Ok(receipt),
             Ok(RootReply::Refused { reason, .. }) => Err(io::Error::other(format!(
                 "selected-open admission refused: {reason:?}"
             ))),
-            Ok(_) => {
-                self.retired.store(true, Ordering::Release);
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                Err(refused())
-            }
-            Err(error) => {
-                self.retired.store(true, Ordering::Release);
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                Err(error)
-            }
+            Ok(_) => Err(refused()),
+            Err(error) => Err(error),
         }
     }
 }
@@ -334,22 +348,22 @@ impl Dispatcher {
     }
     pub(super) fn admit(
         self: &Arc<Self>,
-        request: RootRequest,
+        request: &RootRequest,
         objects: Objects,
-        executing: Arc<ExecutingPeer>,
-        authorize: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+        executing: &ExecutingPeer,
+        authorize: &(dyn Fn() -> Result<(), String> + Send + Sync),
     ) -> io::Result<RootReceipt> {
         self.send(request, objects, executing, authorize, None)
     }
     pub(super) fn admit_v2(
         &self,
-        request: runtime_collab::open_selected::v2::RootRequest,
+        request: &runtime_collab::open_selected::v2::RootRequest,
         objects: Objects,
-        executing: Arc<ExecutingPeer>,
-        authorize: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+        executing: &ExecutingPeer,
+        authorize: &(dyn Fn() -> Result<(), String> + Send + Sync),
     ) -> io::Result<RootReceipt> {
         self.send(
-            request.navigation(),
+            &request.navigation(),
             objects,
             executing,
             authorize,
@@ -358,7 +372,7 @@ impl Dispatcher {
     }
     pub(super) fn transact<T>(
         &self,
-        authorize: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+        authorize: &(dyn Fn() -> Result<(), String> + Send + Sync),
         exchange: impl FnOnce(&mut UnixStream) -> io::Result<T>,
     ) -> io::Result<T> {
         self.transact_classified(authorize, |stream, _| exchange(stream).map(Ok), false)?
@@ -367,34 +381,36 @@ impl Dispatcher {
     /// shared framing is complete. Root/source integrity failures remain global.
     pub(super) fn transact_operation<T>(
         &self,
-        authorize: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+        authorize: &(dyn Fn() -> Result<(), String> + Send + Sync),
         exchange: impl FnOnce(&mut UnixStream, Instant) -> io::Result<io::Result<T>>,
     ) -> io::Result<io::Result<T>> {
         self.transact_classified(authorize, exchange, true)
     }
     fn transact_classified<T>(
         &self,
-        authorize: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+        authorize: &(dyn Fn() -> Result<(), String> + Send + Sync),
         exchange: impl FnOnce(&mut UnixStream, Instant) -> io::Result<io::Result<T>>,
         operation_outcome: bool,
     ) -> io::Result<io::Result<T>> {
-        self.check(authorize.as_ref())?;
+        self.check(authorize)?;
         self.queued
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1).filter(|next| *next <= 16)
             })
             .map_err(|_| io::Error::other("selected-open queue at capacity"))?;
         let _slot = QueuedRequest(&self.queued);
-        let deadline = Instant::now() + BUDGET;
+        let deadline = Instant::now()
+            .checked_add(BUDGET)
+            .unwrap_or_else(Instant::now);
         let mut stream = loop {
-            self.check(authorize.as_ref())?;
+            self.check(authorize)?;
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             match self.stream.try_lock() {
                 Ok(stream) => break stream,
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    std::thread::sleep(Duration::from_millis(20))
+                    std::thread::sleep(Duration::from_millis(20));
                 }
                 Err(_) => return Err(refused()),
             }

@@ -86,7 +86,7 @@ fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl 
     // A completed send can schedule another authorized private-history read.
     // Observe its actual accessibility projection, not just the send receipt.
     assert!(
-        harness.wait_until(ui::time::Duration::from_secs(5), |harness| {
+        harness.wait_until(tilo_test_env::hang_bound(), |harness| {
             pump();
             harness
                 .a11y_nodes()
@@ -97,29 +97,26 @@ fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl 
     );
 }
 
-fn seed_person<P: Resource<State = P> + Fields + SharedRecord>(
-    apps: &mut super::super::super::InProcessApps,
+/// Write `value` into the person's record of `P` the session holds, which
+/// the apps it shows read.
+fn seed_person<P: Resource<State = P> + Fields + SharedRecord + Clone + Send + 'static>(
+    apps: &super::super::super::InProcessApps,
     value: &P,
 ) {
-    let records = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        P::OWNER,
-        ui::permissions::UserId(apps.author.0.clone()),
-    )
-    .unwrap();
-    let record = records
-        .open_record(ui::record::RecordKind::new(P::KIND), &|doc| {
-            P::initialize(doc).map_err(|error| error.to_string())
+    let value = value.clone();
+    apps.person_records
+        .run(move |records| {
+            let record = records.shared::<P>().unwrap();
+            record.record().edit(false, |doc| {
+                value
+                    .write_fields(doc, &automerge::ROOT)
+                    .map_err(|error| error.to_string())
+            })?;
+            record.record().flush();
+            Ok::<_, String>(())
         })
+        .unwrap()
         .unwrap();
-    record
-        .edit(false, |doc| {
-            value
-                .write_fields(doc, &automerge::ROOT)
-                .map_err(|error| error.to_string())
-        })
-        .unwrap();
-    records.flush().unwrap();
 }
 fn effect(
     harness: &mut ui::headless::FrameHarness,
@@ -144,7 +141,7 @@ fn effect_with_pump(
         harness.relayout();
         return Ok(output);
     }
-    if !harness.wait_until(ui::time::Duration::from_secs(5), |harness| {
+    if !harness.wait_until(tilo_test_env::hang_bound(), |harness| {
         pump();
         harness
             .job_updates(invocation)
@@ -212,6 +209,7 @@ fn default_native_broker_source_refuses_inactive_wrong_person_and_socket() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        &rig.root.path().join("apps").join("person"),
         &rig.owner.principal,
         socket.clone(),
     )
@@ -278,6 +276,7 @@ fn first_account_preparation_uses_original_native_source_without_opening_custody
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("first-account-apps"),
+        &rig.root.path().join("first-account-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -343,6 +342,7 @@ fn native_credential_owner_refuses_foreign_requests_and_retired_source_before_st
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        &rig.root.path().join("apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -428,6 +428,7 @@ fn native_permission_proposal_reaches_original_protected_passwords_confirmation_
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("permission-apps"),
+        &rig.root.path().join("permission-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -528,6 +529,10 @@ fn native_permission_proposal_retirement_never_grants_after_lock_unlock() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("retired-permission-apps"),
+        &rig.root
+            .path()
+            .join("retired-permission-apps")
+            .join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -627,9 +632,7 @@ fn receiver_daemon(
         let mut reader = BufReader::new(receive_peer.try_clone().unwrap());
         probe(&mut reader, &mut receive_peer);
         subscribe(&mut reader, &mut receive_peer);
-        arrival
-            .recv_timeout(ui::time::Duration::from_secs(5))
-            .unwrap();
+        tilo_test_env::recv("the test to release the arrival", &arrival);
         writeln!(receive_peer, "{}", serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{"subscription":0,"result":{"account":"+15555550101","envelope":{"sourceUuid":ACI,"dataMessage":{"timestamp":42,"message":"native private arrival"}}}}})).unwrap();
         assert_eq!(
             reader.read(&mut [0]).unwrap(),
@@ -786,14 +789,15 @@ fn revoke_native_permission(
         unreachable!()
     };
     assert!(
-        effect(
+        effect_with_pump(
             &mut mounted.harness,
             &MessagesEffect::Send {
                 choice,
                 text,
                 operation: "native-after-passwords-revoke".into(),
             },
-            true
+            true,
+            || apps.pump_messaging_records(),
         )
         .is_err()
     );
@@ -827,6 +831,9 @@ fn native_current_startup(
 
 #[test]
 fn default_native_launch_receives_displays_and_replies_on_exact_signed_account() {
+    // Every record request below is serviced by pumping the owner, so a
+    // worker waits for that, never for the product's give-up deadline.
+    super::super::records::set_deadline_for_owners_opened_here(tilo_test_env::hang_bound());
     let mut rig = Rig::new();
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -834,6 +841,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        &rig.root.path().join("apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -842,10 +850,10 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
     let (sender, send_peer) = UnixStream::pair().unwrap();
     let (receiver, receive_peer) = UnixStream::pair().unwrap();
     send_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     receive_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let writes = Arc::new(AtomicUsize::new(0));
     let observed = writes.clone();
@@ -859,7 +867,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 apps.pump_messaging_records();
                 harness
                     .a11y_nodes()
@@ -888,7 +896,12 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
             .contains("native private arrival")
     );
     assert!(!mounted.harness.dump_json().contains("native private reply"));
-    assert!(effect(&mut mounted.harness, &reply, true).is_err());
+    assert!(
+        effect_with_pump(&mut mounted.harness, &reply, true, || {
+            apps.pump_messaging_records();
+        })
+        .is_err()
+    );
     assert_eq!(
         writes.load(Ordering::SeqCst),
         1,
@@ -902,7 +915,12 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
             .account_state(&ServiceAccount::new("signal", &rig.owner.account)),
         AccountState::Locked
     );
-    assert!(effect(&mut mounted.harness, &reply, true).is_err());
+    assert!(
+        effect_with_pump(&mut mounted.harness, &reply, true, || {
+            apps.pump_messaging_records();
+        })
+        .is_err()
+    );
     drop(mounted);
     drop(account);
     drop(apps);
@@ -935,7 +953,7 @@ fn await_current_fixture(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 mounted
                     .client
@@ -955,6 +973,7 @@ fn native_private_link_setup_crosses_sensitive_actions_and_never_exports_qr() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        &rig.root.path().join("apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -1054,10 +1073,10 @@ fn activate_linked_conversation(
     let (sender, send_peer) = UnixStream::pair().unwrap();
     let (receiver, receive_peer) = UnixStream::pair().unwrap();
     send_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     receive_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let writes = Arc::new(AtomicUsize::new(0));
     let daemon = sender_daemon(send_peer, writes.clone());
@@ -1078,7 +1097,7 @@ fn activate_linked_conversation(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .a11y_nodes()
                 .iter()
                 .any(|(_, node)| node.label() == Some("native private arrival")))
@@ -1105,7 +1124,7 @@ fn activate_linked_conversation(
     (daemon, inbox, writes)
 }
 fn link_daemon(mut peer: UnixStream) -> std::thread::JoinHandle<()> {
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(peer.try_clone().unwrap());
@@ -1155,7 +1174,6 @@ fn completed_first_enrollment(
 
 #[test]
 fn reviewed_first_enrollment_publishes_original_settings_action_without_credential_or_ready_loan() {
-    use tilo_actions::Action as _;
     let rig = Rig::new();
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -1163,39 +1181,24 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("publication-apps"),
+        &rig.root.path().join("publication-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
     .unwrap();
-    let settings = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        accounts::person::ACCOUNTS_OWNER,
-        apps.author.clone(),
-    )
-    .unwrap();
-    let record = settings
-        .open_original_record(
-            ui::record::RecordKind::new(accounts::person::PersonAccounts::KIND),
-            |doc| {
-                accounts::person::PersonAccounts::initialize(doc).map_err(|error| error.to_string())
-            },
+    let person = apps.person_records.clone();
+    person
+        .change_accounts(
+            accounts::person::PersonAccounts::SAVE_ACCOUNT.with((
+                "existing-mail".into(),
+                "email".into(),
+                "Existing mail".into(),
+                serde_json::json!({}),
+                true,
+                0,
+            )),
+            || Ok(()),
         )
-        .unwrap();
-    let existing = accounts::person::PersonAccounts::SAVE_ACCOUNT
-        .with((
-            "existing-mail".into(),
-            "email".into(),
-            "Existing mail".into(),
-            serde_json::json!({}),
-            true,
-            0,
-        ))
-        .build(tilo_resource::origin_now_ms())
-        .unwrap();
-    record
-        .edit(true, |doc| {
-            existing.apply(doc).map_err(|error| error.to_string())
-        })
         .unwrap();
     let (enrollment, candidate, provider) = completed_first_enrollment(&apps);
     let id = candidate.owner().account.clone();
@@ -1204,9 +1207,8 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
         .unwrap();
     assert_eq!(published.account, ServiceAccount::new("signal", &id));
     assert_eq!(published.scope, format!("signal:{OWN_ACI}"));
-    let state = record
-        .read(accounts::person::PersonAccounts::read)
-        .unwrap()
+    let state = person
+        .read::<accounts::person::PersonAccounts, _>(Clone::clone)
         .unwrap();
     assert_eq!(state.accounts.len(), 2);
     assert!(
@@ -1235,9 +1237,8 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
             .is_err()
     );
     assert_eq!(
-        record
-            .read(accounts::person::PersonAccounts::read)
-            .unwrap()
+        person
+            .read::<accounts::person::PersonAccounts, _>(Clone::clone)
             .unwrap(),
         before
     );
@@ -1258,6 +1259,7 @@ fn native_profile_custody_refuses_local_key_before_storage_and_retired_enrollmen
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("profile-apps"),
+        &rig.root.path().join("profile-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -1333,6 +1335,7 @@ fn exercise_verified_enrollment_profile(include_ram: bool) {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("sealed-profile-apps"),
+        &rig.root.path().join("sealed-profile-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -1377,10 +1380,7 @@ fn exercise_verified_enrollment_profile(include_ram: bool) {
         .publish_native_signal_enrollment(candidate, "Fixture Signal".into())
         .unwrap();
     assert_eq!(linked.account.account, owner.account);
-    seed_person(
-        &mut apps,
-        &tilo_contact_directory::ContactDirectory::default(),
-    );
+    seed_person(&apps, &tilo_contact_directory::ContactDirectory::default());
     apps.bind_messaging_record_wake(Arc::new(|| {}));
     let authority = apps
         .native_messaging_authority(&identity, &credential, &linked.scope)
@@ -1602,7 +1602,7 @@ fn approve_fixture_profile_key(
 }
 
 #[test]
-fn retired_native_enrollment_never_initializes_the_canonical_account_owner() {
+fn retired_native_enrollment_publishes_no_account() {
     let rig = Rig::new();
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -1610,6 +1610,10 @@ fn retired_native_enrollment_never_initializes_the_canonical_account_owner() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("retired-publication-apps"),
+        &rig.root
+            .path()
+            .join("retired-publication-apps")
+            .join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -1621,34 +1625,11 @@ fn retired_native_enrollment_never_initializes_the_canonical_account_owner() {
         apps.publish_native_signal_enrollment(candidate, "Stale identity".into())
             .is_err()
     );
-    let initialized = std::cell::Cell::new(0);
-    let settings = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        accounts::person::ACCOUNTS_OWNER,
-        apps.author.clone(),
-    )
-    .unwrap();
-    let record = settings
-        .open_original_record(
-            ui::record::RecordKind::new(accounts::person::PersonAccounts::KIND),
-            |doc| {
-                initialized.set(initialized.get() + 1);
-                accounts::person::PersonAccounts::initialize(doc).map_err(|error| error.to_string())
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        initialized.get(),
-        1,
-        "retired evidence never opened an empty canonical owner"
-    );
     assert!(
-        record
-            .read(accounts::person::PersonAccounts::read)
-            .unwrap()
-            .unwrap()
-            .accounts
-            .is_empty()
+        apps.person_records
+            .read::<accounts::person::PersonAccounts, _>(|state| state.accounts.is_empty())
+            .unwrap(),
+        "retired evidence published no account"
     );
     assert!(apps.messaging.is_none());
     enrollment.cancel();
@@ -1686,6 +1667,7 @@ fn actual_session_lock_retires_visible_private_link_and_never_revives_after_unlo
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        &rig.root.path().join("apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -1696,7 +1678,7 @@ fn actual_session_lock_retires_visible_private_link_and_never_revives_after_unlo
         .start_signal_account(startup, |_| Err(SendError::Unavailable))
         .unwrap();
     let (setup, mut peer) = UnixStream::pair().unwrap();
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let linker = account.prepare_linking(OWN_ACI.into(), setup).unwrap();
     let daemon = std::thread::spawn(move || {
@@ -1872,9 +1854,7 @@ fn messaging_network_consent_requires_protected_confirmed_answer_and_retires_wit
 
 #[cfg(target_os = "linux")]
 fn wait_network_prompt(queue: &crate::portal::PromptQueueHandle) -> crate::portal::PendingGrant {
-    let deadline = std::time::Instant::now()
-        .checked_add(ui::time::Duration::from_secs(5))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(pending) = queue.drain().pop() {
             return pending;

@@ -26,6 +26,22 @@ static ENTRIES: OnceLock<Mutex<BTreeMap<uuid::Uuid, Entry>>> = OnceLock::new();
 fn entries() -> &'static Mutex<BTreeMap<uuid::Uuid, Entry>> {
     ENTRIES.get_or_init(Mutex::default)
 }
+/// Run `f` on entry `id` under the registry's lock.
+fn with_entry<R>(id: &uuid::Uuid, f: impl FnOnce(&mut Entry) -> io::Result<R>) -> io::Result<R> {
+    let mut entries = entries()
+        .lock()
+        .map_err(|_| io::Error::other("retirement registry poisoned"))?;
+    f(entries.get_mut(id).ok_or(io::ErrorKind::NotFound)?)
+}
+/// Run `f` on entry `id` if the registry and the entry are there, and say
+/// whether it ran; an observation going away records what it can and
+/// nothing more.
+fn if_entry(id: &uuid::Uuid, f: impl FnOnce(&mut Entry)) -> bool {
+    let Ok(mut entries) = entries().lock() else {
+        return false;
+    };
+    entries.get_mut(id).map(f).is_some()
+}
 pub(super) struct Observation {
     id: uuid::Uuid,
 }
@@ -63,6 +79,7 @@ impl Observation {
                 retired_at: None,
             },
         );
+        drop(entries);
         Ok(Self { id })
     }
     pub(super) fn bind(
@@ -72,70 +89,59 @@ impl Observation {
         if !peer.current() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        let mut entries = entries()
-            .lock()
-            .map_err(|_| io::Error::other("retirement registry poisoned"))?;
-        let entry = entries.get_mut(&self.id).ok_or(io::ErrorKind::NotFound)?;
-        if entry.root_pid.is_some() {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        entry.root_pid = Some(peer.pid());
-        entry.state = "running";
-        let subject = Subject {
-            source_operation: entry.source_operation.clone(),
-            context_sha256: entry.context_sha256.clone(),
-            root_pid: peer.pid(),
-        };
-        subject.validate()?;
-        Ok(subject)
+        with_entry(&self.id, |entry| {
+            if entry.root_pid.is_some() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            entry.root_pid = Some(peer.pid());
+            entry.state = "running";
+            let subject = Subject {
+                source_operation: entry.source_operation.clone(),
+                context_sha256: entry.context_sha256.clone(),
+                root_pid: peer.pid(),
+            };
+            subject.validate()?;
+            Ok(subject)
+        })
     }
     pub(super) fn track(self: &Arc<Self>) -> io::Result<ProofTicket> {
-        let mut entries = entries()
-            .lock()
-            .map_err(|_| io::Error::other("retirement registry poisoned"))?;
-        let entry = entries.get_mut(&self.id).ok_or(io::ErrorKind::NotFound)?;
-        if entry.state != "running" || entry.pending_proofs >= 256 {
-            return Err(io::ErrorKind::WouldBlock.into());
-        }
-        entry.pending_proofs += 1;
+        with_entry(&self.id, |entry| {
+            if entry.state != "running" || entry.pending_proofs >= 256 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            entry.pending_proofs = entry.pending_proofs.saturating_add(1);
+            Ok(())
+        })?;
         Ok(ProofTicket {
             observation: self.clone(),
             recorded: false,
         })
     }
     pub(super) fn unknown(&self) {
-        if let Ok(mut entries) = entries().lock() {
-            if let Some(entry) = entries.get_mut(&self.id) {
-                entry.state = "unknown";
-            }
-        }
+        if_entry(&self.id, |entry| entry.state = "unknown");
     }
     pub(super) fn reaped(&self) {
-        if let Ok(mut entries) = entries().lock() {
-            if let Some(entry) = entries.get_mut(&self.id) {
-                entry.child_reaped = true;
-                entry.state = "retiring";
-            }
-        }
+        if_entry(&self.id, |entry| {
+            entry.child_reaped = true;
+            entry.state = "retiring";
+        });
     }
     pub(super) fn retired(&self, outcomes: Vec<String>) -> io::Result<()> {
-        let mut entries = entries()
-            .lock()
-            .map_err(|_| io::Error::other("retirement registry poisoned"))?;
-        let entry = entries.get_mut(&self.id).ok_or(io::ErrorKind::NotFound)?;
-        if !entry.child_reaped || entry.root_pid.is_none() {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        if entry.invalid_proof {
-            return Err(io::Error::other("unobserved selected proof termination"));
-        }
-        if entry.pending_proofs != 0 {
-            return Err(io::ErrorKind::WouldBlock.into());
-        }
-        entry.proof_terminations.extend(outcomes);
-        entry.state = "retired";
-        entry.retired_at = Some(Instant::now());
-        Ok(())
+        with_entry(&self.id, |entry| {
+            if !entry.child_reaped || entry.root_pid.is_none() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            if entry.invalid_proof {
+                return Err(io::Error::other("unobserved selected proof termination"));
+            }
+            if entry.pending_proofs != 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            entry.proof_terminations.extend(outcomes);
+            entry.state = "retired";
+            entry.retired_at = Some(Instant::now());
+            Ok(())
+        })
     }
 }
 pub(super) struct ProofTicket {
@@ -144,47 +150,37 @@ pub(super) struct ProofTicket {
 }
 impl ProofTicket {
     pub(super) fn record(mut self, outcome: &io::Result<String>) {
-        if let Ok(mut entries) = entries().lock() {
-            if let Some(entry) = entries.get_mut(&self.observation.id) {
-                entry.pending_proofs = entry.pending_proofs.saturating_sub(1);
-                match outcome {
-                    Ok(value) => {
-                        if entry.proof_terminations.len() >= 256 {
-                            entry.proof_terminations.remove(0);
-                        }
-                        entry.proof_terminations.push(value.clone());
-                    }
-                    Err(_) => {
-                        entry.invalid_proof = true;
-                        entry.state = "unknown";
-                    }
+        self.recorded = if_entry(&self.observation.id, |entry| {
+            entry.pending_proofs = entry.pending_proofs.saturating_sub(1);
+            if let Ok(value) = outcome {
+                if entry.proof_terminations.len() >= 256 {
+                    entry.proof_terminations.remove(0);
                 }
-                self.recorded = true;
+                entry.proof_terminations.push(value.clone());
+            } else {
+                entry.invalid_proof = true;
+                entry.state = "unknown";
             }
-        }
+        });
     }
 }
 impl Drop for ProofTicket {
     fn drop(&mut self) {
         if !self.recorded {
-            if let Ok(mut entries) = entries().lock() {
-                if let Some(entry) = entries.get_mut(&self.observation.id) {
-                    entry.invalid_proof = true;
-                    entry.state = "unknown";
-                }
-            }
+            if_entry(&self.observation.id, |entry| {
+                entry.invalid_proof = true;
+                entry.state = "unknown";
+            });
         }
     }
 }
 impl Drop for Observation {
     fn drop(&mut self) {
-        if let Ok(mut entries) = entries().lock() {
-            if let Some(entry) = entries.get_mut(&self.id) {
-                if entry.state != "retired" {
-                    entry.state = "unknown";
-                }
+        if_entry(&self.id, |entry| {
+            if entry.state != "retired" {
+                entry.state = "unknown";
             }
-        }
+        });
     }
 }
 pub(crate) fn snapshot() -> io::Result<serde_json::Value> {

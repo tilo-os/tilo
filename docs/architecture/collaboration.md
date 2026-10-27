@@ -73,6 +73,33 @@ root signed, and each that revokes a device the room certifies to the signing
 root: the device leaves the room's access and its channels, and every
 member's replica refuses it from the room's own history, after a restart too.
 
+A device whose revocation arrives after it authenticated stops counting as
+authenticated from then on. A room a desktop governs does not wait for that
+device either. An invite
+pins its issuing device as the room's governor, so revoking that device alone
+would freeze the room. When the root revokes a device it also names another
+of the person's devices to govern in its place: a `GovernorSuccession`
+(`tilo-user-identity`, `succession.rs`) binds the revoked device's certificate,
+its revocation and the successor's certificate under one root signature, and
+the successor must be native and certified to own workspaces. Settings'
+revoke signs one naming the device that revokes. It names no room, so one
+statement moves every room the revoked device governed. Members receive it
+with the person's identity, check it against the root that certified the
+pinned governor, and re-pin each such room to the successor
+(`WorkspaceTree::follow_governor_successions`); on the successor itself the
+room becomes its own. From then on the revoked device's governance is
+refused and the successor's admitted, and the room's channels follow their
+new steward. Where a root named two successors for one device, the lower key
+governs everywhere (`current_governor`).
+
+Not covered yet: governance the revoked device wrote before its revocation
+reached a member stays, for the successor to undo; a workspace host whose own
+device is revoked does not hand its rooms to another host; and a room
+`StatePeer` governs pins its authority's certificate, so a revoked authority
+there is refused but not succeeded. The rule is engine-neutral
+(`current_governor`), so the one room engine applies it when it governs
+rooms a desktop mints.
+
 ## Direct collaboration
 
 `crates/session/shell/src/network/actor.rs` owns an Iroh endpoint and one `iroh-gossip` topic
@@ -109,12 +136,12 @@ room.
 Only a locally governing administrator can mint an invite or change membership
 and capabilities. Whether this device may invite, and through which authority,
 is one decision (`shell::invite_policy::may_issue_invitation`) that the invite
-composer, the palette's `peer.invite` rows and the issuer all ask: `Invite` on
-the `peer.invite.named` action under the workspace's capability policy, then
+composer, the palette's `peer.invite` rows and the issuer all ask: the grant for
+the `peer.invite.named` action under the workspace's policy, then
 the room's governor — this person's relay (the admitted governor is the
 identity this room selects, which may be a workspace-specific identity rather
 than the device's default person), this device sharing a room it governs on
-its home relay, or, for a member who holds a delegated `Invite` grant in a
+its home relay, or, for a member who holds a delegated invite grant in a
 room someone else governs, a refusal that sends them to the owner rather than
 a composer or palette row the issuer would reject. Ordinary role controls
 expose Viewer, Commenter, and Editor;
@@ -123,32 +150,27 @@ by cycling a role chip. What a role may change depends on the path the change
 takes:
 
 - **Directed action invocations** (an action invoked through the session action
-  broker by a person, script or agent) are checked against the action's
-  declared permission requirement — `Read`, `Comment`, `Write`, `Invite` or
-  `Admin` — and the caller's live capabilities.
-- **Replicated app documents are checked only as a whole.** The SDK signs every
-  document change, snapshot or incremental and whatever action produced it, as
-  `OpClass::Splice`, which requires `Write`. The identity service checks the
-  role table and live capability restrictions before signing, and every broker
-  checks them again on receipt. Owners and Editors can therefore change any
-  part of an app document; Commenters and Viewers can change none of it, so a
-  comment stored inside an app document is refused for a Commenter; and an
-  Editor is not limited to particular actions.
+  broker by a person, script or agent) are decided against the grants on the
+  action's node in the published tree, filtered by the action's kind
+  ([permissions.md](permissions.md)).
+- **Replicated app documents are checked change by change.** The SDK signs
+  every document change, snapshot or incremental together with what each
+  change claims to be — its action key and the storage units it writes — and
+  a receiver, a relay that cannot read a sealed payload included, decides
+  every claim against the author's grants before merging it. Owners and
+  Editors therefore hold the grants to change an app document; a Commenter's
+  grant covers comments and reactions, and nothing else in it.
 - **Governance, compaction and redaction operations** are signed with their own
-  classes, which the role table grants to the owner only.
+  claims, which the room's grants give the owner alone.
 
-Per-action enforcement does not exist for replicated app state, and signing the
-action's declared class would not create it: the broker holds no Automerge
-document, the payload may be MLS ciphertext, and an Automerge change does not
-name the action that made it, so a Commenter could label any edit as a comment.
-Enforcing actions such as "commenters may add comments" needs structure the
-receiver can check — for example comments kept as their own records that
-accept only `Comment`-class changes. Until then, treat the app-document role
-split as write or no write.
+Per-action enforcement is a property of the claims, not of the payload: the
+broker holds no Automerge document and the payload may be MLS ciphertext, so
+whether a change is a comment or a rewrite is decided by the claim the author
+signed, under the same rule-in-the-tree as every other action.
 
 Publishing a surface stream, granting or injecting remote control, and room
-state responses likewise require `Write`; passive presence, requests, and
-validated history reads require `Read`.
+state responses likewise need a grant for the change they claim; passive
+presence, requests, and validated history reads need a `Read` grant.
 
 Live session handles in cursor, app-presence, remote-input, stream, and
 scrollback messages are bound to the authenticated transport endpoint before
@@ -214,6 +236,53 @@ nothing, the room's authority included. The checks, in order:
 8. The media policy is well formed and its transition permitted. The
    receiver then binds a policy to its own authority record before
    installing the candidate.
+
+### Joining: governance first, app data after
+
+A device becomes a member on the room's governance alone
+(`tilo-joined-room`, `install`): the join's bootstrap is admitted in the
+host's order, but only its governance — membership, roles, policy and the
+certificates they import, everything an app message is authorized against.
+The bootstrap's app messages (the host's own record checkpoints since its
+last full one) are left out: a device that does not hold the room yet often
+cannot decide them (the app surface a change names is read from the room's
+own content; a sealed write needs its record's checkpoint), and the host
+retains every one on its record's channel. They arrive through the room's
+sync once it is installed and are authorized like any later write, so how
+many messages a room has never decides whether someone can join it.
+
+An app message whose prerequisite is still in flight (its author's
+certificate, its record's checkpoint, the changes it builds on, its app
+surface) is held, and every later room change and admitted document retries
+what is held. The queue is bounded (`MAX_HELD_INPUTS`, `MAX_HELD_BYTES`) and
+never refuses the input being admitted: when it is full, the message held
+longest is decided again, applied if it now can be, and otherwise let go
+unapplied with what it waited for (`ReceiveOutcome::dropped`, logged by the
+room owner). Nothing is applied without being authorized, and nothing let go
+is lost: the peer remembers what each message let go waited for (an author's
+certificate, a record's state), and once one of those lands it reports
+`replay_wanted`, on which the device asks the room's host to replay what it
+retains (`NetCmd::NativeReplay`, a fresh subscription), and the message is
+decided again. The shell's own hold for app surfaces does the same: a room
+whose held inputs were let go is replayed once a surface is named. A device
+that restarts subscribes afresh, and its host replays everything anyway.
+
+A write that names an app surface this device has no copy of was made with
+a newer build of the app, so the device needs that app's update. The shell
+holds the write and runs that app's update (`app_versions::surface_named`).
+This is the same `app update` an app that is behind takes before it starts.
+Once the update is in, the shell decides the held writes again, against the
+surface the updated package ships (`app_versions::installed_surface`, signed
+by the package's publisher like the surface the app runs with). An app the
+device does not have installed is not installed for it; its writes wait.
+
+A room's sync arrives as a burst of relay inputs. Inputs of one session
+queued back to back are admitted together
+(`NativeWorkspaceOwner::receive_batch`, at most `native_admission::MAX_BATCH`
+at a time). Each one is authorized alone, in order, exactly as a single
+input is. The batch is published once, as one atomic state-file replacement.
+A crash before that publish loses nothing: the uncommitted inputs are still
+retained by the host, and the next subscription replays them.
 
 ### Write authority on a room's governance
 

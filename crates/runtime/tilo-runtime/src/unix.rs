@@ -32,8 +32,6 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
 
 /// Native automatic startup rejects a pre-existing public profile before any
 /// legacy profile initialization can change its permissions.
-/// # Errors
-/// Rejects a profile readable by others, or any [`private_directory`] error.
 pub(crate) fn check_private_profile(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.permissions().mode() & 0o077 != 0 => {
@@ -92,8 +90,6 @@ fn started_surface() -> Option<String> {
 }
 
 impl ServiceConnections {
-    /// # Errors
-    /// Rejects an empty identity and returns connect or handshake errors.
     pub(crate) fn connect(
         app_id: &str,
         room: &str,
@@ -162,8 +158,6 @@ pub(crate) struct Connections {
     _services: ServiceConnections,
 }
 impl Connections {
-    /// # Errors
-    /// Rejects an empty identity and returns connect or handshake errors.
     pub(crate) fn prepare(
         command: &mut Command,
         app_id: &str,
@@ -205,7 +199,7 @@ impl Connections {
 
 /// Spawn `command` as `app_id` with its service connections inherited.
 /// # Errors
-/// Returns [`Connections::prepare`] or spawn errors.
+/// Returns `Connections::prepare` or spawn errors.
 pub fn launch(
     mut command: Command,
     app_id: &str,
@@ -217,8 +211,6 @@ pub fn launch(
 }
 
 /// Open or create a private file, refusing symlinks and shared files.
-/// # Errors
-/// Rejects a file that is linked, shared or owned by someone else.
 pub(crate) fn private_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)

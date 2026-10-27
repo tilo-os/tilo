@@ -17,7 +17,7 @@ pub enum SheetsEffect {
     /// Import CSV
     ///
     /// Adds a CSV file as a new sheet.
-    #[effect(job, cancellable, device_only, opens_path = "csv")]
+    #[effect(job, cancellable, opens_path = "csv")]
     ImportCsv {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
@@ -25,7 +25,7 @@ pub enum SheetsEffect {
     /// Import Excel workbook
     ///
     /// Adds every sheet of an `.xlsx` workbook.
-    #[effect(job, cancellable, device_only, opens_path = "xlsx")]
+    #[effect(job, cancellable, opens_path = "xlsx")]
     ImportXlsx {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
@@ -34,7 +34,6 @@ pub enum SheetsEffect {
     #[effect(
         job,
         cancellable,
-        device_only,
         opens_path = "ods",
         label = "Import OpenDocument spreadsheet"
     )]
@@ -45,7 +44,7 @@ pub enum SheetsEffect {
     /// Export CSV
     ///
     /// Saves what the active sheet shows as a CSV file.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, risk = "export_risk")]
     ExportCsv {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
@@ -53,7 +52,7 @@ pub enum SheetsEffect {
     /// Export Excel workbook
     ///
     /// Saves every sheet as an `.xlsx` workbook.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, risk = "export_risk")]
     ExportXlsx {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
@@ -62,14 +61,34 @@ pub enum SheetsEffect {
     #[effect(
         job,
         cancellable,
-        destructive,
-        device_only,
+        risk = "export_risk",
         label = "Export OpenDocument spreadsheet"
     )]
     ExportOds {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
     },
+    /// Import Excel workbook from content
+    ///
+    /// Adds every sheet of an `.xlsx` workbook the room holds as content (an
+    /// attachment, a shared file, an export), with its formulas, money,
+    /// percent and date formats and hidden sheets; a new workbook's untouched
+    /// blank sheet gives way to them. The same content imported again is
+    /// not added twice.
+    #[effect(returns, kind = "undoable", audience = "agents")]
+    ImportXlsxContent {
+        #[param(content, "The workbook's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param("The workbook's title, e.g. the file's name, when it has none yet")]
+        title: Option<String>,
+    },
+    /// Export Excel workbook as content
+    ///
+    /// Keeps every sheet as an `.xlsx` workbook in the content store, with no
+    /// file to write: the caller reads, attaches or sends it by the content
+    /// address it answers.
+    #[effect(content, kind = "read", idempotent)]
+    ExportXlsxContent,
     /// Open command palette
     #[effect(view)]
     Commands,
@@ -88,9 +107,9 @@ pub enum SheetsEffect {
     ///
     /// What a range of a sheet holds and shows: computed values row by row,
     /// the formulas and the bold cells by reference.
-    #[effect(view, returns)]
+    #[effect(view, returns, audience = "agents")]
     ReadCells {
-        #[param("The sheet's id")]
+        #[param("The sheet's id or name")]
         sheet: String,
         #[param("Cell or range, e.g. A1:D6; every used cell when none")]
         range: Option<String>,
@@ -107,4 +126,16 @@ pub enum SheetsEffect {
         #[param("Zero-based row")]
         row: u32,
     },
+}
+
+/// What an export risks: nothing when the person picks where in the save
+/// dialog, which is itself the confirmation; writing over whatever is at a
+/// path a caller names is destructive and asks first.
+fn export_risk(effect: &SheetsEffect) -> ui::tilo_actions::RiskLevel {
+    match effect {
+        SheetsEffect::ExportCsv { path: Some(_) }
+        | SheetsEffect::ExportXlsx { path: Some(_) }
+        | SheetsEffect::ExportOds { path: Some(_) } => ui::tilo_actions::RiskLevel::Destructive,
+        _ => ui::tilo_actions::RiskLevel::None,
+    }
 }

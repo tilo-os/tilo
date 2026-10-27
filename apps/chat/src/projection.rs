@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::tilo_resource::{Id, Identified, Resource};
 
-use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, Reaction, User};
+use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, User};
 use crate::record::Chat;
 
 /// The published id of the item `id` of the record's `field`
@@ -127,26 +127,24 @@ impl Chat {
     }
 
     /// The feedback filed in `channel`, as the timeline shows it: a message
-    /// by whoever filed it, saying what they reported.
+    /// by whoever filed it, saying what they reported
+    /// ([`crate::feedback::message`]).
     fn feedback_rows(&self, channel: &str) -> Vec<Message> {
-        self.feedback
-            .iter()
-            .filter_map(|(id, report)| {
-                let submission = report.submission.as_ref()?;
-                (submission.destination.channel == channel).then(|| {
-                    message_row(
-                        &Id::from_raw(crate::feedback::message_id(id.as_str())),
-                        &crate::record::Message {
-                            channel: Id::from_raw(channel),
-                            author: report.author.clone(),
-                            ts: report.ts,
-                            text: submission.feedback.text.clone(),
-                            ..crate::record::Message::default()
-                        },
-                    )
-                })
-            })
+        self.feedback_messages()
+            .filter(|(_, message)| message.channel.as_str() == channel)
+            .map(|(id, message)| message_row(&id, &message))
             .collect()
+    }
+
+    /// Every filed report as the message its channel shows, under its
+    /// message id ([`crate::feedback::message_id`]).
+    pub fn feedback_messages(&self) -> impl Iterator<Item = (Id, crate::record::Message)> + '_ {
+        self.feedback.iter().filter_map(|(id, report)| {
+            Some((
+                Id::from_raw(crate::feedback::message_id(id.as_str())),
+                crate::feedback::message::message(report)?,
+            ))
+        })
     }
 
     /// The message `id` held in `messages`, in whichever channel it is, or
@@ -190,24 +188,7 @@ impl Chat {
 /// `message` as the timeline draws it.
 #[must_use]
 pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
-    let mut by_emoji: std::collections::BTreeMap<&str, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for reacted in message.reactions.iter() {
-        by_emoji
-            .entry(reacted.emoji.as_str())
-            .or_default()
-            .push(reacted.user.clone());
-    }
-    let reactions: Vec<Reaction> = by_emoji
-        .into_iter()
-        .map(|(emoji, mut users)| {
-            users.sort();
-            Reaction {
-                emoji: emoji.to_owned(),
-                users,
-            }
-        })
-        .collect();
+    let reactions = message.reactions.groups();
     Message {
         id: id.to_string(),
         channel: message.channel.to_string(),
@@ -240,6 +221,7 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
         appearance: message.appearance.clone().map(Into::into),
+        share: message.share.clone(),
     }
 }
 
@@ -294,7 +276,6 @@ pub fn draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
     }
 }
 
-/// The draft for `key` as written.
 #[must_use]
 pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::widget::BlockContent> {
     draft(doc, key)

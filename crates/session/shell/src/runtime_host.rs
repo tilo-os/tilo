@@ -121,7 +121,7 @@ impl Session {
             .workspaces
             .first_mut()
             .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        let room_id = workspace.room.to_string();
+        let room_id = workspace.room().to_string();
         let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();
@@ -133,7 +133,7 @@ impl Session {
         // The room policy the native seat and every launched app are admitted
         // against is the accepted one just saved; publish it as a save does,
         // or nothing is admitted until the first later write.
-        crate::shell::launcher::action_authority::Export::of(&tree).publish();
+        crate::shell::action_authority::Export::of(&tree).publish();
         let tree = tree.shared();
         let identity_socket = root.join(IDENTITY_SOCKET);
         let channel_keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
@@ -203,8 +203,6 @@ impl Session {
 
     /// Launch a trusted native app through the existing SDK descriptor contract.
     /// This is a development host, not a replacement for Tilo package sandboxing.
-    /// # Errors
-    /// Returns handshake, descriptor or process-spawn errors.
     pub fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         unix::launch(
             command,

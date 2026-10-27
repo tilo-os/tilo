@@ -1,13 +1,13 @@
 //! Data-driven keyboard layouts + pure geometry.
 //!
-//! A [`KeyboardLayout`] is just rows of [`Key`]s. Adding AZERTY, QWERTZ, a
+//! A [`KeyboardLayout`](crate::touch::KeyboardLayout) is just rows of [`Key`](crate::touch::Key)s. Adding AZERTY, QWERTZ, a
 //! Dvorak layer, an emoji layer, … is *data* — build a `KeyboardLayout` and
 //! register it on the OSK widget.
 //! Nothing about rendering, sizing, or input is layout-specific.
 //!
 //! The *same* normalized key positions double as the FUTO
 //! swipe `load_layout_json()` geometry — one source of truth for rendering and
-//! (later) swipe decoding. [`key_rects`] is that single geometry pass;
+//! (later) swipe decoding. [`key_rects`](crate::touch::key_rects) is that single geometry pass;
 //! a swipe decoder can normalise its output rects into 0..1 space.
 
 /// Bundled letter layouts, in their legacy switching order.
@@ -153,7 +153,7 @@ impl Key {
     /// press released without sliding types it), then its accented forms,
     /// cased for `shift`. `usage` says how often the typing language uses a
     /// form: forms it uses come first, most used first; the rest follow in
-    /// [`ALTERNATES`] order. Empty for keys without accented forms.
+    /// `ALTERNATES` order. Empty for keys without accented forms.
     pub fn alternates(&self, shift: ShiftState, usage: impl Fn(char) -> f64) -> Vec<String> {
         let KeyAction::Char(s) = &self.action else {
             return Vec::new();
@@ -634,7 +634,6 @@ mod tests {
             assert_eq!(l.row_count(), 4);
             // Top row is the 10 QWERTY letters.
             assert_eq!(l.rows[0].len(), 10);
-            // The space key is the widest in the function row.
             let space = l.rows[3]
                 .iter()
                 .find(|k| k.action == KeyAction::Space)
@@ -811,8 +810,6 @@ mod tests {
         }
     }
 
-    // --- input-type layouts -------------------------------------------
-
     /// All characters a layout can emit, as single-char strings.
     fn emitted_chars(l: &KeyboardLayout) -> Vec<String> {
         l.rows
@@ -847,7 +844,6 @@ mod tests {
             }
             assert!(has_action(&l, &KeyAction::Backspace));
             assert!(!has_any_letter(&l), "numeric must have no letters");
-            // A minus sign and a decimal point are reasonable for plain numbers.
             assert!(emits(&l, "-"));
             assert!(emits(&l, "."));
         }
@@ -869,7 +865,6 @@ mod tests {
             for d in "0123456789".chars() {
                 assert!(emits(&l, &d.to_string()), "phone missing digit {d}");
             }
-            // Dialpad-specific keys.
             assert!(emits(&l, "*"));
             assert!(emits(&l, "#"));
             assert!(emits(&l, "+"));

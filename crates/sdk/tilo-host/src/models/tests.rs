@@ -54,6 +54,15 @@ impl ProviderAdmin for Administration {
     ) -> agent_provider_config::management::AdminFuture<'_, CredentialStatus> {
         Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
     }
+    fn list_models(
+        &self,
+        _: String,
+    ) -> agent_provider_config::management::AdminFuture<
+        '_,
+        Vec<agent_provider_config::ModelDescriptor>,
+    > {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
     fn set_api_key(
         &self,
         _: String,

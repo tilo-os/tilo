@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use taffy::style_helpers::length;
-use taffy::{AvailableSpace, LengthPercentage, NodeId, Size, TaffyTree};
+use taffy::{AvailableSpace, Dimension, LengthPercentage, NodeId, Size, TaffyTree};
 
 use super::Widget;
 use crate::Theme;
@@ -151,7 +151,9 @@ thread_local! {
 /// viewport of the nearest enclosing scroll view (intersected with any
 /// outer one), or `None` when nothing clips it. A collection reads it in
 /// [`Widget::apply_layout`] to keep only the rows near what is shown laid
-/// out; drawing culls against `PresenceCtx::should_cull` instead.
+/// out; drawing culls against `PresenceCtx::should_cull` instead. It is in
+/// effect too while a scroll view collects its content's damage and while
+/// the host plans its copies ([`Widget::for_each_child_in_clip`]).
 #[must_use]
 pub fn layout_clip() -> Option<vello::kurbo::Rect> {
     LAYOUT_CLIP.with(std::cell::Cell::get)
@@ -172,12 +174,98 @@ pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) 
     place()
 }
 
+thread_local! {
+    /// The tree whose widgets are being placed again from the layout they
+    /// were last placed from ([`placing_again`]), by address.
+    static PLACING_AGAIN: std::cell::Cell<Option<*const ()>> = const { std::cell::Cell::new(None) };
+}
+
+/// A layout tree by address, to name it to [`placing_again_in`] while the
+/// tree's owner is borrowed to place its widgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TreeId(*const ());
+
+impl TreeId {
+    pub(crate) fn of(taffy: &TaffyTree<()>) -> Self {
+        Self(std::ptr::from_ref(taffy).cast::<()>())
+    }
+}
+
+/// Run `place` (the host placing its widgets) knowing that nothing of the
+/// tree `tree` names was solved, built or rebuilt since its widgets were
+/// last placed from it: only where things stand moved (a scroll, a glide),
+/// so every box stands where it stood relative to its parent. A long
+/// collection then places only what is near its [`layout_clip`]
+/// ([`placing_again`]).
+#[cfg_attr(
+    not(any(feature = "native", test)),
+    expect(dead_code, reason = "only a native host's layout pass places again")
+)]
+pub(crate) fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T {
+    struct Restore(Option<*const ()>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PLACING_AGAIN.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(PLACING_AGAIN.with(|cell| cell.replace(Some(tree.0))));
+    place()
+}
+
+/// Maximum `rect.y1` across a widget subtree, for finding the true bottom
+/// edge when taffy's `content_size` under-reports.
+pub(crate) fn max_bottom_edge(w: &dyn super::Widget) -> f64 {
+    let mut deepest = w.get_rect().y1;
+    if w.child_clip_rect().is_some() {
+        return deepest;
+    }
+    for c in w.children() {
+        deepest = deepest.max(max_bottom_edge(c));
+    }
+    deepest
+}
+
+/// Whether `event` happens at a place in the window (a pointer, a touch),
+/// so only what stands there may take it.
+pub(crate) fn at_a_place(event: &winit::event::WindowEvent) -> bool {
+    use winit::event::WindowEvent;
+    matches!(
+        event,
+        WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_)
+    )
+}
+
+/// From [`Widget::apply_layout`]: whether `taffy` is a tree its widgets are
+/// being placed again from unchanged ([`placing_again_in`]). A widget that
+/// lays out a tree of its own solves it, so its children are placed anew.
+#[must_use]
+pub fn placing_again(taffy: &TaffyTree<()>) -> bool {
+    PLACING_AGAIN.with(std::cell::Cell::get) == Some(TreeId::of(taffy).0)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WidgetLayoutError {
     #[error(transparent)]
     Taffy(#[from] taffy::TaffyError),
-    #[error("widget layout styles did not settle after eight adjustments")]
-    DidNotSettle,
+    /// `still_changing` names the widgets whose style or manual placement
+    /// still changed in the last pass, so the one that oscillates is known;
+    /// `passes` gives each one's solved size over the last passes and
+    /// `available` the space offered, so the geometry that loops can be
+    /// rebuilt in a test.
+    #[error(
+        "widget layout styles did not settle after eight adjustments in {available}; still \
+         changing: {}; solved sizes by pass: {}",
+        still_changing.join(", "),
+        passes.join("; ")
+    )]
+    DidNotSettle {
+        still_changing: Vec<&'static str>,
+        passes: Vec<String>,
+        available: String,
+    },
     #[error("widget composition did not settle after eight layout passes")]
     CompositionDidNotSettle,
     #[error("manual layout nesting exceeds 32 levels")]
@@ -190,6 +278,42 @@ pub enum WidgetLayoutError {
     UnplacedManualChild,
     #[error("manual child {0} was placed more than once")]
     DuplicateManualPlacement(usize),
+}
+
+/// The frames a host skipped because their layout failed, and when it last
+/// said so. Every host (native, headless, the browser) skips such a frame
+/// and keeps showing the last one, so input still lands and the next frame
+/// lays out again. A layout that keeps failing would fail on every frame,
+/// so the first failure is reported in full and later ones at most once a
+/// minute, with how many frames were skipped since.
+#[derive(Debug, Default)]
+pub struct SkippedFrames {
+    reported: Option<crate::time::Instant>,
+    unreported: u64,
+}
+
+impl SkippedFrames {
+    const QUIET: crate::time::Duration = crate::time::Duration::from_secs(60);
+
+    /// Note a frame skipped for `error` at `now`; the line to log, when one
+    /// is due.
+    pub fn skip(&mut self, error: &WidgetLayoutError, now: crate::time::Instant) -> Option<String> {
+        self.unreported = self.unreported.saturating_add(1);
+        if self
+            .reported
+            .is_some_and(|reported| now.saturating_duration_since(reported) < Self::QUIET)
+        {
+            return None;
+        }
+        let line = match std::mem::take(&mut self.unreported) {
+            1 => format!("widget layout failed; skipping the frame: {error}"),
+            skipped => format!(
+                "widget layout failed; skipped {skipped} frames since the last report: {error}"
+            ),
+        };
+        self.reported = Some(now);
+        Some(line)
+    }
 }
 
 /// Measure the host tree and settle allocation-dependent styles before calling
@@ -225,6 +349,29 @@ pub unsafe fn compute_widget_layout(
     unsafe { compute_widget_layout_depth(taffy, root, available, nodes, bindings, text, 0) }
 }
 
+/// A node's measured size from its known dimensions and the space offered.
+pub(crate) type MeasureNode<'a> =
+    dyn FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId) -> Size<f32> + 'a;
+
+/// Solve `taffy` from `root`, measuring leaves with `measure`.
+///
+/// Taffy's solver is generic over its measure function, so every distinct
+/// closure handed to `compute_layout_with_measure` compiles the whole flexbox,
+/// grid and block solver again (about 200 KB of WebAssembly each). Toolkit
+/// code solves through this one function instead, so the solver is compiled
+/// once.
+#[inline(never)]
+pub(crate) fn solve_layout(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: Size<AvailableSpace>,
+    measure: &mut MeasureNode<'_>,
+) -> taffy::TaffyResult<()> {
+    taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
+        measure(known, available, node)
+    })
+}
+
 pub(super) unsafe fn compute_widget_layout_depth(
     taffy: &mut TaffyTree<()>,
     root: NodeId,
@@ -239,14 +386,12 @@ pub(super) unsafe fn compute_widget_layout_depth(
     }
     let mut policies = Vec::new();
     let mut pending = vec![root];
+    let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
     while let Some(node) = pending.pop() {
-        let policy = unsafe {
-            crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                widget.manual_layout_policy()
-            })
-        }
-        .ok()
-        .flatten();
+        // SAFETY: the caller's exact live-tree ownership contract.
+        let policy = unsafe { sweep.inspect(node, |widget| widget.manual_layout_policy()) }
+            .ok()
+            .flatten();
         if let Some(policy) = policy {
             policies.push((node, policy));
         }
@@ -260,22 +405,36 @@ pub(super) unsafe fn compute_widget_layout_depth(
     // descendant heights intact and clips paragraphs as they wrap while typing.
     for &node in nodes.keys() {
         // SAFETY: use the same admission/lifetime checks as measurement below.
-        let needs_measure = unsafe {
-            layout_bound_node(bindings, nodes, node, |widget| {
-                widget.layout_needs_measure()
-            })
-        }
-        .unwrap_or(false);
+        let needs_measure =
+            unsafe { sweep.layout(node, |widget| widget.layout_needs_measure()) }.unwrap_or(false);
         if needs_measure {
             taffy.mark_dirty(node)?;
         }
     }
+    // Measurement enters each measured node's own scope.
+    drop(sweep);
     // Outermost first: resetting a region dirties the regions inside it.
     for (node, policy) in &policies {
         super::manual::reset_region(policy, taffy, *node)?;
     }
+    let mut still_changing = Vec::new();
+    // The last passes' solved sizes of the nodes that changed in them.
+    let mut recent: std::collections::VecDeque<Vec<(NodeId, String)>> =
+        std::collections::VecDeque::new();
     for _ in 0..8 {
-        taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
+        if !still_changing.is_empty() {
+            if recent.len() == 3 {
+                recent.pop_front();
+            }
+            recent.push_back(
+                still_changing
+                    .iter()
+                    .map(|&node| (node, solved_node(taffy, node)))
+                    .collect(),
+            );
+        }
+        still_changing.clear();
+        solve_layout(taffy, root, available, &mut |known, available, node| {
             // SAFETY: caller owns the stable matching tree, each callback is
             // exclusive, and bound dispatch checks admission and lifetime.
             unsafe {
@@ -297,25 +456,100 @@ pub(super) unsafe fn compute_widget_layout_depth(
             else {
                 continue;
             };
-            changed |= unsafe {
+            let placed = unsafe {
                 super::manual::run_policy(policy, taffy, *node, nodes, bindings, text, depth)?
             };
+            if placed {
+                still_changing.push(*node);
+            }
+            changed |= placed;
         }
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_style.
-            changed |= unsafe {
-                layout_bound_node(bindings, nodes, node, |widget| {
-                    widget.adjust_layout_style(taffy, node, text)
-                })
+            let adjusted = unsafe {
+                sweep.layout(node, |widget| widget.adjust_layout_style(taffy, node, text))
             }
             .unwrap_or(false);
+            if adjusted {
+                still_changing.push(node);
+            }
+            changed |= adjusted;
         }
+        drop(sweep);
         if !changed {
             return Ok(());
         }
     }
-    Err(WidgetLayoutError::DidNotSettle)
+    if recent.len() == 3 {
+        recent.pop_front();
+    }
+    recent.push_back(
+        still_changing
+            .iter()
+            .map(|&node| (node, solved_node(taffy, node)))
+            .collect(),
+    );
+    // Named once it gave up, outside every owner's lease.
+    let passes = still_changing
+        .iter()
+        .map(|&node| {
+            let sizes: Vec<String> = recent
+                .iter()
+                .filter_map(|pass| pass.iter().find(|(at, _)| *at == node))
+                .map(|(_, solved)| solved.clone())
+                .collect();
+            // SAFETY: the caller's exact live-tree ownership contract.
+            let name = unsafe { widget_name(bindings, nodes, node) };
+            format!("{name} {}", sizes.join(" -> "))
+        })
+        .collect();
+    let mut still_changing: Vec<&'static str> = still_changing
+        .into_iter()
+        .map(|node| unsafe { widget_name(bindings, nodes, node) })
+        .collect();
+    still_changing.sort_unstable();
+    still_changing.dedup();
+    Err(WidgetLayoutError::DidNotSettle {
+        still_changing,
+        passes,
+        available: format!("{available:?}"),
+    })
+}
+
+/// `node`'s unrounded solved size, its minimum height and its trailing
+/// padding (where a scroll view reserves its bar), for an unsettled layout's
+/// error.
+fn solved_node(taffy: &TaffyTree<()>, node: NodeId) -> String {
+    let layout = taffy.unrounded_layout(node);
+    let min_height = taffy
+        .style(node)
+        .map_or(Dimension::auto(), |style| style.min_size.height)
+        .into_raw();
+    let min_height = match min_height.tag() {
+        taffy::CompactLength::LENGTH_TAG => format!("{}px", min_height.value()),
+        taffy::CompactLength::PERCENT_TAG => format!("{}%", min_height.value() * 100.0),
+        _ => "auto".to_owned(),
+    };
+    format!(
+        "{}x{} (min height {min_height}, padding right {})",
+        layout.size.width, layout.size.height, layout.padding.right
+    )
+}
+
+/// The concrete type of the widget at `node`, for naming it in an error.
+///
+/// # Safety
+/// The same live-tree contract as [`compute_widget_layout`].
+unsafe fn widget_name(
+    bindings: &BoundNodeMap,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    node: NodeId,
+) -> &'static str {
+    // SAFETY: forwards the caller's exact live-tree ownership contract.
+    unsafe { layout_bound_node(bindings, nodes, node, |widget| widget.concrete_type_name()) }
+        .unwrap_or("an unbound widget")
 }
 
 /// Whether any widget under `root` composes from its allocation (see
@@ -402,16 +636,42 @@ impl CompositionFocus {
                     .map(|key| format!("semantic:{key}"))
             })
     }
+    /// Whether `widget`'s [`Self::key`] is `key`. A name is compared without
+    /// building the widget's accessibility node (and resolving its translated
+    /// label), which a rebuild would otherwise do for every widget.
+    fn has_key(widget: &dyn Widget, key: &str) -> bool {
+        if let Some(name) = key.strip_prefix("named:") {
+            return widget.test_id() == Some(name);
+        }
+        key.strip_prefix("semantic:").is_some_and(|semantic| {
+            widget.test_id().is_none()
+                && widget
+                    .accessibility_root()
+                    .and_then(|access| access.semantic_key)
+                    .as_deref()
+                    == Some(semantic)
+        })
+    }
     /// Recover focus from the retained tree after a structural mutation. No
     /// pointer from the previous layout is read; owner custody follows the
     /// same component/legacy boundaries as the next admitted topology.
     pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
+        type Visit<'v> = dyn FnMut(
+                &dyn Widget,
+                &Option<crate::bound_dispatch::CallbackBinding>,
+                &Option<crate::history_mode::HistoryOwner>,
+                bool,
+            ) + 'v;
+        /// Visit every widget a rebuild admits, in tree order, inside its
+        /// binding entry, with the component binding and legacy owner it is
+        /// admitted under and whether it is a focus target (focused, with no
+        /// focused ancestor).
         fn walk(
             widget: &dyn Widget,
             binding: Option<crate::bound_dispatch::CallbackBinding>,
             legacy: Option<crate::history_mode::HistoryOwner>,
             focused_ancestor: bool,
-            nodes: &mut Vec<(CompositionFocus, bool)>,
+            visit: &mut Visit<'_>,
         ) {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
@@ -436,55 +696,80 @@ impl CompositionFocus {
                 own_binding.or(binding)
             };
             let focused = widget.is_focusable() && widget.is_enabled() && widget.is_focused();
-            nodes.push((
-                CompositionFocus {
-                    ambiguous: false,
-                    key: CompositionFocus::key(widget),
-                    semantic_key: widget
-                        .accessibility_root()
-                        .and_then(|access| access.semantic_key),
-                    qualified_semantic: false,
-                    binding: binding.clone(),
-                    legacy: legacy.clone(),
-                    state: crate::undo::get_state(widget),
-                },
-                focused && !focused_ancestor,
-            ));
+            visit(widget, &binding, &legacy, focused && !focused_ancestor);
             widget.for_each_child(&mut |child| {
                 walk(
                     child,
                     binding.clone(),
                     legacy.clone(),
                     focused_ancestor || focused,
-                    nodes,
+                    visit,
                 );
             });
         }
-        let mut nodes = Vec::new();
-        walk(root, None, None, false, &mut nodes);
-        let mut targets = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, focused))| *focused);
-        let index = targets.next()?.0;
-        if targets.next().is_some() {
+        // The unique focus target first: only it needs an identity.
+        let mut visited = 0_usize;
+        let mut targets = 0_usize;
+        let mut found = None;
+        walk(
+            root,
+            None,
+            None,
+            false,
+            &mut |widget, binding, legacy, target| {
+                if target {
+                    targets = targets.saturating_add(1);
+                    if found.is_none() {
+                        found = Some((
+                            visited,
+                            CompositionFocus {
+                                ambiguous: false,
+                                key: CompositionFocus::key(widget),
+                                semantic_key: widget
+                                    .accessibility_root()
+                                    .and_then(|access| access.semantic_key),
+                                qualified_semantic: false,
+                                binding: binding.clone(),
+                                legacy: legacy.clone(),
+                                state: crate::undo::get_state(widget),
+                            },
+                        ));
+                    }
+                }
+                visited = visited.saturating_add(1);
+            },
+        );
+        if targets != 1 {
             return None;
         }
-        let (mut focus, _) = nodes.remove(index);
-        let key = focus.key.as_ref()?;
-        focus.ambiguous = nodes.iter().any(|(other, _)| {
-            other.key.as_ref() == Some(key)
-                && match (&focus.binding, &other.binding) {
-                    (Some(a), Some(b)) => a.same_component(b),
-                    (None, None) => true,
-                    _ => false,
-                }
-                && match (&focus.legacy, &other.legacy) {
-                    (Some(a), Some(b)) => a.same_owner(b),
-                    (None, None) => true,
-                    _ => false,
-                }
-        });
+        let (target, mut focus) = found?;
+        let key = focus.key.clone()?;
+        // Then whether another widget of the same owners answers to its key.
+        let mut visited = 0_usize;
+        let mut ambiguous = false;
+        walk(
+            root,
+            None,
+            None,
+            false,
+            &mut |widget, binding, legacy, _| {
+                ambiguous = ambiguous
+                    || (visited != target
+                        && match (&focus.binding, binding) {
+                            (Some(a), Some(b)) => a.same_component(b),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                        && match (&focus.legacy, legacy) {
+                            (Some(a), Some(b)) => a.same_owner(b),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                        && Self::has_key(widget, &key));
+                visited = visited.saturating_add(1);
+            },
+        );
+        focus.ambiguous = ambiguous;
         Some(focus)
     }
 
@@ -573,8 +858,7 @@ impl CompositionFocus {
                     // SAFETY: the same exclusive admitted tree is still live.
                     unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                            focus.same_owner(bindings, node)
-                                && Self::key(widget).as_ref() == Some(key)
+                            focus.same_owner(bindings, node) && Self::has_key(widget, key)
                         })
                     }
                     .unwrap_or(false)
@@ -590,7 +874,7 @@ impl CompositionFocus {
                     .filter(|&&node| unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                             focus.same_owner(bindings, node)
-                                && Self::key(widget).as_ref() == Some(key)
+                                && Self::has_key(widget, key)
                                 && widget
                                     .accessibility_root()
                                     .and_then(|access| access.semantic_key)
@@ -630,19 +914,21 @@ impl CompositionFocus {
         // Asked of every node: look the order up, do not scan it each time.
         let allowed: Option<std::collections::HashSet<NodeId>> =
             allowed.map(|order| order.iter().copied().collect());
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
         let focused: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
                 allowed.as_ref().is_none_or(|order| order.contains(&node))
                     && unsafe {
-                        crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                        sweep.inspect(node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
                         })
-                        .unwrap_or(false)
                     }
+                    .unwrap_or(false)
             })
             .collect();
+        drop(sweep);
         let mut candidates = focused.iter().copied().filter(|&candidate| {
             let owner = Self {
                 ambiguous: false,
@@ -682,7 +968,7 @@ impl CompositionFocus {
                         !self.ambiguous
                             && self.same_owner(bindings, node)
                             && match &self.key {
-                                Some(key) => Self::key(widget).as_ref() == Some(key),
+                                Some(key) => Self::has_key(widget, key),
                                 None => false,
                             }
                     })
@@ -845,6 +1131,80 @@ mod tests {
     use super::*;
     use crate::widget::TaffyTreeExt;
     use vello::kurbo::{Point, Rect};
+
+    /// A focusable control that counts how often its accessibility node is
+    /// built: what a rebuild pays per widget to resolve its translated name.
+    struct AccessCount {
+        built: std::rc::Rc<std::cell::Cell<usize>>,
+        focused: bool,
+        id: Option<&'static str>,
+    }
+    impl Widget for AccessCount {
+        fn name(&self) -> &'static str {
+            "AccessCount"
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &crate::Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+        fn is_focusable(&self) -> bool {
+            true
+        }
+        fn is_focused(&self) -> bool {
+            self.focused
+        }
+        fn test_id(&self) -> Option<&str> {
+            self.id
+        }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            self.built.set(self.built.get().saturating_add(1));
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_semantic_key("shared"),
+            )
+        }
+    }
+
+    #[test]
+    fn focus_captured_across_a_rebuild_builds_only_the_focused_accessibility_node() {
+        use crate::widget::Column;
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        let list = |focused: Option<Option<&'static str>>| {
+            let mut column = Column::new();
+            for _ in 0..50 {
+                column = column.push(Box::new(AccessCount {
+                    built: built.clone(),
+                    focused: false,
+                    id: None,
+                }));
+            }
+            if let Some(id) = focused {
+                column = column.push(Box::new(AccessCount {
+                    built: built.clone(),
+                    focused: true,
+                    id,
+                }));
+            }
+            column
+        };
+        assert!(CompositionFocus::capture_live(&list(None)).is_none());
+        assert_eq!(built.get(), 0, "with nothing focused, no node is built");
+
+        let focus = CompositionFocus::capture_live(&list(Some(Some("target")))).unwrap();
+        assert_eq!(focus.key.as_deref(), Some("named:target"));
+        assert!(!focus.ambiguous, "no other control has its name");
+        assert_eq!(built.get(), 1, "a named target's own node only");
+
+        // A target known by its semantic key alone is compared with every
+        // other control's, and they share it.
+        built.set(0);
+        let focus = CompositionFocus::capture_live(&list(Some(None))).unwrap();
+        assert_eq!(focus.key.as_deref(), Some("semantic:shared"));
+        assert!(focus.ambiguous, "the others answer to the same key");
+    }
 
     #[derive(Default)]
     struct UnsettledStyles {
@@ -1062,7 +1422,13 @@ mod tests {
             let result = unsafe {
                 compute_widget_layout(&mut tree, root, available, &nodes, &bindings, &mut text)
             };
-            assert!(matches!(result, Err(WidgetLayoutError::DidNotSettle)));
+            // The error names the widget that kept changing.
+            match result {
+                Err(WidgetLayoutError::DidNotSettle { still_changing, .. }) => {
+                    assert_eq!(still_changing, [std::any::type_name::<UnsettledStyles>()])
+                }
+                other => panic!("an oscillating style must not settle: {other:?}"),
+            }
             assert_eq!(widget.adjustments, 8);
             assert!(widget.measures > 0);
         }
@@ -1531,10 +1897,6 @@ pub(super) fn flow_rects(
 /// did not give it: a capture drawing a scrolling document at its full
 /// height. The widget's retained layout nodes then name that tree, so the
 /// host must rebuild its own before it lays the widget out again.
-///
-/// # Errors
-///
-/// Returns the solver's error when Taffy rejects the tree.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "window-space layout dimensions narrowed for taffy; never near f32::MAX"
@@ -1576,3 +1938,7 @@ pub(crate) fn lay_out_detached(
     widget.apply_layout(&taffy, child, rect.origin());
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "scrollable_placement_tests.rs"]
+mod scrollable_placement_tests;

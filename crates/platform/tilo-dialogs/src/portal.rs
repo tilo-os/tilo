@@ -42,7 +42,9 @@
     reason = "native host runner: portal and file dialogs block on their own thread"
 )]
 
+mod destination;
 mod uri;
+pub use destination::{DestinationChannel, DestinationOutcome, SaveDestination};
 pub use uri::open_uri_scoped;
 #[cfg(any(test, feature = "test-support"))]
 pub use uri::{ScopedUriFixture, scoped_uri_fixture};
@@ -53,11 +55,6 @@ pub use uri::{ScopedUriFixture, scoped_uri_fixture};
 /// the effect.
 pub trait EffectGate: Send + 'static {
     /// Run `effect` only while the original caller is still admitted.
-    ///
-    /// # Errors
-    ///
-    /// The caller's refusal when it is no longer admitted, or `effect`'s own
-    /// error.
     fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String>;
 }
 
@@ -650,9 +647,17 @@ impl PickRequest {
     }
 
     /// Save `bytes` where the user chooses. Save requests only. A browser
-    /// page downloads them under the suggested name.
+    /// page shows its own Save dialog where it has one, else downloads them
+    /// under the suggested name.
     pub fn send_save_contents(self, bytes: Vec<u8>) -> SaveChannel {
         crate::current_picker().save_contents(self, bytes)
+    }
+
+    /// Ask where to save now and write later, for bytes the app produces
+    /// after the choice: [`SaveDestination::write`] stores them. Works on
+    /// every host, a browser page included. Save requests only.
+    pub fn send_save_destination(self) -> DestinationChannel {
+        crate::current_picker().save_destination(self)
     }
 }
 
@@ -668,6 +673,60 @@ pub struct PickedContents {
     /// with a path: for recognising the same file chosen again, never for
     /// showing. `None` where files have no paths (a browser page).
     pub location: Option<std::path::PathBuf>,
+}
+
+/// A file dropped on a window whose host hands files over rather than
+/// paths (a browser page).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dropped {
+    Contents(PickedContents),
+    /// A file the host did not read, so the app can say why it took none
+    /// of it: only its name and size were looked at.
+    NotRead {
+        /// The name shown to the user.
+        name: String,
+        /// Its size in bytes.
+        size: u64,
+        /// Why it was not read.
+        why: NotRead,
+    },
+}
+
+/// Why a host did not read a dropped file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRead {
+    TooLarge,
+    /// One more than a drop hands over at once.
+    TooMany,
+}
+
+thread_local! {
+    static DROPPED: std::cell::RefCell<Option<Dropped>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `run`, the dispatch of the `WindowEvent::DroppedFile` that names a
+/// file dropped on the window, while `dropped` is that file. A host whose
+/// files have no path to read (a browser page) reads the dropped file first
+/// (or says why it did not) and hands it along this way, for that dispatch
+/// only.
+pub fn dropping<R>(dropped: Dropped, run: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Dropped>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            DROPPED.with_borrow_mut(|slot| *slot = previous);
+        }
+    }
+    let _restore = Restore(DROPPED.with_borrow_mut(|slot| slot.replace(dropped)));
+    run()
+}
+
+/// The file the `WindowEvent::DroppedFile` being handled names, where it
+/// has no path to read it from (a browser page): taken once. `None` where
+/// the event's path is the file, as on a desktop.
+pub fn dropped() -> Option<Dropped> {
+    DROPPED.with_borrow_mut(Option::take)
 }
 
 /// The result of [`PickRequest::send_contents`].
@@ -991,6 +1050,11 @@ pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn display_name(path: &Path) -> String {
+    file_name_of(path)
+}
+
+/// The file name `path` shows the person.
+pub(crate) fn file_name_of(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
@@ -1152,7 +1216,7 @@ mod tests {
 
     #[test]
     fn directory_hint_preserves_the_requested_folder_without_granting_it() {
-        let home = local_path("/Users/Recognized home");
+        let home = local_path("/Users/you/Recognized home");
         let request =
             PickRequest::directory("Allow this folder", "Allow").initial_directory(home.clone());
         assert_eq!(request.directory_hint(), Some(home.as_path()));
@@ -1163,8 +1227,6 @@ mod tests {
             None
         );
     }
-
-    // ---- the security rule -------------------------------------------
 
     #[test]
     fn rejects_a_uri_that_names_a_remote_host() {
@@ -1234,8 +1296,6 @@ mod tests {
             PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
         );
     }
-
-    // ---- escaped filenames, which the nine copies disagreed about -----
 
     #[test]
     fn percent_escapes_in_filenames_are_decoded() {
@@ -1331,8 +1391,6 @@ mod tests {
             );
         }
     }
-
-    // ---- the shape every copy implemented -----------------------------
 
     #[test]
     fn empty_is_cancel() {
@@ -1478,8 +1536,6 @@ mod tests {
         ));
     }
 
-    // ---- the request builder ------------------------------------------
-
     #[test]
     fn builder_records_the_per_app_delta() {
         let r = PickRequest::open("Insert image", "Insert")
@@ -1529,10 +1585,6 @@ pub struct ScopedPickerFixture {
 /// Select a test backend for scoped chooser requests on this exact UI thread.
 /// Dispatch retains the backend even after the guard leaves scope; all real
 /// effect checks still run immediately before invoking it on the worker.
-///
-/// # Errors
-///
-/// When this UI thread already owns a picker fixture.
 #[cfg(any(test, feature = "test-support"))]
 pub fn scoped_picker_fixture(backend: ScopedPickerBackend) -> Result<ScopedPickerFixture, String> {
     SCOPED_PICKER_FIXTURE.with(|current| {
@@ -1572,4 +1624,20 @@ fn writer_scoped_picker_fixture_is_thread_local_and_released_by_guard() {
     );
     drop(guard);
     assert!(scoped_picker_fixture_backend().is_none());
+}
+
+#[cfg(test)]
+#[test]
+fn a_dropped_files_contents_are_taken_once_while_its_event_is_handled() {
+    let file = PickedContents {
+        name: "notes.txt".into(),
+        media_type: Some("text/plain".into()),
+        bytes: b"hi".to_vec(),
+        location: None,
+    };
+    assert_eq!(dropped(), None, "nothing outside a drop");
+    let file = Dropped::Contents(file);
+    let taken = dropping(file.clone(), || (dropped(), dropped()));
+    assert_eq!(taken, (Some(file), None));
+    assert_eq!(dropped(), None, "nothing outlives the dispatch");
 }

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools/release/verify_dictation_field_setup.py"
@@ -38,7 +39,7 @@ class ObservedFieldSetupTests(unittest.TestCase):
                     with self.subTest(case=name, optimize=optimize):
                         path.write_text(json.dumps(record))
                         command = [sys.executable, *(["-O"] if optimize else []), str(TOOL), str(path)]
-                        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                        result = subprocess.run(command, capture_output=True, text=True, timeout=HANG_BOUND)
                         self.assertEqual(result.returncode, expected_exit, result.stderr + result.stdout)
                         response = json.loads(result.stdout)
                         self.assertFalse(response["speech_acceptance_verified"])

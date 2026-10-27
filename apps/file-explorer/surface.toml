@@ -7,7 +7,7 @@ version = 1
 fields = [
   { path = "places", type = "Collection<Bookmark>", stored = "collection" },
   { path = "places.*.place", type = "Atom", label = true, readonly = true },
-  { path = "ops", type = "Outbox<FileTask, Vec<Change>>" },
+  { path = "ops", type = "Outbox<FileTask, Vec<Change>>", unit = true },
 ]
 
 [[resources.verbs]]
@@ -113,6 +113,17 @@ params = [
   { name = "from", required = true, schema = { type = "string" } },
   { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
   { name = "name", required = false, schema = { type = ["string", "null"] } },
+  { name = "format", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "extract"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "archive", required = true, schema = { type = "string" } },
+  { name = "to", required = false, schema = { type = ["string", "null"] } },
+  { name = "if_exists", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

@@ -23,6 +23,7 @@
 pub mod bootstrap;
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use crate::portable_storage::PortableStorage;
 mod portable;
@@ -35,8 +36,11 @@ use durable_store::{DurableStore, StorageKey};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
+mod history_access;
+pub use history_access::HistoryUnavailable;
 pub mod person;
 pub mod transfer;
+pub mod workspace;
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "tilo:record";
@@ -104,6 +108,30 @@ impl RecordId {
     }
     pub fn is_package_primary(&self) -> bool {
         self.0 == "@tilo:package-primary"
+    }
+
+    /// The record a collaboration route's record id names: the empty id is
+    /// the [package primary](Self::package_primary), anything else must be a
+    /// record id. The package primary's custody key is not a route, so a
+    /// route spelling it names nothing: one record never has two routes.
+    #[must_use]
+    pub fn from_route(record: &str) -> Option<Self> {
+        if record.is_empty() {
+            Some(Self::package_primary())
+        } else {
+            Self::parse(record)
+        }
+    }
+
+    /// The record id this record travels under on the collaboration wire,
+    /// what [`Self::from_route`] reads back.
+    #[must_use]
+    pub fn route(&self) -> &str {
+        if self.is_package_primary() {
+            ""
+        } else {
+            &self.0
+        }
     }
 
     /// The record a file *is*. Relative paths resolve against the cwd, so
@@ -264,6 +292,17 @@ impl RecordId {
         (!id.is_empty()).then(|| (Self(base.to_owned()), id.to_owned()))
     }
 
+    /// The record whose tree `self` belongs to: the chain of a
+    /// [`Self::part`], the parent of a [`Self::child`]; `None` for a record
+    /// of its own. Such a record lives and syncs with its tree: whatever
+    /// holds the tree holds it, whether or not a view shows it.
+    #[must_use]
+    pub fn tree(&self) -> Option<Self> {
+        self.chain_part()
+            .map(|(chain, _)| chain)
+            .or_else(|| self.child_of().map(|(parent, _)| parent))
+    }
+
     /// `self` declared on-demand: a room's host does not replay it to a
     /// joining device, and sends it to a device when it opens it. The wire
     /// form is `neighbour_wire::on_demand_record`'s.
@@ -397,28 +436,7 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
-/// The durable file id behind [`RecordId::identify_file`]: the
-/// `user.tilo.record-id` extended attribute, kept by `tilo-files`.
-mod file_identity {
-    use std::path::Path;
-
-    /// The attribute the collaborative filesystem serves its `FileRecordId`
-    /// in, and the one written for files elsewhere.
-    pub(super) use fs_protocol::RECORD_ID_XATTR as ATTRIBUTE;
-
-    /// The file's id, minting and storing one for a regular file that has
-    /// none. `None` when the file can't carry an id.
-    pub(super) fn read_or_mint(path: &Path) -> Option<uuid::Uuid> {
-        let fresh = uuid::Uuid::new_v4().into_bytes();
-        match tilo_files::native::identity::read_or_mint(path, ATTRIBUTE, fresh) {
-            Ok(id) => id.map(uuid::Uuid::from_bytes),
-            Err(error) => {
-                tracing::debug!(path = %path.display(), %error, "file cannot carry a record id; identifying it by path");
-                None
-            }
-        }
-    }
-}
+mod file_identity;
 
 /// FNV-1a, 64-bit: a fixed algorithm, unlike a library's default hasher, so
 /// the directory names it produces stay stable.
@@ -1093,6 +1111,7 @@ pub mod room {
         AutoCommit, INDEX, ObjId, ObjType, ObjectAt, ROOT, ReadDoc, RecordCheckout, RecordId,
         RecordKind, RecordSet, StringAt, Transactable, object_at, str_at, string_at,
     };
+    use tilo_sort::CompactSort as _;
 
     /// Select the room index. Malformed or conflicted metadata fails closed;
     /// only an entirely absent index is created.
@@ -1191,7 +1210,7 @@ pub mod room {
                 checkout.is_valid().then_some(checkout)
             })
             .collect();
-        out.sort();
+        out.compact_sort();
         out
     }
 
@@ -1218,7 +1237,7 @@ pub mod room {
                 checkout.is_valid().then_some(checkout)
             })
             .collect();
-        out.sort();
+        out.compact_sort();
         out.truncate(super::MAX_DISCOVERED_ROOM_RECORDS);
         out
     }
@@ -1319,15 +1338,16 @@ pub struct RecordSet {
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
     native_initial: Option<crate::collaboration::native_initial::InitialReadBridge>,
-    /// Set by a caller that must not wait on the disk (the compositor, see
-    /// [`RecordStore::open_without_waiting`]): a record whose document the
-    /// store has yet to open is opened by the store's own thread, which
-    /// calls this when done, and the caller is told
-    /// [`RecordOpenError::Opening`] meanwhile.
-    storage_wake: Option<durable_store::ReadyWake>,
     /// How many times a record arrived in the backend without being
     /// opened here ([`RecordStore::note_kept`]).
     kept: std::cell::Cell<u64>,
+    /// Records of this store's trees peers wrote that it does not hold yet
+    /// ([`RecordStore::announce`]).
+    announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    /// The windows that read this store's records
+    /// ([`RecordStore::wake_on_arrival`]): woken when another replica's
+    /// change arrives, which no input or wake of theirs announces.
+    readers: std::cell::RefCell<Vec<crate::WakeHandle>>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1394,8 +1414,9 @@ impl RecordSet {
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
-            storage_wake: None,
             kept: std::cell::Cell::new(0),
+            announced: std::cell::RefCell::default(),
+            readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
     }
@@ -1422,8 +1443,9 @@ impl RecordSet {
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: None,
-            storage_wake: None,
             kept: std::cell::Cell::new(0),
+            announced: std::cell::RefCell::default(),
+            readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
     }
@@ -1480,7 +1502,7 @@ impl RecordSet {
             .iter()
             .map(|(id, p)| RecordCheckout::new(id.clone(), p.kind.clone()))
             .collect();
-        out.sort();
+        out.compact_sort();
         out
     }
 
@@ -1806,22 +1828,6 @@ impl RecordSet {
             })
     }
 
-    /// With [`Self::storage_wake`] set, make sure leasing `record_key`'s
-    /// document waits on nothing: `Err(Opening)` while the store's thread
-    /// opens it.
-    fn prepare_scoped_document(&self, record_key: &str) -> Result<(), RecordOpenError> {
-        let Some(wake) = &self.storage_wake else {
-            return Ok(());
-        };
-        app_state::validate_record_identity(&self.package_id, &self.home, record_key)?;
-        let key = StorageKey::record(&self.package_id, &self.home, record_key);
-        match self.documents()?.prepare_shared(&key, wake) {
-            Ok(()) => Ok(()),
-            Err(durable_store::StoreError::Opening(_)) => Err(RecordOpenError::Opening),
-            Err(error) => Err(error.into()),
-        }
-    }
-
     /// The shared-writer document for one record in this set's room.
     fn scoped_document(
         &self,
@@ -2116,6 +2122,16 @@ impl RecordSet {
                 },
             );
             return Ok(RecordOpenOutcome::Loaded);
+        }
+        // On a thread that may not wait on the disk, whether there is a
+        // record at all is told by a read, not by a lease the reservation of
+        // a new one would take again: each lease there is opened by the
+        // store's own thread and handed over once.
+        if want.formerly.is_empty()
+            && backend.declined_waiting_here()
+            && backend.read(&key)?.is_none()
+        {
+            return Err(RecordOpenError::MissingRecord);
         }
         // The room's own document is the one every window of a room-record
         // app opens, each in its own process, and a relaunch overlaps the
@@ -2480,8 +2496,9 @@ impl RecordOwners {
             native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
-            storage_wake: None,
             kept: std::cell::Cell::new(0),
+            announced: std::cell::RefCell::default(),
+            readers: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -2563,6 +2580,88 @@ pub struct RecordRefusal {
     pub reason: String,
 }
 
+/// What windows said they did to a record ("Added Buy milk"), held until
+/// the room it is shared in keeps the change, so success is never said of
+/// a change the room then refuses ([`RecordStore::hold_notice`]).
+///
+/// A record no host replicates is decided by nobody else: what is said of
+/// it is said at once. A replicated one holds each notice with the heads it
+/// was said at; the next publication carries them, and once the room
+/// answered every commit of the record ([`RecordStore::room_settled`]) the
+/// notices are said. A refusal withdraws the changes, and a notice whose
+/// heads went with them is dropped: the refusal is said instead.
+#[derive(Debug, Default)]
+pub(crate) struct RoomNotices {
+    /// A host replicates the record to a room that decides its changes.
+    replicated: bool,
+    held: Vec<HeldNotice>,
+    /// The heads the last publication carried.
+    sent: Vec<automerge::ChangeHash>,
+    /// The room answered every commit published so far.
+    answered: bool,
+    said: Vec<String>,
+}
+
+#[derive(Debug)]
+struct HeldNotice {
+    text: String,
+    heads: Vec<automerge::ChangeHash>,
+    /// A publication carried its heads.
+    published: bool,
+}
+
+impl RoomNotices {
+    fn hold(&mut self, text: String, heads: Vec<automerge::ChangeHash>) {
+        let unchanged = heads == self.sent;
+        if !self.replicated || (unchanged && self.answered) {
+            self.said.push(text);
+            return;
+        }
+        self.held.push(HeldNotice {
+            text,
+            heads,
+            published: unchanged,
+        });
+    }
+
+    /// A host replicating the record asked for what to publish.
+    fn replicating(&mut self) {
+        self.replicated = true;
+    }
+
+    /// A publication carried the record up to `heads`.
+    fn sent(&mut self, heads: &[automerge::ChangeHash]) {
+        self.replicated = true;
+        heads.clone_into(&mut self.sent);
+        self.answered = false;
+        for notice in &mut self.held {
+            notice.published = true;
+        }
+    }
+
+    /// The room answered every commit published so far.
+    fn settled(&mut self) {
+        self.answered = true;
+        let (published, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|notice| notice.published);
+        self.held = waiting;
+        self.said
+            .extend(published.into_iter().map(|notice| notice.text));
+    }
+
+    /// Changes were withdrawn: what was said at heads `doc` no longer holds
+    /// is not said.
+    fn withdrawn(&mut self, doc: &mut AutoCommit) {
+        self.held.retain(|notice| {
+            notice
+                .heads
+                .iter()
+                .all(|head| doc.get_change_meta_by_hash(head).is_some())
+        });
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordSaveStatus {
     Saved,
@@ -2580,16 +2679,16 @@ pub enum RecordOpenOutcome {
 #[derive(Debug, thiserror::Error)]
 pub enum RecordOpenError {
     #[error(transparent)]
-    Store(#[from] app_state::StoreError),
+    Store(app_state::StoreError),
     #[error("record identity does not match its binding")]
     IdentityMismatch,
     #[error("record does not exist")]
     MissingRecord,
     #[error("record is reserved or already initialized")]
     Busy,
-    /// The store's own thread is still opening the record's document; the
-    /// caller is woken when it is done (see
-    /// [`RecordStore::open_without_waiting`]).
+    /// The store's own thread is still opening the record's document for a
+    /// thread that must not wait on storage; that thread's wake is called
+    /// when it is done (see [`durable_store::waiting`]).
     #[error("the document is still opening")]
     Opening,
     #[error("the new record identity already exists or is reserved")]
@@ -2602,9 +2701,18 @@ pub enum RecordOpenError {
     Retired,
 }
 
+impl From<app_state::StoreError> for RecordOpenError {
+    fn from(error: app_state::StoreError) -> Self {
+        match error {
+            app_state::StoreError::Opening(_) => Self::Opening,
+            other => Self::Store(other),
+        }
+    }
+}
+
 impl From<durable_store::StoreError> for RecordOpenError {
     fn from(error: durable_store::StoreError) -> Self {
-        Self::Store(error.into())
+        Self::from(app_state::StoreError::from(error))
     }
 }
 
@@ -3131,7 +3239,7 @@ impl RecordStore {
     pub fn content_revision(&self) -> String {
         let set = self.0.borrow();
         let mut records = set.open.iter().collect::<Vec<_>>();
-        records.sort_unstable_by_key(|(id, _)| *id);
+        records.compact_sort_by_key(|(id, _)| *id);
         let mut revision = String::new();
         for (id, parked) in records {
             use std::fmt::Write as _;
@@ -3243,6 +3351,37 @@ impl RecordStore {
         if let Ok(set) = self.0.try_borrow() {
             set.kept.set(set.kept.get().wrapping_add(1));
         }
+        self.wake_readers();
+    }
+
+    /// Peers wrote `records` of this store's trees ([`RecordId::tree`]),
+    /// which it does not hold: whatever follows those trees takes them up
+    /// at once ([`Self::announced_parts`]), as after [`Self::note_kept`].
+    /// Callable while a frame reads the store.
+    pub fn announce(&self, records: impl IntoIterator<Item = RecordId>) {
+        if let Ok(set) = self.0.try_borrow() {
+            set.announced
+                .borrow_mut()
+                .extend(records.into_iter().filter(|record| record.tree().is_some()));
+            set.kept.set(set.kept.get().wrapping_add(1));
+        }
+        self.wake_readers();
+    }
+
+    /// The numbers of the parts of the chain `base` peers wrote
+    /// ([`Self::announce`]), in order.
+    #[must_use]
+    pub fn announced_parts(&self, base: &RecordId) -> Vec<u64> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        let announced = set.announced.borrow();
+        announced
+            .iter()
+            .filter_map(RecordId::chain_part)
+            .filter(|(chain, _)| chain == base)
+            .map(|(_, index)| index)
+            .collect()
     }
 
     /// Moves whenever [`Self::note_kept`] is called.
@@ -3267,18 +3406,19 @@ impl RecordStore {
             .filter(|(chain, _)| chain == base)
             .map(|(_, index)| index)
             .collect();
-        open.sort_unstable();
+        open.compact_sort();
         open
     }
 
     /// Every [window default record](RecordId::window_default) of `kind`
     /// this package keeps in this room, sorted by id, each as last made
-    /// durable: what an app that kept a record per window left behind once
-    /// it keeps one per room. Read without taking any writer, so a window
+    /// durable: the documents an app's windows started, which it lists so a
+    /// closed window's document is reached again, or left behind once it
+    /// keeps one per room. Read without taking any writer, so a window
     /// still showing one keeps it, and nothing here changes them. A record
     /// that cannot be read, is retired, or is not of `kind` in this room is
-    /// left out (and logged), never an error: these are a migration's
-    /// sources, and one bad one must not keep the others out.
+    /// left out (and logged), never an error: one bad one must not keep the
+    /// others out.
     pub fn window_records(&self, kind: &RecordKind) -> Vec<(RecordId, AutoCommit)> {
         let Some(store) = self.backend() else {
             return Vec::new();
@@ -3308,7 +3448,7 @@ impl RecordStore {
                 }
             })
             .collect::<Vec<_>>();
-        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.compact_sort_by(|a, b| a.0.cmp(&b.0));
         found
     }
     /// Explicit immutable identity only: the store namespace, package and
@@ -3438,6 +3578,23 @@ impl RecordStore {
         } else {
             RecordSaveStatus::MemoryOnly
         })
+    }
+
+    /// Have `wake` called whenever [`Self::save_status`] of `id` may change
+    /// without input: its store resolving its writer's writes, or a host
+    /// acknowledging a portable cache. A memory-only record never changes.
+    /// Sample again once armed: a write that landed before is not heard of.
+    pub fn wake_on_save_progress(&self, id: &RecordId, wake: durable_store::ReadyWake) {
+        let Ok(set) = self.0.try_borrow() else {
+            return;
+        };
+        if let Some(cache) = &set.portable {
+            cache.watch_durability(&portable::key(&set.package_id, &set.home, id), wake);
+            return;
+        }
+        if let Some(saver) = set.open.get(id).and_then(|slot| slot.autosave.as_ref()) {
+            saver.wake_on_settle(wake);
+        }
     }
 
     /// Block until the store has committed or refused every write `id`'s
@@ -3597,16 +3754,6 @@ impl RecordStore {
         self.0.borrow_mut().open_record(want, None)
     }
 
-    /// From now on, never wait on the disk to open or create a record: one
-    /// whose document the store has yet to open is refused with
-    /// [`RecordOpenError::Opening`] while the store's own thread opens it,
-    /// and `wake` is called when that is done, so the caller asks again.
-    /// For a caller on a frame loop. A store with no thread of its own
-    /// still opens in place.
-    pub fn open_without_waiting(&self, wake: durable_store::ReadyWake) {
-        self.0.borrow_mut().storage_wake = Some(wake);
-    }
-
     /// Create exactly the new resource named by its owning action. Reopening
     /// existing tabs must use existing-only admission instead.
     ///
@@ -3638,7 +3785,6 @@ impl RecordStore {
         }
         let owner = if set.persistent {
             let key = want.id.storage_key();
-            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             // An empty/corrupt document is existing evidence too, never
             // permission to replace it with a freshly initialized one.
@@ -3739,7 +3885,6 @@ impl RecordStore {
                 return Err(RecordOpenError::IdentityMismatch);
             }
             let key = want.id.storage_key();
-            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             let (mut doc, adopted) = if let Some(doc) = owner.load_complete()? {
                 (doc, false)
@@ -4019,7 +4164,7 @@ impl RecordStore {
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
         let identity = self.replica_identity_stamp(checkout)?;
-        self.with_action_state(&checkout.id, |doc, history, actions| {
+        let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();
             actions.commit_for_save(&mut local);
             let before = local.get_heads();
@@ -4028,6 +4173,11 @@ impl RecordStore {
                 collab_types::DocumentMutation::Snapshot(bytes) => {
                     let mut incoming =
                         AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                    // The host's empty document for a record a member is
+                    // creating carries nothing to merge, and no identity.
+                    if incoming.get_heads().is_empty() {
+                        return Ok((false, Vec::new()));
+                    }
                     identity.validate(&incoming)?;
                     let heads = incoming.get_heads();
                     // Merging copies every change the receiving side lacks, so
@@ -4042,6 +4192,15 @@ impl RecordStore {
                         .collect();
                     if shared.len() == heads.len() {
                         candidate = local.clone();
+                    } else if !local.get_missing_deps(&[]).is_empty() {
+                        // Changes the replica received before the ones they
+                        // build on wait in it, and only there: copying the
+                        // replica's changes into the snapshot would leave
+                        // them behind, so the snapshot's come to the replica.
+                        candidate = local.clone();
+                        candidate
+                            .load_incoming(&incoming.save_after(&[]))
+                            .map_err(|error| error.to_string())?;
                     } else {
                         let unshared = local.save_after(&shared);
                         incoming.set_actor(local.get_actor().clone());
@@ -4053,21 +4212,8 @@ impl RecordStore {
                     heads
                 }
                 collab_types::DocumentMutation::Incremental(bytes) => {
-                    // load_incremental deliberately accepts a valid prefix of
-                    // corrupt input. Validate the entire payload first. Missing
-                    // dependencies are valid for an incremental message and are
-                    // checked only after Automerge has parsed every chunk.
-                    match AutoCommit::load_with_options(
-                        &bytes,
-                        automerge::LoadOptions::new()
-                            .on_partial_load(automerge::OnPartialLoad::Error),
-                    ) {
-                        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
-                        Err(error) => return Err(error.to_string()),
-                    }
                     candidate = local.clone();
-                    candidate
-                        .load_incoming(&bytes)
+                    crate::history_mode::routes::load_incremental(&mut candidate, &bytes)
                         .map_err(|error| error.to_string())?;
                     // The new heads stand for every change the payload added:
                     // listing each one re-encodes them all, which costs as
@@ -4089,10 +4235,24 @@ impl RecordStore {
                 actions.generation = actions.generation.and_then(|value| value.checked_add(1));
             }
             // Keep valid changes with dependencies still in flight, too.
+            let missing = candidate.get_missing_deps(&[]);
+            if !missing.is_empty() {
+                // Shown until they arrive; a record that keeps waiting never
+                // received a change another replica built on.
+                tracing::debug!(
+                    record = %checkout.id,
+                    missing = ?missing.iter().take(4).map(|hash| hash.to_string()).collect::<Vec<_>>(),
+                    "remote changes wait for changes this replica has not received"
+                );
+            }
             *doc = candidate;
             Ok((changed, observed))
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        if let Ok((true, _)) = &merged {
+            self.wake_readers();
+        }
+        merged
     }
 
     /// Merge a peer's full document into an open record, exactly as a
@@ -4191,7 +4351,8 @@ impl RecordStore {
                 if kept_heads.is_empty() {
                     // The record's own creation was refused: it stays as this
                     // device made it, a record nobody else holds, rather than
-                    // one with no identity.
+                    // one with no identity. Nothing said of it holds.
+                    action_state.notices.held.clear();
                     return Ok(None);
                 }
                 let actor = doc.get_actor().clone();
@@ -4204,6 +4365,7 @@ impl RecordStore {
                     .generation
                     .and_then(|value| value.checked_add(1));
                 *doc = rebuilt;
+                action_state.notices.withdrawn(doc);
                 Ok(Some(doc.get_heads()))
             },
         )?;
@@ -4215,6 +4377,42 @@ impl RecordStore {
             writer.request_checkpoint(doc);
         }
         Ok(withdrawn)
+    }
+
+    /// Say `text` of what was just done to the open record `id` once the
+    /// room it is shared in keeps it (`RoomNotices`): at once when no host
+    /// replicates it, never when the room refuses it. The pending action is
+    /// committed first, so the change it names is among the heads held.
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub fn hold_notice(&self, id: &RecordId, text: String) -> Result<(), RecordOpenError> {
+        self.with_action_state(id, |doc, _, actions| {
+            actions.commit_for_save(doc);
+            let heads = doc.get_heads();
+            actions.notices.hold(text, heads);
+        })
+    }
+
+    /// The room answered every commit of record `id` its host published:
+    /// what was held for them is said ([`Self::take_said`]).
+    pub fn room_settled(&self, id: &RecordId) {
+        if let Ok(mut set) = self.0.try_borrow_mut()
+            && let Some(parked) = set.open.get_mut(id)
+        {
+            parked.action_state.notices.settled();
+        }
+    }
+
+    /// What to say now of record `id` ([`Self::hold_notice`]), each once.
+    pub fn take_said(&self, id: &RecordId) -> Vec<String> {
+        let Ok(mut set) = self.0.try_borrow_mut() else {
+            return Vec::new();
+        };
+        set.open
+            .get_mut(id)
+            .map(|parked| std::mem::take(&mut parked.action_state.notices.said))
+            .unwrap_or_default()
     }
 
     /// The refusals of record `id` noted since the last call
@@ -4243,7 +4441,13 @@ impl RecordStore {
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
-            frontier.pending_delta(doc)
+            let (delta, heads) = frontier.pending_delta(doc);
+            if delta.is_empty() {
+                actions.notices.replicating();
+            } else {
+                actions.notices.sent(&heads);
+            }
+            (delta, heads)
         })
     }
 
@@ -4258,7 +4462,9 @@ impl RecordStore {
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
-            (doc.save(), doc.get_heads())
+            let heads = doc.get_heads();
+            actions.notices.sent(&heads);
+            (doc.save(), heads)
         })
     }
 
@@ -4322,6 +4528,20 @@ impl RecordStore {
     /// Every record this store holds.
     pub fn open_records(&self) -> Vec<RecordCheckout> {
         self.0.borrow().open_records()
+    }
+
+    /// The open records that belong to another's tree ([`RecordId::tree`]),
+    /// ready to read; none while a frame holds the store.
+    #[must_use]
+    pub fn open_tree_records(&self) -> Vec<RecordCheckout> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        set.open
+            .iter()
+            .filter(|(id, parked)| parked.doc.is_some() && id.tree().is_some())
+            .map(|(id, parked)| RecordCheckout::new(id.clone(), parked.kind.clone()))
+            .collect()
     }
 
     /// Offer every open record to its writer. Once per idle tick.
@@ -4413,6 +4633,10 @@ pub fn tick(
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod identity_tests;
+
+mod arrival;
+#[cfg(test)]
+mod replica_merge_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5754,137 +5978,4 @@ mod tests {
 }
 
 #[cfg(test)]
-mod portable_tests {
-    use super::*;
-
-    #[test]
-    fn portable_owner_preserves_reservation_identity_actor_and_durability() {
-        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-        let mut owners = RecordOwners::portable(cache.clone());
-        let store = owners.open("so.tilo.test", "room").unwrap();
-        let again = owners.open("so.tilo.test", "room").unwrap();
-        assert!(store.same_owner(&again));
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let mut reservation = store.reserve_record(&checkout).unwrap();
-        assert!(again.reserve_record(&checkout).is_err());
-        assert!(!store.is_ready(&checkout.id));
-        reservation
-            .initialize(|doc| {
-                doc.put(automerge::ROOT, "title", "Hello").unwrap();
-                Ok(())
-            })
-            .unwrap();
-        let actor = store
-            .read(&checkout.id, |doc| doc.get_actor().clone())
-            .unwrap();
-        assert!(store.try_flush().is_err());
-        for write in cache.pending_writes() {
-            cache.acknowledge(&write, Ok(())).unwrap();
-        }
-        assert!(store.try_flush().is_ok());
-        assert_eq!(
-            store.save_status(&checkout.id).unwrap(),
-            RecordSaveStatus::Saved
-        );
-        drop(reservation);
-        drop(again);
-        drop(store);
-        let reopened = owners.open("so.tilo.test", "room").unwrap();
-        reopened.try_open_record(&checkout).unwrap();
-        assert_eq!(
-            reopened
-                .read(&checkout.id, |doc| doc.get_actor().clone())
-                .unwrap(),
-            actor
-        );
-        let wrong_kind = RecordCheckout::new(checkout.id.clone(), RecordKind::new("other"));
-        assert!(matches!(
-            reopened.try_open_record(&wrong_kind),
-            Err(RecordOpenError::IdentityMismatch)
-        ));
-    }
-    #[test]
-    fn portable_failed_initializer_keeps_reservation_until_drop() {
-        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-        let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "room")
-            .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let mut reservation = store.reserve_record(&checkout).unwrap();
-        assert!(reservation.initialize(|_| Err("failed".into())).is_err());
-        assert!(store.reserve_record(&checkout).is_err());
-        assert!(cache.pending_writes().is_empty());
-        drop(reservation);
-        assert!(store.reserve_record(&checkout).is_ok());
-    }
-
-    /// A change the room refused leaves the record with every change built
-    /// on it, each named for the app as the action it was; what came before
-    /// stays.
-    #[test]
-    fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
-        use collab_types::CommitNamed as _;
-        let store = RecordStore::in_memory();
-        let checkout = RecordCheckout::new(RecordId::for_tab(77), RecordKind::new("tab"));
-        store.create_record(&checkout).unwrap();
-        let commit = |field: &str, value: &str| {
-            store
-                .with(&checkout.id, |doc| {
-                    doc.put(automerge::ROOT, field, value).unwrap();
-                    doc.commit_edit("test.note", field).unwrap()
-                })
-                .unwrap()
-        };
-        commit("title", "kept");
-        let refused = commit("body", "refused");
-        commit("footer", "built on it");
-        let heads = store
-            .withdraw_refused(&checkout.id, &[refused], "This room doesn't allow that.")
-            .unwrap()
-            .expect("something was withdrawn");
-        assert_eq!(
-            store.with(&checkout.id, AutoCommit::get_heads).unwrap(),
-            heads
-        );
-        assert_eq!(
-            store
-                .read(&checkout.id, |doc| str_at(doc, &ROOT, "title"))
-                .flatten()
-                .as_deref(),
-            Some("kept")
-        );
-        assert_eq!(
-            store
-                .read(&checkout.id, |doc| str_at(doc, &ROOT, "body"))
-                .flatten(),
-            None
-        );
-        assert_eq!(
-            store
-                .read(&checkout.id, |doc| str_at(doc, &ROOT, "footer"))
-                .flatten(),
-            None
-        );
-        let refusals = store.take_refusals(&checkout.id);
-        assert_eq!(
-            refusals
-                .iter()
-                .map(|refusal| refusal.action.as_str())
-                .collect::<Vec<_>>(),
-            ["body", "footer"]
-        );
-        assert!(
-            refusals
-                .iter()
-                .all(|refusal| refusal.reason == "This room doesn't allow that.")
-        );
-        assert!(store.take_refusals(&checkout.id).is_empty(), "told once");
-        assert_eq!(
-            store
-                .withdraw_refused(&checkout.id, &[refused], "again")
-                .unwrap(),
-            None,
-            "a change the record no longer holds withdraws nothing"
-        );
-    }
-}
+mod portable_tests;

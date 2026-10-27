@@ -23,6 +23,7 @@ use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp};
 use crate::model::{Drive, Partition, Topology};
+use crate::offer::{self, Offer};
 
 /// What the person authors about their storage devices.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -85,7 +86,7 @@ impl Disks {
 /// name their target by its kernel name (`sda`, `nvme0n1p2`) and are
 /// checked against the latest probe before anything runs.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "disks.device", device_only)]
+#[effect(operation = "disks.device")]
 pub enum DisksEffect {
     /// Rescan storage devices.
     #[effect(kind = "read")]
@@ -99,7 +100,7 @@ pub enum DisksEffect {
     /// Show detail tab.
     #[effect(kind = "read")]
     ShowTab {
-        #[param("overview | smart | partitions")]
+        #[param("The tab to show", choices = ["overview", "smart", "partitions"])]
         tab: String,
     },
     /// Mount.
@@ -114,8 +115,9 @@ pub enum DisksEffect {
         #[param("Kernel name of the partition")]
         device: String,
     },
-    /// Format.
-    #[effect(job, destructive)]
+    /// Erase a drive or partition for good: every file on it is lost, and it
+    /// starts again empty.
+    #[effect(job, destructive, label = "Format")]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
@@ -130,6 +132,22 @@ pub enum DisksEffect {
     #[effect(job)]
     Eject {
         #[param("Kernel name of the removable drive")]
+        device: String,
+    },
+    /// Open a mounted filesystem where it lives, in Files.
+    ///
+    /// A mount is only useful once its files are reachable: this is the way
+    /// there, without copying the path out of the row.
+    #[effect(job, label = "Open in Files")]
+    OpenFolder {
+        #[param("Kernel name of the mounted partition")]
+        device: String,
+    },
+    /// Show how much room a mounted filesystem's files take up, in the Disk
+    /// Usage analyzer.
+    #[effect(job, label = "Show disk usage")]
+    DiskUsage {
+        #[param("Kernel name of the mounted partition")]
         device: String,
     },
 }
@@ -148,6 +166,23 @@ impl DisksEffect {
     }
 }
 
+/// The session link that opens the Disk Usage analyzer in the workspace the
+/// window is in. Its job is a different one from partitioning — what the
+/// person's own files take up, not what the hardware is — so the two apps
+/// find each other by link and stay two apps.
+pub(crate) const USAGE_LINK: &str = "tilo://open#/me/so.tilo.disk-usage";
+
+/// The mount point of `device` on `topology`, when it is mounted.
+pub(crate) fn mount_point(topology: &Topology, device: &str) -> Option<String> {
+    topology
+        .drives
+        .iter()
+        .flat_map(|drive| drive.partitions.iter())
+        .find(|part| part.name == device)
+        .and_then(|part| part.mountpoint.clone())
+        .filter(|mount| !mount.trim().is_empty())
+}
+
 /// The published row of the drive named `leaf`.
 pub(crate) fn drive_row_id(leaf: &str) -> String {
     format!("disk:{leaf}")
@@ -158,36 +193,127 @@ pub(crate) fn partition_row_id(leaf: &str) -> String {
     format!("partition:{leaf}")
 }
 
-/// `kind` on `device`, as a row offers it. Formatting asks the caller to
-/// type the device's name, as erasing it deserves.
-fn row_operation(kind: ActionKind, device: &str) -> ui::tilo_actions::ActionSpec {
+/// What formatting `part` of `drive` (`None`: the whole drive) erases, in
+/// the words the confirmation asks with: the partitions and the files a
+/// person would lose, never only the action's name.
+fn format_loses(drive: &Drive, part: Option<&Partition>) -> String {
+    let Some(part) = part else {
+        return match drive.partitions.len() {
+            0 => "Everything on it is erased for good.".to_owned(),
+            1 => "Its partition and every file on it are erased for good.".to_owned(),
+            n => format!("Its {n} partitions and every file on them are erased for good."),
+        };
+    };
+    let on = part
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map_or_else(
+            || "it".to_owned(),
+            |label| format!("\u{201c}{label}\u{201d}"),
+        );
+    match part.used.filter(|used| *used > 0) {
+        Some(used) => format!(
+            "The {} of files on {on} are erased for good.",
+            ui::format::size(used)
+        ),
+        None => format!("Every file on {on} is erased for good."),
+    }
+}
+
+/// `kind` on `device`, as a row offers it: unavailable, with the reason,
+/// when `offer` says so. Formatting asks the caller to type the device's
+/// name, as erasing it deserves, and says what is lost.
+fn row_operation(
+    kind: ActionKind,
+    device: &str,
+    offer: Offer,
+    lost: impl FnOnce() -> String,
+) -> ui::tilo_actions::ActionSpec {
     let mut spec = DisksEffect::operation(kind, device).bound();
     if kind.destructive() {
         spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
             phrase: device.to_owned(),
         };
+        spec.type_mut().description = Some(lost());
+    }
+    if let Offer::Unavailable(reason) = offer {
+        spec.type_mut().contract.availability = ui::tilo_actions::Availability::Unavailable {
+            code: "disks_target_in_use".into(),
+            reason: reason.into(),
+        };
     }
     spec
 }
 
-/// The row of one partition: select it, and the operations that apply.
-fn partition_row(part: &Partition) -> LiveRow {
-    let mount = if part.mountpoint.is_some() {
-        ActionKind::Unmount
-    } else {
-        ActionKind::Mount
-    };
-    LiveRow::new(
+/// Each of `actions` that `part` of `drive` shows, as row operations.
+fn operations(
+    mut row: LiveRow,
+    drive: &Drive,
+    part: Option<&Partition>,
+    device: &str,
+    actions: &[ActionKind],
+) -> LiveRow {
+    for &action in actions {
+        let offer = offer::offer(drive, part, action);
+        if offer.is_shown() {
+            row = row.operation(row_operation(action, device, offer, || {
+                format_loses(drive, part)
+            }));
+        }
+    }
+    row
+}
+
+/// The row of one partition: select it, and the operations it shows, the
+/// same ones its context menu offers.
+fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
+    let row = LiveRow::new(
         partition_row_id(&part.name),
         "disks.partition",
         part.name.clone(),
     )
     .effect(&DisksEffect::Select {
         device: part.name.clone(),
-    })
-    .operation(row_operation(mount, &part.name))
-    .operation(row_operation(ActionKind::Benchmark, &part.name))
-    .operation(row_operation(ActionKind::Format, &part.name))
+    });
+    let row = operations(
+        row,
+        drive,
+        Some(part),
+        &part.name,
+        &[
+            ActionKind::Mount,
+            ActionKind::Unmount,
+            ActionKind::Benchmark,
+            ActionKind::Format,
+        ],
+    );
+    // A mounted filesystem's files are reachable, so both ways to go and
+    // look at them are offered where the mount is.
+    if part.mountpoint.is_none() {
+        return row;
+    }
+    row.operation(row_view_operation(
+        &DisksEffect::OpenFolder {
+            device: part.name.clone(),
+        },
+        "Open in Files",
+    ))
+    .operation(row_view_operation(
+        &DisksEffect::DiskUsage {
+            device: part.name.clone(),
+        },
+        "How much space is left?",
+    ))
+}
+
+/// `effect` as a row operation, named `label`: what a row can do that
+/// changes nothing on the machine.
+fn row_view_operation(effect: &DisksEffect, label: &str) -> ui::tilo_actions::ActionSpec {
+    let mut spec = effect.bound();
+    spec.type_mut().label.clone_from(&label.to_owned());
+    spec
 }
 
 /// The row of one drive, with its partitions beneath it.
@@ -198,17 +324,20 @@ pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> Live
         .and_then(|serial| names.get(serial))
         .cloned()
         .unwrap_or_else(|| drive.model.clone());
-    let mut row = LiveRow::new(drive_row_id(&drive.name), "disks.drive", label)
-        .effect(&DisksEffect::Select {
+    let row = LiveRow::new(drive_row_id(&drive.name), "disks.drive", label).effect(
+        &DisksEffect::Select {
             device: drive.name.clone(),
-        })
-        .operation(row_operation(ActionKind::Format, &drive.name))
-        .operation(row_operation(ActionKind::Benchmark, &drive.name));
-    if drive.removable {
-        row = row.operation(row_operation(ActionKind::Eject, &drive.name));
-    }
+        },
+    );
+    let mut row = operations(
+        row,
+        drive,
+        None,
+        &drive.name,
+        &[ActionKind::Format, ActionKind::Benchmark, ActionKind::Eject],
+    );
     for part in &drive.partitions {
-        row = row.row(partition_row(part));
+        row = row.row(partition_row(drive, part));
     }
     row
 }
@@ -216,9 +345,13 @@ pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> Live
 /// The framework app.
 pub struct DisksShell;
 
-/// Screenshot scenarios: the sample machine, staged. A phone-sized capture
-/// stages the same state as its wide twin.
+/// Screenshot scenarios: the sample machine, staged, and (`laptop*`) a real
+/// laptop's captured storage. A phone-sized capture stages the same state as
+/// its wide twin.
 const SCENARIOS: &[&str] = &[
+    "laptop",
+    "laptop-partitions",
+    "laptop-health",
     "health",
     "partitions",
     "partition",
@@ -228,6 +361,7 @@ const SCENARIOS: &[&str] = &[
     "toast",
     "toast-error",
     "empty",
+    "loading",
     "narrow",
     "drawer",
     "phone",
@@ -239,6 +373,7 @@ const SCENARIOS: &[&str] = &[
 impl ResourceApp for DisksShell {
     type Resource = Disks;
     const ID: &'static str = "so.tilo.disks";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Disks";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -258,16 +393,21 @@ impl ResourceApp for DisksShell {
                 // Narrow enough that the drive list collapses into a drawer.
                 "drawer" => Some((640, 600)),
                 _ if name.starts_with("phone") => Some((520, 820)),
+                // Tall enough for the list and the chosen partition's
+                // details under it.
+                "laptop-partitions" => Some((1280, 1280)),
                 _ => None,
             })
             .unwrap_or((1280, 800))
     }
 
     fn fixture(fixture: &mut Fixture<Disks>) {
-        let topology = if fixture.scenario() == Some("empty") {
-            Topology::default()
-        } else {
-            Topology::sample()
+        let topology = match fixture.scenario() {
+            Some("empty" | "loading") => Topology::default(),
+            Some(name) if name.starts_with("laptop") => {
+                crate::probe::captured::yoga().unwrap_or_default()
+            }
+            _ => Topology::sample(),
         };
         fixture.provide(topology);
     }
@@ -291,7 +431,7 @@ impl ResourceSurface<Disks, DisksEffect> for DisksApp {
 
     fn attach(&mut self, cx: SurfaceCx<Disks>) {
         let fixture = cx.fixture::<Topology>().map(|topology| (*topology).clone());
-        self.attach_framework(cx.dispatcher(), cx.mode(), fixture);
+        self.attach_framework(cx.dispatcher(), cx.mode(), fixture, cx.waker());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -403,6 +543,22 @@ mod tests {
             },
             "erasing a drive asks for its name"
         );
+        assert_eq!(
+            format.description.as_deref(),
+            Some("Its 4 partitions and every file on them are erased for good."),
+            "the question says what erasing the drive loses"
+        );
+        let media = find(&resources, "partition:sdb1").expect("the media partition");
+        let format = media
+            .actions
+            .iter()
+            .find(|action| action.id == "format")
+            .unwrap();
+        assert_eq!(
+            format.description.as_deref(),
+            Some("The 1.5 TB of files on \u{201c}Media\u{201d} are erased for good."),
+            "the question names the partition and what it holds"
+        );
         let partition = find(&resources, "partition:nvme0n1p2").expect("a partition row");
         assert!(
             action_ids(partition)
@@ -425,6 +581,146 @@ mod tests {
             .filter(|row| row.actions.iter().any(|action| action.id == "eject"))
             .count();
         assert_eq!(removable, 1, "only the removable drive ejects");
+    }
+
+    #[test]
+    fn a_mounted_filesystem_offers_both_ways_on_its_files() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        let resources = app.harness().resources();
+        let mounted = find(&resources, "partition:sdb1").expect("the media partition");
+        assert!(
+            mounted
+                .actions
+                .iter()
+                .any(|action| action.id == "open-folder"),
+            "a mounted row offers the way to its files: {:?}",
+            action_ids(mounted)
+        );
+        assert!(
+            mounted
+                .actions
+                .iter()
+                .any(|action| action.id == "disk-usage"),
+            "and how much room they take: {:?}",
+            action_ids(mounted)
+        );
+        let sample = crate::model::Topology::sample();
+        let unmounted_row = sample
+            .drives
+            .iter()
+            .flat_map(|drive| drive.partitions.iter())
+            .find(|part| part.mountpoint.is_none());
+        if let Some(unmounted) = unmounted_row {
+            let row = find(&resources, &format!("partition:{}", unmounted.name))
+                .expect("an unmounted partition row");
+            assert!(
+                row.actions
+                    .iter()
+                    .all(|action| !matches!(action.id.as_str(), "open-folder" | "disk-usage")),
+                "a filesystem that is not mounted has nowhere to go: {:?}",
+                action_ids(row)
+            );
+        }
+
+        // Both are offered on the sample machine, which says what it would do.
+        let said = |output: ui::tilo_actions::ActionOutput| {
+            output
+                .value
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        };
+        let opened = said(
+            app.effect(&DisksEffect::OpenFolder {
+                device: "sdb1".into(),
+            })
+            .unwrap(),
+        );
+        assert!(
+            opened.contains("would open /mnt/media in Files"),
+            "{opened:?}"
+        );
+        let usage = said(
+            app.effect(&DisksEffect::DiskUsage {
+                device: "sdb1".into(),
+            })
+            .unwrap(),
+        );
+        assert!(usage.contains("would open Disk Usage"), "{usage:?}");
+    }
+
+    #[test]
+    fn a_filesystem_that_is_not_mounted_has_nowhere_to_go() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        // A whole disk has no mount point of its own.
+        assert!(
+            app.effect(&DisksEffect::OpenFolder {
+                device: "nvme0n1".into()
+            })
+            .is_err(),
+            "a device that is not a mounted filesystem is refused, not opened"
+        );
+        assert!(
+            app.effect(&DisksEffect::DiskUsage {
+                device: "nvme0n1".into()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_usage_link_names_the_analyzer_in_the_persons_own_workspace() {
+        assert_eq!(
+            USAGE_LINK, "tilo://open#/me/so.tilo.disk-usage",
+            "an app and no record opens the app as launching it would"
+        );
+        assert!(
+            ui::tilo_reference::link::Link::parse_native(USAGE_LINK).is_ok(),
+            "the session's own grammar takes it"
+        );
+        let topology = crate::model::Topology::sample();
+        assert_eq!(
+            mount_point(&topology, "sdb1").as_deref(),
+            Some("/mnt/media")
+        );
+        assert_eq!(mount_point(&topology, "sdb"), None, "a disk is not mounted");
+    }
+
+    /// The drive page's two ways on reach the machine's own effects: the
+    /// buttons name the mounted filesystem the section has selected, and the
+    /// sample machine says what it would do rather than doing it.
+    #[test]
+    fn the_drive_pages_ways_on_run_the_effects_they_name() {
+        // The drive page acts for the filesystem holding the most, not for
+        // whichever partition comes first.
+        let topology = crate::model::Topology::sample();
+        let mount = topology.drives[0]
+            .partitions
+            .iter()
+            .filter(|part| part.mountpoint.is_some())
+            .max_by_key(|part| part.used.unwrap_or(0))
+            .and_then(|part| part.mountpoint.clone())
+            .expect("the sample drive has a mounted filesystem");
+        assert_ne!(mount, "/boot/efi", "a boot partition is not the drive");
+
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        app.harness()
+            .click_named("disks-open-in-files")
+            .expect("the drive page offers the way to the files");
+        app.settle();
+        let opened = app.harness().inspection_json().unwrap();
+        assert!(
+            opened.contains(&format!("would open {mount} in Files")),
+            "the button opened {mount}: {opened}"
+        );
+        app.harness()
+            .click_named("disks-space-left")
+            .expect("the drive page offers how much space is left");
+        app.settle();
+        let usage = app.harness().inspection_json().unwrap();
+        assert!(
+            usage.contains(&format!("would open Disk Usage for {mount}")),
+            "the button asked the analyzer about {mount}: {usage}"
+        );
     }
 
     #[test]
@@ -471,7 +767,9 @@ mod tests {
     #[test]
     fn an_action_bar_button_runs_the_operation_its_row_offers() {
         let mut app = TestApp::<SampleDisks>::new().unwrap();
-        app.harness().click_named("disks-action-benchmark").unwrap();
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+            id: ActionKind::Benchmark.key().to_owned(),
+        });
         app.settle();
         app.harness().relayout();
         assert!(
@@ -524,7 +822,6 @@ mod tests {
         assert!(app.undo(), "naming a drive is an undo step");
         assert!(app.state().names.is_empty());
 
-        // An agent names a drive in one call.
         app.call(
             "name-drive",
             serde_json::json!({ "serial": "S6Z1NJ0T934217X", "name": "Fast" }),
@@ -593,7 +890,11 @@ mod tests {
             let mut app = TestApp::<DisksShell>::capture(scenario).unwrap();
             let resources = app.harness().resources();
             let sample = find(&resources, "disk:nvme0n1").is_some();
-            assert_eq!(sample, scenario != Some("empty"), "{scenario:?}");
+            assert_eq!(
+                sample,
+                !matches!(scenario, Some("empty" | "loading")),
+                "{scenario:?}"
+            );
             let audit = app.harness().native_app_audit();
             assert!(audit.is_certified(), "{scenario:?}: {audit:#?}");
         }
@@ -613,5 +914,28 @@ mod tests {
                 .unwrap()
                 .contains("failed")
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::DisksShell::scenarios() {
+            let mut app = TestApp::<super::DisksShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

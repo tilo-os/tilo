@@ -159,6 +159,17 @@ pub struct Plane {
     pub stride: u32,
 }
 
+/// The device a render service draws on, in wgpu's words (`AdapterInfo`'s
+/// name, device type, backend and driver, as `Debug` prints the enums).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Renderer {
+    pub name: String,
+    /// `Cpu` when frames are rasterised in software.
+    pub device_type: String,
+    pub backend: String,
+    pub driver: String,
+}
+
 /// What the service sends.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServiceMessage {
@@ -169,6 +180,9 @@ pub enum ServiceMessage {
         version: u16,
         limits: Limits,
         font_roots: Vec<String>,
+        /// What draws this app's frames, which the app names in its log as
+        /// a window drawing on its own GPU names its adapter.
+        renderer: Renderer,
     },
     /// The buffers `surface` is drawn into from now on, one descriptor each,
     /// in order. A new generation replaces the previous one (a resize).
@@ -197,11 +211,6 @@ pub enum ServiceMessage {
     Refused { why: Refusal },
 }
 
-/// Encode `message` for the channel.
-///
-/// # Errors
-///
-/// When it does not fit [`MAX_MESSAGE_BYTES`].
 pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, WireError> {
     let bytes = postcard::to_allocvec(message).map_err(|_| WireError::Malformed("message"))?;
     if bytes.len() > MAX_MESSAGE_BYTES {
@@ -211,10 +220,6 @@ pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, WireError> {
 }
 
 /// Decode a message from the channel.
-///
-/// # Errors
-///
-/// When the bytes are not exactly one message.
 pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, WireError> {
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(WireError::OverLimit("message size"));

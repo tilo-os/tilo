@@ -13,7 +13,6 @@ pub(super) struct Rooms {
 }
 
 impl Rooms {
-    /// The `profile`'s own room and those it `joined`.
     pub(super) fn new(profile: &Arc<ProfileWorkspace>, joined: &Arc<Joined>) -> Self {
         Self {
             profile: Arc::clone(profile),
@@ -57,7 +56,7 @@ impl WorkspaceAuthority for Rooms {
         };
         let joined = RoomId::parse(room)
             .and_then(|id| self.joined.workspace(id))
-            .filter(|workspace| workspace.room.to_string() == room);
+            .filter(|workspace| workspace.room().to_string() == room);
         read(joined.as_ref());
         Ok(())
     }

@@ -8,24 +8,25 @@ mod https_completion {
         ModerationConsentPreview, ModerationConsentPurpose,
     };
 
-    #[allow(
-        clippy::panic,
-        reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
-    )]
     async fn bounded<T>(stage: &str, future: impl std::future::Future<Output = T>) -> T {
-        tokio::time::timeout(std::time::Duration::from_secs(15), future)
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for {stage}"))
+        tilo_test_env::within(stage, future).await
     }
 
-    #[allow(
-        clippy::panic,
-        reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
-    )]
-    async fn scenario(stage: &str, future: impl std::future::Future<Output = ()>) {
-        tokio::time::timeout(std::time::Duration::from_secs(60), future)
-            .await
-            .unwrap_or_else(|_| panic!("timed out during {stage}"));
+    /// Run the test `test`'s `future` in a process of its own, with the
+    /// wall clock held: the approved operations' validity windows, checked
+    /// by the broker and the registry, never lapse mid-test, and no other
+    /// test reads the held time.
+    fn scenario(test: &str, stage: &str, future: impl std::future::Future<Output = ()>) {
+        tilo_test_env::in_own_process(module_path!(), test, || {
+            tilo_clock::freeze_wall(tilo_clock::wall());
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(
+                    tokio::task::LocalSet::new().run_until(tilo_test_env::within(stage, future)),
+                );
+        });
     }
 
     async fn native_app(room: &Room, peer: u64) -> signed_worker::Connection {
@@ -330,7 +331,6 @@ mod https_completion {
                     .apply(store::Reports::DRAFT_REPORT.with("org.example.app"))
                     .unwrap();
             }
-            // Use the Store's real resource action and typed collaborative text edit.
             reports
                 .apply(
                     tilo_resource::Invoke::edit(
@@ -439,87 +439,172 @@ mod https_completion {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn durable_store_host_sheet_allow_deny_absence_and_retry() {
-        tokio::task::LocalSet::new().run_until(scenario("durable Store", async {
-            let files = tempfile::tempdir().unwrap();
-            let mut config = tilo_test_env::ScopedEnv::new();
-            config.set("TILO_STORE_CONFIG_DIR", files.path());
-            let original = signed_worker::OriginalRoom::current_native();
-            let (device, _) = tilo_identity_host::broker::trusted_current_device(&original.route.cluster_id).unwrap();
-            let server = HttpsRegistry::new(&device).await;
-            let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
-            owner.commit("The description is misleading");
-            let room = Room::with_original(true, Some(owner), original);
-            let target = bounded("durable Store worker", room.worker(988)).await;
-            let state = Arc::downgrade(&room.state);
-            let directories = room.directories.clone();
-            let turn = room.state.action_directory_bridge.turn.clone();
-            let _pump = DirectoryPump(tokio::task::spawn_local(async move {
-                loop {
-                    turn.notified().await;
-                    let Some(state) = state.upgrade() else { break };
-                    state.drain_action_directory_bridge(&directories);
-                }
-            }));
-            target.handle.publish_action_directory(&room.route.app_id, capnp_rpc::new_client(StoreDirectory)).await.unwrap();
-            let descriptor = descriptor("submit-report");
-            // A reliable target binding captures an already-live UUID stream.
-            let stream = target.handle.subscribe_stable_invocations().await.unwrap();
-            let (_, binding) = target.handle.resolve_published_action_for_invocation(988, "moderation-r1", &descriptor.resource, &descriptor.action).await.unwrap();
-            let operation = approved_operation(&server, "The description is misleading", None);
-            let exact = argument(&operation);
-            let evidence = r#"{"confirm":true,"confirmation_token":"caller-supplied"}"#;
-            let absent = uuid::Uuid::new_v4();
-            let unavailable = target.handle.invoke_resolved_published_action_durable(
-                absent.as_bytes(), &binding, "moderation-r1", &descriptor.resource, &descriptor.action, Some(&exact), evidence,
-            ).await.expect_err("caller evidence cannot replace an absent host");
-            assert!(unavailable.to_string().contains("host confirmation unavailable"), "{unavailable}");
-            let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-            room.state.set_app_action_consent(Arc::new(Sheet(send)));
-            // Keep the same RPC read across absence checks: dropping its caller
-            // does not cancel the server's receive and can discard a delivery.
-            let mut delivery = Box::pin(stream.read());
-            for allow in [false, true] {
-                let invocation = uuid::Uuid::new_v4();
-                let call = target.handle.invoke_resolved_published_action_durable(
-                    invocation.as_bytes(), &binding, "moderation-r1", &descriptor.resource, &descriptor.action, Some(&exact), evidence,
+    #[test]
+    fn durable_store_host_sheet_allow_deny_absence_and_retry() {
+        scenario(
+            "durable_store_host_sheet_allow_deny_absence_and_retry",
+            "durable Store",
+            async {
+                let files = tempfile::tempdir().unwrap();
+                let mut config = tilo_test_env::ScopedEnv::new();
+                config.set("TILO_STORE_CONFIG_DIR", files.path());
+                let original = signed_worker::OriginalRoom::current_native();
+                let (device, _) =
+                    tilo_identity_host::broker::trusted_current_device(&original.route.cluster_id)
+                        .unwrap();
+                let server = HttpsRegistry::new(&device).await;
+                let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
+                owner.commit("The description is misleading");
+                let room = Room::with_original(true, Some(owner), original);
+                let target = bounded("durable Store worker", room.worker(988)).await;
+                let state = Arc::downgrade(&room.state);
+                let directories = room.directories.clone();
+                let turn = room.state.action_directory_bridge.turn.clone();
+                let _pump = DirectoryPump(tokio::task::spawn_local(async move {
+                    loop {
+                        turn.notified().await;
+                        let Some(state) = state.upgrade() else { break };
+                        state.drain_action_directory_bridge(&directories);
+                    }
+                }));
+                target
+                    .handle
+                    .publish_action_directory(
+                        &room.route.app_id,
+                        capnp_rpc::new_client(StoreDirectory),
+                    )
+                    .await
+                    .unwrap();
+                let descriptor = descriptor("submit-report");
+                let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                let (_, binding) = target
+                    .handle
+                    .resolve_published_action_for_invocation(
+                        988,
+                        "moderation-r1",
+                        &descriptor.resource,
+                        &descriptor.action,
+                    )
+                    .await
+                    .unwrap();
+                let operation = approved_operation(&server, "The description is misleading", None);
+                let exact = argument(&operation);
+                let evidence = r#"{"confirm":true,"confirmation_token":"caller-supplied"}"#;
+                let absent = uuid::Uuid::new_v4();
+                let unavailable = target
+                    .handle
+                    .invoke_resolved_published_action_durable(
+                        absent.as_bytes(),
+                        &binding,
+                        "moderation-r1",
+                        &descriptor.resource,
+                        &descriptor.action,
+                        Some(&exact),
+                        evidence,
+                    )
+                    .await
+                    .expect_err("caller evidence cannot replace an absent host");
+                assert!(
+                    unavailable
+                        .to_string()
+                        .contains("host confirmation unavailable"),
+                    "{unavailable}"
                 );
-                tokio::pin!(call);
-                let (question, answer) = tokio::select! {
-                    result = &mut call => panic!("durable invocation bypassed host sheet: {result:?}"),
-                    sheet = bounded("durable host sheet", sheets.recv()) => sheet.unwrap(),
-                };
-                assert_preview(&question, &operation, &room.original.cert.user_public_key);
-                assert!(server.service().transparency(1, 10).unwrap().events.is_empty());
-                assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
-                answer.send(if allow { AppActionConsent::Once } else { AppActionConsent::Deny }).unwrap();
-                let result = bounded("durable admission after consent", call).await;
-                if allow {
-                    let admitted = result.unwrap();
-                    let delivered = bounded("durable invocation delivery", &mut delivery).await.unwrap();
-                    delivery = Box::pin(stream.read());
-                    assert_eq!(delivered.invocation_uuid, *invocation.as_bytes());
-                    let retry = target.handle.invoke_resolved_published_action_durable(
-                        invocation.as_bytes(), &binding, "moderation-r1", &descriptor.resource, &descriptor.action, Some(&exact), "{}",
-                    ).await.unwrap();
-                    assert_eq!(retry, admitted);
-                    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
-                } else {
-                    let denied = result.expect_err("the host declined disclosure");
-                    assert!(denied.to_string().contains("Store disclosure declined"), "{denied}");
-                    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
+                let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
+                room.state.set_app_action_consent(Arc::new(Sheet(send)));
+                // Keep the same RPC read across absence checks: dropping its caller
+                // does not cancel the server's receive and can discard a delivery.
+                let mut delivery = Box::pin(stream.read());
+                // A denial, then two approvals: each delivery is the next approved
+                // invocation, so nothing denied and no retry was delivered.
+                for allow in [false, true, true] {
+                    let invocation = uuid::Uuid::new_v4();
+                    let call = target.handle.invoke_resolved_published_action_durable(
+                        invocation.as_bytes(),
+                        &binding,
+                        "moderation-r1",
+                        &descriptor.resource,
+                        &descriptor.action,
+                        Some(&exact),
+                        evidence,
+                    );
+                    tokio::pin!(call);
+                    let (question, answer) = tokio::select! {
+                        result = &mut call => panic!("durable invocation bypassed host sheet: {result:?}"),
+                        sheet = bounded("durable host sheet", sheets.recv()) => sheet.unwrap(),
+                    };
+                    assert_preview(&question, &operation, &room.original.cert.user_public_key);
+                    assert!(
+                        server
+                            .service()
+                            .transparency(1, 10)
+                            .unwrap()
+                            .events
+                            .is_empty()
+                    );
+                    assert!(
+                        futures::poll!(&mut delivery).is_pending(),
+                        "nothing is delivered before consent"
+                    );
+                    answer
+                        .send(if allow {
+                            AppActionConsent::Once
+                        } else {
+                            AppActionConsent::Deny
+                        })
+                        .unwrap();
+                    let result = bounded("durable admission after consent", call).await;
+                    if allow {
+                        let admitted = result.unwrap();
+                        let delivered = bounded("durable invocation delivery", &mut delivery)
+                            .await
+                            .unwrap();
+                        delivery = Box::pin(stream.read());
+                        assert_eq!(delivered.invocation_uuid, *invocation.as_bytes());
+                        let retry = target
+                            .handle
+                            .invoke_resolved_published_action_durable(
+                                invocation.as_bytes(),
+                                &binding,
+                                "moderation-r1",
+                                &descriptor.resource,
+                                &descriptor.action,
+                                Some(&exact),
+                                "{}",
+                            )
+                            .await
+                            .unwrap();
+                        assert_eq!(retry, admitted);
+                    } else {
+                        let denied = result.expect_err("the host declined disclosure");
+                        assert!(
+                            denied.to_string().contains("Store disclosure declined"),
+                            "{denied}"
+                        );
+                    }
+                    assert!(matches!(
+                        sheets.try_recv(),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    ));
+                    assert!(
+                        server
+                            .service()
+                            .transparency(1, 10)
+                            .unwrap()
+                            .events
+                            .is_empty()
+                    );
                 }
-                assert!(matches!(sheets.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
-                assert!(server.service().transparency(1, 10).unwrap().events.is_empty());
-            }
-        })).await;
+            },
+        );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn native_store_report_and_appeal_reach_v2_verifier_over_https_and_persist() {
-        tokio::task::LocalSet::new()
-            .run_until(scenario("native Store", async {
+    #[test]
+    fn native_store_report_and_appeal_reach_v2_verifier_over_https_and_persist() {
+        scenario(
+            "native_store_report_and_appeal_reach_v2_verifier_over_https_and_persist",
+            "native Store",
+            async {
                 let files = tempfile::tempdir().unwrap();
                 let mut config = tilo_test_env::ScopedEnv::new();
                 config.set("TILO_STORE_CONFIG_DIR", files.path());
@@ -560,7 +645,10 @@ mod https_completion {
                         .unwrap();
                     let exact = argument(&operation);
                     let call = target.handle.invoke_published_action(
-                        987, &descriptor.resource, action, Some(&exact),
+                        987,
+                        &descriptor.resource,
+                        action,
+                        Some(&exact),
                         r#"{"confirm":true,"confirmation_token":"caller-supplied"}"#,
                     );
                     tokio::pin!(call);
@@ -569,26 +657,35 @@ mod https_completion {
                         sheet = bounded("native host sheet", sheets.recv()) => sheet.unwrap(),
                     };
                     assert_preview(&question, &operation, &room.original.cert.user_public_key);
-                    assert_eq!(server.service().transparency(1, 10).unwrap().events.len(), usize::from(case_id.is_some()));
+                    assert_eq!(
+                        server.service().transparency(1, 10).unwrap().events.len(),
+                        usize::from(case_id.is_some())
+                    );
                     let delivery = stream.read();
                     tokio::pin!(delivery);
-                    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());
+                    assert!(
+                        futures::poll!(&mut delivery).is_pending(),
+                        "nothing is delivered before consent"
+                    );
                     answer.send(AppActionConsent::Once).unwrap();
-                    bounded("native admission after consent", call).await.unwrap();
-                    let delivered = bounded("native invocation delivery", &mut delivery).await.unwrap();
+                    bounded("native admission after consent", call)
+                        .await
+                        .unwrap();
+                    let delivered = bounded("native invocation delivery", &mut delivery)
+                        .await
+                        .unwrap();
                     let request = Request {
                         protocol: PROTOCOL.into(),
                         invocation: uuid::Uuid::from_bytes(delivered.invocation_uuid).to_string(),
                         operation: operation.clone(),
                     };
-                    let receipt = tokio::time::timeout(
-                        std::time::Duration::from_secs(20),
+                    let receipt = bounded(
+                        "the HTTPS disclosure",
                         target
                             .handle
                             .external_moderation(&request, delivered.invocation_uuid),
                     )
                     .await
-                    .expect("HTTPS disclosure completed")
                     .expect("registry accepted v2 disclosure");
                     assert_eq!(
                         server.service().case(&receipt.case_id).unwrap(),
@@ -614,14 +711,16 @@ mod https_completion {
                         signed.actor_pubkey_hex
                     );
                     registry_types::verify_moderation_mutation(signed).unwrap();
-                    // The exact retained continuation returns its receipt without duplicating the write.
                     let retry = target
                         .handle
                         .external_moderation(&request, delivered.invocation_uuid)
                         .await
                         .unwrap();
                     assert_eq!(retry, receipt);
-                    assert!(matches!(sheets.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+                    assert!(matches!(
+                        sheets.try_recv(),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    ));
                     assert_eq!(
                         server.service().transparency(1, 10).unwrap().events.len(),
                         events.len()
@@ -632,7 +731,7 @@ mod https_completion {
                     server.service().transparency(1, 10).unwrap().events.len(),
                     2
                 );
-            }))
-            .await;
+            },
+        );
     }
 }

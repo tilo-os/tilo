@@ -1,4 +1,3 @@
-//! Actual host-file launch reuses public import, inspection and history.
 use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
 use ui::application::OpenFile;

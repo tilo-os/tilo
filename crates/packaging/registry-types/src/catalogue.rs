@@ -13,9 +13,7 @@ use serde::{Deserialize, Serialize};
 pub struct CatalogueApp {
     /// Reverse-DNS package id — the same identity `tilo-install` records once this is installed.
     pub package_id: String,
-    /// The publisher's name for it.
     pub display_name: String,
-    /// The publisher's one-line description.
     #[serde(default)]
     pub description: String,
     /// Publisher's short localized tagline.

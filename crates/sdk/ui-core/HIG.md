@@ -81,20 +81,30 @@ email client's accounts + folders.
   **never an `X`**, never a hamburger. One system shortcut toggles it in
   every app (`HostShortcut::Sidebar`, Ctrl+Shift+L / ⌘⇧L), and the toggle
   publishes "Show sidebar" / "Hide sidebar" to the palette and to agents.
-  Dragging the sidebar's trailing edge resizes it between
-  `sidebar_min_width` and `sidebar_max_width`; dragging it below the minimum
-  hides it. The person's choice is remembered per window size class.
+  Dragging the sidebar's trailing edge (pointer, finger, or the arrow keys
+  on its separator) resizes it up to `sidebar_max_width`; dragging it below
+  its narrowest hides it. A `NavList` sidebar reads by its width: a rail of
+  tiles while narrow, a list once every label fits beside its icon (never
+  past `sidebar_min_width`); a short flat set of places starts as its rail,
+  anything else at `sidebar_width` (docs/design-language.md, "Rail or
+  list"). Another sidebar's narrowest is `sidebar_min_width`. Apps never
+  call `NavList::rail` on a sidebar: the shell decides. The width is
+  remembered per app on this device; the show/hide choice per window size
+  class.
 - **At any width, the layout in which everything shown is usable.**
   Darkening content the person works with is never the automatic answer.
   - **Docked** while the sidebar fits beside the content's *real* minimum:
     the app says what its content is (`.content_kind(ContentKind::List)`,
     `Reading`, `Page`, `Grid`, `Document`) and the shell knows what that
     needs (`list_min_width` 320, `reading_min_width` 360, `page_min_width`
-    360, `grid_min_width` 280). The sidebar first shrinks from
-    `sidebar_width` toward `sidebar_min_width`; the layout changes only
-    below `sidebar_min_width` + the content's minimum (a Files window docks
-    down to 520). Hiding it is the person's choice, remembered per size
-    class; showing it again docks it and the content reflows.
+    360, `grid_min_width` 280). The sidebar **docks at its own width**; on
+    the way down it shrinks only toward its own minimum
+    (`panel_min_width` 200), and the layout changes below that minimum plus
+    the content's minimum (a Files window docks down to 520, Settings to
+    560, Mail to 720). A panel never widens to fill a roomy window, and it
+    never narrows past the width it needs to read so the content can stay
+    wider. Hiding it is the person's choice, remembered per size class;
+    showing it again docks it and the content reflows.
   - **One at a time (push)** below that: the list (sidebar or overview) or
     the page fills the window, with Back — the Settings list or a setting,
     Files' places or a folder. A new narrow window opens on the list;
@@ -242,6 +252,29 @@ selection core:
 - Selection: shift+arrows, drag-select, word-wise (ctrl+arrows), select-all.
 - Clipboard: Ctrl+C / X / V.
 - Collaborative multi-cursor.
+- **Emoji by default**: typing `:name:` offers the catalogue's matching emoji and
+  accepting replaces the token with the character.
+- **Mentions by default**: typing `@name` offers the people and agents in the
+  room, and accepting replaces the token with the name it will resolve to.
+
+Both come from the field. The catalogue is the toolkit's, so every app has the
+emoji picker and custom emoji without linking a catalogue crate; an app with
+workspace emoji *adds* to it, it does not provide it. One inline candidate list
+serves both triggers: arrows move, Enter or Tab accepts, Escape dismisses.
+
+A field that should not offer them says so, once, at the field — and the reason
+is visible there:
+
+| Field | Setting | Why |
+|---|---|---|
+| a message, note, document body, task, description | *(default)* | people write emoji and names in prose |
+| a search or filter field | plain (UTF-8 only) | the query is matched, not written |
+| a password, a secret, a one-time code | plain | nothing may insert into it, and nothing may echo it |
+| a code editor, a terminal, a hex view, SQL, a URL | plain | `:` and `@` are syntax there, not an invitation |
+
+"Plain" is not a degraded field: it is a field where completion is *wrong*
+rather than unavailable. Never disable one of the two and leave the other on
+without saying why.
 
 If an app hand-rolls text editing, it will get these wrong — use the shared core.
 
@@ -333,6 +366,26 @@ answer:
   `paint_find_match` over the matched glyphs; the current one is stronger and
   outlined. The bar shows "n of m", Match case and Whole word, previous/next,
   and replace or a text/hex mode when the view supports them.
+
+### 4b. Confirmations are questions, not search
+
+Use the shared `ModalDialog` or `ModalSheet` for confirmation, over the window
+that asked. Name the action in the title and primary button, explain its
+consequence, and offer Cancel. Do not show a search field, unrelated commands,
+provider scopes or internal resource identifiers. Refreshing resources while a
+question is open must not replace it with search results.
+
+A destructive question starts on Cancel; Enter must not accidentally delete
+anything. Pointer, keyboard and accessibility activate the same retained request,
+with its exact arguments and fresh permission checks. Escape and Cancel perform
+nothing. Ordinary owner-authorized navigation needs no extra confirmation;
+explicit workspace approval rules still apply.
+
+An irreversible action that names what it destroys asks for that name in a
+labelled field in the sheet's body (`PromptBody::confirm_phrase`). Its button
+is the action's verb, destructive, and stays disabled until the name is exact;
+Enter in the field never goes ahead, even once the name matches. An action Undo
+takes back asks nothing: it runs at once and offers Undo.
 
 ---
 
@@ -462,6 +515,7 @@ each replaces):
 | A number and what it measures | `StatTile` / `StatTileFace` in a `StatGroup` |
 | Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos) |
 | A file drop target | `DropZone` / `DropZoneFace` |
+| An app that opens a file: its empty state and a drop anywhere on the window | `FileOpenSurface` |
 | Content still loading | `Skeleton` / `SkeletonFace` |
 | A countdown, progress or level ring | `ProgressRing` / `ProgressRingFace` |
 | Wizard steps | `Stepper` / `StepperFace` |
@@ -649,23 +703,26 @@ the control or its row already shows.
 **Status has two homes.** What a person reads while working and expects to
 stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
 `chrome::status_bar`, which reserves its band (`status_bar::split`) so it
-never covers content. A change worth noticing once (a page turn, a finished sync) is
-the transient `StatusBubble`: it shows on change, hides by itself and floats
-in its area's bottom-trailing corner. An error the person must act on is a
-`Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
-button). A document's save state is `SaveStatusSurface`: autosave is the
-system's job, so "Saving…" and "Saved" never show (they stay in the
-accessibility status); a save still unconfirmed after `SAVE_STALL` (10 s) says
-"Couldn't save yet. Retrying…", then "Not saved" with Try again; a failed save
-is an error card with Try again that stays until the save succeeds, and that
-success is a one-time "Saved" in the transient bubble. The framework presents
-it for every framework window from the record's durability, with no wiring in
-the app; an app that also writes elsewhere (a file) reports those saves
+never covers content. A change worth noticing once (a page turn, a finished
+sync, a copy with Undo) is the window bar's notice
+(`window_toolbar::notify`, through `Transient::publish` or
+`Notice::publish`): it stands in the bar's location slot, icon and text, for a
+while, with its one action as a bar action while it shows; a newer one
+replaces it, and nothing stacks. No window widget paints a transient card. An
+error the person must act on is a `Banner` (persistent, in the flow) or a
+notice held until it is resolved. A document's save state is
+`SaveStatusSurface`, said in the same slot: autosave is the system's job, so
+"Saving…" and "Saved" never show (they stay in the accessibility status); a
+save still unconfirmed after `SAVE_STALL` (10 s) says "Couldn't save yet.
+Retrying…", then "Not saved" with Try again; a failed save is an error with
+Try again, held until a save succeeds, and that success is a one-time
+"Saved". The framework presents it for every framework window from the
+record's durability, with no wiring in the app; an app that also writes
+elsewhere (a file) reports those saves
 through `cx.saves()` (`framework::Saves`) and answers its Try again. Saving to
 the place a document already lives, Ctrl+S included, says nothing either; a
 save that put a copy somewhere out of sight names where ("Saved a copy as
-report.pdf"). An app never pokes or pins a save bubble, paints its own save
-pill or toasts "Saved"; `tools/policy/check_copy_language.py` fails such copy,
+report.pdf"). An app never paints its own save pill or says "Saved" itself; `tools/policy/check_copy_language.py` fails such copy,
 and `copy_save_exceptions.toml` lists, with reasons, the few uses of the word
 that are not about saving.
 
@@ -737,7 +794,8 @@ This generalises §3 (text editing) to **all** interactive primitives. Concretel
   built in; it is presented in the window's top layer, §7c). Never paint your
   own overlay + scrim rect.
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
-  `Slider` / `NumberInput`; peer views → `TabBar` / `ToggleGroup`; right-click →
+  `Slider` / `NumberInput`; switching a window's view → `ViewTabs` (§9.11a);
+  choosing a value → `ToggleGroup`; right-click →
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
 - Sidebar, master/detail, drawer, push screens, column headers → `NavShell`;
   a list of destinations → `NavList` (a painted app: `SidebarDrawer` +
@@ -778,6 +836,43 @@ every app, ratcheted against the shards under
 `crates/sdk/ui-core/tests/baselines/theme/`: a file may never gain one. The
 count only goes down. Those shards, not this document, are the authority on
 how many are left (§9.13).
+
+---
+
+## 8a. Conversations: one substrate, two apps
+
+Chat and Messages both talk to people and they stay two apps, because their
+primary object differs: Chat's is a **channel** — a room with a history, a
+membership and a mood, many-to-many and public-ish — and Messages' is a
+**person** — a private thread that may arrive by SMS, Signal or WhatsApp.
+Neither is a subset of the other. Merging them by surface similarity (both have
+a composer, both have a timeline) would produce one app that does neither job.
+
+What they do not differ in is the *mechanics*: when a day starts, what time a
+line was said, whether it arrived, what happens to a draft, which key sends, and
+what an attachment does when you touch it. Those live once, in
+[`widget::conversation`](src/widget/conversation/mod.rs), and an app that invents
+its own is a defect of the same class as a hand-rolled text field (§8).
+
+| Piece | The rule |
+|---|---|
+| `ConversationClock`, `DayBreaks`, `DayDividerFace` | A divider appears before the first line of each local day and never otherwise, labelled "Today", "Yesterday", the weekday inside the week, then the date. Every line can name its own time. No conversation may show a clock with no day anywhere near it. |
+| `DeliveryState` / `DeliveryFace` | One vocabulary — Queued, Sending, Submitted, Sent, Delivered, Read, Failed, Uncertain — from one table of steps, with one glyph and one tone each. A transport renames its states into `DeliveryStep`; it never invents a word of its own, and "unknown" is a state rather than a silence. |
+| `AttachmentSummary`, `AttachmentAction` | The ladder: the inline preview, the picture at full size, a copy saved where the person says, and the saved copy shown in the file manager. Rungs that cannot be offered are absent, with the reason where they would have been. |
+| `DraftBook`, `draft::line` | A draft is per conversation, blank is not a draft, sending clears it only while it is still what was sent, and the words are shown wherever the conversation is listed ("Draft: …"). A draft you cannot find is a draft you have lost. |
+| `ComposerRule` | Enter sends, Shift+Enter breaks the line, Escape lets the draft go. One rule, both apps; a comment field inside a document is the one other rule (`ModEnter`). |
+| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above. A painting app composes its own rows from the same pieces. |
+
+Consequences a person feels: a screenshot in Chat opens full size, a message in
+Messages has a time, a draft in either app is visible in the list, and Enter
+sends in both. What each app keeps is its own: a channel still shows authors,
+avatars, threads and presence; a private thread still shows one person, their
+transport and their account.
+
+The module's labels (the delivery words, the attachment ladder's names) ship in
+its own catalogue beside it (`src/widget/conversation/locales/en-US.ftl`,
+namespaced `conversation-*`), so an app can override any of them without a
+toolkit change.
 
 ---
 
@@ -1187,18 +1282,18 @@ edge kept at full strength, so rest and disabled never look the same.
 | Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |
 | Card / Container (objects only) | `surfaces.raised`; a pressable one lifts on hover and press | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill (hover `lift_on(fill, 0.5)`, focus `1.0`) | `edge_on(fill)`; focus `border_focus`; a value `Field::with_error` rejected edges the field in danger ink (`Widget::set_invalid`) and its message is danger ink |
-| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating`; what stands on it is drawn with `theme.on_ground(panel_ground)`, whose `surfaces.raised` stays off the panel (`Colors::raised_on`) | `panel_border`, `floating_edge` on dark; a toast's severity is its leading icon's colour, as on a banner |
+| Popover, ModalDialog, a shell notification card, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating`; what stands on it is drawn with `theme.on_ground(panel_ground)`, whose `surfaces.raised` stays off the panel (`Colors::raised_on`) | `panel_border`, `floating_edge` on dark; a toast's severity is its leading icon's colour, as on a banner |
 | Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
 | Banner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
 | Tooltip | the blurred material (`surface::panel`) at `radii.control`, ink measured on the panel ground | `panel_border`, `floating_edge` on dark |
-| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a selector thumb (`selector_tier(raised)`, §9.3) inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track; the chosen tab is a selector on the window ground, as an in-app `TabBar`'s. `Quiet`: no track, a bare lift of the ground |
+| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a selector thumb (`selector_tier(raised)`, §9.3) inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs` (what `ViewTabs` and the window bar's views draw, §9.11a): no track; the chosen tab is a selector on the window ground, as the window tab bar's. `Quiet`: no track, a bare lift of the ground |
 | Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
 | Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
 | Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
 | Toggle | off `intent.selection`, on `intent.inverted` | `edge_on(track)`; on, the knob is `on_inverted`; off, a raised white knob with a ring that clears 3:1 on a light material and `text_dim` on a dark one |
-| Slider | unfilled `intent.selection`, filled `intent.inverted` | `edge_on(unfilled)`; the thumb is a raised white object with a ring on a light material and primary ink on a dark one, clearing both halves; never collapses below six knob widths |
-| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
-| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.inverted`, `radii.detail` | none |
+| Slider | unfilled `intent.selection`, filled `intent.value_fill` (the accent as a mark, 3:1 on its ground, never the text colour) | `edge_on(unfilled)`; the thumb is a raised white disc on a light material, its fill setting it off the filled half and its ring off the unfilled half, and primary ink ringed in the ground on a dark one; never collapses below six knob widths |
+| Checkbox | unchecked `surfaces.raised`, checked `intent.on_state`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
+| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.value_fill`, `radii.detail` | none |
 | TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
 | Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its lane | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
@@ -1285,6 +1380,7 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   |---|---|---|
   | `header_height` | 56 | the one header row: `min_pointer_target` 32 in an `s3` inset |
   | `sidebar_width` | 280 | a docked sidebar (drag range `sidebar_min_width` 200 – `sidebar_max_width` 420) |
+  | `panel_min_width` | 200 | the narrowest a docked sidebar or panel shrinks to before it floats (`sidebar_min_width`); a content column beside it pans out of view at this width rather than shrinking further |
   | `drawer_width` | 320 | the floating drawer, `s2` in from the window edges |
   | `rail_width` | 76 | a docked icon rail (`NavMode::Docked`, `NavList::rail`) |
   | `overview_width` | 340 | the overview column |
@@ -1297,21 +1393,27 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   | `inspector_width` | 300 | the inspector; it floats from the trailing edge when it does not fit |
   | `nav_row_height` | 32 | a navigation row (`NavList`, `paint_nav_row`) |
 
-  The breakpoints follow from them: the sidebar docks while
-  `sidebar_min_width` + the content's minimum fits (with an overview,
-  `sidebar_min_width + overview_width +` the minimum), shrinking from
-  `sidebar_width` first: Files docks down to 520, Settings to 560, Mail to
-  900. The overview and detail stand side by side while `overview_width +`
-  the minimum fits. The shell's buttons (sidebar toggle, Back,
+  The breakpoints follow from them: the sidebar docks at `sidebar_width`
+  while `panel_min_width` + the content's minimum fits (with an overview,
+  `panel_min_width + overview_width +` the minimum), shrinking from
+  `sidebar_width` toward `panel_min_width` first: Files docks down to 520,
+  Settings to 560, Mail to 720. The overview and detail stand side by side
+  while `overview_width +` the minimum fits. The shell's buttons (sidebar toggle, Back,
   inspector toggle, the window's History control) are Plain icon buttons of
   `min_pointer_target` in the `s3` inset. `content_min_width` (560) and
   `detail_min_width` (360) remain for painted apps that split their own
-  window; a painted app's `SidebarDrawer` takes the same content kinds
+  window; a painted app's own content column states it with
+  `SidebarDrawer::content_is_column(min)`, and the panel keeps its own width
+  beside that column instead of shrinking so the column can become a phone.
+  A painted app's `SidebarDrawer` takes the same content kinds
   (`.content_kind(..)`) and shrinks, docks and keeps hysteresis the same way.
   Too narrow to dock, its list and its content take turns filling the
   window (`SidebarDrawer::is_push`: the list on the sidebar region under the
-  header row, the toggle bringing the content back) — Music, Calendar, Chat;
-  only a `Document` kind floats as a drawer.
+  header row, the toggle bringing the content back) — Music, Calendar, Chat,
+  and the video library beside a picture too narrow to keep it. Every other
+  panel floats as a drawer over the content: a `Document` kind's outline, an
+  inspector, and `SidebarDrawer::with_push()` for a panel that would cover
+  what the content is for (Video Player's library beside the picture).
   Chat's channel list and conversation form a master/detail composition:
   its conversation reserves a reading column, rather than the form-sheet
   `content_min_width`: it is a `Reading` kind, and the panel docks down to
@@ -1368,6 +1470,7 @@ says how (no curve, duration, spring constant or eased ratio of its own):
 | `Ambient` | chrome that comes back on its own (leaves at once, arrives slowly unless asked) |
 | `Feedback` | press and hover tints: on at once, off over `fast` |
 | `Attention` | a refusal's shake, a single pulse; a tint under reduced motion |
+| `Beckon` | a control hint (`ui::control_hints`): arrives with the library's one deliberate overshoot and a glow pulse, loops its gesture picture while it shows, and when the gesture is done checks, folds to a dot and drifts to the person's avatar. The overshoot and the loop are the exception to "nothing bounces" and "nothing moves at idle": a hint exists to be noticed, shows once, and goes on its own. Reduced motion: a fade in, the picture at its resting frame, the check held briefly |
 
 They all run on `MotionValue`, a damped spring solved in closed form: exact
 at any frame rate, interruptible (a new target continues from the drawn
@@ -1504,6 +1607,27 @@ had no representation on screen at all. It idles quiet enough to ignore and is
 never absent, so a second strip is discoverable by looking rather than by being
 told.
 
+### 9.11a Views are tabs; values are segments
+
+Switching what a window's content shows — a request's Params, Headers, Auth
+and Body; a container's Logs, Stats, Inspect and Terminal; a library's Queue,
+Recent and Shared; a calendar's Month, Week and Day in the window bar's views
+slot — is always tabs, with one look everywhere: no track, each tab as wide
+as its label, the chosen one a selector lifted off the ground it stands on,
+the window tab bar's look. In a retained tree that is `ViewTabs`; the window
+bar's views slot paints the same tabs. Assistive technology meets a tab list
+whose chosen tab is selected.
+
+A segmented control (`ToggleGroup`) is only for choosing a **value**: an
+alignment, a density, a unit, a fill kind, list or grid. It has a track and a
+thumb, and assistive technology meets a group of toggles, one checked.
+
+How to tell: if choosing replaces the content below with another view of the
+thing, it is tabs. If it sets a property of the thing (and the content stays
+the same thing, shown differently or configured differently), it is a
+segmented control. A view switcher drawn as a segmented control, or a value
+chooser drawn as tabs, is a defect.
+
 ### 9.12 Collaboration chrome is chrome
 
 Inviting a peer, showing who is here, and joining someone else's workspace are
@@ -1546,7 +1670,7 @@ yield files or the ratchet fails rather than passing empty.
 |---|---|---|---|
 | `theme` | ui-core `src`, shell `src`, `apps/*/src`; not `theme.rs`, `tokens/`, `presence/render.rs` | `literal_color`, `white_or_black`, `theme_blind_white` | `design_token_audit.rs::theme_escape_hatches_do_not_grow` |
 | `app-paint` | shell `src`, `apps/*/src`; same exemptions | `literal_color_new`, `ramp_slot`, `legacy_alias`, `desktop_ground`, `literal_radius`, `literal_alpha`, `raw_paint`, `glyph_icon`, `transparent_shot` | `design_token_audit.rs::app_and_shell_paint_knobs_do_not_grow` |
-| `chrome-border` | ui-core `src/widget`, `src/chrome`, `surface.rs`, `status_bubble.rs`, shell `src` | `declared_border` | `design_token_audit.rs::declared_borders_in_chrome_do_not_grow` |
+| `chrome-border` | ui-core `src/widget`, `src/chrome`, `surface.rs`, shell `src` | `declared_border` | `design_token_audit.rs::declared_borders_in_chrome_do_not_grow` |
 | `spacing` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src` | `pixel_const`, `taffy_length`, `literal_gap`, `literal_spacer` | `spacing_token_audit.rs::spacing_audit_sees_what_it_polices_and_literals_do_not_grow` |
 | `typography` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src`; not `tokens/typography.rs`, `text_render*`, `text_metrics.rs` | `literal_font_size`, `legacy_size_api`, `font_size_const`, `type_step_arithmetic`, `raw_type_step`, `renderer_scale_helper` | `typography_token_audit.rs::typography_literals_do_not_grow` |
 | `copy` | `apps/*/src` | `all_caps_label`, `middle_dot_join`, `to_uppercase` | `copy_audit.rs::copy_rules_do_not_grow` |
@@ -1658,6 +1782,161 @@ Not automated yet; grep a diff for these:
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*
 
+## 10. Truth: every value carries its measure and its as-of
+
+A number on screen is a claim. `ui::fact::Fact` keeps the claim and its
+provenance together so a view cannot draw the number without answering
+"measured how?", "from where?" and "when?".
+
+- **Measure first.** A `Fact` has a `Measure` naming what the number counts
+  (`Memory in use`, `Memory (RSS)`, `Packets dropped`) and its unit when it has
+  one. Two values called "Memory" are two different claims; name them
+  differently on screen as well as in the model.
+- **Provenance is the caption line under the value, always.** Use
+  `Fact::value_or_dash()` in the value position and `Fact::caption(now)` under
+  it. The caption carries the source and the age ("measured 2 s ago · this
+  device"). It is never beside the value and never omitted.
+- **Age makes the claim honest.** `Fact::is_stale(now)` is true when the
+  reading is older than the interval it was measured for. Dim the caption, not
+  the value: dimming a good number teaches people to distrust good data.
+- **Unknown is a designed state.** `Fact::unknown(measure, reason)` renders an
+  em dash (`—`) plus why, and the app offers the action that would resolve it.
+  Zero is a measurement, not a stand-in for "we did not measure". Do not show
+  a healthy state, a count or a rate you did not read.
+- **A sparkline states its period and its scale.** A shape with no time span
+  and no axis is not a reading. Put "last 2 min" and the top of the scale in
+  the caption (or in the chart's axis labels) so the person can answer "when
+  did that spike happen" and "how large is it".
+
+## 11. Capability: privilege is granted, never inferred
+
+A privileged verb declares the capability it needs. Before a view draws a
+control for it, it asks `ui::capability_door` for the resolution and draws one
+of exactly three faces:
+
+| Resolution | The surface draws |
+|---|---|
+| `Granted` | the real control, doing the real thing |
+| `Grantable` | the control plus an explicit grant step, in the person's words ("Tilo needs your permission to change firewall rules") |
+| `Unavailable` | no control at all: one sentence of why, and what would make it available ("the firewall service isn't running — start it") |
+
+- **No inert control may exist.** A switch, Apply button or menu item for a
+  privileged act is drawn only in the granted face. If it would not do the
+  thing, it is not drawn. An unavailable surface has no disabled switches
+  standing in for the truth.
+- **Ask for the grant once, in words.** `Door::grantable` carries the words the
+  grant step says. The grant is object-scoped ("change firewall rules", not
+  "manage the system"), so revoking one privileged act does not silently take
+  away another.
+- **Discovery is not resolution.** `which()`, `$PATH` and environment variables
+  are test seams (`#[cfg(test)]`, `testing`), never how a product decides what
+  it can do. An app may ask the platform or the person; it may not infer
+  privilege from its environment.
+- **A preview is a person's choice, not a hidden mode.** If a flow offers a
+  preview, it is an apply/discard diff the person selected. It is never a mode
+  in which "Apply" silently does nothing.
+- **Draw through `Door::face`.** `Door::control()` is the shorthand for the
+  granted face only; the grantable and unavailable faces need their own grant
+  step or sentence.
+
+---
+
 ## Form composition
 
 For content-first account/settings forms, use `FormPage`, `Form`, `FormSection` and `Field`; see [automatic and guided forms](FORM_COMPOSITION.md) for the API, independent override/reset rules and runnable primitive comparison. Manual composition remains supported with the same standard controls.
+
+## 10. Jobs: long work has a body, and outlives its window
+
+Anything that can take longer than a breath is a **job**, and a job is the
+toolkit's (`ui::jobs`), not the app's. Nine apps improvising "Installing…",
+"Scanning…", "Connecting…" produced nine progress stories, none of them
+cancellable and most of them dead the moment the person left the page.
+
+**The five fields.** Every job has a title in the person's words ("Installing
+LibreOffice"), a subject (what it is about, and where **Show me** goes), a
+progress, a way out, and an outcome:
+
+| Field | Rule |
+|---|---|
+| title | what is happening, as the person would say it — not a code, not an id |
+| subject | the app (icon *and* name) and the thing; `opens` carries what **Show me** opens |
+| progress | determinate when a total is known (`312 MB of 480 MB`), honest when it is not (`Reading 12,480 files`) — never a bare spinner, never a fake percentage |
+| Stop | present only when the worker honours it (`Spec::stoppable`). A job whose stopping would not be honoured shows no Stop: a Stop that does nothing is worse than none |
+| outcome | done (one sentence), failed **with the reason**, or stopped |
+
+**The surface.** One row per job, built by `ui::jobs::Band` (the window's foot,
+`NavShell::bottom_band`) or `ui::jobs::Pane` (the Jobs surface). A row is a
+`ListRow`: the app's icon leading, the title, the live line as the secondary,
+the percentage as the value, and the controls trailing — **Stop** while it
+runs and can be stopped, **Show me** and **Read** once it has ended. The bar
+of a job's progress goes under its row in the pane, and facts are never joined
+into one string with a separator glyph.
+
+**The registry is the process's, not the window's.** Starting a job puts it
+where every window reads it, so leaving the page, closing the panel or opening
+another window does not end the work: the next surface reads the same rows.
+An app keeps a `jobs::Presses` beside the widget and answers what was pressed
+in its update (`ui::jobs::apply`): **Stop** calls the worker's way out,
+**Read** takes the row away, **Show me** gets the subject and navigates.
+
+**A failure is not just a row.** `Running::failed` raises an attention item
+with the reason and a **Show me** action, and reading the job's row takes that
+item back (`attention::dismissed(Target::Job)`). A failure nobody can decide
+about is a ledger entry, not a failure.
+
+**What an app never does.** Draw its own progress bar beside a long
+operation, refuse every other action "while one is in progress" (jobs are
+concurrent by construction), or time out a job's notice. Reachable from
+anywhere: `ui::jobs::CHORD` (Ctrl+Shift+J) and `ui::jobs::open` ask for the
+surface; a host resolves the request with `take_opening`.
+
+## 11. Attention and the ledger: one raised hand, one record
+
+Everything the system says about itself goes to exactly one of two places,
+and `ui::attention::publish` is the one call that decides:
+
+* **it needs a person** → an item in the waiting stack (`Notice::needs`, with
+  the `Action` it waits on);
+* **it does not** → the ledger (`Notice::did`), append-only, attributed,
+  never on a timer.
+
+There is no third place. In particular there is no toast: a notice that
+expires is a claim that something matters now and will not matter in four
+seconds, and the timer teaches people to stop reading.
+
+**An item.** `Item::new(owner, title, action)`: an owner with a face (icon
+*and* name — never the icon alone), what happened, what it is about, why,
+since when, how urgent, and **one** action. The action is not optional in the
+type, because a row a person cannot act on is not a row.
+
+**Three states, deliberately distinct.** Unseen counts on the bar
+(`attention::unseen`, `attention::pill`), seen stops counting and keeps the
+row, deferred puts it out of the way and **stays counted** (`attention::deferred`,
+and the stack says "4 put aside" under itself). Nothing expires: an item
+leaves when it is acted on or when the app that raised it takes it back
+(`dismissed`).
+
+**Order.** By what it costs to leave (Blocking, then Waiting, then Noted), and
+within that by age — the first row is the one that costs most to ignore.
+Groups get a `SectionHeader` naming the urgency, never a colour alone.
+
+**Keys.** `Presses::key`: Up and Down move the choice, Home and End go to the
+ends, Enter acts on the chosen row, Escape puts it aside. The chosen row is
+selected (the lift, §9.3). Acting reports the verb once
+(`attention::apply` → `Acted`), and the app performs it.
+
+**The surface.** `ui::attention::Stack` — the waiting stack as a widget, kept
+by the app that shows it. Reachable from anywhere: `ui::attention::CHORD`
+(Ctrl+Shift+A) and `ui::attention::open`, which a host resolves.
+
+**The ledger.** `ui::attention::entries` — every outcome that needed nobody,
+with the app that did it, when, and what it was about. Activity's History
+lists it beside the workspace's changes, found by the same find
+(`entry.matches`), and nothing about it steals the focus: it is read when
+someone looks. `MAX_ENTRIES` is a bound on memory, never a lifetime.
+
+**What an app never does.** Its own notice with its own severity vocabulary
+and its own lifetime; a badge count collected and never drawn; a failure that
+vanishes; a success that interrupts. `tools/policy/check_no_transient_cards.py`
+keeps the notification card the shell's; this section keeps the outcomes the
+system's.

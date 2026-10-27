@@ -129,11 +129,6 @@ pub fn preflight_exact(
 /// Select the single causally-nearest common ancestor of two conflict
 /// members. Ambiguous criss-cross histories and incomplete graphs are refused;
 /// choosing an arbitrary base would make a text merge unsafe.
-///
-/// # Errors
-///
-/// Returns an error for duplicate or unknown members, incomplete ancestry, no
-/// common ancestor, or more than one causally maximal common ancestor.
 pub fn exact_common_base(
     versions: &[FileVersionV1],
     first: FileVersionId,
@@ -356,7 +351,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn plain_text_merges_only_disjoint_edits_from_an_exact_common_base() {
-        // Phase `common_base_is_exact_and_criss_cross_is_refused`.
         {
             let versions = vec![
                 graph_version(1, &[]),
@@ -382,7 +376,6 @@ mod tests {
                 Err(DeterministicMergeError::AmbiguousCommonBase)
             );
         }
-        // Phase `plain_text_merges_only_disjoint_prepend_and_append`.
         {
             let result = merge_exact(
                 ExactMergeInput {
@@ -402,7 +395,6 @@ mod tests {
             assert_eq!(result.codec, DeterministicMergeCodec::PlainUtf8ThreeWayV1);
             assert_eq!(result.bytes, b"head\nbase\ntail\n");
         }
-        // Phase `plain_text_preflight_is_safe_and_order_independent_for_arriving_edits`.
         {
             let input = |first_id: u128, first: &[u8], second_id: u128, second: &[u8]| {
                 preflight_exact(
@@ -434,7 +426,6 @@ mod tests {
             assert_eq!(result.bytes, b"head\nbase\ntail\n");
             assert!(explanation.contains("separate"));
         }
-        // Phase `overlapping_text_arrival_orders_need_review_without_a_result`.
         {
             let input = |first_id: u128, first: &[u8], second_id: u128, second: &[u8]| {
                 preflight_exact(
@@ -507,7 +498,6 @@ mod tests {
 
     #[test]
     fn tilo_doc_merges_are_order_independent_and_deterministic() {
-        // Phase `tilo_doc_merge_is_input_order_independent_and_valid`.
         {
             let mut base = Document::new();
             let block = base.insert_block(None, "paragraph");
@@ -554,7 +544,6 @@ mod tests {
                 Err(DeterministicMergeError::UnsupportedContent)
             );
         }
-        // Phase `identical_retry_is_deterministic`.
         {
             let input = || {
                 (

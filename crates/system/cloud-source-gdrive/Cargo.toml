@@ -42,6 +42,7 @@ fake-server = ["dep:test-http", "dep:md-5", "dep:sha1", "dep:sha2", "dep:hex"]
 cloud-source = { path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
 cloud-source-gdrive = { path = ".", features = ["fake-server"] }
+tilo-test-env = { path = "../../dev/test-env" }
 uuid.workspace = true
 zeroize.workspace = true
 

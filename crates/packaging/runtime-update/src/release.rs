@@ -38,11 +38,6 @@ pub struct Release {
 impl Release {
     /// Parse `feed` after verifying `signature_hex` over its exact bytes with
     /// `public_key_hex`. Nothing in an unverified feed is looked at.
-    ///
-    /// # Errors
-    ///
-    /// A malformed key or signature, a signature that does not verify, or a
-    /// verified feed that is not a release with an https archive.
     pub fn verify(feed: &[u8], signature_hex: &str, public_key_hex: &str) -> Result<Self, Error> {
         let key: [u8; 32] = decode_hex(public_key_hex).ok_or(Error::Malformed("public key"))?;
         let key = VerifyingKey::from_bytes(&key).map_err(|_| Error::Malformed("public key"))?;
@@ -106,10 +101,6 @@ pub fn sign(feed: &[u8], key: &SigningKey) -> String {
 /// A signing key from a publisher key file (`{"secret_key_hex": "…"}`, what
 /// `tilo-app keys new` and `tilo-runtime-bundle key generate` write) or its
 /// bare hex seed.
-///
-/// # Errors
-///
-/// When `text` is neither.
 pub fn parse_signing_key(text: &str) -> Result<SigningKey, Error> {
     #[derive(Deserialize)]
     struct KeyFile {

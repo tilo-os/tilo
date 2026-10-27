@@ -214,7 +214,6 @@ impl Frame {
         self.layers.get(&ROOT)
     }
 
-    /// Every blob any item references.
     pub fn blobs(&self) -> impl Iterator<Item = &BlobRef> {
         self.layers.values().flat_map(|l| {
             l.items.iter().filter_map(|i| match i {
@@ -242,7 +241,6 @@ impl Frame {
             }
             at = l.parent;
         }
-        // Walk from the outermost layer inwards.
         let mut off = Point::default();
         let mut clip: Option<Rect> = None;
         for l in chain.iter().rev() {

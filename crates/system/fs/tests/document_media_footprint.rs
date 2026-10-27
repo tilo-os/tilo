@@ -15,9 +15,16 @@
 //!
 //! The figure is the process-wide peak of live heap bytes above what was
 //! live when the operation began, counted by [`PeakCounting`]: the store's
-//! actors and the capability's server run on threads of their own, so a
-//! per-thread count would miss them. The one test runs alone in this binary,
-//! so no other test's allocations land in the figure.
+//! actors, the capability's server and the app's blocking client run as
+//! tasks and threads of their own, so a per-thread count would miss them.
+//! The one test runs alone in this binary, so no other test's allocations
+//! land in the figure.
+//!
+//! It runs on a single-threaded runtime. The blob cache frees an evicted
+//! entry only once the thread that evicted it collects its deferred
+//! garbage; on a multi-threaded runtime which worker last touched the cache
+//! varies from run to run, and with it how many evicted 1 MiB blobs are
+//! still awaiting collection when the reads end.
 //!
 //! Each footprint is also printed as a `PERF <name>: <x> MiB (SLO <= <y> MiB)`
 //! line, the KPI the performance record keeps (`tools/perf/kpi-budgets.toml`).
@@ -355,7 +362,7 @@ async fn upload(socket: PathBuf, len: usize) -> (BlobRef, Duration, usize) {
     (stored, started.elapsed(), peak_above(base))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn document_media_and_blob_reads_hold_ranges_not_attachments() {
     cold_reads_hold_one_range_of_the_largest_attachment().await;
     storing_and_uploading_hold_no_whole_attachment().await;

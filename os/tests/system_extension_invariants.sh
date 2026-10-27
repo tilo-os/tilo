@@ -19,7 +19,7 @@ user_model_source="$repo/crates/agent/local-model-service/src/main.rs"
 model_gateway_entry="$repo/crates/agent/model-gateway/src/main.rs"
 model_gateway_library="$repo/crates/agent/model-gateway/src/lib.rs"
 model_gateway_source="$repo/crates/agent/model-gateway/src/service.rs"
-settings_models_source="$repo/apps/settings/src/panes/agent_models.rs"
+settings_models_source="$repo/apps/settings-rare/src/panes/agent_models.rs"
 socket="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket"
 dispatcher="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service"
 dispatch_helper="$repo/os/usr/libexec/tilo-system-extension-dispatch"
@@ -103,7 +103,7 @@ need "$model" 'PrivateDevices=yes' 'local-model runtime has ambient device acces
 need "$model" 'ReadOnlyPaths=/var/lib/tilo/system-extensions /var/lib/tilo/local-models /usr/share/tilo/system-extensions' 'local-model runtime can replace verified packs'
 [ "$fail" -ne 0 ] || ok 'future local-model service is unprivileged and condition-gated'
 
-need "$user_model" 'ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo/services/models.sock' 'per-user model service does not publish the launcher service socket'
+need "$user_model" 'ExecStart=/usr/libexec/tilo/tilo-model-manager serve --socket %t/tilo/services/models.sock' 'per-user model service does not publish the launcher service socket'
 need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the immutable root'
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
@@ -221,7 +221,7 @@ need "$containerfile" 'systemctl enable tilo-system-extension-dispatcher.socket'
 containerfile_installs_output "$containerfile" tilo-system-extension-manager \
   /usr/libexec/tilo-system-extension-manager \
   || bad 'image does not package privileged BootPack manager'
-need "$containerfile" '-p system-extension' 'image builder does not compile privileged BootPack manager'
+need "$repo/os/image/compile.sh" '-p system-extension' 'image builder does not compile privileged BootPack manager'
 need "$containerfile" 'systemctl enable tilo-system-extension-boot-pack-status.timer' 'BootPack reboot status is not projected after boot'
 need "$boot_status_timer" 'Unit=tilo-system-extension-boot-pack-status.service' 'BootPack status timer starts the wrong unit'
 need "$boot_status_timer" 'OnBootSec=5s' 'BootPack status projection is not deferred beyond the login-critical path'

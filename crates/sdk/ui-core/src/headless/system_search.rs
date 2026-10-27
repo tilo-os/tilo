@@ -98,7 +98,9 @@ impl Provider<(), Row> for SnapshotProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
     }
-    fn available_in_active_app_scope(&self) -> bool {
+    /// The actions here are the calling app's own, so they belong to a
+    /// search scoped to it; every other snapshot is one source of its own.
+    fn narrows_to_active_app(&self) -> bool {
         self.id == "actions"
     }
     fn query_page(
@@ -385,6 +387,8 @@ impl FrameHarness {
         let caller_actions: Vec<_> = tilo_actions::flatten(&caller_resources)
             .into_iter()
             .filter(|fa| fa.action.contract.availability.is_available())
+            // What is for agents and scripts is never a person's row.
+            .filter(|fa| fa.action.reaches_people())
             // Desktop launch actions already have the authoritative Applications group.
             .filter(|fa| {
                 !data.applications.iter().any(|a| {
@@ -415,11 +419,12 @@ impl FrameHarness {
             .into_iter()
             .zip(action_ranks)
             .filter_map(|(fa, rank)| {
+                let row = fa.row();
                 Some(Row {
                     identity: format!("action:{}", fa.key),
                     score: system::provider_score(rank?),
-                    title: format!("{} — {}", fa.resource_label, fa.action.label),
-                    subtitle: fa.action.description.clone(),
+                    title: row.title,
+                    subtitle: row.subtitle,
                     kind: ResourceKind::Action,
                     icon: None,
                     intent: GlobalSearchIntent::CallerAction(ActionAddress::new(

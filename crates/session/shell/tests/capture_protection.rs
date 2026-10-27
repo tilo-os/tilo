@@ -30,8 +30,7 @@ use shell::shell::capture_protection;
 use ui::num::u32_of_f64;
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
-    AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode, PipLayout,
-    SourceMode,
+    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, PipLayout, SourceMode,
 };
 use vello::kurbo::Rect;
 use vello::peniko::Color;
@@ -83,19 +82,15 @@ fn sparse_pixels(rgba: &[u8]) -> Vec<(u8, u8, u8, u8)> {
         .collect()
 }
 
-fn intent(extent: CaptureExtent, regions: Vec<Rect>) -> CaptureIntent {
+fn intent(source: SourceMode, regions: Vec<Rect>) -> CaptureIntent {
     CaptureIntent {
         mode: CaptureMode::Screenshot,
-        source: if extent == CaptureExtent::Visible {
-            SourceMode::Region
-        } else {
-            SourceMode::Window
-        },
+        source,
         destination: CaptureDestination::File,
         regions,
+        anchors: Vec::new(),
         include_pointer: false,
         audio: AudioCaptureMode::None,
-        extent,
         pip_layout: PipLayout::Auto,
         targets: Vec::new(),
         recording_command: None,
@@ -106,7 +101,7 @@ fn intent(extent: CaptureExtent, regions: Vec<Rect>) -> CaptureIntent {
 
 fn whole_screen() -> CaptureIntent {
     intent(
-        CaptureExtent::Visible,
+        SourceMode::Region,
         vec![Rect::new(0.0, 0.0, f64::from(W), f64::from(H))],
     )
 }
@@ -118,8 +113,9 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     fb.paint_settled()
 }
 
-/// Paint until the adopted client has latched as presented and its opening
-/// cross-fade is over, so samples measure the client and not the card.
+/// Paint until the adopted client has latched as presented and its first
+/// frame's cross-fade in is over, so samples measure the client and not the
+/// placeholder.
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
     let deadline = tilo_test_env::hang_deadline();
@@ -129,7 +125,7 @@ fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
             store().publish_rgba(surface_id, &solid(bw, bh, CLIENT), bw, bh);
             published = true;
         }
-        let _ = fb.any_tile_opening();
+        let _ = fb.any_tile_arriving();
         let _ = frame(fb);
         if published && store().is_presented(surface_id) {
             break;
@@ -143,8 +139,14 @@ fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let handover_end = std::time::Instant::now()
         .checked_add(std::time::Duration::from_millis(250))
         .unwrap_or_else(std::time::Instant::now);
-    while std::time::Instant::now() < handover_end {
+    // The last frame starts after the handover has ended, however long the
+    // frames before it took.
+    loop {
+        let ended = std::time::Instant::now() >= handover_end;
         let _ = frame(fb);
+        if ended {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
 }
@@ -264,7 +266,7 @@ fn a_protected_window_is_captured_as_the_placeholder_and_an_unprotected_one_as_i
         .into_iter()
         .find(|target| target.virtual_rect.contains(rect.center()))
         .expect("the protected window is a capture target");
-    let mut app_capture = intent(CaptureExtent::FullApp, vec![target.virtual_rect]);
+    let mut app_capture = intent(SourceMode::Window, vec![target.virtual_rect]);
     app_capture.targets = vec![target];
     let (shot, _, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &app_capture).expect("app capture");
@@ -322,8 +324,14 @@ fn the_lock_screen_is_never_captured() {
         size: (f64::from(W), f64::from(H)),
         scale: 1.0,
     }];
+    let prompt = shell::compositor::lock_controller::LockPrompt::new();
+    prompt
+        .borrow_mut()
+        .reject(shell::compositor::lock_controller::refusal_line(
+            "Incorrect password",
+        ));
     let view = LockView {
-        password_len: 6,
+        prompt: Some(&prompt),
         error: Some("Incorrect password"),
         clock: "13:37",
         date: "Friday, 11 July",
@@ -369,7 +377,7 @@ fn the_lock_screen_is_never_captured() {
     assert_eq!(count_near(&samples, fill), samples.len());
 
     // An App capture has no desktop to repaint while locked.
-    let mut app_capture = intent(CaptureExtent::FullApp, vec![everywhere]);
+    let mut app_capture = intent(SourceMode::Window, vec![everywhere]);
     app_capture.targets = fb.capture_targets();
     let captured = CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture);
     drop(fb);
@@ -491,6 +499,7 @@ fn the_shells_secret_prompts_are_never_captured() {
                     rule: SecretFieldRule::WpaPassphrase,
                 }],
                 remember: Some(true),
+                sim: None,
             })
             .expect("the sheet is queued");
         fb.host_mut().pump_portal_dialogs();
@@ -519,7 +528,12 @@ fn the_shells_secret_prompts_are_never_captured() {
         use shell::onboarding_view::OnboardingVisualState;
         let identity = tempfile::tempdir().expect("identity dir");
         let mut fb = FrameBuilder::new((W, H));
-        fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
+        {
+            // The view takes this login's home and identity root from the
+            // environment once, here; other tests change both under the lock.
+            let _env = tilo_test_env::lock();
+            fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
+        }
         for (state, secret) in [
             (OnboardingVisualState::Intro, false),
             (OnboardingVisualState::Existing, false),
@@ -615,8 +629,12 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     let settled = std::time::Instant::now()
         .checked_add(std::time::Duration::from_millis(400))
         .unwrap_or_else(std::time::Instant::now);
-    while std::time::Instant::now() < settled {
+    loop {
+        let ended = std::time::Instant::now() >= settled;
         let _ = frame(&mut fb);
+        if ended {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
     let (_, keyboard) = fb

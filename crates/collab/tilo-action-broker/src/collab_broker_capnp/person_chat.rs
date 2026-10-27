@@ -199,10 +199,7 @@ impl CapnpChannelHandle {
             .host_workers
             .lock()
             .map_err(|_| "private app registry unavailable")?
-            .iter()
-            .find_map(|(peer, worker)| {
-                (worker.worker_registration.as_ref() == Some(registration)).then_some(*peer)
-            })
+            .peer_of(registration)
             .ok_or("private Chat app worker has closed")?;
         Ok((peer, registration.clone()))
     }

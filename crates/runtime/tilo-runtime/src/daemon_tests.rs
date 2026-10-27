@@ -44,7 +44,7 @@ fn default_admission_activates_a_live_owner_and_retries_after_its_exit() {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
-                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .set_read_timeout(Some(tilo_test_env::hang_bound()))
                             .unwrap();
                         let mut request = String::new();
                         BufReader::new(stream.try_clone().unwrap())
@@ -103,8 +103,11 @@ const LIMITS: StartupLimits = StartupLimits {
 
 /// A process that progresses until `progress_for`, then goes quiet. Only
 /// the signal at `moving` changes; the others stay constant or unreadable.
+/// It lives on a virtual clock that moves only when the wait pauses, so
+/// how fast or loaded the machine is never decides the outcome.
 struct Fake {
     started: Instant,
+    elapsed: Duration,
     progress_for: Duration,
     moving: usize,
     ready_after: Option<Duration>,
@@ -116,6 +119,7 @@ impl Fake {
     fn new(progress_for: Duration) -> Self {
         Self {
             started: Instant::now(),
+            elapsed: Duration::ZERO,
             progress_for,
             moving: 0,
             ready_after: None,
@@ -129,17 +133,23 @@ impl StartingProcess for Fake {
     type Ready = &'static str;
     fn ready(&mut self) -> Option<&'static str> {
         self.ready_after
-            .is_some_and(|after| self.started.elapsed() >= after)
+            .is_some_and(|after| self.elapsed >= after)
             .then_some("ready")
     }
     fn exited(&mut self) -> io::Result<Option<String>> {
         Ok(self
             .exit_after
-            .is_some_and(|after| self.started.elapsed() >= after)
+            .is_some_and(|after| self.elapsed >= after)
             .then(|| "exit status: 3".to_owned()))
     }
+    fn now(&self) -> Instant {
+        self.started.checked_add(self.elapsed).unwrap()
+    }
+    fn pause(&mut self, poll: Duration) {
+        self.elapsed = self.elapsed.saturating_add(poll);
+    }
     fn observe(&mut self) -> Observation {
-        let elapsed = self.started.elapsed();
+        let elapsed = self.elapsed;
         let (stage, value) = if elapsed < self.progress_for {
             (
                 "warming up",
@@ -168,18 +178,16 @@ fn slow_start_that_keeps_progressing_is_waited_for() {
     let mut fake = Fake::new(Duration::from_secs(60));
     // Several stall windows long: only continued progress keeps it alive.
     fake.ready_after = Some(Duration::from_millis(1500));
-    let started = Instant::now();
     assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
-    assert!(started.elapsed() >= Duration::from_millis(1500));
+    assert!(fake.elapsed >= Duration::from_millis(1500));
     assert!(!fake.stopped);
 }
 
 #[test]
 fn stalled_start_fails_at_the_stall_timeout_naming_its_stage() {
     let mut fake = Fake::new(Duration::from_millis(200));
-    let started = Instant::now();
     let error = wait_until_ready(&mut fake, LIMITS).unwrap_err();
-    let elapsed = started.elapsed();
+    let elapsed = fake.elapsed;
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     let message = error.to_string();
     assert!(
@@ -209,9 +217,8 @@ fn progress_in_any_single_signal_keeps_the_start_alive() {
 fn exited_start_fails_immediately_with_its_output() {
     let mut fake = Fake::new(Duration::from_secs(60));
     fake.exit_after = Some(Duration::from_millis(20));
-    let started = Instant::now();
     let message = wait_until_ready(&mut fake, LIMITS).unwrap_err().to_string();
-    assert!(started.elapsed() < LIMITS.stall);
+    assert!(fake.elapsed < LIMITS.stall);
     assert!(
         message.contains("exited while warming up (exit status: 3)"),
         "{message}"
@@ -260,39 +267,115 @@ fn real_child_exit_reports_its_stderr() {
     assert!(message.contains("identity: boom"), "{message}");
 }
 
+/// A real daemon start whose steps the test paces on a virtual clock: the
+/// child names its next step when the clock passes it, and the clock waits
+/// for the step to be named, so the child's speed never decides the outcome.
+struct Paced {
+    start: DaemonStart,
+    stages: std::path::PathBuf,
+    steps: std::process::ChildStdin,
+    started: Instant,
+    elapsed: Duration,
+    every: Duration,
+    named: usize,
+    total: usize,
+}
+
+impl StartingProcess for Paced {
+    type Ready = <DaemonStart as StartingProcess>::Ready;
+    fn ready(&mut self) -> Option<Self::Ready> {
+        self.start.ready()
+    }
+    fn exited(&mut self) -> io::Result<Option<String>> {
+        self.start.exited()
+    }
+    fn observe(&mut self) -> Observation {
+        self.start.observe()
+    }
+    fn stop(&mut self) {
+        self.start.stop();
+    }
+    fn diagnostics(&self) -> String {
+        self.start.diagnostics()
+    }
+    fn now(&self) -> Instant {
+        self.started.checked_add(self.elapsed).unwrap()
+    }
+    fn pause(&mut self, poll: Duration) {
+        use std::io::Write as _;
+        self.elapsed = self.elapsed.saturating_add(poll);
+        while self.named < self.total
+            && self.elapsed
+                >= self
+                    .every
+                    .checked_mul(u32::try_from(self.named.saturating_add(1)).unwrap())
+                    .unwrap()
+        {
+            self.named = self.named.saturating_add(1);
+            writeln!(self.steps).unwrap();
+            let named = self.named;
+            tilo_test_env::wait_until(format!("the child to name step {named}"), || {
+                std::fs::read_to_string(&self.stages)
+                    .is_ok_and(|stages| stages.lines().count() == named)
+            });
+            if named == self.total {
+                #[cfg(target_os = "linux")]
+                {
+                    let comm = format!("/proc/{}/comm", self.start.child.id());
+                    tilo_test_env::wait_until("the child to block in sleep", || {
+                        std::fs::read_to_string(&comm).is_ok_and(|name| name.trim() == "sleep")
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn named_startup_steps_are_progress_and_a_stall_names_the_last_one() {
     let profile = tempfile::tempdir().unwrap();
     // Names a step every 0.2 s for several stall windows, without output,
     // then blocks without using CPU, reading, writing or naming a step.
-    let mut start = daemon_start(
-        profile.path(),
-        &format!(
-            "for step in 1 2 3 4 5 6 7 8; do sleep 0.2; echo \"step $step\" >> {STAGES_FILE}; \
-             done; exec sleep 60"
-        ),
-    );
-    let pid = start.child.id();
+    let mut child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!(
+                "for step in 1 2 3 4 5 6 7 8; do read line; echo \"step $step\" >> {STAGES_FILE}; \
+                 done; exec sleep 60"
+            ),
+        ])
+        .current_dir(profile.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(profile.path().join("daemon.log")).unwrap())
+        .spawn()
+        .unwrap();
+    let steps = child.stdin.take().unwrap();
+    let pid = child.id();
+    let mut start = Paced {
+        start: DaemonStart::new(profile.path(), child),
+        stages: profile.path().join(STAGES_FILE),
+        steps,
+        started: Instant::now(),
+        elapsed: Duration::ZERO,
+        every: Duration::from_millis(200),
+        named: 0,
+        total: 8,
+    };
     let limits = StartupLimits {
         stall: Duration::from_secs(1),
         ..LIMITS
     };
-    let started = Instant::now();
     let error = wait_until_ready(&mut start, limits).unwrap_err();
     let message = error.to_string();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(message.contains("stalled while step 8"), "{message}");
-    assert!(
-        started.elapsed() >= Duration::from_millis(2600),
-        "{message}"
-    );
+    assert!(start.elapsed >= Duration::from_millis(2600), "{message}");
     assert!(message.contains("startup step last changed"), "{message}");
     assert!(message.contains("wrote nothing"), "{message}");
     #[cfg(target_os = "linux")]
     {
-        // What the stalled process was blocked on.
         assert!(message.contains("threads: sleep S"), "{message}");
-        // The stalled child was killed and reaped.
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }
     // Only Linux exposes a process tree's CPU time and thread states; elsewhere
@@ -547,8 +630,10 @@ impl tilo_actions::remote::ActionHost for PageHost {
         &self,
         _caller: &tilo_actions::remote::Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
-        Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionHostError::UnknownInvocation,
+        ))
     }
 }
 

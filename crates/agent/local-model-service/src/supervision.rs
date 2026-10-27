@@ -37,6 +37,10 @@ pub fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
                 "/dev/dri".into(),
             ]);
         }
+        // Mesa in the image drives the GPU through its render node.
+        agent_provider_config::local::RuntimeKind::Vulkan => {
+            argv.extend(["--device".into(), "/dev/dri".into()]);
+        }
     }
     // The host object is derived exclusively from its verified SHA-256 path.
     // `label=disable` lets rootless podman read the existing per-user store

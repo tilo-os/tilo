@@ -69,7 +69,6 @@ impl ImportEntry {
     }
 }
 
-/// The map key of a proposal.
 #[must_use]
 pub fn key(proposal_id: &[u8; 32]) -> String {
     hex::encode(proposal_id)
@@ -209,9 +208,6 @@ pub enum ImportAction {
 
 impl ImportAction {
     /// The action named `action` with its JSON `argument`.
-    ///
-    /// # Errors
-    /// An unknown action, or an argument that is not its typed form.
     pub fn parse(action: &str, argument: &str) -> Result<Self, String> {
         let limit = usize::try_from(MAX_IMPORT_DOCUMENT_BYTES)
             .unwrap_or(usize::MAX)

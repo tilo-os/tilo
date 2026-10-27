@@ -266,11 +266,14 @@ pub(crate) struct RemoteCaptureFabricRuntime {
 }
 
 impl RemoteCaptureFabricRuntime {
+    /// This machine's capture, its programs and devices probed off the
+    /// compositor thread ([`CaptureHost::watch`]).
     pub(crate) fn production(broker: Arc<Mutex<CaptureBroker>>) -> Self {
+        let host = crate::shell::remote_capture::host::CaptureHost::watch();
         Self::new(
             broker,
-            Box::new(ProductionRemoteCaptureAdapter::detect()),
-            Box::new(ProductionRemoteCaptureSource::detect()),
+            Box::new(ProductionRemoteCaptureAdapter::new(host.clone())),
+            Box::new(ProductionRemoteCaptureSource::new(host)),
         )
     }
 
@@ -1222,9 +1225,6 @@ fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::shell::remote_capture::adapter::{RemoteCaptureAdapterError, RemoteCaptureEndpoint};
     use crate::shell::remote_capture::device::{
@@ -1373,7 +1373,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_runtime_gates_chunks_on_consent_approval_and_bounded_profiles() {
-        // Phase `exact_route_consent_and_local_app_approval_gate_chunks`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1431,9 +1430,7 @@ mod tests {
             };
             assert_eq!(chunk.grant, source_grant);
             assert_eq!(chunk.sequence, 1);
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 target_runtime.pump(now);
                 if target_runtime.target_sessions.contains_key(&session_id) {
@@ -1463,7 +1460,6 @@ mod tests {
             );
         }
 
-        // Phase `unanswered_requests_expire_without_leaving_authority`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1480,7 +1476,6 @@ mod tests {
             assert!(runtime.target_sessions.is_empty());
         }
 
-        // Phase `standard_profiles_fit_the_bounded_transport_and_views_hide_backend_ids`.
         {
             for kind in [
                 RemoteCaptureKind::Camera,
@@ -1520,7 +1515,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_runtime_teardown_revokes_exactly_the_affected_authority() {
-        // Phase `peer_and_policy_teardown_remove_pending_and_live_authority`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1539,7 +1533,6 @@ mod tests {
             assert_eq!(RemoteCaptureKind::Camera, profile().kind());
         }
 
-        // Phase `focus_teardown_revokes_only_the_previous_target_app`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1565,9 +1558,7 @@ mod tests {
             let (_, decision) = source.decide(request_id, true, now).unwrap();
             target.handle_action(&envelope(&phone, &laptop, decision), now);
 
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 target.pump(now);
                 if !target.target_sessions.is_empty() {
@@ -1615,7 +1606,6 @@ mod tests {
             ));
         }
 
-        // Phase `source_backend_failure_returns_a_denial_without_authority`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1663,7 +1653,6 @@ mod tests {
             );
         }
 
-        // Phase `target_adapter_failure_revokes_grant_and_stops_exact_source`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1694,9 +1683,7 @@ mod tests {
             source.handle_action(&envelope(&laptop, &phone, request), now);
             let (_, decision) = source.decide(request_id, true, now).unwrap();
             target.handle_action(&envelope(&phone, &laptop, decision), now);
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 target.pump(now);
                 if !target.outgoing.is_empty() {

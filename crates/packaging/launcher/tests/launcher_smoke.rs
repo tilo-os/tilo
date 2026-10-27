@@ -263,7 +263,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
             no_services: false,
             runtime_root: None,
             bwrap_bin: Some(bwrap),
-            sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+            sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
             minimal_libs: false,
             landlock_enforce: false,
             mode: launcher::run::LaunchMode::Gui,
@@ -335,7 +335,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
             no_services: false,
             runtime_root: None,
             bwrap_bin: Some(bwrap),
-            sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+            sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
             minimal_libs: false,
             landlock_enforce: false,
             mode: launcher::run::LaunchMode::Gui,
@@ -762,7 +762,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         env.set(PROXY_BIN_ENV, &mock)
             .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
 
-        // Build a manifest declaring `notifications = via-host`.
         let mut m = hello_manifest(tmp.path(), BTreeMap::new());
         m.sandbox.portals.insert(
             "notifications".to_string(),
@@ -781,7 +780,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             &bin,
             "unix:path=/run/user/1234/bus",
             &sock,
-            std::time::Duration::from_secs(60),
+            tilo_test_env::hang_bound(),
         )
         .expect("spawn mock proxy");
         let plan = launcher::sandbox::DBusBindPlan {
@@ -790,7 +789,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             atspi: None,
         };
 
-        // The proxy child exists.
         let pid = guard.pid().expect("proxy pid");
         assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
 

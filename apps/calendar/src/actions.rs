@@ -223,7 +223,7 @@ impl EventData {
             // scalar while preserving the event itself.
             reminder: e
                 .reminder_min
-                .filter(|minutes| matches!(*minutes, 10 | 30 | 60))
+                .filter(|minutes| crate::model::REMINDERS.contains(minutes))
                 .unwrap_or(-1),
             project: e.project.map(|p| p.to_string()).unwrap_or_default(),
             calendar_id: e.calendar_id.clone().unwrap_or_default(),
@@ -250,7 +250,7 @@ impl EventData {
         let organizer = parse_optional_id(&self.organizer)?;
         if !crate::timezone::valid_span(&timezone, start, end, self.end_later_fold)
             || self.color >= Palette::ALL.len()
-            || !matches!(self.reminder, -1 | 10 | 30 | 60)
+            || (self.reminder != -1 && !crate::model::REMINDERS.contains(&self.reminder))
             || Recurrence::from_rrule(&self.rrule).to_rrule() != self.rrule
             || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
             || organizer
@@ -487,12 +487,15 @@ fn parse_opt_id(s: &str) -> Option<Id> {
 /// identities so a repeated import also recognises locally edited items.
 /// `None` when it holds neither.
 pub fn import_payload(source: &str) -> Option<(Vec<EventData>, Vec<TaskData>)> {
-    let (events, tasks) = crate::ics::parse(source);
-    let events: Vec<_> = events
-        .into_iter()
-        .map(|event| EventData::from_event(&event))
-        .collect();
-    let tasks: Vec<_> = tasks.iter().map(TaskData::from_task).collect();
+    import_parsed(&crate::ics::parse_calendar(source))
+}
+
+/// [`import_payload`] of a file already parsed.
+pub(crate) fn import_parsed(
+    parsed: &crate::ics::Parsed,
+) -> Option<(Vec<EventData>, Vec<TaskData>)> {
+    let events: Vec<_> = parsed.events.iter().map(EventData::from_event).collect();
+    let tasks: Vec<_> = parsed.tasks.iter().map(TaskData::from_task).collect();
     (!events.is_empty() || !tasks.is_empty()).then_some((events, tasks))
 }
 

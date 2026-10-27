@@ -329,6 +329,74 @@ fn host(raw: &str) -> (String, bool) {
     )
 }
 
+/// Bounded, value-free counts for one selected service's cookie store.
+/// Counting never decrypts a cookie and never establishes an account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedCounts {
+    pub cookies: u64,
+    pub origins: u64,
+}
+
+/// Count matching cookie rows and distinct hosts without reading values.
+/// The source is copied consistently and only the private copy is queried.
+///
+/// # Errors
+/// Refuses unavailable/changed sources or an unsupported cookie schema.
+pub fn count_selected(
+    grant: &SourceGrant,
+    service: Service,
+) -> Result<SelectedCounts, SourceError> {
+    let (_temporary, connection, _source_snapshot_digest) = snapshot(grant, service)?;
+    let query = match grant.provider {
+        Provider::Firefox => {
+            let version: i64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(sqlite)?;
+            if !matches!(version, 15..=17) {
+                return Err(SourceError::UnsupportedSchema);
+            }
+            match service {
+                Service::Slack => {
+                    "SELECT COUNT(*), COUNT(DISTINCT host) FROM moz_cookies WHERE lower(host)='slack.com' OR lower(host) LIKE '%.slack.com'"
+                }
+                Service::Discord => {
+                    "SELECT COUNT(*), COUNT(DISTINCT host) FROM moz_cookies WHERE lower(host)='discord.com' OR lower(host) LIKE '%.discord.com'"
+                }
+            }
+        }
+        Provider::Chromium => {
+            let version = connection
+                .query_row("SELECT value FROM meta WHERE key='version'", [], |row| {
+                    Ok(match row.get_ref(0)? {
+                        rusqlite::types::ValueRef::Integer(version @ (23 | 24)) => Some(version),
+                        rusqlite::types::ValueRef::Text(b"23") => Some(23),
+                        rusqlite::types::ValueRef::Text(b"24") => Some(24),
+                        _ => None,
+                    })
+                })
+                .map_err(sqlite)?;
+            if version.is_none() {
+                return Err(SourceError::UnsupportedSchema);
+            }
+            match service {
+                Service::Slack => {
+                    "SELECT COUNT(*), COUNT(DISTINCT host_key) FROM cookies WHERE lower(host_key)='slack.com' OR lower(host_key) LIKE '%.slack.com'"
+                }
+                Service::Discord => {
+                    "SELECT COUNT(*), COUNT(DISTINCT host_key) FROM cookies WHERE lower(host_key)='discord.com' OR lower(host_key) LIKE '%.discord.com'"
+                }
+            }
+        }
+    };
+    let (cookies, origins): (i64, i64) = connection
+        .query_row(query, [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(sqlite)?;
+    Ok(SelectedCounts {
+        cookies: u64::try_from(cookies).map_err(|_| SourceError::InvalidCookies)?,
+        origins: u64::try_from(origins).map_err(|_| SourceError::InvalidCookies)?,
+    })
+}
+
 /// Read every cookie for exactly the selected Slack or Discord domain family.
 /// The source store is copied consistently; only private copies are queried by
 /// `SQLite`. Encrypted cookies require an explicitly attached, profile-bound
@@ -654,6 +722,35 @@ mod tests {
             read_selected(&grant, Service::Discord).expect_err("no Discord session"),
             SourceError::Unavailable
         );
+    }
+
+    #[test]
+    fn selected_service_counts_are_value_free_and_source_preserving() {
+        let (directory, connection, grant) = firefox_fixture(17);
+        firefox_row(&connection, "token", 2_000_000_123_000, 256);
+        connection
+            .execute_batch(
+                "INSERT INTO moz_cookies(host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,
+                 originAttributes,isPartitionedAttributeSet,inBrowserElement)
+                 VALUES('app.slack.com','session','synthetic-cookie-secret','/',2000000000000,1,1,256,'',0,0);
+                 INSERT INTO moz_cookies(host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,
+                 originAttributes,isPartitionedAttributeSet,inBrowserElement)
+                 VALUES('.discord.com','token','synthetic-discord-secret','/',2000000000000,1,1,256,'',0,0);
+                 INSERT INTO moz_cookies(host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,
+                 originAttributes,isPartitionedAttributeSet,inBrowserElement)
+                 VALUES('.example.com','cookie','synthetic-other-secret','/',2000000000000,1,1,256,'',0,0);",
+            )
+            .expect("synthetic service rows");
+        let before = unchanged_files(directory.path(), "cookies.sqlite");
+        let slack = count_selected(&grant, Service::Slack).expect("value-free Slack count");
+        assert_eq!(slack.cookies, 2);
+        assert_eq!(slack.origins, 2);
+        let discord = count_selected(&grant, Service::Discord).expect("value-free Discord count");
+        assert_eq!(discord.cookies, 1);
+        assert_eq!(discord.origins, 1);
+        assert_eq!(unchanged_files(directory.path(), "cookies.sqlite"), before);
+        assert!(!format!("{slack:?}").contains("synthetic-cookie-secret"));
+        assert!(!format!("{discord:?}").contains("synthetic-discord-secret"));
     }
 
     #[test]

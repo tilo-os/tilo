@@ -21,7 +21,7 @@
 //! host-desktop session and its satellite), real GPU output and real input
 //! devices.
 
-use std::path::Path;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -32,7 +32,9 @@ use crate::support::desktop::{Desktop, Pressure, UNLOCK_PASSWORD};
 const SCREEN: (i32, i32) = (1280, 800);
 
 /// The Wayland client that reports pointer enter/leave and key presses.
-const CLIENT: &str = env!("CARGO_BIN_EXE_click_test_client");
+fn client() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("click_test_client")
+}
 const CLIENT_APP_ID: &str = "click-test";
 
 /// The demo desktop, restored as three Tilo-app windows side by side (Notes,
@@ -215,7 +217,7 @@ fn scenario(desktop: &Desktop) {
     let clients: Vec<_> = (0..2)
         .map(|_| {
             desktop.ok(&json!({"op": "place_next_window", "app_id": CLIENT_APP_ID}));
-            desktop.spawn_client(Path::new(CLIENT))
+            desktop.spawn_client(&client())
         })
         .collect();
     desktop.wait_for("both Wayland clients to paint", || {
@@ -458,6 +460,37 @@ fn idle_log(idle: &crate::support::desktop::Idle) -> String {
     format!("  compositor in the window:\n    {}", lines.join("\n    "))
 }
 
+/// The compositor's soft limit on open descriptors, from its `limits` file.
+fn soft_descriptor_limit(limits: &str) -> Option<u64> {
+    let line = limits.lines().find(|l| l.starts_with("Max open files"))?;
+    line.trim_start_matches("Max open files")
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Growing a threaded process's descriptor table waits for an RCU grace
+/// period, and every thread that opens a file meanwhile sleeps: under
+/// pressure this smoke once found the main loop asleep in `expand_files` for
+/// 282 ms. The compositor reserves the table at startup
+/// (`compositor::descriptor_table`), so after the whole scenario it still
+/// has exactly that size: nothing the person did had to wait for it to grow.
+fn assert_descriptor_table_never_grew(desktop: &Desktop) {
+    use shell::compositor::descriptor_table::{slots_for, table_slots};
+    let limit = soft_descriptor_limit(&desktop.proc_file("limits"))
+        .expect("the compositor's descriptor limit in /proc/<pid>/limits");
+    let table = table_slots(&desktop.proc_file("status"))
+        .expect("the compositor's descriptor table in /proc/<pid>/status");
+    // The kernel sizes a table to a power of two.
+    assert_eq!(
+        table,
+        slots_for(limit).next_power_of_two(),
+        "the compositor's descriptor table has {table} slots under a limit of {limit}; \
+         it was not reserved at startup, or grew while the person used the desktop"
+    );
+}
+
 /// A shorter pointer pass: the corners, the edges and the top bar.
 fn sweep_edges(desktop: &Desktop) {
     let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
@@ -479,6 +512,7 @@ fn sweep_edges(desktop: &Desktop) {
 
 fn run(desktop: &Desktop, pressure: Option<Pressure>) {
     scenario(desktop);
+    assert_descriptor_table_never_grew(desktop);
     // The pressure ends with the scenario: idleness is judged without it.
     drop(pressure);
     assert_idle(desktop);
@@ -500,6 +534,67 @@ fn desktop_smoke_keeps_the_main_loop_turning() {
     run(&desktop, None);
 }
 
+// A path lookup can wait seconds for a busy disk, and on the main loop that is
+// a frozen desktop: the smoke under pressure once found the main thread asleep
+// in `path_openat`. So once started, the compositor's main thread opens,
+// stats and lists nothing by path through the whole smoke scenario; that work
+// runs on a worker, or at startup.
+//
+// `main_thread_walks.txt` lists the sites that still do, by `FileWalk::site`.
+// It only shrinks: a site moved off the loop leaves it, and a walk from any
+// site not on it fails here.
+//
+// A store waiting for its writer thread (a flush: the loop asleep until an
+// fsync on another thread finishes) is just as frozen, and is held to
+// `main_thread_storage_waits.txt` the same way.
+#[test]
+fn the_main_loop_walks_no_path_after_startup() {
+    let sites = |text: &'static str| -> std::collections::BTreeSet<&'static str> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect()
+    };
+    let known_walks = sites(include_str!("main_thread_walks.txt"));
+    let known_waits = sites(include_str!("main_thread_storage_waits.txt"));
+    let desktop = Desktop::start(SCREEN, &smoke_tree());
+    desktop.forbid_main_thread_files();
+    run(&desktop, None);
+    let walks = desktop.main_thread_files();
+    let new: Vec<_> = walks
+        .iter()
+        .filter(|walk| {
+            let known = if walk.syscall == shell::compositor::liveness::STORAGE_WAIT {
+                &known_waits
+            } else {
+                &known_walks
+            };
+            !known.contains(walk.site().as_str())
+        })
+        .collect();
+    let mut listed = String::new();
+    for walk in &new {
+        let _ = write!(
+            listed,
+            "\nsite: {}\nunder: {}\n{} {:?} ({}x)\n{}",
+            walk.site(),
+            walk.handler(),
+            walk.syscall,
+            walk.path,
+            walk.count,
+            walk.backtrace
+        );
+    }
+    assert!(
+        new.is_empty(),
+        "the compositor's main thread walked {} path(s) or waited on storage after startup \
+         from sites not in main_thread_walks.txt or main_thread_storage_waits.txt; each can \
+         wait on the disk and freeze the desktop. Move the work to a worker or to startup, \
+         and flush through DurableStore::flush_where_allowed:\n{listed}",
+        new.len(),
+    );
+}
+
 #[test]
 fn desktop_smoke_under_cpu_and_memory_pressure() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
@@ -511,7 +606,7 @@ fn desktop_smoke_under_cpu_and_memory_pressure() {
 // decoded work that no file descriptor reports any more: the loop must come
 // back for it by itself.
 mod burst {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use wayland_client::protocol::{
         wl_callback, wl_compositor::WlCompositor, wl_surface::WlSurface,
@@ -572,9 +667,7 @@ mod burst {
         let _sync = conn.display().sync(&qh, ());
         conn.flush().expect("send the burst");
 
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         while !client.synced {
             queue.dispatch_pending(&mut client).expect("dispatch");
             if client.synced {
@@ -605,12 +698,11 @@ mod burst {
 // blank windows is a desktop the person cannot use. One lock cycle failed to
 // bring the clients back about one run in fifteen, so this repeats it.
 mod lock_cycle {
-    use std::path::Path;
     use std::time::Duration;
 
     use serde_json::json;
 
-    use super::{CLIENT, CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, painted_clients, smoke_tree};
+    use super::{CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, client, painted_clients, smoke_tree};
     use crate::support::desktop::Desktop;
 
     #[test]
@@ -619,7 +711,7 @@ mod lock_cycle {
         let _clients: Vec<_> = (0..2)
             .map(|_| {
                 desktop.ok(&json!({"op": "place_next_window", "app_id": CLIENT_APP_ID}));
-                desktop.spawn_client(Path::new(CLIENT))
+                desktop.spawn_client(&client())
             })
             .collect();
         desktop.wait_for("both Wayland clients to paint", || {

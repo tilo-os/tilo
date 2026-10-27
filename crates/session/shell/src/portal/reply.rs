@@ -25,7 +25,6 @@ pub enum Ended {
 /// A request's result before it is put on the wire.
 pub type Outcome = Result<Results, Ended>;
 
-/// The wire [`Reply`] for `outcome`.
 #[must_use]
 pub fn reply(outcome: Outcome) -> Reply {
     match outcome {

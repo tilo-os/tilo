@@ -525,11 +525,9 @@ mod tests {
 
     #[test]
     fn keyframe_interpolation_modes_evaluate_correctly() {
-        // Case `no_keys_means_no_value_so_the_constant_wins`.
         {
             assert_eq!(ParamTrack::new(Param::Opacity).sample(3.0), None);
         }
-        // Case `linear_interpolates_and_holds_at_both_ends`.
         {
             let t = track(&[(1.0, 0.0), (3.0, 1.0)]);
             assert_eq!(t.sample(0.0), Some(0.0), "before the first key it holds");
@@ -542,7 +540,6 @@ mod tests {
             assert_eq!(t.sample(3.0), Some(1.0));
             assert_eq!(t.sample(99.0), Some(1.0), "after the last key it holds");
         }
-        // Case `hold_steps_instead_of_ramping`.
         {
             let mut t = ParamTrack::new(Param::Opacity);
             t.set_key(0.0, 0.2, Interp::Hold);
@@ -551,7 +548,6 @@ mod tests {
             assert_eq!(t.sample(1.999), Some(0.2));
             assert_eq!(t.sample(2.0), Some(0.9), "and jumps on it");
         }
-        // Case `ease_is_flat_at_the_ends_and_matches_linear_at_the_middle`.
         {
             let mut t = ParamTrack::new(Param::Opacity);
             t.set_key(0.0, 0.0, Interp::Ease);
@@ -567,28 +563,24 @@ mod tests {
 
     #[test]
     fn keyframe_editing_and_slicing_preserve_values() {
-        // Case `setting_the_same_time_replaces_rather_than_stacks`.
         {
             let mut t = track(&[(1.0, 0.0)]);
             t.set_key(1.0, 0.7, Interp::Linear);
             assert_eq!(t.keys.len(), 1);
             assert_eq!(t.sample(1.0), Some(0.7));
         }
-        // Case `keys_stay_sorted_however_they_arrive`.
         {
             let t = track(&[(5.0, 1.0), (1.0, 0.0), (3.0, 0.5)]);
             let times: Vec<f64> = t.keys.iter().map(|k| k.t).collect();
             assert_eq!(times, vec![1.0, 3.0, 5.0]);
             assert!((t.sample(2.0).unwrap() - 0.25).abs() < 1e-9);
         }
-        // Case `removing_a_key_takes_the_nearest_within_tolerance`.
         {
             let mut t = track(&[(1.0, 0.0), (3.0, 1.0)]);
             assert!(!t.remove_key_near(2.0, 0.1), "nothing is that close");
             assert!(t.remove_key_near(3.05, 0.2));
             assert_eq!(t.keys.len(), 1);
         }
-        // Case `slicing_preserves_the_value_at_both_cut_edges`.
         {
             // Ramp 0 → 1 over 4 seconds; slice the middle two seconds.
             let t = track(&[(0.0, 0.0), (4.0, 1.0)]);
@@ -601,10 +593,8 @@ mod tests {
                 (s.sample(2.0).unwrap() - 0.75).abs() < 1e-9,
                 "right edge too"
             );
-            // And the ramp between them is unchanged in shape.
             assert!((s.sample(1.0).unwrap() - 0.5).abs() < 1e-9);
         }
-        // Case `slicing_carries_interior_keys_rebased`.
         {
             let t = track(&[(0.0, 0.0), (2.0, 1.0), (4.0, 0.0)]);
             let s = t.sliced(1.0, 4.0);
@@ -615,7 +605,6 @@ mod tests {
 
     #[test]
     fn animation_tracks_report_merge_and_round_trip_names() {
-        // Case `animation_reports_which_params_are_animated`.
         {
             let mut a = ClipAnimation::default();
             assert!(a.is_empty());
@@ -628,7 +617,6 @@ mod tests {
             a.clear(Param::Opacity);
             assert!(!a.is_animated(Param::Opacity));
         }
-        // Case `effect_curves_are_named_by_the_effect_and_leave_with_it`.
         {
             let [first, second, third] = [1, 2, 3].map(uuid::Uuid::from_u128);
             let mut animation = ClipAnimation::default();
@@ -656,7 +644,6 @@ mod tests {
             assert_eq!(animation.sample(Param::EffectAmount(third), 0.0), None);
             assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
         }
-        // Case `key_times_are_merged_across_params`.
         {
             let mut a = ClipAnimation::default();
             a.ensure(Param::Opacity).set_key(1.0, 0.0, Interp::Linear);
@@ -665,7 +652,6 @@ mod tests {
             a.ensure(Param::ScaleX).set_key(2.0, 2.0, Interp::Linear);
             assert_eq!(a.key_times(), vec![1.0, 2.0, 3.0]);
         }
-        // Case `param_names_round_trip_including_effects_by_id`.
         {
             for p in Param::SIMPLE {
                 assert_eq!(Param::from_name(&p.as_str()), Some(p), "{p:?}");
@@ -675,7 +661,6 @@ mod tests {
             assert_eq!(Param::from_name("effect3"), None);
             assert_eq!(Param::from_name("nonsense"), None);
         }
-        // Case `interp_names_round_trip`.
         {
             for i in Interp::ALL {
                 assert_eq!(Interp::from_name(i.as_str()), i);

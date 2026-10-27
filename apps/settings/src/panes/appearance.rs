@@ -16,9 +16,10 @@
 //!   or "Automatic": light by day, dark by night.
 //! - **Day and night** — when "Automatic" and a scheduled Night Light switch:
 //!   at sunset and sunrise, or at custom times.
-//! - **High contrast** — overrides the palette with the WCAG-AAA track.
-//! - **Reduce motion** — snaps animations to their resting state.
-//! - **Text size** — a UI-wide text-scale multiplier for low-vision comfort.
+//!
+//! High contrast, reduce motion and text size are Accessibility's: they
+//! live in that pane alone, where people look for them, and this page links
+//! there with one row instead of a second copy of the controls.
 //!
 //! A control that sets one field is bound to that field of the section, the
 //! others to an [`AppearanceEffect`]; either writes the section, and the pane
@@ -40,6 +41,8 @@ use crate::widgets::{Item, SettingsSection, block, note, rows, section, value_ro
 
 mod theme_tiles;
 use theme_tiles::ThemeTiles;
+
+crate::effects::effect_family!(AppearanceEffect => answer);
 
 /// The shape of the wallpaper thumbnails: the laptop panel's 16:10.
 const WALLPAPER_ASPECT: f64 = 16.0 / 10.0;
@@ -77,15 +80,7 @@ fn values(table: &[(&str, &str)]) -> impl Iterator<Item = String> {
 
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
-/// `(label, persisted value)` of which workspaces a new wallpaper covers.
-pub const WALLPAPER_SCOPES: [(&str, &str); 2] =
-    [("This workspace", "workspace"), ("Every workspace", "all")];
-/// `(label, persisted value)` of where a new wallpaper shows.
-pub const WALLPAPER_TARGETS: [(&str, &str); 3] = [
-    ("Desktop", "background"),
-    ("Lock screen", "lockscreen"),
-    ("Desktop and lock screen", "both"),
-];
+pub use crate::prefs::{WALLPAPER_SCOPES, WALLPAPER_TARGETS};
 /// The offered custom sunrise and sunset times.
 pub const TIMES: [&str; 48] = [
     "00:00", "00:30", "01:00", "01:30", "02:00", "02:30", "03:00", "03:30", "04:00", "04:30",
@@ -148,15 +143,6 @@ pub fn target_label(value: &str) -> String {
     })
 }
 
-fn text_size_ftl(english: &str) -> &'static str {
-    match english {
-        "Small" => "settings-appearance-text-small",
-        "Large" => "settings-appearance-text-large",
-        "Larger" => "settings-appearance-text-larger",
-        _ => "settings-appearance-text-default",
-    }
-}
-
 /// The offered global UI-scale steps as `(display label, factor)`. The factor is
 /// what [`AppearancePrefs::ui_scale`] persists; it grows the whole design system
 /// (spacing, radii, and type together) and composes with the per-output
@@ -178,30 +164,6 @@ pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
         .iter()
         .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
         .map_or("100%", |(label, _)| *label)
-}
-
-/// The offered text sizes as `(display label, scale factor)`. The label is
-/// what the dropdown shows and stores; the factor is what
-/// [`AppearancePrefs::text_scale`] persists.
-pub const TEXT_SIZES: &[(&str, f64)] = &[
-    ("Small", 0.85),
-    ("Default", 1.0),
-    ("Large", 1.15),
-    ("Larger", 1.30),
-];
-
-/// Map a text-scale factor to the closest offered label (defaults to
-/// "Default"). Shared with the Accessibility pane, which offers the same
-/// text-size control over the same [`AppearancePrefs::text_scale`] field.
-pub fn text_size_label(scale: f64) -> String {
-    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
-    // could hold a non-finite scale, and this must degrade to Default
-    // rather than panic the pane.
-    let english = TEXT_SIZES
-        .iter()
-        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
-        .map_or("Default", |(label, _)| *label);
-    t(text_size_ftl(english))
 }
 
 /// The person's current appearance selectors and controls, before the OS
@@ -259,13 +221,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
 pub enum AppearanceEffect {
     /// Read the person's current selectors and schedule without resolving
     /// Automatic mode or changing the OS-controlled theme.
-    #[effect(
-        view,
-        returns,
-        device_only,
-        kind = "read",
-        label = "Inspect appearance preferences"
-    )]
+    #[effect(view, returns, kind = "read", label = "Inspect appearance preferences")]
     InspectAppearance,
     /// Choose a picture and make it the wallpaper.
     #[effect(job)]
@@ -375,8 +331,46 @@ pub struct AppearancePane {
     desk: Followed<crate::prefs::DeskWidgetsPrefs>,
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
-    status_shown: Option<String>,
+    /// What the page was built showing ([`Shape`]).
+    shape: Shape,
     composed: ui::widget::Composed,
+}
+
+/// What the page shows of the values other than through a control that
+/// follows its field: the chosen theme's tile, the chosen wallpaper, the
+/// schedule's rows, the desk widgets that are on and where the wallpaper
+/// request stands. A change in any of them rebuilds the page; any other
+/// change only moves its control.
+#[derive(Clone, PartialEq)]
+struct Shape {
+    theme: String,
+    wallpaper: Option<String>,
+    schedule: [String; 3],
+    desk: [bool; 4],
+    status: Option<String>,
+}
+
+impl AppearancePane {
+    fn shape(&self) -> Shape {
+        let prefs = self.prefs();
+        let desk = self.desk.get();
+        Shape {
+            theme: prefs.theme_choice(),
+            wallpaper: prefs.wallpaper.clone(),
+            schedule: [
+                prefs.schedule.clone(),
+                prefs.sunrise.clone(),
+                prefs.sunset.clone(),
+            ],
+            desk: [
+                desk.music.enabled,
+                desk.team.enabled,
+                desk.calendar.enabled,
+                desk.system_monitor.enabled,
+            ],
+            status: self.wallpaper_status.get(),
+        }
+    }
 }
 
 impl AppearancePane {
@@ -386,23 +380,31 @@ impl AppearancePane {
         let prefs = cx.follow::<AppearancePrefs>();
         let desktop = cx.follow::<DesktopControls>();
         let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
-        let status_shown = wallpaper_status.get();
-        Self {
+        let mut pane = Self {
             cx,
             prefs,
             desktop,
             desk,
             wallpaper_status,
-            status_shown,
+            shape: Shape {
+                theme: String::new(),
+                wallpaper: None,
+                schedule: Default::default(),
+                desk: [false; 4],
+                status: None,
+            },
             composed: ui::widget::Composed::default(),
-        }
+        };
+        pane.shape = pane.shape();
+        pane
     }
 
     pub fn prefs(&self) -> &AppearancePrefs {
         self.prefs.get()
     }
 
-    /// The theme, the interface scale and the text size.
+    /// The theme, the density and the interface scale, and the way to
+    /// the accessibility options.
     fn theme_card(&self) -> SettingsSection {
         let cx = &self.cx;
         let paths = AppearancePrefs::paths();
@@ -428,46 +430,23 @@ impl AppearancePane {
                     .among(UI_SCALES.iter().map(|(_, scale)| *scale), |scale: &f64| {
                         ui_scale_label(*scale).to_owned()
                     }),
-                cx.row(t("settings-appearance-text-size"))
-                    .id("appearance.text_size")
-                    .of(&self.prefs, paths.text_scale)
-                    .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
-                        text_size_label(*scale)
-                    }),
+                // Contrast, motion and text size are Accessibility's alone.
+                cx.row(t("settings-appearance-accessibility"))
+                    .described(t("settings-appearance-accessibility-desc"))
+                    .button(
+                        "appearance.accessibility",
+                        &t("settings-appearance-accessibility-open"),
+                        crate::effects::open_pane(crate::categories::Category::Accessibility),
+                    ),
             ]),
         )
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let theme_card = self.theme_card();
-        let access_card = section(
-            &t("settings-appearance-access-card"),
-            rows(vec![
-                self.cx
-                    .row(t("settings-appearance-high-contrast"))
-                    .described(t("settings-appearance-high-contrast-desc"))
-                    .id("appearance.high_contrast")
-                    .of(&self.prefs, AppearancePrefs::paths().high_contrast)
-                    .toggle(),
-                self.cx
-                    .row(t("settings-appearance-reduce-motion"))
-                    .described(t("settings-appearance-reduce-motion-desc"))
-                    .id("appearance.reduce_motion")
-                    .of(&self.prefs, AppearancePrefs::paths().reduce_motion)
-                    .toggle(),
-            ]),
-        );
-
         let desktop_card = section(
             &t("settings-appearance-desktop-card"),
-            rows(vec![
-                self.cx
-                    .row(t("settings-appearance-hide-top-bar"))
-                    .described(t("settings-appearance-hide-top-bar-desc"))
-                    .id("appearance.hide_top_bar")
-                    .of(&self.desktop, DesktopControls::paths().hide_top_bar)
-                    .toggle(),
-            ]),
+            rows(vec![hide_top_bar(&self.cx, &self.desktop)]),
         );
 
         crate::widgets::page(vec![
@@ -476,7 +455,6 @@ impl AppearancePane {
             self.schedule_card(),
             desktop_card,
             self.desk_widgets_card(),
-            access_card,
         ])
     }
 
@@ -497,7 +475,7 @@ impl AppearancePane {
                     target_label(target)
                 }),
         ];
-        if let Some(status) = &self.status_shown {
+        if let Some(status) = &self.shape.status {
             body.push(note(status));
         }
         section(&t("settings-appearance-wallpaper-card"), rows(body))
@@ -544,7 +522,6 @@ impl AppearancePane {
                 )
                 .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
                 .title(t("settings-appearance-your-picture"))
-                .meta(t("settings-appearance-choose-picture"))
                 .selected(chosen == Some(tilo_wallpapers::Choice::Custom)),
                 AppearanceEffect::ChooseWallpaper,
             ),
@@ -607,21 +584,31 @@ impl AppearancePane {
     }
 }
 
+pub(crate) mod values;
+
+pub(crate) fn hide_top_bar(cx: &PaneCx, desktop: &Followed<DesktopControls>) -> Item {
+    cx.row(t("settings-appearance-hide-top-bar"))
+        .described(t("settings-appearance-hide-top-bar-desc"))
+        .id("appearance.hide_top_bar")
+        .of(desktop, DesktopControls::paths().hide_top_bar)
+        .toggle()
+}
+
 impl Widget for AppearancePane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        if self.prefs.refresh() {
-            // The schedule's rows and the applied theme follow the values.
-            self.composed.invalidate();
-        }
+        // The controls follow their fields; the page is rebuilt only when
+        // what it shows otherwise changes.
+        self.prefs.refresh();
         self.desktop.refresh();
-        let status = self.wallpaper_status.get();
-        if status != self.status_shown {
-            self.status_shown = status;
+        self.desk.refresh();
+        let shape = self.shape();
+        if shape != self.shape {
+            self.shape = shape;
             self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
-    crate::panes::composed_pane!();
+    crate::panes::composed_pane!(kept);
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // This pane paints only its composition. Keep a child's local visual
@@ -758,10 +745,13 @@ mod tests {
         let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
         let paths = AppearancePrefs::paths();
         assert_eq!(pane.prefs().theme_choice(), "Dark cool");
-        let text_size = pane
-            .prefs
-            .shown(&paths.text_scale, |scale| text_size_label(*scale));
-        assert_eq!(text_size.get(), text_size_label(1.15));
+        let text_size = pane.prefs.shown(&paths.text_scale, |scale| {
+            crate::panes::accessibility::text_size_label(*scale)
+        });
+        assert_eq!(
+            text_size.get(),
+            crate::panes::accessibility::text_size_label(1.15)
+        );
         let ui_scale = pane
             .prefs
             .shown(&paths.ui_scale, |scale| ui_scale_label(*scale).to_owned());
@@ -840,6 +830,104 @@ mod tests {
             crate::categories::Category::Appearance.matches("top bar"),
             "searching for the top bar lands here"
         );
+    }
+
+    /// The ids of the controls the open pane of `app` shows.
+    fn shown_ids(app: &mut TestApp<SettingsShell>) -> Vec<String> {
+        fn walk(widget: &dyn Widget, ids: &mut Vec<String>) {
+            if let Some(id) = widget.test_id() {
+                ids.push(id.to_owned());
+            }
+            for child in widget.children() {
+                walk(child, ids);
+            }
+        }
+        let mut ids = Vec::new();
+        walk(app.harness().root_widget(), &mut ids);
+        ids
+    }
+
+    fn settle(app: &mut TestApp<SettingsShell>) {
+        for _ in 0..10 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+    }
+
+    #[test]
+    fn contrast_motion_and_text_size_live_only_in_accessibility_and_appearance_links_there() {
+        use crate::categories::Category;
+        use crate::effects::open_pane;
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1200, 2000)).unwrap();
+        app.effect(&open_pane(Category::Appearance)).unwrap();
+        settle(&mut app);
+        let appearance = shown_ids(&mut app);
+        for duplicate in [
+            "appearance.high_contrast",
+            "appearance.reduce_motion",
+            "appearance.text_size",
+            "a11y.high_contrast",
+            "a11y.reduce_motion",
+            "a11y.text_size",
+        ] {
+            assert!(
+                !appearance.iter().any(|id| id == duplicate),
+                "Appearance shows {duplicate}: {appearance:?}"
+            );
+        }
+        assert_eq!(
+            appearance
+                .iter()
+                .filter(|id| id.as_str() == "appearance.accessibility")
+                .count(),
+            1,
+            "one row links to Accessibility"
+        );
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Accessibility options")
+        );
+
+        let link =
+            ui::widget::find_test_id(app.harness().root_widget(), "appearance.accessibility")
+                .expect("the link is shown")
+                .get_rect()
+                .center();
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(link.x, link.y));
+        app.harness().send(&ui::synthetic_input::mouse_press());
+        app.harness().send(&ui::synthetic_input::mouse_release());
+        settle(&mut app);
+        assert_eq!(
+            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::Accessibility)
+        );
+        let accessibility = shown_ids(&mut app);
+        for control in ["a11y.high_contrast", "a11y.reduce_motion", "a11y.text_size"] {
+            assert_eq!(
+                accessibility
+                    .iter()
+                    .filter(|id| id.as_str() == control)
+                    .count(),
+                1,
+                "Accessibility shows {control} once: {accessibility:?}"
+            );
+        }
+        for setting in [
+            "appearance.high_contrast",
+            "appearance.reduce_motion",
+            "appearance.text_size",
+        ] {
+            assert_eq!(
+                settings_store::index::setting(setting).map(|setting| setting.page),
+                Some("accessibility"),
+                "{setting}"
+            );
+        }
     }
 
     #[test]
@@ -956,8 +1044,14 @@ mod tests {
     #[test]
     fn every_shipped_wallpaper_has_a_name_in_every_language() {
         for (locale, text) in [
-            ("en-US", include_str!("../../locales/en-US.ftl")),
-            ("de-DE", include_str!("../../locales/de-DE.ftl")),
+            (
+                "en-US",
+                include_str!("../../../settings-core/locales/en-US.ftl"),
+            ),
+            (
+                "de-DE",
+                include_str!("../../../settings-core/locales/de-DE.ftl"),
+            ),
         ] {
             for wallpaper in tilo_wallpapers::all() {
                 let key = format!("settings-wallpaper-{} = ", wallpaper.id);

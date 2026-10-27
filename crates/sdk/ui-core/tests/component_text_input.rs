@@ -537,7 +537,10 @@ impl AppWidget for WithdrawableResource {
 }
 
 impl Widget for WithdrawableResource {
-    tilo_ui::provides!(dyn tilo_ui::resources::PublishesResources);
+    tilo_ui::provides!(
+        dyn tilo_ui::resources::PublishesResources,
+        dyn tilo_ui::host_operation::ResourceOperations
+    );
     fn name(&self) -> &'static str {
         "WithdrawableResource"
     }
@@ -551,9 +554,13 @@ impl Widget for WithdrawableResource {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
+}
+
+impl tilo_ui::host_operation::ResourceOperations for WithdrawableResource {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[tilo_ui::widget::resource_actions::OPERATION_TYPE]
     }
+
     fn start_operation(
         &mut self,
         _: &tilo_ui::host_operation::ResourceOperation<'_>,

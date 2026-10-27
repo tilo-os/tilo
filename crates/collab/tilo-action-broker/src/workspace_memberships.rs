@@ -14,7 +14,6 @@ const APP: &str = "so.tilo.desktop";
 const RECORD: &str = "membership";
 const WORKSPACE: &str = "desktop:workspace";
 const AGENT_PREFIX: &str = "desktop:agent:";
-const TASK_PREFIX: &str = "desktop:task:";
 const GRANT_APP_AUTHORSHIP: &str = "grant-app-authorship";
 
 impl CapnpBrokerState {
@@ -45,19 +44,6 @@ impl CapnpBrokerState {
                 );
                 (WORKSPACE.into(), GRANT_APP_AUTHORSHIP, Some(argument))
             }
-            WorkspaceMembershipCommand::GrantForTask {
-                task,
-                node,
-                kinds,
-                answer,
-            } => {
-                let argument = format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::json!({"node": node, "kinds": kinds, "answer": answer})
-                );
-                (format!("desktop:{task}"), "grant", Some(argument))
-            }
             WorkspaceMembershipCommand::Grant { grant } => {
                 let argument = format!(
                     "{}{}",
@@ -74,13 +60,9 @@ impl CapnpBrokerState {
                 );
                 (WORKSPACE.into(), "revoke", Some(argument))
             }
-            WorkspaceMembershipCommand::RevokeForTask { task, grant } => {
-                let argument = format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::json!({"grant": grant})
-                );
-                (format!("desktop:{task}"), "revoke", Some(argument))
+            WorkspaceMembershipCommand::RetiredGrantForTask { .. }
+            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. } => {
+                return Err(tilo_peer_state::workspace_membership::RETIRED_TASK_GRANTS.into());
             }
             WorkspaceMembershipCommand::InstallBot(_)
             | WorkspaceMembershipCommand::RenewBot(_)
@@ -93,6 +75,13 @@ impl CapnpBrokerState {
             | WorkspaceMembershipCommand::WithdrawBotRequest { .. } => {
                 let (action, argument) = bot_invocation(command)?;
                 (WORKSPACE.into(), action, Some(argument))
+            }
+            WorkspaceMembershipCommand::InstallApp(_)
+            | WorkspaceMembershipCommand::UninstallApp { .. } => {
+                return Err(
+                    "a room's app version is chosen on its host, through the room's `install-app`"
+                        .into(),
+                );
             }
         };
         self.invoke_workspace_person_action(
@@ -182,7 +171,9 @@ impl CapnpBrokerState {
                 admitted: Box::new(admitted),
                 time,
             }),
-        )
+        )?
+        // A host-side call from the shell's threads, never the broker's loop.
+        .start_blocking(self)
     }
 
     pub(super) fn refresh_workspace_membership_services(self: &Arc<Self>) -> Result<(), String> {
@@ -200,30 +191,20 @@ impl CapnpBrokerState {
                 .iter()
                 .map(|workspace| {
                     (
-                        workspace.room.to_string(),
-                        workspace.name.clone(),
+                        workspace.room().to_string(),
                         membership_actions(workspace, now / 1_000_000_000),
-                        workspace
-                            .agent_members_at(now / 1_000_000_000)
-                            .into_iter()
-                            .map(|(agent, _)| agent)
-                            .collect::<std::collections::BTreeSet<_>>(),
                     )
                 })
                 .collect::<Vec<_>>()
         })?;
-        for (room, name, mut actions, current_agents) in rooms {
+        for (room, mut actions) in rooms {
             if service.requires_room(&room) {
                 actions.extend(super::workspace_checkpoints::actions());
-                actions.extend(super::workspace_tasks::actions(
-                    &service.task_snapshot(&room)?,
-                    &name,
-                    &current_agents,
-                ));
             } else if service.grants_authorship_at_host(&room) {
-                // Governed by the node that stewards it: the one change
-                // this device asks there is an opening app's authorship.
-                actions.retain(|action| action.action == GRANT_APP_AUTHORSHIP);
+                // Governed by the node that stewards it: this device keeps
+                // the room's own membership changes and asks that host to
+                // commit them, but a checkpoint is this device's custody
+                // and is not the host's to make.
             } else {
                 continue;
             }
@@ -360,37 +341,6 @@ impl CapnpBrokerState {
             })
             .cloned()
             .ok_or("membership invocation is no longer admitted")?;
-        if super::workspace_tasks::is_inspect(envelope) {
-            let original = pending
-                .original
-                .as_ref()
-                .ok_or("task inspection custody unavailable")?;
-            original.owner_person_certificate(self, room, envelope)?;
-            if !service.requires_room(room) {
-                return Err("task inspection room changed".into());
-            }
-            service.health()?;
-            let snapshot = service.task_snapshot(room)?;
-            if let Some(agent) = super::workspace_tasks::inspection_agent(&snapshot, envelope)? {
-                let now = self.policy_now_ns()? / 1_000_000_000;
-                let membership = self
-                    .membership
-                    .as_ref()
-                    .ok_or("task inspection workspace authority unavailable")?;
-                let current = membership.decide_in_room(room, |workspace| {
-                    workspace.is_some_and(|workspace| {
-                        workspace
-                            .agent_members_at(now)
-                            .iter()
-                            .any(|(current, _)| current == &agent)
-                    })
-                })?;
-                if !current {
-                    return Err("task inspection agent is not a current room member".into());
-                }
-            }
-            return super::workspace_tasks::inspect(&snapshot, envelope);
-        }
         if let Some(command) = super::workspace_checkpoints::command(envelope)? {
             return self
                 .execute_workspace_checkpoint(room, envelope, command, &pending, service)
@@ -412,27 +362,6 @@ impl CapnpBrokerState {
             .as_ref()
             .ok_or("membership original custody unavailable")?;
         let caller = original.owner_person_certificate(self, room, envelope)?;
-        if let Some(command) = super::workspace_tasks::command(envelope)? {
-            let request = OwnerCommitRequest {
-                room: room.into(),
-                operation: CommitOperation::WorkspaceTaskCommand {
-                    invocation: envelope.invocation.0,
-                    authority: tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
-                        caller: caller.clone(),
-                    },
-                    command,
-                },
-            };
-            let receipt = service.execute(request.clone()).await?;
-            receipt.validate_for(&request)?;
-            let snapshot = service.task_snapshot(room)?;
-            return super::workspace_tasks::result(
-                &snapshot,
-                envelope,
-                caller.device_public_key,
-                receipt.generation,
-            );
-        }
         let command = membership_command(envelope)?;
         let request = OwnerCommitRequest {
             room: room.into(),
@@ -492,38 +421,6 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let encoded = bounded_argument(envelope, "grant")?;
         let input: TakeBack = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::Revoke { grant: input.grant }
-    } else if let Some(task) = envelope.resource.strip_prefix(TASK_PREFIX)
-        && envelope.action == "grant"
-    {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct TaskGrant {
-            node: tilo_action_policy::TreePath,
-            kinds: tilo_action_policy::KindSet,
-            answer: tilo_action_policy::Answer,
-        }
-        let encoded = bounded_argument(envelope, "task grant")?;
-        let input: TaskGrant = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
-        WorkspaceMembershipCommand::GrantForTask {
-            task: format!("task:{task}"),
-            node: input.node,
-            kinds: input.kinds,
-            answer: input.answer,
-        }
-    } else if let Some(task) = envelope.resource.strip_prefix(TASK_PREFIX)
-        && envelope.action == "revoke"
-    {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct TaskRevoke {
-            grant: tilo_action_policy::GrantId,
-        }
-        let encoded = bounded_argument(envelope, "task grant")?;
-        let input: TaskRevoke = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
-        WorkspaceMembershipCommand::RevokeForTask {
-            task: format!("task:{task}"),
-            grant: input.grant,
-        }
     } else if let Some(agent) = envelope.resource.strip_prefix(AGENT_PREFIX)
         && envelope.action == "remove"
         && envelope.argument.is_none()
@@ -931,8 +828,17 @@ mod tests {
 
     struct DiscoveryMemberships;
 
-    impl WorkspaceMemberships for DiscoveryMemberships {
+    /// A service standing in for a room this device holds but a host
+    /// stewards: it commits nothing here and asks the host, so the room's
+    /// own membership changes are what it publishes.
+    struct HostedElsewhereMemberships;
+
+    impl WorkspaceMemberships for HostedElsewhereMemberships {
         fn requires_room(&self, _: &str) -> bool {
+            false
+        }
+
+        fn grants_authorship_at_host(&self, _: &str) -> bool {
             true
         }
 
@@ -940,15 +846,18 @@ mod tests {
             Ok(())
         }
 
-        fn task_snapshot(
-            &self,
-            _: &str,
-        ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
-            Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
-                tasks: Vec::new(),
-                controls: std::collections::BTreeMap::default(),
-                grants: Vec::new(),
-            })
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+            Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
+        }
+    }
+
+    impl WorkspaceMemberships for DiscoveryMemberships {
+        fn requires_room(&self, _: &str) -> bool {
+            true
+        }
+
+        fn health(&self) -> Result<(), String> {
+            Ok(())
         }
 
         fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
@@ -1001,6 +910,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_room_a_host_stewards_offers_its_own_membership_but_no_checkpoint() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Hosted elsewhere",
+                    ));
+                let room = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let tree = tree.shared();
+                let state = CapnpBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(Arc::new(HostedElsewhereMemberships)),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                state.refresh_workspace_membership_services().unwrap();
+                // The room's own governance is offered, so adding and
+                // removing an agent and giving and taking back a grant are
+                // actions here, and the host is asked to commit them.
+                let mut expected = vec![
+                    (WORKSPACE, "add-agent"),
+                    (WORKSPACE, "grant-app-authorship"),
+                    (WORKSPACE, "grant"),
+                    (WORKSPACE, "revoke"),
+                    (WORKSPACE, "install-bot"),
+                    (WORKSPACE, "renew-bot"),
+                    (WORKSPACE, "adopt-bot"),
+                    (WORKSPACE, "uninstall-bot"),
+                    (WORKSPACE, "pause-bot"),
+                    (WORKSPACE, "resume-bot"),
+                    (WORKSPACE, "set-bot-appearance"),
+                    (WORKSPACE, "request-bot"),
+                    (WORKSPACE, "withdraw-bot-request"),
+                ];
+                assert_membership_action_set(&state, &room, &expected);
+                {
+                    use crate::test_support::{Grants as _, KindSet};
+                    tree.write()
+                        .desktop
+                        .workspaces
+                        .first_mut()
+                        .unwrap()
+                        .admit_agent("scribe", KindSet::READ);
+                }
+                state.refresh_workspace_membership_services().unwrap();
+                expected.push(("desktop:agent:scribe", "remove"));
+                assert_membership_action_set(&state, &room, &expected);
+                assert!(
+                    !expected
+                        .iter()
+                        .any(|(resource, _)| *resource == "desktop:checkpoints"),
+                    "a checkpoint is this device's custody, not the host's"
+                );
+                drop(state);
+            })
+            .await;
+    }
+
+    #[tokio::test]
     async fn service_surface_lifecycle_invalidates_discovery_only_on_actual_changes() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -1011,7 +991,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceId(1),
                         "Discovery",
                     ));
-                let room = tree.desktop.workspaces.first().unwrap().room.to_string();
+                let room = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
                 let state = CapnpBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
@@ -1031,7 +1011,7 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 21));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 17));
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
@@ -1046,10 +1026,6 @@ mod tests {
                     (WORKSPACE, "set-bot-appearance"),
                     (WORKSPACE, "request-bot"),
                     (WORKSPACE, "withdraw-bot-request"),
-                    (WORKSPACE, "create-task"),
-                    (WORKSPACE, "queue-agent-task"),
-                    ("desktop:tasks", "queue"),
-                    ("desktop:tasks", "read-current-tasks"),
                     ("desktop:checkpoints", "capture"),
                     ("desktop:checkpoints", "inspect"),
                     ("desktop:checkpoints", "name-bind"),
@@ -1073,7 +1049,7 @@ mod tests {
                 }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 22));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 18));
                 expected.push(("desktop:agent:scribe", "remove"));
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();
@@ -1136,6 +1112,7 @@ mod tests {
                     entry: "so.tilo.bots.standup".into(),
                     version: "1.2.0".into(),
                     inputs: std::collections::BTreeMap::new(),
+                    program: None,
                 }
             )
         );
@@ -1220,7 +1197,6 @@ mod tests {
                 inputs: std::collections::BTreeMap::default(),
                 paused: false,
             },
-            // Far above the few ids other membership commands carry.
             program: "x".repeat(8 * 1024),
             device: None,
         };

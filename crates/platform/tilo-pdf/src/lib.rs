@@ -134,7 +134,6 @@ use tilo_sandbox::shm;
 /// Documents larger than this are refused before any parsing.
 pub const MAX_DOCUMENT_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Name of the helper executable.
 pub const HELPER_NAME: &str = "tilo-pdf-helper";
 
 /// A rendered image: RGBA8, straight alpha (opaque on white), rows packed
@@ -745,7 +744,6 @@ struct TextCache {
 
 const TEXT_CACHE_PAGES: usize = 64;
 
-/// One search hit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
     /// 0-based page.
@@ -810,7 +808,6 @@ impl Document {
         self.info.pages.get(page).copied()
     }
 
-    /// Display size of page `page`.
     #[must_use]
     pub fn page_size(&self, page: usize) -> Option<PageSize> {
         self.page(page).map(|g| g.size())

@@ -23,21 +23,21 @@ runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
 reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
 provide one before the library loads.
 
-- **`runtime-size-<arch>`** in t (`t test runtime-size-aarch64`) compiles the runtime, its
-  engines and the apps of `apps_without_media` as a release does
-  (`tools/apps/t-release.sh runtime-size`) and holds the dylib, its engines and those apps'
-  loaded libraries to the budget. It is keyed by what those are built from, and runs when named,
+- **`runtime-size-<arch>`** in t (`t test runtime-size-aarch64`) compiles the apps of
+  `apps_without_media` as a release does, on the runtime and engines `thin-runtime-<arch>`
+  built (`tools/apps/t-release.sh runtime-size`), and holds the dylib, its engines and those
+  apps' loaded libraries to the budget. It is keyed by what those are built from, and runs when named,
   not on main's commits; the whole collection's `app-sizes-<arch>` measures it too, on each new
-  head of `stable`.
+  head of `stable` and on `main`'s newest head when t has room.
 - **Release / apps** (`Shared runtime within its size budget`) measures the
   dylib it has just built, and the closures above. Its next steps report the
   loader's cost for an app without media (statistics, the objects it loads,
   its private dirty memory) and, when Video Player is built, decode its H.264
   fixture through the thin runtime.
-- **Perf / scheduled** (footprint group) fetches the newest published
-  `so.tilo.runtime` of each architecture, holds it to the budgets and records
+- **t's `perf-footprint` check** (the performance run's footprint group) fetches the newest published
+  `so.tilo.runtime` of each architecture, holds it to the budgets of the commit that built it and records
   `footprint.runtime.<metric>.<arch>`.
-- **CI / fast quality** fails when a budget grows without a raise file new in
+- **t's `changes` check** fails when a budget grows without a raise file new in
   the same change.
 
 To raise a budget for an intended growth, add one file per change:
@@ -84,13 +84,19 @@ shares; the workspace filesystem's FUSE presentation, runtime-fs-fuse with
 fuser: `libtilo_fuse_engine.so` for Imager's projection worker; the import
 from another browser's profile, browser-continuity's capture with the SQLite
 it reads Chromium's and Firefox's databases with:
-`libtilo_browser_import_engine.so` for Browser; the app host's client, with
+`libtilo_browser_import_engine.so` for Browser, with the parts of Browser
+people rarely use (browser-parts: extensions, site controls, site
+capabilities, saved addresses and passwords, service sessions, the private
+window, and the effects, records and copy they share with the page) and the
+website-session codec check; the app host's client, with
 its Cap'n Proto RPC, and the catalogue Store browses:
 `libtilo_app_host_engine.so` for Store; Mail's message codecs and SMTP
 client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
-Mail; the libraries only Settings uses, the model-provider administration
+Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
+`libtilo_archive_engine.so` for Files; the libraries only Settings uses, the model-provider administration
 panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility
-settings, the PC keyboard outlines and the time-zone globe:
+settings, the PC keyboard outlines and the time-zone globe, with Settings'
+core and the panes people rarely open (settings-core, settings-rare):
 `libtilo_settings_engine.so` for
 Settings; the emoji catalogue with
 its names and keywords in every locale: `libtilo_emoji_engine.so` for Chat and

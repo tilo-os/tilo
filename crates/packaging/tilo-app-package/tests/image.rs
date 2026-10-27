@@ -1,5 +1,3 @@
-//! Sealing a directory tree into an environment image and unpacking it back.
-
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 

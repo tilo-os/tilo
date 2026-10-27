@@ -26,6 +26,7 @@ pub(crate) fn connecting(ws: u64) {
     if !matches!(state, RoomSyncState::Synced) {
         *state = RoomSyncState::Connecting;
     }
+    drop(rooms);
 }
 
 /// A sync with the host of the room on topic `ws` completed.
@@ -47,6 +48,7 @@ pub(crate) fn other_version(ws: u64, theirs: u32) {
     if !matches!(current, RoomSyncState::Synced) {
         *current = state;
     }
+    drop(rooms);
 }
 
 /// The room on topic `ws` is no longer held: forget it.
@@ -79,7 +81,6 @@ pub(crate) fn told(ws: u64, name: &str, writable: Option<bool>) -> Option<ui::ro
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn a_room_is_connecting_until_its_first_sync_and_says_who_has_to_update() {
         const WS: u64 = 0x5eed_0001;

@@ -32,7 +32,7 @@ class RecoveryTests(unittest.TestCase):
     def test_only_the_original_protected_source_and_successful_builds_qualify(self):
         r.validate_run(self.run, self.jobs, self.manifest)
         for field, value in [('commit_sha', '0' * 40), ('event', 'pull_request'),
-                             ('prettyref', 'feature'), ('workflow_id', 'check.yml'), ('id', 1)]:
+                             ('prettyref', 'feature'), ('workflow_id', 'build-image.yml'), ('id', 1)]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 r.validate_run(dict(self.run, **{field: value}), self.jobs, self.manifest)
         for field, value in [('status', 'failure'), ('attempt', 2)]:

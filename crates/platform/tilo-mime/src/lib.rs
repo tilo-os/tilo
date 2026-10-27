@@ -1,7 +1,7 @@
 //! A file's MIME type by its extension.
 //!
 //! The mapping is `mime_guess`'s (`tools/mime-table.py` generates
-//! [`table`] from it), keeping each extension's first, most prevalent type.
+//! `table` from it), keeping each extension's first, most prevalent type.
 //! `mime_guess` holds it as a table of string slices: about 1400 entries of
 //! pointers that the loader relocates in every process mapping the shared
 //! runtime, before `main`, whether the process ever asks for a type. This
@@ -40,7 +40,6 @@ pub fn from_path(path: impl AsRef<Path>) -> Option<&'static str> {
     from_ext(path.as_ref().extension()?.to_str()?)
 }
 
-/// [`from_path`], or [`OCTET_STREAM`].
 #[must_use]
 pub fn from_path_or_octet_stream(path: impl AsRef<Path>) -> &'static str {
     from_path(path).unwrap_or(OCTET_STREAM)

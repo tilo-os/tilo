@@ -34,8 +34,14 @@ impl MapsApp {
         crate::hand_laid::drive(&mut self.overflow, event, scale, modifiers, doc);
     }
 
-    /// Map an overflow-menu row selection to app state.
+    /// Map a row chosen in the open menu to app state.
     pub(super) fn overflow_select(&mut self, idx: usize) {
+        if self.menu_for == super::MapMenu::Layers {
+            if idx == 0 {
+                self.set_traffic(!self.map_controls.traffic_enabled());
+            }
+            return;
+        }
         match idx {
             0 => self.info_sheet.open(MapInfo::Attribution),
             1 => self.offline_panel.open(self.tiles.cache_bytes()),

@@ -51,18 +51,27 @@ echo "runuser $*" >>"$SEAT_LOG"
 shift 2; [ "$1" = -- ] && shift
 exec "$@"
 EOF
+# Stopping a board session ends the one running, if any.
 cat >"$bin/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >>"$SEAT_LOG"
-case "$*" in *"stop tilo-board-"*) : >"$SEAT_STOP" ;; esac
+case "$*" in *"stop tilo-board-"*) [ -e "$SEAT_STOP.running" ] && : >"$SEAT_STOP" ;; esac
+exit 0
 EOF
-# Each session runs until its stop file appears or for SESSION_SECS.
+# Each session runs until its stop file appears or for SESSION_TENTHS
+# (DRM_TENTHS for a drm session) tenths of a second.
 cat >"$bin/systemd-run" <<'EOF'
 #!/bin/bash
 backend=${*: -1}
+limit=${SESSION_TENTHS:-30}
+[ "$backend" = drm ] && limit=${DRM_TENTHS:-$limit}
+rm -f "$SEAT_STOP"
+: >"$SEAT_STOP.running"
+trap 'rm -f "$SEAT_STOP.running"' EXIT
+# Logged once running, so a test that sees this line can stop the session.
 echo "run $backend $*" >>"$SEAT_LOG"
 n=0
-while [ "$n" -lt "${SESSION_TENTHS:-30}" ]; do
+while [ "$n" -lt "$limit" ]; do
   [ -e "$SEAT_STOP" ] && { rm -f "$SEAT_STOP"; exit 0; }
   sleep 0.1; n=$((n + 1))
 done
@@ -86,14 +95,24 @@ seat() {
     "$@" "$libexec/tilo-seat-session" you /usr/libexec/tilo-session
 }
 
+# Wait until the supervisor has started COUNT sessions, rather than for a
+# fixed time a loaded runner may not keep to; give up after the shared hang
+# bound.
+wait_runs() {
+  local count="$1" deadline=$((SECONDS + ${TILO_TEST_HANG_BOUND_SECS:-120}))
+  while [ "$(awk '$1 == "run"' "$work/seat.log" | wc -l)" -lt "$count" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 0.1
+  done
+}
+
 : >"$work/seat.log"; echo off >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 &
 pid=$!
-sleep 1
+wait_runs 1
 echo on >"$work/display"
-sleep 1.5
+wait_runs 2
 echo off >"$work/display"
-sleep 1.5
+wait_runs 3
 kill -TERM "$pid"; wait "$pid"
 backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
 if [ "$backends" = 'headless drm headless ' ] \
@@ -109,15 +128,59 @@ fi
 : >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 &
 pid=$!
-sleep 1
+wait_runs 1
 : >"$work/stop"
-sleep 1
+wait_runs 2
 kill -TERM "$pid"; wait "$pid"
 backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
 if [ "$backends" = 'drm headless ' ]; then
   ok 'a drm session that ends with the display connected falls back to headless'
 else
   bad "a failed drm session was not replaced by headless: $backends"
+fi
+
+# A drm session left running by an earlier supervisor (its unit stopped while
+# it was starting one) holds the unit name: it is stopped before the new one.
+: >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
+: >"$work/stop.running"
+seat SESSION_TENTHS=600 &
+pid=$!
+wait_runs 1
+kill -TERM "$pid"; wait "$pid"
+if awk '/stop tilo-board-drm-session.service/ { stopped = 1 } $1 == "run" { print (stopped ? "after" : "before"); exit }' \
+     "$work/seat.log" | grep -qx after; then
+  ok 'a session left behind is stopped before the next one starts'
+else
+  bad 'the next session started over one left behind'; cat "$work/seat.log" >&2
+fi
+
+: >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
+seat SESSION_TENTHS=600 DRM_TENTHS=3 TILO_SEAT_DRM_RETRY_SEC=1 &
+pid=$!
+wait_runs 4
+kill -TERM "$pid"; wait "$pid"
+backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
+case "$backends" in
+  'drm headless drm headless '*)
+    if grep -q 'systemctl start getty@tty1.service' "$work/seat.log"; then
+      bad 'a failed drm session put a console login on the display'
+    else
+      ok 'a drm session that keeps failing is tried on the display again after a pause'
+    fi
+    ;;
+  *) bad "a failed drm session was not tried again: $backends"; cat "$work/seat.log" >&2 ;;
+esac
+
+: >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
+seat SESSION_TENTHS=600 DRM_TENTHS=15 TILO_SEAT_DRM_STABLE_SEC=1 &
+pid=$!
+wait_runs 2
+kill -TERM "$pid"; wait "$pid"
+backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
+if [ "$backends" = 'drm drm ' ]; then
+  ok 'a drm session that ends after running a while starts again at once'
+else
+  bad "an established drm session was not started again: $backends"; cat "$work/seat.log" >&2
 fi
 
 : >"$work/seat.log"; echo off >"$work/display"; rm -f "$work/stop"

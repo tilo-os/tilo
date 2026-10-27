@@ -37,12 +37,25 @@
 //! operation (any reader may invoke it, a collaborator may not move someone
 //! else's view, repeating it is harmless), answered by the same handler.
 //!
-//! An effect that reaches the files, hardware or services of the device it
+//! Who may run an effect is decided by its kind alone, like any action: an
+//! effect that reaches the files, hardware or services of the device it
 //! runs on — set this computer up, kill a process here, read a local
-//! folder — is `device_only`: the door runs it for the person at that
-//! device and refuses collaborators and remote participants. Mark one
-//! variant, or the whole vocabulary (`#[effect(operation = "…",
-//! device_only)]`).
+//! folder — reaches outside the record, so the person's Allow, Ask first or
+//! Deny for outside effects decides it.
+//!
+//! An effect whose whole scope is the invoking person's own device —
+//! copy to their clipboard, apply their own appearance, measure their own
+//! connection — and that touches nothing shared and no one else is
+//! `own_device`: a room's grants have nothing to consent to, so a guest
+//! invokes it as the room's owner does, and it runs only for the person at
+//! the device it acts on ([`tilo_actions::OWN_DEVICE_SCOPE`]). An effect
+//! that reaches other people (a direct message, a call) is not.
+//!
+//! An effect that needs its person attending — it opens a chooser for
+//! them, asks them for a credential or a sign-in, or shows something only
+//! they may see — is `attended`: whoever acts for the person (an agent, a
+//! bot) is always asked first, and no answer allows it unasked
+//! ([`tilo_actions::ATTENDED_TAG`]).
 //!
 //! An effect that acts on one item — open *this* snippet, connect *this*
 //! connection — is offered on the item itself with its arguments bound
@@ -66,8 +79,10 @@
 //! credential, such as copying a one-time
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
-//! uncertain outcome), `device_only` (only the person at this device),
-//! `programmatic` (for programs and agents, never offered in the palette),
+//! uncertain outcome), `own_device` (its scope is the invoker's own device),
+//! `attended` (needs its person attending: anyone acting for them asks),
+//! `audience = "agents"` (listed for agents and programs, never in the
+//! palette; `"people"` lists it for people only),
 //! `untrusted` (answers with content from outside the user's data, such as a
 //! web page's text: the caller reasons about it and never follows it),
 //! `opens_path` (opens the file its `path` names in this instance, which is
@@ -76,7 +91,15 @@
 //! `participant` (a view that moves only the invoking participant's own
 //! view, such as an agent's caret, so a remote participant may invoke it),
 //! `member` (any member of a room may ask the room's host to run it for
-//! themselves on the room's record, as linking their own account elsewhere)
+//! themselves on the room's record, as linking their own account elsewhere),
+//! `host_render` (a host answers it in a render service of its own, never in
+//! the record's confined app worker: [`tilo_actions::HOST_RENDER_TAG`]),
+//! `tag = EXPR` (repeatable: a further contract tag, a `&'static str`
+//! constant, for how a host treats the effect),
+//! `outside_with = "path"` (an effect of `kind = "read"` that reaches outside
+//! the record only when that parameter is given: an export that writes the
+//! file it names, else keeps what it made as content; each invocation is
+//! admitted as what it does)
 //! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
 //! invoke; an effect reaches outside the record by default, a view reads),
@@ -146,10 +169,12 @@ pub trait Effect: Sized + 'static {
     /// declaration.
     fn bound(&self) -> ActionSpec {
         let id = self.id();
+        let arguments = self.arguments();
         kept_type((std::any::TypeId::of::<Self>(), id, None), || {
             bound_type(Self::OPERATION, id, Self::declaration(id))
         })
-        .bind(Target::new(self.arguments()))
+        .bind(Target::new(arguments.clone()))
+        .with_bound(arguments.into_iter().collect())
     }
 
     /// This effect bound to the item it acts on, as [`bound`](Self::bound),
@@ -366,10 +391,16 @@ fn asking_spec(
     params: Vec<ActionParam>,
     args: BoundArguments,
 ) -> ActionSpec {
+    let fixed = args
+        .iter()
+        .filter(|(name, _)| !params.iter().any(|param| param.name == name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     let build = encoder(operation, decl.id, Bound::UnderCaller);
     decl.spec_with(operation, params, build)
         .action_type()
         .bind(Target::new(args))
+        .with_bound(fixed)
 }
 
 /// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
@@ -395,7 +426,8 @@ fn item_specs(
                 first,
                 serde_json::Value::String(item.as_str().to_owned()),
             )]);
-            Some(ty.bind(Target::new(bound)))
+            let fixed = bound.clone().into_iter().collect();
+            Some(ty.bind(Target::new(bound)).with_bound(fixed))
         })
         .collect()
 }
@@ -435,9 +467,10 @@ pub struct EffectRow {
     pub risk: RiskLevel,
     pub idempotent: bool,
     pub action_kind: ActionKind,
-    pub device_only: bool,
+    pub own_device: bool,
+    pub attended: bool,
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
-    pub programmatic: bool,
+    pub audience: tilo_actions::Audience,
     pub untrusted: bool,
     pub opens: Option<&'static [&'static str]>,
     pub participant: bool,
@@ -445,6 +478,8 @@ pub struct EffectRow {
     pub member: bool,
     pub item: Option<&'static str>,
     pub offload: Option<EffectOffload>,
+    pub tags: &'static [&'static str],
+    pub outside_with: Option<&'static str>,
 }
 
 /// An effect's `#[effect(offload(...))]`: the signed package entrypoint
@@ -514,18 +549,22 @@ pub struct EffectDecl {
     /// What it is able to do: reach outside the record by default, read for
     /// a view or an effect declared `kind = "read"`.
     pub action_kind: ActionKind,
-    /// Reaches files, hardware or services of the device it runs on: only
-    /// the person at that device may invoke it, never a collaborator or a
-    /// remote participant.
-    pub device_only: bool,
+    /// Its whole scope is the invoking person's own device: it touches
+    /// nothing shared and no one else, so a room's grants have nothing to
+    /// consent to ([`tilo_actions::OWN_DEVICE_SCOPE`]).
+    pub own_device: bool,
+    /// Needs its person attending: it opens a chooser, asks for a credential
+    /// or a sign-in, or shows what only they may see, so whoever acts for
+    /// them is always asked first ([`tilo_actions::ATTENDED_TAG`]).
+    pub attended: bool,
     /// How much harm one invocation can do, classified from its arguments
     /// (formatting the system disk, against any other): an invocation the
     /// classifier finds destructive asks for the confirmation a declared
     /// destructive effect does.
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
-    /// Invoked by programs and agents, never offered to a person picking
-    /// from the palette or a menu (an agent reading a page's structure).
-    pub programmatic: bool,
+    /// Who listings offer it to (`#[effect(audience = "agents")]`): an agent
+    /// reading a page's structure is never a person's palette row.
+    pub audience: tilo_actions::Audience,
     /// Answers with content from outside the user's own data (a web page's
     /// text and logs): data to reason about, never instructions to follow.
     pub untrusted: bool,
@@ -552,6 +591,16 @@ pub struct EffectDecl {
     /// A content transform the system may run on the invoker's best-placed
     /// device (`#[effect(offload(...))]`); the handler is its local run.
     pub offload: Option<EffectOffload>,
+    /// Further contract tags, each naming how a host treats the effect
+    /// (`#[effect(host_render)]`, `#[effect(tag = ...)]`): an agent's host
+    /// routes a [`tilo_actions::HOST_RENDER_TAG`] effect to its render
+    /// service rather than the app's worker.
+    pub tags: &'static [&'static str],
+    /// The parameter that, given, makes an invocation reach outside the
+    /// record (`#[effect(kind = "read", outside_with = "path")]`): an export
+    /// writing the file it names. Without it the invocation only reads and
+    /// keeps what it made as content, and is admitted as a read.
+    pub outside_with: Option<&'static str>,
 }
 
 /// The contract tag of an effect that submits only edits of its record
@@ -609,9 +658,10 @@ impl EffectDecl {
             risk: row.risk,
             idempotent: row.idempotent,
             action_kind: row.action_kind,
-            device_only: row.device_only,
+            own_device: row.own_device,
+            attended: row.attended,
             risk_of: row.risk_of,
-            programmatic: row.programmatic,
+            audience: row.audience,
             untrusted: row.untrusted,
             opens: row.opens,
             participant: row.participant,
@@ -619,6 +669,8 @@ impl EffectDecl {
             member: row.member,
             item: row.item,
             offload: row.offload,
+            tags: row.tags,
+            outside_with: row.outside_with,
         }
     }
 
@@ -696,13 +748,15 @@ impl EffectDecl {
                 base.retry
             },
             tags: {
-                let mut tags = if self.device_only {
-                    ::std::vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]
-                } else {
-                    base.tags.clone()
-                };
-                if self.programmatic {
-                    tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
+                let mut tags = base.tags.clone();
+                if self.own_device {
+                    tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
+                }
+                if self.attended {
+                    tags.push(tilo_actions::ATTENDED_TAG.to_owned());
+                }
+                if let Some(tag) = self.audience.tag() {
+                    tags.push(tag.to_owned());
                 }
                 if self.untrusted {
                     tags.push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
@@ -722,10 +776,15 @@ impl EffectDecl {
                 if self.member {
                     tags.push(tilo_actions::MEMBER_OWN_TAG.to_owned());
                 }
+                tags.extend(self.tags.iter().map(|tag| (*tag).to_owned()));
                 tags
             },
             offload: self.offload.as_ref().map(EffectOffload::contract),
             ..base
+        };
+        let spec = match self.outside_with {
+            Some(param) => spec.with_need_of(outside_with(param, self.action_kind)),
+            None => spec,
         };
         match self.risk_of {
             Some(classify) => spec.with_risk(classify),
@@ -736,6 +795,22 @@ impl EffectDecl {
     /// Whether the effect runs in the background, reporting its result later.
     pub fn is_job(&self) -> bool {
         matches!(self.answers, Answers::Later { .. })
+    }
+}
+
+/// What one invocation of an effect declared `outside_with = param` is:
+/// reaching outside when `param` is given (the file an export writes), else
+/// the `least` it was declared as.
+fn outside_with(
+    param: &'static str,
+    least: ActionKind,
+) -> impl Fn(&tilo_actions::ActionArgs) -> tilo_actions::ActionNeed + Send + Sync + 'static {
+    move |args| {
+        let given = args
+            .to_json()
+            .get(param)
+            .is_some_and(|value| !value.is_null());
+        tilo_actions::ActionNeed::of(if given { ActionKind::Outside } else { least })
     }
 }
 
@@ -828,12 +903,15 @@ mod tests {
         Paint {
             #[param("The colour", choices = ["red", "green"])]
             colour: String,
-            #[param(choices = SHADES)]
+            // `Self` in an attribute reaches the rows' static as the enum.
+            #[param(choices = Self::SHADES)]
             shade: Option<String>,
         },
     }
 
-    const SHADES: [&str; 2] = ["light", "dark"];
+    impl Sample {
+        const SHADES: [&str; 2] = ["light", "dark"];
+    }
 
     /// A content transform declared offloadable.
     #[derive(Clone, Debug, PartialEq, Effect)]
@@ -886,7 +964,6 @@ mod tests {
             shrink.contract.validate_declaration()
         );
         assert_eq!(specs[1].contract.offload, None, "only where declared");
-        // Its inputs are the content its list of content names.
         assert!(shrink.params()[0].is_content_list());
         assert!(specs[1].params()[0].is_content());
     }
@@ -951,8 +1028,6 @@ mod tests {
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
 
-        // Bound to its arguments, the effect takes none and keeps its
-        // declaration's contract.
         let bound = Sample::Wipe { passes: 3 }.bound();
         assert_eq!(bound.id, "wipe");
         assert_eq!(bound.label, "Wipe");
@@ -965,7 +1040,6 @@ mod tests {
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
 
-        // Bound to the thing it acts on, it still asks for the rest.
         let asking = Sample::RenameThing {
             thing: "a".into(),
             label: None,

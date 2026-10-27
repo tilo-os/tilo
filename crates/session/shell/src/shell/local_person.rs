@@ -45,11 +45,9 @@ impl LocalPersonServices for NativeLocalPerson {
         let room = RoomId::parse(room).ok_or("native caller room is invalid")?;
         let tree = self.tree.upgrade().ok_or("native caller owner retired")?;
         if !tree.read().requires_native_owner(room) {
-            return super::launcher::action_authority::with_ordinary_room_current(
-                &tree,
-                room,
-                |_| Ok(certificate),
-            );
+            return super::action_authority::with_ordinary_room_current(&tree, room, |_| {
+                Ok(certificate)
+            });
         }
         let owner = tree
             .read()
@@ -179,10 +177,11 @@ mod tests {
     /// before the explicit publication so none arrives after it.
     fn publish_after_saves(tree: &crate::shell::state::WorkspaceTreeHandle) {
         crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        super::super::action_authority::Export::of(&tree.read()).publish();
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn native_person_comes_from_protected_identity_and_borrows_live_ordinary_custody() {
         let directory = tempfile::tempdir().unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
@@ -210,12 +209,12 @@ mod tests {
             certificate.user_public_key,
         );
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         tree.desktop.workspaces[0].set_owner(&person);
         tree.persist_path = Some(directory.path().join("state.json"));
         let tree = tree.shared();
         let owner = super::super::native_workspace_owner::open(tree.clone()).unwrap();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        super::super::action_authority::Export::of(&tree.read()).publish();
         let service = NativeLocalPerson {
             tree: tree.downgrade(),
         };
@@ -286,7 +285,7 @@ mod tests {
         crate::shell::persist::wait_for_saves();
         tree.write().desktop.workspaces[0].set_owner(person.clone());
         crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        super::super::action_authority::Export::of(&tree.read()).publish();
         assert!(service.certificate(&room.to_string(), &person).is_ok());
         drop(owner);
         assert!(

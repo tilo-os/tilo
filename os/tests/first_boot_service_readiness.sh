@@ -66,7 +66,7 @@ if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:
    && exactly_once "$device_key_unit" 'RestrictNamespaces=yes' \
    && exactly_once "$device_key_unit" 'MemoryDenyWriteExecute=yes' \
    && exactly_once "$device_key_unit" 'CapabilityBoundingSet=' \
-   && containerfile_installs_output "$containerfile" tilo-device-key-init /usr/bin/tilo-device-key-init \
+   && containerfile_installs_output "$containerfile" tilo-device-key-init /usr/libexec/tilo/tilo-device-key-init \
    && grep -Fq 'systemctl enable tilo-device-key-init.service' "$containerfile"; then
   ok 'device private key is provisioned before login only when creation or migration is needed'
 else
@@ -120,7 +120,9 @@ fi
 # on the cycle-6 rootless builder, without creating a useful cache boundary.
 enable_runs="$(sed -n \
   '/^# Keep service activation in one transaction\./,/^# Boot-time prune\./p' \
-  "$containerfile" | grep -c '^RUN systemctl' || true)"
+  "$containerfile" | grep -c '^RUN ' || true)"
+# The one RUN may bind-mount the files it installs beside the activations
+# (RUN --mount=... install ... && systemctl enable ...), so count RUNs.
 if [ "$enable_runs" -eq 1 ] \
    && exactly_once "$containerfile" '    systemctl enable cups.socket && \' \
    && grep -Fq 'systemctl enable tilo-boot-entries.timer tilo-boot-health.service' "$containerfile" \

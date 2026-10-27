@@ -26,9 +26,9 @@ pub struct HostIdentity {
     pub workspace_device_certs: HashMap<WorkspaceId, DeviceCert>,
     /// Root-signed revocations advertised beside each workspace certificate.
     pub workspace_revocations: HashMap<WorkspaceId, Vec<tilo_user_identity::RevocationEntry>>,
-    /// System device-key/certificate paths. Production actors use these to
-    /// refresh workspace identity material on every heartbeat; tests may use
-    /// the in-memory maps alone.
+    /// System device-key/certificate paths. Production actors read
+    /// workspace identity material from these and announce it again when
+    /// they change; tests may use the in-memory maps alone.
     pub identity_paths: Option<tilo_user_identity::IdentityPaths>,
 }
 
@@ -123,43 +123,85 @@ impl HostIdentity {
             .get(&ws)
             .cloned()
             .unwrap_or_default();
-        let Some(paths) = self.identity_paths.as_ref() else {
+        let Some((cert, fleet)) = self.selected(ws) else {
             return (fallback_cert, fallback_revocations);
         };
-        let Ok(registry_store) = crate::registry::IdentityRegistryStore::from_env() else {
-            return (fallback_cert, fallback_revocations);
+        (
+            cert,
+            fleet.map_or(fallback_revocations, |fleet| fleet.revocations),
+        )
+    }
+
+    /// The directories [`Self::material_for`] and [`Self::successions_for`]
+    /// read: what this device announces changes only with them. None for an
+    /// identity kept in memory.
+    #[must_use]
+    pub fn material_directories(&self) -> Vec<std::path::PathBuf> {
+        let Some(paths) = &self.identity_paths else {
+            return Vec::new();
         };
-        let Ok(registry) = registry_store.load_reconciled_cached() else {
-            return (fallback_cert, fallback_revocations);
-        };
+        let mut directories: Vec<_> = paths
+            .device_cert
+            .parent()
+            .map(|device| device.join("certs"))
+            .into_iter()
+            .chain(
+                paths
+                    .user_pubkey
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .map(tilo_relay_protocol::home_peer_registry_path)
+                    .and_then(|registry| registry.parent().map(std::path::Path::to_path_buf)),
+            )
+            .collect();
+        if let Ok(store) = crate::registry::IdentityRegistryStore::from_env() {
+            directories.push(store.identity_dir().join("fleets"));
+            directories.push(store.identity_dir().to_path_buf());
+        }
+        directories
+    }
+
+    /// The root's governor successions of the identity selected for `ws`,
+    /// announced beside its revocations.
+    pub fn successions_for(&self, ws: WorkspaceId) -> Vec<tilo_user_identity::GovernorSuccession> {
+        self.selected(ws)
+            .and_then(|(_, fleet)| fleet)
+            .map(|fleet| fleet.successions)
+            .unwrap_or_default()
+    }
+
+    /// This device's certificate for the identity selected for `ws`, and that
+    /// identity's fleet when it loads; `None` when no stored selection names
+    /// a certificate of this device.
+    fn selected(
+        &self,
+        ws: WorkspaceId,
+    ) -> Option<(DeviceCert, Option<crate::device_fleet::DeviceFleet>)> {
+        let paths = self.identity_paths.as_ref()?;
+        let registry_store = crate::registry::IdentityRegistryStore::from_env().ok()?;
+        let registry = registry_store.load_reconciled_cached().ok()?;
         let selected = registry.workspace_identities.iter().find_map(|(room, id)| {
             let room = RoomId::parse(room)?;
             (room_topic(room) == ws).then_some(id)
         });
         let identity_id = selected
             .cloned()
-            .or_else(|| registry.default_identity.clone());
-        let Some(identity_id) = identity_id else {
-            return (fallback_cert, fallback_revocations);
-        };
-        let Some(profile) = registry.identities.get(&identity_id) else {
-            return (fallback_cert, fallback_revocations);
-        };
-        let Ok(cert) = tilo_user_identity::persist::read_device_cert(
+            .or_else(|| registry.default_identity.clone())?;
+        let profile = registry.identities.get(&identity_id)?;
+        let cert = tilo_user_identity::persist::read_device_cert(
             &paths.device_cert_for_user(&profile.user_public_key),
-        ) else {
-            return (fallback_cert, fallback_revocations);
-        };
+        )
+        .ok()?;
         if tilo_user_identity::verify_device_cert(&cert).is_err()
             || cert.user_public_key != profile.user_public_key
             || cert.device_public_key != self.device_signing_key.verifying_key().to_bytes()
         {
-            return (fallback_cert, fallback_revocations);
+            return None;
         }
-        let revocations =
+        let fleet =
             crate::device_fleet::DeviceFleetStore::at(registry_store.identity_dir(), paths.clone())
                 .load(&identity_id)
-                .map_or_else(|_| fallback_revocations, |fleet| fleet.revocations);
-        (cert, revocations)
+                .ok();
+        Some((cert, fleet))
     }
 }

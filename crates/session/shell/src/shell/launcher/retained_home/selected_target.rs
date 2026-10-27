@@ -1,11 +1,12 @@
 //! An admitted selected object continued through the ordinary signed launch queue.
-use super::super::{InstalledApp, LaunchCommand, action_authority};
+use super::super::{InstalledApp, LaunchCommand};
 use super::{
     Registration,
     bootstrap::{self, ProofCustody},
     open_selected::{Dispatcher, Objects},
     refused,
 };
+use crate::shell::action_authority;
 use crate::shell::{
     native_workspace_owner::NativeWorkspaceOwner,
     state::{RoomId, WorkspaceTreeHandle},
@@ -42,8 +43,12 @@ pub(crate) struct SelectedContinuation {
     access: Option<SelectedAccess>,
     destination: String,
     succeeded: AtomicBool,
-    prepared: Mutex<Option<tokio::sync::oneshot::Sender<Result<Arc<TargetLifetime>, String>>>>,
+    prepared: Mutex<Option<LifetimeReply>>,
 }
+/// Where a prepared target's lifetime is answered, or why it is not.
+type LifetimeReply = tokio::sync::oneshot::Sender<Result<Arc<TargetLifetime>, String>>;
+/// Where a continuation waits for its target's lifetime.
+type LifetimeAnswer = tokio::sync::oneshot::Receiver<Result<Arc<TargetLifetime>, String>>;
 impl SelectedContinuation {
     fn editable(&self) -> bool {
         self.access.is_some_and(SelectedAccess::editable)
@@ -123,12 +128,16 @@ impl SelectedContinuation {
         Arc::new(move || context.authorize())
     }
     pub(crate) fn report_error(&self, error: String) {
-        if let Ok(mut pending) = self.prepared.lock() {
-            if let Some(reply) = pending.take() {
-                let _ = reply.send(Err(error));
-            }
+        if let Ok(mut pending) = self.prepared.lock()
+            && let Some(reply) = pending.take()
+        {
+            let _ = reply.send(Err(error));
         }
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lease is moved into the spawned target, and the prepared target is kept until its lifetime is answered"
+    )]
     pub(crate) fn dispatch(
         self: &Arc<Self>,
         app: InstalledApp,
@@ -143,7 +152,7 @@ impl SelectedContinuation {
             *super::super::lock(&super::super::LaunchSession::current().diagnostics),
         )?;
         let target = Arc::new(PreparedTarget::new(
-            app.clone(),
+            &app,
             command.clone(),
             self.clone(),
             owner.ok_or_else(refused)?,
@@ -169,10 +178,7 @@ impl SelectedContinuation {
         request: RootRequest,
         receipt: RootReceipt,
         access: Option<SelectedAccess>,
-    ) -> io::Result<(
-        Arc<Self>,
-        tokio::sync::oneshot::Receiver<Result<Arc<TargetLifetime>, String>>,
-    )> {
+    ) -> io::Result<(Arc<Self>, LifetimeAnswer)> {
         if receipt.request_id != request.request_id
             || receipt.source_operation != source.operation()
         {
@@ -188,7 +194,7 @@ impl SelectedContinuation {
             source_operation: receipt.source_operation.clone(),
             app_id: request.app_id.clone(),
         };
-        let reply = source.transact(checker, |stream| {
+        let reply = source.transact(checker.as_ref(), |stream| {
             write_command(stream, &RootCommand::ClaimSelected(claim), access)?;
             let bytes = read_frame(stream, open_selected::MAX_WIRE_BYTES)?;
             let reply = match access {
@@ -220,7 +226,7 @@ impl SelectedContinuation {
         ))
     }
     fn poll(&self, target: &PreparedTarget) -> io::Result<Option<TargetNamespaceReceipt>> {
-        let reply = self.source.transact(self.checker(), |stream| {
+        let reply = self.source.transact(self.checker().as_ref(), |stream| {
             write_command(
                 stream,
                 &RootCommand::PollSelected(PollSelected {
@@ -284,7 +290,7 @@ pub(super) struct PreparedTarget {
 }
 impl PreparedTarget {
     fn new(
-        app: InstalledApp,
+        app: &InstalledApp,
         command: LaunchCommand,
         selection: Arc<SelectedContinuation>,
         owner: NativeWorkspaceOwner,
@@ -344,10 +350,9 @@ impl PreparedTarget {
                 .authorize()
                 .map_err(io::Error::other)?;
         }
-        let source = self.selection.source.prepared();
-        source.session.check().map_err(io::Error::other)?;
-        let certificate = source
-            .session
+        let session = || &self.selection.source.prepared().session;
+        session().check().map_err(io::Error::other)?;
+        let certificate = session()
             .retained_launch_certificate(self.room())
             .map_err(io::Error::other)?;
         if !self.committed.load(Ordering::Acquire)
@@ -429,7 +434,7 @@ impl PreparedTarget {
         {
             return Err(refused());
         }
-        source.session.check().map_err(io::Error::other)
+        session().check().map_err(io::Error::other)
     }
     fn context(&self) -> io::Result<Vec<u8>> {
         self.check()?;
@@ -470,7 +475,7 @@ impl PreparedTarget {
             package_sha256: self.package.package_id_hex.clone(),
             room: self.room().to_string(),
             resource_record: self.resource(),
-            target_uid: unsafe { libc::geteuid() },
+            target_uid: rustix::process::geteuid().as_raw(),
             target_pid: std::process::id(),
             root_pid: self.selection.source.root().pid(),
             context_sha256: hex::encode(Sha256::digest(self.context()?)),
@@ -487,6 +492,10 @@ impl PreparedTarget {
             access: SelectedAccess::EditInParent,
         })
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered root transaction: the proof, the endpoint and the staging are handed over and acknowledged in turn on one stream"
+    )]
     fn register(self: &Arc<Self>) -> io::Result<(Registration, Arc<TargetLifetime>)> {
         let binding = self.binding()?;
         let (proof_stream, root_proof) = UnixStream::pair()?;
@@ -494,7 +503,7 @@ impl PreparedTarget {
         let proof_binding = binding.clone();
         let session = self.selection.source.prepared().session.clone();
         let proof = bootstrap::start_selected_proof(proof_stream, move |stream| {
-            session.serve_retained_launch_proof_checked(stream, proof_binding, move || {
+            session.serve_retained_launch_proof_checked(stream, &proof_binding, move || {
                 prepared.check()
             })
         })?;
@@ -510,7 +519,7 @@ impl PreparedTarget {
             publisher_hex: hex::encode(self.publisher),
         };
         let staged = self.selection.source.transact_operation(
-            self.selection.checker(),
+            self.selection.checker().as_ref(),
             |stream, deadline| {
                 write_command(
                     stream,
@@ -569,8 +578,8 @@ impl PreparedTarget {
                         bootstrap::start_selected_proof(daemon_stream, move |proof_stream| {
                             daemon_session.serve_retained_daemon_proof_checked(
                                 proof_stream,
-                                daemon_binding,
-                                recipient,
+                                &daemon_binding,
+                                &recipient,
                                 move || prepared.check_daemon_context(&context),
                             )
                         })?;
@@ -604,8 +613,8 @@ impl PreparedTarget {
                         bootstrap::start_selected_proof(reader_stream, move |proof_stream| {
                             reader_session.serve_retained_daemon_proof_checked(
                                 proof_stream,
-                                reader_binding,
-                                reader,
+                                &reader_binding,
+                                &reader,
                                 move || prepared_reader.check_daemon_context(&reader_context),
                             )
                         })?;
@@ -697,6 +706,7 @@ impl PreparedTarget {
             return Err(refused());
         }
         *held = Some(launcher);
+        drop(held);
         Ok(())
     }
     fn check_receipt(&self, receipt: &TargetNamespaceReceipt) -> io::Result<()> {
@@ -711,6 +721,7 @@ impl PreparedTarget {
         {
             return Err(refused());
         }
+        drop(held);
         Ok(())
     }
 }
@@ -790,6 +801,10 @@ fn read_frame(stream: &mut UnixStream, max: usize) -> io::Result<Vec<u8>> {
         .ok_or_else(refused)
 }
 /// Captures the actual launch session before the async broker leaves its thread.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the dispatcher found is moved into the continuation it claims"
+)]
 pub(crate) fn begin(
     tree: WorkspaceTreeHandle,
     context: OpenSelectedContext,
@@ -816,14 +831,14 @@ pub(crate) fn begin(
             };
             let receipt = source
                 .admit(
-                    request.request.clone(),
+                    &request.request,
                     Objects {
                         selected,
                         parent,
                         proof,
                     },
-                    context.executing().clone(),
-                    check,
+                    context.executing(),
+                    check.as_ref(),
                 )
                 .map_err(|e| e.to_string())?;
             let (continuation, prepared) =
@@ -845,6 +860,10 @@ pub(crate) fn begin(
         observe_target(setup.0, setup.1, setup.2).await
     })
 }
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the dispatcher found is moved into the continuation it claims"
+)]
 pub(crate) fn begin_v2(
     tree: WorkspaceTreeHandle,
     context: OpenSelectedContext,
@@ -879,14 +898,14 @@ pub(crate) fn begin_v2(
             };
             let receipt = source
                 .admit_v2(
-                    request.request.clone(),
+                    &request.request,
                     Objects {
                         selected,
                         parent,
                         proof,
                     },
-                    context.executing().clone(),
-                    check,
+                    context.executing(),
+                    check.as_ref(),
                 )
                 .map_err(|e| e.to_string())?;
             let (continuation, prepared) = SelectedContinuation::claim(
@@ -919,12 +938,22 @@ pub(crate) fn begin_v2(
         })
     })
 }
+/// Ends the namespace polling of a target observation when the
+/// observation ends, whichever way.
+struct StopPolling(Arc<AtomicBool>);
+impl Drop for StopPolling {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 async fn observe_target(
     continuation: Arc<SelectedContinuation>,
-    prepared: tokio::sync::oneshot::Receiver<Result<Arc<TargetLifetime>, String>>,
+    prepared: LifetimeAnswer,
     readiness: tilo_action_broker::services::LaunchReadiness,
 ) -> Result<ObservedOpenReply, String> {
-    let deadline = Instant::now() + START_BUDGET;
+    let deadline = Instant::now()
+        .checked_add(START_BUDGET)
+        .unwrap_or_else(Instant::now);
     let lifetime = tokio::time::timeout(START_BUDGET, prepared)
         .await
         .map_err(|_| "selected target preparation timed out")?
@@ -932,12 +961,6 @@ async fn observe_target(
     let poll_continuation = continuation.clone();
     let poll_target = lifetime.prepared.clone();
     let polling = Arc::new(AtomicBool::new(true));
-    struct StopPolling(Arc<AtomicBool>);
-    impl Drop for StopPolling {
-        fn drop(&mut self) {
-            self.0.store(false, Ordering::Release);
-        }
-    }
     let _poll_guard = StopPolling(polling.clone());
     let namespace = tokio::task::spawn_blocking(move || {
         loop {
@@ -963,8 +986,9 @@ async fn observe_target(
             .await
             .map_err(|_| "selected target window startup timed out".to_string())?
     };
-    let (receipt, _) = tokio::try_join!(namespace, ready)?;
+    let (receipt, ()) = tokio::try_join!(namespace, ready)?;
     lifetime.commit(&receipt).map_err(|e| e.to_string())?;
+    drop(lifetime);
     Ok(ObservedOpenReply {
         schema: 1,
         request_id: continuation.request.request_id.clone(),
@@ -991,7 +1015,7 @@ impl Drop for SelectedContinuation {
                 let check =
                     Arc::new(move || prepared.check(&prepared.command).map_err(|e| e.to_string()))
                         as Check;
-                let _ = source.transact(check, |stream| {
+                let _ = source.transact(check.as_ref(), |stream| {
                     write_command(
                         stream,
                         &RootCommand::CancelSelected(PollSelected {

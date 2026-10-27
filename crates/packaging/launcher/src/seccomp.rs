@@ -9,10 +9,7 @@
 //!
 //! At runtime the launcher compiles the filter into a BPF blob, writes
 //! it to a temp file, and passes the open fd to `bwrap`'s `--seccomp
-//! <fd>`. [`compile_baseline`] is the default fast path;
-//! [`baked_blob_path`] returns a pre-populated on-disk blob under
-//! `share/tilo-default.bpf` for environments where seccompiler can't run
-//! inside the sandbox — identical output for the current build arch.
+//! <fd>`. [`compile_baseline`] is the default fast path.
 
 use std::path::PathBuf;
 
@@ -163,17 +160,6 @@ pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
 /// without write-xor-execute is the image's decision, not the packager's.
 pub fn manifest_profile(sandbox: &crate::manifest::Sandbox, package_id: &str) -> SeccompProfile {
     resolve_profile(&sandbox.seccomp, package_id).applied
-}
-
-/// Path the launcher checks for a pre-baked blob, preferred over
-/// compiling when present. Looked up relative to `$CARGO_MANIFEST_DIR`
-/// at build time and `<crate_root>/share/tilo-default.bpf` at runtime —
-/// a developer convenience only; production has a fixed location.
-#[cfg(target_os = "linux")]
-pub fn baked_blob_path(profile: SeccompProfile) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("share")
-        .join(format!("{}.bpf", profile.as_str()))
 }
 
 #[cfg(test)]
@@ -423,21 +409,18 @@ mod tests {
     /// entitles only the JIT keeps a web engine rendering without it.
     #[test]
     fn web_engine_profile_needs_its_own_entitlement() {
-        // Phase `the_entitled_browser_gets_its_nested_sandbox`.
         {
             let _policy = JitPolicy::listing("so.tilo.browser\n");
             let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
             assert_eq!(decision.applied, SeccompProfile::TiloWebEngine);
             assert!(!decision.refused);
         }
-        // Phase `an_unentitled_package_is_confined_strictly`.
         {
             let _policy = JitPolicy::listing("so.tilo.browser\n");
             let decision = resolve_profile("tilo-web-engine", "com.example.evil");
             assert_eq!(decision.applied, SeccompProfile::TiloDefault);
             assert!(decision.refused);
         }
-        // Phase `jit_without_nested_sandbox_keeps_the_jit`.
         {
             let _policy = JitPolicy::lists("so.tilo.browser\n", "# nobody\n");
             let decision = resolve_profile("tilo-web-engine", "so.tilo.browser");
@@ -448,7 +431,6 @@ mod tests {
             );
             assert!(decision.refused);
         }
-        // Phase `nested_sandbox_without_jit_is_strict`.
         {
             let _policy = JitPolicy::lists("# nobody\n", "so.tilo.browser\n");
             assert_eq!(
@@ -456,7 +438,6 @@ mod tests {
                 SeccompProfile::TiloDefault
             );
         }
-        // Phase `the_fallback_entitles_the_browser_only`.
         {
             let _policy = JitPolicy::missing();
             assert_eq!(
@@ -468,7 +449,6 @@ mod tests {
                 SeccompProfile::TiloDefault
             );
         }
-        // Phase `the_running_filter_follows_the_decision`.
         #[cfg(target_os = "linux")]
         {
             let _policy = JitPolicy::listing("so.tilo.browser\n");
@@ -482,7 +462,6 @@ mod tests {
                 );
             }
         }
-        // Phase `the_shipped_list_and_the_builtin_list_agree`.
         {
             let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../os/usr/lib/tilo/web-engine-entitled.conf");

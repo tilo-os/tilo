@@ -297,7 +297,7 @@ on the older laptop and Arm board before choosing defaults.
 The [source review ledger](dictation-whistle-review.json) records exact model,
 runtime, header and wrapper revisions, artifact sizes and hashes. That interface
 review executed no upstream code. The subsequent
-[CLI comparison](dictation-whistle-cli-qualification.json) executed only the
+[CLI comparison](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-cli-qualification.json) executed only the
 pinned native CLI in a network-free, hardware-free review namespace; no model
 was installed. The pinned C interface includes
 streaming process and stop calls: each call remains bounded to 30 seconds of
@@ -342,7 +342,7 @@ physical devices and production trust remain unqualified.
 
 ## Release integration dependency
 
-`dictation-upstream-pins.json` records an exact model revision,
+[`dictation-upstream-pins.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-upstream-pins.json) records an exact model revision,
 LFS SHA-256/byte count and verified public OCI index/architecture/config digests.
 Only small metadata was downloaded. The runtime's compressed layers alone are
 about 419 MB on x86-64 and 381 MB on Arm64, in addition to the 164 MB model.
@@ -356,8 +356,9 @@ catalogue payload and verifier are internal to its CLI. It has no speech engine
 launch verb or checked-in speech release. Extend that shared lifecycle rather
 than inventing a second unsigned installer or an ambient executable path.
 
-Current main supplies the existing release route in
-`.forgejo/workflows/release-local-model-catalog.yml`, documented by
+Current main supplies the existing release route in t's model catalog checks
+(`model-catalog-compiler`, `review-speech-catalog`, `sign-model-catalog`,
+`publish-model-catalog`), documented by
 `crates/agent/local-model-service/RELEASE.md`. Its production catalogue source is
 `dist/local-models/catalog-source.json`, and its public key identifier is
 `tilo-local-model-release-2026-10`. Immutable Forgejo package URLs already host
@@ -393,7 +394,7 @@ models, and never enters the chat supervisor or recommendation. No fields were
 added to existing signed model records; the checked-in image catalogue is
 verified with its existing public trust input in the regression test.
 
-`dictation-whisper-review.json` pins a multilingual tiny-model candidate by
+[`dictation-whisper-review.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whisper-review.json) pins a multilingual tiny-model candidate by
 upstream revision, LFS hash and size, plus the exact binding source archives
 reviewed. No weights or native dependency were installed. The exact weights and licence
 were subsequently downloaded into an isolated remote review directory and both
@@ -438,7 +439,9 @@ stamps now come from the shared host input contract described above.
    and consumes the marked standard final before public app event dispatch.
    Focus changes cancel the original grant; a stale final is consumed without
    successor dispatch. Ordinary composition/OSK remains closed outside this
-   voice session. Five real protocol tests, six bound native-dispatch tests and
+   voice session for a page whose engine does not take compositions; a
+   Chromium host that advertises `ime_composition` takes them as a native
+   field does (`apps/browser/chromium/README.md`, "Keys and input methods"). Five real protocol tests, six bound native-dispatch tests and
    mounted renderer journeys qualify
    separate boundaries; a complete standalone native-window journey remains an
    acceptance gate. Search, telephone, URL and plaintext-only editable fields
@@ -594,7 +597,7 @@ the unchanged scope limits. It excludes native-engine and frozen holdout modes.
 These are exposed development probes, never a fresh holdout or natural noisy
 speech claim. Actual execution and quality results must be recorded separately.
 
-The [baseline qualification ledger](dictation-baseline-qualification.json)
+The [baseline qualification ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-baseline-qualification.json)
 records six actual production-worker sessions on pinned public audio after a
 fresh remote rebuild. All completed under the unchanged limits, with aggregate
 scope peaks of about 642–645 MB and first drafts around three seconds. Raw errors
@@ -619,7 +622,7 @@ not model admission: the complete native parser, receipt/catalogue checks,
 256 MiB artifact cap, 1 GiB address-space cap and 960 MiB review headroom guard
 remain intact. The compatibility byte loader uses the same decision.
 
-The [small allocation ledger](dictation-small-allocation-qualification.json)
+The [small allocation ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-small-allocation-qualification.json)
 retains the failed non-flash production-worker attempt: the headroom guard stopped
 it before final delivery at 1,028,264 KiB virtual size. An earlier probe parser
 mismatch also failed before a decoder was observed; that was fixed rather than
@@ -665,9 +668,9 @@ hashes, full notices, CPU capability and hardware requirements. It rejects
 insecure transport, altered receipts, excess bytes and overwriting. Its output
 is staging, not installation or permission to record.
 
-The existing protected `release-local-model-catalog.yml` has two explicit modes:
+The release route has two explicit modes, both t checks dispatched on stable:
 
-1. `review-speech` stages public inputs without credentials, signs a candidate
+1. `review-speech-catalog` stages public inputs without credentials, signs a candidate
    with the existing `TILO_MODEL_CATALOG_SIGNING_KEY`, compares the resulting
    public key with the installed image key, and uploads only signed catalog,
    public key, declarative source and review hashes. It publishes no weights,
@@ -675,9 +678,9 @@ The existing protected `release-local-model-catalog.yml` has two explicit modes:
 2. Review those exact artifact bytes and commit the matching source and signed
    image catalog through the normal protected PR path. A development key or
    removal of the reproduction comparison cannot bootstrap a release.
-3. Default `publish` supports the prior U²-Net-only release or these exact four
+3. `publish-model-catalog` supports the prior U²-Net-only release or these exact four
    models. It stages verified speech inputs, publishes weights and full MIT
-   notices using the existing `RELEASE_TOKEN`, and verifies anonymous readback
+   notices using the package token, and verifies anonymous readback
    before signing. Authentication, rate-limit or server read failures never
    become an upload; an existing receipt conflict fails without overwriting.
    It reproduces the checked-in catalog and key bytes before catalog publication.
@@ -685,7 +688,7 @@ The existing protected `release-local-model-catalog.yml` has two explicit modes:
    license-acceptance and installation actions obtain a model. Installation
    neither starts recognition nor grants microphone permission.
 
-Both modes run only from protected main with the existing release key id
+Both modes run only from stable or a release tag with the existing release key id
 `tilo-local-model-release-2026-10`. Live microphone consent remains a separate
 local decision for each recording. The source candidate and workflow extension
 alone leave the currently installed catalog unchanged.
@@ -742,7 +745,7 @@ python3 tools/release/summarize_speech_benchmark.py target/tiny.log target/base.
 ```
 
 The qualification runs on a build machine with no microphone or model install.
-Results and per-fixture provenance are in `dictation-speech-benchmark.json`.
+Results and per-fixture provenance are in [`dictation-speech-benchmark.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-speech-benchmark.json).
 Normalization is NFKC/casefold and punctuation/whitespace cleanup only. It does
 not hide number, accent or Chinese script errors. Mandarin uses CER because
 space-token WER is not meaningful; Simplified/Traditional differences count.
@@ -1372,7 +1375,7 @@ VM peaks were 872092, 862804 and 885608 KiB respectively. These are builder
 affinity profiles, not physical older-hardware results. The two-CPU first
 English hypothesis was incorrectly “Thank you.” Raw revisions and latency
 are evidence of provisional output, not an accuracy or stability guarantee.
-Full metric and digest receipts are in `dictation-speech-benchmark.json`.
+Full metric and digest receipts are in [`dictation-speech-benchmark.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-speech-benchmark.json).
 
 Final-text cleanup is a bounded shared speech function with a personal literal
 preference in the existing accessibility section. Settings exposes the
@@ -1440,12 +1443,11 @@ still contain only U²-Net, so an ordinary installed desktop still refuses to
 load speech until the reviewed release is approved. No new signing identity,
 trust root, account, API charge or microphone permission is introduced.
 
-The normal route is the existing manual
-`.forgejo/workflows/release-local-model-catalog.yml` on `main`: `review-speech`
-fetches exact upstream receipts and creates a review artifact using the
+The normal route is the existing manual t dispatch on stable:
+`review-speech-catalog` fetches exact upstream receipts and creates a review artifact using the
 existing protected catalogue identity, with trust-key equality checked.
 After explicit release approval and promotion of reviewed source/signed image
-inputs, `publish` uses the existing protected package credential, immutable
+inputs, `publish-model-catalog` uses the existing protected package credential, immutable
 model/license URLs and anonymous exact readback, then reproduces and compares
 the signed image inputs before publishing the catalogue. Image deployment is
 a separate authorized operation. Source support for the four-entry candidate
@@ -1594,7 +1596,7 @@ All three stayed below the unchanged 1 GiB address-space limit (peak
 871,300–873,172 KiB); no decoder, permission or sandbox limit was relaxed.
 
 Compact source/model/log receipts and scored results are committed in
-`dictation-quality-probes.json`; raw public probe logs remain in the task evidence
+[`dictation-quality-probes.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-quality-probes.json); raw public probe logs remain in the task evidence
 worktree. No microphone or private dictionary contents entered these probes.
 
 ## Fixed backend comparison suite
@@ -1669,7 +1671,7 @@ a guard stop is not a measured out-of-memory event or an accuracy result. The
 probe refuses vocabulary conditions it cannot implement rather than silently
 ignoring hints. No production model selection, catalogue, acceptance or trust
 store changes. Native adapters retain raw decoder strings; cleanup cannot hide
-ASR errors. The receipt ledger is `dictation-engine-comparison.json`.
+ASR errors. The receipt ledger is [`dictation-engine-comparison.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-engine-comparison.json).
 
 The controlled Whisper comparison links the exact production bridge and existing
 pinned 1.8.3 native archives, with greedy/best-of one, no previous-text context,
@@ -1833,7 +1835,7 @@ ranged 530044–531680 KiB and virtual peaks 958992–962884 KiB. Q8 French firs
 text was 6.597/10.825 s on two/one CPUs, meaningful stable prefix 15.821/20.102 s,
 CPU 27.57/18.18 s and final WER 10%. These remain slow, exposed development
 observations, not an older-device or high-accuracy qualification. Detailed receipts
-are `dictation-memory-characterization.json` (23 records, including retained
+are [`dictation-memory-characterization.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-memory-characterization.json) (23 records, including retained
 Nemotron failure and two rejected shorter-context runs).
 
 Nemotron still failed startup under the separate 2 GiB budget, before accuracy
@@ -1952,7 +1954,7 @@ Reported model construction is separate from the source clock. Streaming
 memory/latency are promising, but these exposed accuracy results reject
 promotion. No multilingual coverage or natural-environment claim is made.
 
-`dictation-streaming-characterization.json` contains fifteen no-transcript
+[`dictation-streaming-characterization.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-streaming-characterization.json) contains fifteen no-transcript
 receipts: original failures, six-language prototype, one-CPU French, pool
 telemetry, supported one-slot comparison and four English/noise cases.
 No audio, raw transcript, weight artifact or installed model is committed.
@@ -2072,7 +2074,7 @@ Native peak virtual space is 946972/947912 KiB and resident memory
 793144/793312 KiB. Before building, pressure 6.76% stopped the adapter build;
 it compiled successfully after recovery with pressure 0.77%. Default fusion
 stopped before decoding at 6.77%, so its accuracy and false-positive behavior
-remain **unmeasured**. `dictation-vocabulary-characterization.json` retains
+remain **unmeasured**. [`dictation-vocabulary-characterization.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-vocabulary-characterization.json) retains
 both completed cases, both pre-work stops, exact source/binary/library hashes
 and pending status. `build_nemo_vocabulary_review.py` and
 `probe_nemo_vocabulary_review.py` reproduce this isolated experiment; explicitly
@@ -2102,7 +2104,7 @@ a pressure-safe window.
 
 ### Prerecorded physical-laptop baseline
 
-The [physical-laptop ledger](dictation-laptop-qualification.json) records the
+The [physical-laptop ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-laptop-qualification.json) records the
 exact remotely built worker and public French fixture on the connected ASUS
 Ryzen 9 7940HS laptop with 32 GiB RAM. The hardware-free, network-free review
 namespace exposes no microphone or user home. Two assigned CPUs occupy different
@@ -2132,7 +2134,7 @@ stops comparison before decoding rather than weakening admission.
 
 ### Startup, first words and bounded Base attention
 
-The [latency ledger](dictation-latency-qualification.json) distinguishes visible
+The [latency ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-latency-qualification.json) distinguishes visible
 punctuation from lexical replies and records matched optimized/debug controls,
 failed experiments and the actual native attention mode. On the shared builder,
 the optimized control reached words at about 5.8 seconds and the debug control
@@ -2162,7 +2164,7 @@ shipping-profile, live microphone or release acceptance claim.
 
 ### Whistle native thread admission
 
-The review-only source fixture `tools/release/fixtures/whistle_stream_review.cpp`
+The review-only source fixture [`tools/release/fixtures/whistle_stream_review.cpp`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/whistle_stream_review.cpp)
 links the pinned native C API with a private, signature-verified Fedora libc++
 closure. No packages, trust keys or models were installed. The initial linker
 failure remains historical evidence; this separately receipted closure links.
@@ -2180,7 +2182,7 @@ this is a failed admission, not faster speech recognition. A real child-thread
 test exercises the same termination route. The public CLI review now also
 requires at most two observed native threads. The exact binary, package
 signatures, source and failed-run receipts are recorded in
-`dictation-whistle-native-review.json`. The first private native-output JSON
+[`dictation-whistle-native-review.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-native-review.json). The first private native-output JSON
 was overwritten by the guard replay; its captured sanitized scope log and
 owned process diagnostic remain, and no speech metric is inferred from it.
 
@@ -2244,7 +2246,7 @@ in equality and its keyed stamp; absent metadata defaults to single-line, and
 changed or malformed metadata does not authorize insertion. Browser DOM paragraph
 propagation is an unpublished prototype, not qualified or enabled by this commit.
 Its real CEF build and three focused tests are recorded in
-`dictation-browser-paragraph-native.json`: control-character and single-line-kind
+[`dictation-browser-paragraph-native.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-browser-paragraph-native.json): control-character and single-line-kind
 rejection pass; the paragraph test fails on an exact native-event assertion.
 Independent native controls establish four input notifications for one undoable
 text command, plus three rendered LF for two requested LF in the rich fixture.
@@ -2344,7 +2346,7 @@ paragraph assertions are extended as part of this fix. A separate native typing
 control verifies that dictation undo retains text typed immediately beforehand.
 The 20 focused shell dictation integration cases also passed (0.502 seconds).
 
-Portable evidence views are indexed in `dictation-execution-environment-index.json`.
+Portable evidence views are indexed in [`dictation-execution-environment-index.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-execution-environment-index.json).
 The original committed bytes remain addressable by commit, Git blob and SHA-256;
 only execution-environment tokens are normalized in these views. Recorded source
 and driver hashes still identify the original executions, not a new qualification.
@@ -2383,7 +2385,7 @@ exit successfully with unchanged guard/cgroup limits; cancellation records no
 unobserved decoder exit claim. An earlier stricter rerun was refused before its
 fourth worker became ready by host pressure admission; that failure is retained
 separately rather than hidden or counted as a pass. Detailed source/host digests,
-exact outputs and limits are in `dictation-browser-paragraph-fixed.json`.
+exact outputs and limits are in [`dictation-browser-paragraph-fixed.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-browser-paragraph-fixed.json).
 
 The final mounted SDK run passes for direct and decorated widgets, including
 the corrected rich paragraph's exact text/markup and one native undo/redo.
@@ -2408,7 +2410,7 @@ complete range. It rejects locked content before handlers or editing; editable
 text alongside the island still accepts paragraphs and owned undo normally.
 The pinned host build passed in 11.951 seconds and all 15 focused tests passed
 in 15.836 seconds. The original failure and corrected source/host hashes are
-retained separately in `dictation-browser-rich-islands.json`.
+retained separately in [`dictation-browser-rich-islands.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-browser-rich-islands.json).
 
 Current-head CI for 5680a08243 was inspected once: check run 86055, lint 86058 and
 app-SDK 86054 stopped during merge against main 8f6bfc2b00, before compiling the
@@ -2457,7 +2459,7 @@ invalidates on mapped presses; original-field checks still guard release-handler
 mutations and deferred history. The regression also retains press/focus refusal
 and waits for an actual history acknowledgement.
 
-See `dictation-recorded-compositor-evidence.json` for failed traces, verified
+See [`dictation-recorded-compositor-evidence.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-recorded-compositor-evidence.json) for failed traces, verified
 public model/audio/tool provenance, exact source/binary hashes and actual output;
 `dictation-recorded-compositor-plan.md` records the repaired journey and limits.
 The first successful bounded run took 53.183 seconds overall, with a 37.951-second
@@ -2473,8 +2475,8 @@ runtime now pass the assembled hardware-disabled French, English and Spanish
 compositor journeys. German passes the same editor behavior but its unchanged
 accuracy assertions fail. Exact outputs, source/binary/model/runtime hashes,
 resource controls and failed setup/accuracy traces are in
-`dictation-whistle-compositor-evidence.json`; exact historical drivers are in
-`tools/release/fixtures/whistle_compositor_20261009/`.
+[`dictation-whistle-compositor-evidence.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-compositor-evidence.json); exact historical drivers are in
+[`tools/release/fixtures/whistle_compositor_20261009/`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/whistle_compositor_20261009).
 
 | Public fixture | First visible preview after playback | Insertion after Finish | Sampled total peak | Raw development-fixture WER |
 | --- | ---: | ---: | ---: | ---: |
@@ -2549,7 +2551,7 @@ recognition defect; the inspected bridge passes the language correctly and
 calls the pinned decoder without reference-aware text replacement. A next
 accuracy comparison has a specific existing candidate: pinned Whisper Small
 Q5 (`ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb`).
-The earlier [conditional allocation ledger](dictation-small-allocation-qualification.json)
+The earlier [conditional allocation ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-small-allocation-qualification.json)
 records 0/18 German errors on this same clip, but first preview takes 7.246
 seconds and worker RSS peaks at 446,896 KiB. This is a separate older source
 and source-paced transport with the unrelated public spelling `TiLo`; it is
@@ -2559,5 +2561,5 @@ the current sealed worker on fixed German PCM with no vocabulary and unchanged
 1 GiB worker/two-thread limits before selecting that accuracy/latency tradeoff.
 No catalogue, runtime publication or persistent deployment is authorized.
 
-See [component evidence](dictation-component-profile-evidence.json) and
-[historical drivers](../../tools/release/fixtures/whistle_components_20261009/README.md).
+See [component evidence](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-component-profile-evidence.json) and
+[historical drivers](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/whistle_components_20261009/README.md).

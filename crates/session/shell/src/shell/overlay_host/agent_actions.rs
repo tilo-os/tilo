@@ -1,19 +1,22 @@
-//! Nonblocking adapter from private composer intentions to the existing
-//! certified semantic action door. It owns no task or Chat document state.
+//! Nonblocking adapter from private composer intentions to the certified
+//! semantic action door. It owns no task or Chat document state.
 //!
 //! A request goes to the agent's own entry point (`respond`), which answers
-//! it or names the work; work is queued and started through Task Center,
-//! so it runs as an ordinary attributed, undoable task, and this adapter
-//! follows that run until it ends. When the agent cannot be asked, the
-//! request is queued as it stands and the run decides.
+//! it or names the work. Work becomes an issue in Tasks assigned to the
+//! agent, whose run the asking starts (`ask-agent`), so it runs as an
+//! ordinary attributed, undoable action; this adapter follows that run on
+//! the room's tracker until it ends. When the agent cannot be asked, the
+//! request is asked as it stands and the run decides.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
+use tasks::model::RunPhase as IssueRunPhase;
 use tilo_actions::remote::{
     ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
-    InvokeRequest, Pending, PendingPoll, ReceiptStatus, workspace_provider,
+    InvokeRequest, Pending, PendingPoll, ReceiptStatus,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
@@ -21,54 +24,53 @@ use crate::shell::agent_quick_composer::{
     AgentQuickComposer, AnswerUse, ComposerIntent, ComposerOutcome, ComposerOwner, ComposerReceipt,
     ComposerRequest, ComposerRun, ComposerTask, ComposerTurn, RunPhase,
 };
+use crate::shell::broker_services::FollowedRun;
 use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionSession};
 use crate::shell::search::invocation_wake::{poll, waker, watch};
 use crate::shell::selection_agent::SelectionSeed;
 
-const REFRESH: Duration = Duration::from_secs(1);
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// The agent's own answer may take its whole model budget, and a little more.
 const RESPOND_TIMEOUT: Duration = Duration::from_secs(45);
-const TASKS: &str = "desktop:tasks";
-const DESKTOP: &str = tilo_desktop_model::commands::APP_ID;
+/// The Tasks app: a request the composer starts is an issue there, assigned
+/// to the agent and started by the asking.
+const TRACKER_APP: &str = tilo_action_broker::services::TRACKER_APP;
+const TRACKER: &str = tilo_action_broker::services::TRACKER_RESOURCE;
 const AGENT: &str = tilo_automation::AGENT_APP_ID;
-/// How often a queued run is asked to start before the composer gives up.
-const START_ATTEMPTS: u8 = 5;
 /// The longest task title, in characters.
 const TITLE_CHARS: usize = 120;
 
+/// Where the composer reads the runs it follows: the rooms' trackers.
+pub(crate) trait RunSource {
+    /// Every issue's latest run in `room`.
+    fn runs(&self, room: &str) -> Vec<FollowedRun>;
+}
+
+impl RunSource for crate::shell::broker_services::NativeTrackerRuns {
+    fn runs(&self, room: &str) -> Vec<FollowedRun> {
+        match self.tracker(room) {
+            Ok(tracker) => tracker
+                .map(|tracker| tracker.followed.clone())
+                .unwrap_or_default(),
+            Err(error) => {
+                tracing::debug!(%error, "the composer could not read the tracker");
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Purpose {
-    Current,
-    /// Ask the agent to answer the request or name its work.
     Respond(ComposerRequest),
-    /// Queue work: a request's, or what the person chose to do with an answer.
+    /// Ask for work: a request's, or what the person chose to do with an
+    /// answer.
     Queue {
         request: Option<ComposerRequest>,
         title: String,
     },
-    /// Start the queued run.
-    Start,
-    /// Read the followed task.
-    Follow,
-    /// Read what the agent said in the followed run.
-    Said,
-    /// A direction for, or Stop of, the followed run.
+    /// A message to, or Stop of, the followed run.
     Submit(ComposerRequest),
-    Applied {
-        request: ComposerRequest,
-        saved: ComposerTask,
-    },
-}
-
-impl Purpose {
-    /// Whether this is something the person asked for, never deduplicated.
-    fn submitted(&self) -> bool {
-        matches!(
-            self,
-            Self::Respond(_) | Self::Queue { .. } | Self::Submit(_)
-        )
-    }
 }
 
 #[derive(Clone)]
@@ -77,9 +79,8 @@ struct Operation {
     action: String,
     arguments: Map<String, Value>,
     purpose: Purpose,
-    /// The application whose provider publishes the action, when it is not
-    /// the room's desktop.
-    app: Option<&'static str>,
+    /// The application whose action it is.
+    app: &'static str,
 }
 
 enum Phase {
@@ -106,107 +107,81 @@ struct Call {
     deadline: Instant,
 }
 
-#[derive(Clone, Deserialize)]
-struct Frontier {
-    task_id: String,
-    title: String,
-    assigned_agent: Option<String>,
-    active_agent: Option<String>,
-    status: String,
-    route: String,
-    run_epoch: Option<u64>,
-    after_revision: Option<u64>,
-    applied_revision: Option<u64>,
-}
-
-impl Frontier {
-    fn choice(&self, owner: &ComposerOwner) -> Option<ComposerTask> {
-        let epoch = self.run_epoch?;
-        let revision = self.after_revision?;
-        (epoch > 0
-            && self.assigned_agent.as_deref() == Some(&owner.agent)
-            && self.active_agent.as_deref() == Some(&owner.agent)
-            && self.status == "in_progress"
-            && self.route == "model")
-            .then(|| ComposerTask {
-                task_id: self.task_id.clone(),
-                run_epoch: epoch,
-                revision,
-                label: self.title.clone(),
-            })
-    }
-
-    /// The run's phase, when the task has ended.
-    fn ended(&self) -> Option<RunPhase> {
-        match self.status.as_str() {
-            "done" => Some(RunPhase::Finished(None)),
-            "waiting" => Some(RunPhase::NeedsAttention(None)),
-            "cancelled" => Some(RunPhase::Stopped),
-            _ => None,
-        }
-    }
-}
-
-/// The task the composer follows: one it queued, or the one its agent was
-/// working on when the person opened it.
+/// The issue run the composer follows: one it asked for, or the one its
+/// agent was working on when the person opened it.
 struct Followed {
-    task_id: String,
+    /// The issue's address.
+    issue: String,
     title: String,
-    /// Queued here, so started here.
-    ours: bool,
-    started: bool,
-    start_attempts: u8,
-    frontier: Option<Frontier>,
-    /// How the run ended, with what the agent said once that is read.
-    ended: Option<RunPhase>,
-    /// Whether what the agent said at the end has been read.
-    said: bool,
+    /// The run as the tracker last held it; none until it is read.
+    run: Option<FollowedRun>,
 }
 
 impl Followed {
-    fn new(task_id: String, title: String, ours: bool) -> Self {
-        Self {
-            task_id,
-            title,
-            ours,
-            started: !ours,
-            start_attempts: 0,
-            frontier: None,
-            ended: None,
-            said: false,
-        }
-    }
-
-    /// The run as the composer shows it. An ended run still shows as
-    /// working until what the agent said at the end is read, so it is
-    /// told once, with those words.
-    fn run(&self, owner: &ComposerOwner) -> ComposerRun {
-        let current = self
-            .frontier
-            .as_ref()
-            .and_then(|frontier| frontier.choice(owner));
-        let phase = match &self.ended {
-            Some(phase) if self.said || *phase == RunPhase::Stopped => phase.clone(),
-            Some(_) => RunPhase::Working,
-            None if current.is_some() => RunPhase::Working,
-            None => RunPhase::Starting,
+    /// The run as the composer shows it: working until the tracker says it
+    /// ended, then how, with what its agent said last.
+    fn run(&self) -> ComposerRun {
+        let said = || self.run.as_ref().and_then(|run| run.said.clone());
+        let phase = match self.run.as_ref().map(|run| run.phase) {
+            None
+            | Some(
+                IssueRunPhase::Approved
+                | IssueRunPhase::Accepted
+                | IssueRunPhase::Planning
+                | IssueRunPhase::Executing,
+            ) => RunPhase::Working,
+            Some(IssueRunPhase::Done) => RunPhase::Finished(said()),
+            // Waiting on the person, who answers on the issue's page.
+            Some(IssueRunPhase::Waiting | IssueRunPhase::Failed) => {
+                RunPhase::NeedsAttention(said())
+            }
+            Some(IssueRunPhase::Stopped) => RunPhase::Stopped,
         };
         ComposerRun {
             task: ComposerTask {
-                task_id: self.task_id.clone(),
-                run_epoch: self.epoch(),
-                revision: current.map_or(0, |task| task.revision),
+                task_id: self.issue.clone(),
+                run_epoch: self.run.as_ref().map_or(0, |run| run.epoch),
+                revision: self.run.as_ref().map_or(0, |run| run.messages),
                 label: self.title.clone(),
             },
             phase,
         }
     }
+}
 
-    fn epoch(&self) -> u64 {
-        self.frontier
-            .as_ref()
-            .and_then(|frontier| frontier.run_epoch)
-            .unwrap_or_default()
+/// Re-reads the tracker when the room's owner publishes, not on a clock.
+struct Freshness {
+    stale: Arc<AtomicBool>,
+    watch: tilo_identity_host::policy_change::Watch,
+}
+
+impl Default for Freshness {
+    fn default() -> Self {
+        let stale = Arc::new(AtomicBool::new(true));
+        let woken = stale.clone();
+        Self {
+            stale,
+            watch: tilo_identity_host::policy_change::Watch::new(move || {
+                woken.store(true, Ordering::SeqCst);
+                crate::shell::wake_compositor();
+            }),
+        }
+    }
+}
+
+impl Freshness {
+    /// Whether the tracker may have changed since it was last read. Armed
+    /// again first, so a change during the read wakes the next one.
+    fn take(&self) -> bool {
+        if !self.stale.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        self.watch.arm();
+        true
+    }
+
+    fn mark(&self) {
+        self.stale.store(true, Ordering::SeqCst);
     }
 }
 
@@ -216,28 +191,22 @@ pub(super) struct AgentActions {
     source: Option<ActionSessionSource>,
     session: Option<DesktopActionSession>,
     calls: Vec<Call>,
-    /// The agent's current runs, for following the one it is working on.
-    tasks: Vec<ComposerTask>,
     followed: Option<Followed>,
     /// A run the person stopped or that ended is not followed again.
     retired: Vec<String>,
-    refresh_at: Option<Instant>,
-    follows: Vec<(ComposerRequest, ComposerTask, Instant, Instant)>,
+    /// Messages to the run saved on its issue, until its agent takes them in.
+    sent: Vec<(ComposerRequest, ComposerTask)>,
+    fresh: Freshness,
 }
 
 impl AgentActions {
     pub(super) fn open(&mut self, source: ActionSessionSource, owner: ComposerOwner) -> bool {
-        // Opening chrome must not retire a still-observable mutation or an
-        // exact-run Saved receipt. It is never a cancellation or a retry.
+        // Opening chrome must not retire a still-observable request or a
+        // saved message. It is never a cancellation or a retry.
         if self.owner.as_ref() == Some(&owner) && self.session.is_some() {
             return true;
         }
-        if self
-            .calls
-            .iter()
-            .any(|call| call.operation.purpose.submitted())
-            || !self.follows.is_empty()
-        {
+        if !self.calls.is_empty() || !self.sent.is_empty() {
             return false;
         }
         let Some(revision) = source.identity_revision(&owner.room) else {
@@ -252,22 +221,12 @@ impl AgentActions {
         self.owner = Some(owner);
         self.source = Some(source);
         self.session = Some(session);
-        self.calls.clear();
-        self.tasks.clear();
-        self.follows.clear();
         self.followed = None;
-        self.refresh_at = Some(Instant::now());
+        self.fresh.mark();
         true
     }
 
     fn begin(&mut self, operation: Operation) {
-        if self
-            .calls
-            .iter()
-            .any(|call| same_read(&call.operation, &operation))
-        {
-            return;
-        }
         let (Some(session), Some(_)) = (&self.session, &self.owner) else {
             return;
         };
@@ -276,9 +235,7 @@ impl AgentActions {
         } else {
             TIMEOUT
         });
-        // Who publishes the action in this room is asked first: the agent's
-        // own provider, or the desktop's, which a native room serves as an
-        // application's.
+        // Who publishes the action in this room is asked first.
         let phase = Phase::Providers(watch(session.query(CatalogueQuery {
             max_results: 0,
             ..CatalogueQuery::default()
@@ -290,91 +247,72 @@ impl AgentActions {
         });
     }
 
-    fn refresh(&mut self) {
-        let Some(owner) = &self.owner else {
+    /// Read the room's tracker when it may have changed: the followed run's
+    /// phase and messages, or the agent's one going run, which the composer
+    /// then follows.
+    fn read_runs(
+        &mut self,
+        owner: &ComposerOwner,
+        source: Option<&dyn RunSource>,
+        composer: &mut AgentQuickComposer,
+    ) {
+        let Some(source) = source else {
             return;
         };
-        let agent = owner.agent.clone();
-        self.refresh_at = Some(deadline_after(REFRESH));
-        let Some(followed) = &self.followed else {
-            self.begin(task_read(
-                TASKS,
-                "read-current-tasks",
-                Map::from_iter([("agent".into(), agent.into())]),
-                Purpose::Current,
-            ));
-            return;
-        };
-        let task = format!("desktop:{}", followed.task_id);
-        if followed.said {
+        if !self.fresh.take() {
             return;
         }
-        if followed.ended.is_some() {
-            let epoch = followed.epoch();
-            self.begin(task_read(
-                &task,
-                "read-conversation",
-                Map::from_iter([("run_epoch".into(), epoch.into())]),
-                Purpose::Said,
-            ));
-            return;
-        }
-        let start = followed.ours
-            && !followed.started
-            && followed
-                .frontier
-                .as_ref()
-                .is_none_or(|frontier| frontier.status == "queued");
-        self.begin(task_read(&task, "read-task", Map::new(), Purpose::Follow));
-        if start {
-            self.begin(Operation {
-                resource: task,
-                action: "approve-run".into(),
-                arguments: Map::from_iter([
-                    ("agent_id".into(), agent.into()),
-                    ("expected_run_epoch".into(), 0.into()),
-                    ("after_revision".into(), 0.into()),
-                ]),
-                purpose: Purpose::Start,
-                app: None,
-            });
-        }
-    }
-
-    /// The run the composer shows: the followed one, or the agent's single
-    /// current run, which the composer then follows.
-    fn run(&mut self, owner: &ComposerOwner, composer: &AgentQuickComposer) -> Option<ComposerRun> {
-        if self.followed.is_none()
-            && let [task] = self.tasks.as_slice()
-            && !self.retired.contains(&task.task_id)
-            && !self
-                .calls
+        let runs = source.runs(&owner.room);
+        if self.followed.is_none() && composer.followed().is_none() {
+            let agent = format!("agent:{}", owner.agent);
+            let going: Vec<&FollowedRun> = runs
                 .iter()
-                .any(|call| call.operation.purpose.submitted())
-            && composer.followed().is_none()
-        {
-            self.followed = Some(Followed::new(
-                task.task_id.clone(),
-                task.label.clone(),
-                false,
-            ));
-            self.refresh_at = Some(Instant::now());
-            return Some(ComposerRun {
-                task: task.clone(),
-                phase: RunPhase::Working,
-            });
+                .filter(|run| {
+                    run.agent == agent && run.phase.active() && !self.retired.contains(&run.issue)
+                })
+                .collect();
+            if let [run] = going.as_slice() {
+                self.followed = Some(Followed {
+                    issue: run.issue.clone(),
+                    title: run.title.clone(),
+                    run: None,
+                });
+            }
         }
-        self.followed.as_ref().map(|followed| followed.run(owner))
+        let Some(followed) = &mut self.followed else {
+            return;
+        };
+        followed.run = runs.into_iter().find(|run| run.issue == followed.issue);
+        let Some(run) = &followed.run else {
+            return;
+        };
+        let incorporated = run.incorporated;
+        let epoch = run.epoch;
+        self.sent.retain(|(request, saved)| {
+            if saved.run_epoch != epoch {
+                return false;
+            }
+            if incorporated < saved.revision {
+                return true;
+            }
+            composer.observe_receipt(ComposerReceipt {
+                owner: request.owner.clone(),
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionApplied(saved.clone()),
+            });
+            false
+        });
     }
 
-    pub(super) fn pump(&mut self, composer: &mut AgentQuickComposer) -> bool {
+    pub(super) fn pump(
+        &mut self,
+        composer: &mut AgentQuickComposer,
+        runs: Option<&dyn RunSource>,
+    ) -> bool {
         let Some(owner) = self.owner.clone() else {
             return false;
         };
         let active = composer.owner() == Some(&owner) && composer.is_open();
-        if !active {
-            self.refresh_at = None;
-        }
         if self
             .source
             .as_ref()
@@ -385,16 +323,11 @@ impl AgentActions {
             for call in std::mem::take(&mut self.calls) {
                 self.refuse(&call.operation, composer, true);
             }
-            self.tasks.clear();
             self.followed = None;
             self.session = None;
-            self.refresh_at = None;
-            self.follows.clear();
+            self.sent.clear();
             composer.project(&owner, None);
             return changed && active;
-        }
-        if active && self.refresh_at.is_none_or(|due| Instant::now() >= due) {
-            self.refresh();
         }
         let pending = std::mem::take(&mut self.calls);
         let mut changed = false;
@@ -410,16 +343,18 @@ impl AgentActions {
                 changed = true;
             }
         }
-        self.follow_applied();
         if !active {
+            self.fresh.mark();
             return changed;
         }
-        let run = self.run(&owner, composer);
+        self.read_runs(&owner, runs, composer);
+        let run = self.followed.as_ref().map(Followed::run);
         if run.as_ref().is_some_and(|run| !run.phase.running()) {
             // Told now; following ends with it.
             if let Some(followed) = self.followed.take() {
-                self.retired.push(followed.task_id);
+                self.retired.push(followed.issue);
             }
+            self.sent.clear();
         }
         if composer.followed() != run.as_ref() {
             changed = true;
@@ -448,6 +383,22 @@ impl AgentActions {
         }
     }
 
+    /// Open for `owner` and ask its agent for `title`'s work, described by
+    /// `body`: an issue in Tasks whose run the asking starts, as the composer
+    /// asks. Whether it was asked.
+    pub(super) fn open_and_ask(
+        &mut self,
+        source: ActionSessionSource,
+        owner: &ComposerOwner,
+        (title, body): (&str, &str),
+    ) -> bool {
+        if !self.open(source, owner.clone()) {
+            return false;
+        }
+        self.begin(queue_operation(owner, None, (title, body), None, None));
+        true
+    }
+
     /// Hand what the person chose to do with an answer to the agent as work.
     /// An answer put at the selection carries that selection, so the agent
     /// is told the exact place.
@@ -471,7 +422,13 @@ impl AgentActions {
                 None,
             ),
         };
-        self.begin(queue_operation(owner, None, title, &instruction, about));
+        self.begin(queue_operation(
+            owner,
+            None,
+            (title, &instruction),
+            about,
+            None,
+        ));
     }
 
     fn advance(&mut self, call: &mut Call, composer: &mut AgentQuickComposer) -> bool {
@@ -502,7 +459,7 @@ impl AgentActions {
                 true
             }
             Step::Complete(value) => {
-                self.complete(&call.operation, value, composer);
+                self.complete(&call.operation, value.as_ref(), composer);
                 false
             }
             Step::Refused(unknown) => {
@@ -512,25 +469,14 @@ impl AgentActions {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match keeps every answer's handling, and so the whole request flow, in one place"
-    )]
     fn complete(
         &mut self,
         operation: &Operation,
-        value: Option<Value>,
+        value: Option<&Value>,
         composer: &mut AgentQuickComposer,
     ) {
         match &operation.purpose {
-            Purpose::Current => {
-                self.tasks = self
-                    .owner
-                    .as_ref()
-                    .map(|owner| current_tasks(owner, value.as_ref()))
-                    .unwrap_or_default();
-            }
-            Purpose::Respond(request) => match respond_outcome(value.as_ref()) {
+            Purpose::Respond(request) => match respond_outcome(value) {
                 Some(Responded::Answer(answer)) => composer.observe_receipt(ComposerReceipt {
                     owner: request.owner.clone(),
                     submission: request.submission,
@@ -542,19 +488,20 @@ impl AgentActions {
                 None => self.begin(request_queue(request, None)),
             },
             Purpose::Queue { request, title } => {
-                let queued = self
-                    .owner
-                    .as_ref()
-                    .and_then(|owner| queued_task(owner, value.as_ref()));
-                if let Some(task_id) = &queued {
-                    self.followed = Some(Followed::new(task_id.clone(), title.clone(), true));
-                    self.refresh_at = Some(Instant::now());
+                let asked = asked_issue(operation);
+                if let Some(issue) = &asked {
+                    self.followed = Some(Followed {
+                        issue: issue.clone(),
+                        title: title.clone(),
+                        run: None,
+                    });
+                    self.fresh.mark();
                 }
                 if let Some(request) = request {
                     composer.observe_receipt(ComposerReceipt {
                         owner: request.owner.clone(),
                         submission: request.submission,
-                        outcome: queued.map_or(ComposerOutcome::Unknown, |task_id| {
+                        outcome: asked.map_or(ComposerOutcome::Unknown, |task_id| {
                             ComposerOutcome::Started {
                                 task_id,
                                 title: title.clone(),
@@ -563,55 +510,21 @@ impl AgentActions {
                     });
                 }
             }
-            Purpose::Start => {
-                if let Some(followed) = &mut self.followed
-                    && operation.resource == format!("desktop:{}", followed.task_id)
-                {
-                    followed.started = true;
-                    self.refresh_at = Some(Instant::now());
-                }
-            }
-            Purpose::Follow => {
-                let Some(frontier) =
-                    value.and_then(|value| serde_json::from_value::<Frontier>(value).ok())
-                else {
-                    return;
-                };
-                if let Some(followed) = &mut self.followed
-                    && followed.task_id == frontier.task_id
-                    && operation.resource == format!("desktop:{}", followed.task_id)
-                {
-                    followed.started |= frontier.status != "queued";
-                    followed.ended = frontier.ended();
-                    followed.frontier = Some(frontier);
-                    if followed.ended.is_some() {
-                        self.refresh_at = Some(Instant::now());
-                    }
-                }
-            }
-            Purpose::Said => {
-                if let Some(followed) = &mut self.followed
-                    && operation.resource == format!("desktop:{}", followed.task_id)
-                {
-                    let said = closing_words(value.as_ref(), followed.epoch());
-                    followed.ended = Some(match followed.ended.take() {
-                        Some(RunPhase::Finished(_)) => RunPhase::Finished(said),
-                        Some(RunPhase::NeedsAttention(_)) => RunPhase::NeedsAttention(said),
-                        _ => RunPhase::Stopped,
-                    });
-                    followed.said = true;
-                }
-            }
             Purpose::Submit(request) => {
-                let outcome = mutation_outcome(request, value.as_ref());
-                if let ComposerOutcome::DirectionSaved(saved) = &outcome {
-                    self.follows.push((
-                        request.clone(),
-                        saved.clone(),
-                        deadline_after(TIMEOUT),
-                        Instant::now(),
-                    ));
-                }
+                // The issue took the message or the stop; the tracker shows
+                // when the run takes the message in.
+                let outcome = match &request.task {
+                    Some(task) if request.stop => ComposerOutcome::Stopped(task.clone()),
+                    Some(task) => {
+                        let saved = ComposerTask {
+                            revision: task.revision.saturating_add(1),
+                            ..task.clone()
+                        };
+                        self.sent.push((request.clone(), saved.clone()));
+                        ComposerOutcome::DirectionSaved(saved)
+                    }
+                    None => ComposerOutcome::Unknown,
+                };
                 if matches!(outcome, ComposerOutcome::Stopped(_)) {
                     self.followed = None;
                 }
@@ -620,37 +533,12 @@ impl AgentActions {
                     submission: request.submission,
                     outcome,
                 });
-                self.refresh_at = Some(Instant::now());
-            }
-            Purpose::Applied { request, saved } => {
-                let matched = value
-                    .and_then(|value| serde_json::from_value::<Frontier>(value).ok())
-                    .is_some_and(|row| {
-                        row.task_id == saved.task_id
-                            && row.run_epoch == Some(saved.run_epoch)
-                            && row.active_agent.as_deref() == Some(&request.owner.agent)
-                            && row.assigned_agent.as_deref() == Some(&request.owner.agent)
-                            && row.route == "model"
-                            && row
-                                .applied_revision
-                                .is_some_and(|revision| revision >= saved.revision)
-                    });
-                if matched {
-                    composer.observe_receipt(ComposerReceipt {
-                        owner: request.owner.clone(),
-                        submission: request.submission,
-                        outcome: ComposerOutcome::DirectionApplied(saved.clone()),
-                    });
-                    self.follows
-                        .retain(|(pending, _, _, _)| pending.submission != request.submission);
-                }
             }
         }
     }
 
     fn refuse(&mut self, operation: &Operation, composer: &mut AgentQuickComposer, unknown: bool) {
         match &operation.purpose {
-            Purpose::Current => self.tasks.clear(),
             // The agent could not be asked: the run decides instead. Asking
             // has no effect, so this never does anything twice.
             Purpose::Respond(request) => {
@@ -669,15 +557,6 @@ impl AgentActions {
                     });
                 }
             }
-            Purpose::Start => {
-                if let Some(followed) = &mut self.followed {
-                    followed.start_attempts = followed.start_attempts.saturating_add(1);
-                    if followed.start_attempts >= START_ATTEMPTS && !followed.started {
-                        followed.ended = Some(RunPhase::NeedsAttention(None));
-                        followed.said = true;
-                    }
-                }
-            }
             Purpose::Queue {
                 request: Some(request),
                 ..
@@ -693,106 +572,18 @@ impl AgentActions {
                     },
                 });
             }
-            Purpose::Queue { request: None, .. }
-            | Purpose::Follow
-            | Purpose::Said
-            | Purpose::Applied { .. } => {}
-        }
-    }
-
-    fn follow_applied(&mut self) {
-        self.follows
-            .retain(|(_, _, deadline, _)| Instant::now() < *deadline);
-        let mut reads = Vec::new();
-        for (request, saved, _, next) in &mut self.follows {
-            if Instant::now() >= *next {
-                *next = deadline_after(REFRESH);
-                reads.push((request.clone(), saved.clone()));
-            }
-        }
-        for (request, saved) in reads {
-            self.begin(task_read(
-                &format!("desktop:{}", saved.task_id),
-                "read-task",
-                Map::new(),
-                Purpose::Applied { request, saved },
-            ));
+            Purpose::Queue { request: None, .. } => {}
         }
     }
 
     pub(super) fn deadline(&self) -> Option<Instant> {
-        self.calls
-            .iter()
-            .map(|call| call.deadline)
-            .chain(self.refresh_at)
-            .chain(
-                self.follows
-                    .iter()
-                    .flat_map(|(_, _, until, next)| [*until, *next]),
-            )
-            .min()
+        self.calls.iter().map(|call| call.deadline).min()
     }
 }
 
 fn deadline_after(duration: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(duration).unwrap_or(now)
-}
-
-fn task_read(
-    resource: &str,
-    action: &str,
-    arguments: Map<String, Value>,
-    purpose: Purpose,
-) -> Operation {
-    Operation {
-        resource: resource.into(),
-        action: action.into(),
-        arguments,
-        purpose,
-        app: None,
-    }
-}
-
-fn current_tasks(owner: &ComposerOwner, value: Option<&Value>) -> Vec<ComposerTask> {
-    let Some(value) = value else {
-        return Vec::new();
-    };
-    let Some(rows) = value.get("tasks").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    if value.get("complete").and_then(Value::as_bool) != Some(true)
-        || value.get("total").and_then(Value::as_u64) != u64::try_from(rows.len()).ok()
-        || rows.len() > 64
-    {
-        return Vec::new();
-    }
-    let frontiers: Option<Vec<Frontier>> = rows
-        .iter()
-        .map(|row| serde_json::from_value(row.clone()).ok())
-        .collect();
-    frontiers
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|row| row.choice(owner))
-        .collect()
-}
-
-/// What the agent said last in run `epoch`: its closing words once it ended.
-fn closing_words(value: Option<&Value>, epoch: u64) -> Option<String> {
-    value?
-        .get("turns")?
-        .as_array()?
-        .iter()
-        .filter(|turn| {
-            turn.get("kind").and_then(Value::as_str) == Some("agent-output")
-                && turn.get("run_epoch").and_then(Value::as_u64) == Some(epoch)
-        })
-        .filter_map(|turn| turn.get("text").and_then(Value::as_str))
-        .next_back()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
 }
 
 enum Responded {
@@ -853,7 +644,7 @@ fn respond_operation(request: ComposerRequest) -> Operation {
         action: tilo_automation::AGENT_RESPOND_ACTION.into(),
         arguments,
         purpose: Purpose::Respond(request),
-        app: Some(AGENT),
+        app: AGENT,
     }
 }
 
@@ -870,64 +661,73 @@ fn request_queue(request: &ComposerRequest, title: Option<String>) -> Operation 
     queue_operation(
         &request.owner,
         Some(request.clone()),
-        &title,
-        &instruction,
+        (&title, &instruction),
         request.about.as_ref(),
+        request.model.as_ref(),
     )
 }
 
+/// The task the composer starts: the one place it does, so where tasks live
+/// changes here alone. It is an issue in the Tasks app assigned to `owner`'s
+/// agent, whose run the asking starts (the person asking approves it), with
+/// `model` in place of the agent's own when one was picked. What it is about
+/// rides as its subject and grants nothing.
 fn queue_operation(
     owner: &ComposerOwner,
     request: Option<ComposerRequest>,
-    title: &str,
-    instruction: &str,
+    (title, instruction): (&str, &str),
     about: Option<&SelectionSeed>,
+    model: Option<&runtime_collab::TaskRunModel>,
 ) -> Operation {
     let title: String = title.trim().chars().take(TITLE_CHARS).collect();
-    let instruction: String = instruction
-        .chars()
-        .scan(0_usize, |bytes, c| {
-            *bytes = bytes.saturating_add(c.len_utf8());
-            (*bytes <= tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES).then_some(c)
-        })
-        .collect();
     let mut arguments = Map::from_iter([
+        ("id".into(), uuid::Uuid::new_v4().to_string().into()),
         ("title".into(), title.clone().into()),
-        ("instruction".into(), instruction.into()),
-        ("assigned_agent".into(), owner.agent.clone().into()),
-        ("planning".into(), "model".into()),
+        ("body".into(), instruction.into()),
+        ("agent".into(), format!("agent:{}", owner.agent).into()),
     ]);
-    // The selection rides as the task's subject, so the agent is told the
+    if let Some(model) = model {
+        arguments.insert(
+            "model".into(),
+            serde_json::json!({ "profile": model.profile, "model": model.model }),
+        );
+    }
+    // The selection rides as the issue's subject, so the agent is told the
     // exact place to act at; it attaches nothing, so the run's authority
-    // stays a room-wide task's.
-    if let Some(subject) = about.and_then(SelectionSeed::subject_json) {
-        arguments.insert("subject_json".into(), subject.into());
+    // stays the asker's.
+    if let Some(subject) = about
+        .and_then(SelectionSeed::subject_json)
+        .and_then(|subject| serde_json::from_str::<Value>(&subject).ok())
+    {
+        arguments.insert("subject".into(), subject);
     }
     if let Some(about) = about {
-        // Whether the selection travels as a place the agent can act at, or
-        // only as text in the instruction.
         tracing::info!(
             app_id = %about.app_id,
-            resource = ?about
-                .selection
-                .as_ref()
-                .and_then(|selection| selection.resource.as_ref())
-                .map(|resource| resource.id.as_str()),
             place = about
                 .selection
                 .as_ref()
                 .is_some_and(|selection| selection.anchor.place.is_some()),
-            subject = arguments.contains_key("subject_json"),
-            "queueing a task about a selection"
+            subject = arguments.contains_key("subject"),
+            "asking an agent about a selection"
         );
     }
     Operation {
-        resource: TASKS.into(),
-        action: "queue".into(),
+        resource: TRACKER.into(),
+        action: "ask-agent".into(),
         arguments,
         purpose: Purpose::Queue { request, title },
-        app: None,
+        app: TRACKER_APP,
     }
+}
+
+/// The issue an `ask-agent` operation makes, by its address.
+fn asked_issue(operation: &Operation) -> Option<String> {
+    let id = operation.arguments.get("id")?.as_str()?;
+    Some(format!(
+        "{}{id}",
+        tilo_action_broker::services::TRACKER_ISSUE_PREFIX
+    ))
 }
 
 /// The run's instruction: the request, what it is about, and the
@@ -954,20 +754,25 @@ fn submission_operation(request: ComposerRequest) -> Option<Operation> {
     if request.intent == ComposerIntent::Request && !request.stop {
         return Some(respond_operation(request));
     }
-    let task = request.task.as_ref()?;
-    let mut arguments = task_arguments(task);
+    let issue = request
+        .task
+        .as_ref()?
+        .task_id
+        .strip_prefix(tilo_action_broker::services::TRACKER_ISSUE_PREFIX)?
+        .to_owned();
+    let mut arguments = Map::from_iter([("issue".into(), issue.into())]);
     let action = if request.stop {
-        "stop"
+        "stop-run"
     } else {
         arguments.insert("text".into(), request.text.clone().into());
-        "direct"
+        "send-message"
     };
     Some(Operation {
-        resource: format!("desktop:{}", task.task_id),
+        resource: TRACKER.into(),
         action: action.into(),
         arguments,
         purpose: Purpose::Submit(request),
-        app: None,
+        app: TRACKER_APP,
     })
 }
 
@@ -995,23 +800,22 @@ fn provider_step(
     if !page.exhausted || page.stale_cursor || page.budget_exhausted {
         return Step::Refused(false);
     }
-    let Some(app) = operation.app else {
-        let Some(provider) = desktop_provider(&page, &owner.room) else {
-            return Step::Refused(false);
-        };
-        let answer = watch(session.query(CatalogueQuery {
-            provider: Some(provider.clone()),
-            target: Some(ActionAddress::new(&operation.resource, &operation.action)),
-            max_results: 1,
-            ..CatalogueQuery::default()
-        }));
-        return Step::Next(Phase::Resolve {
-            provider,
-            answer,
-            pages: 1,
-            matched: Vec::new(),
-        });
-    };
+    let app = operation.app;
+    // The tracker is reached whether or not Tasks runs: the host launches it
+    // to take the issue.
+    if app == TRACKER_APP {
+        return invoke_operation(
+            session,
+            operation,
+            tilo_actions::remote::application_action_target(
+                &owner.room,
+                app,
+                operation.resource.clone(),
+                operation.action.clone(),
+            ),
+            None,
+        );
+    }
     let providers: Vec<_> = page
         .providers
         .iter()
@@ -1038,19 +842,6 @@ fn provider_step(
 /// application surface there, which is how a native room publishes them,
 /// else the workspace provider of a room whose desktop serves them itself.
 /// Two desktop surfaces in one room name no single publisher.
-fn desktop_provider(page: &CataloguePage, room: &str) -> Option<String> {
-    let desktop: Vec<_> = page
-        .providers
-        .iter()
-        .filter(|provider| provider.app_id == DESKTOP && provider.room == room)
-        .collect();
-    match desktop.as_slice() {
-        [] => Some(workspace_provider(room)),
-        [provider] => Some(provider.provider.clone()),
-        _ => None,
-    }
-}
-
 fn resolve_step(
     session: &DesktopActionSession,
     operation: &Operation,
@@ -1097,6 +888,16 @@ fn resolve_step(
     let Some(target) = row.target() else {
         return Step::Refused(false);
     };
+    invoke_operation(session, operation, target, Some(page.revision))
+}
+
+/// Invoke `operation` at `target`, chosen from the catalogue at `revision`.
+fn invoke_operation(
+    session: &DesktopActionSession,
+    operation: &Operation,
+    target: tilo_actions::remote::RemoteActionTarget,
+    revision: Option<String>,
+) -> Step {
     let invocation = InvocationId::new();
     let argument = if operation.arguments.is_empty() {
         InvokeArgument::None
@@ -1109,7 +910,7 @@ fn resolve_step(
         argument,
         context: None,
         confirmation: None,
-        revision: Some(page.revision),
+        revision,
         on_behalf_of: None,
         appearance: None,
         wait_ms: Some(1_000),
@@ -1164,84 +965,13 @@ fn observe_step(
     }
 }
 
-fn same_read(left: &Operation, right: &Operation) -> bool {
-    left.resource == right.resource
-        && left.action == right.action
-        && !left.purpose.submitted()
-        && !right.purpose.submitted()
-}
-
-fn task_arguments(task: &ComposerTask) -> Map<String, Value> {
-    Map::from_iter([
-        ("run_epoch".into(), task.run_epoch.into()),
-        ("after_revision".into(), task.revision.into()),
-    ])
-}
-
 fn exact_row(row: &tilo_actions::remote::CatalogueRow, operation: &Operation) -> bool {
     row.action.as_ref().is_some_and(|action| {
         action.address.action == operation.action
             && action.address.resource == operation.resource
             && row.resource.id == operation.resource
-            && operation.app.is_none_or(|app| row.app_id == app)
+            && row.app_id == operation.app
     })
-}
-
-/// The task a queue answer names, held to the run it must be: this agent's,
-/// planned by a model.
-fn queued_task(owner: &ComposerOwner, value: Option<&Value>) -> Option<String> {
-    let value = value?;
-    let task_id = value.pointer("/task/id").and_then(Value::as_str)?;
-    (!task_id.is_empty()
-        && value
-            .pointer("/result/queued/task_id")
-            .and_then(Value::as_str)
-            == Some(task_id)
-        && value["resource"].as_str() == Some(format!("desktop:{task_id}").as_str())
-        && value["managed_route"] == true
-        && value
-            .pointer("/task/assigned_agent")
-            .and_then(Value::as_str)
-            == Some(&owner.agent)
-        && value.pointer("/task/route").and_then(Value::as_str) == Some("model"))
-    .then(|| task_id.to_owned())
-}
-
-fn mutation_outcome(request: &ComposerRequest, value: Option<&Value>) -> ComposerOutcome {
-    let Some(value) = value else {
-        return ComposerOutcome::Unknown;
-    };
-    let Some(before) = &request.task else {
-        return ComposerOutcome::Unknown;
-    };
-    if value["resource"].as_str() != Some(&format!("desktop:{}", before.task_id)) {
-        return ComposerOutcome::Unknown;
-    }
-    if request.stop && value["cancelled"] == true {
-        return ComposerOutcome::Stopped(before.clone());
-    }
-    let Some(next_revision) = before.revision.checked_add(1) else {
-        return ComposerOutcome::Unknown;
-    };
-    if !request.stop
-        && value["saved"] == true
-        && value["run_epoch"].as_u64() == Some(before.run_epoch)
-        && value["revision"].as_u64() == Some(next_revision)
-        && value
-            .pointer("/result/direction_added/task_id")
-            .and_then(Value::as_str)
-            == Some(before.task_id.as_str())
-        && value
-            .pointer("/result/direction_added/revision")
-            .and_then(Value::as_u64)
-            == Some(next_revision)
-    {
-        return ComposerOutcome::DirectionSaved(ComposerTask {
-            revision: next_revision,
-            ..before.clone()
-        });
-    }
-    ComposerOutcome::Unknown
 }
 
 #[cfg(test)]
@@ -1262,181 +992,6 @@ mod tests {
         }
     }
 
-    /// A room whose desktop publishes its task actions as the desktop
-    /// application's surface, as a native room does.
-    struct NativeRoom {
-        room: String,
-        queries: std::sync::Mutex<Vec<CatalogueQuery>>,
-    }
-
-    impl tilo_actions::remote::ActionHost for NativeRoom {
-        fn query(
-            &self,
-            _: &tilo_actions::remote::Caller,
-            query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionHostError>> {
-            self.queries.lock().unwrap().push(query.clone());
-            let provider = |provider: &str, app_id: &str, room: &str| {
-                tilo_actions::remote::CatalogueProvider {
-                    provider: provider.into(),
-                    app_id: app_id.into(),
-                    room: room.into(),
-                    record_id: "membership".into(),
-                    browsable: false,
-                }
-            };
-            if query.max_results == 0 {
-                return Pending::ready(Ok(CataloguePage {
-                    providers: vec![
-                        provider("7", DESKTOP, &self.room),
-                        provider("9", DESKTOP, "another-room"),
-                    ],
-                    exhausted: true,
-                    ..CataloguePage::default()
-                }));
-            }
-            let rows = match (&query.provider, &query.target) {
-                (Some(provider), Some(target)) if provider == "7" => {
-                    let descriptor: tilo_actions::ActionDescriptor =
-                        serde_json::from_value(serde_json::json!({
-                            "address": {"resource": target.resource, "action": target.action},
-                            "resource_kind": "desktop.tasks", "resource_label": "Tasks",
-                            "action_label": target.action,
-                            "locus": tilo_actions::ExecutionLocus::default(),
-                            "kind": tilo_actions::OperationKind::Effect,
-                            "contract": tilo_actions::ActionContract::view(),
-                            "input": tilo_actions::InputSpec::None, "params": []
-                        }))
-                        .unwrap();
-                    vec![tilo_actions::remote::CatalogueRow {
-                        provider: "7".into(),
-                        app_id: DESKTOP.into(),
-                        parent_resource: String::new(),
-                        resource: tilo_actions::remote::CatalogueResource {
-                            id: target.resource.clone(),
-                            kind: "desktop.tasks".into(),
-                            label: "Tasks".into(),
-                            presentation: None,
-                        },
-                        action: Some(descriptor),
-                        has_children: false,
-                        visibility: None,
-                    }]
-                }
-                _ => Vec::new(),
-            };
-            Pending::ready(Ok(CataloguePage {
-                rows,
-                revision: "1".into(),
-                exhausted: true,
-                ..CataloguePage::default()
-            }))
-        }
-        fn invoke(
-            &self,
-            _: &tilo_actions::remote::Caller,
-            request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-            Pending::ready(Ok(InvocationReceipt {
-                invocation: request.invocation,
-                status: ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput::default(),
-                },
-            }))
-        }
-        fn observe(
-            &self,
-            _: &tilo_actions::remote::Caller,
-            _: &InvocationId,
-        ) -> Option<tilo_actions::remote::InvocationState> {
-            None
-        }
-        fn cancel(
-            &self,
-            _: &tilo_actions::remote::Caller,
-            _: &InvocationId,
-        ) -> Result<(), ActionHostError> {
-            Err(ActionHostError::UnknownInvocation)
-        }
-    }
-
-    #[test]
-    fn a_native_rooms_task_actions_are_found_under_the_desktop_application() {
-        let host = std::sync::Arc::new(NativeRoom {
-            room: uuid::Uuid::new_v4().to_string(),
-            queries: std::sync::Mutex::default(),
-        });
-        let owner = ComposerOwner {
-            room: host.room.clone(),
-            ..owner("room")
-        };
-        let mut actions = AgentActions::default();
-        assert!(actions.open(
-            ActionSessionSource::with_mock(
-                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-                host.clone(),
-            ),
-            owner.clone(),
-        ));
-        let mut composer = AgentQuickComposer::default();
-        composer.open(
-            owner,
-            "Tide",
-            crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
-                marker: vello::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
-                protected: vello::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
-                context: String::new(),
-            },
-            vello::kurbo::Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        for _ in 0..6 {
-            actions.pump(&mut composer);
-        }
-        drop(actions);
-        let queries = host.queries.lock().unwrap().clone();
-        assert!(
-            queries.iter().any(|query| {
-                query.provider.as_deref() == Some("7")
-                    && query.target == Some(ActionAddress::new(TASKS, "read-current-tasks"))
-            }),
-            "the current tasks are read from the desktop's own surface"
-        );
-        assert!(
-            queries
-                .iter()
-                .all(|query| query.provider.as_deref() != Some("9")),
-            "another room's desktop is never asked"
-        );
-    }
-
-    #[test]
-    fn a_room_without_a_desktop_surface_asks_its_workspace_provider() {
-        let page = |providers| CataloguePage {
-            providers,
-            ..CataloguePage::default()
-        };
-        let desktop = |provider: &str| tilo_actions::remote::CatalogueProvider {
-            provider: provider.into(),
-            app_id: DESKTOP.into(),
-            room: "room".into(),
-            record_id: String::new(),
-            browsable: false,
-        };
-        assert_eq!(
-            desktop_provider(&page(Vec::new()), "room"),
-            Some(workspace_provider("room"))
-        );
-        assert_eq!(
-            desktop_provider(&page(vec![desktop("7")]), "room").as_deref(),
-            Some("7")
-        );
-        assert_eq!(
-            desktop_provider(&page(vec![desktop("7"), desktop("8")]), "room"),
-            None,
-            "two desktops in one room name no single publisher"
-        );
-    }
-
     fn request(intent: ComposerIntent) -> ComposerRequest {
         ComposerRequest {
             owner: owner("room"),
@@ -1445,7 +1000,7 @@ mod tests {
             text: "Fix the link\nand tell me where it points".into(),
             stop: false,
             task: Some(ComposerTask {
-                task_id: "task:one".into(),
+                task_id: "tasks.tracker/issues/one".into(),
                 run_epoch: 7,
                 revision: 2,
                 label: "Current task".into(),
@@ -1462,6 +1017,7 @@ mod tests {
                 },
             ],
             about: None,
+            model: None,
         }
     }
 
@@ -1472,7 +1028,7 @@ mod tests {
         let operation = submission_operation(asked.clone()).unwrap();
         assert_eq!(operation.resource, "agent.transform:default");
         assert_eq!(operation.action, "respond");
-        assert_eq!(operation.app, Some(AGENT));
+        assert_eq!(operation.app, AGENT);
         assert_eq!(operation.arguments["request"], asked.text);
         assert_eq!(operation.arguments["input"], asked.context);
         let mut long = asked;
@@ -1497,17 +1053,18 @@ mod tests {
 
         let steer = request(ComposerIntent::Steer);
         let operation = submission_operation(steer.clone()).unwrap();
-        assert_eq!(operation.resource, "desktop:task:one");
-        assert_eq!(operation.action, "direct");
-        assert_eq!(operation.app, None);
-        assert_eq!(operation.arguments["run_epoch"], 7);
-        assert_eq!(operation.arguments["after_revision"], 2);
+        assert_eq!(
+            (operation.resource.as_str(), operation.action.as_str()),
+            (TRACKER, "send-message")
+        );
+        assert_eq!(operation.app, TRACKER_APP);
+        assert_eq!(operation.arguments["issue"], "one");
         assert_eq!(operation.arguments["text"], steer.text);
 
         let mut stop = steer;
         stop.stop = true;
         let operation = submission_operation(stop.clone()).unwrap();
-        assert_eq!(operation.action, "stop");
+        assert_eq!(operation.action, "stop-run");
         assert!(operation.arguments.get("text").is_none());
         stop.task = None;
         assert!(submission_operation(stop).is_none(), "nothing to stop");
@@ -1539,8 +1096,14 @@ mod tests {
     fn work_is_queued_for_this_agent_with_its_context_and_conversation() {
         let asked = request(ComposerIntent::Request);
         let operation = request_queue(&asked, Some("x".repeat(300)));
-        assert_eq!(operation.resource, TASKS);
-        assert_eq!(operation.action, "queue");
+        assert_eq!(
+            (
+                operation.resource.as_str(),
+                operation.action.as_str(),
+                operation.app
+            ),
+            (TRACKER, "ask-agent", TRACKER_APP)
+        );
         assert_eq!(
             operation.arguments["title"]
                 .as_str()
@@ -1549,9 +1112,12 @@ mod tests {
                 .count(),
             TITLE_CHARS
         );
-        assert_eq!(operation.arguments["assigned_agent"], "tide");
-        assert_eq!(operation.arguments["planning"], "model");
-        let instruction = operation.arguments["instruction"].as_str().unwrap();
+        assert_eq!(operation.arguments["agent"], "agent:tide");
+        assert!(
+            operation.arguments.get("model").is_none(),
+            "the agent's own model"
+        );
+        let instruction = operation.arguments["body"].as_str().unwrap();
         assert!(instruction.starts_with("Fix the link\nand tell me where it points"));
         assert!(instruction.contains("About your selection in Notes"));
         assert!(instruction.contains("Person: Where does it point?"));
@@ -1581,17 +1147,12 @@ mod tests {
             ),
         ));
         let operation = request_queue(&request, None);
-        assert_eq!(operation.action, "queue");
+        assert_eq!(operation.action, "ask-agent");
         assert_eq!(
-            operation.arguments["instruction"], "Tighten this",
+            operation.arguments["body"], "Tighten this",
             "the excerpt travels in the anchor, not the instruction"
         );
-        assert!(
-            operation.arguments.get("resource_json").is_none(),
-            "a selection attaches nothing that would narrow the run"
-        );
-        let subject: Value =
-            serde_json::from_str(operation.arguments["subject_json"].as_str().unwrap()).unwrap();
+        let subject = operation.arguments["subject"].clone();
         assert_eq!(subject["app_id"], "so.tilo.word-processor");
         assert_eq!(subject["resource"]["id"], "doc:proposal");
         assert_eq!(subject["resource"]["kind"], "word-processor.document");
@@ -1609,112 +1170,80 @@ mod tests {
             Some(SharedSelection::of_text("ls -la /srv")),
         ));
         let operation = request_queue(&request, None);
-        assert!(operation.arguments.get("subject_json").is_none());
-        let instruction = operation.arguments["instruction"].as_str().unwrap();
+        assert!(operation.arguments.get("subject").is_none());
+        let instruction = operation.arguments["body"].as_str().unwrap();
         assert!(instruction.starts_with("Tighten this\n\n"));
         assert!(instruction.contains("selected in Terminal"));
         assert!(instruction.contains("<<<\nls -la /srv\n>>>"));
     }
 
     #[test]
-    fn queue_receipt_requires_exact_owner_and_canonical_queued_result() {
-        let owner = owner("room");
-        let value = serde_json::json!({
-            "resource":"desktop:task:new", "result":{"queued":{"task_id":"task:new"}},
-            "managed_route":true,
-            "task":{"id":"task:new", "assigned_agent":"tide", "route":"model"}
-        });
-        assert_eq!(queued_task(&owner, Some(&value)), Some("task:new".into()));
-        for (pointer, replacement) in [
-            ("/task/assigned_agent", Value::from("reed")),
-            ("/result/queued/task_id", Value::from("task:other")),
-            ("/resource", Value::from("desktop:task:other")),
-            ("/managed_route", Value::from(false)),
-        ] {
-            let mut wrong = value.clone();
-            *wrong.pointer_mut(pointer).unwrap() = replacement;
-            assert_eq!(queued_task(&owner, Some(&wrong)), None);
-        }
-        assert_eq!(queued_task(&owner, None), None);
-    }
+    fn a_thing_told_from_a_context_menu_is_a_typed_subject_of_an_ordinary_assigned_task() {
+        use ui::shared_selection::SharedSelection;
 
-    #[test]
-    fn direction_ack_is_saved_not_applied_and_rejects_another_run_or_revision() {
-        let request = request(ComposerIntent::Steer);
-        let value = serde_json::json!({
-            "resource":"desktop:task:one", "saved":true, "applied":true,
-            "run_epoch":7, "revision":3,
-            "result":{"direction_added":{"task_id":"task:one","revision":3}}
+        let mut request = request(ComposerIntent::Request);
+        request.text = "File this under Q3".into();
+        request.conversation.clear();
+        // What a row's context menu attaches: its item, in its resource.
+        request.about = Some(SelectionSeed::new(
+            "so.tilo.mail",
+            "Mail",
+            Some(
+                SharedSelection::of_text("Invoice March")
+                    .at(tilo_actions::SelectionPlace::item("msg-7"))
+                    .in_resource(tilo_actions::ActionResource {
+                        id: "mailbox:inbox".into(),
+                        kind: "mail.mailbox".into(),
+                        label: "Inbox".into(),
+                    }),
+            ),
+        ));
+        request.model = Some(runtime_collab::TaskRunModel {
+            profile: "work".into(),
+            model: "fast".into(),
         });
-        let mut saved = request.task.clone().unwrap();
-        saved.revision = 3;
+        let operation = request_queue(&request, None);
+        // The one door every task goes through: an issue the asking starts,
+        // an action the broker admits like any other.
         assert_eq!(
-            mutation_outcome(&request, Some(&value)),
-            ComposerOutcome::DirectionSaved(saved)
+            (operation.resource.as_str(), operation.action.as_str()),
+            (TRACKER, "ask-agent")
         );
-        for (pointer, replacement) in [
-            ("/run_epoch", Value::from(8)),
-            ("/revision", Value::from(4)),
-            ("/resource", Value::from("desktop:task:other")),
-        ] {
-            let mut wrong = value.clone();
-            *wrong.pointer_mut(pointer).unwrap() = replacement;
-            assert_eq!(
-                mutation_outcome(&request, Some(&wrong)),
-                ComposerOutcome::Unknown
-            );
-        }
-    }
-
-    #[test]
-    fn owner_frontier_never_retargets_steer_to_another_agent_or_inactive_run() {
-        let owner = owner("room");
-        let value = serde_json::json!({
-            "task_id":"task:one", "title":"Current task", "assigned_agent":"tide",
-            "active_agent":"tide", "status":"in_progress", "route":"model",
-            "run_epoch":7, "after_revision":2, "applied_revision":1
-        });
-        let row: Frontier = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(row.choice(&owner).unwrap().revision, 2);
-        for (pointer, replacement) in [
-            ("/assigned_agent", Value::from("reed")),
-            ("/active_agent", Value::Null),
-            ("/run_epoch", Value::from(0)),
-            ("/status", Value::from("queued")),
-        ] {
-            let mut wrong = value.clone();
-            *wrong.pointer_mut(pointer).unwrap() = replacement;
-            let row: Frontier = serde_json::from_value(wrong).unwrap();
-            assert!(row.choice(&owner).is_none());
-        }
-        let malformed = serde_json::json!({"complete":true,"total":1,"tasks":[{"malformed":true}]});
-        assert!(current_tasks(&owner, Some(&malformed)).is_empty());
-    }
-
-    #[test]
-    fn the_closing_words_are_the_agents_last_output_in_that_run() {
-        let value = serde_json::json!({"turns": [
-            {"text": "Fix it", "run_epoch": 0},
-            {"kind": "agent-output", "run_epoch": 2, "text": "Reviewing the catalogue"},
-            {"kind": "agent-output", "run_epoch": 2, "text": "Linked it to tilo.so."},
-            {"kind": "agent-output", "run_epoch": 1, "text": "An earlier run"},
-        ]});
+        let mut keys: Vec<_> = operation.arguments.keys().map(String::as_str).collect();
+        keys.sort_unstable();
         assert_eq!(
-            closing_words(Some(&value), 2).as_deref(),
-            Some("Linked it to tilo.so.")
+            keys,
+            ["agent", "body", "id", "model", "subject", "title"],
+            "the reference names a place and grants nothing: no scope, resource or grant"
         );
-        assert_eq!(closing_words(Some(&value), 3), None);
+        assert_eq!(
+            operation.arguments["agent"],
+            format!("agent:{}", request.owner.agent)
+        );
+        assert_eq!(operation.arguments["model"]["model"], "fast");
+        assert!(
+            asked_issue(&operation)
+                .unwrap()
+                .starts_with("tasks.tracker/issues/")
+        );
+        let subject: tilo_actions::SelectionSubject =
+            serde_json::from_value(operation.arguments["subject"].clone()).unwrap();
+        subject.validate().unwrap();
+        assert_eq!(subject.resource.id, "mailbox:inbox");
+        assert_eq!(
+            subject.anchor.place,
+            Some(tilo_actions::SelectionPlace::item("msg-7"))
+        );
+        assert_eq!(operation.arguments["body"], "File this under Q3");
     }
 
-    /// A room with an agent that answers `respond` as scripted and a Task
-    /// Center whose one task moves as the test says.
+    /// A room with an agent that answers `respond` as scripted, and whose
+    /// tracker takes what the composer asks.
     type Invoked = Vec<(String, String, Map<String, Value>)>;
 
     struct Room {
         id: String,
         respond: Mutex<Option<Value>>,
-        task: Mutex<Value>,
-        said: Mutex<Vec<Value>>,
         invoked: Mutex<Invoked>,
     }
 
@@ -1723,12 +1252,6 @@ mod tests {
             Arc::new(Self {
                 id: uuid::Uuid::new_v4().to_string(),
                 respond: Mutex::new(respond),
-                task: Mutex::new(serde_json::json!({
-                    "task_id": "task:new", "title": "Fix the link", "assigned_agent": "tide",
-                    "active_agent": null, "status": "queued", "route": "model",
-                    "run_epoch": 0, "after_revision": 0, "applied_revision": null
-                })),
-                said: Mutex::new(Vec::new()),
                 invoked: Mutex::default(),
             })
         }
@@ -1802,9 +1325,6 @@ mod tests {
                 }));
             }
             let rows = match (&query.provider, &query.target) {
-                (Some(provider), Some(target)) if *provider == workspace_provider(&self.id) => {
-                    vec![Self::row(provider, "desktop", target)]
-                }
                 (Some(provider), Some(_)) if provider == "agent" => vec![Self::row(
                     provider,
                     AGENT,
@@ -1836,9 +1356,8 @@ mod tests {
             self.invoked.lock().unwrap().push((
                 address.resource.clone(),
                 address.action.clone(),
-                arguments.clone(),
+                arguments,
             ));
-            let task = self.task.lock().unwrap().clone();
             let respond = self.respond.lock().unwrap().clone();
             let value = match address.action.as_str() {
                 "respond" => match respond {
@@ -1852,40 +1371,6 @@ mod tests {
                         }));
                     }
                 },
-                "read-current-tasks" => {
-                    serde_json::json!({"complete": true, "total": 0, "tasks": []})
-                }
-                "queue" => serde_json::json!({
-                    "resource": "desktop:task:new", "managed_route": true,
-                    "result": {"queued": {"task_id": "task:new"}},
-                    "task": {"id": "task:new", "assigned_agent": "tide", "route": "model"}
-                }),
-                "approve-run" => {
-                    let mut started = task;
-                    started["status"] = "in_progress".into();
-                    started["active_agent"] = "tide".into();
-                    started["run_epoch"] = 1.into();
-                    *self.task.lock().unwrap() = started;
-                    serde_json::json!({"resource": "desktop:task:new"})
-                }
-                "read-task" => task,
-                "read-conversation" => {
-                    serde_json::json!({"turns": self.said.lock().unwrap().clone()})
-                }
-                "direct" => {
-                    let revision = arguments["after_revision"]
-                        .as_u64()
-                        .unwrap()
-                        .saturating_add(1);
-                    let mut directed = task;
-                    directed["after_revision"] = revision.into();
-                    *self.task.lock().unwrap() = directed;
-                    serde_json::json!({
-                        "resource": "desktop:task:new", "saved": true,
-                        "run_epoch": arguments["run_epoch"], "revision": revision,
-                        "result": {"direction_added": {"task_id": "task:new", "revision": revision}}
-                    })
-                }
                 _ => Value::Null,
             };
             Pending::ready(Ok(InvocationReceipt {
@@ -1903,8 +1388,12 @@ mod tests {
             None
         }
 
-        fn cancel(&self, _: &Caller, _: &InvocationId) -> Result<(), ActionHostError> {
-            Err(ActionHostError::UnknownInvocation)
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &InvocationId,
+        ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+            tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
         }
     }
 
@@ -1967,10 +1456,41 @@ mod tests {
         perform(composer, "agent-quick-send", &ui::a11y::Action::Activate);
     }
 
-    fn settle(actions: &mut AgentActions, composer: &mut AgentQuickComposer) {
+    /// The room's tracker, holding the runs the test says.
+    #[derive(Default)]
+    struct Tracker(Mutex<Vec<FollowedRun>>);
+
+    impl RunSource for Tracker {
+        fn runs(&self, _: &str) -> Vec<FollowedRun> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl Tracker {
+        /// The issue's run is at `phase` now, and the owner published it.
+        fn holds(&self, actions: &AgentActions, run: FollowedRun) {
+            *self.0.lock().unwrap() = vec![run];
+            actions.fresh.mark();
+        }
+    }
+
+    fn run_of(issue: &str, phase: IssueRunPhase) -> FollowedRun {
+        FollowedRun {
+            issue: issue.into(),
+            title: "Fix the link".into(),
+            agent: "agent:tide".into(),
+            starter: "person".into(),
+            epoch: 1,
+            phase,
+            messages: 0,
+            incorporated: 0,
+            said: None,
+        }
+    }
+
+    fn settle(actions: &mut AgentActions, composer: &mut AgentQuickComposer, tracker: &Tracker) {
         for _ in 0..32 {
-            actions.refresh_at = Some(Instant::now());
-            actions.pump(composer);
+            actions.pump(composer, Some(tracker));
         }
     }
 
@@ -1980,8 +1500,9 @@ mod tests {
             serde_json::json!({"answer": "It points nowhere yet."}),
         ));
         let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
         send(&mut composer, "Where does this link point?");
-        settle(&mut actions, &mut composer);
+        settle(&mut actions, &mut composer, &tracker);
         let invoked = room.invoked();
         assert!(invoked.contains(&"agent.transform:default#respond".to_owned()));
         assert!(
@@ -2001,50 +1522,139 @@ mod tests {
     }
 
     #[test]
-    fn work_becomes_a_started_task_the_field_steers_until_it_ends_with_its_words() {
+    fn work_becomes_an_issue_the_asking_started_which_the_field_steers_and_stops() {
         let room = Room::new(Some(serde_json::json!({"work": "Fix the link"})));
-        let (mut actions, mut composer, owner) = composer_in(&room);
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
         send(&mut composer, "Replace the parenthesis with the real link");
-        settle(&mut actions, &mut composer);
-        assert_eq!(room.arguments("queue")["title"], "Fix the link");
-        assert_eq!(room.arguments("approve-run")["agent_id"], "tide");
+        settle(&mut actions, &mut composer, &tracker);
+        let asked = room.arguments("ask-agent");
+        assert_eq!(asked["title"], "Fix the link");
+        assert_eq!(asked["agent"], "agent:tide");
+        assert!(
+            !room
+                .invoked()
+                .iter()
+                .any(|call| call.ends_with("#approve-run")),
+            "the asking approved the run"
+        );
         let run = composer.followed().cloned().expect("the run is followed");
         assert_eq!(run.phase, RunPhase::Working);
-        assert_eq!(run.task.task_id, "task:new");
-        assert_eq!(run.task.run_epoch, 1);
+        assert_eq!(
+            run.task.task_id,
+            format!("tasks.tracker/issues/{}", asked["id"].as_str().unwrap())
+        );
 
         send(&mut composer, "Use the https address");
-        settle(&mut actions, &mut composer);
-        let direction = room.arguments("direct");
-        assert_eq!(direction["text"], "Use the https address");
-        assert_eq!(direction["run_epoch"], 1);
-        assert!(
+        settle(&mut actions, &mut composer, &tracker);
+        let message = room.arguments("send-message");
+        assert_eq!(message["text"], "Use the https address");
+        assert_eq!(message["issue"], asked["id"]);
+        assert_eq!(
             room.invoked()
                 .iter()
                 .filter(|call| call.ends_with("#respond"))
-                .count()
-                == 1,
-            "a direction is not a new request"
+                .count(),
+            1,
+            "a message to the run is not a new request"
         );
 
-        room.said.lock().unwrap().push(serde_json::json!({
-            "kind": "agent-output", "run_epoch": 1, "text": "Linked it to tilo.so."
-        }));
-        room.task.lock().unwrap()["status"] = "done".into();
-        room.task.lock().unwrap()["active_agent"] = Value::Null;
-        settle(&mut actions, &mut composer);
-        assert!(composer.followed().is_none(), "the run ended");
+        perform(
+            &mut composer,
+            "agent-quick-stop",
+            &ui::a11y::Action::Activate,
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        assert_eq!(room.arguments("stop-run")["issue"], asked["id"]);
+        assert!(actions.followed.is_none(), "a stopped run is not followed");
+    }
+
+    #[test]
+    fn the_composer_follows_the_issues_run_until_the_tracker_says_it_ended() {
+        let room = Room::new(Some(serde_json::json!({"work": "Fix the link"})));
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        send(&mut composer, "Replace the parenthesis with the real link");
+        settle(&mut actions, &mut composer, &tracker);
+        let issue = format!(
+            "tasks.tracker/issues/{}",
+            room.arguments("ask-agent")["id"].as_str().unwrap()
+        );
+        tracker.holds(&actions, run_of(&issue, IssueRunPhase::Executing));
+        settle(&mut actions, &mut composer, &tracker);
+        let run = composer.followed().cloned().unwrap();
+        assert_eq!((run.phase, run.task.run_epoch), (RunPhase::Working, 1));
+
+        send(&mut composer, "Use the https address");
+        settle(&mut actions, &mut composer, &tracker);
+        assert_eq!(actions.sent.len(), 1, "saved, not taken in yet");
+        tracker.holds(
+            &actions,
+            FollowedRun {
+                messages: 1,
+                incorporated: 1,
+                ..run_of(&issue, IssueRunPhase::Executing)
+            },
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        assert!(actions.sent.is_empty(), "the run took the message in");
+
+        tracker.holds(
+            &actions,
+            FollowedRun {
+                said: Some("Linked it to tilo.so.".into()),
+                ..run_of(&issue, IssueRunPhase::Done)
+            },
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        assert!(composer.followed().is_none(), "told, and no longer working");
         assert!(actions.followed.is_none());
-        let _ = owner;
-        // Asking again is a new request again.
-        *room.respond.lock().unwrap() = Some(serde_json::json!({"answer": "You're welcome."}));
-        send(&mut composer, "Thanks");
-        settle(&mut actions, &mut composer);
-        let conversation = room.arguments("respond")["conversation"].clone();
+        assert!(actions.retired.contains(&issue));
+    }
+
+    #[test]
+    fn an_ended_run_reads_as_how_it_ended_with_its_agents_last_words() {
+        let followed = |phase, said: Option<&str>| {
+            Followed {
+                issue: "tasks.tracker/issues/one".into(),
+                title: "Fix the link".into(),
+                run: Some(FollowedRun {
+                    said: said.map(str::to_owned),
+                    ..run_of("tasks.tracker/issues/one", phase)
+                }),
+            }
+            .run()
+            .phase
+        };
         assert_eq!(
-            conversation.as_array().unwrap().last().unwrap()["text"],
-            "Linked it to tilo.so.",
-            "the run's closing words are part of the conversation: {conversation}"
+            followed(IssueRunPhase::Done, Some("Linked it.")),
+            RunPhase::Finished(Some("Linked it.".into()))
+        );
+        assert_eq!(
+            followed(IssueRunPhase::Failed, Some("No access")),
+            RunPhase::NeedsAttention(Some("No access".into()))
+        );
+        assert_eq!(
+            followed(IssueRunPhase::Waiting, None),
+            RunPhase::NeedsAttention(None)
+        );
+        assert_eq!(followed(IssueRunPhase::Stopped, None), RunPhase::Stopped);
+        assert_eq!(followed(IssueRunPhase::Planning, None), RunPhase::Working);
+    }
+
+    #[test]
+    fn the_agents_one_going_run_is_followed_when_the_composer_opens() {
+        let room = Room::new(None);
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        tracker.holds(
+            &actions,
+            run_of("tasks.tracker/issues/one", IssueRunPhase::Planning),
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        assert_eq!(
+            composer.followed().map(|run| run.task.task_id.as_str()),
+            Some("tasks.tracker/issues/one")
         );
     }
 
@@ -2052,12 +1662,13 @@ mod tests {
     fn a_request_the_agent_cannot_take_is_queued_as_it_stands() {
         let room = Room::new(None);
         let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
         send(&mut composer, "Tidy the notes\nall of them");
-        settle(&mut actions, &mut composer);
-        let queued = room.arguments("queue");
+        settle(&mut actions, &mut composer, &tracker);
+        let queued = room.arguments("ask-agent");
         assert_eq!(queued["title"], "Tidy the notes");
         assert!(
-            queued["instruction"]
+            queued["body"]
                 .as_str()
                 .unwrap()
                 .starts_with("Tidy the notes\nall of them")

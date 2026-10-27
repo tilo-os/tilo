@@ -46,6 +46,7 @@ pub mod adopt;
 pub mod app;
 pub mod markup;
 pub mod model;
+pub use tilo_page_raster::images as page_images;
 pub mod render;
 pub mod resource;
 pub mod search;
@@ -66,3 +67,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 
 pub use markup::PdfMarkup;
 pub use resource::PdfViewerShell;
+
+// The reader's copy: its status notes and the history of its markup.
+ui::embedded_catalog!(pub(crate) fn, ["en-US"]);

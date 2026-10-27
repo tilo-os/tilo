@@ -261,10 +261,6 @@ impl AccountsController {
 
     /// At most one worker and one pending outcome exist. Retry invalidates even
     /// a successful but not-yet-polled outcome before starting another attempt.
-    ///
-    /// # Errors
-    /// Returns an error for invalid requests, a still-stopping worker, or failure
-    /// to start authorization.
     pub fn command(&mut self, command: AccountsCommand) -> Result<(), AccountsError> {
         match command {
             AccountsCommand::SelectCalendars(selected) => {

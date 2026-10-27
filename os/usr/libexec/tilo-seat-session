@@ -13,8 +13,10 @@
 #
 # A session that ends without a display change ends this process with its
 # status; the board unit's Restart= starts a fresh one. A drm session that
-# ends while the sink is still connected is not retried until the sink is
-# unplugged: the board stays headless, and reachable, meanwhile.
+# ends while the sink is still connected starts again: at once when it had
+# run for a while, else after a pause that doubles with each quick failure,
+# with the board headless, and reachable, meanwhile. The display shows Tilo
+# whenever it can, never a console login.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -45,6 +47,9 @@ systemd_run=${TILO_SEAT_SYSTEMD_RUN:-/usr/bin/systemd-run}
 systemctl_bin=${TILO_SEAT_SYSTEMCTL:-/usr/bin/systemctl}
 display_present=${TILO_DISPLAY_PRESENT:-/usr/libexec/tilo-display-present}
 poll_sec=${TILO_SEAT_POLL_SEC:-1}
+drm_retry_sec=${TILO_SEAT_DRM_RETRY_SEC:-30}
+drm_retry_max_sec=${TILO_SEAT_DRM_RETRY_MAX_SEC:-600}
+drm_stable_sec=${TILO_SEAT_DRM_STABLE_SEC:-60}
 headless_unit=tilo-board-session
 drm_unit=tilo-board-drm-session
 
@@ -77,15 +82,20 @@ session_env=(
 
 run_pid=
 current=
-drm_refused=0
+drm_started=0
+# A drm session that failed quickly is not tried again before $SECONDS
+# reaches retry_at; each quick failure doubles the pause.
+retry_at=0
+retry_sec=$drm_retry_sec
 
 # Sets $now. Runs in this shell, not a command substitution, so that
-# unplugging the display clears drm_refused.
+# unplugging the display resets the pause.
 decide_backend() {
   if "$display_present"; then
-    if [ "$drm_refused" = 1 ]; then now=headless; else now=drm; fi
+    if [ "$SECONDS" -lt "$retry_at" ]; then now=headless; else now=drm; fi
   else
-    drm_refused=0
+    retry_at=0
+    retry_sec=$drm_retry_sec
     now=headless
   fi
 }
@@ -101,7 +111,13 @@ child_running() {
 
 start_backend() {
   current=$1
+  # A session a previous run of this supervisor left behind (the board unit
+  # was stopped while it was starting one) holds the unit name, and
+  # systemd-run would refuse the new one: it ends first.
+  "$systemctl_bin" stop "$drm_unit.service" 2>/dev/null || true
+  "$systemctl_bin" --user --machine="$account@" stop "$headless_unit.service" 2>/dev/null || true
   if [ "$current" = drm ]; then
+    drm_started=$SECONDS
     # The PAM login takes VT 1, which the console getty holds while the
     # board is headless.
     "$systemctl_bin" stop getty@tty1.service || true
@@ -164,9 +180,16 @@ while :; do
     run_pid=
     decide_backend
     if [ "$current" = drm ] && [ "$now" = drm ]; then
-      printf 'tilo-seat-session: the drm session ended (status %s) with the display connected; staying headless until it is reconnected\n' "$status" >&2
-      "$systemctl_bin" start getty@tty1.service || true
-      drm_refused=1
+      ran=$((SECONDS - drm_started))
+      if [ "$ran" -ge "$drm_stable_sec" ]; then
+        printf 'tilo-seat-session: the drm session ended (status %s) after %ss; starting it again\n' "$status" "$ran" >&2
+        retry_sec=$drm_retry_sec
+        start_backend drm
+        continue
+      fi
+      printf 'tilo-seat-session: the drm session ended (status %s) after %ss; headless for %ss, then on the display again\n' "$status" "$ran" "$retry_sec" >&2
+      retry_at=$((SECONDS + retry_sec))
+      retry_sec=$((retry_sec * 2 > drm_retry_max_sec ? drm_retry_max_sec : retry_sec * 2))
       start_backend headless
       continue
     fi

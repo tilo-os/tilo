@@ -60,11 +60,6 @@ pub fn month_title(anchor: NaiveDate) -> String {
     ui::format::month_heading(anchor)
 }
 
-/// Compact month title for constrained navigation bars, e.g. `Sep 2026`.
-pub(crate) fn month_title_short(anchor: NaiveDate) -> String {
-    ui::format::month_heading_short(anchor)
-}
-
 /// The abbreviated weekday of `date`: `Mon`.
 pub(crate) fn weekday_short(date: NaiveDate) -> String {
     ui::format::weekday_short(date.weekday())
@@ -147,7 +142,6 @@ mod tests {
         assert_eq!(w[0], d(2026, 6, 15));
         assert_eq!(w[6], d(2026, 6, 21));
 
-        // A week the person starts on Sunday.
         assert_eq!(
             week_start_from(d(2026, 6, 17), chrono::Weekday::Sun),
             d(2026, 6, 14)

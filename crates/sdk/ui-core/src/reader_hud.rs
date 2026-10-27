@@ -5,7 +5,8 @@
 //! - [`SelectionHud`] — the floating toolbar shown while a passage is
 //!   selected: a floating Panel ([`crate::widget::floating_surface`]) with
 //!   the highlight colours as [`ColorSwatchFace`]s and Copy / Note / Delete
-//!   as plain buttons. Presentation + hit-testing only: each app owns the
+//!   as plain buttons (and Select all, with shortcuts where a keyboard is
+//!   the way in). Presentation + hit-testing only: each app owns the
 //!   selection model and maps the emitted [`HudAction`] to its own command.
 //! - [`MarkerDrag`] — the grab/track/threshold state a reader embeds to let
 //!   an annotation marker be *dragged*, agnostic of the coordinate space
@@ -33,6 +34,8 @@ pub enum HudAction {
     Note,
     /// Removes the mark the selection covers.
     Delete,
+    /// Selects everything the selection could cover.
+    SelectAll,
 }
 
 /// One highlight colour offered in the HUD's swatch row.
@@ -69,6 +72,11 @@ pub struct HudControls<'a> {
     pub swatches: &'a [HudSwatch],
     pub show_note: bool,
     pub show_delete: bool,
+    /// A Select all button after Copy (and Note).
+    pub show_select_all: bool,
+    /// Copy and Select all carry their keyboard shortcuts, where a
+    /// keyboard is how the reader works.
+    pub shortcuts: bool,
 }
 
 /// Which side of the selection a [`SelectionHud`] prefers.
@@ -90,7 +98,6 @@ pub enum HudSide {
 pub struct HudPlacement {
     pub anchor: Point,
     pub bounds: Rect,
-    /// The side the bar prefers.
     pub side: HudSide,
     /// The bottom y of the selection's last band, for a bar placed below.
     /// `None` uses the anchor.
@@ -209,7 +216,23 @@ fn place(m: &HudMetrics, width: f64, placement: HudPlacement) -> Rect {
     at(y)
 }
 
+/// A plain Small bar button, carrying `key`'s command shortcut when given.
+fn hud_button<'a>(rect: Rect, label: &'a str, key: Option<&str>) -> ButtonFace<'a> {
+    let face = ButtonFace::new(rect, label)
+        .role(ButtonRole::Plain)
+        .control_size(ControlSize::Small);
+    match key {
+        Some(key) => face.shortcut_hint(crate::platform::Shortcut::command(key)),
+        None => face,
+    }
+}
+
 impl SelectionHud {
+    /// The bar's height in `theme`, so a reader can keep a slot for it.
+    pub fn height(theme: &Theme) -> f64 {
+        HudMetrics::of(theme).height()
+    }
+
     /// The bar centres on `placement.anchor.x` on the preferred side of the
     /// selection, moving to the other side when that would leave
     /// `placement.bounds` or cover `placement.avoid`. `cursor` drives the
@@ -225,10 +248,12 @@ impl SelectionHud {
     ) -> Self {
         let m = HudMetrics::of(theme);
         let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
-        let copy = ButtonFace::new(Rect::ZERO, "Copy").control_size(ControlSize::Small);
-        let note = ButtonFace::new(Rect::ZERO, "Note").control_size(ControlSize::Small);
-        let copy_w = copy.intrinsic_width(tr, &on_panel);
-        let note_w = note.intrinsic_width(tr, &on_panel);
+        let face = |rect: Rect, label: &'static str, key: Option<&'static str>| {
+            hud_button(rect, label, key.filter(|_| controls.shortcuts))
+        };
+        let copy_w = face(Rect::ZERO, "Copy", Some("C")).intrinsic_width(tr, &on_panel);
+        let note_w = face(Rect::ZERO, "Note", None).intrinsic_width(tr, &on_panel);
+        let all_w = face(Rect::ZERO, "Select all", Some("A")).intrinsic_width(tr, &on_panel);
         let swatches = controls.swatches;
         #[allow(clippy::cast_precision_loss, reason = "a handful of highlight colours")]
         let n = swatches.len() as f64;
@@ -249,7 +274,12 @@ impl SelectionHud {
         } else {
             0.0
         };
-        let width = m.pad * 2.0 + dots_w + sep + copy_w + note_extra + trash_extra;
+        let all_extra = if controls.show_select_all {
+            m.gap + all_w
+        } else {
+            0.0
+        };
+        let width = m.pad * 2.0 + dots_w + sep + copy_w + note_extra + all_extra + trash_extra;
         let rect = place(&m, width, placement);
         let mut hud = SelectionHud {
             rect,
@@ -303,22 +333,24 @@ impl SelectionHud {
         };
         let copy_rect = place_button(&mut x, copy_w);
         let note_rect = controls.show_note.then(|| place_button(&mut x, note_w));
+        let all_rect = controls
+            .show_select_all
+            .then(|| place_button(&mut x, all_w));
         let trash_rect = controls
             .show_delete
             .then(|| place_button(&mut x, m.control_h));
-        let face = ButtonFace::new(copy_rect, "Copy")
-            .role(ButtonRole::Plain)
-            .control_size(ControlSize::Small)
-            .hovered(copy_rect.contains(cursor));
-        Button::paint(scene, transform, tr, &on_panel, &face);
+        let copy_face = face(copy_rect, "Copy", Some("C")).hovered(copy_rect.contains(cursor));
+        Button::paint(scene, transform, tr, &on_panel, &copy_face);
         hud.buttons.push((copy_rect, HudAction::Copy));
         if let Some(r) = note_rect {
-            let face = ButtonFace::new(r, "Note")
-                .role(ButtonRole::Plain)
-                .control_size(ControlSize::Small)
-                .hovered(r.contains(cursor));
-            Button::paint(scene, transform, tr, &on_panel, &face);
+            let note_face = face(r, "Note", None).hovered(r.contains(cursor));
+            Button::paint(scene, transform, tr, &on_panel, &note_face);
             hud.buttons.push((r, HudAction::Note));
+        }
+        if let Some(r) = all_rect {
+            let all_face = face(r, "Select all", Some("A")).hovered(r.contains(cursor));
+            Button::paint(scene, transform, tr, &on_panel, &all_face);
+            hud.buttons.push((r, HudAction::SelectAll));
         }
         if let Some(r) = trash_rect {
             let face = ButtonFace::icon_only(r, Icon::Trash2, "Delete highlight")
@@ -431,6 +463,8 @@ mod tests {
                 swatches: &swatches(),
                 show_note,
                 show_delete,
+                show_select_all: false,
+                shortcuts: false,
             },
             HudPlacement::new(anchor, bounds),
             Point::new(-1000.0, -1000.0),
@@ -439,7 +473,6 @@ mod tests {
 
     #[test]
     fn hud_layout_places_every_control_inside_bounds() {
-        // Case `hud_lays_out_copy_and_every_swatch`.
         {
             let hud = draw_hud(
                 true,
@@ -448,7 +481,6 @@ mod tests {
                 Rect::new(0.0, 0.0, 800.0, 600.0),
             );
             assert!(hud.is_shown());
-            // Every swatch + Copy + Note is a hittable button.
             let highlights: Vec<usize> = hud
                 .buttons()
                 .iter()
@@ -475,7 +507,6 @@ mod tests {
             );
         }
 
-        // Case `delete_appears_only_when_asked`.
         {
             let hud = draw_hud(
                 true,
@@ -486,7 +517,6 @@ mod tests {
             assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
         }
 
-        // Case `hud_stays_inside_bounds_when_anchor_is_at_an_edge`.
         {
             let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
             // Anchor jammed into the top-left corner: the bar must not spill out.
@@ -501,7 +531,6 @@ mod tests {
             );
         }
 
-        // Case `hud_floats_below_when_there_is_no_room_above`.
         {
             let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
             // Anchor near the top → the bar drops below it rather than off-screen.
@@ -527,6 +556,8 @@ mod tests {
                     swatches: &swatches(),
                     show_note: true,
                     show_delete: true,
+                    show_select_all: false,
+                    shortcuts: false,
                 },
                 placement,
                 Point::new(-1000.0, -1000.0),
@@ -544,7 +575,6 @@ mod tests {
             "the bar steps off the rect it must not cover: {:?}",
             aside.rect()
         );
-        // Every control is a Small control inside the panel's inset.
         let inset = crate::widget::floating_surface::control_inset(&theme);
         for (rect, _) in above.buttons() {
             assert!(rect.y0 >= above.rect().y0 + inset - 0.01);
@@ -554,7 +584,6 @@ mod tests {
 
     #[test]
     fn hud_hits_controls_and_latches_marker_drags() {
-        // Case `hit_returns_the_control_under_the_point`.
         {
             let hud = draw_hud(
                 true,
@@ -572,7 +601,6 @@ mod tests {
             assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
         }
 
-        // Case `marker_drag_latches_moved_past_threshold`.
         {
             let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
             // A grab keeps the offset so the first tiny move doesn't jump.
@@ -587,5 +615,38 @@ mod tests {
             assert!(o2.0 > o.0 && o2.1 > o.1);
             assert_eq!(d.id, "n1");
         }
+    }
+
+    #[test]
+    fn select_all_follows_copy_and_shortcuts_widen_the_bar_only_for_a_keyboard() {
+        let draw = |shortcuts: bool| {
+            SelectionHud::draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &crate::theme::Theme::dark(),
+                &HudControls {
+                    swatches: &swatches(),
+                    show_note: true,
+                    show_delete: false,
+                    show_select_all: true,
+                    shortcuts,
+                },
+                HudPlacement::new(Point::new(400.0, 300.0), Rect::new(0.0, 0.0, 1200.0, 800.0)),
+                Point::new(-1000.0, -1000.0),
+            )
+        };
+        let touch = draw(false);
+        let actions: Vec<HudAction> = touch.buttons().iter().map(|(_, a)| *a).collect();
+        let copy = actions.iter().position(|a| *a == HudAction::Copy).unwrap();
+        let all = actions
+            .iter()
+            .position(|a| *a == HudAction::SelectAll)
+            .unwrap();
+        assert!(all > copy, "Select all follows Copy: {actions:?}");
+        assert!(
+            draw(true).rect().width() > touch.rect().width(),
+            "the shortcuts take room where they show"
+        );
     }
 }

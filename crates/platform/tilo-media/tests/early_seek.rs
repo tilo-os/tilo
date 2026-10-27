@@ -19,6 +19,7 @@ fn an_early_seek_under_load_always_produces_a_picture() {
     use std::time::Duration;
     use tilo_media::{EngineConfig, MediaEngine};
 
+    const CONTENDED_CPUS: usize = 4;
     const WORKERS: usize = 24;
     const OPENS: usize = 40;
     // A healthy open lands its picture in well under a second even under
@@ -27,14 +28,20 @@ fn an_early_seek_under_load_always_produces_a_picture() {
     // How much longer a miss is watched before it counts as a stall. On a
     // runner whose cores other jobs also hold, a starved open can outlast
     // PER_OPEN; the stall this test exists for never produces its picture,
-    // so only an open that stays silent this long is one.
-    const STALL: Duration = Duration::from_secs(120);
+    // so only an open that stays silent for the shared hang bound is one.
+    let stall = tilo_test_env::hang_bound();
+
+    // The contention is made on a few CPUs, not the whole machine: every
+    // thread of the test (the fixture's encoder, the hogs, the workers and the
+    // pipelines they start) runs on them, a hog for each, so the opens contend
+    // as on a busy machine while a shared one keeps its other cores.
+    let cpus = confine_to_cpus(CONTENDED_CPUS);
 
     // Encode the fixture before the load starts.
     let _ = fixture_path();
 
     let stop = Arc::new(AtomicBool::new(false));
-    let hogs: Vec<_> = (0..std::thread::available_parallelism().map_or(8, std::num::NonZero::get))
+    let hogs: Vec<_> = (0..cpus)
         .map(|_| {
             let stop = stop.clone();
             std::thread::spawn(move || {
@@ -59,7 +66,7 @@ fn an_early_seek_under_load_always_produces_a_picture() {
                     if let Err(error) = e.seek_and_wait(target, PER_OPEN) {
                         // Keep pumping the engine without asking again: a
                         // second seek could unstick the very stall sought.
-                        let deadline = std::time::Instant::now() + STALL;
+                        let deadline = std::time::Instant::now() + stall;
                         let mut late = false;
                         while std::time::Instant::now() < deadline {
                             let _ = e.poll();
@@ -75,7 +82,7 @@ fn an_early_seek_under_load_always_produces_a_picture() {
                             );
                         } else {
                             stalls.push(format!(
-                                "worker {w} open {open} seek {target}ms: {error}, and nothing for {STALL:?} more; {}",
+                                "worker {w} open {open} seek {target}ms: {error}, and nothing for {stall:?} more; {}",
                                 e.hw_report().describe()
                             ));
                         }
@@ -104,4 +111,38 @@ fn an_early_seek_under_load_always_produces_a_picture() {
         stalls.len(),
         WORKERS * OPENS
     );
+}
+
+/// Confines the calling thread, and every thread it starts from now on, to at
+/// most `count` of the CPUs it may run on; returns how many it got.
+#[cfg(all(feature = "decode", target_os = "linux"))]
+fn confine_to_cpus(count: usize) -> usize {
+    let size = std::mem::size_of::<libc::cpu_set_t>();
+    // SAFETY: an all-zero `cpu_set_t` is the empty set, and both calls read or
+    // write only the set they are handed, of the size they are told.
+    unsafe {
+        let mut allowed: libc::cpu_set_t = std::mem::zeroed();
+        assert_eq!(
+            libc::sched_getaffinity(0, size, &raw mut allowed),
+            0,
+            "read this thread's CPUs"
+        );
+        let mut chosen: libc::cpu_set_t = std::mem::zeroed();
+        let cpus = (0..size.saturating_mul(8))
+            .filter(|&cpu| libc::CPU_ISSET(cpu, &allowed))
+            .take(count);
+        let got = cpus.inspect(|&cpu| libc::CPU_SET(cpu, &mut chosen)).count();
+        assert_eq!(
+            libc::sched_setaffinity(0, size, &raw const chosen),
+            0,
+            "confine this thread's CPUs"
+        );
+        got
+    }
+}
+
+/// Where threads can't be confined, the load is still bounded to `count`.
+#[cfg(all(feature = "decode", not(target_os = "linux")))]
+fn confine_to_cpus(count: usize) -> usize {
+    std::thread::available_parallelism().map_or(count, |cpus| cpus.get().min(count))
 }

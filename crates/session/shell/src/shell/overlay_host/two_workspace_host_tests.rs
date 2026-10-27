@@ -62,14 +62,14 @@ fn two_workspace_host_switches_without_animation_and_draws_only_active_room_peer
                     .iter()
                     .find(|w| w.id == active)
                     .expect("an active workspace")
-                    .room
+                    .room()
                     .to_string(),
                 tree.desktop
                     .workspaces
                     .iter()
                     .find(|w| w.id != active)
                     .expect("a second workspace")
-                    .room
+                    .room()
                     .to_string(),
             )
         };
@@ -98,7 +98,6 @@ fn two_workspace_host_switches_without_animation_and_draws_only_active_room_peer
         assert_eq!(visible[0].pos, (120.0, 240.0));
     }
 
-    /// Two peers in the same room are drawn in distinct colours.
     fn several_peers_in_one_room_are_all_drawn_in_distinct_colours() {
         use ui::permissions::UserId;
         let (h, chrome) = host_with_two_workspaces();
@@ -111,7 +110,7 @@ fn two_workspace_host_switches_without_animation_and_draws_only_active_room_peer
                 .iter()
                 .find(|w| w.id == active)
                 .expect("an active workspace")
-                .room
+                .room()
                 .to_string()
         };
         let key = PresenceKey::Workspace { id: room };

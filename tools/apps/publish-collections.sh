@@ -523,4 +523,73 @@ publish_runtimes() {
   }
 }
 
-publish_runtimes
+# Offer every language other than English as its language pack, which
+# Settings installs when a person chooses the language. A pack is data for
+# every architecture, so the native build's packs are published once, with
+# the architecture `any`. Like the runtime, a refusal fails the job without
+# holding back the apps.
+publish_language_packs() {
+  local packs=${registry_cli%/tilo-app-package}/language-packs
+  [[ -f $packs/index.json ]] || { printf 'no signed language packs in %s\n' "$packs" >&2; return 1; }
+  local uploads="$RUNNER_TEMP/tilo-language-pack-uploads.tsv" failed=0
+  : > "$uploads"
+  while IFS=$'\t' read -r id file listing; do
+    "$registry_cli" compress -o "$twins/$file.zst" "$packs/$file"
+    printf '%s\t%s\n' "$packs/$file" "$package_api/tilo-language-packs/$VERSION/$file" >> "$uploads"
+    printf '%s\t%s\n' "$twins/$file.zst" \
+      "$package_api/tilo-language-packs/$VERSION/$file.zst" >> "$uploads"
+  done < <(jq -r '.packs[] | [.id,.file,.metadata] | @tsv' "$packs/index.json")
+  if [[ $stage != submit ]]; then
+    TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
+      tools/upload_immutable_packages.sh "$uploads"
+  fi
+  [[ $stage != upload ]] || return 0
+  while IFS=$'\t' read -r id file listing; do
+    local accepted=false attempt previous request action
+    for attempt in 1 2 3; do
+      fetch_snapshot
+      previous="$RUNNER_TEMP/tilo-language-pack-previous.json"
+      request="$RUNNER_TEMP/tilo-language-pack-request.json"
+      rm -f "$previous" "$request"
+      "$registry_cli" pending --registry "$registry_url" \
+        --identity "$registry_identity" "$id" > "$previous"
+      if jq -e --arg id "$id" '[.entries[] | select(.package_id == $id)] | length > 0' \
+          "$snapshot" >/dev/null; then
+        action=update
+        [[ -s $previous ]] || jq --arg id "$id" \
+          '.entries[] | select(.package_id == $id)' "$snapshot" > "$previous"
+      else
+        action=add
+      fi
+      local args=(entry --arch any --identity "$registry_identity" \
+        --metadata "$packs/$listing" --action "$action" --keep-releases 3 \
+        --url "$registry_url/artifacts/$owner/generic/tilo-language-packs/$VERSION/$file")
+      [[ -s $previous ]] && args+=(--previous-entry "$previous")
+      "$registry_cli" "${args[@]}" "$packs/$file" > "$request"
+      status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+        --retry 3 --retry-all-errors \
+        --output "$response" --write-out '%{http_code}' --request POST \
+        --header 'Content-Type: application/json' --data-binary "@$request" \
+        "$registry_url/entries")
+      if [[ $status == 202 ]]; then
+        accepted=true
+        echo "::notice::submitted $id to the Tilo registry"
+        break
+      fi
+      printf 'registry answered %s with HTTP %s: %s\n' \
+        "$id" "$status" "$(head -c 1000 "$response")" >&2
+      [[ $status == 409 || $status == 429 || $status == 5?? ]] || break
+      sleep "$attempt"
+    done
+    [[ $accepted == true ]] || failed=1
+  done < <(jq -r '.packs[] | [.id,.file,.metadata] | @tsv' "$packs/index.json")
+  (( failed == 0 )) || {
+    printf 'the registry did not accept every language pack\n' >&2
+    return 1
+  }
+}
+
+offered=0
+publish_runtimes || offered=1
+publish_language_packs || offered=1
+exit "$offered"

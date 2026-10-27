@@ -9,6 +9,7 @@
 
 use std::any::Any;
 use std::marker::PhantomData;
+use tilo_sort::CompactSort as _;
 
 use automerge::ROOT;
 use serde::de::DeserializeOwned;
@@ -108,7 +109,7 @@ impl ActionCx {
         } else {
             hasher.update(doc.get_actor().to_bytes());
             let mut heads = automerge::transaction::Transactable::base_heads(doc);
-            heads.sort();
+            heads.compact_sort();
             for head in heads {
                 hasher.update(&head.0);
             }
@@ -301,7 +302,7 @@ pub fn minted_ids(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item
     hasher.update(b"tilo-resource/action-seed/v1");
     hasher.update(envelope.actor().to_bytes());
     let mut heads = envelope.base_heads.clone();
-    heads.sort_unstable();
+    heads.compact_sort();
     for head in &heads {
         hasher.update(head);
     }
@@ -328,7 +329,7 @@ pub(crate) fn seed(doc: &Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
         // (a host stamping typing as one change) owns. With nothing pending
         // this is exactly the document's heads.
         let mut heads = doc.base_heads();
-        heads.sort();
+        heads.compact_sort();
         for head in heads {
             hasher.update(&head.0);
         }
@@ -453,6 +454,13 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     /// Whether the operation records a message someone received.
     /// `#[resource]` generates it from `#[action(incoming_message)]`.
     fn incoming_message(&self) -> bool {
+        false
+    }
+
+    /// Whether the operation loses what Undo cannot bring back, beside its
+    /// document change. `#[resource]` generates it from
+    /// `#[action(irreversible)]`.
+    fn irreversible(&self) -> bool {
         false
     }
 
@@ -807,13 +815,13 @@ fn reverted_change(
         .map(|hash| hash.parse())
         .collect::<Result<Vec<automerge::ChangeHash>, _>>()
         .map_err(|_| refused("a reverted change names invalid heads"))?;
-    deps.sort();
+    deps.compact_sort();
     doc.get_changes(&deps)
         .into_iter()
         .find(|change| {
             change.actor_id().to_hex_string() == actor && {
                 let mut of = change.deps().to_vec();
-                of.sort();
+                of.compact_sort();
                 of == deps
             }
         })
@@ -1189,7 +1197,7 @@ fn apply_operation(
 
 impl<O: Operation> tilo_actions::Action for Stamped<O> {
     /// Read the record, run the method, write back what changed
-    /// ([`apply_operation`]).
+    /// (`apply_operation`).
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         apply_operation(
@@ -1225,6 +1233,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn incoming_message(&self) -> bool {
         self.operation.incoming_message()
+    }
+
+    fn irreversible(&self) -> bool {
+        self.operation.irreversible()
     }
 
     /// A verb that declares its undo is undone by applying that verb, and a
@@ -1312,14 +1324,13 @@ impl<R, A: Serialize> ActionRef<R, A> {
         &self,
         input: &A,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let id = self.id;
         // Through bytes: the serializer writing recorded actions serves
         // here too, rather than one more per parameter type.
-        let value = match crate::__private::json_via_bytes(input) {
-            Ok(value) => value,
-            Err(error) => return Err(format!("`{id}`: {error}")),
-        };
-        bind_arguments(id, self.params, value)
+        bind_serialized(
+            self.id,
+            self.params,
+            crate::__private::json_via_bytes(input),
+        )
     }
 
     /// Fully apply the input: an invocation with nothing left to supply.
@@ -1351,6 +1362,20 @@ impl<R, A: Serialize> ActionRef<R, A> {
             Some(refusal) => Err(refusal),
             None => Ok(invoke),
         }
+    }
+}
+
+/// [`bind_arguments`] of an action input as it serialized, or why it did
+/// not: compiled once rather than for every input type.
+#[inline(never)]
+fn bind_serialized(
+    id: &'static str,
+    params: &'static [&'static str],
+    value: Result<serde_json::Value, serde_json::Error>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match value {
+        Ok(value) => bind_arguments(id, params, value),
+        Err(error) => Err(format!("`{id}`: {error}")),
     }
 }
 
@@ -1404,6 +1429,15 @@ impl<R, A: Serialize> ActionRef<R, A> {
 pub struct Mapped<R, A, F> {
     action: ActionRef<R, A>,
     map: F,
+}
+
+impl<R, A, F: Clone> Clone for Mapped<R, A, F> {
+    fn clone(&self) -> Self {
+        Self {
+            action: self.action,
+            map: self.map.clone(),
+        }
+    }
 }
 
 /// Something a control with input `I` can be bound to: an action and how the

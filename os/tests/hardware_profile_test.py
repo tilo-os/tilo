@@ -20,6 +20,7 @@ from unittest.mock import patch
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/prepare-hardware-profile.py"
 sys.path.insert(0, str(SCRIPT.parent))
 import hardware_profile  # noqa: E402
+from restart_fixture import restart_fixture
 SPEC = importlib.util.spec_from_file_location("prepare_hardware_profile", SCRIPT)
 prepare = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prepare)
@@ -29,18 +30,11 @@ NAMES = (
 )
 TARGET_REF = "code.tilo.so/tilo/tilo:board-fixture"
 LENOVO = json.loads((SCRIPT.parents[1] / "hardware/profiles/lenovo-83ed.json").read_text(encoding="utf-8"))
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
+# A schema-2 board that keeps no record of a crash, reset by nothing and
+# panicking from no detector: the smallest honest declaration, so a test of
+# another field does not also have to describe a board's crash evidence.
+QUIET_CRASH_RECORD = {"schema_version": 2, "system_firmware": [],
+                      "crash_record": {"storage": "none", "watchdog": "none", "lockup": "none"}}
 
 
 class HardwareProfileTest(unittest.TestCase):
@@ -59,7 +53,7 @@ class HardwareProfileTest(unittest.TestCase):
 
     def test_wifi_wake_policy_is_board_bound_and_never_migrates_profiles(self):
         definitions, data = self.definition()
-        data = data | {"schema_version": 2, "system_firmware": []}
+        data = data | QUIET_CRASH_RECORD
         for value in [0, 8, True, "0"]:
             with self.subTest(other_board=value):
                 with self.assertRaisesRegex(ValueError, "Wi-Fi wake policy"):
@@ -78,6 +72,7 @@ class HardwareProfileTest(unittest.TestCase):
         # A fresh unrelated image gets no Lenovo policy.
         restart_fixture(self)
         definitions, data = self.definition()
+        data = data | QUIET_CRASH_RECORD
         prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
                                 definitions, target_update_ref=TARGET_REF)
         self.assertNotIn("wifi_wake_on_wlan", json.loads((self.root / prepare.DEFINITION_PATH).read_text()))
@@ -131,15 +126,97 @@ class HardwareProfileTest(unittest.TestCase):
             hardware_profile.validate_definition(LENOVO | {"internal_keyboards": [keyboard, keyboard]})
         with self.assertRaisesRegex(ValueError, "internal keyboards must be a bounded list"):
             hardware_profile.validate_definition(LENOVO | {"internal_keyboards": keyboard})
-        # Without a device tree there is no board match to confine it to.
+        # Without a device tree or a DMI identity there is no board match to
+        # confine the quirk to.
         definitions, data = self.definition()
-        data = data | {"schema_version": 2, "system_firmware": []}
-        with self.assertRaisesRegex(ValueError, "require a device-tree board"):
+        data = data | QUIET_CRASH_RECORD
+        with self.assertRaisesRegex(ValueError, "require a device-tree or DMI board"):
             hardware_profile.validate_definition(data | {"internal_keyboards": [keyboard]})
         # A board that names no keyboard ships no quirk.
         prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
                                 definitions, target_update_ref=TARGET_REF)
         self.assertFalse((self.root / "usr/share/libinput").exists())
+
+    def test_a_firmware_described_keyboard_matches_on_the_boards_dmi_identity(self):
+        # An x86-64 handheld has no device tree: its firmware describes its
+        # devices. The quirk still has to name one model, so it matches the
+        # DMI modalias of the board the definition describes.
+        classes, data = self.definition(architecture="aarch64")
+        data = data | QUIET_CRASH_RECORD | {
+            "id": "other-board", "architecture": "x86_64",
+            "dmi": {"sys_vendor": "Valve", "product_name": "Jupiter"},
+            "internal_keyboards": [{"name": "AT Translated Set 2 keyboard", "bus": "i2c",
+                                     "vendor": "0001", "product": "0001",
+                                     "devicetree_compatible": None}],
+        }
+        self.assertEqual(hardware_profile.validate_definition(data)["id"], data["id"])
+        (classes / "other-board.json").write_text(json.dumps(data))
+        # setUp builds as an aarch64 machine with an arm64 kernel; this board is
+        # x86-64, so it is prepared the way a native x86-64 builder would
+        # prepare it, against an x86-64 kernel.
+        (self.kernel / "config").write_text(prepare.ARCH_CONFIG["x86_64"] + "\n", encoding="utf-8")
+        with patch.object(prepare.platform, "machine", return_value="x86_64"):
+            prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
+                                    classes, target_update_ref=TARGET_REF)
+        quirks = (self.root / "usr/share/libinput/50-tilo-other-board.quirks").read_text(encoding="utf-8")
+        self.assertIn("MatchDMIModalias=dmi:Valve:Jupiter:\n", quirks)
+        self.assertNotIn("MatchDeviceTree", quirks, "a board without a device tree has no compatible")
+
+    def test_a_dmi_identity_is_validated_and_stays_off_a_device_tree_board(self):
+        _, base = self.definition(architecture="x86_64")
+        keyboard = {"name": "kb", "bus": "i2c", "vendor": "0001", "product": "0001",
+                    "devicetree_compatible": None}
+        board = base | QUIET_CRASH_RECORD | {
+            "dmi": {"sys_vendor": "Valve", "product_name": "Jupiter"},
+            "internal_keyboards": [keyboard]}
+        dmi = board["dmi"]
+        mutations = (
+            {"sys_vendor": "Valve", "product_name": "Jup:iter"},
+            {"sys_vendor": "Va*ve", "product_name": "Jupiter"},
+            {"sys_vendor": "Valve", "product_name": ""},
+            {"sys_vendor": 7, "product_name": "Jupiter"},
+            {"sys_vendor": "Valve"},
+            {"sys_vendor": "Valve", "product_name": "Jupiter", "board_name": "Jupiter"},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(ValueError, "DMI"):
+                    hardware_profile.validate_definition(board | {"dmi": mutation})
+        with self.assertRaisesRegex(ValueError, "DMI"):
+            hardware_profile.validate_definition(board | {"dmi": [dmi["sys_vendor"], dmi["product_name"]]})
+        # One board, one name for it: a definition with a device tree is
+        # already confined by its compatible. That board may only be aarch64
+        # (only ARM64 embeds a DTB), so the refusal names the device tree when
+        # the board is x86-64 and the DMI field when it is not.
+        with self.assertRaises(ValueError):
+            hardware_profile.validate_definition(board | {"devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb"})
+        # A keyboard entry names the identity it matches on, so on a board
+        # without a device tree it carries no compatible.
+        with self.assertRaisesRegex(ValueError, "device-tree compatible"):
+            hardware_profile.validate_definition(board | {
+                "internal_keyboards": [keyboard | {"devicetree_compatible": "valve,jupiter"}]})
+
+    def test_shipped_handhelds_are_firmware_described_boards(self):
+        profiles = Path(__file__).resolve().parents[1] / "hardware/profiles"
+        handhelds = {path.stem: json.loads(path.read_text(encoding="utf-8"))
+                     for path in profiles.glob("*.json")}
+        handhelds = {name: definition for name, definition in handhelds.items()
+                     if definition["architecture"] == "x86_64"}
+        self.assertTrue(handhelds, "no x86-64 board is shipped")
+        for name, definition in handhelds.items():
+            with self.subTest(board=name):
+                self.assertIsNone(definition["devicetree"], f"{name} has no device tree")
+                # A panel mounted in portrait turns the console with it: the
+                # value is the one the panel is mounted at, so text is upright
+                # from the first frame the kernel draws. The console is on the
+                # built-in panel before any output name exists, so it is named
+                # by connector rather than by driver instance.
+                panel = "video=eDP-1:panel_orientation=right_side_up"
+                self.assertIn(panel, definition["kernel_args"], name)
+                self.assertEqual(definition["dmi"], {
+                    "sys_vendor": definition["dmi"]["sys_vendor"],
+                    "product_name": definition["dmi"]["product_name"]})
+                self.assertEqual(hardware_profile.validate_definition(definition)["id"], name)
 
     def test_current_dev_origin_requires_target_flavour_and_policy(self):
         from hardware_profile import install_update_origin, validate_target_imgref
@@ -293,7 +370,17 @@ class HardwareProfileTest(unittest.TestCase):
             # driver, the generator would hold sysinit.target for the 45 s
             # device timeout in the initrd and again after switch-root.
             kargs = self.root / prepare.KARGS_PATH
-            self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
+            sealed = tomllib.loads(kargs.read_text())["kargs"]
+            self.assertEqual(sealed, LENOVO["kernel_args"])
+            self.assertIn("systemd.tpm2_wait=0", sealed)
+            # A hang the 83ED cannot recover from panics, so its stacks reach
+            # the ramoops region before the watchdog resets the machine.
+            for argument in ("systemd.watchdog_sec=30", "sbsa_gwdt.action=1",
+                             "softlockup_panic=1", "nmi_watchdog=panic"):
+                self.assertIn(argument, sealed)
+            # A task blocked on slow I/O is reported, never a reason to reboot
+            # a machine someone is working on.
+            self.assertNotIn("hung_task_panic=1", sealed)
             outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, kargs,
                        self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf",
                        self.root / "usr/share/libinput/50-tilo-lenovo-83ed.quirks",
@@ -387,7 +474,7 @@ class HardwareProfileTest(unittest.TestCase):
         restart_fixture(self)
         with self.subTest(phase="version_two_system_firmware_schema_rejects_unsafe_paths"):
             definitions, data = self.definition()
-            data["schema_version"] = 2
+            data |= QUIET_CRASH_RECORD
             for value in ("qcom/../outside", "/qcom/a740_sqe.fw", "qcom/with space.fw"):
                 with self.subTest(value=value):
                     (definitions / "other-board.json").write_text(json.dumps(data | {"system_firmware": [value]}))
@@ -506,8 +593,7 @@ class HardwareProfileTest(unittest.TestCase):
 
     def test_boot_modules_match_the_installed_kernel(self):
         definitions, data = self.definition()
-        data["schema_version"] = 2
-        data["system_firmware"] = []
+        data |= QUIET_CRASH_RECORD
         data["boot_modules"] = ["sdhci-of-dwcmshc", "rk808"]
         tree = self.kernel / "dtb/rockchip/rk3566-orangepi-3b-v2.1.dtb"
         tree.parent.mkdir(parents=True)
@@ -534,8 +620,7 @@ class HardwareProfileTest(unittest.TestCase):
 
     def test_kernel_args_reach_the_sealed_command_line(self):
         definitions, data = self.definition()
-        data["schema_version"] = 2
-        data["system_firmware"] = []
+        data |= QUIET_CRASH_RECORD
         data["kernel_args"] = ["earlycon", "console=ttyS2,1500000n8"]
         (definitions / "other-board.json").write_text(json.dumps(data))
         prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
@@ -550,6 +635,97 @@ class HardwareProfileTest(unittest.TestCase):
                 data["kernel_args"] = bad
                 with self.assertRaisesRegex(ValueError, "kernel argument"):
                     hardware_profile.validate_definition(data)
+
+
+class CrashRecordContractTest(unittest.TestCase):
+    """Every board says where its record of a crash goes, what resets it and
+    what panics first, and the kernel arguments it ships keep that promise."""
+
+    def test_shipped_boards_declare_a_crash_record(self):
+        lenovo = hardware_profile.validate_definition(json.loads(json.dumps(LENOVO)))
+        self.assertEqual(lenovo["crash_record"],
+                         {"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy"})
+        orangepi = json.loads((Path(__file__).resolve().parents[1]
+                               / "hardware/profiles/orangepi-3b-v2-1.json").read_text(encoding="utf-8"))
+        # No reserved memory for a record, no watchdog on its command line,
+        # and a stuck CPU only logs.
+        self.assertEqual(hardware_profile.validate_definition(orangepi)["crash_record"],
+                         {"storage": "none", "watchdog": "none", "lockup": "none"})
+        self.assertFalse([arg for arg in orangepi["kernel_args"]
+                          if arg.startswith("systemd.watchdog") or "lockup_panic" in arg])
+        # Every shipped board carries one, so a board that keeps nothing is a
+        # written-down decision rather than an omission.
+        for path in (Path(__file__).resolve().parents[1] / "hardware/profiles").glob("*.json"):
+            self.assertIn("crash_record", json.loads(path.read_text(encoding="utf-8")), path.name)
+
+    def test_a_definition_without_a_crash_record_is_refused(self):
+        for record, message in (
+            (None, "crash record must name"),
+            ("ramoops", "crash record must name"),
+            ({"storage": "ramoops", "watchdog": "hardware"}, "crash record must name"),
+            ({"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy", "pstore": "/x"},
+             "missing or unknown fields"),
+            ({"storage": "flash", "watchdog": "hardware", "lockup": "buddy"}, "supported backend"),
+            ({"storage": "ramoops", "watchdog": "gpio", "lockup": "buddy"}, "supported watchdog"),
+            ({"storage": "ramoops", "watchdog": "hardware", "lockup": "perf"}, "supported detector"),
+        ):
+            with self.subTest(record=record):
+                data = json.loads(json.dumps(LENOVO))
+                if record is None:
+                    data.pop("crash_record")
+                else:
+                    data["crash_record"] = record
+                with self.assertRaisesRegex(ValueError, message):
+                    hardware_profile.validate_definition(data)
+
+    def test_a_boards_arguments_must_keep_the_record_it_declares(self):
+        # A hang only leaves a stack if something panics, and only resets if
+        # something feeds the watchdog; the declaration follows the arguments.
+        for record, args, message in (
+            # Declares no watchdog, but its command line feeds one.
+            ({"storage": "ramoops", "watchdog": "none", "lockup": "buddy"},
+             ["sbsa_gwdt.action=1", "softlockup_panic=1"], "watchdog its arguments feed"),
+            # Declares a watchdog, but nothing on its command line feeds one.
+            ({"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy"},
+             ["softlockup_panic=1"], "argument that feeds it"),
+            # Declares a stuck CPU only logs, but its command line panics.
+            ({"storage": "ramoops", "watchdog": "hardware", "lockup": "none"},
+             ["systemd.watchdog_sec=30", "nmi_watchdog=panic"],
+             "detector its arguments panic from"),
+            # Declares a panicking detector, but its command line only logs.
+            ({"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy"},
+             ["systemd.watchdog_sec=30"], "argument that panics"),
+        ):
+            with self.subTest(record=record, args=args):
+                data = json.loads(json.dumps(LENOVO))
+                data["crash_record"] = record
+                data["kernel_args"] = args
+                with self.assertRaisesRegex(ValueError, message):
+                    hardware_profile.validate_definition(data)
+        # The Lenovo board's own arguments are the ones it declares.
+        hardware_profile.validate_definition(json.loads(json.dumps(LENOVO)))
+        # Schema 1 predates the record: a board that moves to schema 2 states it.
+        legacy = {"schema_version": 1, "id": "other-board", "architecture": "x86_64",
+                  "devicetree": None, "firmware": {}}
+        self.assertNotIn("crash_record", hardware_profile.validate_definition(legacy))
+
+    def test_a_watchdog_module_reaches_the_initramfs_and_ramoops_needs_a_device_tree(self):
+        minimal = {"schema_version": 2, "id": "other-board", "architecture": "x86_64",
+                   "devicetree": None, "firmware": {}, "system_firmware": [],
+                   "kernel_args": ["nowayout=1"],
+                   "crash_record": {"storage": "efi-variable", "watchdog": "hardware", "lockup": "none"}}
+        self.assertIsNone(hardware_profile.validate_definition(minimal)["devicetree"])
+        reserved = json.loads(json.dumps(minimal))
+        reserved["crash_record"]["storage"] = "ramoops"
+        with self.assertRaisesRegex(ValueError, "requires a device-tree board"):
+            hardware_profile.validate_definition(reserved)
+        modular = json.loads(json.dumps(minimal))
+        modular["crash_record"]["watchdog"] = "module"
+        with self.assertRaisesRegex(ValueError, "must be a boot module"):
+            hardware_profile.validate_definition(modular)
+        modular["boot_modules"] = ["dw_wdt"]
+        self.assertEqual(hardware_profile.validate_definition(modular)["crash_record"]["watchdog"],
+                         "module")
 
 
 class FirmwareTrimContractTest(unittest.TestCase):
@@ -590,12 +766,21 @@ class FirmwareTrimContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "would remove firmware"):
             hardware_profile.validate_definition(local)
 
-    def test_only_the_lenovo_board_trims_and_the_layer_applies_it(self):
+    def test_boards_trim_foreign_firmware_generic_keeps_all_and_the_layer_applies_it(self):
         profiles = self.ROOT / "hardware/profiles"
+        trimmed = set()
         for path in profiles.glob("*.json"):
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data["id"] != "lenovo-83ed":
+            if data["id"] == "generic":
                 self.assertNotIn("firmware_exclude", data, path.name)
+            elif data.get("firmware_exclude"):
+                hardware_profile.validate_definition(data)
+                trimmed.add(data["id"])
+        # Every board that ships has no PC GPU of another vendor, so each
+        # names the firmware it does not need; the set is read from the
+        # shipped definitions rather than listed here, so a board added to
+        # os/hardware/profiles is held to the same rule.
+        self.assertEqual(trimmed, {path.stem for path in profiles.glob("*.json")})
         layer = (self.ROOT / "dev/install-board-layer.sh").read_text(encoding="utf-8")
         self.assertIn("dnf remove -y --no-autoremove", layer)
         self.assertIn("firmware_exclude", layer)
@@ -636,6 +821,32 @@ class LenovoTpmTest(unittest.TestCase):
         # The window comes from mssecapp, not from a hard-coded address.
         self.assertIn("+#define MSSEC_CMD_GET_WINDOW\t0x4004", patch_text)
         self.assertNotIn("0x81f10000", patch_text.lower())
+
+
+class LenovoInternalKeyboardTest(unittest.TestCase):
+    """The Yoga Slim 7x's keyboard is HID over an i2c bus, and the unlock
+    prompt runs before any module could be loaded, so every driver on that
+    path is built in. A module as dracut gets it in is not enough: no dracut
+    module installs one, so a modular driver means a prompt that takes no key."""
+
+    KERNEL = SCRIPT.parents[1] / "kernel"
+    DRIVERS = ("CONFIG_I2C", "CONFIG_I2C_QCOM_GENI", "CONFIG_I2C_HID_OF", "CONFIG_HID",
+               "CONFIG_INPUT_EVDEV", "CONFIG_INPUT_KEYBOARD")
+
+    def test_the_whole_input_path_is_built_in(self):
+        fragment = (self.KERNEL / "config-fragments/aarch64.config").read_text(encoding="utf-8")
+        for driver in self.DRIVERS:
+            with self.subTest(driver=driver):
+                self.assertIn(f"\n{driver}=y\n", fragment)
+
+    def test_the_initramfs_verifier_names_the_same_drivers(self):
+        spec = importlib.util.spec_from_file_location(
+            "verify_board_initramfs", SCRIPT.parents[1] / "scripts/verify-board-initramfs.py")
+        verify = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verify)
+        fragment = (self.KERNEL / "config-fragments/aarch64.config").read_text(encoding="utf-8")
+        for name, symbol in verify.I2C_INPUT_BUILTIN.items():
+            self.assertIn(f"\n{symbol}=y\n", fragment, name)
 
 
 class OrangePiWifiFirmwareTest(unittest.TestCase):

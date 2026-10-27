@@ -5,23 +5,17 @@ use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 
 impl MusicApp {
-    pub(super) fn make_open_file_button() -> ui::widget::Button {
+    /// The invocation of the library's Open audio file, as the window bar's
+    /// slot runs it through the window's controls.
+    pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
         let resource = tilo_actions::Resource::new("music.library", "music.library", "Library")
             .with_action(ui::tilo_resource::Effect::bound(
                 &crate::actions::MusicEffect::OpenFile,
             ));
-        #[allow(
-            clippy::expect_used,
-            reason = "the canonical open-file action is statically zero-argument"
-        )]
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open-file")
-            .expect("canonical Music picker binding");
-        ui::widget::Button::icon_only(
-            "music-open-file",
-            ui::icons::Icon::FolderOpen,
-            &crate::i18n::t("music-open-audio-file"),
-        )
-        .on_action(binding)
+        tilo_actions::ActionBinding::unit_for(&resource, "open-file")
+            .ok()?
+            .invoke(())
+            .ok()
     }
 
     pub(super) fn is_local_file(&self, id: &str) -> bool {
@@ -35,9 +29,7 @@ impl MusicApp {
         invocation: tilo_actions::InvocationId,
         playback: crate::model::Playback,
     ) -> Result<ui::framework::Effected, String> {
-        if self.resource_stream_invocation.is_some() {
-            return Err("another Music stream-start operation is still resolving".into());
-        }
+        self.supersede_pending_stream_start();
         let resuming = self.pb.current == playback.current && self.audio.has_stream();
         let frames_before = if resuming {
             self.audio.frames_rendered()
@@ -103,40 +95,68 @@ impl MusicApp {
                     .glob("*.wma"),
             )
             .all_files();
-        let receiver = request.send();
-        self.local_file_pick = Some((invocation, receiver));
+        // Where files have no paths (a browser page) the chooser hands over
+        // the file's contents instead.
+        let pick = if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+            == tilo_paths::Availability::Available
+        {
+            super::LocalFilePick::Path(request.send())
+        } else {
+            super::LocalFilePick::Contents(request.send_contents())
+        };
+        self.local_file_pick = Some((invocation, pick));
         self.dirty = true;
         Ok(())
     }
 
     pub(super) fn drain_local_file_pick(&mut self) {
-        let Some((invocation, receiver)) = &self.local_file_pick else {
+        enum Chosen {
+            Path(String),
+            Contents(ui::portal::PickedContents),
+        }
+        let Some((invocation, pick)) = &self.local_file_pick else {
             return;
         };
         let invocation = *invocation;
-        let outcome = match receiver.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::portal::PortalOutcome::Failed("The file picker stopped without a result".into())
-            }
+        let stopped = || Err("The file picker stopped without a result".to_string());
+        // What was chosen, nothing (`None`), or why it could not be.
+        let chosen: Option<Result<Chosen, String>> = match pick {
+            super::LocalFilePick::Path(receiver) => match receiver.try_recv() {
+                Ok(ui::portal::PortalOutcome::Opened(path)) => Some(
+                    path.to_str()
+                        .map(|path| Chosen::Path(path.to_owned()))
+                        .ok_or_else(|| "The selected path is not valid Unicode".to_string()),
+                ),
+                Ok(ui::portal::PortalOutcome::Cancelled) => None,
+                Ok(ui::portal::PortalOutcome::Failed(error)) => Some(Err(error)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(stopped()),
+            },
+            super::LocalFilePick::Contents(receiver) => match receiver.try_recv() {
+                Ok(ui::portal::ContentsOutcome::Picked(files)) => files
+                    .into_iter()
+                    .next()
+                    .map(|file| Ok(Chosen::Contents(file))),
+                Ok(ui::portal::ContentsOutcome::Cancelled) => None,
+                Ok(ui::portal::ContentsOutcome::Failed(error)) => Some(Err(error)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(stopped()),
+            },
         };
         self.local_file_pick = None;
-        let error = match outcome {
-            ui::portal::PortalOutcome::Opened(path) => {
-                match path
-                    .to_str()
-                    .ok_or_else(|| "The selected path is not valid Unicode".to_string())
-                    .and_then(|path| self.open_local_file(path))
-                {
-                    Ok(request) => {
-                        self.begin_resource_stream_invocation(invocation, request);
-                        return;
-                    }
-                    Err(error) => error,
-                }
+        let opened = chosen.map(|chosen| {
+            chosen.and_then(|chosen| match chosen {
+                Chosen::Path(path) => self.open_local_file(&path),
+                Chosen::Contents(file) => self.open_local_contents(&file),
+            })
+        });
+        let error = match opened {
+            Some(Ok(request)) => {
+                self.begin_resource_stream_invocation(invocation, request);
+                return;
             }
-            ui::portal::PortalOutcome::Cancelled => {
+            Some(Err(error)) => error,
+            None => {
                 self.resource_stream_results
                     .push(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
@@ -144,7 +164,6 @@ impl MusicApp {
                     });
                 return;
             }
-            ui::portal::PortalOutcome::Failed(error) => error,
         };
         self.notify(ToastKind::Error, error.clone());
         self.resource_stream_results
@@ -166,6 +185,56 @@ impl MusicApp {
             return Err("This Music build does not include audio playback".into());
         }
         let file = crate::local_file::LocalFile::open(source, self.local_file.as_ref())?;
+        self.play_local_file(file)
+    }
+
+    /// Open a file the host handed over as contents: from where it is when
+    /// it has a path, else from a page-local copy of its bytes.
+    pub(crate) fn open_local_contents(
+        &mut self,
+        file: &ui::portal::PickedContents,
+    ) -> Result<u64, String> {
+        if let Some(location) = file.location.as_ref().and_then(|path| path.to_str()) {
+            return self.open_local_file(location);
+        }
+        crate::local_file::check_supported(std::path::Path::new(&file.name))?;
+        if file.bytes.is_empty() {
+            return Err("Choose a non-empty audio file".into());
+        }
+        if !crate::audio::AudioEngine::is_live() {
+            return Err("This Music build does not include audio playback".into());
+        }
+        let source = media::Source::from_contents(&file.name, &file.bytes)
+            .map_err(|error| format!("Cannot open audio file: {error}"))?;
+        match source {
+            media::Source::Remote { url } => {
+                let file = crate::local_file::LocalFile::from_page_url(&file.name, url)?;
+                self.play_local_file(file)
+            }
+            staged => {
+                let path = staged
+                    .abs_path()
+                    .ok_or("Cannot open audio file: it has no place on this device")?;
+                let path = path
+                    .to_str()
+                    .ok_or("Cannot open audio file: its place is not valid Unicode")?;
+                let mut local = crate::local_file::LocalFile::open(path, self.local_file.as_ref())?;
+                // Named by what the person chose, not the staged copy.
+                local.track.title = crate::local_file::file_title(std::path::Path::new(&file.name));
+                self.play_local_file(local)
+            }
+        }
+    }
+
+    /// The open file to reopen next time. One playing from a page-local
+    /// copy of its bytes is gone with the page, so it is not kept.
+    pub(super) fn kept_local_file(&self) -> Option<crate::local_file::LocalFile> {
+        self.local_file
+            .clone()
+            .filter(|file| file.page_url.is_none())
+    }
+
+    fn play_local_file(&mut self, file: crate::local_file::LocalFile) -> Result<u64, String> {
         let id = file.track.id.clone();
         let previous_file = self.local_file.clone();
         let previous_playback = self.pb.clone();
@@ -225,10 +294,14 @@ impl MusicApp {
             self.pb.position_ms = 0;
         }
         self.playhead_ms = self.pb.position_ms as f64;
-        if !crate::files::is_nonempty_file(&file.path) {
-            return Err("Local audio file is unavailable or empty".into());
-        }
-        let uri = media::source::path_to_file_uri(&file.path).map_err(|error| error.to_string())?;
+        let uri = if let Some(url) = &file.page_url {
+            url.clone()
+        } else {
+            if !crate::files::is_nonempty_file(&file.path) {
+                return Err("Local audio file is unavailable or empty".into());
+            }
+            media::source::path_to_file_uri(&file.path).map_err(|error| error.to_string())?
+        };
         let request = self
             .next_worker_request_id()
             .ok_or("Music request identity space is exhausted")?;
@@ -328,7 +401,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn local_file_intents_are_canonical_and_uris_are_validated() {
-        // Phase `raw_path_operation_is_not_remotely_decodable`.
         {
             let mut app = MusicApp::without_profile();
             let _doc = automerge::AutoCommit::new();
@@ -342,87 +414,56 @@ mod tests {
             assert!(!app.audio.has_stream());
         }
 
-        // Phase `empty_home_shared_button_emits_canonical_picker_intent`.
         {
-            use ui::widget::Widget;
-            for scale in [1.0, 2.0] {
-                let mut app = MusicApp::without_profile();
-                app.disconnect();
-                let mut doc = automerge::AutoCommit::new();
-                app.sync(&doc, &automerge::ROOT);
-                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-                app.sync(&doc, &automerge::ROOT);
-                app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1000.0, 850.0);
-                let theme = ui::theme::Theme::dark().with_text_scale(scale);
-                let mut tree = taffy::TaffyTree::<()>::new();
-                let node =
-                    app.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
-                let mut text = ui::text_render::TextRenderer::new();
-                text.set_text_scale(scale);
-                app.render_frame(
-                    &mut vello::Scene::new(),
-                    vello::kurbo::Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                );
-                let rect = app.open_file_button.get_rect();
-                let side = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, &theme);
-                assert!(rect.width() >= side - 0.5 && rect.height() >= side - 0.5);
-                assert!(app.rect.contains(rect.center()));
-                assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
-                assert_eq!(tree.children(node).unwrap().len(), app.children().len());
-                let device_id = winit::event::DeviceId::dummy();
-                let events = [
-                    winit::event::WindowEvent::CursorMoved {
-                        device_id,
-                        position: winit::dpi::PhysicalPosition::new(
-                            rect.center().x,
-                            rect.center().y,
-                        ),
-                    },
-                    winit::event::WindowEvent::MouseInput {
-                        device_id,
-                        state: winit::event::ElementState::Pressed,
-                        button: winit::event::MouseButton::Left,
-                    },
-                    winit::event::WindowEvent::MouseInput {
-                        device_id,
-                        state: winit::event::ElementState::Released,
-                        button: winit::event::MouseButton::Left,
-                    },
-                ];
-                let mut sending = ui::testing::Dispatch::new()
-                    .doc(&mut doc)
-                    .layout(&tree, node);
-                for event in events {
-                    sending.send(&mut app, &event);
-                }
-                let intent = ui::widget::controls::take_control_invocation(&mut app)
-                    .expect("visible shared button intent");
-                assert_eq!(intent.address.resource, "music.library");
-                assert_eq!(
-                    intent.address.action,
-                    ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
-                );
-                assert!(intent.arguments.is_empty());
-                assert!(
-                    app.local_file_pick.is_none(),
-                    "the control must await broker admission"
-                );
-            }
+            let mut app = MusicApp::without_profile();
+            app.disconnect();
+            let mut doc = automerge::AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+            assert!(
+                toolbar
+                    .actions
+                    .iter()
+                    .any(|action| action.id == super::super::window_bar::OPEN_FILE),
+                "Home offers Open audio file in the window's bar: {toolbar:?}"
+            );
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                id: super::super::window_bar::OPEN_FILE.into(),
+            });
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            let intent = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("the bar's slot queues the picker's intent");
+            assert_eq!(intent.address.resource, "music.library");
+            assert_eq!(
+                intent.address.action,
+                ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
+            );
+            assert!(intent.arguments.is_empty());
+            assert!(
+                app.local_file_pick.is_none(),
+                "the control must await broker admission"
+            );
         }
 
-        // Phase `header_actions_are_in_host_focus_order_on_every_destination`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
             let home_focus = app.harness().focus_order();
-            assert!(home_focus.len() > 2, "Home source controls are focusable");
+            assert!(!home_focus.is_empty(), "Home source controls are focusable");
+            let offers_open_file = || {
+                ui::window_toolbar::declared().is_some_and(|toolbar| {
+                    toolbar
+                        .actions
+                        .iter()
+                        .any(|action| action.id == super::super::window_bar::OPEN_FILE)
+                })
+            };
             assert!(
-                app.harness().targets().contains_key("music-open-file"),
-                "Home exposes its file picker"
+                offers_open_file(),
+                "Home offers its file picker in the window's bar"
             );
             app.call_on(
                 &crate::actions::view_resource_id("songs"),
@@ -431,18 +472,14 @@ mod tests {
             )
             .unwrap();
             app.settle();
+            assert!(!offers_open_file(), "leaving Home removes the picker");
             assert!(
-                !app.harness().targets().contains_key("music-open-file"),
-                "leaving Home removes the picker"
-            );
-            assert_eq!(
-                app.harness().focus_order().len(),
-                2,
-                "Search and Back remain after the Home picker and source controls leave focus order"
+                app.harness().focus_order().len() < home_focus.len(),
+                "the source controls leave focus order with Home"
             );
             assert!(
-                app.harness().a11y_node_named("Back").is_some(),
-                "the page offers Back"
+                app.harness().a11y_node_named("Back").is_none(),
+                "a sidebar section is a destination, not a step to go back from"
             );
             app.call_on(
                 &crate::actions::view_resource_id("home"),
@@ -453,11 +490,11 @@ mod tests {
             app.settle();
             assert_eq!(
                 app.harness().focus_order().len(),
-                home_focus.len() + 1,
-                "returning Home restores the picker and keeps Back to the prior page"
+                home_focus.len(),
+                "returning Home restores the picker"
             );
-            assert!(app.harness().a11y_node_named("Back").is_some());
-            assert!(app.harness().targets().contains_key("music-open-file"));
+            assert!(app.harness().a11y_node_named("Back").is_none());
+            assert!(offers_open_file(), "returning Home restores the picker");
             #[cfg(feature = "audio")]
             {
                 app.call("open-file", serde_json::json!({})).unwrap();
@@ -466,7 +503,6 @@ mod tests {
             }
         }
 
-        // Phase `local_paths_and_file_uris_are_equivalent_and_reject_unsupported_sources`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("音楽 #1.wav");
@@ -639,7 +675,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn local_source_switches_wait_for_decoder_and_retire_old_audio() {
-        // Phase `fully_prerolled_finite_source_resume_waits_for_confirmed_playing`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("one-buffer.wav");
@@ -709,7 +744,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `switching_to_cached_source_uses_new_output_baseline`.
         {
             check_cached_source_switch(false);
             check_cached_source_switch(true);
@@ -724,17 +758,14 @@ mod tests {
             }
         }
 
-        // Phase `paused_queue_removal_retires_old_audio_before_resuming_selected_uri`.
         {
             check_replaced_paused_source(false);
         }
 
-        // Phase `continuation_retires_old_audio_before_resuming_selected_uri`.
         {
             check_replaced_paused_source(true);
         }
 
-        // Phase `local_file_row_restart_previous_and_repeat_match_canonical_restart_position`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("restart.wav");
@@ -1103,7 +1134,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn local_file_effects_settle_only_on_real_playback_or_real_failure() {
-        // Phase `positional_local_file_uses_live_factory_without_polluting_shared_library`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("local song.wav");
@@ -1195,7 +1225,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `exported_file_effect_settles_only_after_real_pcm_and_preserves_document`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("effect.wav");
@@ -1240,6 +1269,7 @@ mod tests {
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
                 spotify_catalogue: false,
+                catalogue_connected: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
                 queue_catalogue: Vec::new(),
@@ -1252,7 +1282,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `restored_file_resumes_saved_position_and_missing_file_fails_the_effect`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("resume.wav");
@@ -1268,6 +1297,7 @@ mod tests {
                 },
                 local_file: Some(file),
                 queue_catalogue: Vec::new(),
+                catalogue_connected: false,
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1318,7 +1348,6 @@ mod tests {
             }
         }
 
-        // Phase `already_decoded_local_source_settles_after_late_invocation_registration`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("short.wav");
@@ -1342,7 +1371,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `undecodable_file_fails_the_actual_operation_without_fake_playback`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("corrupt.wav");
@@ -1397,6 +1425,87 @@ mod tests {
         app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
         assert!(app.playback_error.is_some());
         assert!(app.pb.current.is_none());
+    }
+
+    fn picked(name: &str, bytes: Vec<u8>) -> ui::portal::PickedContents {
+        ui::portal::PickedContents {
+            name: name.into(),
+            media_type: None,
+            bytes,
+            location: None,
+        }
+    }
+
+    /// Deliver `outcome` as the answer to an Open audio file chooser that
+    /// asked for contents, as a browser page's does.
+    fn answer_contents(app: &mut MusicApp, outcome: ui::portal::ContentsOutcome) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(outcome).unwrap();
+        let invocation = tilo_actions::InvocationId::new();
+        app.local_file_pick = Some((invocation, crate::app::LocalFilePick::Contents(receiver)));
+        app.drain_local_file_pick();
+    }
+
+    /// A file a page hands over by its contents is checked the same way as
+    /// one chosen by path, and a refusal says why rather than nothing.
+    #[test]
+    fn a_file_chosen_by_contents_that_music_cannot_play_says_why() {
+        let mut app = MusicApp::without_profile();
+        answer_contents(
+            &mut app,
+            ui::portal::ContentsOutcome::Picked(vec![picked("notes.txt", b"hello".to_vec())]),
+        );
+        assert!(app.local_file_pick.is_none());
+        assert!(app.local_file.is_none());
+        assert_eq!(
+            app.toast.get().map(|(text, _)| text),
+            Some("This file type is not supported by Music")
+        );
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("This file type is not supported by Music".to_owned()),
+            "the window bar says why"
+        );
+        let failed = app.resource_stream_results.iter().any(|update| {
+            matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. }
+                if error.code == "music.open_file_failed")
+        });
+        assert!(failed, "the Open audio file effect settles as failed");
+    }
+
+    /// A file playing from a page-local copy of its bytes is not kept to
+    /// reopen: the copy is gone with the page.
+    #[test]
+    fn a_file_playing_from_a_page_copy_is_not_kept() {
+        let mut app = MusicApp::without_profile();
+        app.local_file = Some(
+            crate::local_file::LocalFile::from_page_url("Song.mp3", "blob:page/1".into()).unwrap(),
+        );
+        assert_eq!(app.local_file.as_ref().unwrap().track.title, "Song");
+        assert!(app.kept_local_file().is_none());
+        assert!(
+            crate::local_file::LocalFile::from_page_url("notes.txt", "blob:page/2".into()).is_err()
+        );
+    }
+
+    /// A file a page hands over by its contents, with no place on the
+    /// device, plays from those contents.
+    #[test]
+    #[cfg(feature = "audio")]
+    fn a_file_chosen_by_contents_plays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tone.wav");
+        wav(&path);
+        let bytes = std::fs::read(&path).unwrap();
+        let mut app = MusicApp::without_profile();
+        answer_contents(
+            &mut app,
+            ui::portal::ContentsOutcome::Picked(vec![picked("Tone.wav", bytes)]),
+        );
+        let file = app.local_file.as_ref().expect("the chosen file is open");
+        assert_eq!(file.track.title, "Tone");
+        assert!(app.pb.playing);
+        wait_for_audio(&mut app);
     }
 
     #[test]

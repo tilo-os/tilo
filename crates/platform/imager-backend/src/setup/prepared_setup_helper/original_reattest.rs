@@ -78,7 +78,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, output: &mut impl Write) ->
     }
     for (path, hash, executable) in [
         (
-            Path::new("/usr/bin/tilo-launcher").to_path_buf(),
+            Path::new("/usr/libexec/tilo/tilo-launcher").to_path_buf(),
             &proof.installed_launcher_sha256,
             true,
         ),
@@ -341,7 +341,7 @@ impl ActualFacts {
         }
         let pins: CapturePins = serde_json::from_value(serde_json::to_value(pins)?)?;
         record_artifact(
-            Path::new("/usr/bin/tilo-launcher"),
+            Path::new("/usr/libexec/tilo/tilo-launcher"),
             &mut artifacts,
             &mut held,
             true,
@@ -362,7 +362,7 @@ impl ActualFacts {
         }
         let installed_launcher = artifacts
             .iter()
-            .find(|(path, _)| path == "/usr/bin/tilo-launcher")
+            .find(|(path, _)| path == "/usr/libexec/tilo/tilo-launcher")
             .ok_or_else(invalid)?;
         let runtime_launcher = artifacts
             .iter()
@@ -439,7 +439,7 @@ impl ActualFacts {
             schema: 1,
             original_source_protocol: self.pins.worker_protocol,
             prepared_helper_sha256: hash(Path::new(HELPER))?,
-            installed_launcher_sha256: hash(Path::new("/usr/bin/tilo-launcher"))?,
+            installed_launcher_sha256: hash(Path::new("/usr/libexec/tilo/tilo-launcher"))?,
             runtime_launcher_sha256: hash(&runtime.join("bin/tilo-launcher"))?,
             runtime_sdk_sha256: hash(&runtime.join("lib/libruntime_dylib.so"))?,
             runtime_tar_sha256: hash(&runtime.join("bin/tar"))?,

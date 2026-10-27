@@ -167,10 +167,6 @@ impl CertificationProtocol {
 
     /// Admit a request into the pending set, or say why not. Returns its
     /// digest, pairing code and a receiver that sees the answer.
-    ///
-    /// # Errors
-    ///
-    /// Returns the reason the request is refused.
     pub fn enqueue(&self, request: CertificationRequest, now_ns: u64) -> Result<Queued, String> {
         self.enqueue_with(request, None, now_ns, false, None)
     }
@@ -179,10 +175,6 @@ impl CertificationProtocol {
     /// (`member`: the request names such a member's root), whose own devices
     /// answer it through [`Self::member_approve`]. `country` is where a
     /// trusted proxy says the request came from, shown to the approver.
-    ///
-    /// # Errors
-    ///
-    /// Returns the reason the request is refused.
     pub fn enqueue_member(
         &self,
         request: CertificationRequest,
@@ -236,10 +228,6 @@ impl CertificationProtocol {
     /// Queue a request for an agent this host supervises, carrying what
     /// the person proposed. Only an `IssueDelegate` decision answers it; wait
     /// for it with [`Self::delegate_answer`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the reason the request is refused.
     pub fn enqueue_delegate(
         &self,
         request: CertificationRequest,
@@ -258,10 +246,6 @@ impl CertificationProtocol {
 
     /// The approver's answer to agent request `digest`: its certificate and
     /// delegation, or why there are none. Waits until decided or expired.
-    ///
-    /// # Errors
-    ///
-    /// Returns the denial, or that the request expired or is unknown.
     pub async fn delegate_answer(
         &self,
         digest: &[u8; 32],

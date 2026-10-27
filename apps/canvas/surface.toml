@@ -59,6 +59,24 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "chart"
+kind = "undoable"
+params = [
+  { name = "labels", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "values", required = true, schema = { type = "array", items = { type = "number" } } },
+  { name = "kind", required = false, schema = { type = ["string", "null"] } },
+  { name = "box", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 4, minItems = 4 } },
+  { name = "max", required = false, schema = { type = ["number", "null"] } },
+  { name = "bar_width", required = false, schema = { type = ["number", "null"] } },
+  { name = "colour", required = false, schema = { type = ["string", "null"] } },
+  { name = "label_size", required = false, schema = { type = ["number", "null"] } },
+  { name = "values_shown", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
+  { name = "id", required = false, schema = { type = ["string", "null"] } },
+  { name = "layer", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "edit-marks"
 kind = "undoable"
 params = [
@@ -256,13 +274,7 @@ params = [
   { name = "points", required = false, schema = { type = ["array", "null"], items = { type = "array", items = { type = "number" }, maxItems = 2, minItems = 2 } } },
   { name = "d", required = false, schema = { type = ["string", "null"] } },
   { name = "marks", required = false, schema = { type = ["array", "null"], items = { type = "string" } } },
-  { name = "at", required = false, schema = { type = ["array", "null"], items = { type = "number" }, maxItems = 2, minItems = 2 } },
-  { name = "subject", required = false, schema = { type = ["boolean", "null"] } },
-  { name = "refine", required = false, schema = { type = ["number", "null"] } },
   { name = "matte", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { rect = { type = "array", items = { type = "number" }, maxItems = 4, minItems = 4 }, src = { type = "string" } }, required = ["src", "rect"] } },
-  { name = "colour", required = false, schema = { type = ["string", "null"] } },
-  { name = "tolerance", required = false, schema = { type = ["number", "null"] } },
-  { name = "layer", required = false, schema = { type = ["string", "null"] } },
   { name = "mode", required = false, schema = { type = ["string", "null"] } },
   { name = "feather", required = false, schema = { type = ["number", "null"] } },
   { name = "grow", required = false, schema = { type = ["number", "null"] } },

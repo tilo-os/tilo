@@ -143,8 +143,6 @@ pub struct ExistingMarkup {
     pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
-
 /// Bring a PDF's markup of version 1 up to this one: a comment's and a
 /// reply's formatted paragraphs were one JSON string, and are a list of
 /// paragraphs now.
@@ -171,6 +169,32 @@ fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelEr
     migrate = upgrade_markup
 )]
 impl PdfMarkup {
+    /// Record where the reader left off.
+    ///
+    /// A resume hint for the next window that opens this document: the page
+    /// occurrence, how far down it the reader was (0 to 1), and the zoom.
+    #[action]
+    pub fn record_reading_position(
+        &mut self,
+        #[param("The page occurrence the reader was on")] page: String,
+        #[param("How far down the page, from 0 to 1")] fraction: f64,
+        #[param("The zoom factor")] zoom: f64,
+    ) -> Result<(), Refusal> {
+        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
+            return Err(Refusal::new("a reading fraction is between 0 and 1"));
+        }
+        if !zoom.is_finite() || zoom <= 0.0 {
+            return Err(Refusal::new("a reading zoom is a positive factor"));
+        }
+        if !page.is_empty() && !self.pages.contains(&Id::from_raw(page.clone())) {
+            return Err(Refusal::new("the reading page is not in the plan"));
+        }
+        self.reading_page = page;
+        self.reading_fraction = fraction;
+        self.reading_zoom = zoom.clamp(crate::app::ZOOM_MIN, crate::app::ZOOM_MAX);
+        Ok(())
+    }
+
     /// Make the page plan.
     ///
     /// The pages of the opened file, in their order, the first time a
@@ -743,7 +767,7 @@ impl PdfMarkup {
                 .collect();
             entries.push(
                 SearchEntry::new(
-                    format!("Comment — {}", comment.author),
+                    format!("Comment: {}", comment.author),
                     std::iter::once(comment.body.as_str())
                         .chain(replies)
                         .collect::<Vec<_>>()
@@ -811,6 +835,8 @@ pub struct PdfViewerShell;
 impl ResourceApp for PdfViewerShell {
     type Resource = PdfMarkup;
     const ID: &'static str = "so.tilo.pdf-viewer";
+    // Each window shows what it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "PDF Viewer";
     const ICON: Option<&'static str> = Some("pdf-viewer");
     const OPENS: &'static [&'static str] = &["application/pdf"];
@@ -837,7 +863,7 @@ impl ResourceApp for PdfViewerShell {
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::CATALOG)
     }
 
     fn label(state: &PdfMarkup) -> String {
@@ -929,6 +955,15 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
             PdfEffect::ReadText { from_page, to_page } => self
                 .read_text(from_page, to_page)
                 .map(ui::framework::Effected::value),
+            PdfEffect::LookPage { page, size } => self
+                .look_page(page, size)
+                .map(ui::framework::Effected::Done),
+            PdfEffect::ImportPdfContent { content, name } => self
+                .import_pdf_content(&content, name.as_deref(), cx)
+                .map(ui::framework::Effected::value),
+            PdfEffect::SelectText { .. } | PdfEffect::CopySelection => {
+                self.selection_effect(&effect, || cx.reply())
+            }
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

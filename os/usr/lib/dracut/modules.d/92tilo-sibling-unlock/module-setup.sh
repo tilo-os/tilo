@@ -5,7 +5,7 @@
 # token (tilo-root-discover checks), so an ordinary boot starts nothing here.
 
 check() {
-    require_binaries tilo-sibling-unlock NetworkManager cryptsetup ip systemctl || return 1
+    require_binaries /usr/libexec/tilo/tilo-sibling-unlock NetworkManager cryptsetup ip systemctl || return 1
     return 255
 }
 
@@ -16,7 +16,7 @@ depends() {
 }
 
 install() {
-    inst_multiple tilo-sibling-unlock NetworkManager cryptsetup ip systemctl systemd-creds
+    inst_multiple /usr/libexec/tilo/tilo-sibling-unlock NetworkManager cryptsetup ip systemctl systemd-creds
     # Wi-Fi, for a machine whose owner chose a Wi-Fi network for unlocking.
     inst_multiple -o wpa_supplicant
     inst_libdir_dir "NetworkManager/$(NetworkManager --version)"

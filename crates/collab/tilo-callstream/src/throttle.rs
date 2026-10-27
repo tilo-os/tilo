@@ -44,6 +44,11 @@ impl StreamingThrottle {
         }
     }
 
+    /// Space encodes `interval` apart from the next one on.
+    pub fn set_interval(&mut self, interval: Duration) {
+        self.interval = interval;
+    }
+
     /// Whether the caller should encode now: `true` before the first encode
     /// and once the next one is due. Callers must then call
     /// [`Self::mark_encoded`] only when they actually encode — gating on this

@@ -9,9 +9,9 @@
 //! "Waiting for an update from the developer" and does not start. One that
 //! needs a newer system starts the system's update.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use registry_types::interfaces::{Behind, Unmet};
@@ -75,6 +75,16 @@ pub(crate) const UPDATE_TIMEOUT: Duration = crate::shell::catalogue::INSTALL_TIM
 /// `start` with whether a build that fits is installed now. `start` runs on
 /// the worker; it launches the app again, or reports why it cannot.
 pub(crate) fn update_then(package_id: &str, start: impl FnOnce(UpdateOutcome) + Send + 'static) {
+    update_after(package_id, || {}, start);
+}
+
+/// [`update_then`], running `first` on the worker before the update starts.
+/// When `package_id` is already being updated, neither runs.
+pub(crate) fn update_after(
+    package_id: &str,
+    first: impl FnOnce() + Send + 'static,
+    start: impl FnOnce(UpdateOutcome) + Send + 'static,
+) {
     if !UPDATING.lock_recover().insert(package_id.to_owned()) {
         return;
     }
@@ -83,6 +93,7 @@ pub(crate) fn update_then(package_id: &str, start: impl FnOnce(UpdateOutcome) + 
     let spawned = std::thread::Builder::new()
         .name("app-update".to_string())
         .spawn(move || {
+            first();
             let outcome = crate::shell::catalogue::update_package(&package);
             crate::shell::launcher::invalidate_app_cache();
             UPDATING.lock_recover().remove(&package);
@@ -96,6 +107,107 @@ pub(crate) fn update_then(package_id: &str, start: impl FnOnce(UpdateOutcome) + 
             "could not start the update an app needs to open"
         );
     }
+}
+
+/// Apps by the surface a room's write named that this device's copy does
+/// not ship.
+type Sought = HashSet<(String, [u8; 32])>;
+/// Each starts the app's update once.
+static SOUGHT: LazyLock<Mutex<Sought>> = LazyLock::new(Mutex::default);
+
+/// A room's write for `package_id` names `surface`, which neither the build
+/// this device runs nor the one it has installed ships: its writer runs a
+/// newer build of the app. That is the app's update, the same one an app
+/// behind takes as it starts. Once it is in, the surface the updated package
+/// ships is readable ([`installed_surface`]) and the writes held for it are
+/// decided again. An app this device does not have is not installed here;
+/// its writes wait as any held write does.
+pub(crate) fn surface_named(package_id: &str, surface: [u8; 32]) {
+    if ui::app_surface::hash_of(package_id) == Some(surface) {
+        return;
+    }
+    match installed_package_surface(package_id) {
+        Installed::Absent => return,
+        Installed::Ships(Some((hash, _))) if hash == surface => {
+            // Installed since the write was decided: decide it again.
+            ui::app_surface::arrived();
+            return;
+        }
+        Installed::Ships(_) => {}
+    }
+    if !SOUGHT
+        .lock_recover()
+        .insert((package_id.to_owned(), surface))
+    {
+        return;
+    }
+    tracing::info!(
+        package_id,
+        surface = %hex::encode(surface),
+        "a room names a newer surface of an app: updating it"
+    );
+    let package = package_id.to_owned();
+    update_then(package_id, move |outcome| {
+        if matches!(installed_package_surface(&package), Installed::Ships(Some((hash, _))) if hash == surface)
+        {
+            tracing::info!(package_id = %package, "the app's update brought the surface its room names");
+        } else {
+            tracing::warn!(
+                package_id = %package,
+                ?outcome,
+                "the app's update did not bring the surface its room names; its writes wait"
+            );
+        }
+        ui::app_surface::arrived();
+    });
+}
+
+/// A signed surface by its hash.
+type Surface = ([u8; 32], Arc<[u8]>);
+
+#[derive(Clone)]
+enum Installed {
+    /// The app is not installed.
+    Absent,
+    /// The app is installed, shipping this signed surface, or none.
+    Ships(Option<Surface>),
+}
+
+/// Each installed app as of the installed store's epoch it was read at.
+type InstalledSurfaces = HashMap<String, (u64, Installed)>;
+static INSTALLED_SURFACES: LazyLock<Mutex<InstalledSurfaces>> = LazyLock::new(Mutex::default);
+
+/// The surface the installed package `package_id` ships, by its hash: what
+/// a change of that app naming it is decided against, before the app has
+/// started with it. Signed by the package's publisher, as the surface the
+/// app runs with is ([`ui::app_surface::register_package`]).
+pub(crate) fn installed_surface(package_id: &str, hash: &str) -> Option<Vec<u8>> {
+    let Installed::Ships(Some((installed, bytes))) = installed_package_surface(package_id) else {
+        return None;
+    };
+    (hex::encode(installed) == hash).then(|| bytes.to_vec())
+}
+
+fn installed_package_surface(package_id: &str) -> Installed {
+    let epoch = crate::shell::launcher::installed_apps_epoch();
+    if let Some((read_at, installed)) = INSTALLED_SURFACES.lock_recover().get(package_id)
+        && *read_at == epoch
+    {
+        return installed.clone();
+    }
+    let installed = package_store::find_installed(package_id)
+        .ok()
+        .flatten()
+        .map_or(Installed::Absent, |installed| {
+            Installed::Ships(
+                package_store::integrity::signed_surface(&installed)
+                    .map(|bytes| (*blake3::hash(&bytes).as_bytes(), Arc::from(bytes))),
+            )
+        });
+    INSTALLED_SURFACES
+        .lock_recover()
+        .insert(package_id.to_owned(), (epoch, installed.clone()));
+    installed
 }
 
 /// What updating a package that was behind came to.
@@ -146,7 +258,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_app_behind_is_updated_and_one_ahead_waits_for_the_system() {
         assert_eq!(fit_on(Vec::new()), Fit::Fits);

@@ -4,15 +4,13 @@ use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use tilo_test_env::hang_bound;
 use ui::State;
 use ui::framework::ResourceSurface;
 use ui::tilo_resource::Resource as _;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
-
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn shell_command(unix_script: &str, windows_script: &str) -> portable_pty::CommandBuilder {
     #[cfg(unix)]
@@ -143,7 +141,7 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
         );
     }
 
-    // Case `pty_reader_retries_interrupts_and_linux_handoff_eio`.
+    // Case `pty_reader_retries_interrupts_and_the_handoff_without_a_slave`.
     {
         use crate::inner::{PtyReadDisposition, classify_pty_read};
 
@@ -170,7 +168,17 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
         );
         assert_eq!(
             classify_pty_read(&Ok(0), || true),
-            PtyReadDisposition::Closed
+            if cfg!(target_vendor = "apple") {
+                PtyReadDisposition::Retry
+            } else {
+                PtyReadDisposition::Closed
+            },
+            "macOS reports a master without a slave as the end of the file, Linux as EIO"
+        );
+        assert_eq!(
+            classify_pty_read(&Ok(0), || false),
+            PtyReadDisposition::Closed,
+            "once the session's lifetime socket closes, the end of the file is the guest's exit"
         );
         assert_eq!(
             classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {
@@ -227,7 +235,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             terminal_end.set_read_timeout(bound).unwrap();
             let supervisor = std::thread::spawn(move || {
                 let mut reader = std::io::BufReader::new(&supervisor_end);
-                // The persistent-control handshake precedes every open.
                 let mut hello = String::new();
                 reader.read_line(&mut hello).unwrap();
                 assert!(hello.contains("\"op\":\"hello\""), "{hello}");
@@ -285,7 +292,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             std::os::unix::net::UnixStream::pair().expect("socket pair");
         let supervisor = std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(&supervisor_end);
-            // The persistent-control handshake precedes every open.
             let mut hello = String::new();
             reader.read_line(&mut hello).unwrap();
             assert!(hello.contains("\"op\":\"hello\""), "{hello}");
@@ -423,7 +429,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         // The session opens at the first sync, once the record says where.
         let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = std::time::Instant::now() + hang_bound();
         while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -472,7 +478,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 .unwrap();
         let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = std::time::Instant::now() + hang_bound();
         while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -563,7 +569,7 @@ fn send_key(
     send_key_mods(widget, doc, key, ctrl, shift, false);
 }
 
-fn send_key_mods(
+pub(crate) fn send_key_mods(
     widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
@@ -777,7 +783,6 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
     {
         let (mut widget, _rx) = build_test_widget();
 
-        // Fresh lines start empty.
         widget.feed(b"");
         assert_eq!(widget.grid_row(0).len(), 0, "blank lines are seeded empty");
 
@@ -814,6 +819,7 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
         let content = tilo_content::ContentStore::memory();
 
         {
+            let mut bells = 0u32;
             let mut performer = TerminalPerformer {
                 screen: &mut screen,
                 content: &content,
@@ -830,6 +836,7 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
                 next_link_id: &mut next_link_id,
                 current_link_id: 0,
                 title_out: &mut title_out,
+                bells: &mut bells,
                 allow_osc52_clipboard: true,
                 responses: &mut responses,
                 print_buf: None,
@@ -875,7 +882,6 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
     }
 }
 
-/// Disconnected accessibility state and drawing from theme tokens at every text scale.
 #[test]
 fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
     // Case `exited_pty_publishes_a_persistent_disconnected_accessibility_state`.
@@ -885,7 +891,7 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
         let doc = AutoCommit::new();
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             widget.sync(&doc, &ROOT);
             if widget.is_disconnected() {
@@ -961,8 +967,6 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
     }
 }
 
-/// The session banner stands above the grid and the grid starts under it, at
-/// every text scale.
 #[test]
 fn ended_session_banner_reserves_its_own_band_above_the_grid() {
     use ui::widget::Widget;
@@ -972,7 +976,7 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
     let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
         .expect("spawn short-lived pty command");
     let doc = AutoCommit::new();
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline && !widget.is_disconnected() {
         widget.sync(&doc, &ROOT);
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1003,7 +1007,8 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
 }
 
 /// Find honours the bar's options: literal by default only in that case counts,
-/// and a whole word is not matched inside a longer one.
+/// a whole word is not matched inside a longer one, and a regular expression
+/// matches as one.
 #[test]
 fn find_matches_follow_case_and_whole_word_options() {
     use ui::widget::{FindOptions, Findable};
@@ -1037,6 +1042,27 @@ fn find_matches_follow_case_and_whole_word_options() {
             }
         ),
         3
+    );
+    let regex = FindOptions {
+        mode: ui::widget::FindMode::Regex,
+        ..FindOptions::default()
+    };
+    assert_eq!(Findable::find(&mut widget, "^c.t", regex).len(), 2);
+    assert_eq!(
+        Findable::find(
+            &mut widget,
+            "c.t",
+            FindOptions {
+                whole_word: true,
+                ..regex
+            }
+        )
+        .len(),
+        3
+    );
+    assert!(
+        Findable::find(&mut widget, "(", regex).is_empty(),
+        "a pattern that does not compile finds nothing"
     );
     Findable::clear_find(&mut widget);
     assert!(widget.find_test_matches().is_empty());
@@ -1532,7 +1558,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     let mut app =
         ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
     let writes = app
-        .with_surface(|terminal: &mut TerminalWidget| {
+        .with_surface(|terminal: &mut crate::TerminalView| {
             terminal.accept_input_for_test();
             terminal.attach_input_probe()
         })
@@ -1541,7 +1567,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
 
     // Diagnostics: the framework's own-gesture verdict and the direct path.
     let (own, direct) = app
-        .with_surface(|terminal: &mut TerminalWidget| {
+        .with_surface(|terminal: &mut crate::TerminalView| {
             let probe = TerminalEffect::Paste { text: "d".into() };
             (
                 terminal.own_gesture_verdict(&probe),
@@ -1554,7 +1580,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
 
     // Case `ctrl_shift_v_pastes_without_confirmation`.
     ui::clipboard_copy("person shortcut paste");
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         use winit::keyboard::{Key, NamedKey, SmolStr};
         let mut doc = AutoCommit::new();
         terminal.set_focus(true);
@@ -1565,7 +1591,6 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
             true,
             true,
         );
-        // Case `shift_insert_pastes_without_confirmation`.
         send_key(
             terminal,
             &mut doc,
@@ -1584,7 +1609,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
 
     // Case `context_menu_paste_pastes_without_confirmation`.
     ui::clipboard_copy("person menu paste");
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         terminal.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         terminal.open_context_menu_at(Point::new(20.0, 20.0));
         let paste = terminal
@@ -1811,14 +1836,17 @@ fn scrollback_viewport_and_scrollbar_track_output() {
     }
 }
 
-/// Local find: shortcut routing, discoverability, matches and reflow.
+/// Local find: the terminal's chord and its context menu open the window
+/// bar's search, a plain Ctrl+F stays the program's, and the matches stay
+/// local while the terminal reveals them.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
-fn find_in_terminal_is_local_discoverable_and_reflows() {
+fn find_in_terminal_is_local_discoverable_and_reveals() {
     use crate::TerminalView;
+    use ui::window_toolbar::{SearchOpening, take_search_request};
 
     // Case `find_shortcut_preserves_foreground_control_f_on_every_platform`.
     {
@@ -1837,24 +1865,26 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 let mut view = TerminalView::new(widget);
                 view.set_platform_conventions(PlatformConventions::new(platform));
                 let mut doc = AutoCommit::new();
+                let _ = take_search_request();
                 send_key_with_modifiers(&mut view, &mut doc, Key::Character("f".into()), modifiers);
                 assert_eq!(
                     drain_writes(&writes),
                     expected,
                     "{platform:?}: shell editing bytes"
                 );
-                assert!(
-                    !view.find_is_open(),
+                assert_eq!(
+                    take_search_request(),
+                    None,
                     "{platform:?}: shell chord must not open Find"
                 );
             }
         }
     }
 
-    // Case `find_shortcut_opens_local_search_and_escape_restores_terminal_input`.
+    // Case `find_shortcut_opens_the_window_bars_search_without_typing_into_the_process`.
     {
         use ui::{Platform, PlatformConventions};
-        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        use winit::keyboard::{Key, ModifiersState};
 
         for (platform, modifiers) in [
             (
@@ -1874,43 +1904,17 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             let mut view = TerminalView::new(widget);
             view.set_platform_conventions(PlatformConventions::new(platform));
             let mut doc = AutoCommit::new();
+            let _ = take_search_request();
             send_key_with_modifiers(&mut view, &mut doc, Key::Character("F".into()), modifiers);
-            assert!(
-                view.find_is_open(),
-                "{platform:?}: the find scope's terminal chord"
+            assert_eq!(
+                take_search_request(),
+                Some(SearchOpening::Find),
+                "{platform:?}: the terminal's chord opens the window bar's search"
             );
             assert!(
                 drain_writes(&writes).is_empty(),
                 "Find must not type into the process"
             );
-            send_key(
-                &mut view,
-                &mut doc,
-                Key::Character("query".into()),
-                false,
-                false,
-            );
-            assert!(
-                drain_writes(&writes).is_empty(),
-                "private Find query must not reach the process"
-            );
-            // A key the query has no use for stays the bar's too.
-            send_key(
-                &mut view,
-                &mut doc,
-                Key::Named(NamedKey::ArrowUp),
-                false,
-                false,
-            );
-            assert!(drain_writes(&writes).is_empty());
-            send_key(
-                &mut view,
-                &mut doc,
-                Key::Named(NamedKey::Escape),
-                false,
-                false,
-            );
-            assert!(!view.find_is_open());
             send_key(&mut view, &mut doc, Key::Character("f".into()), true, false);
             assert_eq!(drain_writes(&writes), vec![0x06]);
         }
@@ -1957,6 +1961,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|item| item.name.as_deref() == Some(find_label.as_str()))
             .expect("Find entry");
+        let _ = take_search_request();
         assert!(view.terminal_mut().perform_semantic_action(
             find.action_target.as_deref().expect("Find target"),
             &Action::Activate,
@@ -1964,40 +1969,16 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             &ROOT,
         ));
         view.sync(&doc, &ROOT);
-        assert!(view.find_is_open());
-        let mut state = State::new();
-        assert!(state.adopt_doc(doc));
-        let mut framed = ui::headless::Framed::new(state, view, (800, 480), ui::Theme::dark());
-        let harness = ui::headless::Framed::harness_mut(&mut framed);
-        let query = harness
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.role() == ui::accesskit::Role::TextInput)
-            .map(|(id, _)| id)
-            .expect("Find publishes its actual retained text input");
-        harness
-            .perform_a11y_action(query, &Action::SetValue("private search".into()))
-            .expect("the hosted Find query owns its text-edit action");
+        assert_eq!(take_search_request(), Some(SearchOpening::Find));
         assert!(
             drain_writes(&writes).is_empty(),
             "Find never writes shell commands"
         );
-        let (view, state) = ui::headless::Framed::split(&mut framed);
         assert_eq!(
             heads_before,
-            state.doc.get_heads(),
+            doc.get_heads(),
             "Find remains private local view state"
         );
-        assert!(
-            !view.terminal_mut().perform_semantic_action(
-                transcript.action_target.as_deref().unwrap(),
-                &Action::SetValue("unreviewed command".into()),
-                &mut ui::widget::Edits::lend(&mut state.doc),
-                &ROOT,
-            ),
-            "transcript actions still cannot execute arbitrary text"
-        );
-        assert!(drain_writes(&writes).is_empty());
     }
 
     // Case `fresh_output_tells_an_open_find_bar_to_find_again`.
@@ -2018,9 +1999,9 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         );
     }
 
-    // Case `find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text`.
+    // Case `the_window_bars_search_reveals_matches_in_scrollback_locally`.
     {
-        use ui::{Theme, a11y::Action};
+        use ui::widget::{InPlace, SearchDriver};
 
         let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -2033,86 +2014,39 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         );
         let heads_before = doc.get_heads();
         let mut view = TerminalView::new(widget);
-
-        view.open_find();
-        view.set_find_query("build step 020");
-        assert!(view.find_is_open());
+        assert_eq!(InPlace::of(&mut view), InPlace::Document);
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::Document);
+        let options = ui::widget::FindOptions::default();
+        driver.drive(&mut view, "build step 020", options, None, false);
         assert_eq!(view.find_test_matches(), vec![20]);
+        assert_eq!(driver.position(), Some((1, 1)));
         assert!(
             view.scroll_offset() > 0,
             "find reveals a distant history row"
+        );
+        let abilities = driver.abilities();
+        assert!(abilities.regex, "the bar offers regular expressions");
+        assert!(!abilities.replace, "scrollback is not edited");
+        let regex = ui::widget::FindOptions {
+            mode: ui::widget::FindMode::Regex,
+            ..options
+        };
+        driver.drive(&mut view, "step 04[2-3]", regex, None, false);
+        assert_eq!(view.find_test_matches(), vec![42, 43]);
+        driver.drive(&mut view, "step 04[2-3]", regex, None, true);
+        assert!(
+            view.find_test_matches().is_empty(),
+            "closing forgets the matches"
+        );
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "Find never writes to the PTY"
         );
         assert_eq!(
             doc.get_heads(),
             heads_before,
             "find text/matches stay local rather than mutating the collaborative transcript"
-        );
-
-        // The real layout and draw at 200%: the scope stands its band above
-        // the terminal, inside the viewport, and the grid starts under it.
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut state = State::new();
-        assert!(state.adopt_doc(doc));
-        let mut framed = ui::headless::Framed::new(state, view, (390, 844), theme);
-        assert!(
-            !ui::headless::Framed::harness(&framed)
-                .scene()
-                .encoding()
-                .is_empty(),
-            "the real large-text host renders the terminal and its find band"
-        );
-        let view = &framed;
-        let band = view.find_band().expect("find band");
-        assert!(band.x0 >= viewport.x0 && band.x1 <= viewport.x1);
-        assert!(band.y0 >= viewport.y0 && band.y1 <= viewport.y1);
-        assert!(band.height() > 0.0);
-        assert!(
-            view.grid_rect().y0 >= band.y1,
-            "the grid starts under the find band"
-        );
-        assert_eq!(
-            view.find_counter(),
-            Some(("build step 020".to_string(), Some((1, 1))))
-        );
-
-        // Assistive activation resolves the exported controls to their real
-        // FindBar owner rather than sending child targets to TerminalView.
-        let control = |harness: &ui::headless::FrameHarness, key: &str| {
-            let label = crate::i18n::t(key);
-            harness
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| node.label() == Some(label.as_str()))
-                .map_or_else(
-                    || panic!("missing exported Find control {label}"),
-                    |(id, _)| id,
-                )
-        };
-        let harness = ui::headless::Framed::harness_mut(&mut framed);
-        let next = control(harness, "find-bar-next");
-        harness
-            .perform_a11y_action(next, &Action::Activate)
-            .expect("the exported next-match control enters the real find scope");
-        let query = control(harness, "find-bar-placeholder");
-        harness
-            .perform_a11y_action(query, &Action::SetValue("build step 042".into()))
-            .expect("the exported query edits local Find state");
-        assert_eq!(framed.find_test_matches(), vec![42]);
-        let harness = ui::headless::Framed::harness_mut(&mut framed);
-        let close = control(harness, "find-bar-close");
-        harness
-            .perform_a11y_action(close, &Action::Activate)
-            .expect("the exported close control closes the real find scope");
-        assert!(!framed.find_is_open());
-        assert!(
-            drain_writes(&writes).is_empty(),
-            "Find never writes to the PTY"
-        );
-        let (_, state) = ui::headless::Framed::split(&mut framed);
-        assert_eq!(
-            state.doc.get_heads(),
-            heads_before,
-            "hosted Find actions leave the collaborative transcript unchanged"
         );
     }
 }
@@ -2198,7 +2132,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             );
             assert!(
                 widget.take_find_request(),
-                "the Find row asks the hosting find scope for its bar"
+                "the Find row asks the hosting view for the window bar's search"
             );
             assert!(
                 ui::widget::controls::take_control_invocation(&mut widget).is_none(),
@@ -2353,14 +2287,14 @@ fn menu_rows_drive_the_process_and_follow_its_lifecycle() {
 fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     // Case `bulk_styled_output_stays_linear_and_correct`.
     // Bulk output must stay linear. `print` batches a run of cells into one
-    // diffed text splice + one `attrs` put per line; the old per-cell
-    // `splice_text` + full-`attrs`-`put` was an O(doc) write *per character*, so
-    // a screenful of coloured output was O(n²) and took minutes (a debug-build
-    // freeze; HIG §6). Feeding a full screen of styled lines through the real
-    // `feed` path must produce correct content and finish well under a bound the
-    // quadratic path could never meet.
+    // line replacement; the old per-cell write was O(line) work *per character*,
+    // so a screenful of coloured output was O(n²) and took minutes (a
+    // debug-build freeze; HIG §6). Feeding a full screen of styled lines through
+    // the real `feed` path must produce correct content and replace each line
+    // once per print run, never once per character.
     {
-        use ui::time::Duration;
+        use crate::inner::work::LINE_WRITES;
+        const LINES: usize = 80;
         let (mut w, _write_rx, _out_tx) = build_test_widget_io();
         let doc = AutoCommit::new();
         // 129 cols × ~38 rows — the same shape a maximized terminal reflows to,
@@ -2370,17 +2304,17 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         // A screenful-and-then-some of SGR-coloured lines (the mid-line reset is
         // deliberate: it forces a buffer flush partway through each line too).
         let mut payload = Vec::new();
-        for i in 0..80u32 {
+        for i in 0..LINES {
             payload.extend_from_slice(
             format!("\x1b[38;5;250m{i:>4}\x1b[0m  the quick brown fox jumps over the lazy dog {i:03}\r\n")
                 .as_bytes(),
         );
         }
 
-        let start = ui::time::now();
+        LINE_WRITES.with(|n| n.set(0));
         w.feed(&payload);
         w.sync(&doc, &automerge::ROOT);
-        let elapsed = start.elapsed();
+        let line_writes = LINE_WRITES.with(std::cell::Cell::get);
 
         // Correctness: the freshest lines are on screen with their real content.
         let visible = w.visible_lines();
@@ -2396,13 +2330,13 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
             "oldest bulk line retained: {top:?}"
         );
 
-        // Performance guard: the fixed path does this in well under a second even
-        // in debug; the O(n²) regression took minutes. A generous 30s bound only
-        // trips if the per-character CRDT write storm comes back — never on load.
+        // Each line holds two print runs (the number, then the text after the
+        // SGR reset), so it is replaced at most twice. A per-character write
+        // would replace it once for each of its ~60 cells.
         assert!(
-            elapsed < Duration::from_secs(30),
-            "feeding 80 styled lines took {elapsed:?} — the per-cell O(n²) CRDT \
-         write regressed (HIG §6)"
+            line_writes <= 2 * LINES,
+            "feeding {LINES} styled lines replaced a line {line_writes} times — \
+         the per-cell write regressed (HIG §6)"
         );
     }
 
@@ -2491,7 +2425,6 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
 // Paste — bracketed and plain, straight to the PTY.
 // ---------------------------------------------------------------
 
-/// Plain and bracketed paste bytes.
 #[test]
 fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
     // Case `plain_paste_writes_to_pty_with_cr_newlines`.
@@ -2506,7 +2439,6 @@ fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
     // Case `bracketed_paste_wraps_when_app_enabled_it`.
     {
         let (mut w, write_rx) = build_test_widget();
-        // App turns on bracketed paste via a real DEC private set sequence.
         w.feed(b"\x1b[?2004h");
         assert!(w.modes().bracketed_paste);
         w.paste("data");
@@ -2522,7 +2454,6 @@ fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
 // Alternate screen + DEC private modes.
 // ---------------------------------------------------------------
 
-/// Alternate screen, DEC private modes and focus reporting.
 #[test]
 fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
     // Case `alt_screen_switches_buffers_and_restores_main`.
@@ -2532,13 +2463,11 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Write to the main screen.
         w.feed(b"MAIN CONTENT\r\n");
         w.sync(&doc, &automerge::ROOT);
         assert!(!w.is_alt_screen());
         assert!(w.grid_row(0).starts_with("MAIN CONTENT"));
 
-        // Enter the alternate screen and do a full-screen redraw.
         w.feed(b"\x1b[?1049h\x1b[2J\x1b[H");
         w.feed(b"\x1b[3;5HTUI REDRAW");
         w.sync(&doc, &automerge::ROOT);
@@ -2689,8 +2618,6 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
             "grid right inset by padding + scrollbar gutter: {gr:?}"
         );
         assert!(gr.y1 < 640.0, "grid bottom inset by body padding: {gr:?}");
-        // The top+bottom padding genuinely reduces the usable rows vs. a
-        // full-rect fit.
         let (cols, rows) = w.grid_size();
         assert!(cols > 0 && rows > 0, "reflow produced a usable grid");
         assert!(
@@ -2743,7 +2670,6 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
     }
 }
 
-/// IME commits and the accessibility/semantic transcript surface.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -2932,7 +2858,6 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     }
 }
 
-/// Terminal resource identity, CRDT convergence between peers, and presence.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -3031,7 +2956,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         use ui::presence::PresenceKey;
         let mut a = ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new()
             .expect("terminal");
-        a.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"peer-a-line-one\r\n"))
+        a.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(b"peer-a-line-one\r\n"))
             .expect("hosted terminal");
         a.settle();
         let joined = crate::resource::Terminal::read(&a.peer_document()).unwrap();
@@ -3046,7 +2971,7 @@ fn terminal_resource_identity_convergence_and_presence() {
             b.grid_text()
         );
         let a_key = a
-            .with_surface(|terminal: &mut TerminalWidget| {
+            .with_surface(|terminal: &mut crate::TerminalView| {
                 ui::presence::capability::presence_key(terminal)
             })
             .expect("hosted terminal");
@@ -3070,7 +2995,6 @@ fn terminal_resource_identity_convergence_and_presence() {
         let (mut w, _) = build_test_widget();
         w.force_grid(vec!["abcdefgh".to_string()]);
 
-        // With a selection, the payload is a Selection over linear indices.
         w.force_selection(Some(Selection {
             anchor: GridPos { row: 0, col: 2 },
             cursor: GridPos { row: 0, col: 5 },
@@ -3085,7 +3009,6 @@ fn terminal_resource_identity_convergence_and_presence() {
             other => panic!("expected Selection payload, got {other:?}"),
         }
 
-        // Without a selection, the payload is a Caret at the cursor.
         w.force_selection(None);
         let (_key, payload) =
             ui::presence::capability::presence_payload(&w).expect("payload with cursor");
@@ -3097,10 +3020,134 @@ fn terminal_resource_identity_convergence_and_presence() {
 }
 
 // ---------------------------------------------------------------
+// Private-marker CSI sequences are not their plain forms.
+// ---------------------------------------------------------------
+
+/// The cells from `col` for `len` columns on `row`, as (char, attr) pairs.
+fn cells(w: &TerminalWidget, row: usize, col: usize, len: usize) -> Vec<(char, Attr)> {
+    w.grid_row(row)
+        .chars()
+        .skip(col)
+        .take(len)
+        .enumerate()
+        .map(|(i, c)| (c, w.cell_attr(row, col + i)))
+        .collect()
+}
+
+/// Claude Code's start-up bytes, as captured from `claude` 2.1.305 on a pty:
+/// it pushes Kitty keyboard flags (`CSI > 5 u`), pops them (`CSI < u`) and
+/// sets modifyOtherKeys (`CSI > 4 ; 2 m`), then styles its text with `1`/`22`
+/// and colours only, never `0` or `24`. Reading `CSI > 4 ; 2 m` as SGR 4;2
+/// underlined and dimmed every word it drew after it.
+#[test]
+fn claude_codes_start_up_leaves_its_text_without_a_line_under_it() {
+    use vello::kurbo::Rect;
+    let (mut w, _rx) = build_test_widget();
+    let doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    w.feed(
+        b"\x1b7\x1b[r\x1b8\x1b[?25h\x1b[?2004h\x1b[?2031h\x1b[?1004h\x1b[<u\x1b[>5u\x1b[>4;2m\
+          \x1b]0;\xe2\x9c\xb3 Claude Code\x07\x1b[?1049h\x1b[2J\x1b[H\x1b[<u\x1b[>5u\x1b[>4;2m\
+          \x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[H\
+          \x1b[1mClaude Code\x1b[22m\x1b[13G\x1b[38;5;246mv2.1.305\x1b[39m",
+    );
+    w.sync(&doc, &automerge::ROOT);
+
+    let drawn = cells(&w, 0, 0, 20);
+    let text: String = drawn.iter().map(|(c, _)| c).collect();
+    assert_eq!(
+        text, "Claude Code v2.1.305",
+        "the private-marker sequences moved nothing: {text:?}"
+    );
+    for (c, attr) in &drawn {
+        assert!(!attr.underline, "{c:?} has a line drawn under it: {attr:?}");
+        assert!(!attr.dim, "{c:?} is drawn faint: {attr:?}");
+    }
+    assert!(
+        drawn.iter().take(6).all(|(_, a)| a.bold),
+        "the bold that was asked for still applies"
+    );
+}
+
+/// `CSI > 5 u` and `CSI < u` are Kitty keyboard pushes and pops, not a
+/// cursor restore (`CSI u`): text after them lands where the cursor was, in
+/// the attribute it had, not at the position and style `ESC 7` saved.
+#[test]
+fn kitty_keyboard_pushes_and_pops_do_not_restore_the_cursor() {
+    use vello::kurbo::Rect;
+    let (mut w, _rx) = build_test_widget();
+    let doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    w.feed(b"\x1b[3;10H\x1b[4m\x1b7\x1b[24m\x1b[H\x1b[>5uA\x1b[<uB\x1b[=1;1uC");
+    w.sync(&doc, &automerge::ROOT);
+
+    let drawn = cells(&w, 0, 0, 3);
+    let text: String = drawn.iter().map(|(c, _)| c).collect();
+    assert_eq!(text, "ABC", "each letter follows the last: {text:?}");
+    assert!(drawn.iter().all(|(_, a)| !a.underline), "{drawn:?}");
+}
+
+/// Underline state is set and cleared the ways programs send it: `24` and
+/// `0` end it, `4:0` is "no underline", `4:3` (curly) is an underline, the
+/// underline colour (`58;2;r;g;b`, `58;5;n`, `58:2::r:g:b`, `59`) never turns
+/// into other SGR codes, and an OSC 8 link's underline stops at its close.
+#[test]
+fn underline_ends_where_programs_end_it() {
+    use vello::kurbo::Rect;
+    let (mut w, _rx) = build_test_widget();
+    let doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    // (bytes before `X`, X underlined?, X faint?)
+    let cases: &[(&[u8], bool, bool)] = &[
+        (b"\x1b[4m", true, false),
+        (b"\x1b[4m\x1b[24m", false, false),
+        (b"\x1b[4m\x1b[0m", false, false),
+        (b"\x1b[4:3m", true, false),
+        (b"\x1b[4:3m\x1b[4:0m", false, false),
+        (b"\x1b[4:0m", false, false),
+        // `2` and `4` as colour components, never as faint / underline.
+        (b"\x1b[58;2;2;4;4m", false, false),
+        (b"\x1b[58;5;4m", false, false),
+        (b"\x1b[58:2::4:2:4m", false, false),
+        (b"\x1b[4;58;2;1;2;3m\x1b[59m\x1b[24m", false, false),
+        (b"\x1b[>4;2m", false, false),
+        (b"\x1b[>4m", false, false),
+    ];
+    for (i, (seq, underline, dim)) in cases.iter().enumerate() {
+        let mut bytes = b"\x1b[0m\x1b[H".to_vec();
+        bytes.extend_from_slice(seq);
+        bytes.push(b'X');
+        w.feed(&bytes);
+        w.sync(&doc, &automerge::ROOT);
+        let a = w.cell_attr(0, 0);
+        assert_eq!(
+            (a.underline, a.dim),
+            (*underline, *dim),
+            "case {i} {:?}: {a:?}",
+            String::from_utf8_lossy(seq)
+        );
+    }
+
+    // An OSC 8 link, then plain text: only the link's cells carry it.
+    w.feed(b"\x1b[0m\x1b[2;1H\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ plain");
+    w.sync(&doc, &automerge::ROOT);
+    let row = cells(&w, 1, 0, 10);
+    assert!(row.iter().take(4).all(|(_, a)| a.link_id != 0), "{row:?}");
+    assert!(
+        row.iter()
+            .skip(4)
+            .all(|(_, a)| a.link_id == 0 && !a.underline),
+        "text after the link's close is plain: {row:?}"
+    );
+}
+
+// ---------------------------------------------------------------
 // SGR — 256-color, truecolor, and the four style bits.
 // ---------------------------------------------------------------
 
-/// SGR colours/styles and kitty images parse into cells and placements.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -3115,7 +3162,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Semicolon truecolor foreground.
         w.feed(b"\x1b[H\x1b[38;2;10;20;30mA");
         w.sync(&doc, &automerge::ROOT);
         assert_eq!(
@@ -3142,7 +3188,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
             "38:5 colon-form indexed fg"
         );
 
-        // Truecolor background.
         w.feed(b"\x1b[H\x1b[48;2;5;6;7mD");
         w.sync(&doc, &automerge::ROOT);
         assert_eq!(
@@ -3160,7 +3205,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Bold + italic + underline + reverse all at once.
         w.feed(b"\x1b[H\x1b[1;3;4;7mW");
         w.sync(&doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
@@ -3169,7 +3213,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
             "combined SGR style bits: {a:?}"
         );
 
-        // A reset clears everything back to the default attribute.
         w.feed(b"\x1b[H\x1b[0mN");
         w.sync(&doc, &automerge::ROOT);
         let b = w.cell_attr(0, 0);
@@ -3187,7 +3230,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Faint + crossed-out together.
         w.feed(b"\x1b[H\x1b[2;9mX");
         w.sync(&doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
@@ -3251,7 +3293,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 /// Pump and settle the production terminal lifecycle until the grid contains
 /// `needle` or `tries` elapse. Returns whether it appeared.
 fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
         w.update(doc, &ROOT);
         w.settle(&mut ui::widget::Edits::lend(doc), &ROOT);
@@ -3334,7 +3376,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("-c");
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             fresh.sync(&doc, &automerge::ROOT);
             if fresh.grid_text().contains("new-session-output") {
@@ -3610,6 +3652,38 @@ fn keyboard_encoding_sends_expected_sequences() {
             false,
         );
         assert_eq!(drain_writes(&rx), b"\x1b[Z", "Shift+Tab = CSI Z (back-tab)");
+        // The desktop's tab chords pass through to it: no bytes for the
+        // shell, so the app hands them on and the window's tabs step.
+        for (key, shift) in [
+            (Key::Named(NamedKey::Tab), false),
+            (Key::Named(NamedKey::Tab), true),
+            (Key::Character("T".into()), true),
+        ] {
+            send_key_mods(&mut w, &mut doc, key.clone(), true, shift, false);
+            assert!(
+                drain_writes(&rx).is_empty(),
+                "{key:?} with Ctrl (Shift {shift}) is the desktop's, not the shell's"
+            );
+        }
+        // Ctrl+T and Ctrl+W stay the shell's line-editing control bytes.
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character("t".into()),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(drain_writes(&rx), [0x14], "Ctrl+T = ^T");
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character("w".into()),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(drain_writes(&rx), [0x17], "Ctrl+W = ^W");
     }
 
     // Case `alt_letter_sends_meta_escape_but_altgr_symbols_pass_through`.
@@ -3720,7 +3794,6 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
 
     // Case `triple_click_selects_line`.
     {
-        // A triple-click selects the whole grid line.
         let (mut w, _) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
@@ -3921,7 +3994,6 @@ fn osc_sequences_update_title_and_hyperlinks() {
         // clickable).
         let (mut w, _) = build_test_widget();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        // Home, open link, print "link", close link.
         w.feed(b"\x1b[H\x1b]8;;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\");
 
         assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
@@ -4126,7 +4198,6 @@ fn status_and_mode_reports_reply_or_stay_silent() {
     }
 }
 
-/// Query replies through the real PTY pump, and fish starting cleanly.
 #[test]
 #[cfg(unix)]
 fn real_pty_query_replies_and_fish_startup() {
@@ -4158,13 +4229,15 @@ fn real_pty_query_replies_and_fish_startup() {
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn fish under a pty");
         let mut doc = AutoCommit::new();
 
-        // Warm-up: pump long enough for fish to issue its DA query and for the
-        // emulator to answer it (via write_input) before we type anything, so
-        // our keystrokes are never mistaken for the DA response.
-        for _ in 0..40 {
+        // Warm-up: pump until fish has issued its DA query and the emulator has
+        // answered it (via write_input) before we type anything, so our
+        // keystrokes are never mistaken for the DA response.
+        let answered = || crate::inner::work::DA1_REPLIES.with(std::cell::Cell::get);
+        let before = answered();
+        tilo_test_env::wait_until("the emulator to answer fish's DA query", || {
             w.sync(&doc, &ROOT);
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
+            answered() > before
+        });
 
         // Now type the sentinel the way a user would, then quit.
         w.write_input(b"echo TILO_FISH_READY\r");
@@ -4272,7 +4345,6 @@ fn login_shell_resolution_and_default_spawn() {
             "/usr/bin/zsh",
             "with $SHELL unset the passwd login shell is used, not a hardcoded /bin/sh"
         );
-        // An empty $SHELL is treated as unset and also falls through to passwd.
         assert_eq!(
             crate::inner::resolve_login_shell_with(
                 Some(String::new()),
@@ -4328,7 +4400,6 @@ fn locate_fish() -> Option<std::path::PathBuf> {
 // Confinement / capability detection (issue: ush errors off Tilo).
 // ---------------------------------------------------------------
 
-/// Confinement routing and the hosted-terminal ush requirement.
 #[test]
 fn confinement_routes_are_mandatory_for_hosted_terminals() {
     // Case `confine_route_service_is_mandatory_for_every_target`.
@@ -4587,7 +4658,6 @@ fn cell_fills_snap_to_device_pixels_and_adjacent_cells_tile() {
 
     for scale in [1.0, 1.25, 1.5, 2.0] {
         let transform = Affine::scale(scale);
-        // Fractional advances and an offset, as in a real grid.
         let (char_w, x0) = (8.43, 12.0);
         for cell in 0..40 {
             let left = x0 + f64::from(cell) * char_w;
@@ -4669,5 +4739,135 @@ fn typing_damages_only_its_row_and_the_cursor() {
         area * 4.0 < viewport.area(),
         "typing repaints a sliver of the terminal, not {area} of {} px: {damage:?}",
         viewport.area()
+    );
+}
+
+/// Fingers move the scrollback pixel by pixel, and a host that copies what
+/// a scroll keeps on screen copies the rows they only moved: the frame
+/// repaints the strip that came into view, not the grid.
+#[test]
+fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+
+    let (mut widget, _) = build_test_widget();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 400.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    let mut output = Vec::new();
+    for line in 0..200 {
+        output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
+    }
+    widget.feed(&output);
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut frame = |widget: &mut TerminalWidget| {
+        widget.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+    };
+    // The first draw measures the cell and resizes the grid to the
+    // viewport; the next output applies that size.
+    frame(&mut widget);
+    widget.feed(b"");
+    frame(&mut widget);
+    widget.mark_drawn();
+    let mut doc = AutoCommit::new();
+    let mut fingers = |widget: &mut TerminalWidget, dy: f64| {
+        let event = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy)),
+            phase: TouchPhase::Moved,
+        };
+        ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .send(widget, &event);
+    };
+    let centre = viewport.center();
+    ui::testing::Dispatch::new().send(
+        &mut widget,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+        },
+    );
+    fingers(&mut widget, 7.0);
+    assert_eq!(
+        widget.scroll_offset(),
+        1,
+        "seven pixels back show part of the row above the live screen"
+    );
+    frame(&mut widget);
+    let mut regions = Vec::new();
+    let offers = ui::scroll_copy::accepting(|| widget.collect_damage(&mut regions));
+    assert_eq!(offers.len(), 1, "the scroll is offered as a copy");
+    assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, 7.0));
+    let area: f64 = regions.iter().map(Rect::area).sum();
+    assert!(
+        area * 4.0 < viewport.area(),
+        "a scroll repaints a strip of the terminal, not {area} of {} px: {regions:?}",
+        viewport.area()
+    );
+    widget.mark_drawn();
+    // Back to the live output, exactly: the rows stand where they started.
+    fingers(&mut widget, -7.0);
+    assert_eq!(widget.scroll_offset(), 0);
+    let lines = widget.visible_lines();
+    assert!(
+        lines.iter().any(|line| line.contains("line 199")),
+        "the live output is in view: {lines:?}"
+    );
+}
+
+/// A program's bell is visible: the pane flashes, and the flash asks for the
+/// frames that fade it. With the bell off it changes nothing — which is what
+/// a bell used to do even when it was on.
+#[test]
+fn the_bell_flashes_the_pane_when_it_is_turned_on() {
+    use crate::preferences::{Bell, Preferences};
+
+    let (mut widget, _writes) = build_test_widget();
+    widget.use_preferences(Preferences::none());
+    widget.feed(b"ready\x07");
+    assert_eq!(
+        widget.bell_flash_for_test(),
+        0.0,
+        "the bell is off by default: nothing happens"
+    );
+
+    widget.set_bell(Bell::Visual);
+    widget.feed(b"\x07");
+    assert!(
+        widget.bell_flash_for_test() > 0.0,
+        "the bell flashes the pane"
+    );
+    assert!(
+        widget.needs_animation_frame(),
+        "the flash keeps frames coming while it fades"
+    );
+}
+
+/// Copy-on-select is remembered by the settings store, so the next terminal
+/// opens with it on instead of the person turning it on again.
+#[test]
+fn copy_on_select_is_kept_for_the_next_terminal() {
+    use crate::preferences::Preferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let (mut first, _writes) = build_test_widget();
+    first.use_preferences(Preferences::at(&path));
+    assert!(!first.selects_to_copy_for_test(), "off until asked");
+    first.set_select_to_copy(true);
+
+    let (mut second, _writes) = build_test_widget();
+    second.use_preferences(Preferences::at(&path));
+    assert!(
+        second.selects_to_copy_for_test(),
+        "a new terminal opens with the choice already made"
     );
 }

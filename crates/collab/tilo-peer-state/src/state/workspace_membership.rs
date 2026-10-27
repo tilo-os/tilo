@@ -2,7 +2,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{ActionKind, Change, Grant, GrantId, Lifetime, Subject, TreePath, roles};
+use tilo_action_policy::{Change, GrantId, Subject, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -107,60 +107,6 @@ impl StatePeer {
             _ => Err("not a governance grant command".into()),
         }
     }
-
-    /// Change an open task's grant set, for a person who may work in the
-    /// room. A task's grants only bound the work done in it, so changing
-    /// them needs no administration.
-    fn apply_task_grant_command(
-        &mut self,
-        caller: &DeviceCert,
-        command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let member = self.permissions(caller.device_public_key, now)?;
-        let room = TreePath::room(&self.core.room);
-        if !member.allows(&room, ActionKind::Undoable, now) {
-            return Err("changing a task's grants needs write authority in the room".into());
-        }
-        let (WorkspaceMembershipCommand::GrantForTask { task, .. }
-        | WorkspaceMembershipCommand::RevokeForTask { task, .. }) = command
-        else {
-            return Err("not a task grant command".into());
-        };
-        let doc = self
-            .core
-            .room_doc
-            .as_deref()
-            .ok_or("workspace task room document is absent")?;
-        if !tilo_desktop_model::projection::open_task_ids(doc).contains(task) {
-            return Err("the task is not open".into());
-        }
-        match command {
-            WorkspaceMembershipCommand::GrantForTask {
-                task,
-                node,
-                kinds,
-                answer,
-            } => {
-                let grant = Grant::new(
-                    crate::workspace_membership::task_grant_id(task, node).0,
-                    Subject::Task(task.clone()),
-                    room.join(node),
-                    *kinds,
-                    *answer,
-                    Subject::Person(member.person),
-                )
-                .with_lifetime(Lifetime::Task(task.clone()));
-                self.governance_mut()
-                    .put_governed_grants(&[grant], key, now)
-            }
-            WorkspaceMembershipCommand::RevokeForTask { grant, .. } => self
-                .governance_mut()
-                .remove_governed_grants(std::slice::from_ref(grant), key, now),
-            _ => Err("not a task grant command".into()),
-        }
-    }
 }
 impl PeerWorkspace<'_> {
     /// Check that this admitted device may grant in the room now.
@@ -212,14 +158,8 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_bot_command(caller, command, key, now) {
             return outcome;
         }
-        if matches!(
-            command,
-            WorkspaceMembershipCommand::GrantForTask { .. }
-                | WorkspaceMembershipCommand::RevokeForTask { .. }
-        ) {
-            return self
-                .peer
-                .apply_task_grant_command(caller, command, key, now);
+        if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
+            return outcome;
         }
         if matches!(
             command,
@@ -271,8 +211,8 @@ impl PeerWorkspaceMut<'_> {
             }
             WorkspaceMembershipCommand::RemoveAgent { .. } => false,
             WorkspaceMembershipCommand::GrantAppAuthorship { .. }
-            | WorkspaceMembershipCommand::GrantForTask { .. }
-            | WorkspaceMembershipCommand::RevokeForTask { .. }
+            | WorkspaceMembershipCommand::RetiredGrantForTask { .. }
+            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. }
             | WorkspaceMembershipCommand::Grant { .. }
             | WorkspaceMembershipCommand::Revoke { .. }
             | WorkspaceMembershipCommand::InstallBot(_)
@@ -283,7 +223,9 @@ impl PeerWorkspaceMut<'_> {
             | WorkspaceMembershipCommand::SetBotAppearance { .. }
             | WorkspaceMembershipCommand::AdoptBot(_)
             | WorkspaceMembershipCommand::RequestBot(_)
-            | WorkspaceMembershipCommand::WithdrawBotRequest { .. } => {
+            | WorkspaceMembershipCommand::WithdrawBotRequest { .. }
+            | WorkspaceMembershipCommand::InstallApp(_)
+            | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err("a command entered the agent membership branch".into());
             }
         };

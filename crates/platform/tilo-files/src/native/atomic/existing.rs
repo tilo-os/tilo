@@ -33,11 +33,6 @@ impl ExistingCommitError {
         io::Error::new(self.source.kind(), self)
     }
     /// Revalidate and repeat data/name barriers using retained authority only.
-    ///
-    /// # Errors
-    ///
-    /// Returns `self` unchanged without retained custody, or with the new error
-    /// when revalidation or a barrier fails again.
     pub fn retry_commit(mut self) -> Result<(), Self> {
         let Some(custody) = &self.custody else {
             return Err(self);

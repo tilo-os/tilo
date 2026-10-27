@@ -3,7 +3,7 @@
 //! `tilo-legacy` starts it on demand (`tilo-legacy serve`). It holds the
 //! VM's lock, owns the host halves of the VM's devices (the Wayland
 //! forwarder and one `virtiofsd` per share), carries out the
-//! [`Lifecycle`](crate::lifecycle::Lifecycle)'s actions, grows and shrinks the
+//! [`Lifecycle`]'s actions, grows and shrinks the
 //! balloon, and exits once the VM is on disk. Its lifetime is the VM's waking
 //! hours.
 

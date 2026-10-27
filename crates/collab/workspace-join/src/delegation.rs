@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Largest agent id and label.
 pub const MAX_DELEGATE_TEXT_BYTES: usize = 64;
-/// Rooms one delegation may name.
 pub const MAX_DELEGATED_ROOMS: usize = 16;
-/// Apps one delegation may name.
 pub const MAX_DELEGATED_APPS: usize = 64;
 /// Longest window of a bot delegation.
 pub const MAX_BOT_DELEGATION_NS: u64 = 30 * 24 * 3600 * 1_000_000_000;
@@ -31,7 +29,6 @@ const DELEGATION_DOMAIN: &[u8] = b"tilo-delegation-v2\0";
 // internally tagged enum.
 #[serde(rename_all = "snake_case")]
 pub enum Delegate {
-    /// An agent.
     Agent {
         /// Stable id, 1..=[`MAX_DELEGATE_TEXT_BYTES`] bytes.
         agent_id: String,
@@ -230,9 +227,6 @@ impl Delegation {
 
     /// Check the delegation was signed by `user_public_key` and is valid at
     /// `now_ns`.
-    ///
-    /// # Errors
-    /// The first reason it is not usable.
     pub fn verify(&self, user_public_key: &[u8; 32], now_ns: u64) -> Result<(), DelegationError> {
         if &self.user_public_key != user_public_key {
             return Err(DelegationError::WrongUser);
@@ -260,7 +254,6 @@ impl Delegation {
             .any(|room| crate::room_workspace_id(room).is_ok_and(|id| id == workspace_id))
     }
 
-    /// Whether the delegation names room `room`.
     #[must_use]
     pub fn permits_room(&self, room: &str) -> bool {
         crate::room_workspace_id(room).is_ok_and(|id| self.permits_workspace(id))
@@ -291,7 +284,6 @@ impl Delegation {
 /// everything a [`Delegation`] states except the device and the times.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegateProposal {
-    /// Whom the delegation will name.
     pub delegate: Delegate,
     /// Display name.
     pub label: String,
@@ -330,9 +322,6 @@ impl DelegateProposal {
     /// Whether `delegation` grants no more than this proposal: the same
     /// delegate, label and colour, rooms and apps within it, and an expiry
     /// no later.
-    ///
-    /// # Errors
-    /// What is wider than proposed.
     pub fn admits(&self, delegation: &Delegation) -> Result<(), &'static str> {
         if delegation.delegate != self.delegate
             || delegation.label != self.label

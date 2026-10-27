@@ -28,6 +28,7 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
                     kind: AppKind::Other("Test".into()),
                     label: "s".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: StateWidth::Normal,
@@ -35,11 +36,12 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
             focus_history: Vec::new(),
         }],
     };
-    let ws = Workspace {
-        id: ws_id,
-        name: "Test".into(),
-        strips: vec![strip],
-        ..Workspace::new(ws_id, String::new())
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, String::new());
+        workspace.id = ws_id;
+        workspace.name = "Test".into();
+        workspace.strips = vec![strip];
+        workspace
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -282,14 +284,7 @@ fn window_close_retires_without_input_and_undo_during_fade_is_live() {
             "a retained visual cannot be harvested as a window"
         );
     }
-    std::thread::sleep(
-        theme
-            .tokens
-            .motion
-            .durations
-            .base()
-            .saturating_add(Duration::from_millis(40)),
-    );
+    std::thread::sleep(past_window_close());
     host.update(&AutoCommit::new(), &automerge::ROOT);
     let _ = host.take_structure_dirty();
     assert!(
@@ -383,6 +378,7 @@ fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: StateWidth::Normal,
@@ -615,7 +611,10 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                         "/untouched/different.txt".into();
                 }
                 if cancellation == "room" {
-                    tree.desktop.workspaces[0].set_room(crate::shell::state::RoomId::new());
+                    tree.desktop.workspaces[0] = crate::shell::state::rehomed(
+                        &tree.desktop.workspaces[0],
+                        crate::shell::state::RoomId::new(),
+                    );
                 }
                 if cancellation == "app" {
                     for tab in tree
@@ -888,6 +887,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     kind: AppKind::Browser,
                     label: "second".into(),
                 },
+                app_title: None,
             },
             Tab {
                 id: 3,
@@ -896,6 +896,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     kind: AppKind::Terminal,
                     label: "third".into(),
                 },
+                app_title: None,
             },
         ]);
         strip.window_groups.push(make_stub_group(201, "Other-A"));
@@ -1032,7 +1033,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         let mut peer = WorkspaceTree::bootstrap_demo();
         peer.set_salt_override(PEER_SALT);
         let peer_workspace = peer.desktop.active;
-        assert!(peer.set_room(peer_workspace, room));
+        assert!(peer.stand_in_room(peer_workspace, room));
         // The fixed ids below model windows this peer owns in the shared
         // room. They predate this process's global allocator, so make the
         // fixture publish them instead of treating them as pre-join tabs.
@@ -1049,6 +1050,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                 kind,
                 label: title.into(),
             },
+            app_title: None,
         };
         peer.desktop
             .workspaces
@@ -1159,14 +1161,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                 .is_some_and(|group| group.is_closing()),
             "resync keeps only the dying visual, never canonical window state"
         );
-        std::thread::sleep(
-            Theme::dark()
-                .tokens
-                .motion
-                .durations
-                .base()
-                .saturating_add(Duration::from_millis(40)),
-        );
+        std::thread::sleep(past_window_close());
         let _ = host.take_structure_dirty();
         assert!(
             host.group_at_for_tests(strip_id, 0).is_none(),
@@ -1390,6 +1385,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
                     kind: AppKind::Browser,
                     label: "second".into(),
                 },
+                app_title: None,
             });
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.focus_window_on_strip(strip_id, group_id, 2));
@@ -1458,6 +1454,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                     app_id: "com.openai.chatgpt".into(),
                     surface_id: 41,
                 },
+                app_title: None,
             },
             Tab {
                 id: 2,
@@ -1466,6 +1463,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                     app_id: "com.openai.chatgpt".into(),
                     surface_id: 42,
                 },
+                app_title: None,
             },
         ];
         group.active_tab = 1;
@@ -1527,6 +1525,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                 app_id: "org.example.Editor".into(),
                 surface_id: 51,
             },
+            app_title: None,
         }];
         group.active_tab = 1;
         tree.seed_doc_from_cache();
@@ -1536,11 +1535,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         layout_close_fixture(&mut host, &theme);
         // A window leaves on the named window motion, not on a theme's
         // duration token: wait past exactly that.
-        let past_close = ui::motion::WindowMotion::OPEN.settle_time(
-            ui::motion::Direction::Exit,
-            ui::tokens::EffectiveMotion::default(),
-            ui::tokens::MotionSource::Pointer,
-        ) + Duration::from_millis(60);
+        let past_close = past_window_close();
 
         // The close button: the widget starts retiring, the shell asks the
         // client, which has not exited.
@@ -1601,7 +1596,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         );
         assert_eq!(
             host.active_kind_filter,
-            vec![ResourceKind::Application, ResourceKind::HostApplication],
+            vec![ResourceKind::Application],
             "the group + is an app picker, not generic search"
         );
         assert!(host.palette_visible(), "the picker opens immediately");
@@ -1669,4 +1664,108 @@ fn an_explicitly_chosen_window_is_revealed_after_the_strip_was_panned_away() {
     pan_away(&mut host);
     settle(&mut host);
     assert!(!first_visible(&mut host), "the reveal happens once");
+
+    // Another of the person's devices showing the window here, by tab id.
+    assert!(!chrome.borrow_mut().show_tab(999_999), "a tab not here");
+    assert!(chrome.borrow_mut().show_tab(1));
+    settle(&mut host);
+    assert!(first_visible(&mut host), "a window moved here is revealed");
+}
+
+#[test]
+fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
+    let theme = Theme::dark();
+    let (mut tree, first_strip, _) = one_group_seed();
+    let other_strip = StripId::new();
+    tree.desktop.workspaces[0].strips.push(Strip {
+        id: other_strip,
+        name: "There".into(),
+        window_groups: vec![make_stub_group(301, "Mail")],
+    });
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let frame = |host: &mut ShellOverlayHost| {
+        let _ = ui::widget::Widget::take_structure_dirty(host);
+        layout_close_fixture(host, &theme);
+        host.tick_scroll_active_into_view_for_tests();
+        layout_close_fixture(host, &theme);
+    };
+    frame(&mut host);
+    assert_eq!(
+        host.strip_deck().map(ui::widget::StripDeck::shown),
+        Some(0),
+        "fixture: the person is on the first strip"
+    );
+    assert!(!host.strip_deck_moving(), "fixture: the deck is at rest");
+
+    // The window arrives with nobody's hand on anything: beside the one
+    // the person was in on the other strip.
+    let opened = {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        crate::shell::tab_binding::place_tab(
+            &mut tree,
+            Tab {
+                id: 302,
+                title: "Report".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: "Report".into(),
+                },
+                app_title: None,
+            },
+            crate::shell::tab_binding::Placement::RightOf(301),
+        )
+    };
+    chrome.borrow_mut().bump();
+    // The frame that reconciles the desktop with the tree, read at its own
+    // instant: on a loaded machine the slide may be over by the time a
+    // running clock is looked at.
+    let frozen = ui::motion::testing::frozen();
+    let _ = ui::widget::Widget::take_structure_dirty(&mut host);
+    let deck = host.strip_deck().expect("a strip deck");
+    assert_eq!(deck.shown(), 1, "the view goes to the other strip");
+    assert!(
+        deck.position() < 1.0 - f64::EPSILON,
+        "it slides there rather than jumping: the deck stands at {}",
+        deck.position()
+    );
+    drop(frozen);
+    frame(&mut host);
+    let state = chrome.borrow();
+    let tree = state.tree();
+    assert_eq!(
+        tree.desktop.active_strip.get(&tree.desktop.active),
+        Some(&other_strip),
+        "the other strip is the active one, not {first_strip:?}"
+    );
+    let group = tree
+        .desktop
+        .active_group_for(other_strip)
+        .expect("a focused group there");
+    let shown = tree.desktop.workspaces[0]
+        .strips
+        .iter()
+        .find(|s| s.id == other_strip)
+        .and_then(|s| s.window_groups.iter().find(|g| g.id == group))
+        .map(|g| g.active_tab);
+    drop(tree);
+    drop(state);
+    assert_eq!(shown, Some(opened), "the new window is the focused one");
+}
+
+/// When a window closed by pointer has gone: its content has faded out and
+/// its place on the strip has shut, with a margin for a slow runner.
+fn past_window_close() -> Duration {
+    let fade = ui::motion::WindowMotion::OPEN.settle_time(
+        ui::motion::Direction::Exit,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+    );
+    let slot = ui::motion::WindowMotion::MOVE.settle_time(
+        ui::motion::Direction::Enter,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+    );
+    fade.max(slot).saturating_add(Duration::from_millis(60))
 }

@@ -10,13 +10,18 @@ import unittest
 CI = Path(__file__).resolve().parents[1]
 
 
-def run_lane(root, fail=""):
+OWNER = "ab" * 32
+
+
+def run_lane(root, fail="", owner=OWNER, lint_status=0):
     """Run the real lane in `root` with stub jobs; `fail` is shell run first in each job."""
     ci = root / "dist/ci"
     ci.mkdir(parents=True)
     for name in ("package-lane.sh", "package-targets.sh", "package-targets.txt"):
         shutil.copy2(CI / name, ci / name)
-    (ci / "fetch-package-env-runtime.sh").write_text("#!/bin/sh\n")
+    (ci / "fetch-package-env-runtime.sh").write_text("#!/bin/sh\ntouch fetched\n")
+    (root / "dist/rpm").mkdir(parents=True)
+    (root / "dist/rpm/test-rpmlint-config.py").write_text(f"raise SystemExit({lint_status})\n")
     # A container engine attached to the job drains stdin; the stub does too.
     job = ci / "run-package-job.sh"
     job.write_text('#!/bin/sh\ncat >/dev/null\n' + fail
@@ -28,6 +33,9 @@ def run_lane(root, fail=""):
         (bin_dir / tool).write_text("#!/bin/sh\n")
         (bin_dir / tool).chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "TMPDIR": str(root)}
+    env.pop("TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY", None)
+    if owner is not None:
+        env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
     return subprocess.run(["bash", str(ci / "package-lane.sh"), "amd64"], cwd=root, env=env,
                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 
@@ -57,6 +65,16 @@ class PackageLaneTests(unittest.TestCase):
             self.assertIn("failed userspaces: nix", result.stderr)
             self.assertIn("fedora-44", built(root))
             self.assertNotIn("nix", built(root))
+
+    def test_a_missing_trust_root_or_stale_lint_exception_fails_before_fetching(self):
+        for owner, lint_status in ((None, 0), ("0" * 64, 0), (OWNER, 1)):
+            with self.subTest(owner=owner, lint_status=lint_status), \
+                    tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                result = run_lane(root, owner=owner, lint_status=lint_status)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((root / "fetched").exists())
+                self.assertEqual(built(root), [])
 
 
 if __name__ == "__main__":

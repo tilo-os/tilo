@@ -279,7 +279,6 @@ fn set_col_width(doc: &mut AutoCommit, t: &ObjId, cid: &str, w: f64) {
 /// to submit as an action.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TableEdit {
-    /// Cell `(row, column)` now reads `text`.
     SetCell {
         row: usize,
         column: usize,

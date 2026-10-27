@@ -11,7 +11,7 @@ const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 #[test]
 fn osk_shots_flag_writes_png() {
-    let bin = env!("CARGO_BIN_EXE_osk");
+    let bin = tilo_test_env::package_binary!("osk");
     let out = std::env::temp_dir().join(format!("osk-shots-smoke-{}.png", std::process::id()));
     let _ = fs::remove_file(&out);
 

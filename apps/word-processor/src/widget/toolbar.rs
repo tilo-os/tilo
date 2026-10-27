@@ -24,12 +24,16 @@ pub(super) enum ToolAction {
     Italic,
     Underline,
     Strike,
-    FontCycle,
+    /// Set the selection's font family (a row of the Format menu's fonts).
+    SetFont(ui::richtext::FontFamily),
     FontSizeDec,
     FontSizeInc,
+    /// Make the selected paragraphs a bulleted list, or plain paragraphs
+    /// again when they already are one.
+    BulletList,
+    NumberedList,
     TextColor(Option<[u8; 3]>),
     Highlight(Option<[u8; 3]>),
-    /// Open the text-colour swatch grid.
     TextColorPalette,
     /// Open the highlight swatch grid.
     HighlightPalette,
@@ -47,7 +51,6 @@ pub(super) enum ToolAction {
     ToggleRuler,
     ToggleOutline,
     InsertToc,
-    NewMenu,
 }
 
 impl ToolAction {
@@ -68,81 +71,12 @@ impl ToolAction {
             ToolAction::InsertImage => Icon::Image,
             ToolAction::InsertTable => Icon::Table,
             ToolAction::InsertToc => Icon::ListTree,
-            ToolAction::NewMenu => Icon::FilePlus,
             ToolAction::FontSizeDec => Icon::AArrowDown,
             ToolAction::FontSizeInc => Icon::AArrowUp,
             ToolAction::ToggleRuler => Icon::Ruler,
+            ToolAction::BulletList => Icon::List,
+            ToolAction::NumberedList => Icon::ListOrdered,
             _ => return None,
         })
-    }
-
-    /// Whether the command changes the document (and so ends an undo step).
-    /// View toggles and commands that only open a menu or a picker do not.
-    pub(super) fn edits_document(self) -> bool {
-        !matches!(
-            self,
-            ToolAction::ToggleStyles
-                | ToolAction::ToggleRuler
-                | ToolAction::ToggleOutline
-                | ToolAction::NewMenu
-                | ToolAction::TextColorPalette
-                | ToolAction::HighlightPalette
-                | ToolAction::Hyperlink
-                | ToolAction::InsertImage
-        )
-    }
-}
-
-/// One entry of the toolbar this frame: a command (with its label, and
-/// whether it is a toggle that is on), a group separator or the flexible
-/// space that pushes the view toggles to the trailing edge.
-#[derive(Clone, Debug, PartialEq)]
-pub(super) enum ToolEntry {
-    Command {
-        action: ToolAction,
-        label: String,
-        active: Option<bool>,
-    },
-    Separator,
-    Spacer,
-}
-
-impl ToolEntry {
-    pub(super) fn command(action: ToolAction, label: impl Into<String>) -> Self {
-        ToolEntry::Command {
-            action,
-            label: label.into(),
-            active: None,
-        }
-    }
-
-    pub(super) fn toggle(action: ToolAction, label: impl Into<String>, on: bool) -> Self {
-        ToolEntry::Command {
-            action,
-            label: label.into(),
-            active: Some(on),
-        }
-    }
-
-    /// Two entries with the same shape differ at most in a toggle's state,
-    /// which the toolbar can take without being rebuilt.
-    pub(super) fn same_shape(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                ToolEntry::Command {
-                    action: a,
-                    label: la,
-                    active: aa,
-                },
-                ToolEntry::Command {
-                    action: b,
-                    label: lb,
-                    active: ab,
-                },
-            ) => a == b && la == lb && aa.is_some() == ab.is_some(),
-            (ToolEntry::Separator, ToolEntry::Separator)
-            | (ToolEntry::Spacer, ToolEntry::Spacer) => true,
-            _ => false,
-        }
     }
 }
