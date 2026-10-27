@@ -541,7 +541,7 @@ const WARM_DEADLINE: Duration = Duration::from_secs(10);
 
 /// What the frame that just submitted does about one direct output's pending page flip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FlipWait {
+pub(super) enum FlipWait {
     /// The output paces the loop: the frame completes when its flip retires.
     Await,
     /// A slower output: its flip retires through a later frame's drain, and until then
@@ -675,7 +675,7 @@ fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectEligibility<'a> {
+pub(super) struct DirectEligibility<'a> {
     hardware_cursor: bool,
     event_pageflips: bool,
     renderer_pci: &'a str,
@@ -688,7 +688,7 @@ struct DirectEligibility<'a> {
 /// A rotated output is eligible: its final pass turns the frame on the GPU
 /// (`shell::render::orientation`). So is an ICC-profiled one: the same pass maps it through
 /// the profile (`shell::render::icc_lut`).
-fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
+pub(super) fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
     if !input.hardware_cursor {
         return Some("hardware cursor plane is unavailable");
     }
@@ -883,7 +883,7 @@ struct PaintScanoutSample {
 
 /// Apply one reconfiguration to a scanout set. Shared by the presenter (normal case, render
 /// thread) and by [`DrmBackend`] itself for the inline path before the presenter splits off — one implementation, so hotplug behaves the same on either side.
-fn apply_scanout_command(
+pub(super) fn apply_scanout_command(
     cmd: ScanoutCommand,
     scanouts: &mut Vec<ScanoutEntry>,
     outputs: &mut Vec<Output>,
@@ -1618,7 +1618,7 @@ struct DirectRender {
 
 /// The direct renders of one frame, recorded as one frame however many outputs it took.
 #[derive(Default)]
-struct DirectFrame {
+pub(super) struct DirectFrame {
     outputs: usize,
     render_us: u128,
     sparse: bool,
@@ -2629,7 +2629,7 @@ fn output_local_clip(
 /// changing (`busy`), so that its card watch asks for a frame on the next
 /// event. Returns how many completions were read. `master`: the session
 /// holds the CRTCs, so commits may be made.
-fn service_links(
+pub(super) fn service_links(
     scanouts: &mut [ScanoutEntry],
     master: bool,
     busy: &std::sync::atomic::AtomicBool,
@@ -2686,7 +2686,7 @@ fn drain_page_flip_completions(scanouts: &mut [ScanoutEntry]) -> usize {
 /// to: its link when it completes the link's own commit (a modeset or its
 /// vblank proof), else the direct targets' ring when the output renders
 /// direct, the dumb pair otherwise.
-fn route_flip_completions(
+pub(super) fn route_flip_completions(
     scanouts: &mut [ScanoutEntry],
     completed: &[(u64, smithay::reexports::drm::control::crtc::Handle, u32)],
 ) {

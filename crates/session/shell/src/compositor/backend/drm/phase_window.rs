@@ -1,56 +1,58 @@
 //! Frame pacing: the phase window a presenter reports its timing through, and
 //! the flush that emits it.
 
-use std::time::{Duration, Instant};
-
-use super::paint;
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 /// How often the presenter reports its frame timing.
+#[cfg(test)]
 const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
-struct PhaseWindow {
-    started: Instant,
-    frames: u64,
-    direct_frames: u64,
-    direct_dropped: u64,
-    flip_completions: u64,
-    submit_us: u128,
-    gpu_readback_map_us: u128,
-    settle_us: u128,
-    cpu_swizzle_us: u128,
-    backdrop_us: u128,
+pub(super) struct PhaseWindow {
+    pub(super) started: Instant,
+    pub(super) frames: u64,
+    pub(super) direct_frames: u64,
+    pub(super) direct_dropped: u64,
+    pub(super) flip_completions: u64,
+    pub(super) submit_us: u128,
+    pub(super) gpu_readback_map_us: u128,
+    pub(super) settle_us: u128,
+    pub(super) cpu_swizzle_us: u128,
+    pub(super) backdrop_us: u128,
     /// Render-thread time from a direct frame's start to its completed GPU
     /// work, summed and at most, over the window's direct frames.
-    direct_us: u128,
-    max_direct_us: u128,
+    pub(super) direct_us: u128,
+    pub(super) max_direct_us: u128,
     /// Direct frames the renderer repaired sparsely rather than in full.
-    direct_sparse_frames: u64,
+    pub(super) direct_sparse_frames: u64,
     /// Frames an output showed by flipping a fullscreen client's own buffer,
     /// rendering nothing.
-    client_scanout_frames: u64,
-    readback_bytes: u64,
-    output_bytes: u64,
+    pub(super) client_scanout_frames: u64,
+    pub(super) readback_bytes: u64,
+    pub(super) output_bytes: u64,
     /// Passes the readback presenter made over an output's pixels on the CPU (rotate and
     /// swizzle or PQ-encode, ICC copy, qcms), summed over the window's frames and outputs.
     /// Zero while every output renders direct.
-    cpu_pixel_passes: u64,
+    pub(super) cpu_pixel_passes: u64,
     /// Wall time around the complete renderer bridge call. This remains
     /// available when a failed/timed-out paint cannot publish its detailed
     /// Vello phase record.
-    bridge_us: u128,
+    pub(super) bridge_us: u128,
     /// Wall time after the bridge returns until the scanout submission path
     /// completes (dumb-buffer cursor work, dirtyfb/page-flip included).
-    scanout_us: u128,
+    pub(super) scanout_us: u128,
     /// Legacy readback attempts which returned without detailed bridge phase
     /// timing. They are still frames attempted by the physical presenter and
     /// must not disappear from a performance incident report.
-    unprofiled_frames: u64,
+    pub(super) unprofiled_frames: u64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::backend::drm::{DirectFrame, paint};
 
     fn timing(value: u64) -> paint::BridgePhaseTiming {
         paint::BridgePhaseTiming {

@@ -107,7 +107,12 @@ impl RetainedGpuTarget {
         #[cfg(target_os = "linux")]
         crate::shader_seed::observe_device(gpu.adapter.get_info());
         let seed = pipeline_seed_to_publish(gpu);
-        let mut renderer = Renderer::new(
+        // Atomic tile allocation otherwise sums Area coverage in GPU scheduling order.
+        // The same unchanged desktop can then round to different pixels in dense and
+        // retained renders. Keep their segment order stable on the adaptive shell path;
+        // Vello still preserves its pinned-budget and overflow-validation guards. The
+        // renderer is made in that order, so its shader set compiles once.
+        let mut renderer = Renderer::new_with_canonical_segment_order(
             &gpu.device,
             RendererOptions {
                 use_cpu: false,
@@ -118,13 +123,6 @@ impl RetainedGpuTarget {
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
-        // Atomic tile allocation otherwise sums Area coverage in GPU scheduling order.
-        // The same unchanged desktop can then round to different pixels in dense and
-        // retained renders. Keep their segment order stable on the adaptive shell path;
-        // Vello still preserves its pinned-budget and overflow-validation guards.
-        renderer
-            .enable_canonical_segment_order(&gpu.device)
-            .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
         // Once the desktop got lighter (windows closed) and stayed so, the
         // scratch its busiest scene grew comes back: the pool drops buffers
         // no frame takes and the bump reservation comes down, with headroom.

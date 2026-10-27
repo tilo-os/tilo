@@ -1,6 +1,6 @@
 //! What makes one output eligible for direct scanout.
 
-use super::DirectEligibility;
+use super::{DirectEligibility, direct_scanout_rejection};
 
 fn eligible() -> DirectEligibility<'static> {
     DirectEligibility {
