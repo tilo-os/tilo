@@ -277,13 +277,11 @@ impl ShellNetwork {
         if hosts.is_empty() {
             return None;
         }
-        let mut sites: Vec<url::Url> = by.cloned().into_iter().collect();
-        sites.extend(
-            self.hosted_sites
-                .community()
-                .filter(|community| Some(community) != by),
-        );
-        sites.into_iter().find_map(|entry| {
+        let community = self
+            .hosted_sites
+            .community()
+            .filter(|community| Some(community) != by);
+        by.cloned().into_iter().chain(community).find_map(|entry| {
             let site = self
                 .wait_on(async move { hosted_sites::resolve_site(&entry).await })
                 .ok()?
