@@ -292,6 +292,14 @@ as search's:
 - **The document loads when it is needed:** for the first write, for a view that reads a
   field the index lacks, or in the background after the first frame. Opening never waits for the
   whole document.
+- **Where it lives, for now.** The index should belong to the platform's storage service, since apps
+  own no storage and search must read it without a second copy. Today that service holds the
+  committed documents only of rooms a workspace host governs. Every other room (minted on this
+  device, joined by direct invite, the person's own) is opened by the app itself, from its own
+  files. So the index stays app-local until every room's committed documents live in one storage
+  service. That unification is the shell's own planned work (`docs/architecture/workspace.md`,
+  "What is still doubled"; `storage.md` §5, §13.3). It then moves there, with batched page
+  reads to keep the first frame within budget.
 - **On disk, paged, and shared.** The index is not held whole in memory. The search host and the
   app read the same files, so the app has no second copy.
 
