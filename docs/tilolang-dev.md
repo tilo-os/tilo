@@ -124,10 +124,10 @@ tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json --build-runtim
 
 `tilolang dev` then:
 
-1. builds `tilolang-app` with the nested profile through `cargo` (on the build
-   server), and again on every change of `apps/tilolang`, `tilolang-tilo`,
-   `tilolang-runtime` or `tilolang`; a failed build leaves the apps on the last
-   good runtime;
+1. builds `tilolang-app` thin on the build server (`t outputs tilolang-runtime`,
+   `dist/dev/tilolang-runtime-build.sh`), and again on every change of
+   `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`; a failed
+   build leaves the apps on the last good runtime;
 2. bakes the binary into a runtime bundle signed by a key the launcher trusts;
 3. packs it as a runtime package (`so.tilo.runtime.tilolang.dev`, providing
    `tilolang/0.1.0+dev`) and installs it with `tilo-install`;
@@ -141,12 +141,12 @@ new build of it.
 Every new build re-bakes and reinstalls the bundle, and the apps restart on it. Save `.tl` files as before: those builds name the same runtime
 and are taken in place.
 
-The binary is a full build of `tilolang-app`, without the `thin` feature, about
-110 MB optimised (an unoptimised one is 355 MB). A thin build
-must come from the same Cargo graph as the session's `libruntime_dylib.so`, because a
-Rust dylib's symbols carry crate hashes. A full build links everything it needs and
-carries no such tie. The lazily opened engines (highlighting, ad blocking) are features
-the full build does not turn on.
+The binary is built thin, as the session's own runtime bundle carries it: a few
+megabytes, linked against the session's `libruntime_dylib.so`. A thin build runs only on
+the runtime library of its own Cargo graph, because a Rust dylib's symbols carry crate
+hashes, so the build server builds it with the default collection's runtime plan, as the
+nested session's build does, and the tool refuses a build whose library is not the one
+the session runs: start the session on a build of the same checkout.
 
 ### Local cargo or the build server
 
