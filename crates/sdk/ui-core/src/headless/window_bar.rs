@@ -732,6 +732,10 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
 }
 
 #[cfg(test)]
+#[path = "window_bar_layout_tests.rs"]
+mod layout_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -897,7 +901,7 @@ mod tests {
     }
 
     /// An app that is only its name.
-    struct NamedApp;
+    pub(super) struct NamedApp;
 
     impl Widget for NamedApp {
         fn name(&self) -> &str {
@@ -1897,7 +1901,7 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    struct HostedReset;
+    pub(super) struct HostedReset;
 
     impl Drop for HostedReset {
         fn drop(&mut self) {
