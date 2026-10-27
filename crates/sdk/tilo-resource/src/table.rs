@@ -1239,7 +1239,7 @@ pub fn read_fields(
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
     let keys: Vec<Cow<'static, str>> = record.fields.iter().map(FieldDesc::storage_key).collect();
-    let storage: Vec<&str> = keys.iter().map(|key| key.as_ref()).collect();
+    let storage: Vec<&str> = keys.iter().map(std::convert::AsRef::as_ref).collect();
     let mut slots = vec![None; keys.len()];
     crate::model::fill_slots(doc, obj, &storage, &mut slots);
     (record.build)(
@@ -1268,7 +1268,7 @@ pub(crate) fn read_fields_merged(
     out: &mut dyn Any,
 ) -> Result<(), ModelError> {
     let keys: Vec<Cow<'static, str>> = record.fields.iter().map(FieldDesc::storage_key).collect();
-    let storage: Vec<&str> = keys.iter().map(|key| key.as_ref()).collect();
+    let storage: Vec<&str> = keys.iter().map(std::convert::AsRef::as_ref).collect();
     let mut slots = vec![None; keys.len()];
     for obj in objs {
         let mut found = vec![None; keys.len()];

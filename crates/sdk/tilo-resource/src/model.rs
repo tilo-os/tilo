@@ -1048,6 +1048,20 @@ pub fn field_key(variant: &str, field: &str) -> String {
     key
 }
 
+/// Delete the key `key` of the map `obj`: what a data enum's field edit uses
+/// to remove the flat key an older version stored the field under, without
+/// the derive's expansion needing [`automerge::transaction::Transactable`]
+/// in scope where the enum is declared.
+///
+/// # Errors
+/// Returns the document's write error.
+#[doc(hidden)]
+#[inline(never)]
+pub fn delete_key(doc: &mut Doc, obj: &ObjId, key: &str) -> Result<(), ModelError> {
+    doc.delete(obj, key)?;
+    Ok(())
+}
+
 fn escape_into(text: &str, out: &mut String) {
     for ch in text.chars() {
         match ch {

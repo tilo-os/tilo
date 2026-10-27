@@ -425,8 +425,10 @@ fn a_field_edit_of_an_inactive_variant_is_kept_as_unused_history() {
     );
     let doc = replica.doc();
     let (_, matcher) = doc.get(automerge::ROOT, "matcher").unwrap().unwrap();
-    let (automerge::Value::Scalar(port), _) = doc.get(&matcher, "port").unwrap().unwrap() else {
-        panic!("the port stays a scalar");
+    let (automerge::Value::Scalar(port), _) =
+        doc.get(&matcher, "$field/host/port").unwrap().unwrap()
+    else {
+        panic!("the port is stored under its variant");
     };
     assert!(
         matches!(
@@ -668,91 +670,13 @@ fn a_card_of_the_older_shapes_migrates() {
     );
 }
 
-/// A field edit names the variant and the field (`matcher.host.port`), so
-/// two edits of one variant's different fields merge; the discriminant is
-/// written only when the variant changes.
-#[test]
-fn field_edits_of_one_variant_merge_field_by_field() {
-    let mut left = Replica::<Rules>::new();
-    left.apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
-        .unwrap();
-    let mut right = left.fork();
-    let field = |variant: &str, name: &str, value: serde_json::Value| {
-        Edit::new(
-            vec![
-                Segment::Field("matcher".into()),
-                Segment::Field(variant.into()),
-                Segment::Field(name.into()),
-            ],
-            EditOp::Set { value },
-        )
-    };
-    left.apply(Invoke::edit(&field("host", "name", serde_json::json!("tilo.example"))).unwrap())
-        .unwrap();
-    right
-        .apply(Invoke::edit(&field("host", "port", serde_json::json!(8080))).unwrap())
-        .unwrap();
-    left.sync_with(&mut right).unwrap();
-    assert_eq!(
-        left.state().unwrap().matcher,
-        Some(Matcher::Host {
-            name: "tilo.example".into(),
-            port: 8080,
-        })
-    );
-}
-
-/// A field edit of a variant that is no longer active writes that variant's
-/// unused history; a later change back reads it, while the active variant is
-/// unchanged.
-#[test]
-fn a_field_edit_of_an_inactive_variant_is_kept_as_unused_history() {
-    let mut replica = Replica::<Rules>::new();
-    replica
-        .apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
-        .unwrap();
-    replica
-        .apply(Rules::MATCH_PATH.with("/b".to_owned()))
-        .unwrap();
-    let port = Edit::new(
-        vec![
-            Segment::Field("matcher".into()),
-            Segment::Field("host".into()),
-            Segment::Field("port".into()),
-        ],
-        EditOp::Set {
-            value: serde_json::json!(8080),
-        },
-    );
-    replica.apply(Invoke::edit(&port).unwrap()).unwrap();
-    assert_eq!(
-        replica.state().unwrap().matcher,
-        Some(Matcher::Path("/b".into())),
-        "the active variant is untouched"
-    );
-    let doc = replica.doc();
-    let (_, matcher) = doc.get(automerge::ROOT, "matcher").unwrap().unwrap();
-    let (automerge::Value::Scalar(port), _) =
-        doc.get(&matcher, "$field/host/port").unwrap().unwrap()
-    else {
-        panic!("the port is stored under its variant");
-    };
-    assert!(
-        matches!(
-            port.as_ref(),
-            automerge::ScalarValue::Int(8080) | automerge::ScalarValue::Uint(8080)
-        ),
-        "the inactive variant's port is stored: {port:?}"
-    );
-}
-
 /// Typed field edits name the variant before the field, so a text's `value`
 /// and a count's `value` — types that do not fit each other — are stored and
 /// read apart, whoever edits which first.
 #[test]
 fn typed_field_edits_of_different_variants_never_read_each_others_value() {
     let mut ours = Replica::<Choice>::new();
-    ours.apply(Choice::TEXT.with("hello".into())).unwrap();
+    ours.apply(Choice::TEXT.with("hello".to_owned())).unwrap();
     let mut theirs = Replica::<Choice>::from_doc(ours.doc_mut().fork());
     let field = |variant: &str, value: serde_json::Value| {
         Edit::new(

@@ -251,7 +251,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             })
         });
         quote!(#table::VariantDesc {
-            key: #key,
+            key: #variant_key,
             name: #variant_name,
             fields: &[#(#fields),*],
         })
@@ -866,7 +866,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                                 #krate::Model::read_whole(&mut __loaded, doc)?;
                             }
                             #table::store_field(__field, doc, &__obj, &__loaded)?;
-                            doc.delete(&__obj, __field.key)?;
+                            #model::delete_key(doc, &__obj, __field.key)?;
                         }
                     }
                     #krate::LocatedAt::located(
@@ -881,7 +881,9 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                         __field.key,
                     )?;
                     let __value = #krate::__private::Value::Object(#krate::__private::ObjType::Map);
-                    Self::load(doc, &__value, &__obj)?.check().map_err(#krate::ModelError::refused)?;
+                    let __loaded = <Self as #krate::Model>::load(doc, &__value, &__obj)?;
+                    <Self as #krate::Model>::check(&__loaded)
+                        .map_err(#krate::ModelError::refused)?;
                     return ::core::result::Result::Ok(());
                 }
             }
