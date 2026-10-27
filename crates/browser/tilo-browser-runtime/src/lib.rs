@@ -130,6 +130,9 @@ mod link;
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+// Which peer speaks for the page's person: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod page_person;
 #[cfg(target_arch = "wasm32")]
 mod peer;
 #[cfg(target_arch = "wasm32")]
