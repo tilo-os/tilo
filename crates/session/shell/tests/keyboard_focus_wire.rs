@@ -919,3 +919,55 @@ fn a_modifier_released_outside_the_window_it_was_held_into_is_up_for_that_window
         );
     }
 }
+
+/// A nested desktop's host takes the keyboard away from its window while a
+/// modifier is held there, and that modifier comes up in another window of
+/// the host. The nested desktop lets go of every key it held: its focused
+/// app sees the modifier come up, keeps focus, and the next key it types
+/// is text.
+#[test]
+fn a_modifier_held_into_the_window_and_released_elsewhere_lets_go_of_its_app() {
+    let (mut h, _surface, window) = typing_window("org.example.HeldOut");
+    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    h.state.set_client_keyboard_focus(Some(window));
+    h.pump();
+
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+    assert!(shell::compositor::client_input::route_input(
+        &mut h.state,
+        &mut frame,
+        &captured_key_event(Key::Named(NamedKey::Control), true),
+        &ctrl,
+    ));
+    h.pump();
+    assert_ne!(h.client.depressed, 0, "Ctrl is held in the app");
+    h.client.keyboard.clear();
+
+    // The host's `wl_keyboard.leave`: the session's keyboard let go.
+    h.state.release_local_keyboard();
+    h.pump();
+    assert_eq!(
+        h.client.keyboard,
+        vec![KeyboardWire::Key {
+            key: 29,
+            pressed: false,
+        }],
+        "the app sees Ctrl come up and keeps keyboard focus"
+    );
+    assert_eq!(h.client.depressed, 0, "and no modifier stays down for it");
+    assert!(
+        h.state
+            .seat
+            .get_keyboard()
+            .expect("seat keyboard")
+            .pressed_keys()
+            .is_empty(),
+        "the seat holds no key the keyboard let go of"
+    );
+
+    // Back in the window, the host's Ctrl release went elsewhere.
+    h.client.presses.clear();
+    type_hi(&mut h, &mut frame);
+    assert_eq!(h.client.presses, TYPED_HI, "the next keys are text");
+    assert!(!frame.host().palette_visible(), "no shortcut ran");
+}
