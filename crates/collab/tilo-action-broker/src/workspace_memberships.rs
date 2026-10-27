@@ -113,14 +113,15 @@ impl CapnpBrokerState {
     /// `certificate`'s person, when the room does not let it yet and that
     /// person may let it there
     /// ([`super::services::WorkspaceMemberships::app_opens_by_granting`]):
-    /// the same membership invocation a launch asks, waited for until the
-    /// grant is in this device's view of the room. Nothing to do otherwise.
+    /// the same membership invocation a launch asks, started once its
+    /// admission is durable. Nothing to do otherwise.
     ///
     /// A room this device's own host serves decides through this device's
     /// owner: what an app opening there needs is for the owner to record.
     ///
     /// # Errors
-    /// The invocation was refused or ended without an answer.
+    /// The invocation could not be admitted or started. A refusal after it
+    /// started is logged when it comes.
     pub(crate) async fn admit_opening_app(
         &self,
         route: &CrdtRoute,
@@ -152,15 +153,31 @@ impl CapnpBrokerState {
             )?
             .start(self)
             .await?;
-        let completed = tokio::task::spawn_blocking(move || job.completion.recv())
-            .await
-            .map_err(|_| "app authorship worker stopped")?
-            .map_err(|_| "app authorship ended without an answer")?;
-        if completed.code.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("app authorship refused: {}", completed.message))
-        }
+        // Its answer comes when the room's owner has recorded the grant,
+        // or when the invocation fails or expires. Nobody acts on it: the
+        // app asks for its keys again when the grant is in. It is heard on
+        // a thread of its own, which neither the broker's loop nor its
+        // runtime's shutdown waits for.
+        let room = route.cluster_id.clone();
+        let app = route.app_id.clone();
+        std::thread::Builder::new()
+            .name("app-authorship".into())
+            .spawn(move || match job.completion.recv() {
+                Ok(completed) if completed.code.is_empty() => {}
+                Ok(completed) => tracing::warn!(
+                    %room,
+                    %app,
+                    error = %completed.message,
+                    "an opening app was not let author its room"
+                ),
+                Err(_) => tracing::debug!(
+                    %room,
+                    %app,
+                    "an opening app's authorship ended without an answer"
+                ),
+            })
+            .map(drop)
+            .map_err(|error| format!("app authorship answer unheard: {error}"))
     }
 
     fn invoke_workspace_person_action(
