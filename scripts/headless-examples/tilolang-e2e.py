@@ -130,7 +130,9 @@ class Session:
         return json.loads(self.control_cmd(*args))
 
     def actions(self, query: str = "") -> list:
-        return self.control_json("actions", "list", query, "--json").get("actions", [])
+        # As an agent or a script lists them: with the actions listed for agents alone
+        # ("Show this window"), which a person's palette leaves out.
+        return self.control_json("actions", "list", query, "--json", "--programmatic").get("actions", [])
 
     def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
         argv = ["actions", "invoke", provider, ident, "--wait"]
