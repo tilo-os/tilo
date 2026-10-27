@@ -520,13 +520,25 @@ class SharedWorkspaceTest(unittest.TestCase):
         self.assertEqual(len(ports), 10)
         self.assertTrue(all(1024 < p < 32768 for p in ports))
 
-    def test_setup_failures_name_what_the_guest_lacked(self):
+    def test_setup_enrolls_the_relay_as_production_does_and_names_what_failed(self):
         key = '{"device_public_key": "%s", "relay_service_node_id": "%s"}' % ("ab" * 32, "cd" * 32)
 
-        def ctx_answering(setup):
+        def ctx_answering(pair="HOME-RELAY pairing\n", approve="HOME-RELAY approved\n",
+                          start="HOME-RELAY started\n"):
+            ran = []
+
             class Vm:
+                def root_exec(self, script, timeout=120):
+                    ran.append(("root", script))
+                    if " pair " in script:
+                        return key + "\n" + pair
+                    if "tilo-relay --config" in script:
+                        return start
+                    return ""
+
                 def exec(self, script, timeout=120, check=True):
-                    return key if "device-key" in script and "certify" not in script else setup
+                    ran.append(("person", script))
+                    return approve if " approve " in script else ""
 
                 def slot_uid(self):
                     return 1001
@@ -536,18 +548,29 @@ class SharedWorkspaceTest(unittest.TestCase):
 
                 def write(self, name, text):
                     pass
-            return Ctx()
+            return Ctx(), ran
 
-        cases = {"HOME-RELAY no-identity-root\n": "identity root of its own",
-                 "error: unexpected argument '--home-peer-service' found\n": "predates",
-                 "Failed to start transient service unit\n": "did not start"}
-        for out, said in cases.items():
+        cases = {"did not approve": {"approve": "Error: approval timed out\n"},
+                 "no bundle": {"start": "HOME-RELAY no-bundle\n"},
+                 "did not start": {"start": "Failed to start transient service unit\n"},
+                 "pairing did not start": {"pair": "Failed to start transient service unit\n"}}
+        for said, answers in cases.items():
+            ctx, _ = ctx_answering(**answers)
             with self.assertRaises(core.Unobservable) as raised:
-                resources.start_home_relay(ctx_answering(out))
+                resources.start_home_relay(ctx)
             self.assertIn(said, str(raised.exception))
-        relay = resources.start_home_relay(ctx_answering("HOME-RELAY started\n"))
+        ctx, ran = ctx_answering()
+        relay = resources.start_home_relay(ctx)
         self.assertEqual(relay, {"device": "ab" * 32, "service": "cd" * 32, "port": 24000 + 1001 % 8000})
-
+        # The server pairs as the relay's account, the person approves exactly that server
+        # on the machine's identity tree, and nothing is certified out of band.
+        approve = next(script for who, script in ran if who == "person" and " approve " in script)
+        self.assertIn("--identity-root /var/lib/tilo", approve)
+        self.assertIn("--expected-device " + "ab" * 32, approve)
+        self.assertIn("--expected-service " + "cd" * 32, approve)
+        self.assertFalse(any("certify" in script or "install-cert" in script for _, script in ran))
+        pair = next(script for who, script in ran if who == "root" and " pair " in script)
+        self.assertIn("--uid=tilo-relay", pair)
 
 if __name__ == "__main__":
     unittest.main()
