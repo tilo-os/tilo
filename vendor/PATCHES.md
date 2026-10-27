@@ -114,8 +114,10 @@ the map's insertion, cloning and comparing, which `#[inline]` copied into
 each caller, and `Value`'s derived, and so inlined, `Clone` and `PartialEq`.
 Measured on the x86_64 app binaries at dcac562fe9: the 64 apps lose 966,311
 loadable bytes (median 17 KB each), the shared runtime 246,289 and its engines
-183,000. Behaviour is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`.
-Keep the copy while apps link serde_json through the shared runtime.
+183,000. `from_str` also reads text as its bytes, so a type read from text
+and from bytes compiles one deserializer instead of one per reader. Behaviour
+is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`. Keep the copy
+while apps link serde_json through the shared runtime.
 
 ## Exportable histories
 

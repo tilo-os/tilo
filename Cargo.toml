@@ -1274,7 +1274,8 @@ regex-syntax = { path = "vendor/regex-syntax" }
 # code once, in serde_json, instead of its own copy: the string parser a raw
 # value is read back with, the map's insertion, cloning and comparing, and
 # `Value`'s `Clone` and `PartialEq`. Every thin app carried all of them beside
-# the shared runtime's. See vendor/serde_json/TILO-PATCH.md.
+# the shared runtime's. Text is read as bytes, so a type read from both
+# compiles one deserializer. See vendor/serde_json/TILO-PATCH.md.
 serde_json = { path = "vendor/serde_json" }
 # An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
 # the relay map is empty, no wall-clock poll on Linux (a timerfd that the
