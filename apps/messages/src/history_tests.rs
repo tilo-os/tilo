@@ -735,7 +735,7 @@ impl Paged {
             asked: Arc::default(),
         }
     }
-    fn page(&self, route: routing::Route, cursor: Option<&str>) -> HistoryPage {
+    fn page(route: routing::Route, cursor: Option<&str>) -> HistoryPage {
         let (id, text, at, more) = match cursor {
             None => ("new-2", "See you in ten", 2000, true),
             Some(_) => ("old-1", "Where are you?", 1000, false),
@@ -766,7 +766,7 @@ impl HistoryHost for Paged {
             .lock()
             .expect("fixture cursors")
             .push(asked.clone());
-        let page = self.page(route, asked.as_deref());
+        let page = Self::page(route, asked.as_deref());
         Box::pin(std::future::ready(Ok(page)))
     }
 }
