@@ -72,6 +72,7 @@ impl ActionHost for ChatHost {
                         resource_label: "Untrusted display alias".into(),
                         action_label: "Action".into(),
                         keywords: Vec::new(),
+                        icon: None,
                         description: None,
                         locus: ExecutionLocus::ClientLocal,
                         kind: OperationKind::View,

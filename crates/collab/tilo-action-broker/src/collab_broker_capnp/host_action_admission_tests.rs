@@ -30,6 +30,7 @@ fn descriptor() -> ActionDescriptor {
         resource_label: "Host test".into(),
         action_label: "Read".into(),
         keywords: Vec::new(),
+        icon: None,
         description: None,
         locus: tilo_actions::ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,

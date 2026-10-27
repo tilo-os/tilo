@@ -142,7 +142,7 @@ impl Project {
     ///
     /// A new file named `name` in the folder `folder` (the project's root
     /// when none), holding `text`.
-    #[action(keywords = "create file, add file, touch")]
+    #[action(keywords = "create file, add file, touch", icon = "file-plus")]
     pub fn new_file(
         &mut self,
         cx: &mut ActionCx,
@@ -165,7 +165,10 @@ impl Project {
     ///
     /// A new folder named `name` in the folder `folder` (the project's root
     /// when none).
-    #[action(keywords = "mkdir, make directory, create folder")]
+    #[action(
+        keywords = "mkdir, make directory, create folder",
+        icon = "folder-plus"
+    )]
     pub fn new_folder(
         &mut self,
         cx: &mut ActionCx,
@@ -179,7 +182,7 @@ impl Project {
     /// Rename
     ///
     /// Give the file or folder another name, unique in its folder.
-    #[action(item = files)]
+    #[action(item = files, icon = "pencil")]
     pub fn rename(
         &mut self,
         entry: &Id,
@@ -198,7 +201,7 @@ impl Project {
     ///
     /// Move the file or folder into the folder `folder` (the project's root
     /// when none), before `before` among its entries or after them all.
-    #[action(item = files)]
+    #[action(item = files, icon = "arrow-right")]
     pub fn move_entry(
         &mut self,
         entry: &Id,
@@ -241,7 +244,7 @@ impl Project {
     /// Replace the file's whole text with `text`, written as the smallest
     /// change to the text it has, so a collaborator's typing elsewhere in
     /// the file stays.
-    #[action(keywords = "find and replace, search and replace, substitute", item = files)]
+    #[action(keywords = "find and replace, search and replace, substitute", item = files, icon = "type")]
     pub fn replace_text(
         &mut self,
         file: &Id,
@@ -263,7 +266,7 @@ impl Project {
     /// Replace a range of one file's text with `text`, or insert `text` at a
     /// caret, counting characters; the rest of the file stays as it is. A
     /// place a person selected is passed exactly as given.
-    #[action]
+    #[action(icon = "type")]
     pub fn replace_range(
         &mut self,
         #[param(
@@ -310,7 +313,7 @@ impl Project {
     /// Delete
     ///
     /// Delete the file and its text, or the folder once it is empty.
-    #[action(keywords = "remove file, delete file", item = files, destructive)]
+    #[action(keywords = "remove file, delete file", item = files, destructive, icon = "trash-2")]
     pub fn delete(&mut self, entry: &Id) -> Result<(), Refusal> {
         self.files.get(entry).ok_or("no such file")?;
         if self
@@ -432,7 +435,7 @@ impl Project {
     ///
     /// Run a command line in the embedded terminal's session, and answer
     /// with the run once it ends.
-    #[action(keywords = "run command, execute, build", id = "run")]
+    #[action(keywords = "run command, execute, build", id = "run", icon = "play")]
     pub fn run_in_terminal(
         &mut self,
         cx: &mut ActionCx,
@@ -445,7 +448,7 @@ impl Project {
     /// Rerun in terminal
     ///
     /// Run one of the embedded terminal's runs again.
-    #[action(id = "rerun")]
+    #[action(id = "rerun", icon = "repeat")]
     pub fn rerun_in_terminal(
         &mut self,
         cx: &mut ActionCx,
@@ -459,7 +462,7 @@ impl Project {
     ///
     /// Run one test of one of the embedded terminal's runs again, the way
     /// its tool runs one test.
-    #[action(id = "rerun-test")]
+    #[action(id = "rerun-test", icon = "repeat-1")]
     pub fn rerun_test_in_terminal(
         &mut self,
         cx: &mut ActionCx,

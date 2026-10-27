@@ -864,6 +864,7 @@ fn production_retained_invoke_revoked_during_discovery_never_starts_launcher() {
             resource_label: "Document".into(),
             action_label: "Append".into(),
             keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Document,
             params: Vec::new(),

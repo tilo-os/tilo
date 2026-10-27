@@ -98,6 +98,9 @@ pub struct ExportedAction {
     /// The other words people use for the action, published with its label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// The action's own picture, by its Lucide name, published with its label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub description: Option<String>,
     pub operation_kind: OperationKind,
     /// The canonical typed parameter descriptors.
@@ -134,6 +137,7 @@ impl ExportedAction {
             resource_label: self.resource_label.clone(),
             action_label: self.action_label.clone(),
             keywords: self.keywords.clone(),
+            icon: self.icon.clone(),
             description: self.description.clone(),
             locus,
             kind: self.operation_kind,
@@ -155,6 +159,7 @@ impl From<&ActionDescriptor> for ExportedAction {
             resource_label: descriptor.resource_label.clone(),
             action_label: descriptor.action_label.clone(),
             keywords: descriptor.keywords.clone(),
+            icon: descriptor.icon.clone(),
             description: descriptor.description.clone(),
             operation_kind: descriptor.kind,
             params: descriptor.params.clone(),
@@ -361,6 +366,7 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
                 .iter()
                 .map(|word| text(word))
                 .fold(STRUCT, usize::saturating_add),
+            optional(descriptor.icon.as_deref()),
             optional(descriptor.description.as_deref()),
             text(descriptor.operation_kind.as_str()),
             json(&descriptor.params),
@@ -524,6 +530,7 @@ mod codec {
                 keywords.set(at, word);
             }
         }
+        out.set_icon(action.icon.as_deref().unwrap_or(""));
         out.set_description(action.description.as_deref().unwrap_or(""));
         out.set_operation_kind(action.operation_kind.as_str());
         out.set_params_json(&encode_json(&action.params, "action parameters")?);
@@ -766,12 +773,14 @@ mod codec {
             .iter()
             .map(|word| capnp_text(word?))
             .collect::<Result<Vec<_>, _>>()?;
+        let icon = capnp_text(row.get_icon()?)?;
         Ok(ExportedAction {
             semantic_identity,
             resource_kind: capnp_text(row.get_resource_kind()?)?,
             resource_label: capnp_text(row.get_resource_label()?)?,
             action_label: capnp_text(row.get_action_label()?)?,
             keywords,
+            icon: (!icon.is_empty()).then_some(icon),
             description: (!description.is_empty()).then_some(description),
             operation_kind,
             params,

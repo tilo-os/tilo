@@ -45,3 +45,43 @@ pub(super) fn selection_first(actions: &mut [KindGroup]) {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::search::{ResourceKind, SearchResult};
+
+    fn action(id: &str, selection: bool) -> SearchResult {
+        let mut row =
+            SearchResult::nullary(ResourceKind::Action, "p", id, id, None, 50, |_, _, _| {});
+        let mut contract = tilo_actions::ActionContract::default();
+        if selection {
+            contract
+                .tags
+                .push(tilo_actions::ContextRequirement::Selection.tag().into());
+        }
+        row.contract = Some(contract);
+        row
+    }
+
+    #[test]
+    fn actions_on_the_selection_lead_and_the_rest_keep_their_order() {
+        let mut groups = vec![KindGroup {
+            kind: ResourceKind::Action,
+            total: 4,
+            results: vec![
+                action("new", false),
+                action("copy", true),
+                action("rename", false),
+                action("cut", true),
+            ],
+        }];
+        selection_first(&mut groups);
+        let ids: Vec<&str> = groups[0]
+            .results
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(ids, ["copy", "cut", "new", "rename"]);
+    }
+}

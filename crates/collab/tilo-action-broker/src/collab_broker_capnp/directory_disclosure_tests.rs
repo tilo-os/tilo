@@ -226,6 +226,7 @@ fn rows() -> Vec<runtime_collab::ActionDirectoryRow> {
             resource_label: label.into(),
             action_label: format!("Read {label}"),
             keywords: Vec::new(),
+            icon: None,
             description: Some(label.into()),
             operation_kind: kind,
             params: Vec::new(),

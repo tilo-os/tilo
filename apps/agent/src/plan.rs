@@ -328,6 +328,7 @@ mod tests {
                 resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
                 action_label: label.to_string(),
                 keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: tilo_actions::ExecutionLocus::ClientLocal,
                 kind: tilo_actions::OperationKind::Document,

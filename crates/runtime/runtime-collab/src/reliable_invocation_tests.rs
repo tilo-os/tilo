@@ -39,6 +39,7 @@ fn row(r: collab_capnp::action_directory_row::Builder<'_>) {
         resource_label: "Note".into(),
         action_label: "Open".into(),
         keywords: Vec::new(),
+        icon: None,
         description: None,
         operation_kind: tilo_actions::OperationKind::View,
         params: Vec::new(),

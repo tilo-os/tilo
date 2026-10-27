@@ -132,6 +132,8 @@ struct VariantOptions {
     label: Option<String>,
     /// `keywords = "…"`: the other words people use for the effect.
     keywords: Vec<String>,
+    /// `icon = "…"`: the effect's own picture, by its Lucide name.
+    icon: Option<String>,
     view: bool,
     row: bool,
     idempotent: bool,
@@ -240,6 +242,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
             } else if meta.path.is_ident("keywords") {
                 options.keywords =
                     crate::keyword_list(&meta.value()?.parse::<syn::LitStr>()?)?;
+            } else if meta.path.is_ident("icon") {
+                options.icon = Some(crate::icon_name(&meta.value()?.parse::<syn::LitStr>()?)?);
             } else if meta.path.is_ident("kind") {
                 options.kind = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("view") {
@@ -302,7 +306,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.outside_with = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(meta.error(
-                    "expected `label`, `keywords`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
+                    "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
@@ -604,6 +608,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let params: Vec<Tokens> = params.collect();
         let keywords = &options.keywords;
+        let icon = crate::optional_str(options.icon.as_deref());
         let params_fn = if params.is_empty() {
             quote!(#krate::effect::no_params)
         } else {
@@ -619,6 +624,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 id: #id,
                 label: #label,
                 keywords: &[#(#keywords),*],
+                icon: #icon,
                 description: #description,
                 params: #params_fn,
                 kind: #krate::__private::OperationKind::#kind,
