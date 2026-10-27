@@ -34,8 +34,8 @@ use std::rc::Rc;
 
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ChangeHash, ObjType, ReadDoc, ScalarValue, Value};
-pub use durable_store::DurableStore;
-use durable_store::{Durability, Revision, StorageKey, WriteOp};
+pub use durable_store::{Durability, DurableStore};
+use durable_store::{Revision, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 
 use super::{
