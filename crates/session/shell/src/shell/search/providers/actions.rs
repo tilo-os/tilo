@@ -3624,7 +3624,7 @@ impl ActionsProvider {
                 Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
@@ -3640,7 +3640,7 @@ impl ActionsProvider {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
             qs_actions,
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
@@ -4593,6 +4593,7 @@ impl ActionsProvider {
                     _ => None,
                 },
                 on_begin_invoke,
+                resource: None,
             })
         }
     }
@@ -4656,6 +4657,7 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             });
         }
         // Each archived workspace: bring it back, or delete it with its
@@ -4735,6 +4737,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
         }
@@ -4798,6 +4801,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
         }
@@ -4863,6 +4867,7 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             });
         }
         for &(id, label_key, subtitle_key, keywords_key) in QUICK_SETTINGS_ACTIONS {
@@ -5014,6 +5019,7 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke,
+                resource: None,
             });
         }
         // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
@@ -5128,6 +5134,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
             }
@@ -5182,6 +5189,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
             }
@@ -5239,6 +5247,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
             if let Some(catalog) = &self.provider_catalog {
@@ -5305,6 +5314,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
                 source_switches.end = out.len();

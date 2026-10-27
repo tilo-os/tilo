@@ -213,6 +213,38 @@ Downloading is an explicit management action (`install-hub-model`), granted
 or denied like every other; it is never a side effect of an agent's model
 request.
 
+### How a window and the agent reach a model
+
+Two callers reach the gateway, and they hold different things. A window holds
+the host's `ui::models::Models`: a capability the mounting host bound to its
+authenticated session, which the app asks for completions and for streams.
+The agent is not a window. The launcher starts it with the gateway's service
+descriptor, and it drives runs of its own, which needs three things the model
+capability does not carry:
+
+- a streamed turn the loop may let go of, where the gateway is told to stop
+  the provider call rather than bill it to its end;
+- content-free timing marks (`PlanTrace`, `TraceEvent`) that say how a
+  decision went, for the gateway's log of a managed agent;
+- the bounded single-shot transforms behind an action's `Ai` step.
+
+These are the gateway's own RPC verbs, so the agent links the gateway's client
+half (`tilo-model-client`). That crate is not app surface and a `ui` app must
+not link it: everything an app would call there talks to the launcher's
+inherited Unix descriptor (`available()` is `#[cfg(unix)]` and false on every
+other target, and the requests behind it read that socket), and an app
+reaching it would bypass the host's authority over which session a window
+talks to. The browser host serves the same crate's transport half
+(`FetchTransport`) to apps as `ui::models`, which is where a window's model
+access comes from.
+
+For the agent to reach models through `ui` instead, those verbs would have to
+become neutral protocol: the mark vocabulary, a transform request and a turn
+its caller may stop, each on `ModelBackend` and `Models`, implemented by the
+launcher backend and by the browser host's transport. Until then the agent is
+the one participant whose model access is its own client rather than a host
+capability.
+
 ## Agent experience and MCP
 
 Foreign Linux agent boxes (no desktop) use the MCP-beside-local-relay path in

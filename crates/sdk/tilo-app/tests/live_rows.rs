@@ -63,6 +63,8 @@ struct Tally;
 impl Resource for Tally {
     const KIND: &'static str = "test.tally";
     const LABEL: &'static str = "Tally";
+    // The app publishing it, whose keys its typed references are bound by.
+    const APP_ID: &'static str = "so.tilo.test-tally";
     const ACTION_TYPE: &'static str = ACTION_TYPE;
     type State = i64;
     type Action = TallyAction;
@@ -418,7 +420,7 @@ struct DynamicBindingsApp;
 
 impl ResourceApp for DynamicBindingsApp {
     type Resource = Tally;
-    const ID: &'static str = "so.tilo.test-dynamic-bindings";
+    const ID: &'static str = "so.tilo.test-tally";
     const TITLE: &'static str = "Dynamic bindings";
 
     fn view(cx: &mut ViewCx<Tally>) -> Element {
@@ -441,23 +443,27 @@ impl ResourceApp for DynamicBindingsApp {
     }
 }
 
+/// The declaration `id` names, referenced as any app names one of its
+/// resource's actions.
+fn declared(id: &'static str) -> tilo_resource::ActionRef<Tally, ()> {
+    tilo_resource::ActionRef::<Tally, ()>::new(id, &[], tilo_resource::ResourceKind::of::<Tally>())
+}
+
 #[test]
 fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
-    use tilo_resource::ActionRef;
     let mut app = TestApp::<DynamicBindingsApp>::new().unwrap();
     let actions = RETAINED_ACTIONS
         .with(|actions| actions.borrow().clone())
         .unwrap();
-    let conditional = ActionRef::<Tally, ()>::new("conditional", &[]);
+    let conditional = declared("conditional");
     let root = actions
-        .binding::<()>(ActionRef::<Tally, ()>::new("seed", &[]))
+        .binding::<()>(declared("seed"))
         .unwrap()
         .address()
         .resource
         .clone();
     assert!(actions.binding::<()>(conditional).is_none());
-    app.invoke(ActionRef::<Tally, ()>::new("seed", &[]).invoke())
-        .unwrap();
+    app.invoke(declared("seed").invoke()).unwrap();
     let binding = actions
         .binding::<()>(conditional)
         .expect("new declaration is bindable");

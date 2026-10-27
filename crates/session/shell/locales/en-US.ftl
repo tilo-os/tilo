@@ -494,11 +494,12 @@ portal-launcher-reason = Review the launcher before it is added to your applicat
 portal-launcher-confirm = Add launcher
 portal-launcher-icon-supplied = Supplied image (validated)
 portal-launcher-icon-monogram = Tilo monogram
-portal-chooser-nothing-granted = This app has been given no files to choose from.
+portal-chooser-cannot-give = This device can't give apps the files you choose right now. Sign out and back in, then try again.
+portal-chooser-not-managed = Only the people who manage this workspace can give its apps your files. Ask one of them to share the file in the workspace.
 portal-chooser-file-not-granted = This app has not been given { $path }.
 portal-chooser-no-file = There is no file to open.
 portal-chooser-session-closing = The session is closing.
-portal-chooser-other-workspace = The app's workspace is not the one on screen.
+portal-chooser-other-workspace = This app's workspace isn't the one on screen. Switch to it, then try again.
 portal-chooser-open-uri-undeclared = This app has not declared that it opens links.
 portal-chooser-save-disabled = Saving to disk is turned off on this device.
 portal-launcher-icon-compass = Tilo web compass
@@ -3315,6 +3316,16 @@ host-crash-records-read = Read a problem's details
 host-crash-records-read-detail = Everything the record of one problem holds. It stays on this computer.
 
 ## Desk widgets
+
+desk-widgets-a11y = Desk widgets
+desk-widget-music = Music
+desk-widget-team = People here
+desk-widget-calendar = Calendar
+desk-widget-system-monitor = System monitor
+desk-widget-open = Open { $widget }
+desk-widget-close = Close { $widget }
+desk-widget-pin = Always show this widget on this workspace
+desk-widget-unpin = Stop always showing this widget
 
 desk-team-title = In this workspace
 # Where a person is: their strip, then the window they are on.

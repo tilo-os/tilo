@@ -4515,12 +4515,22 @@ impl App {
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
     pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+        // On one of the app's actions: the palette asks for its arguments.
+        if let Some(address) = request.asked()
+            && self.open_action_palette_at(&address)
+        {
+            return;
+        }
         self.open_action_palette();
         if let Some(palette) = self.actions.action_palette.as_mut() {
             palette.set_scope(request.resource_scope().cloned());
             if let Some(query) = &request.query {
                 palette.set_query(query);
                 palette.select_query();
+            }
+            if let Some(anchor) = request.anchored() {
+                palette.set_query(&anchor.query);
+                palette.select_resource(&anchor.resource);
             }
         }
     }

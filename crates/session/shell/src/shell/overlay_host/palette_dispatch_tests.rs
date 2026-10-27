@@ -2692,3 +2692,54 @@ fn the_invite_sheet_says_in_plain_words_why_it_cannot_invite_yet() {
     }));
     assert_eq!(h.peer_sync_snapshot().status, None);
 }
+
+/// An app's button that opens search on one of its actions
+/// (`SearchRequest::asking`) lands on that action's first missing argument,
+/// a picked one on its picker, as soon as search lists the action: no row
+/// for the person to run first, and nothing runs before they pick.
+#[test]
+fn search_opened_on_an_action_starts_on_its_picker() {
+    use crate::shell::search::providers::live_app_actions::PROVIDER_ID;
+    use crate::shell::search::{KindGroup, ResourceKind, SearchResult};
+    let (mut host, _chrome) = host_with_chrome();
+    let issue = "tasks.tracker/issues/7";
+    let sep = '\u{1f}';
+    let row = |action: &str| {
+        let mut result = SearchResult::nullary(
+            ResourceKind::Action,
+            PROVIDER_ID,
+            format!(
+                "so.tilo.tasks{sep}undoable{sep}tasks.tracker.issues{sep}room{sep}{sep}{issue}{sep}{action}"
+            ),
+            action,
+            None,
+            0,
+            |_, _, _| {},
+        );
+        result.params = vec![
+            tilo_actions::ActionParam::required(
+                "note",
+                tilo_actions::ParamType::Object,
+                "The note",
+            )
+            .picking(tilo_actions::Pick::Resource {
+                kind: "notes.notebook.pages".into(),
+            }),
+        ];
+        result
+    };
+    let groups = vec![KindGroup {
+        kind: ResourceKind::Action,
+        results: vec![row("write-note"), row("link-note")],
+        total: 2,
+    }];
+    assert!(!host.start_asked_action(&groups), "nothing was asked for");
+    host.palette_asked = Some(tilo_actions::ActionAddress::new(issue, "link-note"));
+    assert!(!host.start_asked_action(&groups[..0]), "not listed yet");
+    assert!(host.palette_asked.is_some(), "still waiting for it");
+    assert!(host.start_asked_action(&groups));
+    let flow = host.param_flow.as_ref().expect("asking for its arguments");
+    assert!(flow.result.id.ends_with("link-note"), "{}", flow.result.id);
+    assert_eq!(flow.param().map(|param| param.name.as_ref()), Some("note"));
+    assert!(host.palette_asked.is_none(), "asked once");
+}

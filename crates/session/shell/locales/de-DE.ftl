@@ -492,11 +492,12 @@ portal-launcher-reason = Prüfe den Starter, bevor er zu deiner App-Bibliothek h
 portal-launcher-confirm = Starter hinzufügen
 portal-launcher-icon-supplied = Mitgeliefertes Bild (geprüft)
 portal-launcher-icon-monogram = Tilo-Monogramm
-portal-chooser-nothing-granted = Dieser App wurden keine Dateien zur Auswahl freigegeben.
+portal-chooser-cannot-give = Dieses Gerät kann Apps gerade keine Dateien geben, die Sie auswählen. Melden Sie sich ab und wieder an und versuchen Sie es dann erneut.
+portal-chooser-not-managed = Nur wer diesen Arbeitsbereich verwaltet, kann seinen Apps Ihre Dateien geben. Bitten Sie eine dieser Personen, die Datei im Arbeitsbereich zu teilen.
 portal-chooser-file-not-granted = Dieser App wurde { $path } nicht freigegeben.
 portal-chooser-no-file = Es gibt keine Datei zum Öffnen.
 portal-chooser-session-closing = Die Sitzung wird beendet.
-portal-chooser-other-workspace = Der Arbeitsbereich der App ist nicht der angezeigte.
+portal-chooser-other-workspace = Der Arbeitsbereich dieser App wird gerade nicht angezeigt. Wechseln Sie zu ihm und versuchen Sie es dann erneut.
 portal-chooser-open-uri-undeclared = Diese App hat nicht angegeben, dass sie Links öffnet.
 portal-chooser-save-disabled = Speichern auf dem Datenträger ist auf diesem Gerät ausgeschaltet.
 portal-launcher-icon-compass = Tilo-Webkompass
@@ -3267,6 +3268,16 @@ host-crash-records-read = Einzelheiten eines Problems lesen
 host-crash-records-read-detail = Alles, was der Bericht über ein Problem enthält. Er bleibt auf diesem Computer.
 
 ## Desk widgets
+
+desk-widgets-a11y = Schreibtisch-Widgets
+desk-widget-music = Musik
+desk-widget-team = Menschen hier
+desk-widget-calendar = Kalender
+desk-widget-system-monitor = Systemmonitor
+desk-widget-open = { $widget } öffnen
+desk-widget-close = { $widget } schließen
+desk-widget-pin = Dieses Widget immer in diesem Arbeitsbereich anzeigen
+desk-widget-unpin = Dieses Widget nicht mehr immer anzeigen
 
 desk-team-title = In diesem Arbeitsbereich
 # Where a person is: their strip, then the window they are on.

@@ -195,6 +195,7 @@ mod tests {
             notification_count: 0,
             verifying: false,
             now_playing: None,
+            media_focus: None,
             keyboard: None,
             alert: None,
         }

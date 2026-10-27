@@ -6,7 +6,9 @@
 
 [apps.agent]
 D1 = 2
-D2 = 7
+# The agent publishes the `task` action, which reads the same allow rules a
+# run's grant is narrowed by, so the policy crate is a runtime dependency.
+D2 = 8
 
 [apps.backups]
 D1 = 1
@@ -83,7 +85,7 @@ D2 = 3
 
 [apps.notes]
 D1 = 1
-D2 = 5
+D2 = 6
 
 [apps.osk]
 D1 = 3

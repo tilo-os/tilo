@@ -842,14 +842,6 @@ fn capture_every_scenario(
 /// Whether these arguments run the app in a live native window, rather than
 /// headless, as captures or as an audit.
 #[cfg(feature = "native")]
-/// A capture that could not set text in the product's faces is refused; on a
-/// build with no capture path there is nothing to refuse.
-#[cfg(not(feature = "native"))]
-fn capture_font_gate(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let _ = args;
-    Ok(())
-}
-
 fn opens_native_window(args: &LaunchArgs) -> bool {
     args.headless.is_none()
         && args.shots.is_none()

@@ -8,43 +8,75 @@ const NOTES_PEER: u64 = 908;
 const MAIL: &str = "so.tilo.mail";
 const MAIL_PEER: u64 = 909;
 
-/// Notes, publishing its notebook's `create-page` on connection
-/// [`NOTES_PEER`], and Mail its `send` on [`MAIL_PEER`]; what is delivered
-/// to Notes arrives on the receiver.
+/// `action` on `resource`, published as a background job of `kind`,
+/// tagged `tags`.
+fn published(
+    resource: &str,
+    action: &str,
+    kind: tilo_actions::ActionKind,
+    tags: &[&str],
+) -> PublishedAction {
+    PublishedAction {
+        semantic_identity: None,
+        resource: resource.into(),
+        action: action.into(),
+        resource_kind: resource.into(),
+        resource_label: resource.into(),
+        action_label: action.into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
+            kind,
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
+            tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            ..Default::default()
+        },
+        input: PublishedInput::None,
+        view: None,
+    }
+}
+
+/// Notes, publishing its notebook's `create-page` (an edit), `read-page`
+/// (a read) and `retitle-mine` (an edit of the person's own record, which
+/// needs only reading) on connection [`NOTES_PEER`], and Mail its `send` on
+/// [`MAIL_PEER`]; what is delivered to Notes arrives on the receiver.
 fn publish_notes(
     rig: &Rig,
     env: &Environment,
 ) -> tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope> {
-    let surface = |peer_id: u64, app_id: &str, resource: &str, action: &str| PublishedSurface {
+    use tilo_actions::ActionKind::{Read, Undoable};
+    let surface = |peer_id: u64, app_id: &str, actions: Vec<PublishedAction>| PublishedSurface {
         peer_id,
         app_id: app_id.into(),
         route: CrdtRoute::record(app_id, env.route.cluster_id.clone(), "record"),
-        actions: vec![PublishedAction {
-            semantic_identity: None,
-            resource: resource.into(),
-            action: action.into(),
-            resource_kind: resource.into(),
-            resource_label: resource.into(),
-            action_label: action.into(),
-            keywords: Vec::new(),
-            icon: None,
-            description: None,
-            operation_kind: tilo_actions::OperationKind::Effect,
-            params: Vec::new(),
-            contract: tilo_actions::ActionContract {
-                kind: tilo_actions::ActionKind::Undoable,
-                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                result: tilo_actions::ResultSpec::Job,
-                ..Default::default()
-            },
-            input: PublishedInput::None,
-            view: None,
-        }],
+        actions,
         live: true,
     };
+    let notebook = "notes.notebook";
     rig.state.replace_published_surfaces_for_test(vec![
-        surface(NOTES_PEER, NOTES, "notes.notebook", "create-page"),
-        surface(MAIL_PEER, MAIL, "mail.outbox", "send"),
+        surface(
+            NOTES_PEER,
+            NOTES,
+            vec![
+                published(notebook, "create-page", Undoable, &[]),
+                published(notebook, "read-page", Read, &[]),
+                published(
+                    notebook,
+                    "retitle-mine",
+                    Undoable,
+                    &[tilo_actions::OWN_RECORD_SCOPE],
+                ),
+            ],
+        ),
+        surface(
+            MAIL_PEER,
+            MAIL,
+            vec![published("mail.outbox", "send", Undoable, &[])],
+        ),
     ]);
     drop(rig.state.capture_invocations_for_test(MAIL_PEER));
     rig.state.capture_invocations_for_test(NOTES_PEER)
@@ -78,6 +110,61 @@ fn new_note(
     on_behalf_of: Option<tilo_actions::InvocationId>,
 ) -> tilo_actions::remote::InvokeRequest {
     call(NOTES_PEER, "notes.notebook", "create-page", on_behalf_of)
+}
+
+/// Notes' `action` on its notebook, continuing `on_behalf_of`.
+fn notebook(
+    action: &str,
+    on_behalf_of: tilo_actions::InvocationId,
+) -> tilo_actions::remote::InvokeRequest {
+    call(NOTES_PEER, "notes.notebook", action, Some(on_behalf_of))
+}
+
+/// Whether `answer` waits for the person's confirmation nobody gave.
+fn unconfirmed(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
+    matches!(
+        answer,
+        tilo_actions::remote::RemoteActionMessage::Receipt(
+            tilo_actions::remote::InvocationReceipt {
+                status: tilo_actions::remote::ReceiptStatus::Rejected {
+                    error: tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                },
+                ..
+            }
+        )
+    )
+}
+
+/// The host's confirmation sheet, handing each question to the test.
+struct PersonSheet(
+    tokio::sync::mpsc::UnboundedSender<(
+        crate::app_actions::AppActionConsentRequest,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionConsent>,
+    )>,
+);
+impl crate::app_actions::AppActionConsentPrompter for PersonSheet {
+    fn ask(
+        &self,
+        request: crate::app_actions::AppActionConsentRequest,
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionConsent>> {
+        let (answer, receive) = tokio::sync::oneshot::channel();
+        self.0.send((request, answer)).ok()?;
+        Some(receive)
+    }
+}
+
+/// That `answer` admitted `request`, and Notes ran it for the agent: the
+/// invocation it continues from there.
+fn ran(
+    notes: &mut tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+    request: &tilo_actions::remote::InvokeRequest,
+    answer: &tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::InvocationId {
+    assert!(admitted(answer), "{answer:?}");
+    let delivered = notes.try_recv().expect("Notes runs the call");
+    assert_eq!(delivered.invocation, request.invocation);
+    assert_eq!(delivered.actor, "agent:scribe");
+    request.invocation
 }
 
 fn admitted(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
@@ -199,6 +286,134 @@ async fn a_persons_invocation_lets_its_effect_call_another_app_as_them() {
             let note = notes.try_recv().expect("Notes runs the call");
             assert_eq!(note.actor, delivered.actor, "the person who asked");
             drop(person);
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_child_reaches_no_further_than_what_it_continues() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use crate::test_support::{Grants as _, KindSet, Subject};
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            {
+                let workspace = &mut env.membership.write().workspaces[0];
+                workspace.admit_agent("scribe", KindSet::READ);
+                workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
+            }
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            // Notes runs on a connection of its own, whose effects continue
+            // what was delivered to it.
+            let notes_app = rig.app_caller(&env, NOTES_PEER, NOTES, None).await;
+            let agent = rig.caller(&env, 905, Some("scribe")).await;
+            let asked = id(0xc4b1);
+            invoke(&agent.handle, &rig.binding, asked).await.unwrap();
+            rig.stream.as_ref().unwrap().read().await.unwrap();
+            let notes = &mut notes;
+
+            // An edit continuing an edit, and a read, stay within it.
+            let edit = new_note(Some(asked));
+            let edit = ran(notes, &edit, &app_asks(&app, edit.clone()).await);
+            let read = notebook("read-page", asked);
+            let read = ran(notes, &read, &app_asks(&app, read.clone()).await);
+
+            // The agent may edit Notes, but what continues its read reads:
+            // an edit is put to the person, and nobody here answers.
+            let beyond = app_asks(&notes_app.handle, notebook("create-page", read)).await;
+            assert!(unconfirmed(&beyond), "{beyond:?}");
+            let within = notebook("read-page", read);
+            let within = ran(
+                notes,
+                &within,
+                &app_asks(&notes_app.handle, within.clone()).await,
+            );
+            let after_edit = notebook("create-page", edit);
+            ran(
+                notes,
+                &after_edit,
+                &app_asks(&notes_app.handle, after_edit.clone()).await,
+            );
+
+            // Down a chain: an edit of the person's own record needs only
+            // reading, so it runs under the read, and reaches no further
+            // than it.
+            let own = notebook("retitle-mine", read);
+            let own = ran(notes, &own, &app_asks(&notes_app.handle, own.clone()).await);
+            for parent in [own, within] {
+                let beyond = app_asks(&notes_app.handle, notebook("create-page", parent)).await;
+                assert!(unconfirmed(&beyond), "{beyond:?}");
+            }
+            // Naming a confirmation of its own answers nothing.
+            let mut claimed = notebook("create-page", read);
+            claimed.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);
+            let claimed = app_asks(&notes_app.handle, claimed).await;
+            assert!(!admitted(&claimed), "{claimed:?}");
+            assert!(notes.try_recv().is_err(), "nothing beyond reached Notes");
+
+            // The person answers it on their own device as its own request,
+            // and then it runs.
+            let (sheet, mut sheets) = tokio::sync::mpsc::unbounded_channel();
+            rig.state
+                .set_app_action_consent(Arc::new(PersonSheet(sheet)));
+            let confirmed = notebook("create-page", read);
+            let notes_handle = notes_app.handle.clone();
+            let asking = app_asks(&notes_handle, confirmed.clone());
+            tokio::pin!(asking);
+            let (question, answer) = tokio::select! {
+                answer = &mut asking => panic!("ran unasked: {answer:?}"),
+                sheet = sheets.recv() => sheet.unwrap(),
+            };
+            assert_eq!(
+                (question.target_app.as_str(), question.action.as_str()),
+                (NOTES, "create-page")
+            );
+            assert!(
+                notes.try_recv().is_err(),
+                "nothing runs while the person decides"
+            );
+            answer
+                .send(crate::app_actions::AppActionConsent::Once)
+                .unwrap();
+            let answered = asking.await;
+            ran(notes, &confirmed, &answered);
+
+            drop((agent, notes_app));
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_persons_read_does_not_make_their_edit_unasked() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            let notes_app = rig.app_caller(&env, NOTES_PEER, NOTES, None).await;
+            let person = rig.caller(&env, 906, None).await;
+            let asked = id(0xc4b2);
+            invoke(&person.handle, &rig.binding, asked).await.unwrap();
+            rig.stream.as_ref().unwrap().read().await.unwrap();
+            let read = notebook("read-page", asked);
+            assert!(admitted(&app_asks(&app, read.clone()).await));
+            notes.try_recv().expect("Notes reads");
+
+            // The person may edit; their read's effect may not, even when it
+            // claims their confirmation.
+            for confirmation in [None, Some(tilo_actions::remote::Confirmation::Confirmed)] {
+                let mut edit = notebook("create-page", read.invocation);
+                edit.confirmation = confirmation;
+                let edit = app_asks(&notes_app.handle, edit).await;
+                assert!(!admitted(&edit), "{edit:?}");
+            }
+            assert!(notes.try_recv().is_err(), "no edit reached Notes");
+            drop((person, notes_app));
             rig.stop().await;
         })
         .await;

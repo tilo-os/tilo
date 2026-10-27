@@ -3012,6 +3012,10 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub mod action_proposal;
+pub use action_proposal::{
+    ActionProposal, ActionProposalView, DiffLine, DiffTag, ProposalDecision, ProposalTarget,
+};
 pub mod binding;
 pub mod capability;
 mod composed;
@@ -3521,7 +3525,7 @@ pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
     ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
     ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
-    DraftBook, ListFace, SavedCopy, UploadProgress,
+    DraftBook, ListCache, ListFace, ListWork, SavedCopy, UploadProgress,
 };
 pub mod card;
 mod tone;

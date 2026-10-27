@@ -26,8 +26,10 @@ pub const CONTROL_PX: f64 = crate::tokens::Metrics::BASE.bar_control_height as f
 pub const CONTROL_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 /// Between the last control and the window's trailing edge.
 pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-/// Between the controls and whatever stands before them in the row.
-pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s4 as f64;
+/// Between the controls and whatever stands before them in the row: the
+/// window's controls are a group of their own, apart from the app's by
+/// the gap between groups, never by a drawn line.
+pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.group as f64;
 
 /// Where each control sits; `Rect::ZERO` for one the window doesn't offer.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

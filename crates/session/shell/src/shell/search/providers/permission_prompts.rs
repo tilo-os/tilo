@@ -175,6 +175,7 @@ impl SearchProvider for PermissionPromptsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             })
             .collect();
         let fields: Vec<_> = rows

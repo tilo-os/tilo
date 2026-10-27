@@ -421,6 +421,16 @@ impl ShellOverlayHost {
         root.children.extend(self.strip_switcher_accessibility());
         // The control hint on screen, said politely.
         root.children.extend(self.control_hint_accessibility());
+        // Last, so the paths above keep their indices: the desk widgets a
+        // reader can open, fold and pin exactly as the pointer and Tab do.
+        let desk = self.desk_accessibility_children();
+        if !desk.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name(t("desk-widgets-a11y"))
+                    .with_children(desk),
+            );
+        }
         root
     }
 

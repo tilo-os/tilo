@@ -98,8 +98,10 @@ def validate_target_imgref(value, *, root=None):
         if isinstance(value, str) and re.fullmatch(
             r"registry\.tilo\.so/tilo/tilo-vm(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
         ):
-            # Ordinary tilo-vm images admit unsigned development updates;
-            # opt-in signed boards tighten that scope to the existing OS key.
+            # A dev image admits the dev channel signed with the development
+            # key (os/scripts/finalize-dev-image.py); opt-in signed boards
+            # tighten that scope to the existing OS key; older dev images
+            # admitted it unsigned.
             # Both immutable flavour and the repository's actual
             # policy must agree; a live medium or environment variable alone
             # cannot enable this origin for a production target.
@@ -111,13 +113,17 @@ def validate_target_imgref(value, *, root=None):
                 raise ValueError("development container policy is too large")
             admission = json.loads(policy.read_bytes()).get("transports", {}).get("docker", {}).get(
                 "registry.tilo.so/tilo/tilo-vm")
-            signed = [{"type": "sigstoreSigned", "keyPath": "/usr/share/tilo/cosign.pub",
-                       "signedIdentity": {"type": "matchRepository"}}]
-            if admission not in ([{"type": "insecureAcceptAnything"}], signed):
-                raise ValueError("tilo-vm update origin requires its development repository policy")
-            if admission == signed:
-                trusted_path(root, Path("usr/share/tilo/cosign.pub"), regular=True)
-            return value
+            def signed(key):
+                return [{"type": "sigstoreSigned", "keyPath": "/" + key,
+                         "signedIdentity": {"type": "matchRepository"}}]
+            keys = ("usr/share/tilo/cosign-dev.pub", "usr/share/tilo/cosign.pub")
+            if admission == [{"type": "insecureAcceptAnything"}]:
+                return value
+            for key in keys:
+                if admission == signed(key):
+                    trusted_path(root, Path(key), regular=True)
+                    return value
+            raise ValueError("tilo-vm update origin requires its development repository policy")
     # Board images carry private firmware and follow the forge's private
     # repository; every other image follows the public one. Both require
     # the release signature.

@@ -494,6 +494,20 @@ completeness does not exempt a screen from these requirements.
   above or painted over the app's controls. An app may put its header *in*
   the bar (`NavShell::with_header_in_window_bar`): maximized, the header
   then hides with the bar and comes back over the content with it.
+- **The window's controls are a group of their own.** History, Full screen
+  and Close stand at the bar's trailing edge, `rhythm.group` apart from the
+  app's controls and the window's search before them; space parts the two
+  groups, never a drawn line. That edge never moves when the app's slots
+  change. The app's controls are its slots in declared order, at most
+  three in the row; a narrow bar folds the last of them into the app's
+  More menu before it squeezes the location, and the window's own
+  controls never fold.
+- **Every control gets its slot before the location.** The location takes
+  what the controls leave; only where that is less than its least width (a
+  phone's) do Forward and then the sidebar's toggle fold into More, Back
+  staying. A breadcrumb that does not fit folds its middle
+  levels into the `…`, then cuts the current level short, then shows the
+  current level alone, cut short; it never paints past its own bounds.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
   (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
@@ -870,7 +884,7 @@ its own is a defect of the same class as a hand-rolled text field (§8).
 | `AttachmentSummary`, `AttachmentAction` | The ladder: the inline preview, the picture at full size, a copy saved where the person says, and the saved copy shown in the file manager. Rungs that cannot be offered are absent, with the reason where they would have been. |
 | `DraftBook`, `draft::line` | A draft is per conversation, blank is not a draft, sending clears it only while it is still what was sent, and the words are shown wherever the conversation is listed ("Draft: …"). A draft you cannot find is a draft you have lost. |
 | `ComposerRule` | Enter sends, Shift+Enter breaks the line, Escape lets the draft go. One rule, both apps; a comment field inside a document is the one other rule (`ModEnter`). |
-| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above. A painting app composes its own rows from the same pieces. |
+| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above — and measured once. A frame keeps the boxes it measured and shapes only the rows its viewport shows, so a thread of a few hundred messages costs what is on screen. A painting app composes its own rows from the same pieces. |
 
 Consequences a person feels: a screenshot in Chat opens full size, a message in
 Messages has a time, a draft in either app is visible in the list, and Enter

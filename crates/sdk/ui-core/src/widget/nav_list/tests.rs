@@ -1888,12 +1888,43 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
 #[cfg(feature = "native")]
 #[test]
 fn a_hover_moving_between_destinations_damages_only_those_two_rows() {
+    assert_sidebar_hovers_damage_only_their_rows(Box::new(
+        crate::widget::Stack::new().push(Box::new(crate::widget::Text::new("A folder"))),
+    ));
+}
+
+/// The content beside the sidebar keeps what it painted while the pointer
+/// moves over the sidebar: a collapsible section's header and its chevron,
+/// and a month, repaint nothing a hover in the sidebar did not change.
+#[cfg(feature = "native")]
+#[test]
+fn a_sidebar_hover_repaints_no_section_header_or_month_beside_it() {
+    let section = crate::widget::Section::new(vec![
+        Box::new(crate::widget::ListRow::new("wifi", "Wi-Fi")),
+        Box::new(crate::widget::ListRow::new("vpn", "VPN")),
+    ])
+    .with_header(crate::widget::SectionHeader::group("Connections"))
+    .collapsible();
+    let month = crate::widget::DatePicker::new(
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default(),
+    )
+    .with_today(chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap_or_default());
+    assert_sidebar_hovers_damage_only_their_rows(Box::new(
+        crate::widget::Column::new()
+            .push(Box::new(section))
+            .push(Box::new(month)),
+    ));
+}
+
+/// Move the pointer from one destination to the next of a sidebar beside
+/// `content`: each hover's damage stays within the two rows it moved
+/// between, and no hover asks for a layout.
+#[cfg(feature = "native")]
+fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element) {
     use crate::a11y::Role;
     let shell = crate::widget::NavShell::new()
         .sidebar(Box::new(NavList::new(destinations(12))))
-        .content(Box::new(
-            crate::widget::Stack::new().push(Box::new(crate::widget::Text::new("A folder"))),
-        ));
+        .content(content);
     let mut app = crate::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
     let mut damage = crate::app::SurfaceDamage::default();
     app.init_layout();

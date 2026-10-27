@@ -9,12 +9,12 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tilo_search::{Document, Hit, Hits, Matching, Page, SearchIndex};
-use ui::search::FieldWeight;
+use tilo_search::{Hit, Hits, Page, SearchIndex};
 
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::i18n::{t, t_args};
+
 use crate::shell::search::ActionReceipt;
 use crate::shell::search::action_api::{ActionError, ActionHierarchy, ActionParam, ParamType};
 use crate::shell::search::{
@@ -30,12 +30,15 @@ use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
+#[path = "live_app_actions/index.rs"]
+mod index;
+use index::index_actions;
+
 pub const PROVIDER_ID: &str = "app-actions";
 /// How long the palette waits for a local action's admission. A closed app
 /// is launched first, and the host gives up on it sooner with a clearer
 /// error; this only bounds a host that never answers.
 const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
-const ID_SEPARATOR: char = '\u{1f}';
 
 /// An action row's secondary line: the record it acts on unless its label
 /// already names it, then the app.
@@ -265,84 +268,9 @@ fn receipt_update(receipt: InvocationReceipt) -> tilo_actions::InvocationUpdate 
     }
 }
 
-pub(crate) const JOB_UNAVAILABLE_MESSAGE: &str = "invocation is unavailable or not visible; this does not establish the original action's outcome";
-
-pub(crate) fn job_control_target(id: &str) -> Option<(u64, bool)> {
-    let (kind, number) = id.split_once(ID_SEPARATOR)?;
-    let cancel = match kind {
-        "job" => false,
-        "job-cancel" => true,
-        _ => return None,
-    };
-    Some((number.parse().ok()?, cancel))
-}
-
-fn job_state(update: &tilo_actions::InvocationUpdate) -> &'static str {
-    match update {
-        tilo_actions::InvocationUpdate::Accepted { .. } => "accepted",
-        tilo_actions::InvocationUpdate::Progress { .. } => "running",
-        tilo_actions::InvocationUpdate::Item { .. } => "streaming",
-        tilo_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
-        tilo_actions::InvocationUpdate::Failed { .. } => "failed",
-        tilo_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
-    }
-}
-
-/// A [`job_state`] as the job's row reads it, in the desktop's language.
-fn job_state_label(state: &str) -> String {
-    match state {
-        "accepted" => t("search-app-job-accepted"),
-        "running" => t("search-app-job-running"),
-        "streaming" => t("search-app-job-streaming"),
-        "succeeded" => t("search-app-job-succeeded"),
-        "failed" => t("search-app-job-failed"),
-        _ => t("search-app-job-cancelled"),
-    }
-}
-
-/// Display only bounded application-reported progress, never outcome evidence or logs.
-fn job_subtitle(update: &tilo_actions::InvocationUpdate) -> String {
-    let tilo_actions::InvocationUpdate::Progress {
-        phase,
-        completed,
-        total,
-        ..
-    } = update
-    else {
-        return job_state_label(job_state(update));
-    };
-    let phase: String = phase
-        .chars()
-        .take(128)
-        .filter(|ch| !ch.is_control())
-        .collect();
-    let phase = phase.trim();
-    if phase.is_empty() {
-        return job_state_label("running");
-    }
-    let mut args = vec![("phase", phase.into())];
-    if let Some(completed) = completed {
-        args.push(("completed", completed.to_string().into()));
-    }
-    if let Some(total) = total {
-        args.push(("total", total.to_string().into()));
-    }
-    let key = match (completed, total) {
-        (Some(_), Some(_)) => "search-app-job-reported-counts",
-        (Some(_), None) => "search-app-job-reported-completed",
-        (None, Some(_)) => "search-app-job-reported-total",
-        (None, None) => "search-app-job-reported-phase",
-    };
-    t_args(key, &args)
-}
-
-pub fn job_status_id(id: u64) -> String {
-    format!("job{ID_SEPARATOR}{id}")
-}
-
-pub fn job_cancel_id(id: u64) -> String {
-    format!("job-cancel{ID_SEPARATOR}{id}")
-}
+pub(crate) use super::live_app_jobs::{ID_SEPARATOR, JOB_UNAVAILABLE_MESSAGE};
+pub use super::live_app_jobs::{job_cancel_id, job_status_id};
+pub(crate) use super::live_app_jobs::{job_control_target, job_subtitle};
 
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
@@ -373,6 +301,10 @@ pub struct LiveAppActionsProvider {
     resource_kinds: Vec<ResourceKind>,
     directory_invalidations: Rc<RefCell<HashSet<DirectoryCacheKey>>>,
     directory_epoch: AtomicU64,
+    /// Moves when a continuation page lands. It is part of the refresh
+    /// identity, so an open palette lists the page, but not of the cursor
+    /// revision: a cursor waiting on that page stays valid and resumes at it.
+    directory_appended: Cell<u64>,
     surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
     surface_build: RefCell<Option<Receiver<SurfaceSnapshot>>>,
     /// The long-lived index worker, started by the first rebuild.
@@ -780,6 +712,7 @@ impl LiveAppActionsProvider {
             ],
             directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
             directory_epoch: AtomicU64::new(0),
+            directory_appended: Cell::new(0),
             surface_snapshot: RefCell::new(None),
             surface_build: RefCell::new(None),
             index_worker: RefCell::new(None),
@@ -1338,41 +1271,51 @@ impl LiveAppActionsProvider {
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
         if !ready.is_empty() {
-            let mut pages = self.directory_pages_mut();
-            for (key, page, initial_page) in ready {
-                self.directory_failures.borrow_mut().remove(&key);
-                // A first page starts a new chain: the pages of an earlier
-                // one for this route/query continue cursors this page does
-                // not name, so they go. A continuation keeps the chain it
-                // extends: a complete listing walks it again from its first
-                // page, and dropping that page asked the app for it again,
-                // whose answer named a new continuation, never cached, so the
-                // listing never settled. The chain stays bounded by
-                // MAX_RETAINED_DIRECTORY_PAGES.
-                if initial_page {
-                    pages.retain(|existing, _| {
-                        existing == &key
-                            || existing.0 != key.0
-                            || existing.1 != key.1
-                            || existing.2 != key.2
-                    });
-                }
-                if !pages.contains_key(&key)
-                    && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
-                    && let Some(evicted) = pages.keys().next().cloned()
-                {
-                    pages.remove(&evicted);
-                }
-                pages.insert(key, page);
-                if initial_page {
-                    self.directory_epoch.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            // A later page appends after a retained cursor. Drop only the
-            // projection so that cursor can continue at its prior offset;
-            // the source revision deliberately remains stable.
-            self.auxiliary_snapshot.borrow_mut().take();
+            self.land_directory_pages(ready);
         }
+    }
+
+    /// Cache directory pages that arrived; `initial_page` tells a chain's
+    /// first page from a continuation.
+    fn land_directory_pages(&self, ready: Vec<(DirectoryCacheKey, CataloguePage, bool)>) {
+        let mut pages = self.directory_pages_mut();
+        for (key, page, initial_page) in ready {
+            self.directory_failures.borrow_mut().remove(&key);
+            // A first page starts a new chain: the pages of an earlier
+            // one for this route/query continue cursors this page does
+            // not name, so they go. A continuation keeps the chain it
+            // extends: a complete listing walks it again from its first
+            // page, and dropping that page asked the app for it again,
+            // whose answer named a new continuation, never cached, so the
+            // listing never settled. The chain stays bounded by
+            // MAX_RETAINED_DIRECTORY_PAGES.
+            if initial_page {
+                pages.retain(|existing, _| {
+                    existing == &key
+                        || existing.0 != key.0
+                        || existing.1 != key.1
+                        || existing.2 != key.2
+                });
+            }
+            if !pages.contains_key(&key)
+                && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
+                && let Some(evicted) = pages.keys().next().cloned()
+            {
+                pages.remove(&evicted);
+            }
+            pages.insert(key, page);
+            if initial_page {
+                self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.directory_appended
+                    .set(self.directory_appended.get().wrapping_add(1));
+            }
+        }
+        drop(pages);
+        // A later page appends after a retained cursor. Drop only the
+        // projection so that cursor resumes at the appended page; the
+        // cursor revision deliberately remains stable.
+        self.auxiliary_snapshot.borrow_mut().take();
     }
 
     /// Land the nested pages that have arrived. `true` when any did, or one
@@ -1653,7 +1596,13 @@ impl LiveAppActionsProvider {
         let mut pending_directory = Vec::new();
         let mut next_resume = None;
         let actor = ctx.chrome.active_local_user();
-        if ctx.chrome.search_resource_scope.is_none()
+        // Jobs lead the first page only; a resumed page continues after them.
+        if *resume
+            == (AuxiliaryResume {
+                root_after: None,
+                directory: None,
+            })
+            && ctx.chrome.search_resource_scope.is_none()
             && (needle.is_empty() || "jobs status progress".contains(needle))
         {
             for (id, update, lifecycle) in self
@@ -1958,6 +1907,7 @@ impl LiveAppActionsProvider {
                     })
                 })),
                 on_begin_invoke: None,
+                resource: None,
             };
         }
         let status_broker = lifecycle;
@@ -1989,7 +1939,34 @@ impl LiveAppActionsProvider {
                 })
             })),
             on_begin_invoke: None,
+            resource: None,
         }
+    }
+
+    /// What a cursor of this provider stays valid for: the local index,
+    /// the directory pages a walk starts from, publishers, actor and
+    /// locale. Pages appended behind a continuation leave it unchanged.
+    fn cursor_revision(&self, ctx: &SearchContext<'_>) -> String {
+        let scope = Self::surface_scope(ctx);
+        let source_generation = self.broker.surfaces_generation();
+        let ready = self
+            .surface_snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.source_generation == source_generation && snapshot.scope == scope
+            });
+        format!(
+            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
+            if ready { "ready" } else { "indexing" },
+            self.directory_epoch.load(Ordering::Relaxed),
+            // Listing publishers is a memory read; it never asks an app.
+            self.directory_revision(ctx.chrome),
+            self.broker.statuses_generation(),
+            ctx.chrome.active_local_user(),
+            ctx.include_programmatic,
+            crate::shell::i18n::current_locale(),
+        )
     }
 
     /// Exact receipt reads use the actor-owned broker key, not the four-row
@@ -2001,7 +1978,7 @@ impl LiveAppActionsProvider {
         cursor: Option<&SearchCursor>,
         budget: SearchBudget,
     ) -> SearchPage {
-        let revision = self.search_revision(ctx);
+        let revision = self.cursor_revision(ctx);
         if cursor.is_some() {
             return SearchPage::stale(revision);
         }
@@ -2414,6 +2391,16 @@ impl LiveAppActionsProvider {
         ))
     }
 
+    /// The resource and action one result id names, whether the row came
+    /// from a published surface or a directory.
+    #[must_use]
+    pub fn address_of(id: &str) -> Option<(&str, &str)> {
+        let mut parts = id.rsplit(ID_SEPARATOR);
+        let action = parts.next()?;
+        let resource = parts.next()?;
+        Some((resource, action))
+    }
+
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
         #[cfg(test)]
         IDS_MINTED.with(|minted| minted.set(minted.get().saturating_add(1)));
@@ -2563,6 +2550,7 @@ impl LiveAppActionsProvider {
                 );
                 Ok(InvocationDisposition::Pending(ticket))
             })),
+            resource: None,
         }
     }
 
@@ -2640,6 +2628,7 @@ impl LiveAppActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -3020,6 +3009,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             None => InvocationDisposition::Pending(ticket),
                         })
                     })),
+                    resource: None,
                 });
             }
         }
@@ -3198,25 +3188,10 @@ impl SearchProvider for LiveAppActionsProvider {
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
-        let scope = Self::surface_scope(ctx);
-        let source_generation = self.broker.surfaces_generation();
-        let ready = self
-            .surface_snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| {
-                snapshot.source_generation == source_generation && snapshot.scope == scope
-            });
         format!(
-            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
-            if ready { "ready" } else { "indexing" },
-            self.directory_epoch.load(Ordering::Relaxed),
-            // Listing publishers is a memory read; it never asks an app.
-            self.directory_revision(ctx.chrome),
-            self.broker.statuses_generation(),
-            ctx.chrome.active_local_user(),
-            ctx.include_programmatic,
-            crate::shell::i18n::current_locale(),
+            "{}:{}",
+            self.cursor_revision(ctx),
+            self.directory_appended.get()
         )
     }
 
@@ -3270,7 +3245,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 && !ctx.wanted.contains(&ResourceKind::Action)
                 && !Self::wants_resource_rows(ctx.wanted))
         {
-            return SearchPage::exhausted(self.search_revision(&ctx), Vec::new());
+            return SearchPage::exhausted(self.cursor_revision(&ctx), Vec::new());
         }
         if let Some(target) = job_control_target(ctx.needle) {
             return self.job_control_page(&ctx, target, cursor, budget);
@@ -3279,7 +3254,7 @@ impl SearchProvider for LiveAppActionsProvider {
         self.set_directory_context(&ctx, &needle);
         self.apply_directory_invalidations();
         self.poll_directory_pages();
-        let revision = self.search_revision(&ctx);
+        let revision = self.cursor_revision(&ctx);
         let scope = Self::surface_scope(&ctx);
         let (stage, after, resume) = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
@@ -3454,10 +3429,12 @@ impl SearchProvider for LiveAppActionsProvider {
                         .as_ref()
                         .map_or("", |scope| scope.resource.as_str()),
                 );
+                // The resumed projection starts at this continuation's
+                // first row, not after this projection's rows.
                 return Self::live_aux_page(
                     revision,
                     results,
-                    position,
+                    0,
                     &needle,
                     &scope,
                     &AuxiliaryResume {
@@ -3559,40 +3536,6 @@ impl SearchProvider for LiveAppActionsProvider {
         let next = local_offset.saturating_add(considered);
         Self::live_page(revision, results, "local", next, &needle, &scope)
     }
-}
-
-/// Index the fields a local action row ranks by, keyed by position.
-fn index_actions(
-    entries: &[(PublishedSurface, PublishedAction)],
-    include_programmatic: bool,
-) -> SearchIndex {
-    let mut index = SearchIndex::new(Matching {
-        spanning: true,
-        typos: false,
-    });
-    index.replace_all(
-        entries
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, action))| include_programmatic || action.contract.reaches_people())
-            .map(|(at, (surface, action))| {
-                // The words the app declares for the action find it as the
-                // shell's own actions are found by theirs.
-                action.keywords.iter().fold(
-                    Document::new(at as u64)
-                        .field(action.action_label.as_str(), FieldWeight::TITLE)
-                        .field(action.resource_label.as_str(), FieldWeight::SUBTITLE)
-                        .field(action.action.as_str(), FieldWeight::IDENTITY)
-                        .field(action.resource.as_str(), FieldWeight::IDENTITY)
-                        .field(surface.app_id.as_str(), FieldWeight::METADATA),
-                    |document, word| document.field(word.as_str(), FieldWeight::KEYWORD),
-                )
-            }),
-    );
-    if let Err(error) = index.commit() {
-        tracing::error!(%error, "could not index live app actions");
-    }
-    index
 }
 
 #[path = "live_app_actions/row_picture.rs"]
@@ -4420,45 +4363,6 @@ mod tests {
         }
     }
 
-    /// An app's action is found by the other words it publishes for
-    /// itself, as by its label: "mkdir" finds New folder, and a word no
-    /// action declares finds none.
-    #[test]
-    fn a_published_action_is_found_by_the_words_it_declares() {
-        let surface = PublishedSurface {
-            peer_id: 7,
-            app_id: "so.tilo.fixture".into(),
-            route: CrdtRoute::app("so.tilo.fixture", "room"),
-            actions: Vec::new(),
-            live: true,
-        };
-        let mut folder = local_action("New folder", "new-folder");
-        folder.keywords = vec!["mkdir".into(), "make directory".into()];
-        let entries = vec![
-            (surface.clone(), local_action("Rename", "rename")),
-            (surface, folder),
-        ];
-        let index = index_actions(&entries, false);
-        let page = tilo_search::Page {
-            offset: 0,
-            limit: 8,
-        };
-        for query in ["mkdir", "make directory", "new folder"] {
-            let keys: Vec<u64> = index
-                .search(query, page)
-                .hits
-                .iter()
-                .map(|hit| hit.key)
-                .collect();
-            assert_eq!(
-                keys.first(),
-                Some(&1),
-                "{query} finds New folder first: {keys:?}"
-            );
-        }
-        assert!(index.search("rmdir", page).hits.is_empty());
-    }
-
     #[test]
     fn cached_directory_action_replaces_only_its_exact_local_alias() {
         let chrome = chrome();
@@ -4945,7 +4849,7 @@ mod tests {
             let doc = AutoCommit::new();
             provider.set_directory_query("open");
             let ctx = context("open", &chrome, &doc);
-            let revision = provider.search_revision(&ctx);
+            let revision = provider.cursor_revision(&ctx);
             let scope = LiveAppActionsProvider::surface_scope(&ctx);
             let root = ActionDirectoryRoot {
                 peer_id: 7,
@@ -6231,6 +6135,7 @@ mod tests {
                 on_open: Rc::new(|_, _, _, _| Ok(())),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             };
 
             assert_eq!(
@@ -6496,3 +6401,11 @@ mod window_records_tests;
 #[cfg(test)]
 #[path = "live_app_actions/row_order_tests.rs"]
 mod row_order_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/catalogue_paging_tests.rs"]
+mod catalogue_paging_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/keyword_tests.rs"]
+mod keyword_tests;

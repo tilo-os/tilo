@@ -144,7 +144,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
                 .notice
                 .as_ref()
                 .unwrap()
-                .contains("Backend settings are unchanged")
+                .contains("The shared provider settings are unchanged")
         );
     })
     .unwrap();

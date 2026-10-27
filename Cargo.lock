@@ -7416,6 +7416,7 @@ dependencies = [
  "bounded-command",
  "calendar",
  "console-control",
+ "imager-backend",
  "install-profile-model",
  "libc",
  "os-actions",
@@ -10048,6 +10049,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-surface",
  "tilo-doc",
+ "tilo-doc-codecs",
  "tilo-document",
  "tilo-emoji-engine",
  "tilo-files",
@@ -10060,6 +10062,7 @@ dependencies = [
  "url",
  "uuid",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]

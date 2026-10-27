@@ -255,7 +255,8 @@ pub(super) fn paint_slots(
         .map(|i| &i.poses)
         .filter(|poses| !poses.is_empty());
     let pose = (poses, toolbar);
-    if toolbar.sidebar.is_some() {
+    // A button the row has no room for is in the overflow menu, not here.
+    if toolbar.sidebar.is_some() && slots.sidebar.area() > 0.0 {
         let lifted = face(
             Slot::Sidebar,
             !toolbar.sidebar_unavailable,
@@ -290,22 +291,24 @@ pub(super) fn paint_slots(
             },
         );
         let forward = face(Slot::Forward, nav.forward, false);
-        posed(
-            scene,
-            transform,
-            pose,
-            (&Slot::Forward, slots.forward),
-            |scene, at| {
-                paint_icon_button(
-                    scene,
-                    at,
-                    tr,
-                    theme,
-                    (slots.forward, Icon::ArrowRight),
-                    forward,
-                );
-            },
-        );
+        if slots.forward.area() > 0.0 {
+            posed(
+                scene,
+                transform,
+                pose,
+                (&Slot::Forward, slots.forward),
+                |scene, at| {
+                    paint_icon_button(
+                        scene,
+                        at,
+                        tr,
+                        theme,
+                        (slots.forward, Icon::ArrowRight),
+                        forward,
+                    );
+                },
+            );
+        }
     }
     for (i, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
         let slot = Slot::Leading(i);

@@ -17,10 +17,12 @@ mod app_scope;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod launcher;
+mod merge;
 pub mod providers;
 pub mod recent_places;
 #[cfg(test)]
 mod relevance_tests;
+pub mod rows;
 mod timing;
 pub mod usage;
 pub mod verifier;
@@ -35,6 +37,8 @@ use automerge::{AutoCommit, ObjId};
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use crate::shell::i18n::t;
 use action_api::{ActionArgs, ActionError, ActionParam};
+use merge::{proximity_boost, sources_keep_their_order};
+pub use rows::row_resource;
 
 use ui::search::system::{self, query_input_is_bounded};
 
@@ -307,6 +311,10 @@ pub struct SearchResult {
     pub contract: Option<tilo_actions::ActionContract>,
     pub on_open: Rc<OpenFn>,
     pub on_invoke: Option<Rc<InvokeFn>>,
+    /// The resource this row acts on, when its id is not that resource. A
+    /// search opened on it ([`ui::search::SearchRequest::on`]) starts on this
+    /// row.
+    pub resource: Option<String>,
     /// Used only when admission itself is asynchronous. It must not claim an
     /// accepted action until its retained ticket resolves current authority.
     pub on_begin_invoke: Option<Rc<BeginInvokeFn>>,
@@ -366,6 +374,7 @@ impl SearchResult {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 
@@ -398,6 +407,7 @@ impl SearchResult {
             on_open: Rc::new(move |doc, root, chrome, _args| on_open(doc, root, chrome)),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -747,6 +757,15 @@ pub trait SearchProvider {
     /// an app serves) gives way to it. Zero for most rows.
     fn intent_strength(&self, _result: &SearchResult, _needle: &str) -> f32 {
         0.0
+    }
+
+    /// Where `result` stands among the rows one source ranks itself: the
+    /// source (an app) and the row's rank in it, higher first. The merge
+    /// keeps each source's order among its own rows
+    /// ([`sources_keep_their_order`]), whatever their titles' lexical fit
+    /// says. `None` for rows no source ranks, most of them.
+    fn source_order(&self, _result: &SearchResult) -> Option<(String, i64)> {
+        None
     }
 
     /// The word `result` matched `needle` through when neither its title nor
@@ -1690,6 +1709,7 @@ impl SearchRegistry {
             .enabled_providers()
             .map(|provider| (provider.id(), provider.as_ref()))
             .collect();
+        sources_keep_their_order(&mut merged, &providers);
         system::order_hits(&mut merged, |row| {
             let availability = providers
                 .get(row.provider_id.as_str())
@@ -1885,25 +1905,6 @@ impl SearchRegistry {
 #[must_use]
 pub fn in_the_store() -> ResourceKind {
     ResourceKind::Custom(t("search-group-in-the-store"))
-}
-
-/// How much nearer the person a row is in Workspace scope: from the focused
-/// app's provider, and in the workspace being looked at.
-fn proximity_boost(provider: &dyn SearchProvider, row: &SearchResult, args: &QueryArgs<'_>) -> f32 {
-    if args.scope != SearchScope::Workspace {
-        return 0.0;
-    }
-    let active_app = if args.active_provider_id == Some(provider.id()) {
-        system::ACTIVE_APP_PROXIMITY_BOOST
-    } else {
-        0.0
-    };
-    let workspace = if provider.proximity(row, args.chrome) == SearchProximity::CurrentWorkspace {
-        system::ACTIVE_APP_PROXIMITY_BOOST
-    } else {
-        0.0
-    };
-    active_app + workspace
 }
 
 /// Queries this short are what launchers live on: the thing chosen most
