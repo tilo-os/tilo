@@ -1730,10 +1730,10 @@ impl CanvasSurface {
             // chord carrying Shift along with the command key are somebody
             // else's, and are left alone (`APP-canvas-01`).
             ("=" | "+", false, _, false) | ("+" | "=", true, false, false) => {
-                self.zoom_by(ZOOM_STEP, None)
+                self.zoom_by(ZOOM_STEP, None);
             }
             ("-" | "_", false, _, false) | ("-" | "_", true, false, false) => {
-                self.zoom_by(1.0 / ZOOM_STEP, None)
+                self.zoom_by(1.0 / ZOOM_STEP, None);
             }
             ("0", true, _, false) | ("!" | "1", false, true, false) => self.zoom_to_fit(),
             ("1", true, _, false) | ("0" | ")", false, true, false) => {
