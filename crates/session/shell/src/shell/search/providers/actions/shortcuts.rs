@@ -33,6 +33,7 @@ pub(super) const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("group.move-to-display-next", "move-group-to-next-display"),
     ("group.maximize", "maximize-window"),
+    ("group.toggle-maximize", "toggle-maximize"),
     ("group.restore", "restore-window"),
     ("group.fullscreen", "toggle-fullscreen"),
     ("group.narrower", "resize-narrower"),
@@ -46,6 +47,9 @@ pub(super) const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ("lock", "lock"),
     ("emoji.picker", "emoji-picker"),
     ("input.source.next", "next-input-source"),
+    ("magnifier.toggle", "toggle-magnifier"),
+    ("magnifier.zoom-in", "magnifier-zoom-in"),
+    ("magnifier.zoom-out", "magnifier-zoom-out"),
 ];
 
 /// `shortcut_id`'s current chord as the active layout's keycaps spell it,

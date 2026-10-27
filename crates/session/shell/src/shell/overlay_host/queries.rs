@@ -763,6 +763,58 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Run the published action `id` on this desktop, as the palette's row
+    /// for it does: the overlay host's chords go through here so that a
+    /// key, a click in the palette and an agent's invocation run the same
+    /// code. `invoked_by` is the action that asked for it, recorded on any
+    /// settings change it makes.
+    ///
+    /// `None` when nothing publishes `id`, so a caller can fall back to its
+    /// own implementation.
+    pub(super) fn run_published_action(
+        &mut self,
+        provider: &str,
+        id: &str,
+        invoked_by: &settings_store::InvokingAction,
+    ) -> Option<bool> {
+        use crate::shell::search::InvocationDisposition;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        let chrome = self.chrome.clone()?;
+        let mut doc = automerge::AutoCommit::new();
+        let resource = ResourceRef::new(provider, id);
+        let catalog = ActionCatalog::build_exact(
+            &self.search_registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let action = catalog.select(&resource)?;
+        let mut args = serde_json::Map::new();
+        // The magnifier's step is the one published action whose whole
+        // meaning is its argument, and whose argument a chord always knows.
+        if let Some(step) = id
+            .strip_prefix("magnifier.")
+            .and_then(|_| id.split_once('.'))
+            && let Some(step) = settings_store::magnifier::MagnifierStep::from_id(step.1)
+        {
+            args.insert("step".into(), step.id().into());
+        }
+        let _ = invoked_by;
+        action
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &args,
+            )
+            .ok()
+            .map(|disposition| matches!(disposition, InvocationDisposition::Accepted(_)))
+    }
+
     /// Resolve a previously enumerated action by its stable address. Dynamic
     /// providers can preserve their retained discovery page while
     /// revalidating the route used to invoke it.

@@ -73,6 +73,10 @@ icons! {
     ChevronLeft => "chevron-left",
     Plus => "plus",
     Search => "search",
+    /// Lucide `zoom-in`: a magnifier with a plus in its lens.
+    ZoomIn => "zoom-in",
+    /// Lucide `zoom-out`: a magnifier with a minus in its lens.
+    ZoomOut => "zoom-out",
     PenTool => "pen-tool",
     Code => "code",
     Terminal => "terminal",
@@ -659,6 +663,17 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::ChevronLeft => vec![path_from_d("m15 18-6-6 6-6")],
         Icon::Plus => vec![path_from_d("M5 12h14"), path_from_d("M12 5v14")],
         Icon::Search => vec![circle_path(11.0, 11.0, 8.0), path_from_d("m21 21-4.3-4.3")],
+        Icon::ZoomIn => vec![
+            circle_path(11.0, 11.0, 8.0),
+            path_from_d("m21 21-4.3-4.3"),
+            path_from_d("M11 8v6"),
+            path_from_d("M8 11h6"),
+        ],
+        Icon::ZoomOut => vec![
+            circle_path(11.0, 11.0, 8.0),
+            path_from_d("m21 21-4.3-4.3"),
+            path_from_d("M8 11h6"),
+        ],
         Icon::PenTool => vec![
             path_from_d(
                 "M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z",
