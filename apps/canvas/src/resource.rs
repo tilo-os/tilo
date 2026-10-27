@@ -319,7 +319,7 @@ pub struct SaveArtwork {
 /// file of it. Each takes its fields as named arguments, as its schema
 /// describes them, and answers with JSON.
 #[derive(Clone, Debug, PartialEq, ui::tilo_resource::Effect)]
-#[effect(operation = "canvas.view")]
+#[effect(operation = "canvas.view", app = "so.tilo.canvas")]
 pub enum ViewOp {
     /// Look at the artwork.
     ///
@@ -681,6 +681,7 @@ mod prepare {
 #[resource(
     kind = "canvas.artwork",
     label = "Artwork",
+    app = "so.tilo.canvas",
     initialize = Artwork::genesis,
     load = Artwork::loaded,
     lands = Artwork::lands,
