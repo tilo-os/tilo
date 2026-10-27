@@ -52,7 +52,17 @@ fn krate() -> Tokens {
 /// now does: `weaker = "higher"` or `"lower"` for a number, with
 /// `weakest = N` for the value weaker than any, such as a lock delay's `0`
 /// for never; `weaker = true` or `false` for a switch; a list of values
-/// from the strongest to the weakest for a choice).
+/// from the strongest to the weakest for a choice), `#[model(range =
+/// low..=high)]` on a number and `#[model(choices = expr)]` on a text (what
+/// the field may hold: published in its value's schema and held by the
+/// record's own check, through every door).
+///
+/// Type attributes: `#[model(check = path)]` (its invariant, with
+/// `check_reads`/`check_items` saying what it reads), `#[model(label =
+/// "..")]`, `#[model(defaults)]` (the type's `Default` is what each field
+/// holds until changed, published with it) and `#[model(field(name,
+/// options..))]` (a field's options given on the type, for a record whose
+/// fields a shared macro writes).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -167,6 +177,11 @@ struct FieldOptions {
     weaker: Option<Expr>,
     /// `weakest = N`: the number weaker than any (a delay's `0`, never).
     weakest: Option<syn::LitInt>,
+    /// `range = low..=high`: the numbers it may hold.
+    range: Option<(Expr, Expr)>,
+    /// `choices = expr`: the texts it may hold, any expression a `&[&str]`
+    /// borrows.
+    choices: Option<Expr>,
 }
 
 impl FieldOptions {
@@ -300,6 +315,16 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.weaker = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("weakest") {
                 options.weakest = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("range") {
+                let range: syn::ExprRange = meta.value()?.parse()?;
+                match (range.start, range.limits, range.end) {
+                    (Some(start), syn::RangeLimits::Closed(_), Some(end)) => {
+                        options.range = Some((*start, *end));
+                    }
+                    _ => return Err(meta.error("expected `range = low..=high`")),
+                }
+            } else if meta.path.is_ident("choices") {
+                options.choices = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -310,7 +335,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
                      `whole`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
-                     `weakest = N` or `remove = \"quiet\"`",
+                     `weakest = N`, `range = low..=high`, `choices = ..` or \
+                     `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -334,6 +360,12 @@ struct ContainerOptions {
     /// counts (not reads): adding or removing one can break it, an edit
     /// inside one cannot.
     check_items: Vec<String>,
+    /// `defaults`: the type's `Default` is what each field holds until
+    /// someone changes it, published with the field.
+    defaults: bool,
+    /// `field(name, options..)`: a field's options given on the type, for a
+    /// record whose fields a shared macro writes.
+    field_options: Vec<(String, Tokens)>,
 }
 
 /// `audience = "people" | "agents" | "everyone"` on an action or effect:
@@ -378,6 +410,18 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             } else if meta.path.is_ident("check_items") {
                 options.check_items = field_list(&meta)?;
                 Ok(())
+            } else if meta.path.is_ident("defaults") {
+                options.defaults = true;
+                Ok(())
+            } else if meta.path.is_ident("field") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let field: syn::Ident = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                options
+                    .field_options
+                    .push((field.to_string(), content.parse::<Tokens>()?));
+                Ok(())
             } else if meta.path.is_ident("label") {
                 options.label = field_list(&meta)?;
                 if options.label.is_empty() {
@@ -387,7 +431,8 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             } else {
                 Err(meta.error(
                     "expected `check = path`, `check_reads = \"field ..\"`, \
-                     `check_items = \"field ..\"` or `label = \"field field ..\"` on the type",
+                     `check_items = \"field ..\"`, `defaults`, `field(name, options..)` or \
+                     `label = \"field field ..\"` on the type",
                 ))
             }
         })?;
@@ -641,10 +686,23 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         label: label_parts,
         check_reads,
         check_items,
+        defaults,
+        field_options: given_options,
     } = container_options(&input.attrs)?;
+    for (given, _) in &given_options {
+        if !fields
+            .named
+            .iter()
+            .any(|field| field.ident.as_ref().is_some_and(|ident| ident == given))
+        {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                format!("`field({given}, ..)` names no field of `{name}`"),
+            ));
+        }
+    }
     // Each stored field's key by its name, for what the check reads.
     let mut keys: Vec<(String, String)> = Vec::new();
-    let own_check_const = check.is_some();
     let paths_name = format_ident!("{}Paths", name);
     let mut paths_generics = input.generics.clone();
     paths_generics.params.insert(0, syn::parse_quote!(__R));
@@ -690,6 +748,12 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut path_clones = Vec::new();
     let mut collection_names = Vec::new();
     let mut outbox_names = Vec::new();
+    // What each field declares it may hold (`range`, `choices`): checked
+    // with the record's own invariant, by the keys of the fields declaring.
+    let mut declared_checks = Vec::new();
+    let mut declared_keys = Vec::new();
+    // Each field's published value schema, narrowed by its declarations.
+    let mut schema_fns = Vec::new();
     let owner = snake_case(&name.to_string()).replace('_', "-");
     for field in &fields.named {
         let ident = field
@@ -698,7 +762,13 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             .ok_or_else(|| syn::Error::new(field.span(), "named field without a name"))?;
         let ty = &field.ty;
         let field_vis = &field.vis;
-        let options = field_options(&field.attrs)?;
+        let mut attrs = field.attrs.clone();
+        for (given, tokens) in &given_options {
+            if *ident == given {
+                attrs.push(syn::parse_quote!(#[model(#tokens)]));
+            }
+        }
+        let options = field_options(&attrs)?;
         let key = options.rename.clone().unwrap_or_else(|| ident.to_string());
         if !options.skip {
             keys.push((ident.to_string(), key.clone()));
@@ -787,6 +857,46 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         } else {
             quote!(::core::option::Option::None)
         };
+        let schema_fn = format_ident!("__schema_{}", ident);
+        let mut narrowed = quote!(<#ty as #krate::Model>::value_schema());
+        if let Some((low, high)) = &options.range {
+            narrowed = quote!(#krate::schema::range(
+                #narrowed,
+                ::core::option::Option::Some(#krate::__private::serde_json::json!(#low)),
+                ::core::option::Option::Some(#krate::__private::serde_json::json!(#high)),
+            ));
+            declared_checks.push(quote!(#krate::__private::declared_range(
+                &value.#ident,
+                #krate::__private::declared_bound(&(#low)),
+                #krate::__private::declared_bound(&(#high)),
+                #key,
+            )?;));
+        }
+        if let Some(choices) = &options.choices {
+            narrowed = quote!(#krate::schema::choices(#narrowed, &#choices));
+            declared_checks.push(quote!(#krate::__private::declared_choices(
+                &value.#ident,
+                &#choices,
+                #key,
+            )?;));
+        }
+        if options.range.is_some() || options.choices.is_some() {
+            declared_keys.push(key.clone());
+        }
+        if defaults {
+            narrowed = quote!(#krate::schema::with_default(
+                #narrowed,
+                ::core::option::Option::Some(#krate::Model::to_json(
+                    &<Self as ::core::default::Default>::default().#ident,
+                )),
+            ));
+        }
+        schema_fns.push(quote! {
+            #[doc(hidden)]
+            fn #schema_fn() -> #krate::__private::serde_json::Value {
+                #narrowed
+            }
+        });
         let ty_text = quote!(#ty)
             .to_string()
             .replace(" < ", "<")
@@ -809,7 +919,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_part: #label_part,
             quiet_remove: #quiet_remove,
             trust: #trust,
-            schema: <#ty as #krate::Model>::value_schema,
+            schema: Self::#schema_fn,
             text: #krate::stored_text::<#ty>,
             absent: #krate::absent_scalar::<#ty>,
             resource: #resource,
@@ -840,9 +950,23 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 )
             })
     };
+    let own_check_const = check.is_some() || !declared_checks.is_empty();
+    if !declared_checks.is_empty() {
+        checks_const.push(quote!(true));
+    }
+    // A record checking only what its fields declare reads only them.
+    let check_reads = match (check.is_some(), check_reads) {
+        (false, _) => Some(Vec::new()),
+        (true, reads) => reads,
+    };
     let check_reads = match check_reads {
         Some(fields) => {
-            let fields = fields.iter().map(key_of).collect::<syn::Result<Vec<_>>>()?;
+            let mut fields = fields.iter().map(key_of).collect::<syn::Result<Vec<_>>>()?;
+            for key in &declared_keys {
+                if !fields.contains(key) {
+                    fields.push(key.clone());
+                }
+            }
             let items = check_items
                 .iter()
                 .map(key_of)
@@ -888,42 +1012,46 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
         }
     };
-    let (own_check, own_check_fns) = check.as_ref().map_or_else(
-        || (quote!(::core::option::Option::None), quote!()),
-        |path| {
-            (
-                quote!(::core::option::Option::Some(#table::OwnCheck {
-                    check: Self::__own_check,
-                    read: Self::__read_record,
-                    reads: #check_reads,
-                })),
-                quote! {
-                    fn __own_check(
-                        value: &dyn ::core::any::Any,
-                    ) -> ::core::result::Result<(), #krate::Refusal> {
-                        match value.downcast_ref::<Self>() {
-                            ::core::option::Option::Some(value) => {
-                                #krate::__private::check_outcome(#path(value))
-                            }
-                            ::core::option::Option::None => ::core::result::Result::Ok(()),
+    let user_check = check
+        .as_ref()
+        .map(|path| quote!(#krate::__private::check_outcome(#path(value))?;));
+    let (own_check, own_check_fns) = if own_check_const {
+        (
+            quote!(::core::option::Option::Some(#table::OwnCheck {
+                check: Self::__own_check,
+                read: Self::__read_record,
+                reads: #check_reads,
+            })),
+            quote! {
+                fn __own_check(
+                    value: &dyn ::core::any::Any,
+                ) -> ::core::result::Result<(), #krate::Refusal> {
+                    match value.downcast_ref::<Self>() {
+                        ::core::option::Option::Some(value) => {
+                            #(#declared_checks)*
+                            #user_check
+                            ::core::result::Result::Ok(())
                         }
+                        ::core::option::Option::None => ::core::result::Result::Ok(()),
                     }
+                }
 
-                    fn __read_record(
-                        doc: &#krate::Doc,
-                        obj: &#krate::__private::ObjId,
-                    ) -> ::core::result::Result<
-                        ::std::boxed::Box<dyn ::core::any::Any>,
-                        #krate::ModelError,
-                    > {
-                        ::core::result::Result::Ok(::std::boxed::Box::new(
-                            <Self as #krate::Fields>::read_fields(doc, obj)?,
-                        ))
-                    }
-                },
-            )
-        },
-    );
+                fn __read_record(
+                    doc: &#krate::Doc,
+                    obj: &#krate::__private::ObjId,
+                ) -> ::core::result::Result<
+                    ::std::boxed::Box<dyn ::core::any::Any>,
+                    #krate::ModelError,
+                > {
+                    ::core::result::Result::Ok(::std::boxed::Box::new(
+                        <Self as #krate::Fields>::read_fields(doc, obj)?,
+                    ))
+                }
+            },
+        )
+    } else {
+        (quote!(::core::option::Option::None), quote!())
+    };
     let collections = if collection_names.is_empty() {
         quote!()
     } else {
@@ -1029,6 +1157,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
 
             #own_check_fns
+
+            #(#schema_fns)*
 
             /// The fields holding a `Collection`, by name: where actions on
             /// an item can act.
