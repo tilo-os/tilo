@@ -56,6 +56,7 @@ fn row(
             resource_kind: kind.into(),
             resource_label: "Inbox".into(),
             action_label: action.into(),
+            keywords: Vec::new(),
             description: None,
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,

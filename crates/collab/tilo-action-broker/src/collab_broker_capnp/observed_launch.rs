@@ -367,6 +367,7 @@ fn launch_descriptor(app: &str) -> tilo_actions::ActionDescriptor {
         resource_kind: "application".into(),
         resource_label: app.into(),
         action_label: "Open".into(),
+        keywords: Vec::new(),
         description: None,
         locus: tilo_actions::ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,

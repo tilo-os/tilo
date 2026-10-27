@@ -37,6 +37,7 @@ impl WorkspaceGovernanceServices for Governance {
             semantic_identity: None,
             resource_label: "Legacy media".into(),
             action_label: "Import".into(),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Effect,

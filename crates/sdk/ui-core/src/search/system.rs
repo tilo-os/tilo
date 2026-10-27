@@ -329,6 +329,53 @@ pub fn application_fields<'a>(
     ]
 }
 
+/// What an app-published action is found by, as every search ranks it: its
+/// label names it, the other words its declaration gives name it as people
+/// say it ("mkdir" for New folder), and the resource it acts on narrows it.
+/// Its id and its resource's kind are names for code: an item's kind is the
+/// collection's field (`so.tilo.chat.messages`), so matching it would offer
+/// every action on every message for "messages".
+#[must_use]
+pub fn action_search_fields<'a>(
+    action_label: &'a str,
+    keywords: &'a [String],
+    resource_label: &'a str,
+) -> Vec<RankField<'a>> {
+    use super::FieldWeight;
+    let mut fields = vec![
+        (action_label, FieldWeight::TITLE),
+        (resource_label, FieldWeight::SUBTITLE),
+    ];
+    fields.extend(
+        keywords
+            .iter()
+            .map(|word| (word.as_str(), FieldWeight::KEYWORD)),
+    );
+    fields
+}
+
+/// The actions of `actions` a search for `query` finds, best first, on
+/// [`action_search_fields`]: what an app's test asserts to pin the words
+/// people use for its actions ("mkdir") to the action they mean.
+#[must_use]
+pub fn actions_found_by<'a>(
+    query: &str,
+    actions: &'a [tilo_actions::ActionSpec],
+) -> Vec<&'a tilo_actions::ActionSpec> {
+    let mut found: Vec<(i32, &tilo_actions::ActionSpec)> = actions
+        .iter()
+        .filter_map(|action| {
+            let score = rank_fields(
+                query,
+                &action_search_fields(&action.label, &action.keywords, ""),
+            )?;
+            Some((score, action))
+        })
+        .collect();
+    found.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    found.into_iter().map(|(_, action)| action).collect()
+}
+
 /// An app's [`application_fields`] plus what else people call it: each of
 /// its `keywords` (aliases, synonyms, the products it stands in for, in
 /// every language its manifest gives), its names in other languages as the

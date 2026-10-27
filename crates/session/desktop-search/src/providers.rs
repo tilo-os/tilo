@@ -258,7 +258,12 @@ impl Source for Actions {
                 // the item named: "edit message" must not list the same edit
                 // once for every message there is.
                 let score = if records.contains(flat.resource_id.as_str()) {
-                    rank::action_match_score(needle, &flat.action.label, &flat.resource_label)?
+                    rank::action_match_score(
+                        needle,
+                        &flat.action.label,
+                        &flat.action.keywords,
+                        &flat.resource_label,
+                    )?
                 } else {
                     rank::item_action_match_score(needle, &flat.resource_label)?
                 };

@@ -355,6 +355,26 @@ fn audience_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Id
 }
 
 /// Fields named by a space-separated `"a b"` list.
+/// `keywords = "mkdir, make directory"`: an action's other words, one
+/// phrase each, comma separated. An empty phrase or one that is the same
+/// word twice is a mistake in the declaration, not a word anyone types.
+fn keyword_list(list: &syn::LitStr) -> syn::Result<Vec<String>> {
+    let mut words: Vec<String> = Vec::new();
+    for word in list.value().split(',').map(str::trim) {
+        if word.is_empty() {
+            return Err(syn::Error::new(list.span(), "a keyword is empty"));
+        }
+        if words.iter().any(|seen| seen.eq_ignore_ascii_case(word)) {
+            return Err(syn::Error::new(
+                list.span(),
+                format!("the keyword `{word}` is listed twice"),
+            ));
+        }
+        words.push(word.to_owned());
+    }
+    Ok(words)
+}
+
 fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>> {
     let fields = meta.value()?.parse::<syn::LitStr>()?;
     Ok(fields

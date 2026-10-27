@@ -639,6 +639,7 @@ mod durable_local_matrix {
                     resource_kind: "document".into(),
                     resource_label: "Document".into(),
                     action_label: action.into(),
+                    keywords: Vec::new(),
                     description: None,
                     operation_kind: tilo_actions::OperationKind::Effect,
                     params: Vec::new(),
