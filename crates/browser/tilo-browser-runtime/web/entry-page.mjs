@@ -823,7 +823,9 @@ export async function startEntryPage({mode}) {
       keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
       return peer;
     },
-    onInvite: () => { void workspaceActions?.perform(INVITE.id); },
+    // An embed lists no host actions, so it has nothing to invite with:
+    // the desktop offers no Invite there rather than one that does nothing.
+    ...(embed ? {} : {onInvite: () => { void workspaceActions?.perform(INVITE.id); }}),
     pairDevice: async ({origin, room, userPublicKey, invite, workspace}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
