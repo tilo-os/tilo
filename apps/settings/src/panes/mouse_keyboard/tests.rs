@@ -809,8 +809,7 @@ fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
         .unwrap()
         .unwrap()["selected_symbols"]
         .as_array()
-        .map(Vec::len)
-        .unwrap_or(0);
+        .map_or(0, Vec::len);
     let level = InputEffect::SetPreviewLevel { level: "1".into() };
     assert_eq!(
         set(&mut app, level),
