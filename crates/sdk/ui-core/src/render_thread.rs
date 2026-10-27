@@ -200,6 +200,10 @@ pub struct RenderThreadHandle {
     /// every device is opened with until the worker reads its own device's.
     texture_limit: Arc<AtomicU32>,
     join: Option<JoinHandle<Option<PreparedRenderer>>>,
+    /// Ends a wait the worker cannot end itself, before it is joined: the
+    /// remote worker's on a render service that may never answer a closing
+    /// window's last frame.
+    interrupt: Option<Box<dyn Fn() + Send>>,
 }
 
 /// One atomic reservation preserves both buffers across an aborted redraw.
@@ -350,6 +354,9 @@ impl RenderThreadHandle {
     fn stop(&mut self, keep_renderer: bool) -> Option<PreparedRenderer> {
         // Best-effort: the worker may already have crashed and dropped the
         // receiver, in which case the send errors and join yields immediately.
+        if let Some(interrupt) = self.interrupt.take() {
+            interrupt();
+        }
         let _ = self
             .render_tx
             .send(RenderRequest::Shutdown { keep_renderer });
@@ -773,6 +780,7 @@ pub(crate) fn spawn_render_thread_deferred(
         full_repaint,
         texture_limit,
         join: Some(join),
+        interrupt: None,
     })
 }
 
