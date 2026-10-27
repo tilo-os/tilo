@@ -338,6 +338,9 @@ pub(crate) struct Shared {
     /// Record ids of tabs whose application is not loaded yet: the record's
     /// kind comes with the application, so they are bound once it is.
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    /// The content, by hash, each tab opened with its app is to open: what
+    /// another window handed over (a capture, a recording).
+    opened_content: Rc<RefCell<HashMap<TabId, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
     /// The workspace renamed since the mount last looked, for a notice when
@@ -1125,6 +1128,13 @@ impl Tiles {
         .map_err(|error| error.to_string())?;
         context.provide_models(self.inputs.models.clone());
         context.provide_content(crate::page_content());
+        // What another window handed this one to open, from the page's
+        // content, where that window keeps it.
+        let handed = self.shared.opened_content.borrow_mut().remove(&instance);
+        if let Some(hash) = handed {
+            let (file, _) = crate::content_open::opened_file(&hash, &crate::page_content())?;
+            context.provide_open_file(file);
+        }
         context.provide_workspace_records(crate::workspace_records::in_page(
             &self.inputs.owners,
             &self.shared.stores,
@@ -1457,11 +1467,22 @@ impl TileSource for Tiles {
             self.shared.peer_windows.borrow_mut().insert(id, window);
             return Some(tab);
         }
-        let (app, record) = match tilo_desktop_surface::session::launched_record(app) {
-            Some((app, record)) => (app, Some(record)),
-            None => (app, None),
+        let (app, record, content) = if let Some((app, hash)) =
+            tilo_desktop_surface::session::launched_content(app)
+        {
+            (app, None, Some(hash))
+        } else if let Some((app, record)) = tilo_desktop_surface::session::launched_record(app) {
+            (app, Some(record), None)
+        } else {
+            (app, None, None)
         };
         let title = known_application(app)?;
+        if let Some(hash) = content {
+            self.shared
+                .opened_content
+                .borrow_mut()
+                .insert(id, hash.to_owned());
+        }
         if let Some(record) = record {
             // The window opens on the record a shared link or window named.
             self.shared

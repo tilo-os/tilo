@@ -33,6 +33,9 @@ mod background_work;
     allow(dead_code, reason = "only the browser page opens windows")
 )]
 mod capture_declarations;
+// Content handed to an app, opened as its file: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod content_open;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]
