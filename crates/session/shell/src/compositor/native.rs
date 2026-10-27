@@ -4189,8 +4189,8 @@ impl ControlState for FrameBuilderControlState<'_> {
         let overlays = &chrome.overlays;
         let native_broker = chrome
             .native_app_opening
-            .as_ref()
-            .and_then(|opening| opening.0.upgrade().ok());
+            .attached()
+            .and_then(|broker| broker.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         let room_sync = room_sync_json(&chrome.tree());
@@ -13803,13 +13803,13 @@ pub fn run() {
             .borrow()
             .native_app_opening
             .clone();
-        if let Some(opening) = copy_opening
+        if copy_opening.attached().is_some()
             && !identity_setup_active
             && let Some(request) = frame_builder.host_mut().take_original_copy_request()
             && let Err(error) = crate::shell::launcher::original_copy::start(
                 request,
                 tree_handle.clone(),
-                opening,
+                copy_opening,
                 Arc::clone(&session_wake),
             )
         {
