@@ -225,6 +225,20 @@ pub enum Inbound {
         /// How many frames the host sent.
         frames: u32,
     },
+    /// The host keeps the write this session sent as commit `op`: it is
+    /// durable there. A resent commit it already kept is answered so too.
+    Committed {
+        /// The commit's id, as the session sent it.
+        op: [u8; 16],
+    },
+    /// The host did not keep commit `op`; nothing of it was persisted or
+    /// passed on.
+    CommitRefused {
+        /// The commit's id, as the session sent it.
+        op: [u8; 16],
+        /// The host's reason, for tracing.
+        reason: String,
+    },
 }
 
 /// What the governor of a room says about its calls; see

@@ -147,10 +147,9 @@ fn a_member_learns_a_host_added_while_it_was_away_and_stays_in_step_through_it()
 
     // The desktop goes off: the laptop goes on through the relay.
     first.go_offline();
-    let before = relay.retained(room).unwrap();
-    second.write_note(room, "written while the desktop was off");
+    let edit = second.write_note(room, "written while the desktop was off");
     until(&[&second], "the relay to take the laptop's edit", || {
-        (relay.retained(room).unwrap_or(0) > before).then_some(())
+        relay.keeps_write(room, &edit).then_some(())
     });
 
     // Back, the desktop catches up with what the laptop wrote meanwhile.
@@ -204,10 +203,9 @@ fn a_governance_change_asked_while_the_governor_is_away_is_made_when_it_is_back(
     // The desktop, the room's governor, goes off; the laptop stays in step
     // through the relay.
     first.go_offline();
-    let before = relay.retained(room).unwrap();
-    second.write_note(room, "written while the desktop was off");
+    let edit = second.write_note(room, "written while the desktop was off");
     until(&[&second], "the relay to take the laptop's edit", || {
-        (relay.retained(room).unwrap_or(0) > before).then_some(())
+        relay.keeps_write(room, &edit).then_some(())
     });
 
     // Ada renames the workspace on the laptop: the relay is no governor, so
