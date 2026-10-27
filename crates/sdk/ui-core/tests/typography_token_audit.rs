@@ -80,8 +80,8 @@ fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
         }
     }
     let separators = commas.saturating_sub(u32::from(last == Some(',')));
-    if closed && last.is_some() {
-        separators == 2
+    if closed {
+        last.is_some() && separators == 2
     } else {
         separators < 3
     }
@@ -196,6 +196,7 @@ fn typography_patterns_match_exactly_the_shapes_they_name() {
             &[
                 "tr.measure_role(s, TextRole::Body)",
                 "layout.measured_size()",
+                "Measure::new(stat.measure())",
                 "draw_text_role(scene, s)",
             ],
         ),

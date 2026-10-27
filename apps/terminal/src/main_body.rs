@@ -814,7 +814,9 @@ impl TerminalWidget {
             .colors
             .semantic
             .warning
+            // ratchet-allow(literal_alpha): how strongly the grid's content is washed at the bell's peak
             .with_alpha_factor(flash * 0.22);
+        // ratchet-allow(raw_paint): the bell washes the grid's content, which the terminal paints
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
