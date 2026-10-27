@@ -226,6 +226,7 @@ impl Delivery {
             let recorder = window_recorder(
                 Arc::clone(&self.connection.borrow().network),
                 admission.destination.room.clone(),
+                apps.declared_capture_protected(),
             );
             let startup = Startup::new(
                 admission.clone(),
@@ -277,8 +278,9 @@ impl Delivery {
 fn window_recorder(
     network: Arc<ShellNetwork>,
     room: String,
-) -> super::feedback_recording::WindowRecorder {
-    super::feedback_recording::WindowRecorder {
+    declared: super::DeclaredProtected,
+) -> tilo_desktop::feedback::recorder::WindowRecorder {
+    tilo_desktop::feedback::recorder::WindowRecorder {
         documents: Box::new(move |workspace, app, record| {
             let workspace = crate::shell::state::RoomId::parse(workspace)?;
             network
@@ -288,7 +290,12 @@ fn window_recorder(
                 .ok()
                 .flatten()
         }),
-        protected: Box::new(|app| crate::shell::foreign::store().is_app_capture_protected(app)),
+        // What the app declares: here when it is mounted in the session,
+        // asked over its shell-ui connection when it runs on its own.
+        protected: Box::new(move |app| {
+            declared.borrow().contains(app)
+                || crate::shell::foreign::store().app_asked_capture_protection(app)
+        }),
         keep: Box::new(move |bytes| {
             crate::shell::broker_services::with_session_blobs(|client| {
                 client
@@ -299,6 +306,7 @@ fn window_recorder(
             .map_err(|error| error.to_string())
         }),
         now_ms: Box::new(tilo_clock::unix_now_ms_i64),
+        pictures: Box::new(tilo_desktop::feedback::transport::NoCapture),
     }
 }
 

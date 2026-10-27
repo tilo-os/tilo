@@ -29,11 +29,14 @@ impl CheckpointRoute {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CheckpointCommand {
     Capture {
         name: String,
+        /// The person's own words for this snapshot; absent or empty means none.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
         routes: Vec<CheckpointRoute>,
     },
     Inspect {
@@ -52,8 +55,13 @@ impl CheckpointCommand {
     /// Rejects invalid names, IDs, or unsorted, duplicate, unbounded coverage.
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Capture { name, routes } => {
+            Self::Capture {
+                name,
+                description,
+                routes,
+            } => {
                 validate_name(name)?;
+                validate_description(description)?;
                 if routes.is_empty()
                     || routes.len() > 32
                     || !routes
@@ -83,6 +91,15 @@ impl CheckpointCommand {
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
         return Err("invalid native checkpoint name".into());
+    }
+    Ok(())
+}
+fn validate_description(description: &str) -> Result<(), String> {
+    if description.len() > 280
+        || description.trim() != description
+        || description.chars().any(|c| c.is_control() && c != '\n')
+    {
+        return Err("invalid checkpoint description".into());
     }
     Ok(())
 }

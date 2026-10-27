@@ -1714,6 +1714,24 @@ impl AudioModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        // With no sound server to ask, every reading fails the same way:
+        // say it once, instead of a failure per row and empty lists of apps
+        // that only look like silence.
+        if let (Some(error), Some(_), Some(_)) =
+            (&self.devices_error, &self.volume_error, &self.input_error)
+        {
+            return crate::widgets::page(vec![
+                section(
+                    &t("sound-unavailable-title"),
+                    rows(vec![row(error_caption(&t_args(
+                        "sound-devices-error",
+                        &[("error", error.as_str().into())],
+                    )))]),
+                ),
+                self.speakers_card(),
+                self.build_system_sounds_card(),
+            ]);
+        }
         let output = self.build_output_card();
         let input = self.build_input_card();
         let hardware = self.build_hardware_card();
@@ -2518,25 +2536,27 @@ mod tests {
     }
 
     /// Levels that could not be read are reported, not drawn as sliders at
-    /// a made-up position.
+    /// a made-up position; when nothing can be read, the failure is said
+    /// once rather than once per row.
     #[test]
     fn unreadable_levels_are_shown_as_errors() {
         let profile = tempfile::tempdir().unwrap().keep();
         let mut model = AudioModel::detached(PaneCx::in_file(profile.join("settings.json")));
         model.volume_error = Some("wpctl: Could not connect to PipeWire".into());
+        let text = crate::widgets::announced_text(model.compose().as_ref());
+        let volume = "Can't read the output volume: wpctl: Could not connect to PipeWire";
+        assert!(text.iter().any(|line| line == volume), "{text:#?}");
+
         model.input_error = Some("wpctl: Could not connect to PipeWire".into());
         model.devices_error = Some("wpctl: Could not connect to PipeWire".into());
         let text = crate::widgets::announced_text(model.compose().as_ref());
-        for expected in [
-            "Can't read the output volume: wpctl: Could not connect to PipeWire",
-            "Can't read the input level: wpctl: Could not connect to PipeWire",
-            "Can't list audio devices: wpctl: Could not connect to PipeWire",
-        ] {
-            assert!(
-                text.iter().any(|line| line == expected),
-                "{expected}: {text:#?}"
-            );
-        }
+        let devices = "Can't list audio devices: wpctl: Could not connect to PipeWire";
+        assert!(text.iter().any(|line| line == devices), "{text:#?}");
+        assert!(!text.iter().any(|line| line == volume), "{text:#?}");
+        assert!(
+            !text.iter().any(|line| line == &t("sound-apps-empty")),
+            "no list of apps that only looks silent: {text:#?}"
+        );
         assert_eq!(parse_source_volume("Volume: 0.42 [MUTED]"), Some(0.42));
     }
 

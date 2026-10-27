@@ -743,3 +743,80 @@ fn civil_dates_match_the_calendar() {
     assert_eq!(civil(MARCH_14.div_euclid(DAY)), (2026, 3, 14));
     assert_eq!(civil(11_016), (2000, 2, 29));
 }
+
+/// A modem service whose changes are followed by hand.
+struct FollowedModem {
+    modem: ScriptedModem,
+    reads: std::sync::atomic::AtomicUsize,
+    follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+impl MobileService for FollowedModem {
+    fn snapshot(&self) -> MobileSnapshot {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.modem.snapshot()
+    }
+
+    fn change(&self, change: &MobileChange) -> Result<(), ModemError> {
+        self.modem.change(change)
+    }
+
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        *self.follower.lock().unwrap() = Some(Arc::from(changed));
+        Some(Box::new(()))
+    }
+}
+
+/// The open section reads the modems again when the modem service says
+/// they changed, and only then: no timer reads them while nothing changes,
+/// and a closed section reads nothing.
+#[test]
+fn the_shown_section_reads_the_modems_again_when_they_change() {
+    let device = Arc::new(FollowedModem {
+        modem: ScriptedModem::new(Some(MobileSample::Registered)),
+        reads: std::sync::atomic::AtomicUsize::new(0),
+        follower: Mutex::new(None),
+    });
+    let mut model = MobileModel::loaded_from(cx(), Arc::clone(&device) as Arc<dyn MobileService>);
+    let reads = || device.reads.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(reads(), 1);
+    assert_eq!(
+        PaneModel::next_wake(&model),
+        None,
+        "nothing reads on a timer"
+    );
+    let poll_until_read = |model: &mut MobileModel, count: usize| {
+        let deadline = tilo_test_env::hang_deadline();
+        while reads() < count || model.snapshot.is_some() {
+            model.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the modems were never read again"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+
+    let following = PaneModel::follow(&mut model).expect("a shown section follows the modems");
+    let changed = device
+        .follower
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the modems are followed while the section shows");
+    poll_until_read(&mut model, 2);
+    model.poll();
+    assert_eq!(reads(), 2, "showing the section reads the modems once");
+
+    changed();
+    poll_until_read(&mut model, 3);
+    model.poll();
+    assert_eq!(reads(), 3, "one change, one read");
+
+    drop(following);
+    changed();
+    model.poll();
+    assert!(model.snapshot.is_none(), "a closed section reads nothing");
+    assert_eq!(reads(), 3);
+}

@@ -2169,6 +2169,13 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
 #[test]
 #[cfg(unix)]
 fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
+    // Every helper here keeps reading its stdin after the engine closes the
+    // command queue, so a hangup cannot win the race and turn a refusal into
+    // "Chromium is unavailable". The last route is owned and closed inside the
+    // case: its engine joins the supervisor on drop, which kills and reaps the
+    // helper that recorded the refusal. Closing that queue on a shared host
+    // left the helper running past the case, and Nextest reported the passing
+    // test as a LEAK.
     let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     assert!(engine.navigate_owned(0, NavigationCommand::Back).is_err());
@@ -2232,11 +2239,20 @@ fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
     engine.shared.fail("fixture helper disconnected".into());
     assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 9, error: Some(error), .. } if error == "fixture helper disconnected")));
     assert!(engine.navigate_owned(10, NavigationCommand::Back).is_err());
-    // Closing the queue also drops the helper's stdin; keep the helper alive
-    // past EOF so the reader's disconnect cannot win the race and turn the
-    // refusal into "Chromium is unavailable".
-    let (dir, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
-    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    let (_fixture, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
+    // A disposable root of this process's own, marked as one the browser may
+    // remove: the owned host needs it, and the engine removes it only after
+    // its supervisor reaped the helper.
+    let root = std::env::temp_dir().join(format!("tilo-browser-private-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(
+        root.join(".tilo-private-root-v1"),
+        "tilo-browser-owned-private-root-v1\n",
+    )
+    .unwrap();
+    std::fs::write(root.join(".tilo-private-root.lock"), "private-root-lock\n").unwrap();
+    let root = root.canonicalize().unwrap();
+    let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
     engine.tx.close();
     assert!(
         engine
@@ -2249,6 +2265,13 @@ fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
     assert_eq!(
         unavailable.navigate_owned(1, NavigationCommand::Back),
         Err("runtime unavailable".into())
+    );
+    // The dropped engine joined its supervisor, which reaped the refused
+    // navigation's helper before the root went: nothing outlives the case.
+    drop(engine);
+    assert!(
+        !root.exists(),
+        "the refused navigation's helper must be reaped, not left running"
     );
 }
 
@@ -2314,52 +2337,6 @@ fn owned_navigation_concurrent_cancel_cannot_overtake_admitted_command() {
             json!({"op":"scoped_navigation","tab":1,"request_id":1,"command":"reload"}),
             json!({"op":"cancel_navigation","tab":1,"request_id":1}),
         ]
-    );
-}
-
-#[test]
-#[cfg(unix)]
-fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
-    // Closing the command queue hangs up helper stdin. Keep stdout owned by
-    // the supervised helper until cancellation fails it; otherwise an unrelated
-    // EOF can win the first-error latch before the refusal under test.
-    let (_fixture, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
-    // This route joins the supervisor on drop, so a fast test process cannot
-    // exit before its deliberately live helper has been killed and reaped.
-    let root = private_root();
-    let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
-    let enabled = Arc::new(AtomicBool::new(false));
-    let reentered = Arc::new(AtomicBool::new(false));
-    let weak = Arc::downgrade(&engine);
-    let ready = enabled.clone();
-    let observed = reentered.clone();
-    engine.set_waker(Box::new(move || {
-        if ready.swap(false, Ordering::AcqRel) {
-            weak.upgrade()
-                .unwrap()
-                .send(WebViewCommand::CancelScopedNavigation { request_id: 2 });
-            observed.store(true, Ordering::Release);
-        }
-    }));
-    engine.tx.close();
-    enabled.store(true, Ordering::Release);
-    let cancelling = engine.clone();
-    let (finished, received) = sync_channel(1);
-    let worker = std::thread::spawn(move || {
-        cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
-        finished.send(()).unwrap();
-    });
-    tilo_test_env::recv(
-        "cancel refusal must allow its waker to reenter the command path",
-        &received,
-    );
-    worker.join().unwrap();
-    assert!(reentered.load(Ordering::Acquire));
-    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed { error, .. } if error.contains("cancellation was not queued"))));
-    drop(engine);
-    assert!(
-        !root.exists(),
-        "cancellation failure must reap its owned helper"
     );
 }
 

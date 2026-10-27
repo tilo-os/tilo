@@ -71,6 +71,11 @@ pub(super) fn actions() -> Vec<PublishedAction> {
             "Capture checkpoint",
             vec![
                 name(),
+                ActionParam::optional(
+                    "description",
+                    ParamType::Text,
+                    "Your own words for what this snapshot is",
+                ),
                 ActionParam::required(
                     "routes",
                     ParamType::Array,
@@ -451,6 +456,8 @@ impl super::CapnpBrokerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_peer_state::workspace_checkpoint::CheckpointRoute;
+
     fn envelope(action: &str, argument: &serde_json::Value) -> InvocationEnvelope {
         InvocationEnvelope {
             id: 1,
@@ -489,12 +496,26 @@ mod tests {
         }
         for invalid in [
             serde_json::json!({"name":"first", "routes":[]}),
+            serde_json::json!({"name":"first", "description":" padded", "routes":[{"app":"so.tilo.chat", "record":"a"}]}),
+            serde_json::json!({"name":"first", "description":"x".repeat(281), "routes":[{"app":"so.tilo.chat", "record":"a"}]}),
             serde_json::json!({"name":"first", "routes":[{"app":"so.tilo.desktop", "record":"membership"}]}),
             serde_json::json!({"name":"first", "routes":[{"app":"so.tilo.chat", "record":"b"},{"app":"so.tilo.chat", "record":"a"}]}),
             serde_json::json!({"name":"x".repeat(257), "routes":[{"app":"so.tilo.chat", "record":"a"}]}),
         ] {
             assert!(command(&envelope("capture", &invalid)).is_err());
         }
+        let described = serde_json::json!({"name":"first", "description":"before the rewrite", "routes":[{"app":"so.tilo.chat", "record":"a"}]});
+        assert_eq!(
+            command(&envelope("capture", &described)).unwrap(),
+            Some(CheckpointCommand::Capture {
+                name: "first".into(),
+                description: "before the rewrite".into(),
+                routes: vec![CheckpointRoute {
+                    app: "so.tilo.chat".into(),
+                    record: "a".into(),
+                }],
+            })
+        );
         assert!(
             command(&envelope(
                 "inspect",

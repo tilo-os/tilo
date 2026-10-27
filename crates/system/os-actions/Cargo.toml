@@ -43,6 +43,8 @@ tilo-power-mgmt = { path = "../power" }
 tilo-rt.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 zbus = { workspace = true, features = ["tokio"] }
+# Following a service's signals (src/bus_follow.rs).
+futures-util.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

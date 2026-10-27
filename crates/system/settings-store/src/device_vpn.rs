@@ -55,6 +55,16 @@ pub const PROFILE_RELEASE: Key<Option<ProfileRelease>> =
 pub const PROFILE_INTENT: Key<ProfileIntent> =
     Key::new(SECTION, "profile_intent", ProfileIntent::default);
 
+// The person's choices, as the fields of their `device-vpn` section.
+#[cfg(feature = "model")]
+tilo_resource::json_model!(Through);
+#[cfg(feature = "model")]
+tilo_resource::json_model!(StopRequest);
+#[cfg(feature = "model")]
+tilo_resource::json_model!(ProfileKillSwitch);
+#[cfg(feature = "model")]
+tilo_resource::json_model!(ProfileRelease);
+
 /// The kept intent of the person's VPN profiles ([`PROFILE_INTENT`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -69,6 +79,7 @@ pub struct ProfileIntent {
 }
 
 /// A VPN profile's kill switch, while it is on.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProfileKillSwitch {
@@ -78,6 +89,7 @@ pub struct ProfileKillSwitch {
 }
 
 /// A request to lift the block of `profile`: the person turned it off.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProfileRelease {
@@ -113,6 +125,7 @@ pub struct ProfileBlockStatus {
 const MAX_STATUS_BYTES: u64 = 262_144;
 
 /// What this device routes through another.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Routes {
@@ -125,6 +138,7 @@ pub enum Routes {
 }
 
 /// Routing through one of the person's devices.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Through {
@@ -163,6 +177,7 @@ impl Through {
 }
 
 /// A request to stop `device` routing through this one.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StopRequest {

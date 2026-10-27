@@ -32,6 +32,7 @@ use super::driver::ShellDriver;
 
 mod file_chooser;
 pub mod film;
+mod keyboard;
 mod launcher;
 mod motion_gallery;
 mod motion_review;
@@ -234,6 +235,14 @@ pub enum Action {
         from: u32,
         to: u32,
     },
+    /// The on-screen keyboard rises over the focused text field, as the
+    /// compositor shows it on a touch screen: the real keyboard app, laid
+    /// out at the panel the shell gives it and in the purpose the focused
+    /// field asks for. `None` takes the field that already has focus;
+    /// `Some(field)` taps that field first.
+    ShowKeyboard(Option<OskField>),
+    /// The text the active field holds, as the person typing it left it.
+    Typed(&'static str),
     /// Seed real collaborative room changes, a second person's among them.
     SeedRoomHistory,
     /// Add two present collaborators and representative shares to the active
@@ -581,6 +590,50 @@ pub enum OwnApp {
     Files,
 }
 
+/// The field [`Action::ShowKeyboard`] rises over, for a flow whose field is
+/// reached by its app name rather than by the pointer: the scenario taps it
+/// first, so the keyboard takes that field's purpose, as a live desktop's
+/// does when the person taps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OskField {
+    /// A chat channel's message composer.
+    ChatComposer,
+    /// A window bar's search field, open.
+    WindowSearch,
+    /// A terminal at its prompt. Tapped for focus, but the keyboard's
+    /// purpose is [`Self::purpose`]'s: a capture's terminal has no session
+    /// (it would need the person's supervisor socket), so its widget
+    /// reports no content type of its own while its session is unopened.
+    TerminalPrompt,
+}
+
+impl OskField {
+    /// The widget target that holds the field, as the app names it.
+    #[must_use]
+    pub fn target(self) -> &'static str {
+        match self {
+            Self::ChatComposer => "chat-composer",
+            Self::WindowSearch => "window-search-open",
+            Self::TerminalPrompt => "terminal",
+        }
+    }
+
+    /// What the keyboard should lay itself out for. A capture's field is
+    /// what the keyboard asks: an app that reports its own content type is
+    /// checked against it, and one that cannot — a terminal with no session,
+    /// a search field in the shell's chrome rather than the app's tree —
+    /// states the purpose its field declares, which is what a live desktop
+    /// would take off the wire.
+    #[must_use]
+    pub fn purpose(self) -> ui::ime::InputPurpose {
+        match self {
+            Self::ChatComposer => ui::ime::InputPurpose::Text,
+            Self::WindowSearch => ui::ime::InputPurpose::Search,
+            Self::TerminalPrompt => ui::ime::InputPurpose::Terminal,
+        }
+    }
+}
+
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
 /// with `test-support` plays motion, so only it reads a cue.
 #[derive(Debug, Clone)]
@@ -719,6 +772,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_open_window(driver, action);
     apply_add_hosted_tab(driver, action);
     apply_hosted_window(driver, action);
+    keyboard::apply(driver, action);
     apply_reveal_samples(driver, action, sink);
     apply_make_space_sample_and_widths(driver, action, sink);
     apply_seed_status_and_file_picker(driver, action);
@@ -5667,6 +5721,7 @@ pub fn scenarios() -> &'static [Scenario] {
     static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
         [
             build_scenarios(),
+            keyboard::all(),
             motion_review::all(),
             motion_gallery::all(),
         ]

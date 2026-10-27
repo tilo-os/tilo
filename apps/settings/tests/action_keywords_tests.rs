@@ -38,6 +38,12 @@ fn people_find_settings_actions_by_the_words_they_use() {
                 effect.spec(<settings::panes::keyboard_shortcuts::ShortcutEffect>::OPERATION)
             }),
     );
+    // Shortcuts are rebound by the `shortcuts` section's own verbs.
+    actions.extend(
+        <settings::shortcut_settings::ShortcutPrefs as ui::tilo_resource::Resource>::declarations()
+            .iter()
+            .map(ui::tilo_resource::declaration_spec),
+    );
     actions.extend(
         <settings::shortcut_settings::ShortcutPrefs>::declarations()
             .iter()

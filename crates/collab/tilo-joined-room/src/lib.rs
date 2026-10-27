@@ -42,8 +42,8 @@ pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use checkpoint::{
-    CheckpointAcknowledgement, CheckpointCapture, CheckpointEntry, CheckpointRoute,
-    CheckpointSchema, MaterializedCheckpoint, NativeCheckpoint,
+    CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,
+    CheckpointRoute, CheckpointSchema, MaterializedCheckpoint, NameBinding, NativeCheckpoint,
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 pub use file_store::open_file;

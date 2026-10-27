@@ -18,10 +18,7 @@ pub(crate) fn open(st: &mut ChromeState) -> Result<(), ActionError> {
     match focused {
         Focused::Composer => bring_up(st),
         Focused::Nothing => about(st, None),
-        Focused::App(mut subject) => {
-            subject.record = shown_record(st, &subject.app);
-            about(st, Some(subject))
-        }
+        Focused::App(subject) => about(st, Some(subject)),
     }
 }
 
@@ -57,8 +54,20 @@ pub(crate) fn point(st: &mut ChromeState) -> Result<(), ActionError> {
 
 /// Open the composer about `subject`, general feedback for `None`.
 pub(crate) fn about(st: &mut ChromeState, subject: Option<Subject>) -> Result<(), ActionError> {
+    let subject = with_record(st, subject);
     in_process(st)?.borrow_mut().feedback_about(subject);
     bring_up(st)
+}
+
+/// `subject` with the record its window shows. However a report was
+/// started (the palette, a click on a control, picked parts), the window it
+/// is about is the one in front, and the record it shows is what a
+/// recording of it records, through the one recorder.
+fn with_record(st: &ChromeState, mut subject: Option<Subject>) -> Option<Subject> {
+    if let Some(subject) = subject.as_mut().filter(|subject| subject.record.is_none()) {
+        subject.record = shown_record(st, &subject.app);
+    }
+    subject
 }
 
 /// Whether reports have a destination on this desktop.
@@ -73,8 +82,14 @@ pub(crate) fn report(
     st: &mut ChromeState,
     picked: tilo_app::feedback::PickedReport,
 ) -> Result<(), ActionError> {
-    in_process(st)?
-        .borrow()
+    let front = tilo_desktop::feedback::focused(&st.tree().desktop, |_| None);
+    let subject = with_record(
+        st,
+        tilo_desktop::feedback::picked_subject(&picked.draft, front),
+    );
+    let apps = in_process(st)?;
+    apps.borrow_mut().feedback_about(subject);
+    apps.borrow()
         .begin_feedback_report(picked)
         .map_err(ActionError::Explained)?;
     bring_up(st)

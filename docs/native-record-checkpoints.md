@@ -33,7 +33,18 @@ or a general search provider.
   retained data cannot be treated as absence or acknowledged as a successful retry.
 - `bind_checkpoint_name` can move a name to an existing immutable ID;
   `resolve_checkpoint_name` returns that ID's original acknowledgement. Naming
-  does not mutate the manifest or reinstall historical permissions.
+  does not mutate the manifest or reinstall historical permissions. Every move is
+  appended to the retained name history as `{name, id, author, generation}`, so
+  who pointed a name where, and in which acknowledged publication, stays
+  auditable; `checkpoint_name_history` reads that trail back.
+- Each manifest carries an optional `description` in the capturing person's own
+  words, never generated, and a `completeness` answer stating what it does and
+  does not hold: complete for the native app records it names, and explicitly
+  not for file/directory topology, referenced content or governance. A manifest
+  is immutable, so a second capture under a retained ID cannot rewrite its words.
+  Only `complete`, `native_app_records_only`, `file_topology`,
+  `referenced_content` and `governance` can be present; a manifest claiming any
+  other reach is refused rather than read as a promise it cannot keep.
 - `read_checkpoint` materializes a bounded set of saved documents in memory. It
   checks the exact current authenticated certificate and current Read permission
   for **every** route before returning any historical metadata or bytes. It does
@@ -59,7 +70,7 @@ The existing `workspace_memberships` room service publishes the
 
 | Action | Arguments | Result |
 | --- | --- | --- |
-| `capture` | `name`, sorted distinct `routes: [{app, record}]` | Durable acknowledgement; the invocation UUID is the immutable checkpoint ID |
+| `capture` | `name`, optional `description`, sorted distinct `routes: [{app, record}]` | Durable acknowledgement; the invocation UUID is the immutable checkpoint ID |
 | `inspect` | immutable `id` | Verified manifest, including authenticated person attribution when captured by this service |
 | `name-bind` | `name`, immutable `id` | Original acknowledgement of the selected checkpoint |
 | `find` | exact `name` | Original acknowledgement of the currently named checkpoint |
@@ -129,8 +140,9 @@ content it references.
 Production-path tests are in
 `crates/collab/tilo-joined-room/src/checkpoint_tests.rs`: one-generation multi-route
 capture, signed outgoing root, exact retry/reopen, later-mutation pinned reads,
-movable names and collisions, bounds, content damage, publication failure,
-current per-route grant revocation, stale signed-root admission and certificate
+movable names, their appended history, description and completeness of the
+retained manifest, bounds, content damage, publication failure, current per-route
+grant revocation, stale signed-root admission and certificate
 substitution/removal. The installed shell service and certified broker resource
 path are exercised in
 `crates/session/shell/src/shell/broker_services/native_checkpoint_tests.rs`,
