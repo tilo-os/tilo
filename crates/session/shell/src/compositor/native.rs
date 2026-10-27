@@ -13483,9 +13483,8 @@ pub fn run() {
                     (*surface, crate::shell::network::room_topic_id(*room))
                 }));
             }
-            // This session's legacy windows, as its own tabs in the rooms
-            // other devices govern, so their members have a tab to show.
-            // Only those rooms' tabs are copied, and only their own legacy ones.
+            // This device's layout of the rooms its native owner holds,
+            // written as its own changes and sent to their governors.
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
                 hosted_legacy_checked = Instant::now();
                 let rooms = tree_handle
@@ -13496,7 +13495,7 @@ pub fn run() {
                     .map(crate::shell::state::Workspace::room)
                     .collect::<Vec<_>>();
                 for room in rooms {
-                    net.publish_hosted_legacy_windows(room, &tree_handle);
+                    net.publish_governed_layout(room, &tree_handle);
                     net.follow_room_app_versions(room);
                 }
                 let generation = tree_handle.generation();

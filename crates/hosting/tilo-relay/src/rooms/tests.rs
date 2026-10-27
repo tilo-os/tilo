@@ -2036,6 +2036,62 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     relay.shutdown().await;
 }
 
+/// `windows`, the layout of `room` as `member`'s device minting in `salt`
+/// writes it onto `doc`: what it made is its person's.
+fn write_windows(
+    doc: &mut automerge::AutoCommit,
+    room: &str,
+    member: &DeviceCert,
+    salt: u16,
+    windows: &[tilo_desktop_model::Strip],
+) {
+    let room = tilo_desktop_model::RoomId::parse(room).unwrap();
+    let mut workspace = tilo_desktop_model::Workspace::in_room(
+        tilo_desktop_model::WorkspaceId::of_room(room),
+        room,
+        "Room",
+    );
+    if let Some(held) = tilo_desktop_model::shared_record::read(&*doc, None) {
+        workspace.strips = held
+            .tree
+            .workspaces
+            .into_iter()
+            .flat_map(|held| held.strips)
+            .collect();
+    }
+    workspace.strips.extend(windows.iter().cloned());
+    let person = hex::encode(member.user_public_key);
+    let mine = |id: u64| tilo_desktop_model::peer_salt_of(id) == salt;
+    tilo_desktop_model::shared_record::device::write(
+        doc,
+        room,
+        &workspace,
+        &tilo_desktop_model::shared_record::device::Writer {
+            person: Some(&person),
+            mine: &mine,
+            retained: &|_| false,
+        },
+    )
+    .unwrap();
+}
+
+/// The window titles `doc`'s layout holds.
+fn titles_in(doc: &automerge::AutoCommit) -> Vec<String> {
+    tilo_desktop_model::shared_record::read(doc, None)
+        .map(|desktop| {
+            desktop
+                .tree
+                .workspaces
+                .into_iter()
+                .flat_map(|w| w.strips)
+                .flat_map(|s| s.window_groups)
+                .flat_map(|g| g.tabs)
+                .map(|tab| tab.title)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// One window, a Chat tab, on one strip, with ids in the namespace `salt`.
 fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
@@ -2062,10 +2118,10 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
     }]
 }
 
-/// A window a member opens after joining is a change to the room document in
-/// that device's own topology namespace. The governor takes it in as the
-/// room's next generation, so every other member sees the window; before,
-/// only record writes were taken in and the window reached nobody.
+/// A window a member opens after joining is a change to the room's layout,
+/// made by the member's person. The governor takes it in as the room's next
+/// generation, so every other member sees the window; before, only record
+/// writes were taken in and the window reached nobody.
 #[tokio::test]
 #[cfg_attr(
     feature = "agents",
@@ -2086,21 +2142,7 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(&rooms, &created.room, &key, &member).await;
-    // The governor's own namespace has a random salt; take another.
-    let salt = {
-        let state = rooms.room(&created.room).await.unwrap();
-        let owners = tilo_desktop_model::projection::contents_owners_of(
-            state.lock().await.peer().admitted_room().unwrap(),
-        );
-        (1..=u16::MAX)
-            .find(|salt| !owners.contains_key(salt))
-            .unwrap()
-    };
-    rooms
-        .claim_topology_namespace(&created.room, &member, salt)
-        .await
-        .unwrap();
-
+    let salt = 0x3333;
     let windows = one_chat_window(salt);
     let (generation, mut doc) = {
         let state = rooms.room(&created.room).await.unwrap();
@@ -2114,14 +2156,7 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
-    tilo_desktop_model::projection::project_owned_contents(
-        &mut doc,
-        &windows,
-        salt,
-        None,
-        tilo_desktop_model::projection::EmptyStrips::Skip,
-    )
-    .unwrap();
+    write_windows(&mut doc, &created.room, &member, salt, &windows);
     doc.commit();
     let changes = doc.get_changes(&heads);
     assert!(!changes.is_empty(), "opening a window changes the room");
@@ -2164,12 +2199,8 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
 }
 
 /// A device of the governor's person, certified as a member and admitted to
-/// `room`, with its own topology namespace: what joining gives each member.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
-)]
-async fn member_with_namespace(
+/// `room`, and the id namespace it mints in.
+async fn admitted_member(
     rooms: &Rooms,
     room: &str,
     key: &SigningKey,
@@ -2182,21 +2213,7 @@ async fn member_with_namespace(
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(rooms, room, key, &member).await;
-    let salt = {
-        let state = rooms.room(room).await.unwrap();
-        let governed = state.lock().await;
-        let owners = tilo_desktop_model::projection::contents_owners_of(
-            governed.peer().admitted_room().unwrap(),
-        );
-        (1..=u16::MAX)
-            .find(|salt| !owners.contains_key(salt))
-            .unwrap()
-    };
-    rooms
-        .claim_topology_namespace(room, &member, salt)
-        .await
-        .unwrap();
-    (member, salt)
+    (member, u16::from(seed) << 8 | 0x11)
 }
 
 /// `member`'s change to `room`'s document opening two unconfined terminals
@@ -2232,14 +2249,7 @@ async fn terminals_opened(rooms: &Rooms, room: &str, member: &DeviceCert, salt: 
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
-    tilo_desktop_model::projection::project_owned_contents(
-        &mut doc,
-        &windows,
-        salt,
-        None,
-        tilo_desktop_model::projection::EmptyStrips::Skip,
-    )
-    .unwrap();
+    write_windows(&mut doc, room, member, salt, &windows);
     doc.commit();
     postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
         room: room.to_owned(),
@@ -2256,12 +2266,7 @@ async fn terminals_opened(rooms: &Rooms, room: &str, member: &DeviceCert, salt: 
 async fn titles_shared(rooms: &Rooms, room: &str) -> Vec<String> {
     let state = rooms.room(room).await.unwrap();
     let governed = state.lock().await;
-    tilo_desktop_model::projection::contents_of(governed.peer().admitted_room().unwrap())
-        .into_iter()
-        .flat_map(|strip| strip.groups)
-        .flat_map(|group| group.tabs)
-        .map(|tab| tab.title)
-        .collect()
+    titles_in(governed.peer().admitted_room().unwrap())
 }
 
 /// Two strangers in a public room: A opens two terminals, and B is never
@@ -2284,8 +2289,8 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
         .await
         .unwrap();
     assert!(rooms.is_public(&room));
-    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
-    let (_b, _) = member_with_namespace(&rooms, &room, &key, &cert, 4).await;
+    let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
+    let (_b, _) = admitted_member(&rooms, &room, &key, &cert, 4).await;
     let generation = rooms
         .room(&room)
         .await
@@ -2315,9 +2320,11 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
         );
         let shared = governed.peer().admitted_room().unwrap();
         assert!(
-            tilo_desktop_model::projection::contents_of(shared)
-                .iter()
-                .all(|strip| tilo_desktop_model::peer_salt_of(strip.id) != a_salt),
+            tilo_desktop_model::shared_record::read(shared, None)
+                .into_iter()
+                .flat_map(|desktop| desktop.tree.workspaces)
+                .flat_map(|w| w.strips)
+                .all(|strip| tilo_desktop_model::peer_salt_of(strip.id.0) != a_salt),
             "no strip of A's reaches B"
         );
     }
@@ -2342,7 +2349,7 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     let relay = view_read_relay(dir.path(), &key, &cert).await;
     let rooms = relay.rooms().unwrap().clone();
     let room = rooms.create("Team").await.unwrap().room;
-    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
     assert!(!rooms.is_public(&room));
     rooms
@@ -2360,8 +2367,8 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     relay.shutdown().await;
 }
 
-/// `member`'s change to `room`'s document closing every window it has in
-/// its namespace `salt`, as its device would send it.
+/// `member`'s change to `room`'s layout closing every window it made in its
+/// namespace `salt`, as its device would send it.
 async fn windows_closed(rooms: &Rooms, room: &str, member: &DeviceCert, salt: u16) -> Vec<u8> {
     let mut doc = {
         let state = rooms.room(room).await.unwrap();
@@ -2370,13 +2377,9 @@ async fn windows_closed(rooms: &Rooms, room: &str, member: &DeviceCert, salt: u1
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
-    tilo_desktop_model::projection::project_owned_contents(
-        &mut doc,
-        &[],
-        salt,
-        None,
-        tilo_desktop_model::projection::EmptyStrips::Skip,
-    )
+    tilo_desktop_model::shared_record::device::withdraw(&mut doc, &|id| {
+        tilo_desktop_model::peer_salt_of(id) == salt
+    })
     .unwrap();
     doc.commit();
     postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
@@ -2464,7 +2467,7 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
         let rooms = relay.rooms().unwrap().clone();
         let created = rooms.create("Team").await.unwrap();
         let room = created.room.clone();
-        let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+        let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
         let body = terminals_opened(&rooms, &room, &a, a_salt).await;
         rooms
             .absorb(&room, a.device_public_key, &body)
@@ -2561,7 +2564,7 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
     let relay = view_read_relay(dir.path(), &key, &cert).await;
     let rooms = relay.rooms().unwrap().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
-    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
     rooms
         .absorb(&room, a.device_public_key, &body)
@@ -2636,7 +2639,7 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
     let rooms = relay.rooms().unwrap().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
     assert_eq!(rooms.layout(&room), RoomLayout::Shared, "invite-only");
-    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
     rooms
         .absorb(&room, a.device_public_key, &body)

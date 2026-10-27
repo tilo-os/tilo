@@ -172,6 +172,22 @@ impl DocLog {
         drop(pending);
     }
 
+    /// [`Self::cut`] of a document that may have started over from another
+    /// history (a room's new base): one that does not hold the previous cut
+    /// is written whole instead of not at all.
+    pub(crate) fn cut_or_replace(&self, doc: &AutoCommit) {
+        let document = doc.committed_document();
+        let restarted = self.pending.lock().cursor.as_ref().is_some_and(|cursor| {
+            cursor
+                .iter()
+                .any(|head| document.get_change_meta_by_hash(head).is_none())
+        });
+        if restarted {
+            self.pending.lock().cursor = None;
+        }
+        self.cut(doc);
+    }
+
     /// Continue the files `doc` was just loaded from (see [`load`]): the next
     /// cut carries only what changes after this.
     pub(crate) fn attach(
