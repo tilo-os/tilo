@@ -215,6 +215,7 @@ members = [
     "crates/dev/headless-schema",
     "crates/dev/test-env",
     "crates/dev/test-app-registry",
+    "crates/dev/ai-bench",
     "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
