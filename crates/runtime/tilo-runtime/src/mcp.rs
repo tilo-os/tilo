@@ -2244,7 +2244,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms: None,
             appearance: None,
         };
-        let mut started = self.start_confirmed(&mut request).await;
+        let mut started = self.start_confirmed(&mut request, wait).await;
         if current
             && matches!(
                 &started,
@@ -2257,9 +2257,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // moved revision, and an action asking for confirmation needs
             // the revision it is confirmed at: name the one it is at now.
             request.revision = Some(self.current_revision(&request.target.provider).await?);
-            started = self.start_confirmed(&mut request).await;
+            started = self.start_confirmed(&mut request, wait).await;
         }
-        started?;
+        if let Admission::Unanswered(patience) = started? {
+            return Ok(unanswered_admission(invocation, patience));
+        }
         Ok(self.settled(invocation, wait).await?)
     }
     /// Open `path` in instance `peer` through the app's own action, so the
@@ -2524,9 +2526,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Start `request`. An action that asks for confirmation is put to the
     /// person this agent acts for, on their own device, and started again
     /// with their answer; the agent never confirms by its own word.
-    async fn start_confirmed(&self, request: &mut InvokeRequest) -> Result<(), BridgeError> {
-        match self.start(request.clone()).await {
-            Ok(()) => return Ok(()),
+    async fn start_confirmed(
+        &self,
+        request: &mut InvokeRequest,
+        wait: std::time::Duration,
+    ) -> Result<Admission, BridgeError> {
+        match self.start(request.clone(), wait).await {
+            Ok(admission) => return Ok(admission),
             Err(BridgeError::Host(tilo_actions::remote::ActionHostError::ConfirmationRequired)) => {
             }
             Err(error) => return Err(error),
@@ -2548,7 +2554,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         .ok_or_else(|| BridgeError::from("Unavailable"))?
         .map_err(BridgeError::Host)?;
         request.confirmation = Some(witnessed);
-        self.start(request.clone()).await
+        self.start(request.clone(), wait).await
     }
     /// The invocation's update once it is terminal, or after `wait`.
     ///
@@ -2605,25 +2611,34 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self.host
     }
     /// Start one invocation, reporting the host's refusal verbatim.
-    async fn start(&self, request: InvokeRequest) -> Result<(), BridgeError> {
+    ///
+    /// The host answers once the admission is durable, which on a loaded
+    /// disk takes seconds. It is waited for as long as the call waits for
+    /// its outcome, and at least [`HOST_ANSWER_WAIT`]; an admission still
+    /// unanswered then goes on without this call, which says so.
+    async fn start(
+        &self,
+        request: InvokeRequest,
+        wait: std::time::Duration,
+    ) -> Result<Admission, BridgeError> {
         // The workspace's own actions are admitted and started synchronously
         // (a launch among them); an app's action is resolved on the broker's
         // set and answers later.
         let blocking =
             tilo_actions::remote::workspace_provider_room(&request.target.provider).is_some();
-        tokio::time::timeout(
-            HOST_ANSWER_WAIT,
+        let patience = wait.max(HOST_ANSWER_WAIT);
+        let Ok(answer) = tokio::time::timeout(
+            patience,
             self.at_host(blocking, move |host, caller| host.invoke(caller, request)),
         )
         .await
-        .map_err(|_| {
-            BridgeError::from(
-                "TimedOut; admission may be unknown; retry with the same invocation_id",
-            )
-        })?
-        .ok_or_else(|| BridgeError::from("Unavailable"))?
-        .map(|_| ())
-        .map_err(BridgeError::Host)
+        else {
+            return Ok(Admission::Unanswered(patience));
+        };
+        answer
+            .ok_or_else(|| BridgeError::from("Unavailable"))?
+            .map(|_| Admission::Answered)
+            .map_err(BridgeError::Host)
     }
     fn context(&self) -> Option<tilo_actions::ActionContext> {
         self.agent_run().map(|run| tilo_actions::ActionContext {
@@ -2711,9 +2726,30 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         )
     }
 }
-/// How long the host may take to answer a catalogue query or to admit an
-/// invocation before the agent is told it timed out (and that admission may be
-/// unknown, so it retries with the same invocation id).
+/// Whether the host answered an invocation's admission while the call
+/// waited for it.
+enum Admission {
+    /// Admitted: the invocation runs, and its outcome can be awaited.
+    Answered,
+    /// Not answered within this long; the admission goes on regardless.
+    Unanswered(std::time::Duration),
+}
+/// The answer to an invocation whose admission was not answered within
+/// `patience`. The same invocation id never runs twice, so invoking it again
+/// is safe and tells how the admission went.
+fn unanswered_admission(id: tilo_actions::InvocationId, patience: std::time::Duration) -> Value {
+    json!({
+        "invocation_id": id.0.to_string(),
+        "pending": format!(
+            "admission not answered within {} ms; tilo_invoke again with this invocation_id \
+             answers how it went (the same invocation_id never runs twice)",
+            patience.as_millis()
+        ),
+    })
+}
+/// How long the host may take at least to answer a catalogue query or to
+/// admit an invocation. A query not answered by then fails; an admission is
+/// answered as pending with its invocation id, to be invoked again.
 const HOST_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a workspace `open` waits at least for the host to answer with
 /// the instance it started, which it does once that instance has connected
