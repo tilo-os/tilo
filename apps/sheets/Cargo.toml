@@ -36,7 +36,6 @@ tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
 # A Notion export arrives as an archive; it is read through the same bounded
 # zip reader as every other untrusted archive.
-bounded-zip = { version = "0.1.0", path = "../../crates/doc/bounded-zip" }
 uuid.workspace = true
 
 [dev-dependencies]

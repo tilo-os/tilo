@@ -25,6 +25,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use serde_json::Value;
+use tilo_doc_codecs::safety::{ZipLimits, read_zip_parts};
 use ui::tilo_resource::Invoke;
 
 use crate::notebook::Notebook;
@@ -109,26 +110,24 @@ fn looks_like_archive(bytes: &[u8]) -> bool {
 /// The pages a Notion zip export holds, in name order so the same archive
 /// always becomes the same notes.
 fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
-    let limits = bounded_zip::ZipLimits::default();
-    let mut archive = bounded_zip::BoundedArchive::from_bytes(bytes, limits)
+    let mut parts = read_zip_parts(bytes, &archive_limits())
         .map_err(|_| ui::i18n!("notes-notion-archive-invalid"))?;
-    archive
-        .check_declared_sizes()
-        .map_err(|_| ui::i18n!("notes-notion-archive-invalid"))?;
-    let mut names: Vec<String> = archive
-        .file_names()
-        .filter(|name| !name.starts_with("__MACOSX/"))
-        .map(std::borrow::Cow::into_owned)
+    parts.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let mut parts: HashMap<String, Vec<u8>> = parts
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with("__MACOSX/"))
         .collect();
-    names.sort();
+    let names: Vec<String> = parts.keys().cloned().collect();
     // Every picture the export kept, by the path a page names it by.
     let mut pictures: HashMap<String, Vec<u8>> = HashMap::new();
     for name in &names {
         if !is_picture(name) {
             continue;
         }
-        let cap = u64::try_from(crate::notebook::MAX_ASSET_BYTES).unwrap_or(u64::MAX);
-        if let Ok(bytes) = archive.read(name, cap) {
+        let Some(bytes) = parts.remove(name) else {
+            continue;
+        };
+        if fits(&bytes, crate::notebook::MAX_ASSET_BYTES) {
             pictures.insert(name.clone(), bytes);
         }
     }
@@ -139,8 +138,13 @@ fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         if !name.to_lowercase().ends_with(".md") {
             continue;
         }
-        let cap = u64::try_from(crate::notebook::MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(u64::MAX);
-        let Ok(text) = archive.read_text(name, cap) else {
+        let Some(part) = parts.remove(name) else {
+            continue;
+        };
+        if !fits(&part, crate::notebook::MAX_MARKDOWN_IMPORT_BYTES) {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(part) else {
             continue;
         };
         let title = page_title(name, &text);
@@ -148,11 +152,16 @@ fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         let body = keep_pictures(&text, name, &pictures, &mut import);
         let mut markdown = body;
         for database in databases_of(name, &names) {
-            let cap = u64::try_from(crate::notebook::MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(u64::MAX);
-            let Ok(csv) = archive.read_text(&database, cap) else {
+            let Some(part) = parts.get(&database) else {
                 continue;
             };
-            match csv_table(&csv) {
+            if !fits(part, crate::notebook::MAX_MARKDOWN_IMPORT_BYTES) {
+                continue;
+            }
+            let Ok(csv) = std::str::from_utf8(part) else {
+                continue;
+            };
+            match csv_table(csv) {
                 Some(table) if !table.trim().is_empty() => {
                     if !markdown.is_empty() && !markdown.ends_with('\n') {
                         markdown.push('\n');
@@ -171,6 +180,24 @@ fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         });
     }
     Ok(pages)
+}
+
+/// Whether `bytes` fits in the `cap` the notebook sets for what they become.
+fn fits(bytes: &[u8], cap: usize) -> bool {
+    bytes.len() <= cap
+}
+
+/// The bounds an export archive is read under before any page is parsed.
+fn archive_limits() -> ZipLimits {
+    let cap = u64::try_from(
+        crate::notebook::MAX_ASSET_BYTES.max(crate::notebook::MAX_MARKDOWN_IMPORT_BYTES),
+    )
+    .unwrap_or(u64::MAX);
+    ZipLimits {
+        max_parts: MAX_IMPORTED_PAGES.saturating_mul(8),
+        max_part_bytes: cap,
+        max_total_bytes: u64::try_from(MAX_ARCHIVE_BYTES).unwrap_or(u64::MAX),
+    }
 }
 
 /// The pictures a page shows, and the ones already given to the notebook, so
