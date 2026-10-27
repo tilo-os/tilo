@@ -56,11 +56,20 @@ fn frames_until(app: &mut TestApp<TlApp>, until: Instant) -> usize {
     frames
 }
 
-/// Take the frames the window asks for until `within` has passed, then the one after: the
-/// window asks for no frame now, and none for a while after. Idle is zero frames.
+/// The frames a slide owes once its motion has landed: the one whose tick finds it ended
+/// (a tick runs after the frame's paint), the one that lays the landed pose out, and the
+/// structural one that drops the parts that pose hides.
+const LANDING_FRAMES: usize = 3;
+
+/// Take the frames the window asks for until `within` has passed, then the frames landing
+/// owes: the window asks for no frame now, and none for a while after. Idle is zero frames.
 fn assert_settles(app: &mut TestApp<TlApp>, within: ui::time::Duration, what: &str) {
     frames_until(app, later(within));
-    app.frame();
+    for _ in 0..LANDING_FRAMES {
+        if demands_frame(&app.harness().frame_schedule()) {
+            app.frame();
+        }
+    }
     assert!(
         !demands_frame(&app.harness().frame_schedule()),
         "{what}: the window still asks for frames after {within:?}: {}",
