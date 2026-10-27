@@ -27,6 +27,13 @@ history, undo and CRDT synchronization; an app does not add its own action bus
 or sync implementation. Use typed effects for external work rather than
 pretending a network request or file write is an undoable resource edit.
 
+Give a common action the other words people use for it, so search finds it
+by them as by its label: `#[action(keywords = "mkdir, make directory")]` on a
+verb, `#[effect(keywords = "…")]` on an effect. Write plain words, one phrase
+each, never code or the implementation's names (`check_action_keywords.py`).
+Search keeps no list of its own; test the words with
+`ui::search::system::actions_found_by`.
+
 Effect ids share the root resource's action surface. `InspectPackage` becomes
 `inspect-package`; keep names distinct across effect enums and root actions.
 The effect's `operation` names its vocabulary, not an id prefix.
