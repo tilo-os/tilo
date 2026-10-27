@@ -327,6 +327,42 @@ params = [
 ]
 
 [[resources]]
+kind = "settings.shortcuts"
+label = "Keyboard shortcuts"
+version = 1
+person = true
+fields = [
+  { path = "bindings", type = "Stored", readonly = true },
+  { path = "actions", type = "Stored", readonly = true },
+]
+
+[[resources.verbs]]
+id = "rebind"
+kind = "undoable"
+params = [
+  { name = "shortcut", required = true, schema = { type = "string" } },
+  { name = "chord", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reset"
+kind = "undoable"
+params = [
+  { name = "shortcuts", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "reset-all"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "set-action-chords"
+kind = "undoable"
+params = [
+  { name = "chords", required = true, schema = {} },
+]
+
+[[resources]]
 kind = "settings.desktop-controls"
 label = "Desktop controls"
 version = 1

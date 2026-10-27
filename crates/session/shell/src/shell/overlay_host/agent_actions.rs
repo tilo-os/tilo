@@ -39,6 +39,9 @@ const TRACKER: &str = tilo_action_broker::services::TRACKER_RESOURCE;
 const AGENT: &str = tilo_automation::AGENT_APP_ID;
 /// The longest task title, in characters.
 const TITLE_CHARS: usize = 120;
+/// How long an agent started for work asked of it has to come up before
+/// another ask starts it again.
+const AGENT_START: Duration = Duration::from_secs(60);
 
 /// Where the composer reads the runs it follows: the rooms' trackers.
 pub(crate) trait RunSource {
@@ -68,9 +71,13 @@ enum Purpose {
     Queue {
         request: Option<ComposerRequest>,
         title: String,
+        /// Open the issue's page once it is asked.
+        show: bool,
     },
     /// A message to, or Stop of, the followed run.
     Submit(ComposerRequest),
+    /// Open an asked issue's page, as any reference to it opens.
+    Show,
 }
 
 #[derive(Clone)]
@@ -197,6 +204,8 @@ pub(super) struct AgentActions {
     /// Messages to the run saved on its issue, until its agent takes them in.
     sent: Vec<(ComposerRequest, ComposerTask)>,
     fresh: Freshness,
+    /// When the agent was last started for work asked of it.
+    started: Option<Instant>,
 }
 
 impl AgentActions {
@@ -385,17 +394,36 @@ impl AgentActions {
 
     /// Open for `owner` and ask its agent for `title`'s work, described by
     /// `body`: an issue in Tasks whose run the asking starts, as the composer
-    /// asks. Whether it was asked.
+    /// asks; with `show`, the issue's page opens once it is asked. Whether
+    /// it was asked.
     pub(super) fn open_and_ask(
         &mut self,
         source: ActionSessionSource,
         owner: &ComposerOwner,
         (title, body): (&str, &str),
+        show: bool,
     ) -> bool {
         if !self.open(source, owner.clone()) {
             return false;
         }
-        self.begin(queue_operation(owner, None, (title, body), None, None));
+        let mut operation = queue_operation(owner, None, (title, body), None, None);
+        if let Purpose::Queue { show: shown, .. } = &mut operation.purpose {
+            *shown = show;
+        }
+        self.begin(operation);
+        true
+    }
+
+    /// Whether to start the agent for work asked of it now that it is not
+    /// running: once, until it had [`AGENT_START`] to come up.
+    pub(super) fn start_once(&mut self, now: Instant) -> bool {
+        if self
+            .started
+            .is_some_and(|started| now.saturating_duration_since(started) < AGENT_START)
+        {
+            return false;
+        }
+        self.started = Some(now);
         true
     }
 
@@ -487,8 +515,15 @@ impl AgentActions {
                 }
                 None => self.begin(request_queue(request, None)),
             },
-            Purpose::Queue { request, title } => {
+            Purpose::Queue {
+                request,
+                title,
+                show,
+            } => {
                 let asked = asked_issue(operation);
+                if *show && let Some(issue) = &asked {
+                    self.begin(show_operation(issue));
+                }
                 if let Some(issue) = &asked {
                     self.followed = Some(Followed {
                         issue: issue.clone(),
@@ -534,6 +569,7 @@ impl AgentActions {
                     outcome,
                 });
             }
+            Purpose::Show => {}
         }
     }
 
@@ -572,7 +608,7 @@ impl AgentActions {
                     },
                 });
             }
-            Purpose::Queue { request: None, .. } => {}
+            Purpose::Queue { request: None, .. } | Purpose::Show => {}
         }
     }
 
@@ -716,7 +752,25 @@ fn queue_operation(
         resource: TRACKER.into(),
         action: "ask-agent".into(),
         arguments,
-        purpose: Purpose::Queue { request, title },
+        purpose: Purpose::Queue {
+            request,
+            title,
+            show: false,
+        },
+        app: TRACKER_APP,
+    }
+}
+
+/// Open `issue`'s page: the issue's `open` view in Tasks, the one action a
+/// search hit, a chip or an agent opens it with
+/// (`tilo_reference::ResourceRef::open_target`). The host launches Tasks
+/// when no window shows the tracker.
+fn show_operation(issue: &str) -> Operation {
+    Operation {
+        resource: issue.into(),
+        action: tilo_actions::remote::APPLICATION_OPEN_ACTION.into(),
+        arguments: Map::new(),
+        purpose: Purpose::Show,
         app: TRACKER_APP,
     }
 }
@@ -1674,5 +1728,60 @@ mod tests {
                 .starts_with("Tidy the notes\nall of them")
         );
         assert!(composer.followed().is_some());
+    }
+
+    /// A query search hands on is an ordinary issue in Tasks carrying it,
+    /// assigned to the agent and started by the asking, and the issue's
+    /// page opens through its `open` view, as any reference to it opens.
+    /// Work handed on from a notification asks the same way and opens
+    /// nothing.
+    #[test]
+    fn a_query_handed_on_from_search_is_a_task_carrying_it_whose_page_opens() {
+        let query = "what changed in the Q3 numbers?";
+        for show in [true, false] {
+            let room = Room::new(None);
+            let owner = owner(&room.id);
+            let mut actions = AgentActions::default();
+            assert!(actions.open_and_ask(
+                ActionSessionSource::with_mock(
+                    crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+                    room.clone(),
+                ),
+                &owner,
+                (query, query),
+                show,
+            ));
+            let mut composer = AgentQuickComposer::default();
+            settle(&mut actions, &mut composer, &Tracker::default());
+            drop(actions);
+            let asked = room.arguments("ask-agent");
+            assert_eq!(asked["title"], query);
+            assert_eq!(asked["body"], query);
+            assert_eq!(asked["agent"], "agent:tide");
+            let issue = format!(
+                "{}{}",
+                tilo_action_broker::services::TRACKER_ISSUE_PREFIX,
+                asked["id"].as_str().unwrap()
+            );
+            let mut expected = vec![format!("{TRACKER}#ask-agent")];
+            if show {
+                expected.push(format!("{issue}#open"));
+            }
+            assert_eq!(room.invoked(), expected, "show: {show}");
+            assert!(
+                !room.invoked().iter().any(|call| call.ends_with("#respond")),
+                "handing a query on asks for work, not a quick answer"
+            );
+        }
+    }
+
+    #[test]
+    fn an_agent_is_started_for_work_once_until_it_had_time_to_come_up() {
+        let mut actions = AgentActions::default();
+        let now = Instant::now();
+        assert!(actions.start_once(now));
+        assert!(!actions.start_once(now + Duration::from_secs(5)));
+        assert!(actions.start_once(now + AGENT_START));
+        drop(actions);
     }
 }

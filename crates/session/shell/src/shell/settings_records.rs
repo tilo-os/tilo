@@ -21,7 +21,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use accounts::person::PersonAccounts;
@@ -288,8 +288,18 @@ fn with_records<T>(work: impl FnOnce(&SettingsRecords) -> T) -> Result<T, String
     Holder::of(&crate::shell::state::local_user_id())?.run(work)
 }
 
+/// How many times the person's provider settings changed in this session:
+/// what a reader that keeps them compares to know they moved.
+static PROVIDER_SETTINGS_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// See [`PROVIDER_SETTINGS_EPOCH`].
+pub(crate) fn provider_settings_epoch() -> u64 {
+    PROVIDER_SETTINGS_EPOCH.load(Ordering::Relaxed)
+}
+
 /// The person's provider settings changed: offer the models they offer now.
 pub(crate) fn provider_settings_changed() {
+    PROVIDER_SETTINGS_EPOCH.fetch_add(1, Ordering::Relaxed);
     if let Err(error) = with_records(offer_models) {
         tracing::warn!(%error, "the offered models were not updated");
     }

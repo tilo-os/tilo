@@ -1,10 +1,9 @@
 //! Editable compositor shortcuts. The rows are the desktop's keyboard
 //! shortcut catalogue ([`settings_store::keyboard_shortcuts`]), the same one
-//! the shell publishes on the action door and the shortcut guide shows. A
-//! chord is bound with a [`ShortcutEffect`], which validates it against the
-//! catalogue and stores it in the person's `shortcuts` section the
-//! compositor reads; a chord it refuses leaves the binding as it was and
-//! says why.
+//! the shortcut guide shows. A chord is bound with the person's `shortcuts`
+//! section's `rebind` ([`ShortcutPrefs`]), which checks it against every
+//! other chord; a chord it refuses leaves the binding as it was and says
+//! why.
 //!
 //! "Paste in apps" is the other shortcut the person sets here: the chord
 //! the shell pastes with in an app (an image or files chosen from clipboard
@@ -31,11 +30,15 @@ use crate::i18n::{t, t_args};
 use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
+use crate::shortcut_settings::ShortcutPrefs;
 use crate::widgets::{Item, SettingsSection, note, rows, section, section_action, setting_row};
 use settings_store::paste_shortcut::{PasteShortcut, default_for};
 use ui::shell_choosers::ChosenApp;
 
 crate::effects::effect_family!(ShortcutEffect => answer);
+
+/// The `shortcuts` section's verb that moves a shortcut to a chord.
+const REBIND: &str = "rebind";
 
 /// The shell's desktop navigation preferences, as the person's settings
 /// hold them.
@@ -61,41 +64,27 @@ impl ui::storage::SettingsSchema for DesktopControls {
 #[ui::tilo_resource::resource(kind = "settings.desktop-controls", label = "Desktop controls")]
 impl DesktopControls {}
 
-/// The section holding the person's shortcut bindings.
-const SHORTCUTS_SECTION: &str = "shortcuts";
-
-/// The ids of the rebindable shortcuts, as an effect takes them.
-fn rebindable_ids() -> impl Iterator<Item = &'static str> {
-    rebindable().map(ShortcutAction::id)
-}
-
 /// The keys that move around the desktop.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum ShortcutEffect {
-    /// Bind a desktop shortcut to a chord.
-    #[effect(idempotent)]
-    #[effect(keywords = "hotkey, keybinding, keyboard shortcut")]
-    BindShortcut {
-        #[param("The shortcut", choices = rebindable_ids())]
-        shortcut: String,
-        #[param("The chord, such as `Super+K` or `Ctrl+Alt+T`")]
-        chord: String,
-    },
     /// Choose an app with the shell's app chooser, to set how the shell
     /// pastes in it.
     #[effect(job, label = "Choose an app to set how it pastes")]
     ChoosePasteApp,
 }
 
-/// Answer `effect`: a chord the catalogue refuses changes nothing and the
-/// caller is told why.
+/// Answer `effect`.
+#[allow(
+    clippy::unnecessary_wraps,
+    clippy::needless_pass_by_value,
+    reason = "the signature every effect family answers with"
+)]
 pub(crate) fn answer(
-    app: &SettingsApp,
+    _app: &SettingsApp,
     effect: ShortcutEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    let host = app.host();
     match effect {
         ShortcutEffect::ChoosePasteApp => {
             let purpose = t("settings-paste-choose-purpose");
@@ -117,21 +106,6 @@ pub(crate) fn answer(
                         .map_err(|error| format!("the input settings could not be saved: {error}"))
                 },
             ))
-        }
-        ShortcutEffect::BindShortcut { shortcut, chord } => {
-            let action = ShortcutAction::from_id(&shortcut)
-                .ok_or_else(|| format!("`{shortcut}` is not a shortcut that can be changed"))?;
-            let chord = KeyChord::parse(&chord).map_err(|error| format!("`{chord}`: {error}"))?;
-            let document = host.storage().settings_document();
-            let mut config = ShortcutConfig::from_section(document.section(SHORTCUTS_SECTION));
-            config
-                .set(action, chord)
-                .map_err(|error| error.to_string())?;
-            let section = config.section().map_err(|error| error.to_string())?;
-            document
-                .update_section(SHORTCUTS_SECTION, section)
-                .map_err(|error| format!("the shortcut could not be saved: {error}"))?;
-            Ok(Effected::done())
         }
     }
 }
@@ -253,9 +227,9 @@ fn chord_caps(chords: &[KeyChord]) -> Box<dyn Widget> {
 
 pub struct ShortcutPane {
     cx: PaneCx,
+    /// The person's `shortcuts` section, and the table it holds.
+    shortcuts: Followed<ShortcutPrefs>,
     config: ShortcutConfig,
-    /// When the shortcuts section last changed, to read it again.
-    seen: ui::storage::SettingsRevision,
     controls: Followed<DesktopControls>,
     /// The chord each rebindable shortcut's recorder shows.
     chords: HashMap<ShortcutAction, LocalState<String>>,
@@ -273,7 +247,8 @@ impl ShortcutPane {
     pub fn new(cx: PaneCx) -> Self {
         let document = cx.storage().settings_document().clone();
         ui::keycaps::set_active(active_keycaps(&document));
-        let config = ShortcutConfig::from_section(document.section(SHORTCUTS_SECTION));
+        let shortcuts = cx.follow::<ShortcutPrefs>();
+        let config = shortcuts.get().config();
         let controls = cx.follow::<DesktopControls>();
         let input = cx.follow::<InputPrefs>();
         let chords = rebindable()
@@ -282,8 +257,8 @@ impl ShortcutPane {
         let pane = Self {
             refused: cx.refused(),
             cx,
+            shortcuts,
             config,
-            seen: document.revision(),
             controls,
             chords,
             refusal_shown: None,
@@ -325,13 +300,10 @@ impl ShortcutPane {
                         .map(KeyChord::display)
                         .unwrap_or_default(),
                 );
-                let recorder = match self.cx.binding(
-                    effect(ShortcutEffect::BIND_SHORTCUT)
-                        .map(move |chord: String| (id.to_owned(), chord)),
-                ) {
-                    Some(binding) => recorder.on_action(binding),
-                    None => recorder,
-                };
+                let recorder = self.cx.bind_verb(
+                    recorder,
+                    ShortcutPrefs::REBIND.map(move |chord: String| (id.to_owned(), chord)),
+                );
                 setting_row(&label, Box::new(recorder))
             }
             None if entry.chords.is_empty() => {
@@ -466,11 +438,8 @@ pub(crate) fn vim_mode(cx: &PaneCx, controls: &Followed<DesktopControls>) -> Ite
 
 impl Widget for ShortcutPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        let document = self.cx.storage().settings_document();
-        let revision = document.revision();
-        if revision != self.seen {
-            self.seen = revision;
-            let config = ShortcutConfig::from_section(document.section(SHORTCUTS_SECTION));
+        if self.shortcuts.refresh() {
+            let config = self.shortcuts.get().config();
             if config != self.config {
                 self.config = config;
                 self.structure_dirty = true;
@@ -481,7 +450,7 @@ impl Widget for ShortcutPane {
         let refusal = self
             .refused
             .get()
-            .filter(|refused| refused.action == ShortcutEffect::BIND_SHORTCUT.id)
+            .filter(|refused| refused.action == REBIND)
             .map(|refused| refused.reason);
         if refusal != self.refusal_shown {
             self.refusal_shown = refusal;
@@ -548,15 +517,16 @@ impl Widget for ShortcutPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::SettingsEffect;
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
     fn bind(app: &mut TestApp<SettingsShell>, shortcut: &str, chord: &str) -> bool {
-        app.effect(&SettingsEffect::from(ShortcutEffect::BindShortcut {
-            shortcut: shortcut.into(),
-            chord: chord.into(),
-        }))
+        crate::host::testing::invoke_section(
+            app,
+            "settings.shortcuts",
+            REBIND,
+            serde_json::json!({ "shortcut": shortcut, "chord": chord }),
+        )
         .is_ok()
     }
 
@@ -564,7 +534,7 @@ mod tests {
     /// offered for rebinding.
     #[test]
     fn rows_are_the_shortcut_catalogue() {
-        let listed: Vec<&str> = rebindable_ids().collect();
+        let listed: Vec<&str> = rebindable().map(ShortcutAction::id).collect();
         assert!(listed.contains(&"quick-settings"));
         assert!(
             listed.contains(&"lock"),
@@ -591,7 +561,7 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let document = app.settings::<DesktopControls>().document().clone();
         let stored = |document: &ui::storage::SettingsDocument| {
-            ShortcutConfig::from_section(document.section(SHORTCUTS_SECTION))
+            ShortcutConfig::from_section(document.section("shortcuts"))
         };
         assert!(bind(&mut app, "quick-settings", "Super+Shift+Q"));
         assert_eq!(
@@ -632,9 +602,8 @@ mod tests {
         config
             .set(ShortcutAction::Search, KeyChord::parse("Super+J").unwrap())
             .unwrap();
-        cx.storage()
-            .settings_document()
-            .update_section(SHORTCUTS_SECTION, config.section().unwrap())
+        cx.settings::<ShortcutPrefs>()
+            .set(&ShortcutPrefs::of(&config))
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);

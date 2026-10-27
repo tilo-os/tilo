@@ -13,10 +13,14 @@
 
 pub mod action_api;
 pub mod app_content_index;
+#[cfg(test)]
+mod fallback_tests;
+mod fallbacks;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod launcher;
 mod merge;
+mod merge_strength;
 pub mod providers;
 pub mod recent_places;
 #[cfg(test)]
@@ -39,6 +43,12 @@ use action_api::{ActionArgs, ActionError, ActionParam};
 use merge::{proximity_boost, sources_keep_their_order};
 pub use rows::row_resource;
 
+#[cfg(test)]
+use merge_strength::looks_like_a_path;
+use merge_strength::{
+    files_follow_what_was_named, loose_matches_give_way, only_loosely_matched, usage_strength,
+    window_intent,
+};
 use ui::search::system::{self, query_input_is_bounded};
 
 /// Portable search vocabulary and provider page contract, retained at the native API path.
@@ -729,11 +739,18 @@ pub trait SearchProvider {
         Availability::OnDevice
     }
 
-    /// Whether `result` is the row that answers any query, after every
-    /// match (searching the web for it): a person typing sees it last, below
-    /// whatever matched, and it never takes a row from a match.
+    /// Whether `result` is a row that answers any query (asking an agent,
+    /// searching the web for it): it never takes a row from a match, follows
+    /// a direct match and leads when nothing matched directly.
     fn is_fallback(&self, _result: &SearchResult) -> bool {
         false
+    }
+
+    /// Where `result`, a row that answers any query, goes among the others
+    /// like it: lower first. Asking an agent leads while it can take the
+    /// request and follows searching the web while it cannot.
+    fn fallback_rank(&self, _result: &SearchResult, _chrome: &ChromeState) -> u8 {
+        1
     }
 
     /// What `needle` says about `result` beyond the lexical fit of its title,
@@ -1624,6 +1641,9 @@ impl SearchRegistry {
         let interactive = !exhaustive && !include_programmatic;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut fallbacks: Vec<(SearchResult, f32)> = Vec::new();
+        // Whether anything matched the query directly; until it does, the
+        // rows that answer any query lead.
+        let mut direct = false;
         let mut loose: HashSet<(String, String)> = HashSet::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
         let mut incomplete = Vec::new();
@@ -1636,7 +1656,8 @@ impl SearchRegistry {
                     continue;
                 }
                 if interactive && provider.is_fallback(&r) {
-                    fallbacks.push((r, 0.0));
+                    let rank = f32::from(provider.fallback_rank(&r, chrome));
+                    fallbacks.push((r, rank));
                     continue;
                 }
                 // A score above `top` exceeds strength 1.0 and silently
@@ -1649,6 +1670,15 @@ impl SearchRegistry {
                     r.score,
                 );
                 let proximity = proximity_boost(provider, &r, args);
+                let intent = provider.intent_strength(&r, needle);
+                let chosen = if interactive {
+                    window_intent(needle, &r, top) + usage_strength(needle, &r)
+                } else {
+                    0.0
+                };
+                direct = direct
+                    || (interactive
+                        && fallbacks::directly_matched(provider, &r, needle, top, intent + chosen));
                 let strength = system::merged_strength(
                     needle,
                     &r.kind,
@@ -1657,12 +1687,8 @@ impl SearchRegistry {
                     r.score,
                     top,
                     proximity,
-                ) + provider.intent_strength(&r, needle)
-                    + if interactive {
-                        window_intent(needle, &r, top) + usage_strength(needle, &r)
-                    } else {
-                        0.0
-                    };
+                ) + intent
+                    + chosen;
                 let key = (r.provider_id.clone(), r.id.clone());
                 if interactive && only_loosely_matched(needle, &r, top) {
                     loose.insert(key.clone());
@@ -1699,10 +1725,10 @@ impl SearchRegistry {
                 });
             (&row.kind, availability)
         });
-        // The rows that answer any query (searching the web for it) come
-        // last, after every match, in their own group.
+        // Asking an agent and searching the web: after a direct match, else
+        // first.
         if interactive && !needle.trim().is_empty() {
-            merged.append(&mut fallbacks);
+            fallbacks::place(&mut merged, fallbacks, direct);
         }
         let completion = QueryCompletion {
             complete: incomplete.is_empty(),
@@ -1860,23 +1886,25 @@ impl SearchRegistry {
                 (heading, row)
             })
             .collect();
-        let groups = system::group_by_kind(ranked, |(heading, _)| heading, row_budget)
+        let groups = system::group_by_kind(ranked, |(heading, _)| heading, 0)
             .into_iter()
             .map(|group| KindGroup {
                 kind: group.kind,
                 total: group.total,
                 results: group.results.into_iter().map(|(_, row)| row).collect(),
             });
-        if args.scope != SearchScope::ActiveApp {
-            return groups.collect();
-        }
-        // An app's search is about what the app holds: its resources lead,
-        // and what can be done follows them, however well an action's name
-        // matched.
-        let (actions, mut held): (Vec<KindGroup>, Vec<KindGroup>) =
-            groups.partition(|group| group.kind == ResourceKind::Action);
-        held.extend(actions);
-        held
+        let groups = if args.scope == SearchScope::ActiveApp {
+            // An app's search is about what the app holds: its resources
+            // lead, and what can be done follows them, however well an
+            // action's name matched.
+            let (actions, mut held): (Vec<KindGroup>, Vec<KindGroup>) =
+                groups.partition(|group| group.kind == ResourceKind::Action);
+            held.extend(actions);
+            held
+        } else {
+            groups.collect()
+        };
+        self.trim_groups(groups, row_budget, &[])
     }
 }
 
@@ -1885,149 +1913,6 @@ impl SearchRegistry {
 #[must_use]
 pub fn in_the_store() -> ResourceKind {
     ResourceKind::Custom(t("search-group-in-the-store"))
-}
-
-/// Queries this short are what launchers live on: the thing chosen most
-/// leads every other prefix match.
-const SHORT_QUERY_SCALARS: usize = 3;
-/// How much a row's whole frecency adds at the merge, for a short query and
-/// for a longer one. For a short query it outweighs the gap between an exact
-/// name and a prefix (1.5) and an app's launch intent; for a longer one it
-/// only settles near ties.
-const SHORT_QUERY_USAGE: f32 = ui::tokens::search::SHORT_QUERY_USAGE;
-const LONG_QUERY_USAGE: f32 = 0.4;
-/// What a row chosen before for the same typed text adds: it leads.
-const SAME_TEXT_CHOICE: f32 = ui::tokens::search::SAME_TEXT_CHOICE;
-/// A title matched from a word start: the hits frecency may reorder.
-const WORD_START_LEXICAL: f32 = 1.5;
-
-/// What the person chose before adds to a row at the merge: how often and
-/// how recently they chose it, which leads a short query's prefix matches
-/// ("t" is the Terminal they open daily, not whichever action sorts first),
-/// and whether they chose it before for this very text.
-fn usage_strength(needle: &str, row: &SearchResult) -> f32 {
-    let typed = needle.trim();
-    if typed.is_empty() {
-        return 0.0;
-    }
-    let choice = usage::choice_share(typed, &row.provider_id, &row.id) * SAME_TEXT_CHOICE;
-    let lexical = system::lexical_strength(typed, &row.kind, &row.title, None);
-    if lexical < WORD_START_LEXICAL {
-        return choice;
-    }
-    let weight = if typed.chars().count() <= SHORT_QUERY_SCALARS {
-        SHORT_QUERY_USAGE
-    } else {
-        LONG_QUERY_USAGE
-    };
-    choice + usage::share(&row.provider_id, &row.id) * weight
-}
-
-/// A window named by a query is as much what the person reaches for as the
-/// app it belongs to: it gets the launch intent an app row gets.
-fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
-    if needle.trim().is_empty()
-        || row.kind != ResourceKind::Tab
-        || row.operation_kind != tilo_actions::OperationKind::View
-    {
-        return 0.0;
-    }
-    system::application_intent_boost(row.score, top)
-}
-
-/// What a row that matched every word of the query, spread over its fields
-/// (the least a real match ranks), scores on its provider's scale, as a
-/// share of the top. A row below it matched only by a typo.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "provider scores are small integers"
-)]
-fn loose_share() -> f32 {
-    provider_score(tilo_search::SPANNING_RANK) as f32 / system::MAX_PROVIDER_SCORE as f32
-}
-
-/// Whether `row` matched `needle` only loosely: by a typo, with nothing of
-/// the query in its title. A row that holds every word the person typed,
-/// spread over its fields ("gnome calculator": GNOME's Calculator, whose
-/// title is "Calculator"), is a real match, not a loose one.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "provider scores are small integers"
-)]
-fn only_loosely_matched(needle: &str, row: &SearchResult, top: i32) -> bool {
-    (row.score as f32 / top.max(1) as f32) < loose_share()
-        && system::lexical_strength(needle, &row.kind, &row.title, None) < 1.0
-}
-
-/// A typo is how a misspelt name is still found, not a reason to list
-/// everything one letter away from a word that matched: once anything
-/// matches the query as typed, the rows that only match it loosely go
-/// ("move" lists the move actions, not "Mobile broadband").
-fn loose_matches_give_way(
-    merged: &mut Vec<(SearchResult, f32)>,
-    loose: &HashSet<(String, String)>,
-) {
-    let key = |row: &SearchResult| (row.provider_id.clone(), row.id.clone());
-    if merged.iter().any(|(row, _)| !loose.contains(&key(row))) {
-        merged.retain(|(row, _)| !loose.contains(&key(row)));
-    }
-}
-
-/// Whether typed text asks for a file by its shape: a path, a home-relative
-/// path, or a name with an extension ("report.pdf").
-fn looks_like_a_path(needle: &str) -> bool {
-    let typed = needle.trim();
-    if typed.contains('/') || typed.starts_with('~') {
-        return true;
-    }
-    typed.rsplit_once('.').is_some_and(|(stem, extension)| {
-        !stem.is_empty()
-            && (1..=5).contains(&extension.len())
-            && extension.chars().all(|c| c.is_ascii_alphanumeric())
-            && extension.chars().any(|c| c.is_ascii_alphabetic())
-    })
-}
-
-/// Files and folders follow every app, window, action and setting the query
-/// names by a word start of its title, unless the query is shaped like a
-/// file ([`looks_like_a_path`]). A launcher that leads with
-/// `Settings-backup.txt` for "settings" is a filename grep; the files are
-/// still there, below what the person most likely meant.
-fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str) {
-    if looks_like_a_path(needle) {
-        return;
-    }
-    let is_file = |kind: &ResourceKind| matches!(kind, ResourceKind::File | ResourceKind::Folder);
-    let is_named = |kind: &ResourceKind| {
-        matches!(
-            kind,
-            ResourceKind::Action
-                | ResourceKind::Application
-                | ResourceKind::Tab
-                | ResourceKind::WindowGroup
-                | ResourceKind::Custom(_)
-        )
-    };
-    // The weakest best of the kinds whose title the query named: files sit
-    // just below it, so no named group is ordered after them.
-    let mut best: HashMap<(u8, String), f32> = HashMap::new();
-    for (row, strength) in merged.iter() {
-        if is_named(&row.kind)
-            && system::lexical_strength(needle, &row.kind, &row.title, None) >= WORD_START_LEXICAL
-        {
-            let slot = best.entry(row.kind.sort_key()).or_insert(f32::MIN);
-            *slot = slot.max(*strength);
-        }
-    }
-    let Some(floor) = best.values().copied().reduce(f32::min) else {
-        return;
-    };
-    let ceiling = floor - 0.01;
-    for (row, strength) in merged.iter_mut() {
-        if is_file(&row.kind) && *strength >= floor {
-            *strength = ceiling;
-        }
-    }
 }
 
 fn scope_allows(
