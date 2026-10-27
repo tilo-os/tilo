@@ -8454,9 +8454,25 @@ fn attach_peer_presence(
         "collab: subscribed to {} room(s) for peer presence",
         rooms.len()
     );
+    bind_window_routes(frame_builder, broker);
     frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
         broker, net, rooms,
     ));
+}
+
+/// Tell the in-process apps which records the session's windows hold, as
+/// its broker knows them: what a report about a window records.
+fn bind_window_routes(
+    frame_builder: &mut FrameBuilder,
+    broker: &crate::shell::collab_broker::BrokerHandle,
+) {
+    let fanout = Arc::clone(&broker.fanout);
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_window_routes(Arc::new(move || fanout.window_records()));
+        }
+    });
 }
 
 fn spawn_session_identity_broker(
