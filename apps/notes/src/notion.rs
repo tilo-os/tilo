@@ -469,6 +469,33 @@ fn write_block(out: &mut String, block: &Value) {
         || plain_text(block.get("paragraph")),
         |body| plain_text(Some(body)),
     );
+    write_block_body(out, block, kind, &text);
+    if kind != Some("child_page")
+        && let Some(children) = block.get("children").and_then(Value::as_array)
+    {
+        let indented = matches!(
+            kind,
+            Some("bulleted_list_item" | "numbered_list_item" | "to_do")
+        );
+        for child in children {
+            let mut line = String::new();
+            write_block(&mut line, child);
+            for child_line in line.lines().filter(|line| !line.is_empty()) {
+                if indented {
+                    let _ = writeln!(out, "    {child_line}");
+                } else {
+                    let _ = writeln!(out, "{child_line}");
+                }
+            }
+        }
+        if indented {
+            out.push('\n');
+        }
+    }
+}
+
+/// The words of one block, in the shape of its kind.
+fn write_block_body(out: &mut String, block: &Value, kind: Option<&str>, text: &str) {
     match kind {
         Some("heading_1") => {
             let _ = writeln!(out, "# {text}");
@@ -547,28 +574,6 @@ fn write_block(out: &mut String, block: &Value) {
                 let _ = writeln!(out, "{text}");
                 out.push('\n');
             }
-        }
-    }
-    if kind != Some("child_page")
-        && let Some(children) = block.get("children").and_then(Value::as_array)
-    {
-        let indented = matches!(
-            kind,
-            Some("bulleted_list_item" | "numbered_list_item" | "to_do")
-        );
-        for child in children {
-            let mut line = String::new();
-            write_block(&mut line, child);
-            for child_line in line.lines().filter(|line| !line.is_empty()) {
-                if indented {
-                    let _ = writeln!(out, "    {child_line}");
-                } else {
-                    let _ = writeln!(out, "{child_line}");
-                }
-            }
-        }
-        if indented {
-            out.push('\n');
         }
     }
 }
