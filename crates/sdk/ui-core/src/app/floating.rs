@@ -1256,7 +1256,16 @@ impl App {
         use crate::shell_tabs::TabRequest;
         match request {
             TabRequest::OpenBeside { target, .. } => {
-                if let Err(error) = open_standalone_instance(target.as_deref()) {
+                if crate::shell_tabs::launch_instance().is_some() {
+                    // The shell launched this window into its sandbox, so
+                    // another instance is the shell's to launch: a process
+                    // started from here would have none of its services.
+                    tracing::warn!(
+                        "the desktop's tab service is unavailable; not opening another instance"
+                    );
+                } else if let Err(error) =
+                    crate::native::standalone_instance::open(target.as_deref())
+                {
                     tracing::warn!(%error, "could not open another window of this app");
                 }
             }
@@ -1275,31 +1284,6 @@ impl App {
     fn take_close_window_request(&mut self) -> bool {
         std::mem::take(&mut self.floating.close_window_requested)
     }
-}
-
-/// Start another process of this executable showing `target`.
-#[cfg(feature = "native")]
-fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let mut command = std::process::Command::new(executable);
-    if let Some(target) = target {
-        // One opaque positional, never something an argument parser
-        // could read as a flag.
-        if target.starts_with('-') {
-            return Err("refusing an argument-shaped target".into());
-        }
-        command.arg(target);
-    }
-    let mut child = command
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    crate::background::Background::current()
-        .spawn("standalone-instance-reaper", move || {
-            let _ = child.wait();
-        })
-        .map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 #[cfg(test)]
