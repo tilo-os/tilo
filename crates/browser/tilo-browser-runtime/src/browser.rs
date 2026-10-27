@@ -525,11 +525,39 @@ impl Desktop {
     /// any were asked.
     fn open_requested_apps(&self) -> bool {
         self.ask_room_of_nodes();
+        self.ask_app_actions();
         let permissions = self.permissions.borrow();
         self.openings
             .open(&self.handle, &self.generation, |app, existing| {
                 crate::desktop::may_open(&permissions, app, existing)
             })
+    }
+
+    /// Ask the session, as this person, for the app actions they chose in
+    /// the desktop's chrome: it opens each app and its window does the
+    /// action once it is up ([`session_asks`]).
+    fn ask_app_actions(&self) {
+        use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
+        for asked in self.shared.take_app_actions() {
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::application_action_target(
+                    &self.room,
+                    asked.app_id,
+                    asked.resource,
+                    asked.action,
+                ),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            // A refused action is the session's to report.
+            drop(self.session.invoke(&self.caller(), request));
+        }
     }
 
     /// Tell this person, in a banner that retires to the notification
