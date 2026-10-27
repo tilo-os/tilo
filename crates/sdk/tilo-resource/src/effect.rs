@@ -366,7 +366,16 @@ fn offered_specs(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionS
     decls
         .into_iter()
         .filter(|decl| !decl.row)
-        .map(|decl| decl.spec(operation))
+        .map(|decl| {
+            let mut spec = decl.spec(operation);
+            // Offered on each item it acts on (`item = field`), its item
+            // bound, it stays published here for scripts that name the item,
+            // out of the palette's way, as an item verb does.
+            if decl.item.is_some() && spec.audience() == tilo_actions::Audience::Everyone {
+                spec.contract.set_audience(tilo_actions::Audience::Agents);
+            }
+            spec
+        })
         .collect()
 }
 
