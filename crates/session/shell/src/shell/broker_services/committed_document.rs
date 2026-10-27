@@ -148,8 +148,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .ok_or("invalid committed document room")?;
         let owner = &self.opened_owner("native document owner unavailable")?;
         // A record the room's hosts send a device only once it asks (an
-        // earlier part of a chain) is asked for, and read once it arrived:
-        // the reader asks again, as for a checkpoint still arriving.
+        // earlier part of a chain) is asked for the first time it is read,
+        // and read once it arrived. Until then the reader waits on its read
+        // (a held `Await`), which its arrival, a host connecting or leaving,
+        // or a host saying it has none of it wakes.
         if on_demand(&route.record_id)
             && let Some(network) = &self.network
             && !owner.with_current(room, |view| {
@@ -159,8 +161,12 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                     .is_some())
             })?
         {
-            network.open_record(room, &route.app_id, &route.record_id);
-            return Ok(NativeDocumentRead::Pending);
+            return Ok(
+                match network.read_on_demand(room, &route.app_id, &route.record_id) {
+                    crate::shell::network::OnDemand::Arriving => NativeDocumentRead::Pending,
+                    crate::shell::network::OnDemand::Absent => NativeDocumentRead::Absent,
+                },
+            );
         }
         let read = owner.with_current(room, |view| {
             view.read_document_with_history(
@@ -446,7 +452,7 @@ async fn prepare_at_host(
     // A record the host sends a device only once it asks (an earlier part
     // of a chain) is asked for: the host found it, and replays it no one.
     if on_demand(&route.record_id) {
-        network.open_record(room, &route.app_id, &route.record_id);
+        let _ = network.read_on_demand(room, &route.app_id, &route.record_id);
     }
     // The host's answer is not this device's barrier: wait until the record
     // it published is in this device's admitted room, which the room's

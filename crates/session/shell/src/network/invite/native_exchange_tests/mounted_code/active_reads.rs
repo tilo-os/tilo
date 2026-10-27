@@ -135,7 +135,9 @@ impl Meter {
         let (count, body) = match read {
             NativeDocumentRead::Captured { body, .. } => (&self.captures, body),
             NativeDocumentRead::Changes { body, .. } => (&self.changes, body),
-            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Pending => return,
+            NativeDocumentRead::Unchanged(_)
+            | NativeDocumentRead::Pending
+            | NativeDocumentRead::Absent => return,
         };
         count.fetch_add(1, Ordering::AcqRel);
         self.bytes

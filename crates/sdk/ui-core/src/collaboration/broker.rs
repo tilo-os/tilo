@@ -1762,6 +1762,13 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "RecordsArrived"
         }
+        CollabEvent::RecordUnavailable { route } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            "RecordUnavailable"
+        }
         CollabEvent::DocumentSnapshotRequested { route } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
@@ -7844,6 +7851,7 @@ mod tests {
     include!("directory_client_tests.rs");
     #[cfg(unix)]
     include!("committed_read_deadline_tests.rs");
+    include!("committed_absent_tests.rs");
     include!("committed_changes_tests.rs");
     use crate::collaboration::{CollaborationState, SignedSendError, SigningIdentity};
 
@@ -7912,6 +7920,10 @@ mod tests {
         /// Refuse committed Opens on these channels only, as the session
         /// host does for a route this connection holds no read custody of.
         committed_open_refused_channels: Vec<String>,
+        /// Answer a committed Open on these channels `Absent`, and hold
+        /// their `Await`s, as the session host does for an on-demand record
+        /// its room's hosts have none of.
+        committed_absent_channels: Vec<String>,
         /// Hold committed-read `Await`s until this is notified, as the broker
         /// does until the read changes. Without it every `Await` fails, as a
         /// call to a broker can, and the reader re-Opens at its own pace.
@@ -8628,11 +8640,21 @@ mod tests {
                     ));
                 };
                 let captures = self.captures.clone();
+                let channel = self.channel_id.clone();
                 return Promise::from_future(async move {
                     loop {
                         let notified = change.notified();
                         tokio::pin!(notified);
                         notified.as_mut().enable();
+                        let absent = captures
+                            .lock()
+                            .unwrap()
+                            .committed_absent_channels
+                            .contains(&channel);
+                        if absent {
+                            notified.await;
+                            continue;
+                        }
                         let current = {
                             let mut captures = captures.lock().unwrap();
                             let stale = std::mem::take(&mut captures.committed_await_stale);
@@ -8673,7 +8695,12 @@ mod tests {
                     }
                 }
                 let current_revision = captures.committed_revision.unwrap_or([7; 32]);
+                let absent = captures
+                    .committed_absent_channels
+                    .contains(&self.channel_id)
+                    && matches!(request, Request::Open { .. });
                 let reply = match captures.committed_history_fixture.as_ref() {
+                    Some(_) if absent => Reply::Absent,
                     None => Reply::Legacy,
                     Some(bytes) => match request {
                         Request::PrivateWindowBinding => Reply::PrivateWindowBinding {

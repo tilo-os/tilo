@@ -800,12 +800,17 @@ impl Room {
     /// its whole tail at once. Each merge into an open record copies the
     /// document, so the mutations of one route are coalesced first (see
     /// [`tilo_browser_peer::coalesce`]) and merged once per run instead of once per change.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per peer event: the receiver is a table, read top to bottom"
+    )]
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
         let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
         let mut answered: Vec<DocumentRoute> = Vec::new();
+        let mut opened: Vec<DocumentRoute> = Vec::new();
         let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
@@ -863,6 +868,11 @@ impl Room {
                 PeerEvent::Committed { route, .. } if route.cluster_id == self.uuid => {
                     answered.push(route);
                 }
+                PeerEvent::RecordOpened {
+                    workspace_id,
+                    route,
+                    frames: 0,
+                } if workspace_id == self.workspace => opened.push(route),
                 _ => {}
             }
         }
@@ -885,8 +895,7 @@ impl Room {
                 warn(&format!("{}/{}: {error}", route.app_id, route.record));
             }
         }
-        // Every document delivered before a request is applied by now.
-        self.compact(compactions);
+        self.after_merging(compactions, opened, &mut woken);
         let mut notify: Vec<Arc<dyn Fn() + Send + Sync>> = woken
             .into_iter()
             .filter_map(|mount| self.mounts.get(&mount))
@@ -1037,6 +1046,46 @@ impl Room {
                         "{}/{}: a refused change stays: {error}",
                         route.app_id, route.record
                     )),
+                }
+            }
+        }
+    }
+
+    /// What waits for the documents delivered before it to be merged: the
+    /// host's compaction requests, and the on-demand records it retains
+    /// nothing of ([`PeerEvent::RecordOpened`] with no frames). A record it
+    /// sent frames of arrives as they are applied, which keys a sealed
+    /// record waits for can delay past this.
+    fn after_merging(
+        &mut self,
+        compactions: Vec<(DocumentRoute, [u8; 16])>,
+        opened: Vec<DocumentRoute>,
+        woken: &mut HashSet<u64>,
+    ) {
+        self.compact(compactions);
+        for route in opened {
+            if route.cluster_id == self.uuid {
+                self.room_answered(&route, woken);
+            }
+        }
+    }
+
+    /// The host retains nothing of `route`, an on-demand record this page
+    /// opened: each store holding it tells what reads it
+    /// ([`ui::record::RecordStore::note_room_answered`]).
+    fn room_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+        for (&id, mounted) in &self.mounts {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                if let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                {
+                    store.note_room_answered(checkout.id);
+                    woken.insert(id);
                 }
             }
         }

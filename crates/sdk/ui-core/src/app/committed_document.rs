@@ -10,6 +10,8 @@ impl App {
         if self.committed_documents.len() >= 64 {
             return;
         }
+        // An on-demand record asked for before it was here opens now.
+        self.unheld_record_arrived(&route);
         self.committed_documents.push((route, read));
         self.pump_committed_documents();
     }

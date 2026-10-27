@@ -63,11 +63,13 @@ pub(crate) fn component_history_read_for_test(
         .bridge
         .as_ref()
         .ok_or("original read bridge unavailable")?;
-    bridge.record(
-        &binding.app_id,
-        &bridge.route.cluster_id.to_string(),
-        &binding.checkout,
-    )
+    bridge
+        .record(
+            &binding.app_id,
+            &bridge.route.cluster_id.to_string(),
+            &binding.checkout,
+        )
+        .map_err(|error| error.to_string())
 }
 impl NativeConstruction {
     #[cfg(feature = "native")]
@@ -599,7 +601,30 @@ impl InitialReadBridge {
         }
         Ok(())
     }
+    /// The committed history of `checkout` this device reads. A record the
+    /// room sends this device only once it asks
+    /// ([`crate::record::RecordId::arrives_on_demand`]) is asked for and
+    /// never waited on: [`crate::record::RecordOpenError::Arriving`] until it
+    /// is here, and the store's readers are woken when it arrives.
     pub(crate) fn record(
+        &self,
+        app: &str,
+        room: &str,
+        checkout: &crate::record::RecordCheckout,
+    ) -> Result<CommittedDocument, crate::record::RecordOpenError> {
+        use crate::record::RecordOpenError;
+        if checkout.id.arrives_on_demand() {
+            self.check_scope(app, Some(room))
+                .map_err(RecordOpenError::Initialization)?;
+            return self
+                .arrived(checkout)
+                .map_err(RecordOpenError::Initialization)?
+                .ok_or(RecordOpenError::Arriving);
+        }
+        self.record_waiting(app, room, checkout)
+            .map_err(RecordOpenError::Initialization)
+    }
+    fn record_waiting(
         &self,
         app: &str,
         room: &str,
@@ -690,6 +715,31 @@ impl InitialReadBridge {
             self.wait_progress(seen, crate::time::Duration::from_millis(10));
         }
     }
+    /// The committed history of the on-demand record `checkout` that
+    /// arrived, asking the room for it the first time: `None` until it is
+    /// here. Its arrival reaches the app as every committed read does
+    /// ([`super::CollabEvent::CommittedDocument`]), which wakes the store's
+    /// readers.
+    fn arrived(
+        &self,
+        checkout: &crate::record::RecordCheckout,
+    ) -> Result<Option<CommittedDocument>, String> {
+        self.check()?;
+        let route = RouteSpec::record(
+            self.route.app_id.clone(),
+            self.route.cluster_id,
+            checkout.id.as_str(),
+        );
+        let key = route.channel_id();
+        if self.state.document_reads.joining(&key) {
+            let tx = self.commands.upgrade().ok_or("native read worker ended")?;
+            let kind = checkout.kind.as_str().to_owned();
+            if !enqueue_sdk_command(&tx, SdkCommand::Join(route, Some(kind)), &self.state) {
+                return Err("native record read queue unavailable".into());
+            }
+        }
+        Ok(self.state.document_reads.initial(&key))
+    }
     fn progress(&self) -> u64 {
         self.state.document_reads.progress()
     }
@@ -761,7 +811,7 @@ impl InitialReadBridge {
         _app: &str,
         _room: &str,
         _checkout: &crate::record::RecordCheckout,
-    ) -> Result<CommittedDocument, String> {
+    ) -> Result<CommittedDocument, crate::record::RecordOpenError> {
         match self.never {}
     }
     fn read(&self, _record: Option<&crate::record::RecordId>) -> Result<CommittedDocument, String> {

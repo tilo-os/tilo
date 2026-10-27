@@ -806,6 +806,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(took_in)
     }
 
+    /// The room's hosts sent everything they hold of `id`, a record this
+    /// window asked for, or none is connected to ask
+    /// ([`ui_core::record::RecordStore::note_room_answered`]).
+    pub fn room_answered(&mut self, id: RecordId) {
+        self.records.note_room_answered(id);
+    }
+
     /// The room's default records of the app's windows kept on this
     /// profile, as [`SeedCx::window_records`](super::SeedCx::window_records)
     /// reads them.

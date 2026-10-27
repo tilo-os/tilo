@@ -99,6 +99,12 @@ pub enum NativeDocumentRead {
     /// answered as [`Reply::Unavailable`], the reader withholds readiness
     /// and asks again.
     Pending,
+    /// A record the room's hosts send a device only once it asks
+    /// (`neighbour_wire::record_sync`), which they said they have none of,
+    /// or no host of the room is connected to ask: answered as
+    /// [`Reply::Absent`], no failure either, and a held `Await` wakes when
+    /// that changes.
+    Absent,
     Captured {
         revision: [u8; 32],
         /// The sorted heads `revision` names; empty when the owner does not
@@ -298,6 +304,10 @@ pub(super) struct Slot {
     /// The last revision this channel handed out whole or as changes (its
     /// last piece acknowledged), when its owner named the heads.
     delivered: Option<HeldRevision>,
+    /// Whether the last Open without a revision answered [`Reply::Absent`]
+    /// rather than [`Reply::Unavailable`]: what a held `Await` for `None`
+    /// holds.
+    absent: bool,
 }
 impl Slot {
     /// Close the channel once an unacknowledged capture outlived its
@@ -747,6 +757,7 @@ fn open_read(
     };
     context.revalidate()?;
     service.authorize(&context)?;
+    slot.absent = matches!(read, NativeDocumentRead::Absent);
     let (revision, body, heads, base) = match read {
         NativeDocumentRead::Unchanged(revision) => {
             return Ok((Reply::Unchanged { revision }, None));
@@ -754,7 +765,10 @@ fn open_read(
         // A record created by this Open is answered with its capture or
         // not at all; only an existing record may be read again later.
         NativeDocumentRead::Pending if created.is_none() => return Ok((Reply::Unavailable, None)),
-        NativeDocumentRead::Pending => return Err("created record capture unavailable".into()),
+        NativeDocumentRead::Absent if created.is_none() => return Ok((Reply::Absent, None)),
+        NativeDocumentRead::Pending | NativeDocumentRead::Absent => {
+            return Err("created record capture unavailable".into());
+        }
         NativeDocumentRead::Captured {
             revision,
             heads,
@@ -790,7 +804,8 @@ fn open_read(
 }
 
 /// Whether an Open for `known_revision` would answer exactly what the caller
-/// holds (`Unchanged` for that revision, `Unavailable` for `None`), with
+/// holds (`Unchanged` for that revision; for `None` `Absent` when `absent`,
+/// else `Unavailable`), with
 /// every check the Open makes, in its order: custody and admission
 /// (`context`), the owner's authorization, the read under the shared byte
 /// budget, then both checks again. `None` when the Open would answer
@@ -801,6 +816,7 @@ fn read_unchanged(
     budget: &Arc<Budget>,
     room: &str,
     known_revision: Option<[u8; 32]>,
+    absent: bool,
 ) -> Option<NativeDocumentReadContext> {
     if !service.requires_room(room) {
         return None;
@@ -810,7 +826,7 @@ fn read_unchanged(
     let unchanged = service
         .unchanged(&context, known_revision)
         .ok()?
-        .or_else(|| captured_unchanged(service, &context, budget, known_revision))?;
+        .or_else(|| captured_unchanged(service, &context, budget, known_revision, absent))?;
     context.revalidate().ok()?;
     service.authorize(&context).ok()?;
     unchanged.then_some(context)
@@ -824,6 +840,7 @@ fn captured_unchanged(
     context: &NativeDocumentReadContext,
     budget: &Arc<Budget>,
     known_revision: Option<[u8; 32]>,
+    absent: bool,
 ) -> Option<bool> {
     let _reservation = budget.reserve().ok()?;
     Some(
@@ -832,7 +849,8 @@ fn captured_unchanged(
             .ok()?
         {
             NativeDocumentRead::Unchanged(revision) => Some(revision) == known_revision,
-            NativeDocumentRead::Pending => known_revision.is_none(),
+            NativeDocumentRead::Pending => known_revision.is_none() && !absent,
+            NativeDocumentRead::Absent => known_revision.is_none() && absent,
             NativeDocumentRead::Captured { .. } | NativeDocumentRead::Changes { .. } => false,
         },
     )
@@ -978,12 +996,14 @@ impl CapnpChannelHandle {
     /// whether every input that can change that is announced or timed.
     fn committed_read_unchanged(&self, known_revision: Option<[u8; 32]>) -> Option<bool> {
         let service = self.state.services.committed_documents.clone()?;
+        let absent = self.committed_read.try_borrow().ok()?.absent;
         let context = read_unchanged(
             service.as_ref(),
             || self.document_read_context(),
             &self.state.committed_read_budget,
             &self.route().cluster_id,
             known_revision,
+            absent,
         )?;
         Some(self.register_read_expiry(&context, service.as_ref()))
     }

@@ -982,6 +982,7 @@ conversation-delivery-read = Gelesen
 conversation-delivery-failed = Nicht gesendet
 conversation-delivery-uncertain = Status unklar
 conversation-new-messages = Neue Nachrichten
+conversation-earlier-unavailable = Frühere Nachrichten sind auf den Hosts dieses Geräts nicht verfügbar
 conversation-attachment-open = Öffnen
 conversation-attachment-open-full-size = In voller Größe öffnen
 conversation-attachment-save = Speichern

@@ -2,12 +2,12 @@
 
 //! Reading back through a chain's parts on a device that joined late: it
 //! holds the head only, and a view opens earlier parts one at a time as its
-//! reader reaches the top, while an item looked for is searched for in
-//! them, and while something reads the parts back to one.
+//! reader reaches the top, and while an item looked for is searched for in
+//! them.
 
 use std::rc::Rc;
 
-use tilo_app::framework::{Chain, ChainList, ChainPager, ChainRow, Chained, Paged};
+use tilo_app::framework::{Chain, ChainList, ChainPager, ChainRow, Chained, Paged, PartArrival};
 use tilo_app::prelude::*;
 use tilo_app::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
 use tilo_app::tilo_resource::Collection;
@@ -142,14 +142,14 @@ fn texts(parts: &[(u64, Rc<LogPart>)]) -> Vec<(String, String)> {
 fn a_part_this_device_has_none_of_is_held_from_its_genesis_until_it_arrives() {
     let joined = Joined::new();
     assert_eq!(joined.held(), [2]);
-    assert!(!joined.chain.arriving(2), "the head arrived");
+    assert_eq!(joined.chain.waiting(2), None, "the head arrived");
     let seen = joined.chain.revision();
     joined.chain.hold(1).unwrap();
     assert_eq!(joined.held(), [1, 2]);
-    assert!(joined.chain.arriving(1));
+    assert_eq!(joined.chain.waiting(1), Some(PartArrival::Arriving));
     assert!(texts(&joined.chain.parts()[..1]).is_empty());
     joined.deliver(1);
-    assert!(!joined.chain.arriving(1));
+    assert_eq!(joined.chain.waiting(1), None);
     assert_ne!(joined.chain.revision(), seen);
     let lines: Vec<String> = texts(&joined.chain.parts())
         .into_iter()
@@ -206,17 +206,6 @@ fn an_item_looked_for_opens_earlier_parts_until_one_has_it() {
 }
 
 #[test]
-fn reaching_back_holds_the_parts_something_reads() {
-    let joined = Joined::new();
-    let mut pager = ChainPager::new(joined.chain.clone());
-    pager.reach_back_to(1);
-    assert_eq!(pager.settle(), Paged::Opened(1));
-    joined.deliver(1);
-    assert!(!pager.wants_settle(), "part 0 is not read");
-    assert_eq!(pager.settle(), Paged::Nothing);
-}
-
-#[test]
 fn a_chain_list_pages_back_when_its_first_row_shows() {
     let joined = Joined::new();
     let mut list = ChainList::new(joined.chain.clone(), texts);
@@ -248,4 +237,46 @@ fn a_chain_list_pages_back_when_its_first_row_shows() {
         Some(false)
     );
     assert_eq!(list.item(0).map(String::as_str), Some("line 0"));
+}
+
+/// The room's hosts sent everything they hold of a part asked for, without
+/// it (or none is connected): the view says the earlier lines are not
+/// available, nothing spins and nothing before it is asked for, until it
+/// arrives after all.
+#[test]
+fn a_part_the_room_has_none_of_shows_unavailable_until_it_arrives() {
+    let joined = Joined::new();
+    let mut list = ChainList::new(joined.chain.clone(), texts);
+    list.request_range(0..2);
+    assert_eq!(joined.held(), [1, 2]);
+    assert!(list.row_state(0).is_pending());
+
+    joined.reader.note_room_answered(LogPart::chain().part(1));
+    assert_eq!(joined.chain.waiting(1), Some(PartArrival::Unavailable));
+    assert!(list.poll_changed());
+    assert!(list.row_state(0).failure().is_some(), "said, not loading");
+    assert!(list.pager().unavailable());
+    assert!(list.pager().asked().is_none(), "nothing spins");
+    list.pager().reached_top();
+    assert!(!list.pager().wants_settle(), "nothing earlier is asked for");
+    assert_eq!(list.pager().settle(), Paged::Nothing);
+    assert_eq!(joined.held(), [1, 2]);
+
+    // Someone who has it shares it after all.
+    joined.deliver(1);
+    assert_eq!(joined.chain.waiting(1), None);
+    assert!(list.poll_changed());
+    assert!(list.row_state(0).is_pending(), "part 0 is still earlier");
+    assert_eq!(list.item(1).map(String::as_str), Some("line 3"));
+}
+
+/// A part looked for that the room has none of ends the search.
+#[test]
+fn an_item_looked_for_past_an_unavailable_part_is_not_found() {
+    let joined = Joined::new();
+    let mut pager = ChainPager::new(joined.chain.clone());
+    pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
+    assert_eq!(pager.settle(), Paged::Opened(1));
+    joined.reader.note_room_answered(LogPart::chain().part(1));
+    assert_eq!(pager.settle(), Paged::NotFound);
 }

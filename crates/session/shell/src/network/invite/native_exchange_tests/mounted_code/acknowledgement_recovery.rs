@@ -64,7 +64,9 @@ impl Gate {
                 tilo_automerge::ApplyIncoming::load_incoming(replica, body.bytes()).unwrap();
                 &*replica
             }
-            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Pending => return,
+            NativeDocumentRead::Unchanged(_)
+            | NativeDocumentRead::Pending
+            | NativeDocumentRead::Absent => return,
         };
         let mut expected = self.expected.lock().unwrap();
         if expected

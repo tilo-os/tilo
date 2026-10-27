@@ -12,21 +12,18 @@
 //!
 //! Read marks are positions in the chain, so they hold without the earlier
 //! parts: the "new messages" line goes before the first message after the
-//! reader's mark as it stood when they opened the channel, and the window
-//! holds the few parts between the head and the reader's marks so that the
-//! unread counts see them. A message a link or an agent names that no part
-//! held here has is looked for in earlier parts, opened in turn.
+//! reader's mark as it stood when they opened the channel, and the unread
+//! counts reach back to the mark through the counts each part carries of
+//! the ones before it ([`crate::parts::ChatPart::earlier`]), however long
+//! the reader was away, with nothing earlier held. A message a link or an
+//! agent names that no part held here has is looked for in earlier parts,
+//! opened in turn.
 
 use ui::framework::{ChainPager, Paged};
 use ui::tilo_resource::Id;
 
 use crate::app::ChatApp;
 use crate::parts::{ChatPart, ReadMark};
-
-/// How many parts behind the head the window holds for unread counts: a
-/// reader away longer than that sees what those parts hold counted, and
-/// the rest once they read back to it.
-const UNREAD_REACH: u64 = 2;
 
 /// Where the window stands reading back through the chat's parts.
 #[derive(Default)]
@@ -81,20 +78,6 @@ impl ChatApp {
         held: &crate::messages::Messages,
     ) {
         let back = &mut self.scrollback;
-        if let (Some(pager), Some(head)) = (&mut back.pager, held.head()) {
-            // A channel never read has no mark to reach back to.
-            let marks_from = chat
-                .read
-                .get(&self.me.id)
-                .into_iter()
-                .flat_map(|marks| marks.values())
-                .filter(|mark| **mark != ReadMark::default())
-                .map(|mark| u64::try_from(mark.part).unwrap_or_default())
-                .min();
-            if let Some(from) = marks_from {
-                pager.reach_back_to(from.max(head.saturating_sub(UNREAD_REACH)));
-            }
-        }
         let channel = self.active_channel.clone();
         if channel.is_empty() || self.direct_person.is_some() {
             back.opened = None;

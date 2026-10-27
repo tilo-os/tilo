@@ -539,6 +539,57 @@ impl App {
             .iter()
             .filter_map(|record| crate::record::RecordId::parse(record))
             .collect();
+        for store in &self.live_record_stores() {
+            store.announce(records.iter().cloned());
+        }
+        self.needs_sync = true;
+    }
+
+    /// The room's hosts have nothing of the on-demand record on `route`, or
+    /// none is connected: every store a live owner reads from is told
+    /// ([`crate::record::RecordStore::note_room_answered`]).
+    pub(super) fn record_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
+        let Some(id) = route
+            .record
+            .as_deref()
+            .and_then(crate::record::RecordId::parse)
+        else {
+            return;
+        };
+        for store in &self.live_record_stores() {
+            store.note_room_answered(id.clone());
+        }
+        self.needs_sync = true;
+    }
+
+    /// The committed history of a record no window holds arrived (an
+    /// on-demand record a store asked for and could not open yet): every
+    /// store a live owner reads from looks again
+    /// ([`crate::record::RecordStore::note_kept`]), and what asked for it
+    /// opens it.
+    pub(super) fn unheld_record_arrived(&mut self, route: &crate::collaboration::RouteSpec) {
+        let held = self
+            .document_routes
+            .owners
+            .iter()
+            .any(|entry| entry.route == *route);
+        if held
+            || !route
+                .record
+                .as_deref()
+                .and_then(crate::record::RecordId::parse)
+                .is_some_and(|id| id.arrives_on_demand())
+        {
+            return;
+        }
+        for store in &self.live_record_stores() {
+            store.note_kept();
+        }
+        self.needs_sync = true;
+    }
+
+    /// Every store a live document owner reads from, once each.
+    fn live_record_stores(&self) -> Vec<crate::record::RecordStore> {
         let mut stores: Vec<crate::record::RecordStore> = Vec::new();
         for owner in live_document_owners(self.root_widget.as_ref()) {
             let (store, _) = owner.store_checkout();
@@ -546,10 +597,7 @@ impl App {
                 stores.push(store.clone());
             }
         }
-        for store in &stores {
-            store.announce(records.iter().cloned());
-        }
-        self.needs_sync = true;
+        stores
     }
 
     pub(super) fn pump_document_routes(&mut self) {

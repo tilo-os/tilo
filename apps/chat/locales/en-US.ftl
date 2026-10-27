@@ -375,6 +375,7 @@ chat-feedback-hidden = { $kind ->
 chat-surface = Chat
 chat-surface-detail = Channels in the current Tilo workspace
 chat-messages = Messages
+chat-earlier-arriving = Earlier messages are on their way
 chat-add-channel = Add channel
 chat-create-menu = Create channel or category
 chat-composer = Message composer

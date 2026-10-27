@@ -1,8 +1,8 @@
 //! A device that joins a chat whose messages fill several parts: the room
 //! sends it the head only, and it reads back through the earlier parts.
 
-use ui::framework::Chain;
 use ui::framework::testing::TestApp;
+use ui::framework::{Chain, PartArrival};
 use ui::tilo_resource::Id;
 
 use crate::ChatShell;
@@ -169,7 +169,7 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view() {
     bo.harness().relayout();
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![1, 2]);
-    assert!(chain_of(&mut bo).arriving(1));
+    assert_eq!(chain_of(&mut bo).waiting(1), Some(PartArrival::Arriving));
     assert!(loading(&mut bo));
     let top = painted_at(&mut bo, "2.0").expect("the reader looks back at the head's first");
     // Nothing more is asked for while part 1 is on its way.
@@ -181,7 +181,7 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view() {
     ada.deliver_record_to(&mut bo, &crate::parts::part(1))
         .unwrap();
     bo.harness().relayout();
-    assert!(!chain_of(&mut bo).arriving(1));
+    assert_eq!(chain_of(&mut bo).waiting(1), None);
     let texts = shown(&mut bo);
     assert_eq!(texts.first().map(String::as_str), Some("1.0"));
     assert_eq!(texts.len(), 2 * per_part);
@@ -257,8 +257,10 @@ fn a_link_to_a_message_in_a_part_not_held_opens_parts_until_it_is_found() {
     );
 }
 
+/// A reader away for parts counts every message after their mark, from the
+/// counts the head carries of the parts before it, without holding them.
 #[test]
-fn a_joined_device_holds_the_parts_its_read_marks_are_in_for_unread_counts() {
+fn a_joined_device_counts_unread_across_parts_it_does_not_hold() {
     let mut ada = Window::on_device("ada").unwrap();
     let mut bo = Window::on_device("bo").unwrap();
     three_parts(&mut ada, 3);
@@ -283,19 +285,19 @@ fn a_joined_device_holds_the_parts_its_read_marks_are_in_for_unread_counts() {
         })
         .flatten()
     };
-    // The part the mark is in is opened, and on its way.
-    bo.harness().relayout();
-    assert_eq!(held(&mut bo), vec![1, 2]);
-    assert_eq!(unread(&mut bo), Some(3), "the head's three, so far");
-    ada.deliver_record_to(&mut bo, &crate::parts::part(1))
-        .unwrap();
     bo.harness().relayout();
     // Two after the mark in part 1, three in part 2; part 0 is not read.
     assert_eq!(unread(&mut bo), Some(5));
-    assert_eq!(held(&mut bo), vec![1, 2]);
+    assert_eq!(held(&mut bo), vec![2], "nothing earlier is held for it");
 
-    // Opening `#chat` marks where its unread messages start.
+    // Opening `#chat` reads back from its few messages; the line goes
+    // before the first unread one once its part is here.
     open_channel(&mut bo, CHAT_CHANNEL);
+    bo.harness().relayout();
+    assert_eq!(held(&mut bo), vec![1, 2]);
+    ada.deliver_record_to(&mut bo, &crate::parts::part(1))
+        .unwrap();
+    bo.harness().relayout();
     let first = bo
         .with_surface::<ChatApp, _>(|surface| {
             let id = surface.scrollback.first_unread.clone()?;
@@ -325,7 +327,8 @@ fn the_first_unread_message_follows_the_read_mark() {
         text(&messages, messages.first_unread(&general, mark)).as_deref(),
         Some("1.2")
     );
-    // Held from the head only, the line goes before the first message held
+    // Held from the head only, the count reaches back through what the head
+    // carries of part 1, and the line goes before the first message held
     // after the mark.
     let head = crate::messages::Messages::new(
         messages
@@ -335,9 +338,88 @@ fn the_first_unread_message_follows_the_read_mark() {
             .cloned()
             .collect(),
     );
-    assert_eq!(head.unread(&general, mark), 3);
+    assert_eq!(head.unread(&general, mark), 4);
     assert_eq!(
         text(&head, head.first_unread(&general, mark)).as_deref(),
         Some("2.0")
     );
+}
+
+/// A never-read channel counts its whole history, and a mark in the first
+/// part every message since, however few parts are held.
+#[test]
+fn unread_counts_reach_the_first_part_without_holding_it() {
+    let mut ada = Window::on_device("ada").unwrap();
+    let mut bo = Window::on_device("bo").unwrap();
+    let per_part = 4;
+    three_parts(&mut ada, per_part);
+    join(&mut ada, &mut bo);
+    // The head only, as the room sent it: what the window reads back to
+    // for its short channel is left out.
+    let messages = crate::messages::Messages::new(
+        chain_of(&mut bo)
+            .parts()
+            .into_iter()
+            .filter(|(index, _)| *index == 2)
+            .collect(),
+    );
+    let general = Id::from_raw(CHAT_CHANNEL);
+    assert_eq!(messages.unread(&general, ReadMark::default()), 3 * per_part);
+    assert_eq!(
+        messages.unread(&general, ReadMark { part: 0, seen: 1 }),
+        3 * per_part - 1
+    );
+    let archive = Id::from_raw(ARCHIVE);
+    let everywhere = crate::testing::mounted_messages(&mut ada);
+    assert_eq!(
+        messages.unread(&archive, ReadMark::default()),
+        everywhere.unread(&archive, ReadMark::default()),
+        "the long posts that filled the parts are counted as the writer counts them"
+    );
+}
+
+/// Part 0, which the room's hosts have none of: the timeline says earlier
+/// messages are not available, asks for nothing more and spins nothing,
+/// until it arrives after all.
+#[test]
+fn an_earlier_part_the_room_lacks_ends_in_a_final_state() {
+    let mut ada = Window::on_device("ada").unwrap();
+    let mut bo = Window::on_device("bo").unwrap();
+    three_parts(&mut ada, 2);
+    join(&mut ada, &mut bo);
+    bo.harness().relayout();
+    ada.deliver_record_to(&mut bo, &crate::parts::part(1))
+        .unwrap();
+    bo.harness().relayout();
+    bo.harness().relayout();
+    assert_eq!(held(&mut bo), vec![0, 1, 2]);
+    assert_eq!(chain_of(&mut bo).waiting(0), Some(PartArrival::Arriving));
+
+    bo.room_answered(crate::parts::part(0));
+    bo.harness().relayout();
+    let state = |bo: &mut Window| {
+        bo.with_surface::<ChatApp, _>(|surface| {
+            let pager = surface.scrollback.pager.as_ref().unwrap();
+            (
+                pager.unavailable(),
+                pager.asked().is_some(),
+                surface.reads_back(),
+            )
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        state(&mut bo),
+        (true, false, true),
+        "said, nothing spinning"
+    );
+    assert_eq!(chain_of(&mut bo).waiting(0), Some(PartArrival::Unavailable));
+    bo.harness().relayout();
+    assert_eq!(held(&mut bo), vec![0, 1, 2], "nothing more is asked for");
+
+    ada.deliver_record_to(&mut bo, &crate::parts::part(0))
+        .unwrap();
+    bo.harness().relayout();
+    assert_eq!(state(&mut bo), (false, false, false));
+    assert_eq!(shown(&mut bo), ["0.0", "0.1", "1.0", "1.1", "2.0", "2.1"]);
 }

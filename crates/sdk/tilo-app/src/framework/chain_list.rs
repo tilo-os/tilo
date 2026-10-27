@@ -5,27 +5,28 @@
 //! back to. A view of the chain opens the part before the oldest it holds
 //! when its reader comes to the top of what it shows, one part at a time:
 //! the next only once the last one opened is here. A part this device has
-//! none of is started from its genesis and arrives from the room
-//! ([`Chain::hold`]); until it has, the view reserves the place its items
-//! will take and shows them arriving ([`ChainPager::asked`]). The view keeps
-//! the item the reader looks at where it is while earlier ones come in
-//! above it.
+//! none of is asked of the room ([`Chain::hold`]); until it is here, the
+//! view reserves the place its items will take and shows them arriving
+//! ([`ChainPager::asked`]). When the room's hosts sent everything they hold
+//! without it, or none is connected, the place says the earlier items are
+//! not available, with nothing spinning ([`ChainPager::unavailable`]), until
+//! it arrives after all. The view keeps the item the reader looks at where
+//! it is while earlier ones come in above it.
 //!
-//! Two more reasons to read back, both the app's to give:
-//!
-//! - **An item looked for** that no part held here has (a link to an old
-//!   message): [`ChainPager::seek`] opens earlier parts in turn until one
-//!   has it, or the chain's first part did not.
-//! - **Parts something else reads** (the unread counts of a reader who was
-//!   away while parts filled): [`ChainPager::reach_back_to`] holds the
-//!   parts back to one.
+//! One more reason to read back is the app's to give: **an item looked
+//! for** that no part held here has (a link to an old message):
+//! [`ChainPager::seek`] opens earlier parts in turn until one has it, or the
+//! chain's first part did not. What a view counts across parts it does not
+//! hold (a reader's unread messages) a part carries of the ones before it
+//! ([`super::Chained::carry`]), so nothing is held for it.
 //!
 //! [`ChainPager`] is the mechanism, for a view that paints its own rows;
 //! [`ChainList`] is the same as a [`ListModel`] for a [`VirtualList`].
 //! Nothing here polls: the chain's [`Chain::revision`] moves, and the
 //! store wakes the window ([`ui_core::record::RecordStore::wake_on_arrival`]),
-//! when a part's history arrives, and opening a part waits for a pass where
-//! the app's records take writes ([`ChainPager::settle`]).
+//! when a part's history arrives or the room says it has none of it, and
+//! opening a part waits for a pass where the app's records take writes
+//! ([`ChainPager::settle`]).
 //!
 //! [`VirtualList`]: ui_core::widget::virtual_list::VirtualList
 
@@ -38,7 +39,7 @@ use tilo_resource::Resource;
 use ui_core::arriving::{Arrival, ArrivalClock, Source};
 use ui_core::widget::virtual_list::{ListModel, ListModelChange};
 
-use super::chain::{Chain, Chained};
+use super::chain::{Chain, Chained, PartArrival};
 
 /// What a settle pass of a [`ChainPager`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +63,6 @@ pub struct ChainPager<P: Chained> {
     chain: Chain<P>,
     /// The reader came to the top of what is held.
     wanted: bool,
-    /// Hold every part from this one on.
-    reach: Option<u64>,
     seeking: Option<Seek<P>>,
     /// When the part on its way was asked for, from the room.
     asked: Option<ArrivalClock>,
@@ -75,7 +74,6 @@ impl<P: Chained> ChainPager<P> {
         Self {
             chain,
             wanted: false,
-            reach: None,
             seeking: None,
             asked: None,
         }
@@ -86,32 +84,61 @@ impl<P: Chained> ChainPager<P> {
         &self.chain
     }
 
-    /// The oldest part held; `None` while nothing was written to the chain.
+    /// The oldest part held or asked for; `None` while nothing was written
+    /// to the chain.
     #[must_use]
     pub fn oldest(&self) -> Option<u64> {
-        self.chain.parts().first().map(|(index, _)| *index)
+        let held = self.chain.parts().first().map(|(index, _)| *index);
+        let asked = self.chain.waited().first().map(|(index, _)| *index);
+        held.into_iter().chain(asked).min()
     }
 
-    /// Whether the chain has parts before the oldest held.
+    /// Whether the chain has parts before the oldest held or asked for.
     #[must_use]
     pub fn has_earlier(&self) -> bool {
         self.oldest().is_some_and(|oldest| oldest > 0)
     }
 
-    /// Whether a held part is still on its way from the room.
+    /// Whether a part asked for is still on its way from the room.
     #[must_use]
     pub fn arriving(&self) -> bool {
-        self.chain
-            .parts()
-            .iter()
-            .any(|(index, _)| self.chain.arriving(*index))
+        self.waiting(PartArrival::Arriving)
     }
 
-    /// Whether the view shows earlier items as still to come above what it
-    /// holds: there are earlier parts, or one is on its way.
+    /// Whether a part asked for is not available from the room's hosts: it
+    /// is not coming until that changes, and nothing before it is asked
+    /// for.
+    #[must_use]
+    pub fn unavailable(&self) -> bool {
+        self.waiting(PartArrival::Unavailable)
+    }
+
+    /// Whether an earlier part asked for stands at `arrival`: one before
+    /// the newest part, which, still arriving itself, holds back reading
+    /// back without being earlier.
+    fn waiting(&self, arrival: PartArrival) -> bool {
+        let waited = self.chain.waited();
+        let held = self.chain.parts().last().map(|(index, _)| *index);
+        let newest = held
+            .into_iter()
+            .chain(waited.last().map(|(index, _)| *index))
+            .max();
+        waited
+            .iter()
+            .any(|(index, waiting)| *waiting == arrival && Some(*index) != newest)
+    }
+
+    /// Whether the view shows a place for earlier items above what it
+    /// holds: there are earlier parts, or one asked for is not here.
     #[must_use]
     pub fn loading(&self) -> bool {
-        self.has_earlier() || self.arriving()
+        self.has_earlier() || !self.chain.waited().is_empty()
+    }
+
+    /// Whether reading back waits on the room: a part is on its way, or
+    /// the room has none of one.
+    fn held_up(&self) -> bool {
+        !self.chain.waited().is_empty()
     }
 
     /// When the part on its way was asked for, and from where: what a
@@ -126,15 +153,9 @@ impl<P: Chained> ChainPager<P> {
     /// The reader came to the top of what is held: the next settle pass
     /// opens the part before.
     pub fn reached_top(&mut self) {
-        if self.has_earlier() && !self.arriving() {
+        if self.has_earlier() && !self.held_up() {
             self.wanted = true;
         }
-    }
-
-    /// Hold every part from `part` on (and keep holding them), one per
-    /// settle pass.
-    pub fn reach_back_to(&mut self, part: u64) {
-        self.reach = Some(self.reach.map_or(part, |reach| reach.min(part)));
     }
 
     /// Look for the item `found` names in the parts held, and open earlier
@@ -157,16 +178,13 @@ impl<P: Chained> ChainPager<P> {
         if self.seeking.is_some() {
             return !self.arriving();
         }
-        let Some(oldest) = self.oldest().filter(|oldest| *oldest > 0) else {
-            return false;
-        };
-        !self.arriving() && (self.wanted || self.reach.is_some_and(|reach| reach < oldest))
+        self.has_earlier() && !self.held_up() && self.wanted
     }
 
-    /// Open the part before the oldest held when the reader reached the top,
-    /// an item is looked for or the parts reached back to are not all held;
-    /// one at a time, once the last one opened arrived. Run where the app's
-    /// records take writes (a settle pass); anywhere else it waits.
+    /// Open the part before the oldest held when the reader reached the top
+    /// or an item is looked for; one at a time, once the last one opened
+    /// arrived. Run where the app's records take writes (a settle pass);
+    /// anywhere else it waits.
     pub fn settle(&mut self) -> Paged {
         if !self.chain.takes_changes() {
             return Paged::Nothing;
@@ -178,28 +196,28 @@ impl<P: Chained> ChainPager<P> {
             self.seeking = None;
             return Paged::Found;
         }
-        if parts.iter().any(|(index, _)| self.chain.arriving(*index)) {
+        if self.arriving() {
             return Paged::Nothing;
         }
-        let Some(oldest) = parts.first().map(|(index, _)| *index) else {
+        let Some(oldest) = self.oldest() else {
             return Paged::Nothing;
         };
-        if oldest == 0 {
+        // Nothing before a part the room has none of is asked for.
+        if oldest == 0 || self.unavailable() {
             self.wanted = false;
             if self.seeking.take().is_some() {
                 return Paged::NotFound;
             }
             return Paged::Nothing;
         }
-        let reach = self.reach.is_some_and(|reach| reach < oldest);
-        if !(self.wanted || self.seeking.is_some() || reach) {
+        if !(self.wanted || self.seeking.is_some()) {
             return Paged::Nothing;
         }
         self.wanted = false;
         let earlier = oldest.saturating_sub(1);
         match self.chain.hold(earlier) {
             Ok(()) => {
-                if self.chain.arriving(earlier) {
+                if self.chain.waiting(earlier).is_some() {
                     self.asked = Some(ArrivalClock::new(ui_core::time::now(), Source::host("")));
                 }
                 Paged::Opened(earlier)
@@ -226,7 +244,8 @@ type Rows<P, K, T> = Box<dyn Fn(&[(u64, Rc<<P as Resource>::State>)]) -> Vec<(K,
 
 /// A chain's items as a [`ListModel`]: every held part's items, oldest
 /// first, after a row standing for the earlier parts while there are any
-/// ([`ChainRow::Earlier`], pending while one is on its way). Showing that
+/// ([`ChainRow::Earlier`], pending while one is on its way, failed with
+/// why when the room's hosts have none of it). Showing that
 /// row opens the part before ([`ChainPager::reached_top`]); a
 /// [`VirtualList`](ui_core::widget::virtual_list::VirtualList) keeps the
 /// row the reader looks at in place as items come in above it.
@@ -236,6 +255,9 @@ pub struct ChainList<P: Chained, K, T> {
     items: Vec<(K, T)>,
     index: HashMap<K, usize>,
     earlier: bool,
+    /// Why the earlier parts' row shows no more, while the room's hosts
+    /// have none of the part before.
+    unavailable: Option<String>,
     seen: Option<u64>,
 }
 
@@ -252,6 +274,7 @@ impl<P: Chained, K: Clone + Eq + Hash + 'static, T> ChainList<P, K, T> {
             items: Vec::new(),
             index: HashMap::new(),
             earlier: false,
+            unavailable: None,
             seen: None,
         };
         list.read();
@@ -285,6 +308,10 @@ impl<P: Chained, K: Clone + Eq + Hash + 'static, T> ChainList<P, K, T> {
             .map(|(at, (key, _))| (key.clone(), at))
             .collect();
         self.earlier = self.pager.loading();
+        self.unavailable = self
+            .pager
+            .unavailable()
+            .then(ui_core::widget::conversation::EarlierUnavailableFace::label);
         true
     }
 }
@@ -318,6 +345,9 @@ impl<P: Chained, K: Clone + Eq + Hash + 'static, T> ListModel for ChainList<P, K
 
     fn row_state(&self, index: usize) -> Arrival<(), &str> {
         if self.earlier && index == 0 {
+            if let Some(why) = &self.unavailable {
+                return Arrival::Failed(why);
+            }
             let from = self
                 .pager
                 .asked()

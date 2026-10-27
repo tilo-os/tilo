@@ -548,6 +548,14 @@ pub enum NetEvent {
         device: PeerId,
         active: bool,
     },
+    /// A host of `ws` sent everything it retains of the on-demand
+    /// record on `channel` this device asked for ([`NetCmd::OpenRecord`]):
+    /// `frames` of it, which arrived before this as the room's documents do.
+    RecordOpened {
+        ws: WorkspaceId,
+        channel: [u8; 32],
+        frames: u32,
+    },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
@@ -598,6 +606,7 @@ impl NetEvent {
             Self::NotAdmitted { .. } => "NotAdmitted",
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
+            Self::RecordOpened { .. } => "RecordOpened",
             Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } => msg.kind(),
             Self::PersonalFabric { .. } => "PersonalFabric",
             Self::NearbyTransferProgress { .. } => "NearbyTransferProgress",
@@ -780,6 +789,12 @@ enum HostEvent {
     Member {
         device: [u8; 32],
         active: bool,
+    },
+    /// The host sent everything it retains of the on-demand record on
+    /// `channel`: `frames` of it.
+    RecordOpened {
+        channel: [u8; 32],
+        frames: u32,
     },
     Message {
         author: EndpointId,
@@ -1694,17 +1709,7 @@ impl ActorState {
                     tracing::debug!(ws, %error, "joined room replay not asked: not connected");
                 }
             }
-            Some(NetCmd::OpenRecord { ws, channel }) => {
-                if self.opened_records.entry(ws).or_default().insert(channel) {
-                    for ((session_ws, _), runtime) in &self.host_sessions {
-                        if *session_ws == ws
-                            && let Err(error) = runtime.session.open_record(channel)
-                        {
-                            tracing::debug!(ws, %error, "the room's host was not asked for a record");
-                        }
-                    }
-                }
-            }
+            Some(NetCmd::OpenRecord { ws, channel }) => self.open_record(ws, channel),
             Some(NetCmd::PublishLive { ws, frame }) => {
                 for ((session_ws, _), runtime) in &self.host_sessions {
                     if *session_ws == ws {
@@ -3351,6 +3356,7 @@ impl ActorState {
             HostEvent::Ready => "HostReady",
             HostEvent::Live { .. } => "HostLive",
             HostEvent::Member { .. } => "HostMember",
+            HostEvent::RecordOpened { .. } => "HostRecordOpened",
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
@@ -3360,6 +3366,11 @@ impl ActorState {
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
+            HostEvent::RecordOpened { channel, frames } => Some(NetEvent::RecordOpened {
+                ws,
+                channel,
+                frames,
+            }),
             HostEvent::Voice(event) => {
                 let session = self
                     .host_sessions
@@ -5000,8 +5011,9 @@ fn spawn_host_pump(
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
                 HostInbound::Member { device, active } => HostEvent::Member { device, active },
                 HostInbound::Voice(event) => HostEvent::Voice(event),
-                // The shell opens no on-demand record yet.
-                HostInbound::RecordOpened { .. } => continue,
+                HostInbound::RecordOpened { channel, frames } => {
+                    HostEvent::RecordOpened { channel, frames }
+                }
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;

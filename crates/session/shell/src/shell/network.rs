@@ -38,6 +38,8 @@ mod native_admission;
 mod native_admission_tests;
 mod native_enrollment;
 mod native_ingress;
+mod on_demand_records;
+pub(crate) use on_demand_records::OnDemand;
 #[cfg(test)]
 mod native_replay_budget_tests;
 mod own_devices;
@@ -1425,6 +1427,7 @@ pub struct ShellNetwork {
     /// Pairing links this computer made, and the new devices asking.
     device_approvals: device_approvals::State,
     record_content: record_content::State,
+    on_demand_records: on_demand_records::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -2354,6 +2357,7 @@ impl ShellNetwork {
             hosted_sites: hosted_sites::State::open(state_dir),
             device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
+            on_demand_records: on_demand_records::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
@@ -7188,10 +7192,16 @@ impl ShellNetwork {
                 device,
                 active,
             } => self.host_member(ws, host, device, active),
+            NetEvent::RecordOpened {
+                ws,
+                channel,
+                frames,
+            } => self.on_demand_record_opened(ws, channel, frames),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
                 }
+                self.on_demand_hosts_changed(ws);
                 self.record_content_sources_changed();
                 self.handle_host_ready(ws, peer);
                 self.room_relay_ready();
@@ -7232,8 +7242,12 @@ impl ShellNetwork {
                 if let Ok(mut direct) = self.workspace_control_direct.lock() {
                     direct.remove(&(ws, peer));
                 }
-                if let Ok(mut relays) = self.workspace_control_relays.lock() {
-                    relays.remove(&(ws, peer));
+                let host_left = self
+                    .workspace_control_relays
+                    .lock()
+                    .is_ok_and(|mut relays| relays.remove(&(ws, peer)));
+                if host_left {
+                    self.on_demand_hosts_changed(ws);
                 }
                 self.host_left(ws, peer);
                 self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerLeft {
@@ -9049,6 +9063,7 @@ pub(crate) fn shell_network_for_test(
         hosted_sites: hosted_sites::State::default(),
         device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),
+        on_demand_records: on_demand_records::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),

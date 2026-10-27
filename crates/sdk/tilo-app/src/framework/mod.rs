@@ -367,7 +367,7 @@ pub use app::launch_spec;
 pub use app::run;
 pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::{AttachedView, OpenView};
-pub use chain::{Chain, Chained};
+pub use chain::{Chain, Chained, PartArrival};
 pub use chain_list::{ChainList, ChainPager, ChainRow, Paged};
 pub use children::{ChildRecord, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};

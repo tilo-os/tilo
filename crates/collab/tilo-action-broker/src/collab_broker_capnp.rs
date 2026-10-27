@@ -7286,6 +7286,7 @@ impl CapnpBrokerState {
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::ChannelAccess { .. }
             | CollabEvent::CommittedDocument { .. }
+            | CollabEvent::RecordUnavailable { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
