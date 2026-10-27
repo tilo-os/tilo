@@ -1446,12 +1446,12 @@ fn e2e_narrow_window_bar_keeps_its_location_inside_its_field() {
     });
     let mut s = Scene::new();
     group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-    let Some(mut renderer) = OffscreenRenderer::try_new(480, 160).ok() else {
+    let Some(mut offscreen) = OffscreenRenderer::try_new(480, 160).ok() else {
         eprintln!("offscreen: no wgpu adapter — the narrow bar's golden was not compared");
         return;
     };
     let rendered = screenshots_dir().join("e2e-narrow-window-bar-deep-folder.png");
-    renderer.render_png(&s, theme.tokens.colors.surfaces.content, rendered.clone());
+    offscreen.render_png(&s, theme.tokens.colors.surfaces.content, rendered.clone());
     assert_png_nonempty(&rendered);
     SnapshotAssertion::new(
         rendered,
