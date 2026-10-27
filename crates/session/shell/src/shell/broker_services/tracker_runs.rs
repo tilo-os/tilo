@@ -239,6 +239,7 @@ fn run_of(id: &Id, issue: &Issue) -> Option<TrackerRun> {
         epoch: run.epoch,
         starter: run.starter.clone(),
         active: run.phase.active(),
+        paused_through: run.paused.as_ref().map(|paused| paused.through),
         budget: issue
             .budget
             .map(|budget| collab_types::task_budget::TaskExecutionBudget {

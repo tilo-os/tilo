@@ -69,6 +69,9 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "json"] }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false }
 
 agent-provider-config = { path = "../../agent/provider-config" }
+# The model gateway connection the report review binds, made by the shell on
+# the composer's behalf as a launcher makes one for an app.
+tilo-model-client = { path = "../../agent/model-client", default-features = false, features = ["runtime-client"] }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }

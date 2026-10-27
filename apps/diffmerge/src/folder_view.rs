@@ -78,19 +78,6 @@ pub fn paint(
     )
     .max(BadgeFace::height(theme))
         + f64::from(s.s3);
-    let (added, removed, modified) = comparison.counts();
-    let summary = t_args(
-        "folder-summary",
-        &[
-            ("left", comparison.left_label.as_str().into()),
-            ("right", comparison.right_label.as_str().into()),
-            ("added", count(added)),
-            ("removed", count(removed)),
-            ("modified", count(modified)),
-        ],
-    );
-    let cut = comparison.truncated.then(|| t("folder-truncated"));
-
     let viewport = Rect::new(area.x0, area.y0 + band_h, area.x1, area.y1);
     let content_height = comparison.entries.len() as f64 * row_h + f64::from(s.s2);
     let top = viewport.y0 - scroll;
@@ -134,11 +121,13 @@ pub fn paint(
     let badge_w = badge_column_width(ctx.text, theme, &badges);
     let meta: Vec<String> = comparison.entries.iter().map(entry_meta).collect();
     for (index, row) in &rows {
-        let entry = &comparison.entries[*index];
+        let (Some(entry), Some(meta)) = (comparison.entries.get(*index), meta.get(*index)) else {
+            continue;
+        };
         let mut face = ListRowFace::new(&entry.path)
             .leading(RowLeading::Badge(entry.kind.tag()))
             .leading_column(badge_w)
-            .meta(&meta[*index])
+            .meta(meta)
             .selected(*index == selected);
         if index + 1 < comparison.entries.len() {
             face = face.separator(false);
@@ -146,8 +135,32 @@ pub fn paint(
         face.paint(ctx, *row);
     }
     ctx.scene.pop_layer();
+    paint_summary(ctx, area, band_h, comparison);
+    FolderDraw {
+        rows,
+        content_height,
+        viewport,
+    }
+}
 
-    // The band above the rows: which two folders, and how much differs.
+/// The band above the rows, `band_h` tall at the top of `area`: which two
+/// folders, how much differs, and whether the listing was cut short.
+fn paint_summary(ctx: &mut PaintCtx<'_>, area: Rect, band_h: f64, comparison: &FolderComparison) {
+    let theme = ctx.theme;
+    let s = &theme.tokens.spacing;
+    let (added, removed, modified) = comparison.counts();
+    let summary = t_args(
+        "folder-summary",
+        &[
+            ("left", comparison.left_label.as_str().into()),
+            ("right", comparison.right_label.as_str().into()),
+            ("added", count(added)),
+            ("removed", count(removed)),
+            ("modified", count(modified)),
+        ],
+    );
+    let cut = comparison.truncated.then(|| t("folder-truncated"));
+
     let label_style = theme.text(TextRole::Subheading);
     ctx.text(
         &summary,
@@ -165,10 +178,5 @@ pub fn paint(
             Point::new(area.x1 - f64::from(s.s2) - width, area.y0 + band_h / 2.0),
             None,
         );
-    }
-    FolderDraw {
-        rows,
-        content_height,
-        viewport,
     }
 }

@@ -343,6 +343,7 @@ mod tests {
                 "agent-member:scribe:contributor",
                 "agent-member:scribe:contributor:comments",
                 "agent-member:scribe:contributor:no-governance",
+                "agent-member:scribe:contributor:reactions",
             ]
         );
     }
