@@ -22,8 +22,7 @@ use crate::svg::ImportSvg as SvgImport;
 
 /// The kind the artwork's typed references name, so a control binding one
 /// finds the action it publishes.
-pub(crate) const ARTWORK_KIND: tilo_resource::ResourceKind =
-    tilo_resource::ResourceKind::of::<Artwork>();
+pub const ARTWORK_KIND: tilo_resource::ResourceKind = tilo_resource::ResourceKind::of::<Artwork>();
 
 /// Parts of the artwork's verbs that controls bind.
 impl Artwork {

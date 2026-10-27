@@ -540,7 +540,7 @@ impl BluetoothArea {
                 .iter()
                 .map(|&id| {
                     EffectStatus::unavailable(
-                        ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                        ActionRef::<SettingsEffect, ()>::new(id, &[], SettingsEffect::kind()),
                         code,
                         reason,
                     )
