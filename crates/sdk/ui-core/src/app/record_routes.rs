@@ -620,7 +620,7 @@ mod tests {
     /// A holder of `route` whose route takes writes.
     fn holding_route(route: &RouteSpec) -> RouteDocument {
         let mut manager = CollaborationManager::connected_for_lifecycle_test();
-        manager.join_route(route.clone());
+        manager.join_route(route.clone(), crate::record::RecordKind::new(""));
         let held = RouteDocument::with_manager(manager, route.clone(), crate::WakeScope::new());
         let deadline = tilo_test_env::hang_deadline();
         while !held.publishable() {

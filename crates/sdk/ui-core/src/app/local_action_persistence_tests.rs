@@ -17,7 +17,6 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
             .owners
             .push(crate::history_mode::routes::OwnerRoute {
                 route: binding.broker_route().unwrap(),
-                record_kind: binding.checkout.kind.clone(),
                 owners: vec![crate::history_mode::HistoryOwner::component(
                     binding.clone(),
                 )],
