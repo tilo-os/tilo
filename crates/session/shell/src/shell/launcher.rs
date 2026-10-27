@@ -801,15 +801,18 @@ pub(crate) fn restart_on_new_build(package_id: &str) -> bool {
     if pids.is_empty() {
         return false;
     }
-    lock(&RESTARTING_ON_NEW_BUILD).insert(
-        package_id.to_owned(),
-        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
-    );
+    lock(&RESTARTING_ON_NEW_BUILD).insert(package_id.to_owned(), restart_deadline());
     #[cfg(any(test, target_os = "linux"))]
     for pid in pids {
         terminate_process_tree(pid);
     }
     true
+}
+
+/// When a restart on a new build stops being told apart from a crash.
+fn restart_deadline() -> Instant {
+    let now = Instant::now();
+    now.checked_add(RESTART_ON_NEW_BUILD_WITHIN).unwrap_or(now)
 }
 
 /// Whether `package_id`'s launch ended because [`restart_on_new_build`]
@@ -824,10 +827,7 @@ pub(crate) fn restarting_on_new_build(package_id: &str) -> bool {
 /// [`restart_on_new_build`] does, without a process to end.
 #[cfg(test)]
 pub(crate) fn mark_restarting_for_test(package_id: &str) {
-    lock(&RESTARTING_ON_NEW_BUILD).insert(
-        package_id.to_owned(),
-        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
-    );
+    lock(&RESTARTING_ON_NEW_BUILD).insert(package_id.to_owned(), restart_deadline());
 }
 
 #[cfg(any(test, target_os = "linux"))]

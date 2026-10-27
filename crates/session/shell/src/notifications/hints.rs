@@ -127,19 +127,13 @@ pub(super) fn parse_image_data(hints: &HashMap<String, OwnedValue>) -> Option<In
             .checked_mul(height as usize)?
             .checked_mul(4)?,
     );
-    for row in 0..height as usize {
-        let line = bytes.get(row * rowstride..row * rowstride + rowstride)?;
-        for pixel in 0..width as usize {
-            let at = pixel * channels;
-            let r = *line.get(at)?;
-            let g = *line.get(at + 1)?;
-            let b = *line.get(at + 2)?;
-            let a = if channels == 4 {
-                *line.get(at + 3)?
-            } else {
-                255
+    for line in bytes.chunks_exact(rowstride).take(height as usize) {
+        for pixel in line.chunks_exact(channels).take(width as usize) {
+            let [r, g, b, rest @ ..] = pixel else {
+                return None;
             };
-            rgba.extend_from_slice(&[r, g, b, a]);
+            let a = rest.first().copied().unwrap_or(255);
+            rgba.extend_from_slice(&[*r, *g, *b, a]);
         }
     }
     Some(IncomingImageData {
