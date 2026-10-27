@@ -5319,9 +5319,10 @@ name = "nested-session"
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 # A development desktop to run, not a lint gate: warnings stay warnings (clippy and the tests
 # gate them), so dead code somewhere on main does not cost everyone the nested session. The
-# env-runtime tree comes from the frozen RPM snapshot, so it is cached across commits.
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/trees" }
-needs = ["image-env-runtime-tree-x86_64"]
+# env-runtime tree is the one a run's dev images ship: built from the tree's own RPM package set,
+# so it is cached across every commit that leaves the package set alone.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
+needs = ["image-env-runtime-dev-tree-x86_64"]
 inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/nested-session/**"]
 requires = ["arch=x86_64"]
@@ -5624,9 +5625,10 @@ name = "nested-session-arm64"
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 # A development desktop to run, not a lint gate: warnings stay warnings (clippy and the tests
 # gate them), so dead code somewhere on main does not cost everyone the nested session. The
-# env-runtime tree comes from the frozen RPM snapshot, so it is cached across commits.
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/trees" }
-needs = ["image-env-runtime-tree-aarch64"]
+# env-runtime tree is the one a run's dev images ship: built from the tree's own RPM package set,
+# so it is cached across every commit that leaves the package set alone.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
+needs = ["image-env-runtime-dev-tree-aarch64"]
 inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/nested-session/**"]
 requires = ["arch=arm64"]
