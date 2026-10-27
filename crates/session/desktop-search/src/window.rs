@@ -88,7 +88,8 @@ impl Source for Actions<'_> {
         let mut rows: std::collections::HashMap<tilo_actions::ListedRow, usize> =
             std::collections::HashMap::new();
         for flat in &flat {
-            *rows.entry(flat.row()).or_default() += 1;
+            let count = rows.entry(flat.row()).or_default();
+            *count = count.saturating_add(1);
         }
         let browsing = needle.trim().is_empty();
         let count = i32::try_from(flat.len()).unwrap_or(i32::MAX);

@@ -49,13 +49,33 @@ impl WindowReading {
     /// Read what `window` publishes now, for tab `tab` of `app`.
     #[must_use]
     pub fn of(
-        window: &dyn ui::widget::Widget,
+        window: &ui::widget::TileHost,
         doc: &automerge::AutoCommit,
         tab: u64,
         app: String,
     ) -> Self {
-        let resources = ui::widget::published_resources(window, doc);
-        let providers = ui::widget::published_search_providers(window);
+        let ui::widget::WindowPublication {
+            resources,
+            providers,
+        } = window.window_search(doc);
+        Self::from_publication(resources, providers, tab, app)
+    }
+
+    /// What a window published, for tab `tab` of `app`.
+    #[must_use]
+    pub fn from_publication(
+        resources: Vec<tilo_actions::Resource>,
+        providers: Vec<Box<dyn ui::search::SearchProvider>>,
+        tab: u64,
+        app: String,
+    ) -> Self {
+        fn labels(resource: &tilo_actions::Resource, hasher: &mut impl Hasher) {
+            resource.id.as_str().hash(hasher);
+            resource.label.hash(hasher);
+            for child in &resource.children {
+                labels(child, hasher);
+            }
+        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         tab.hash(&mut hasher);
         providers.len().hash(&mut hasher);
@@ -68,13 +88,6 @@ impl WindowReading {
                 .availability
                 .is_available()
                 .hash(&mut hasher);
-        }
-        fn labels(resource: &tilo_actions::Resource, hasher: &mut impl Hasher) {
-            resource.id.as_str().hash(hasher);
-            resource.label.hash(hasher);
-            for child in &resource.children {
-                labels(child, hasher);
-            }
         }
         for resource in &resources {
             labels(resource, &mut hasher);

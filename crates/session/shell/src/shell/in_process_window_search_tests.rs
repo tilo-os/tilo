@@ -15,9 +15,9 @@ fn window_rows(
     use crate::shell::search::providers::focused_window::{FocusedWindowProvider, WindowReading};
     let provider = Rc::new(FocusedWindowProvider::default());
     let doc = automerge::AutoCommit::new();
-    let _lent = provider.lend(Some(WindowReading::of(
-        harness.root_widget(),
-        &doc,
+    let _lent = provider.lend(Some(WindowReading::from_publication(
+        ui::widget::published_resources(harness.root_widget(), &doc),
+        ui::widget::published_search_providers(harness.root_widget()),
         tab,
         app.into(),
     )));
@@ -137,4 +137,55 @@ fn an_apps_search_reads_its_window_and_runs_rows_there() {
             assert!(reads_well(row), "{:?} / {:?}", row.title, row.subtitle);
         }
     }
+}
+
+/// In the shell, an app's search opened over a window the shell mounts
+/// shows that window's rows: read from the window by the overlay host, with
+/// no broker to ask.
+#[test]
+fn the_shells_app_search_shows_what_its_window_offers() {
+    use crate::shell::window_actions::{Destination as Place, open_hosted};
+    let root = tempfile::tempdir().unwrap();
+    let apps = InProcessApps::at(
+        &root.path().join("profile"),
+        &root.path().join("profile").join("person"),
+        "test-person",
+    )
+    .unwrap();
+    let inputs =
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(root.path(), apps)
+            .unwrap();
+    let mut fb = crate::shell::frame::FrameBuilder::with_tree_and_inputs(
+        &crate::shell::state::WorkspaceTree::bootstrap_default(),
+        (1280, 800),
+        inputs,
+    );
+    let chrome = fb.chrome_handle();
+    let tab = open_hosted(
+        &mut chrome.borrow_mut(),
+        crate::shell::state::AppKind::Other("Notes".into()),
+        "Notes",
+        Place::Beside,
+    );
+    for _ in 0..10 {
+        fb.paint_settled();
+    }
+    let window = fb.host().active_app_host().map(|host| {
+        host.window_search(&automerge::AutoCommit::new())
+            .resources
+            .len()
+    });
+    fb.host_mut().open_app_search_for_shots(tab, "");
+    let mut doc = automerge::AutoCommit::new();
+    fb.host_mut()
+        .refresh_search_results_for_shots(&mut doc, &automerge::ROOT);
+    let rows = fb.host().search_rows_for_tests();
+    drop(fb);
+    assert!(
+        rows.iter()
+            .any(|(title, kind, provider)| title == "New note"
+                && *kind == crate::shell::search::ResourceKind::Action
+                && provider == crate::shell::search::providers::focused_window::PROVIDER_ID),
+        "the window's actions are listed (the window published {window:?} resources): {rows:?}"
+    );
 }
