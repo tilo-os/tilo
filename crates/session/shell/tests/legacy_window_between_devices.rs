@@ -71,30 +71,31 @@ async fn spawn_device() -> (
     (cmd_tx, ev_rx, addr)
 }
 
-async fn wait_joined(events: &mut mpsc::Receiver<NetEvent>) {
+async fn wait_joined(events: &mut mpsc::Receiver<NetEvent>) -> bool {
     tilo_test_env::within("devices met on the workspace topic", async {
         while let Some(event) = events.recv().await {
             if matches!(event, NetEvent::PeerJoined { .. }) {
-                return;
+                return true;
             }
         }
-        panic!("event channel closed before the other device joined");
+        false
     })
-    .await;
+    .await
 }
 
 /// Wait until this device has met `peer` itself: a device that meets
 /// another first would send `peer` a stream start before knowing it.
-async fn wait_joined_by(events: &mut mpsc::Receiver<NetEvent>, peer: iroh::EndpointId) {
+/// Whether it joined before the channel closed.
+async fn wait_joined_by(events: &mut mpsc::Receiver<NetEvent>, peer: iroh::EndpointId) -> bool {
     tilo_test_env::within("the device met that peer on the workspace topic", async {
         while let Some(event) = events.recv().await {
             if matches!(event, NetEvent::PeerJoined { peer: joined, .. } if joined == peer) {
-                return;
+                return true;
             }
         }
-        panic!("event channel closed before that peer joined");
+        false
     })
-    .await;
+    .await
 }
 
 /// A text-editor-like picture with a caret bar that moves every frame, so
@@ -231,10 +232,23 @@ async fn stream_a_window(who: Viewer) {
         .await
         .unwrap();
     // The host names the viewer in the stream start, so it must have met the
-    // viewer, not only the bystander that may join first.
-    wait_joined_by(&mut host_events, viewer_id).await;
-    wait_joined(&mut viewer_events).await;
-    wait_joined(&mut bystander_events).await;
+    // viewer, not only the bystander that may join first. A meeting that never
+    // happened still records the first picture (absent) and is judged below,
+    // so a run that never mounts its stream is not only a panic.
+    let met_viewer = wait_joined_by(&mut host_events, viewer_id).await;
+    let viewer_met = wait_joined(&mut viewer_events).await;
+    let bystander_met = wait_joined(&mut bystander_events).await;
+    let peers_met = if met_viewer && viewer_met && bystander_met {
+        None
+    } else {
+        report_first_picture(who, "-", "-", &FirstPicture::default());
+        Some((met_viewer, viewer_met, bystander_met))
+    };
+    assert_eq!(
+        peers_met, None,
+        "every device met the others before the window streamed (host met viewer, \
+         viewer met the host, bystander met the host)"
+    );
 
     // The viewer decodes what this machine decodes; the session picks the
     // codec both ends handle best, hardware first.
@@ -276,6 +290,9 @@ async fn stream_a_window(who: Viewer) {
     let mut producer = Some({
         let session = Arc::clone(&session);
         let host_cmd = host_cmd.clone();
+        // What the producer has sent so far, readable from the viewer's loop
+        // while it still runs: a frame that never arrived leaves the wait to
+        // run out, and that must not be a hang.
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut encode_times = Vec::new();
@@ -325,6 +342,14 @@ async fn stream_a_window(who: Viewer) {
     let mut previous_seq: Option<u64> = None;
     let mut early: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
     let mut pending: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
+    // The rest of the stream never arrived: the run ends here and the
+    // delivery asserts below judge it.
+    let mut never_arrived = false;
+    // How long the viewer waits for frames the host has already sent before
+    // it says they never arrived. This is delivery, not the timing the line
+    // records: a lost unit leaves a gap the rest of the stream cannot fill.
+    const DELIVERY_WAIT: Duration = Duration::from_secs(5);
+    let mut quiet_since = None;
     loop {
         if producer
             .as_ref()
@@ -333,7 +358,7 @@ async fn stream_a_window(who: Viewer) {
             host_report = producer.take().map(|p| p.join().unwrap());
         }
         // Done once every frame the host sent is accounted for; a frame lost
-        // on the way leaves the wait to run out instead.
+        // on the way leaves the viewer answering that it never came.
         let accounted = u32::try_from(latencies.len())
             .unwrap()
             .saturating_add(before_keyframe)
@@ -344,32 +369,26 @@ async fn stream_a_window(who: Viewer) {
         {
             break;
         }
+        let still_sending = host_report.is_none();
         // While the host still sends, look up now and then to see whether it
         // has finished; then wait out only a hang for the rest.
-        let wait = if host_report.is_some() {
-            tilo_test_env::hang_bound()
-        } else {
+        let wait = if still_sending {
             Duration::from_millis(250)
+        } else {
+            Duration::from_millis(50)
         };
         let Ok(Some(event)) = tokio::time::timeout(wait, viewer_events.recv()).await else {
-            if host_report.is_some() {
-                // The rest of the frames never arrived. Record the first
-                // picture as far as it got before the delivery asserts below
-                // judge the run, so the timing line is never missing.
-                report_first_picture(
-                    who,
-                    &encoder,
-                    &codec,
-                    &FirstPicture {
-                        waited: first_picture,
-                        decoded_ts: first_decoded_ts,
-                        sent_ts: first_sent_ts,
-                    },
-                );
-                break;
+            if still_sending {
+                continue;
             }
-            continue;
+            let quiet = *quiet_since.get_or_insert_with(Instant::now);
+            if quiet.elapsed() < DELIVERY_WAIT {
+                continue;
+            }
+            never_arrived = true;
+            break;
         };
+        quiet_since = None;
         let NetEvent::Msg { msg, .. } = event else {
             continue;
         };
@@ -470,6 +489,25 @@ async fn stream_a_window(who: Viewer) {
     let (sent, mut encode_times, first_sent_ts, encoded_bytes, streamed_for) = host_report
         .or_else(|| producer.take().map(|p| p.join().unwrap()))
         .expect("the host's producer ran");
+    // The first picture as far as it got, before the delivery asserts judge
+    // the run: a first-picture timing line missing from a failing run is what
+    // leaves a reader guessing.
+    report_first_picture(
+        who,
+        &encoder,
+        &codec,
+        &FirstPicture {
+            waited: first_picture,
+            decoded_ts: first_decoded_ts,
+            sent_ts: first_sent_ts,
+        },
+    );
+    assert!(
+        !never_arrived,
+        "the viewer stopped getting frames: received {received_before} of {sent} sent, \
+         awaiting_keyframe={awaiting_keyframe} before_keyframe={before_keyframe}",
+        received_before = latencies.len()
+    );
     assert_eq!(announced_tab, Some(TAB), "the stream names its tab");
 
     // Input on the viewer goes back to the host as window-local events; a
@@ -627,16 +665,6 @@ async fn stream_a_window(who: Viewer) {
     );
     // Rate and latency are printed above for a quiet machine to judge; on a
     // shared runner they measure the host's load, not the stream.
-    report_first_picture(
-        who,
-        &encoder,
-        &codec,
-        &FirstPicture {
-            waited: first_picture,
-            decoded_ts: first_decoded_ts,
-            sent_ts: first_sent_ts,
-        },
-    );
     assert_eq!(
         input_latencies.len(),
         usize::from(input_samples),
