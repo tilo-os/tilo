@@ -595,9 +595,7 @@ fn a_draft_or_a_saved_shortcut_duplicates_into_a_new_unsaved_variant() {
     assert_eq!(copy.program(), original.program());
     assert_ne!(copy.shortcut_id, original.shortcut_id);
     assert!(!copy.replaces_saved);
-    replica
-        .apply(Workbench::DUPLICATE_DRAFT.with(id.clone()))
-        .unwrap();
+    replica.apply(Workbench::DUPLICATE_DRAFT.with(id)).unwrap();
     assert!(
         replica
             .state()

@@ -4826,6 +4826,10 @@ fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
 /// A program's bell is visible: the pane flashes, and the flash asks for the
 /// frames that fade it. With the bell off it changes nothing — which is what
 /// a bell used to do even when it was on.
+#[allow(
+    clippy::float_cmp,
+    reason = "a bell that is off leaves the flash at exactly 0.0, untouched"
+)]
 #[test]
 fn the_bell_flashes_the_pane_when_it_is_turned_on() {
     use crate::preferences::{Bell, Preferences};

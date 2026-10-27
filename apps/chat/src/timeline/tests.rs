@@ -1,6 +1,7 @@
 //! What a frame of a long conversation lays out and draws, counted.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -284,7 +285,7 @@ fn a_received_message_lays_out_and_draws_only_its_row() {
     let ((), scopes) = ui::tilo_resource::profiling::observe(|| {
         frames.draw(&mut app);
     });
-    report.push_str(&format!("idle draw {:?} {scopes:?}\n", idle.elapsed()));
+    let _ = writeln!(report, "idle draw {:?} {scopes:?}", idle.elapsed());
     for i in 0..8 {
         let id = crate::testing::say(&mut doc, "u_milo", &channel, &format!("News {i}"));
         let started = std::time::Instant::now();
@@ -293,8 +294,9 @@ fn a_received_message_lays_out_and_draws_only_its_row() {
         let synced = started.elapsed();
         let ((counts, shown), draw_scopes) =
             ui::tilo_resource::profiling::observe(|| frames.draw(&mut app));
-        took.push((synced, started.elapsed() - synced));
-        report.push_str(&format!("sync {sync_scopes:?}\ndraw {draw_scopes:?}\n"));
+        let total = started.elapsed();
+        took.push((synced, total.checked_sub(synced).unwrap_or_default()));
+        let _ = writeln!(report, "sync {sync_scopes:?}\ndraw {draw_scopes:?}");
         assert!(shown.contains(&id), "the new message shows: {shown:?}");
         assert!(
             !app.take_structure_dirty(),

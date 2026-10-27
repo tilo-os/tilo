@@ -367,7 +367,9 @@ fn scoped_live_selection_rejects_substituted_sender_scope_recipient_and_revision
         displayed.starts_with("Message using"),
         "the bar's route picker names the selected route: {displayed}"
     );
-    assert!(displayed.contains("fixture-signal"));
+    // The route names its account as the person knows it, never its key.
+    assert!(displayed.contains("Personal"), "{displayed}");
+    assert!(!displayed.contains("fixture-signal"), "{displayed}");
     assert!(displayed.contains("+12025550123"));
     for (field, forged) in [
         ("account", "fixture-whatsapp"),

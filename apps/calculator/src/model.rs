@@ -418,11 +418,10 @@ impl Key {
             Key::Digit(_) | Key::Dot | Key::DoubleZero => KeyRole::Digit,
             Key::Equals => KeyRole::Equals,
             Key::Clear => KeyRole::Clear,
-            Key::Backspace | Key::Ins("+" | "-" | "*" | "/") => KeyRole::Operator,
             // The page key is navigation, not a function: it gets the
             // operator's lifted face so it reads as a place to go, not
             // another symbol to insert.
-            Key::Page(_) => KeyRole::Operator,
+            Key::Backspace | Key::Ins("+" | "-" | "*" | "/") | Key::Page(_) => KeyRole::Operator,
             _ => KeyRole::Function,
         }
     }

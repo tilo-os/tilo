@@ -410,6 +410,7 @@ impl Fixture {
                 epoch,
                 starter: hex::encode(self.native.certificate.user_public_key),
                 active: true,
+                paused_through: None,
                 budget: None,
                 subject: None,
                 model: None,

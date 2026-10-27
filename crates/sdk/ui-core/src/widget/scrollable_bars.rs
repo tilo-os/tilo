@@ -2,7 +2,10 @@
 //! shown and how it fades, the hover zone that keeps a thin thumb grabbable, the
 //! page-and-hold pacing, and the edge fades that say the content continues.
 
-use super::*;
+use super::{
+    Affine, FIT_EPS, HOLD_REPEAT_MS, HOVER_EXPAND, Instant, MIN_THUMB_LEN, PAGE_FRACTION, Rect,
+    ScrollAxis, Scrollable, deadline_after, f32_of_f64,
+};
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 use crate::widget::scrollbar::ScrollMetrics;

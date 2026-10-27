@@ -49,16 +49,23 @@
       "ink": "#25161b"
     }
   ],
+  "family": "Tilo Sans",
   "text": "#eff2f6",
   "dim": "#afb1b5",
-  "placeholder": "#84868a",
   "danger": "#e47c75",
+  "field_label": "#eff2f6",
   "field": "#1c1e21",
   "field_radius": 8.0,
-  "field_height": 40.0,
+  "field_height": 32.0,
+  "field_label_gap": 4.0,
   "avatar": 80.0,
   "initials_size": 32.0,
+  "initials_weight": 600,
   "name_size": 26.0,
+  "name_weight": 600,
   "body_size": 14.0,
-  "label_size": 13.0
+  "body_weight": 400,
+  "label_size": 13.0,
+  "label_weight": 500,
+  "label_line": 17.0
 }

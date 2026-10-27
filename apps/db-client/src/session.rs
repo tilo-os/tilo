@@ -269,7 +269,7 @@ impl Session {
         self.status = if self.active_connection().is_some_and(|c| c.is_sample) {
             RunStatus::Idle
         } else {
-            RunStatus::Ok(t_args("db-connected", &[("name", text(&name))]))
+            RunStatus::Ok(t_args("db-connected", &[("name", text(name))]))
         };
     }
 
