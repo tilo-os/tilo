@@ -1171,6 +1171,7 @@ mod tests {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             }]
         }
     }
@@ -1214,6 +1215,7 @@ mod tests {
                     })
                 })),
                 on_begin_invoke: None,
+                resource: None,
             }]
         }
     }
@@ -1412,6 +1414,7 @@ mod tests {
                         },
                     )))
                 })),
+                resource: None,
             }]
         }
     }

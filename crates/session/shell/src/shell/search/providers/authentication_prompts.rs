@@ -152,6 +152,7 @@ impl SearchProvider for AuthenticationPromptsProvider {
                 }),
                 on_invoke: Some(invoke),
                 on_begin_invoke: None,
+                resource: None,
             });
         }
         let fields: Vec<_> = rows

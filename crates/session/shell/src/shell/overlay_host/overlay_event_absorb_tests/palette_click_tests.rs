@@ -50,6 +50,7 @@ impl crate::shell::search::SearchProvider for ClickFixture {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 }
             })
             .collect()

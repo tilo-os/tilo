@@ -1979,6 +1979,7 @@ impl LiveAppActionsProvider {
                     })
                 })),
                 on_begin_invoke: None,
+                resource: None,
             };
         }
         let status_broker = lifecycle;
@@ -2010,6 +2011,7 @@ impl LiveAppActionsProvider {
                 })
             })),
             on_begin_invoke: None,
+            resource: None,
         }
     }
 
@@ -2620,6 +2622,7 @@ impl LiveAppActionsProvider {
                 );
                 Ok(InvocationDisposition::Pending(ticket))
             })),
+            resource: None,
         }
     }
 
@@ -2697,6 +2700,7 @@ impl LiveAppActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -3074,6 +3078,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             None => InvocationDisposition::Pending(ticket),
                         })
                     })),
+                    resource: None,
                 });
             }
         }
@@ -6229,6 +6234,7 @@ mod tests {
                 on_open: Rc::new(|_, _, _, _| Ok(())),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             };
 
             assert_eq!(
