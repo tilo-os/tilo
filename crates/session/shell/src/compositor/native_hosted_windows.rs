@@ -18,7 +18,8 @@ use super::{DesiredShares, MemberViewers, PersonalViewers, RoomHosts, all_hosts}
 /// machine's "active" workspace is nobody's screen, so every room counts; a
 /// room's windows go only to that room's hosts. A host republishes what it is
 /// shared to every member of its room, so a room whose layout is personal
-/// shares none of its windows with its hosts either.
+/// shares with its hosts only the windows shared with the room on purpose
+/// ([`crate::shell::state::WorkspaceTree::shared_windows`]).
 ///
 /// `personal` are the person's other devices showing a tab, by tab: a legacy
 /// window streams to each device showing its tab, in whichever workspace it
@@ -26,8 +27,9 @@ use super::{DesiredShares, MemberViewers, PersonalViewers, RoomHosts, all_hosts}
 ///
 /// `members` are the room members viewing a tab, by tab: a window streams to
 /// each member of its room who views it, read only, while the room shares
-/// its layout; a room whose layout is personal shares no window, so none
-/// of its windows streams to anyone but the person's own devices.
+/// its layout; a room whose layout is personal shares only the windows
+/// shared with it on purpose, so none of its other windows streams to
+/// anyone but the person's own devices.
 ///
 /// Each share comes with the room its tab is in, whose topic carries it.
 pub(super) fn desired_legacy_shares(
@@ -41,11 +43,10 @@ pub(super) fn desired_legacy_shares(
         return HashMap::new();
     }
     let hosts = all_hosts(viewer_hosts);
+    let now_ms = tilo_clock::unix_now_ms();
     let mut desired = HashMap::new();
     for workspace in &tree.desktop.workspaces {
         let active = workspace.id == tree.desktop.active;
-        // Each member's windows in a room whose layout is personal stay on
-        // their device: no host or member of the room is shown them.
         let shared_layout = !tree.room_layout(workspace.room()).is_personal();
         for tab in workspace
             .strips
@@ -56,6 +57,11 @@ pub(super) fn desired_legacy_shares(
             let crate::shell::state::TileContent::Foreign { app_id, surface_id } = &tab.tile else {
                 continue;
             };
+            // Each member's windows in a room whose layout is personal stay on
+            // their device: no host or member of the room is shown them, but
+            // for a window its person shared with the room.
+            let shared_layout =
+                shared_layout || tree.is_window_shared(workspace.room(), tab.id, now_ms);
             let mut peers = std::collections::HashSet::new();
             if active
                 && let Some(shared) = workspace
@@ -113,23 +119,29 @@ pub(super) fn desired_legacy_shares(
     desired
 }
 
-/// The rooms whose layouts are shared in which this session hosts a legacy
-/// window: their carriers are kept, so members that reach this device only
-/// through a room's relay view the windows there.
+/// The rooms in which this session hosts a legacy window the room is shown
+/// (every one while the room shares its layout, else those shared with it):
+/// their carriers are kept, so members that reach this device only through
+/// a room's relay view the windows there.
 pub(super) fn rooms_hosting_windows(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> std::collections::BTreeSet<tilo_desktop_model::RoomId> {
+    let now_ms = tilo_clock::unix_now_ms();
     tree.desktop
         .workspaces
         .iter()
-        .filter(|workspace| !tree.room_layout(workspace.room()).is_personal())
         .filter(|workspace| {
+            let shared_layout = !tree.room_layout(workspace.room()).is_personal();
             workspace
                 .strips
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
-                .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
+                .any(|tab| {
+                    matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. })
+                        && (shared_layout
+                            || tree.is_window_shared(workspace.room(), tab.id, now_ms))
+                })
         })
         .map(crate::shell::state::Workspace::room)
         .collect()
@@ -210,17 +222,21 @@ pub(super) fn shown_room_hosted_windows(
     String,
     neighbour_wire::SurfaceView,
 )> {
+    let now_ms = tilo_clock::unix_now_ms();
     let hosted = tree
         .desktop
         .workspaces
         .iter()
-        .filter(|workspace| !tree.room_layout(workspace.room()).is_personal())
         .flat_map(|workspace| {
+            let shared_layout = !tree.room_layout(workspace.room()).is_personal();
             workspace
                 .strips
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
+                .filter(move |tab| {
+                    shared_layout || tree.is_window_shared(workspace.room(), tab.id, now_ms)
+                })
                 .map(move |tab| (workspace.room(), tab))
         })
         .filter_map(|(room, tab)| match &tab.tile {
@@ -393,5 +409,126 @@ mod tests {
             desired_legacy_shares(&tree, true, &hosts, &nobody, &members).is_empty(),
             "a room whose layout is personal streams nothing to its hosts either"
         );
+    }
+
+    /// The boundary of a room whose layout is personal: none of a member's
+    /// windows streams to the room's members or hosts, however many view
+    /// it, but for the one the member shared with the room on purpose; and
+    /// that one only while the share lasts.
+    #[test]
+    fn in_a_personal_room_only_a_window_shared_on_purpose_streams_to_members_or_hosts() {
+        use crate::shell::network::RoomWindowViewer;
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
+        use automerge::transaction::Transactable as _;
+        use tilo_desktop_model::projection;
+        use tilo_desktop_model::window_share::{window_node, window_share_id};
+
+        let salt: u16 = 0x0A51;
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let (chat, notes) = (own(3), own(4));
+        let mut tree = WorkspaceTree::bootstrap_default_with_salt(salt);
+        let room = tree.desktop.workspaces[0].room();
+        tree.desktop.workspaces[0].strips.truncate(1);
+        tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
+            id: own(2),
+            tabs: [(chat, "so.tilo.chat", 31), (notes, "so.tilo.notes", 32)]
+                .into_iter()
+                .map(|(id, app, surface)| Tab {
+                    id,
+                    title: app.into(),
+                    tile: TileContent::Foreign {
+                        app_id: app.into(),
+                        surface_id: surface,
+                    },
+                    app_title: None,
+                })
+                .collect(),
+            active_tab: chat,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }];
+        let viewer = |peer: u64| RoomWindowViewer {
+            peer,
+            room,
+            width: 800,
+            height: 600,
+            decode_limits: std::collections::BTreeMap::new(),
+        };
+        // B (601) views both of A's windows, as a device that showed them
+        // would ask; the room's host (42) watches every room's windows.
+        let members = MemberViewers::from([(chat, vec![viewer(601)]), (notes, vec![viewer(601)])]);
+        let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
+        let nobody = std::collections::BTreeMap::new();
+
+        let room_text = room.to_string();
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, projection::ROOM_ID_KEY, room_text.as_str())
+            .unwrap();
+        doc.put(
+            automerge::ROOT,
+            projection::ROOM_LAYOUT_KEY,
+            projection::RoomLayout::Personal.id(),
+        )
+        .unwrap();
+        let owners = doc
+            .put_object(
+                automerge::ROOT,
+                projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .unwrap();
+        doc.put(&owners, format!("{salt:04x}"), hex::encode([0x5a; 32]))
+            .unwrap();
+        doc.commit();
+        tree.project_room_document_for_test(room, &doc);
+        assert!(
+            desired_legacy_shares(&tree, true, &hosts, &nobody, &members).is_empty(),
+            "no unshared window streams to a member or a host"
+        );
+
+        let mut policy = projection::room_policy_of(&doc, &room_text);
+        policy.grants.extend(
+            tilo_action_policy::share::share_grants(
+                &room_text,
+                "ana",
+                &window_share_id(notes),
+                &window_node(&room_text, "so.tilo.notes", notes),
+                tilo_action_policy::share::ShareAccess::View,
+            )
+            .unwrap(),
+        );
+        projection::project_room_policy(&mut doc, &policy).unwrap();
+        doc.commit();
+        tree.project_room_document_for_test(room, &doc);
+        let desired = desired_legacy_shares(&tree, true, &hosts, &nobody, &members);
+        assert!(
+            !desired.contains_key(&31),
+            "Chat, not shared, reaches nobody"
+        );
+        let (share, shared_room) = desired.get(&32).expect("the shared Notes streams");
+        assert_eq!(*shared_room, room);
+        assert_eq!(share.tab, notes);
+        assert_eq!(
+            share.viewers,
+            [601, 42].into(),
+            "to the member viewing it and the host"
+        );
+        assert_eq!(share.read_only, [601].into(), "the member only watches");
+        assert_eq!(
+            super::rooms_hosting_windows(&tree),
+            [room].into(),
+            "the room's carrier is kept for the shared window"
+        );
+
+        policy.grants.clear();
+        projection::project_room_policy(&mut doc, &policy).unwrap();
+        doc.commit();
+        tree.project_room_document_for_test(room, &doc);
+        assert!(
+            desired_legacy_shares(&tree, true, &hosts, &nobody, &members).is_empty(),
+            "once the share ends, nothing streams again"
+        );
+        assert!(super::rooms_hosting_windows(&tree).is_empty());
     }
 }

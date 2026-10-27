@@ -1,4 +1,5 @@
-//! The bar's "Controls your desktop" chip.
+//! The bar's status chips: "Controls your desktop", "Dev build · by …" and
+//! "Shared with …".
 //!
 //! A program running in an app (`tilo action` typed in a terminal) works in
 //! that app's workspace without asking; once the person lets it reach the
@@ -37,7 +38,166 @@ pub(super) struct DevBuildChip {
     painted: Option<Rect>,
 }
 
+/// Who can see a window its person shared with a workspace where each
+/// person lays out their own windows: the workspace, by name, and the people
+/// in it now, as the window's bar says while the window is in front.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SharedWith {
+    /// The workspace's name.
+    pub place: String,
+    /// The people in the workspace now who see the window, by presence id,
+    /// with their names: their faces stand after the chip.
+    pub people: Vec<(crate::permissions::UserId, String)>,
+}
+
+impl SharedWith {
+    fn label(&self) -> String {
+        crate::i18n!("tab-shared-with", "place" => self.place.as_str())
+    }
+}
+
+/// The bar's "Shared with …" mark: the windows shared with their workspace,
+/// and where the mark was last painted.
+#[derive(Debug, Default)]
+pub(super) struct SharedChip {
+    marks: std::collections::HashMap<u64, SharedWith>,
+    /// Where the mark was last painted.
+    painted: Option<Rect>,
+}
+
+/// How the faces of who can see a shared window stand: a window bar's.
+const SHARED_FACES: crate::presence::FaceStack = crate::presence::FaceStack::WINDOW;
+
 impl TabBar {
+    /// Mark `id` as a window shared with its workspace, seen by whom
+    /// `shared` names, or clear the mark. `true` when that changed what the
+    /// bar shows.
+    pub fn set_shared(&mut self, id: u64, shared: Option<SharedWith>) -> bool {
+        match shared {
+            Some(shared) => self.shared.marks.insert(id, shared.clone()) != Some(shared),
+            None => self.shared.marks.remove(&id).is_some(),
+        }
+    }
+
+    /// Who can see the window `id`, while it is shared.
+    pub fn shared_with(&self, id: u64) -> Option<&SharedWith> {
+        self.shared.marks.get(&id)
+    }
+
+    /// Where the "Shared with …" mark of the window in front stands, with
+    /// its label: the chip, then the faces of the people who see the window.
+    /// After the bar's other status chips. `None` when the window in front
+    /// is not shared, its app put slots in the row, a tab is being dragged,
+    /// or the run is too short for it.
+    pub fn shared_chip(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<(Rect, String)> {
+        let shared = self.shared.marks.get(&self.active_id)?;
+        if self.active_slots().is_some()
+            || self.pending_drag.is_some()
+            || self.tab_rects.len() != self.tabs.len()
+        {
+            return None;
+        }
+        let label = shared.label();
+        let tab_row = self.tab_row();
+        let x0 = match (
+            self.dev_build_chip(tr, theme),
+            self.desktop_control_chip(tr, theme),
+        ) {
+            (Some((before, _)), _) | (None, Some((before, _))) => before.x1 + TOOLBAR_LEAD_GAP,
+            (None, None) => self.status_chips_start() + TOOLBAR_LEAD_GAP,
+        };
+        let limit = self.tab_row_limit(tab_row);
+        let faces = if shared.people.is_empty() {
+            0.0
+        } else {
+            TOOLBAR_LEAD_GAP / 2.0 + SHARED_FACES.width(shared.people.len())
+        };
+        let width = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
+        let height = ChipFace::height(theme).max(SHARED_FACES.width(1).min(tab_row.height()));
+        (x0 + width + faces <= limit).then(|| {
+            (
+                Rect::from_origin_size(
+                    Point::new(x0, tab_row.center().y - height / 2.0),
+                    (width + faces, height),
+                ),
+                label,
+            )
+        })
+    }
+
+    /// Paint the mark where it stands: the chip naming the workspace, and
+    /// the faces of the people in it, each as they look everywhere.
+    pub(super) fn draw_shared_chip(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        self.shared.painted = None;
+        let Some((rect, label)) = self.shared_chip(tr, theme) else {
+            return;
+        };
+        let Some(shared) = self.shared.marks.get(&self.active_id) else {
+            return;
+        };
+        let chip_width = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
+        let chip_height = ChipFace::height(theme);
+        let chip = Rect::from_origin_size(
+            Point::new(rect.x0, rect.center().y - chip_height / 2.0),
+            (chip_width, chip_height),
+        );
+        ChipFace::new(chip, &label).paint(scene, transform, tr, theme);
+        if !shared.people.is_empty() {
+            let (shown, more) = SHARED_FACES.split(shared.people.len());
+            let faces: Vec<crate::presence::Face<'_>> = shared
+                .people
+                .iter()
+                .take(shown)
+                .map(|(user, name)| {
+                    let (red, green, blue) = presence.color_for(user);
+                    crate::presence::Face {
+                        is_agent: presence.is_agent(user),
+                        dimmed: presence.availability_of(user).dims(),
+                        ..crate::presence::Face::new(
+                            name,
+                            &user.0,
+                            vello::peniko::Color::from_rgb8(red, green, blue),
+                        )
+                    }
+                })
+                .collect();
+            SHARED_FACES.paint(
+                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+                (rect.x1, rect.center().y),
+                (&faces, more),
+                self.ground(theme),
+            );
+        }
+        self.shared.painted = Some(rect);
+    }
+
+    /// The mark as an assistive technology reads it: what it says, and who
+    /// sees the window.
+    pub(super) fn shared_access(&self) -> Option<AccessNode> {
+        let rect = self.shared.painted?;
+        let shared = self.shared.marks.get(&self.active_id)?;
+        let node = AccessNode::new(crate::a11y::Role::Label)
+            .with_name(shared.label())
+            .with_bounds(rect);
+        Some(if shared.people.is_empty() {
+            node
+        } else {
+            let names: Vec<&str> = shared
+                .people
+                .iter()
+                .map(|(_, name)| name.as_str())
+                .collect();
+            node.with_description(names.join(", "))
+        })
+    }
+
     /// Mark `id` as running a developer's build installed by `installer`,
     /// or clear the mark. `true` when that changed what the bar shows.
     pub fn set_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
@@ -225,3 +385,7 @@ impl TabBar {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "tabs_status_chips_tests.rs"]
+mod tests;

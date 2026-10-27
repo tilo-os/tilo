@@ -138,11 +138,15 @@ impl ShellNetwork {
     /// it go together, with any join into it still under way
     /// ([`crate::shell::native_workspace_owner::release_workspace_room`]).
     /// The room itself lives on with its governor and its other members.
+    /// The windows this device shared with the room stop being shared
+    /// first, at its host, while this device still holds the room to ask
+    /// as: a share never outlives its sharer's leaving.
     ///
     /// # Errors
     ///
     /// It is the last workspace, or the room's record cannot be changed.
     pub(crate) fn release_room(&self, room: RoomId) -> Result<(), String> {
+        self.end_window_shares(room);
         if let Some(enrollment) = self.enrolling_into(room)
             && let Err(error) = self.cancel_enrollment(enrollment)
         {
@@ -150,6 +154,21 @@ impl ShellNetwork {
         }
         let tree = self.tree.clone();
         crate::shell::native_workspace_owner::release_workspace_room(&tree, room)
+    }
+
+    /// Stop sharing every window this device shares with `room`, at its
+    /// host, as `tab.unshare` does. A share the host does not take back is
+    /// said in the log; leaving goes on all the same.
+    fn end_window_shares(&self, room: RoomId) {
+        let shares = self
+            .tree
+            .read()
+            .own_window_shares(room, tilo_clock::unix_now_ms());
+        for share in shares {
+            if let Err(error) = self.share_window(room, share.tab, &share.app_id, false) {
+                tracing::warn!(%room, tab = share.tab, %error, "a window shared with a room left is still shared");
+            }
+        }
     }
 
     /// The host of `room`, a room this device holds, stopped admitting this
