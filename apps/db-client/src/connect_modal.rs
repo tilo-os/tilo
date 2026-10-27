@@ -170,8 +170,9 @@ fn content(fields: &Fields) -> Element {
     )
     .with_style(SegmentedStyle::Segmented)
     .fill()
-    .with_id("db.modal.engine")
-    .on_change(move |index| chosen.choose(engine_at(index)));
+    .on_view("db.modal.engine", move |index| {
+        chosen.choose(engine_at(index));
+    });
     let form: Element = match fields.engine() {
         Engine::Sqlite => Box::new(sqlite_form(fields)),
         Engine::Postgres | Engine::MySql => Box::new(network_form(fields)),

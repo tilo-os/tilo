@@ -287,9 +287,8 @@ fn protocol_field(requests: &Requests, model: &FormModel) -> Field {
     let selected = kinds.iter().position(|k| *k == model.kind).unwrap_or(0);
     let segments = kinds.iter().map(|k| Segment::new(k.label())).collect();
     let queue_to = Rc::clone(requests);
-    let protocol = ToggleGroup::new(segments, selected)
-        .with_id("remote.form.protocol")
-        .on_change(move |index| {
+    let protocol =
+        ToggleGroup::new(segments, selected).on_view("remote.form.protocol", move |index| {
             if let Some(kind) = kinds.get(index) {
                 queue_to.borrow_mut().push(Action::SetKind(*kind));
             }
@@ -395,13 +394,11 @@ fn sign_in_fields(
         let selected = methods.iter().position(|a| *a == model.auth).unwrap_or(0);
         let segments = methods.iter().map(|a| Segment::new(a.label())).collect();
         let queue_to = Rc::clone(requests);
-        let auth = ToggleGroup::new(segments, selected)
-            .with_id("remote.form.auth")
-            .on_change(move |index| {
-                if let Some(method) = methods.get(index) {
-                    queue_to.borrow_mut().push(Action::SetAuth(*method));
-                }
-            });
+        let auth = ToggleGroup::new(segments, selected).on_view("remote.form.auth", move |index| {
+            if let Some(method) = methods.get(index) {
+                queue_to.borrow_mut().push(Action::SetAuth(*method));
+            }
+        });
         section = section.field(Field::new("Sign in with", auth).with_trailing_control());
     }
     let (label, placeholder) = match model.auth {
