@@ -2169,3 +2169,7 @@ package = "tilo-cli"
 # image's component manifest.
 inputs = ["os/components.toml"]
 readers = ["crates/system/tilo-cli/src/aliases.rs"]
+
+[[cargo-exempt]]
+file = "crates/dev/codebase-qualification/tests/qualification.rs"
+reason = "behind --features benchmark: measures this repository's whole working set on request, so no single changed file selects it"
