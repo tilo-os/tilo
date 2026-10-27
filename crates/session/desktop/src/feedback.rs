@@ -203,6 +203,7 @@ fn subject(tile: &TileContent, name: impl Fn(&str) -> Option<String>) -> Option<
         app,
         name,
         control: None,
+        record: None,
     })
 }
 
@@ -259,6 +260,7 @@ mod focus_tests {
                 app: "org.mozilla.firefox".into(),
                 name: String::new(),
                 control: None,
+                record: None,
             }),
             "a label can be a window title"
         );
@@ -268,6 +270,7 @@ mod focus_tests {
                 app: "org.mozilla.firefox".into(),
                 name: "Name of org.mozilla.firefox".into(),
                 control: None,
+                record: None,
             })
         );
         desktop.set_active_group(StripId(2), 11);

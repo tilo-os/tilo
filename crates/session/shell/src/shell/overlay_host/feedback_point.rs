@@ -20,6 +20,7 @@ impl ShellOverlayHost {
             app: app_id.to_owned(),
             name: self.app_label(app_id),
             control: None,
+            record: None,
         };
         self.feedback_point.picked(subject, point);
         self.bump_chrome();
