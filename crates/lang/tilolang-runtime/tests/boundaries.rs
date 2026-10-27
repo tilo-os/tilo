@@ -684,9 +684,17 @@ view count(bag: Bag) {
         assert_eq!(held, row_keys(&view, &list));
         built_in_order(&view, &list, &held);
 
-        // Another filter: the rows that stay are kept, the others leave.
+        // Another filter: rows of another query, which the host reads anew; the list builds
+        // the rows it shows.
         choose(&view, "is:open");
         let chosen = view.poll_patches().unwrap();
+        assert!(
+            chosen
+                .iter()
+                .any(|p| matches!(p, Patch::Insert { node, .. } if node.key == list)),
+            "the host reads the rows anew: {chosen:?}"
+        );
+        assert!(chosen.len() < 10, "no step per row: {chosen:?}");
         follow(&view, &list, &mut held, &chosen);
         assert_eq!(held, row_keys(&view, &list));
         assert_eq!(held.len(), 27, "{chosen:?}");

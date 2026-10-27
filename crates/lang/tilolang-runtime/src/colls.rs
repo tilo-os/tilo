@@ -73,8 +73,8 @@ impl CollSeen {
         // Read whole, it depends on the collection's field instead.
         self.whole
             || self.len.is_none_or(|len| len == listing.len())
-                && self.first.holds(listing.first().as_ref())
-                && self.last.holds(listing.last().as_ref())
+                && self.first.holds_in(|| listing.first())
+                && self.last.holds_in(|| listing.last())
                 && self
                     .at
                     .iter()
@@ -112,11 +112,13 @@ pub(crate) enum End {
 }
 
 impl End {
-    /// Whether the end still has the item seen, `now` being the item there now.
-    fn holds(&self, now: Option<&Rc<str>>) -> bool {
+    /// Whether the end still has the item seen, `now` reading the item there now: read only
+    /// when an item was seen there, so a collection whose length alone was seen reads none of
+    /// its items.
+    fn holds_in(&self, now: impl FnOnce() -> Option<Rc<str>>) -> bool {
         match self {
             Self::Unread => true,
-            Self::Read(seen) => seen.as_ref() == now,
+            Self::Read(seen) => *seen == now(),
         }
     }
 }
@@ -232,9 +234,10 @@ impl Core {
                 seen.at.push((i, id));
             }
         }
-        // A filtered collection read whole still depends on what it saw item by item: an item
-        // changing whether it is in is no change to the collection's field.
-        if seen.sweep == len && len > 0 && coll.filter.is_none() {
+        // A filtered or ordered collection read whole still depends on what it saw item by
+        // item: an item changing whether it is in, or where, is no change to the collection's
+        // field.
+        if seen.sweep == len && len > 0 && !coll.derived() {
             seen.whole = true;
             seen.at = Vec::new();
             vs.reads.push((seen.resource.clone(), coll.field.clone()));
@@ -313,7 +316,7 @@ impl Core {
     /// A message when the store cannot list the collection.
     pub(crate) fn coll_items(&self, coll: &Rc<CollRef>) -> Result<Vec<Value>, String> {
         let listing = self.coll_listing(coll)?;
-        if coll.filter.is_some() {
+        if coll.derived() {
             self.saw(coll, Read::Len(listing.len()), listing.len());
             for (i, id) in listing.iter().enumerate() {
                 self.saw(coll, Read::At(i, id), listing.len());
