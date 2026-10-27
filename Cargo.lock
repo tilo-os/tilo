@@ -14702,6 +14702,8 @@ dependencies = [
 name = "settings-sections"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
+ "desktop-policy",
  "serde",
  "serde_json",
  "settings-store",

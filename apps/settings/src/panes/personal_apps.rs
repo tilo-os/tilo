@@ -5,10 +5,9 @@
 //! here: it is contextual and belongs to the shell's Workspace Settings.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
-use serde::{Deserialize, Serialize};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
@@ -37,35 +36,16 @@ const MAX_KIND_ROWS: usize = 256;
 /// The most apps one kind lists.
 const MAX_APP_ROWS: usize = 128;
 
-/// The person's default apps, as their settings hold them.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
-pub struct DefaultApps {
-    /// The app each kind of file or link opens with, by the kind's id
-    /// (`ext:pdf`, `mime:text/html`, `scheme:https`).
-    #[serde(default)]
-    #[model(readonly)]
-    pub handlers: BTreeMap<String, String>,
-}
+pub use crate::prefs::DefaultApps;
 
-impl ui::storage::SettingsSchema for DefaultApps {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
-}
-
-#[ui::tilo_resource::resource(kind = "settings.default-apps", label = "Default apps")]
-impl DefaultApps {}
-
-impl DefaultApps {
-    fn personal(&self) -> PersonalDefaults {
-        PersonalDefaults {
-            handlers: self
-                .handlers
-                .iter()
-                .filter_map(|(kind, app)| Some((stored_kind(kind)?, app.clone())))
-                .collect(),
-        }
+/// The defaults `apps` holds, by the kinds they are kept for.
+fn personal(apps: &DefaultApps) -> PersonalDefaults {
+    PersonalDefaults {
+        handlers: apps
+            .handlers
+            .iter()
+            .filter_map(|(kind, app)| Some((stored_kind(kind)?, app.clone())))
+            .collect(),
     }
 }
 
@@ -222,7 +202,7 @@ impl DefaultAppsArea {
     }
 
     fn make_rows(&self, prefs: &DefaultApps) -> Vec<LiveRow> {
-        let defaults = prefs.personal();
+        let defaults = personal(prefs);
         let candidates = self.candidates();
         let resolver = DefaultAppResolver::new(candidates);
         kinds(candidates)
@@ -354,7 +334,7 @@ impl PersonalAppsPane {
     /// Show the app that opens each kind now: the person's choice, else the
     /// one the resolver picks — which is shown, not stored.
     fn show(&self) {
-        let defaults = self.prefs.get().personal();
+        let defaults = personal(self.prefs.get());
         let resolver = DefaultAppResolver::new(&self.candidates);
         for (kind, state) in &self.shown {
             let current = resolver
