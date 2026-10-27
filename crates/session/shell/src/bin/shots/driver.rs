@@ -2008,6 +2008,8 @@ impl ShellDriver {
             "palette_in_app_query" => self.scene_palette_in_app_query(),
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
+            "palette_ask_agent" => self.scene_palette_ask_agent(true),
+            "palette_ask_agent_no_model" => self.scene_palette_ask_agent(false),
             "palette_typed" => self.scene_palette_typed(),
             "palette_rechner" => self.scene_palette_query("rechner"),
             "palette_sum" => self.scene_palette_query("2+2"),
@@ -2371,6 +2373,43 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Search for something nothing here matches, in a workspace whose
+    /// agent "Tide" has a model (`model`) or none: asking the agent leads,
+    /// or says why it cannot and follows searching the web.
+    fn scene_palette_ask_agent(&mut self, model: bool) {
+        if model {
+            use agent_provider_config::{
+                ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
+            };
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+            profile.models = vec![ModelDescriptor::new("small")];
+            profile.default_model = Some("small".into());
+            let config = ProviderConfig {
+                default_profile: Some(profile.id.clone()),
+                profiles: vec![profile],
+                ..ProviderConfig::default()
+            };
+            // This run's private settings (`main` isolates them).
+            if let Err(error) = config.save() {
+                eprintln!("shots: ask-agent could not choose a model: {error}");
+            }
+        }
+        {
+            let chrome = self.chrome_handle();
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            if let Some(workspace) = tree.desktop.active_workspace_mut() {
+                let owner = workspace.owner().cloned().unwrap_or_default();
+                workspace.admit_agent_preset(
+                    "Tide",
+                    tilo_action_policy::roles::AgentPreset::Operator,
+                    &tilo_action_policy::Subject::person(owner),
+                );
+            }
+        }
+        self.scene_palette_query("what changed in the Q3 numbers");
     }
 
     /// Search answering one typed query, for the queries search used to get

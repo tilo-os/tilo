@@ -21,6 +21,10 @@ impl ShellDriver {
         "palette_app_query",
         "palette_records",
         "palette_no_results",
+        // Before `palette_ask_agent`, which chooses a model in this run's
+        // settings.
+        "palette_ask_agent_no_model",
+        "palette_ask_agent",
         "palette_rechner",
         "palette_sum",
         "palette_move",
