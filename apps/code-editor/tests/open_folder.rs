@@ -19,6 +19,17 @@ fn project_folder() -> tempfile::TempDir {
 /// The sidebar's Open folder, shown while no project is open.
 const OPEN_FOLDER: &str = "empty-state:No folder open";
 
+/// Click the sidebar's Open folder, naming what can be clicked if it is not
+/// there.
+fn click_open_folder(app: &mut TestApp<CodeEditorShell>) {
+    let harness = app.harness();
+    if let Err(error) = harness.click_named(OPEN_FOLDER) {
+        let mut targets: Vec<_> = harness.targets().into_keys().collect();
+        targets.sort();
+        panic!("the sidebar offers Open folder: {error}; targets: {targets:?}");
+    }
+}
+
 fn shows(app: &mut TestApp<CodeEditorShell>, name: &str) -> bool {
     app.harness()
         .inspection_json()
@@ -36,9 +47,7 @@ fn open_folder_picks_a_folder_and_shows_its_tree() {
     let mut app = TestApp::<CodeEditorShell>::new().unwrap();
     app.settle();
     assert!(!shows(&mut app, "Cargo.toml"), "no project is open yet");
-    app.harness()
-        .click_named(OPEN_FOLDER)
-        .unwrap_or_else(|error| panic!("the sidebar offers Open folder: {error}"));
+    click_open_folder(&mut app);
     app.settle();
 
     let asked = recorder.pick_requests();
@@ -65,7 +74,7 @@ fn a_picker_that_cannot_open_is_told_in_plain_words() {
 
     let mut app = TestApp::<CodeEditorShell>::new().unwrap();
     app.settle();
-    app.harness().click_named(OPEN_FOLDER).unwrap();
+    click_open_folder(&mut app);
     app.settle();
 
     let said = format!("Couldn't open a folder. {reason}");
