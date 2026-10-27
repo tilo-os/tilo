@@ -903,16 +903,14 @@ fn sweep_rest(
 ) {
     // A window whose model wakes it for every frame never rests: that is
     // the finding, not something to measure hovers over.
-    let mut frames = 0_usize;
-    while app.wake_pending() {
-        assert!(
-            frames < 10_000,
-            "{label}: the window's model wakes it for every frame and it never rests"
-        );
+    for _ in 0..10_000 {
+        if !app.wake_pending() {
+            let _ = damage.take();
+            return;
+        }
         sweep_frame(app, scene, damage);
-        frames += 1;
     }
-    let _ = damage.take();
+    panic!("{label}: the window's model wakes it for every frame and it never rests");
 }
 
 /// Move the pointer to the middle of `to` and run the frames that follow.
