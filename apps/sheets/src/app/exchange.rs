@@ -1,6 +1,11 @@
 //! Getting a workbook in and out of the app: the chooser and its bounds, the tables a file decodes into, the import that becomes a durable action stream, and the export that writes one back.
 
-use super::*;
+use super::{
+    CellFormat, Interchange, Invoke, MAX_CSV_MATERIALIZED_SLOTS, MAX_IMPORT_CELLS,
+    MAX_IMPORT_FILE_BYTES, PathBuf, PendingReveal, SheetsApp, Workbook, file_label, formula,
+    import_source, infer_entry, sheet_name_from_path, spreadsheet_export_request,
+    spreadsheet_import_request, verbs,
+};
 
 impl SheetsApp {
     /// Import a spreadsheet file into new sheets: the one at `path`, or the
@@ -410,7 +415,7 @@ impl SheetsApp {
     #[cfg(test)]
     pub(super) fn import_tables(
         &mut self,
-        doc: &mut Edits<'_>,
+        doc: &mut ui::widget::Edits<'_>,
         tables: Vec<crate::xlsx::SheetTable>,
     ) -> Result<usize, String> {
         let (invoke, total) = self.import_action(tables, None, None)?;

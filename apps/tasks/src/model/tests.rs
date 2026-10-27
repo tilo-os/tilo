@@ -8,7 +8,7 @@
 use ui::tilo_resource::{Id, Replica};
 
 use crate::model::{
-    Imported, ImportedMessage, MessageKind, Question, RunOutcome, RunPhase, Status, Tracker,
+    Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, Status, Tracker,
     agent_assignee, tracker,
 };
 
@@ -622,7 +622,7 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
     agent
         .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
-            issue: issue.clone(),
+            issue,
             spent: 1_200,
         }))
         .unwrap();
@@ -640,4 +640,143 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
     assert_eq!(invoker.actor, AGENT);
     assert_eq!(invoker.kind, ui::tilo_actions::ActorKind::Agent);
     assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
+}
+
+/// The run of `issue`, as a replica of `replica` reads it.
+fn run_of(replica: &Replica<Tracker>, issue: &Id) -> Run {
+    replica
+        .state()
+        .unwrap()
+        .issues
+        .get(issue)
+        .and_then(|issue| issue.run.clone())
+        .expect("the issue has a run")
+}
+
+#[test]
+fn a_paused_run_takes_no_step_until_a_person_lets_it_go_on_from_its_boundary() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Tidy the docs");
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    agent.sync_with(&mut person).unwrap();
+    let report = |text: &str| {
+        Tracker::REPORT_RUN.with(tracker::ReportRun {
+            issue: issue.clone(),
+            phase: RunPhase::Executing,
+            text: Some(text.into()),
+        })
+    };
+    let pause = || {
+        Tracker::PAUSE_RUN.with(tracker::PauseRun {
+            issue: issue.clone(),
+        })
+    };
+    let resume = || {
+        Tracker::RESUME_RUN.with(tracker::ResumeRun {
+            issue: issue.clone(),
+        })
+    };
+    agent.apply(report("Tidying")).unwrap();
+    // The person sees the step its agent reported before pausing it, so the
+    // pause records where the run goes on from.
+    person.sync_with(&mut agent).unwrap();
+    assert_eq!(run_of(&person, &issue).phase, RunPhase::Executing);
+
+    assert!(
+        agent.apply(pause()).is_err(),
+        "an agent does not pause its own run"
+    );
+    assert!(person.apply(resume()).is_err(), "no run is paused yet");
+    // A message sent before the pause is part of the run: it exists at the
+    // boundary the pause records.
+    person
+        .apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
+            issue: issue.clone(),
+            text: "Keep the headings".into(),
+        }))
+        .unwrap();
+    person.apply(pause()).unwrap();
+    assert!(
+        person.apply(pause()).is_err(),
+        "a paused run is not paused again"
+    );
+
+    person.sync_with(&mut agent).unwrap();
+    let run = run_of(&agent, &issue);
+    assert_eq!(
+        run.phase,
+        RunPhase::Executing,
+        "a paused run keeps its step"
+    );
+    assert!(run.phase.active(), "a paused run is still going");
+    let paused = run.paused.expect("the boundary is recorded");
+    assert_eq!(
+        paused.phase(),
+        Some(RunPhase::Executing),
+        "it goes on in the step a person paused"
+    );
+    assert_eq!(paused.through, 1);
+    assert!(
+        agent.apply(report("Carrying on")).is_err(),
+        "a paused run takes no new step"
+    );
+    assert!(
+        agent
+            .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+                issue: issue.clone(),
+                outcome: RunOutcome::Done,
+                summary: None,
+            }))
+            .is_err(),
+        "a paused run does not end itself"
+    );
+
+    // It goes on in the step it stopped in.
+    person.apply(resume()).unwrap();
+    person.sync_with(&mut agent).unwrap();
+    let run = run_of(&agent, &issue);
+    assert_eq!(run.phase, RunPhase::Executing);
+    assert!(
+        run.paused.is_none(),
+        "it goes on where it stopped, and is no longer paused"
+    );
+    agent.apply(report("Carrying on")).unwrap();
+}
+
+#[test]
+fn stopping_a_paused_run_ends_it_and_leaves_what_it_did() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Tidy the docs");
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    person
+        .apply(Tracker::PAUSE_RUN.with(tracker::PauseRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    person
+        .apply(Tracker::STOP_RUN.with(tracker::StopRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let state = person.state().unwrap();
+    let stopped = state.issues.get(&issue).unwrap();
+    assert_eq!(stopped.status, Status::Todo);
+    let run = stopped.run.as_ref().unwrap();
+    assert_eq!(run.phase, RunPhase::Stopped);
+    assert!(run.paused.is_none(), "a stopped run is not still paused");
 }

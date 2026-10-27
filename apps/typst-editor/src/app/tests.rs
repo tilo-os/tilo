@@ -990,7 +990,7 @@ fn the_bar_marks_an_unsaved_document_until_it_is_saved() {
     let file = app.state().files.ids().next().expect("a file").clone();
     let source = Workspace::paths().files.item(&file).source;
     app.with_surface::<TypstApp, _>(|view| {
-        assert!(!view.unsaved(), "a document nobody typed in is not unsaved")
+        assert!(!view.unsaved(), "a document nobody typed in is not unsaved");
     })
     .unwrap();
 
@@ -1018,7 +1018,7 @@ fn the_bar_marks_an_unsaved_document_until_it_is_saved() {
         .unwrap();
     app.settle();
     app.with_surface::<TypstApp, _>(|view| {
-        assert!(!view.unsaved(), "the source as written is not unsaved work")
+        assert!(!view.unsaved(), "the source as written is not unsaved work");
     })
     .unwrap();
 }
@@ -1042,7 +1042,12 @@ fn the_windows_search_finds_in_the_source() {
     app.editor.reveal(0);
     let first = found[0].clone();
     assert_eq!(app.editor.caret(), first.end);
-    let line = body[..first.start].bytes().filter(|b| *b == b'\n').count() + 1;
+    let line = body
+        .bytes()
+        .take(first.start)
+        .filter(|b| *b == b'\n')
+        .count()
+        + 1;
     assert_eq!(app.caret_line_col().0, line, "the caret is on its line");
     // Closing the search stops painting the matches.
     app.editor.clear_find();

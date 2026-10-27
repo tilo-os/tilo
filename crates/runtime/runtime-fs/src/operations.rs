@@ -6610,7 +6610,14 @@ pub(super) mod tests {
         drop(disk);
         drop(meta);
     }
-    fn changed_after_source_fingerprint(change: &str) {
+    /// How a child of the tree changes after its fingerprint was taken.
+    #[derive(Clone, Copy, Debug)]
+    enum ChildChange {
+        Added,
+        Replaced,
+        Modified,
+    }
+    fn changed_after_source_fingerprint(change: ChildChange) {
         let f = Fixture::new();
         fs::create_dir(f.source("tree")).unwrap();
         fs::write(f.source("tree/a"), b"verified bytes").unwrap();
@@ -6624,13 +6631,12 @@ pub(super) mod tests {
         let release = Release(barrier.clone());
         barrier.entered();
         match change {
-            "added" => fs::write(f.source("tree/new"), b"never copied").unwrap(),
-            "replaced" => {
+            ChildChange::Added => fs::write(f.source("tree/new"), b"never copied").unwrap(),
+            ChildChange::Replaced => {
                 fs::rename(f.source("tree/a"), f.source("held")).unwrap();
                 fs::write(f.source("tree/a"), b"replacement bytes").unwrap();
             }
-            "modified" => fs::write(f.source("tree/a"), b"changed in place").unwrap(),
-            _ => unreachable!(),
+            ChildChange::Modified => fs::write(f.source("tree/a"), b"changed in place").unwrap(),
         }
         drop(release);
         let updates = drain(&mut job);
@@ -6638,16 +6644,25 @@ pub(super) mod tests {
         assert!(item(&updates).destination.is_some());
         assert_eq!(fs::read(f.dest("tree/a")).unwrap(), b"verified bytes");
         match change {
-            "added" => assert_eq!(fs::read(f.source("tree/new")).unwrap(), b"never copied"),
-            "replaced" => assert_eq!(fs::read(f.source("tree/a")).unwrap(), b"replacement bytes"),
-            "modified" => assert_eq!(fs::read(f.source("tree/a")).unwrap(), b"changed in place"),
-            _ => unreachable!(),
+            ChildChange::Added => {
+                assert_eq!(fs::read(f.source("tree/new")).unwrap(), b"never copied");
+            }
+            ChildChange::Replaced => {
+                assert_eq!(fs::read(f.source("tree/a")).unwrap(), b"replacement bytes");
+            }
+            ChildChange::Modified => {
+                assert_eq!(fs::read(f.source("tree/a")).unwrap(), b"changed in place");
+            }
         }
     }
     #[test]
     fn fix1_a_child_changed_after_the_fingerprint_is_retained() {
-        for change in ["added", "replaced", "modified"] {
-            eprintln!("case: {change} child after fingerprint");
+        for change in [
+            ChildChange::Added,
+            ChildChange::Replaced,
+            ChildChange::Modified,
+        ] {
+            eprintln!("case: {change:?} child after fingerprint");
             changed_after_source_fingerprint(change);
         }
     }

@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use crate::{ChatApp, identity::LocalIdentity};
 
 /// The chat surface over `doc` for `identity`, editing as them, as a host
@@ -1502,9 +1504,10 @@ fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
             .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
             .collect();
         scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
-        report.push_str(&format!(
-            "key {key:?}: handled in {elapsed:?}; scopes (name, calls, us): {scopes:?}\n"
-        ));
+        let _ = writeln!(
+            report,
+            "key {key:?}: handled in {elapsed:?}; scopes (name, calls, us): {scopes:?}"
+        );
         for _ in 0..8 {
             if !frame.poll_frame().unwrap() {
                 break;
@@ -1572,9 +1575,10 @@ fn a_new_message_leaves_the_window_at_rest() {
             .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
             .collect();
         scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
-        report.push_str(&format!(
-            "message {index}: posted and drawn in {posted:?}, then frames {frames:?}; scopes: {scopes:?}\n"
-        ));
+        let _ = writeln!(
+            report,
+            "message {index}: posted and drawn in {posted:?}, then frames {frames:?}; scopes: {scopes:?}"
+        );
         assert_eq!(
             frame.rebuilt_frames(),
             rebuilt,

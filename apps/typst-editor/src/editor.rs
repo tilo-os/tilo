@@ -97,8 +97,9 @@ impl ui::widget::Findable for SourceEditor {
         };
         self.current = Some(index);
         let text = self.text().to_owned();
-        let line = text[..found.start.min(text.len())]
+        let line = text
             .bytes()
+            .take(found.start)
             .filter(|byte| *byte == b'\n')
             .count()
             + 1;

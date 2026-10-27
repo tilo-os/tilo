@@ -529,14 +529,27 @@ pub const ATTENDED_TAG: &str = "tilo.attended";
 /// this scope.
 pub const OWN_DEVICE_SCOPE: &str = "tilo.scope.own-device";
 
+/// The contract tag of an action that changes a record of the invoking
+/// person's own (their contact directory, a settings section of theirs),
+/// carried out on that record rather than on the room's document. Only the
+/// host of that person changes it, and only for them, so a room's grants
+/// and roles have nothing to decide: it needs only what reading needs
+/// ([`ActionContract::need`]). What it does stays its
+/// [`kind`](ActionContract::kind): a change Undo takes back is still
+/// [`Undoable`](ActionKind::Undoable), and asks nothing before it runs.
+pub const OWN_RECORD_SCOPE: &str = "tilo.scope.own-record";
+
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContract {
     #[serde(default)]
     pub availability: Availability,
     /// What the action is able to do: read, change only the document, or
-    /// reach outside it. Grants are given by kind, so every door decides by
-    /// this and the action's place in the published tree.
+    /// reach outside it. Whether Undo takes it back and whether it asks
+    /// first follow from it. What a grant must allow is its
+    /// [`need`](Self::need), which every door decides with the action's
+    /// place in the published tree: the kind, unless the action's scope
+    /// reaches nothing a room governs ([`Self::scoped`]).
     #[serde(default = "undoable")]
     pub kind: ActionKind,
     /// The one field of its resource the action writes, when it writes only
@@ -653,21 +666,32 @@ impl Default for ActionContract {
 }
 
 impl ActionContract {
-    /// What an invocation needs when its value does not say otherwise.
+    /// What an invocation needs when its value does not say otherwise: its
+    /// kind, [`scoped`](Self::scoped).
     #[must_use]
     pub fn need(&self) -> ActionNeed {
-        ActionNeed {
-            // An outside effect on the person's own device reaches nothing
-            // a room's grants govern ([`OWN_DEVICE_SCOPE`]), and one they
-            // attend is their own decision ([`ATTENDED_TAG`]).
-            kind: if self.kind == ActionKind::Outside && self.runs_on_invokers_device() {
-                ActionKind::Read
-            } else {
-                self.kind
-            },
+        self.scoped(ActionNeed {
+            kind: self.kind,
             field: self.field.clone(),
             privileged: self.risk == RiskLevel::Privileged,
+        })
+    }
+
+    /// The authority `need` asks of a room once this action's scope is
+    /// accounted for. The kind says what the action does (whether Undo takes
+    /// it back, whether it asks first); the need says what a grant must
+    /// allow, and the scope is where they part: a change of the person's own
+    /// record ([`OWN_RECORD_SCOPE`]) and an outside effect on the person's
+    /// own device ([`OWN_DEVICE_SCOPE`], [`ATTENDED_TAG`]) reach nothing a
+    /// room's grants govern, so they need only what reading needs.
+    #[must_use]
+    pub fn scoped(&self, mut need: ActionNeed) -> ActionNeed {
+        if self.is_own_record()
+            || (need.kind == ActionKind::Outside && self.runs_on_invokers_device())
+        {
+            need.kind = ActionKind::Read;
         }
+        need
     }
 
     /// Safe defaults for a presentation-only operation.
@@ -713,6 +737,21 @@ impl ActionContract {
     /// nothing shared. See [`OWN_DEVICE_SCOPE`].
     pub fn is_own_device(&self) -> bool {
         self.tags.iter().any(|tag| tag == OWN_DEVICE_SCOPE)
+    }
+
+    /// Whether the action changes a record of the invoking person's own.
+    /// See [`OWN_RECORD_SCOPE`].
+    pub fn is_own_record(&self) -> bool {
+        self.tags.iter().any(|tag| tag == OWN_RECORD_SCOPE)
+    }
+
+    /// Mark the action as carried out on a record of the invoking person's
+    /// own: it keeps its kind and needs only what reading needs. See
+    /// [`OWN_RECORD_SCOPE`].
+    pub fn set_own_record(&mut self) {
+        if !self.is_own_record() {
+            self.tags.push(OWN_RECORD_SCOPE.to_owned());
+        }
     }
 
     /// Whether the action needs its person attending. See [`ATTENDED_TAG`].

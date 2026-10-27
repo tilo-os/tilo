@@ -18,9 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{
-    ActionError, ActionInvoker, ActionKind, ActionNeed, EncodedAction, OperationKind,
-};
+use tilo_actions::{ActionError, ActionInvoker, EncodedAction, OperationKind};
 use tilo_resource::{Fields, Resource};
 use ui_core::storage::SettingsSchema;
 
@@ -184,11 +182,12 @@ pub(crate) fn route(
 
 /// The document action `spec` carried out on the record `record`.
 pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
-    route_operation(spec, RECORD_ACTION_TYPE, record)
-        // The room's roles do not reach a record of the person's own: the
-        // host lets only its person change it.
-        .of_kind(ActionKind::Read)
-        .with_need_of(|_| ActionNeed::of(ActionKind::Read))
+    let mut spec = route_operation(spec, RECORD_ACTION_TYPE, record);
+    // The room's roles do not reach a record of the person's own: the host
+    // lets only its person change it. It keeps its kind, so a change Undo
+    // takes back still runs at once and offers Undo.
+    spec.contract.set_own_record();
+    spec
 }
 
 /// The document action `spec` carried out as the operation `operation` on

@@ -1,6 +1,10 @@
 //! What a press, a wheel or a key does: the targets the last paint recorded, the cell menu and its rows, the annotation cards, the palette and chrome clicks, and the clipboard chords a keyboard sends.
 
-use super::*;
+use super::{
+    Addr, AnnotationClick, CellFormat, CellMenuRow, ChartKind, CommandEntry, ContextMenu, Edits,
+    ElementState, Id, Invoke, Modifiers, MouseButton, MouseScrollDelta, ObjId, PaletteRouteCtx,
+    Point, Rect, Row, SettingsPanel, SheetsApp, Widget, WindowEvent, Workbook, span, verbs,
+};
 
 impl SheetsApp {
     pub(super) fn annotation_click_from_target(&self, target: &str) -> Option<AnnotationClick> {
@@ -719,6 +723,39 @@ impl SheetsApp {
         false
     }
 
+    /// Ctrl+F and Ctrl+H open the window bar's search for find and replace,
+    /// unless a field or dialog of the sheet owns the keys. Whether the key
+    /// was taken.
+    pub(super) fn route_find_shortcut(
+        &mut self,
+        key: &winit::event::KeyEvent,
+        event_ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let ctrl =
+            event_ctx.modifiers.state().control_key() || event_ctx.modifiers.state().super_key();
+        let shift = event_ctx.modifiers.state().shift_key();
+        if key.state == ElementState::Pressed
+            && ctrl
+            && !self.palette.is_open()
+            && self.settings_panel == SettingsPanel::None
+            && self.name_box_edit.is_none()
+            && self.tab_rename.is_none()
+            && let winit::keyboard::Key::Character(character) = &key.logical_key
+        {
+            if character.eq_ignore_ascii_case("f") && !shift {
+                self.open_find(ui::window_toolbar::SearchOpening::Find);
+                *event_ctx.handled = true;
+                return true;
+            }
+            if character.eq_ignore_ascii_case("h") {
+                self.open_find(ui::window_toolbar::SearchOpening::Replace);
+                *event_ctx.handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
     /// One cell-menu command. Structural edits reach the workbook as a single
     /// verb with the range's count or rows, so undo takes the whole change
     /// back in one step; cell contents and formats go through the app's
@@ -740,111 +777,12 @@ impl SheetsApp {
             CellMenuRow::Paste => {
                 self.paste(doc);
             }
-            CellMenuRow::InsertRowsAbove => {
-                let count = span(r0, r1);
-                self.submit(
-                    doc,
-                    Workbook::INSERT_ROWS.with(verbs::InsertRows {
-                        sheet,
-                        at: r0.saturating_add(1),
-                        count: Some(count),
-                    }),
-                );
-                self.reload();
-                self.status = format!(
-                    "Inserted {} above row {}",
-                    if count == 1 {
-                        "row".to_owned()
-                    } else {
-                        format!("{count} rows")
-                    },
-                    r0.saturating_add(1)
-                );
-            }
-            CellMenuRow::InsertRowsBelow => {
-                let count = span(r0, r1);
-                let at = r1.saturating_add(2);
-                self.submit(
-                    doc,
-                    Workbook::INSERT_ROWS.with(verbs::InsertRows {
-                        sheet,
-                        at,
-                        count: Some(count),
-                    }),
-                );
-                self.reload();
-                self.status = format!(
-                    "Inserted {} below row {}",
-                    if count == 1 {
-                        "row".to_owned()
-                    } else {
-                        format!("{count} rows")
-                    },
-                    r1.saturating_add(1)
-                );
-            }
-            CellMenuRow::DeleteRows => {
-                let rows: Vec<u32> = (r0..=r1).map(|r| r.saturating_add(1)).collect();
-                let count = rows.len();
-                self.submit(
-                    doc,
-                    Workbook::DELETE_ROWS.with(verbs::DeleteRows { sheet, rows }),
-                );
-                self.reload();
-                self.status = format!(
-                    "Deleted {}",
-                    if count == 1 {
-                        "row".to_owned()
-                    } else {
-                        format!("{count} rows")
-                    }
-                );
-            }
-            CellMenuRow::InsertColumnsLeft => {
-                let count = span(c0, c1);
-                let at = crate::model::col_to_letters(c0);
-                self.submit(
-                    doc,
-                    Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
-                        sheet,
-                        at: at.clone(),
-                        count: Some(count),
-                    }),
-                );
-                self.reload();
-                self.status = format!("Inserted {count} column(s) left of {at}");
-            }
-            CellMenuRow::InsertColumnsRight => {
-                let count = span(c0, c1);
-                let at = crate::model::col_to_letters(c1.saturating_add(1));
-                self.submit(
-                    doc,
-                    Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
-                        sheet,
-                        at: at.clone(),
-                        count: Some(count),
-                    }),
-                );
-                self.reload();
-                self.status = format!("Inserted {count} column(s) right of {at}");
-            }
-            CellMenuRow::DeleteColumns => {
-                let columns: Vec<String> = (c0..=c1).map(crate::model::col_to_letters).collect();
-                let count = columns.len();
-                self.submit(
-                    doc,
-                    Workbook::DELETE_COLUMNS.with(verbs::DeleteColumns { sheet, columns }),
-                );
-                self.reload();
-                self.status = format!(
-                    "Deleted {}",
-                    if count == 1 {
-                        "column".to_owned()
-                    } else {
-                        format!("{count} columns")
-                    }
-                );
-            }
+            CellMenuRow::InsertRowsAbove => self.insert_rows_above(doc, sheet, (r0, r1)),
+            CellMenuRow::InsertRowsBelow => self.insert_rows_below(doc, sheet, (r0, r1)),
+            CellMenuRow::DeleteRows => self.delete_rows(doc, sheet, (r0, r1)),
+            CellMenuRow::InsertColumnsLeft => self.insert_columns_left(doc, sheet, (c0, c1)),
+            CellMenuRow::InsertColumnsRight => self.insert_columns_right(doc, sheet, (c0, c1)),
+            CellMenuRow::DeleteColumns => self.delete_columns(doc, sheet, (c0, c1)),
             CellMenuRow::ClearContents => {
                 let writes: Vec<(Addr, String, Option<CellFormat>)> = self
                     .grid
@@ -862,6 +800,123 @@ impl SheetsApp {
             CellMenuRow::ClearFormat => self.clear_format(doc),
         }
         self.pending.redraw = true;
+    }
+
+    /// Insert rows above the selection.
+    fn insert_rows_above(&mut self, doc: &mut Edits<'_>, sheet: Id, (r0, r1): (u32, u32)) {
+        let count = span(r0, r1);
+        self.submit(
+            doc,
+            Workbook::INSERT_ROWS.with(verbs::InsertRows {
+                sheet,
+                at: r0.saturating_add(1),
+                count: Some(count),
+            }),
+        );
+        self.reload();
+        self.status = format!(
+            "Inserted {} above row {}",
+            if count == 1 {
+                "row".to_owned()
+            } else {
+                format!("{count} rows")
+            },
+            r0.saturating_add(1)
+        );
+    }
+
+    /// Insert rows below the selection.
+    fn insert_rows_below(&mut self, doc: &mut Edits<'_>, sheet: Id, (r0, r1): (u32, u32)) {
+        let count = span(r0, r1);
+        let at = r1.saturating_add(2);
+        self.submit(
+            doc,
+            Workbook::INSERT_ROWS.with(verbs::InsertRows {
+                sheet,
+                at,
+                count: Some(count),
+            }),
+        );
+        self.reload();
+        self.status = format!(
+            "Inserted {} below row {}",
+            if count == 1 {
+                "row".to_owned()
+            } else {
+                format!("{count} rows")
+            },
+            r1.saturating_add(1)
+        );
+    }
+
+    /// Delete the selected rows.
+    fn delete_rows(&mut self, doc: &mut Edits<'_>, sheet: Id, (r0, r1): (u32, u32)) {
+        let rows: Vec<u32> = (r0..=r1).map(|r| r.saturating_add(1)).collect();
+        let count = rows.len();
+        self.submit(
+            doc,
+            Workbook::DELETE_ROWS.with(verbs::DeleteRows { sheet, rows }),
+        );
+        self.reload();
+        self.status = format!(
+            "Deleted {}",
+            if count == 1 {
+                "row".to_owned()
+            } else {
+                format!("{count} rows")
+            }
+        );
+    }
+
+    /// Insert columns left of the selection.
+    fn insert_columns_left(&mut self, doc: &mut Edits<'_>, sheet: Id, (c0, c1): (u32, u32)) {
+        let count = span(c0, c1);
+        let at = crate::model::col_to_letters(c0);
+        self.submit(
+            doc,
+            Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
+                sheet,
+                at: at.clone(),
+                count: Some(count),
+            }),
+        );
+        self.reload();
+        self.status = format!("Inserted {count} column(s) left of {at}");
+    }
+
+    /// Insert columns right of the selection.
+    fn insert_columns_right(&mut self, doc: &mut Edits<'_>, sheet: Id, (c0, c1): (u32, u32)) {
+        let count = span(c0, c1);
+        let at = crate::model::col_to_letters(c1.saturating_add(1));
+        self.submit(
+            doc,
+            Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
+                sheet,
+                at: at.clone(),
+                count: Some(count),
+            }),
+        );
+        self.reload();
+        self.status = format!("Inserted {count} column(s) right of {at}");
+    }
+
+    /// Delete the selected columns.
+    fn delete_columns(&mut self, doc: &mut Edits<'_>, sheet: Id, (c0, c1): (u32, u32)) {
+        let columns: Vec<String> = (c0..=c1).map(crate::model::col_to_letters).collect();
+        let count = columns.len();
+        self.submit(
+            doc,
+            Workbook::DELETE_COLUMNS.with(verbs::DeleteColumns { sheet, columns }),
+        );
+        self.reload();
+        self.status = format!(
+            "Deleted {}",
+            if count == 1 {
+                "column".to_owned()
+            } else {
+                format!("{count} columns")
+            }
+        );
     }
 
     pub(super) fn try_annotation_click(

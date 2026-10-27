@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use serde_json::Value;
 use tilo_actions::ActionKey;
 use tilo_actions::door::ActionDescriptor;
-use tilo_actions::params::ActionParam;
+use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::catalog::{ActionCatalog, ResourceTarget};
 use crate::grant::{EDIT_PARAM, FIELD_EDIT, edit_reach, grant_answer, step_node, step_node_at};
@@ -25,7 +25,7 @@ use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step,
 use crate::template::{self, Piece, is_identifier};
 use crate::types::{Ty, assignable, literal_fits, pointer_tokens, schema_at};
 use crate::{AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, shortcut_id_of};
-use tilo_action_policy::Answer;
+use tilo_action_policy::{Answer, Rule};
 
 /// One reason a shortcut cannot be saved as written.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -321,7 +321,16 @@ impl Checker<'_> {
                 }
                 self.invoke(path, scope, action, resource, args)
             }
-            StepKind::Ai { transform, input } => Some(self.ai(path, scope, transform, input)),
+            StepKind::Ai {
+                prompt,
+                output,
+                input,
+            } => Some(self.ai(path, scope, prompt, output.as_ref(), input.as_ref())),
+            StepKind::Task {
+                instruction,
+                allow,
+                output,
+            } => Some(self.task(path, scope, instruction, allow, output.as_ref())),
             StepKind::If {
                 cond,
                 then,
@@ -411,9 +420,22 @@ impl Checker<'_> {
         &mut self,
         path: &StepPath,
         scope: &Scope,
-        transform: &AiTransform,
-        input: &Binding,
+        prompt: &str,
+        output: Option<&Value>,
+        input: Option<&Binding>,
     ) -> (Ty, Option<Value>) {
+        if let Some(input) = input {
+            self.value(input, scope, path);
+        }
+        if let Some(schema) = output
+            && let Err(reason) = Self::output_schema(schema)
+        {
+            self.fail(path, CheckErrorKind::Incompatible(reason));
+        }
+        let transform = AiTransform::Freeform {
+            prompt: prompt.to_string(),
+            output: output.cloned(),
+        };
         self.invoke(
             path,
             scope,
@@ -421,11 +443,53 @@ impl Checker<'_> {
             &Selector::FirstOfKind(AGENT_TRANSFORM_KIND.into()),
             &transform.arguments(input),
         );
-        match transform {
-            AiTransform::Extract { schema } => (Ty::of_schema(schema), Some(schema.clone())),
-            AiTransform::Summarise
-            | AiTransform::Classify { .. }
-            | AiTransform::Freeform { .. } => (Ty::Text, None),
+        declared(output)
+    }
+
+    /// A [`Task`](StepKind::Task) step is one invocation of the agent's task
+    /// action, answered by the task's summary in the shape the step declares.
+    fn task(
+        &mut self,
+        path: &StepPath,
+        scope: &Scope,
+        instruction: &str,
+        allow: &[Rule],
+        output: Option<&Value>,
+    ) -> (Ty, Option<Value>) {
+        if instruction.trim().is_empty() {
+            self.fail(
+                path,
+                CheckErrorKind::Incompatible("a task needs an instruction".into()),
+            );
+        }
+        if let Some(schema) = output
+            && let Err(reason) = Self::output_schema(schema)
+        {
+            self.fail(path, CheckErrorKind::Incompatible(reason));
+        }
+        let transform = AiTransform::Task {
+            instruction: instruction.to_string(),
+            allow: allow.to_vec(),
+            output: output.cloned(),
+        };
+        self.invoke(
+            path,
+            scope,
+            &transform.key(),
+            &Selector::FirstOfKind(AGENT_TRANSFORM_KIND.into()),
+            &transform.arguments(None),
+        );
+        declared(output)
+    }
+
+    /// Whether `schema` is a shape the agent could hold its answer to.
+    fn output_schema(schema: &Value) -> Result<(), String> {
+        let errors = ActionParam::optional("output", ParamType::Object, "The answer's shape")
+            .with_schema(schema.clone())
+            .validate_declaration();
+        match errors.first() {
+            Some(error) => Err(format!("the declared output cannot be checked: {error}")),
+            None => Ok(()),
         }
     }
 
@@ -477,7 +541,7 @@ impl Checker<'_> {
             ),
             None => step_node(None, app_id, &descriptor.resource_kind, &descriptor.address),
         };
-        if grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind).answer
+        if grant_answer(&self.shortcut.grant, &node, descriptor.contract.need().kind).answer
             == Answer::Deny
         {
             self.fail(
@@ -778,6 +842,15 @@ fn literal_ty(value: &Value) -> Ty {
     }
 }
 
+/// The value an AI or task step's answer has, as later steps may refer to
+/// it: the declared shape, or text when the step declares none.
+fn declared(output: Option<&Value>) -> (Ty, Option<Value>) {
+    match output {
+        Some(schema) => (Ty::of_schema(schema), Some(schema.clone())),
+        None => (Ty::Text, None),
+    }
+}
+
 /// Every step of `steps` that runs a shortcut named exactly, with the id.
 fn shortcut_calls(steps: &[Step], path: &StepPath, out: &mut Vec<(StepPath, String)>) {
     for (index, step) in steps.iter().enumerate() {
@@ -802,7 +875,8 @@ fn shortcut_calls(steps: &[Step], path: &StepPath, out: &mut Vec<(StepPath, Stri
             StepKind::Invoke { .. }
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
-            | StepKind::Ai { .. } => {}
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
         }
     }
 }

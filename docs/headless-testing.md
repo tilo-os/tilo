@@ -394,6 +394,55 @@ or HDR frames redraw. A replacement backend starts uncached at its new size.
 Presentation remains synchronous; snapshots cannot race queued renderer work.
 This reduces watched headless work, not physical display input-to-photon latency.
 
+## One harness for app tests: `TestEnv`, `HeadlessApp` and `drive`
+
+An app's test has one shape whether it is a unit test in `ui-core`, a scenario
+the shell runs, or a script an agent sends: build an environment, mount the
+app, drive it, read the resources it wrote. The three pieces name that shape;
+none of them invents a second vocabulary for what a step is.
+
+**`TestEnv`** (`tilo_test_env`) is the machine around the app: a home in a
+temporary directory, a clock that starts at a fixed instant
+(`CAPTURE_LOCAL_TIME`) so a relative date renders the same every run, a network
+that is closed to external hosts until `allow_external` opens it, and
+`with_files` to put fixtures where the app looks for them. It reuses
+`TestHome`, so the record store, view store and local state a test already had
+keep working.
+
+**`HeadlessApp`** (`ui::headless::HeadlessApp`, behind `test-support`) mounts a
+component in one `FrameHarness` and exposes the door every collaborator,
+script and agent uses:
+
+```rust
+let mut app = HeadlessApp::mount(component)?;
+let outcome = app.drive(&[invokes("view"), invokes("edit")]);
+assert!(outcome.is_pass(), "{:?}", outcome.failure());
+assert_eq!(body(&host.records, &checkout), "edited");
+```
+
+`call`/`call_on` run one action and return its answer; `*_confirmed` answer a
+question the contract asks first. `resources()`/`publishes()` say what a caller
+may address. `drive` runs a list of steps. `MOUNT_VIEWPORT` is the window the
+mounted app lays out in.
+
+**`Step`** and **`Outcome`** are `ui::headless::driver`'s, re-exported — not a
+copy. The test harness, the `--headless-drive` spec and the shipped scenario
+format all speak one language, and `HeadlessApp::drive` *is*
+`driver::drive`, on the same `FrameHarness::perform_bound` the CLI uses: a
+scenario the compositor can replay is also one a test can write inline.
+
+`Outcome` is the state the app is in once the steps ran — the document, the
+inspection tree, the named targets and the published resources — plus one
+`StepRecord` per step that ran and `failure()`, the first step that did not
+pass. A step is `Action(Action)`, `Document(json)` or `Resource { id, action }`;
+an expected refusal is a pass, because `expect_error` on the invocation names
+the code the step asked the door for.
+
+Assert on the record, not the widget: the body the store holds, the history
+entry's author, the undo that reaches the starting state. A test that reads
+internal fields of the widget proves nothing a user, a script or an agent can
+observe.
+
 ## End-to-end recipe — "click, snapshot, look"
 
 **The fastest path: run the example script.**

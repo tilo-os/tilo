@@ -833,7 +833,9 @@ impl WakeTally {
     }
 }
 
+mod lock_media;
 mod lock_view;
+use lock_media::{LOCK_MEDIA_REFRESH, lock_media_changed, lock_now_playing, send_lock_transport};
 use lock_view::{LockClock, publish_accessibility_tree, retain_session_redraw};
 
 /// A widget poll already ran in this tick's pump. Its deadline waking the
@@ -966,10 +968,6 @@ fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Opt
     deadline.filter(|deadline| *deadline > tick_started)
 }
 
-/// How often a locked session re-reads its players, so the lock card follows
-/// a track change or a pause made elsewhere.
-const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
-
 /// The output id of the display the person works on, as the desktop's
 /// partition records it.
 fn focused_display_id(frame_builder: &FrameBuilder) -> Option<u32> {
@@ -979,58 +977,6 @@ fn focused_display_id(frame_builder: &FrameBuilder) -> Option<u32> {
         .desktop
         .outputs
         .focused_display()
-}
-
-/// The player the lock screen shows: the one the now-playing card would,
-/// among players that are playing or paused. A stopped player has nothing
-/// to control from a locked screen.
-fn lock_now_playing() -> Option<crate::shell::now_playing::PlayerSnapshot> {
-    use crate::shell::now_playing::{MprisSource, NowPlayingSource, PlaybackStatus, active_index};
-    let source = MprisSource;
-    source.refresh();
-    let players: Vec<_> = source
-        .players()
-        .into_iter()
-        .filter(|player| player.status != PlaybackStatus::Stopped)
-        .collect();
-    let index = active_index(&players, None)?;
-    players.into_iter().nth(index)
-}
-
-/// Whether the lock card must repaint: anything it shows changed. The
-/// playhead is not shown on the lock screen, so its movement is not a change.
-fn lock_media_changed(
-    before: Option<&crate::shell::now_playing::PlayerSnapshot>,
-    after: Option<&crate::shell::now_playing::PlayerSnapshot>,
-) -> bool {
-    match (before, after) {
-        (None, None) => false,
-        (Some(before), Some(after)) => {
-            before.bus_name != after.bus_name
-                || before.status != after.status
-                || before.title != after.title
-                || before.artist != after.artist
-                || before.artwork != after.artwork
-                || before.can_play != after.can_play
-                || before.can_pause != after.can_pause
-                || before.can_go_next != after.can_go_next
-                || before.can_go_previous != after.can_go_previous
-        }
-        _ => true,
-    }
-}
-
-/// Send one lock-screen transport command to exactly the player the lock
-/// card shows. Transport is all a locked session may do to media.
-fn send_lock_transport(
-    player: Option<&crate::shell::now_playing::PlayerSnapshot>,
-    transport: crate::shell::quick_settings::now_playing::Transport,
-) -> bool {
-    use crate::shell::now_playing::{MprisSource, NowPlayingSource};
-    let Some(player) = player.filter(|player| transport.enabled(player)) else {
-        return false;
-    };
-    MprisSource.send(&player.bus_name, transport.command())
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
