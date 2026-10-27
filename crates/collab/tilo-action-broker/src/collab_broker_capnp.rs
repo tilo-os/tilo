@@ -1873,6 +1873,19 @@ mod policy_context;
 mod room_service;
 
 impl CapnpBrokerState {
+    /// Attach the authority a harness admits its devices under, when it
+    /// has one; a broker takes one authority, from wherever it comes.
+    fn attach_certificate_authority(
+        &self,
+        authority: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
+    ) -> std::io::Result<()> {
+        let Some(authority) = authority else {
+            return Ok(());
+        };
+        self.certificate_authority
+            .set(authority)
+            .map_err(|_| std::io::Error::other("a broker takes one certificate authority"))
+    }
     fn registered_policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
         self.certificate_authority
             .get()
@@ -13497,6 +13510,7 @@ pub fn spawn(
             publisher,
             membership,
             trusted_devices: None,
+            certificate_authority: None,
             services,
             config: None,
         },
@@ -13851,6 +13865,9 @@ pub(super) struct BrokerWiring<'a> {
     pub(super) publisher: Arc<PeerPublisher>,
     pub(super) membership: Option<WorkspaceTreeHandle>,
     pub(super) trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    /// The authority a harness admits its enrolled devices under, when
+    /// neither a peer configuration nor the host's services supply one.
+    pub(super) certificate_authority: Option<Arc<dyn super::peer_actions::CertificateAuthority>>,
     pub(super) services: HostServices,
     pub(super) config: Option<&'a super::peer_actions::NativePeerBrokerConfig>,
 }
@@ -13876,6 +13893,7 @@ pub(super) fn spawn_configured(
         publisher,
         membership,
         trusted_devices,
+        certificate_authority,
         services,
         config,
     } = wiring;
@@ -13889,6 +13907,7 @@ pub(super) fn spawn_configured(
         config,
         services,
     );
+    state.attach_certificate_authority(certificate_authority)?;
     if let Some(path) = state.services.launchable_catalogue.clone() {
         state.launchable.persist_at(&path);
     }
