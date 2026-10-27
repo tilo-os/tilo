@@ -906,29 +906,10 @@ impl Widget for SheetsApp {
         // Find and replace open the window bar's search, which owns the
         // field and the keys: the sheet's matches are painted from its
         // find, never typed into a field of the sheet's own.
-        if let WindowEvent::KeyboardInput { event: key, .. } = event {
-            let ctrl = event_ctx.modifiers.state().control_key()
-                || event_ctx.modifiers.state().super_key();
-            let shift = event_ctx.modifiers.state().shift_key();
-            if key.state == ElementState::Pressed
-                && ctrl
-                && !self.palette.is_open()
-                && self.settings_panel == SettingsPanel::None
-                && self.name_box_edit.is_none()
-                && self.tab_rename.is_none()
-                && let winit::keyboard::Key::Character(character) = &key.logical_key
-            {
-                if character.eq_ignore_ascii_case("f") && !shift {
-                    self.open_find(ui::window_toolbar::SearchOpening::Find);
-                    *event_ctx.handled = true;
-                    return;
-                }
-                if character.eq_ignore_ascii_case("h") {
-                    self.open_find(ui::window_toolbar::SearchOpening::Replace);
-                    *event_ctx.handled = true;
-                    return;
-                }
-            }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && self.route_find_shortcut(key, event_ctx)
+        {
+            return;
         }
         // A menu or popover over the sheet is modal and takes the event first.
         if self.route_overlays(event, event_ctx) {

@@ -74,7 +74,6 @@ fun set_dialog_opacity(opacity)
       return;
     dialog.heading.SetOpacity(opacity);
     dialog.help.SetOpacity(opacity);
-    dialog.lock.SetOpacity(opacity);
     dialog.entry.SetOpacity(opacity);
     if (global.other_ways)
       dialog.back.SetOpacity(opacity);
@@ -108,11 +107,9 @@ fun setup_dialog()
     global.dialog.retry_image = Image("unlock-retry.png");
     global.dialog.retry = Sprite(dialog.retry_image);
     dialog.retry.SetOpacity(0);
-    global.dialog.entry_image = Image("entry.png");
+    global.dialog.entry_image = Image("field.png");
     global.dialog.entry = Sprite(dialog.entry_image);
-    global.dialog.lock_image = Image("lock.png");
-    global.dialog.lock = Sprite(dialog.lock_image);
-    global.dialog.bullet_image = Image("bullet.png");
+    global.dialog.bullet_image = Image("field-bullet.png");
     global.dialog.back_image = Image("hint-go-back.png");
     global.dialog.back = Sprite(dialog.back_image);
     dialog.back.SetOpacity(0);
@@ -126,20 +123,23 @@ fun place_dialog()
                                Window.GetY() + Window.GetHeight() * 0.48, 100);
     dialog.help.SetPosition(center_x - dialog.help_image.GetWidth() / 2,
                             Window.GetY() + Window.GetHeight() * 0.535, 100);
-    dialog.retry.SetPosition(center_x - dialog.retry_image.GetWidth() / 2,
-                             Window.GetY() + Window.GetHeight() * 0.67, 100);
     dialog.back.SetPosition(center_x - dialog.back_image.GetWidth() / 2,
                             Window.GetY() + Window.GetHeight() * 0.84, 100);
     global.dialog.entry_x = center_x - dialog.entry_image.GetWidth() / 2;
     global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
     dialog.entry.SetPosition(dialog.entry_x, dialog.entry_y, 100);
-    dialog.lock.SetPosition(dialog.entry_x + 18,
-                            dialog.entry_y + dialog.entry_image.GetHeight() / 2
-                              - dialog.lock_image.GetHeight() / 2,
-                            101);
+    # The refusal sits under the field, left-aligned, as the sign-in error.
+    dialog.retry.SetPosition(dialog.entry_x, dialog.entry_y + look.field_height + 8, 100);
     for (index = 0; dialog.bullet[index]; index++)
-      dialog.bullet[index].SetPosition(dialog.entry_x + 64 + index * 11,
-                                       dialog.entry_y + 24, 102);
+      place_dialog_bullet(index);
+  }
+
+# The disk prompt's dots sit where the sign-in field's do.
+fun place_dialog_bullet(index)
+  {
+    dialog.bullet[index].SetPosition(dialog.entry_x + 14 + index * 12,
+                                     dialog.entry_y + look.field_height / 2
+                                       - dialog.bullet_image.GetHeight() / 2, 102);
   }
 
 # ---- Sign-in ---------------------------------------------------------------
@@ -170,7 +170,9 @@ look.avatar = 80;
 look.initials_size = 32;
 look.name_size = 26;
 look.label_size = 13;
-look.field_height = 40;
+look.label_line = 17;
+look.field_height = 32;
+look.field_label_gap = 4;
 # ---- End of the login screen's look
 signin.active = 0;
 signin.view = "";
@@ -218,12 +220,20 @@ fun to_number(text)
     return value;
   }
 
-# `size` in pixels, as the login screen's text sizes are.
-fun text_image(text, size, red, green, blue)
+# `size` in pixels, as the login screen's text sizes are. Plymouth's label
+# plugin draws with two files: the one any font name asks for, and the one a
+# name containing "Mono" asks for. The theme has no monospaced text, so the
+# initramfs carries the login screen's face in both, cut to its two weights
+# (os/usr/lib/dracut/modules.d/93tilo-boot-face): the labels' weight, and
+# the strong weight of names and initials.
+fun text_image(text, size, red, green, blue, strong)
   {
     if (!can_draw_text || text == "")
       return NULL;
-    local.image = Image.Text(text, red, green, blue, 1, "Sans " + size + "px");
+    local.face = "Sans ";
+    if (strong)
+      face = "Mono ";
+    local.image = Image.Text(text, red, green, blue, 1, face + size + "px");
     if (!image || image.GetWidth() < 1)
       return NULL;
     return image;
@@ -243,9 +253,9 @@ fun setup_signin()
     signin.entry_image = Image("field.png");
     signin.entry_invalid_image = Image("field-invalid.png");
     signin.entry = Sprite(signin.entry_image);
-    signin.placeholder_pin = Image("placeholder-pin.png");
-    signin.placeholder_password = Image("placeholder-password.png");
-    signin.placeholder = Sprite();
+    signin.label_pin = Image("field-label-pin.png");
+    signin.label_password = Image("field-label-password.png");
+    signin.field_label = Sprite();
     signin.bullet_image = Image("field-bullet.png");
     signin.note = Sprite();
     signin.alert_image = Image("alert.png");
@@ -274,7 +284,7 @@ fun hide_signin_field()
     signin.account_sprite.SetOpacity(0);
     signin.alert.SetOpacity(0);
     signin.entry.SetOpacity(0);
-    signin.placeholder.SetOpacity(0);
+    signin.field_label.SetOpacity(0);
     signin.note.SetOpacity(0);
     signin.hint.SetOpacity(0);
     for (local.i = 0; signin.bullet[i]; i++)
@@ -327,7 +337,7 @@ fun draw_signin_field()
     local.disc = signin.avatar_image[signin.slot];
     local.ink = look.ink[signin.slot];
     local.letters = text_image(signin.initials, look.initials_size,
-                               ink.red, ink.green, ink.blue);
+                               ink.red, ink.green, ink.blue, 1);
     if (disc && letters)
       {
         place_centered(signin.avatar, disc, avatar_top, 110);
@@ -345,7 +355,7 @@ fun draw_signin_field()
     if (signin.rendered_name != signin.name)
       {
         signin.name_image = text_image(signin.name, look.name_size,
-                                       look.text.red, look.text.green, look.text.blue);
+                                       look.text.red, look.text.green, look.text.blue, 1);
         if (!signin.name_image)
           signin.name_image = signin.heading_image;
         signin.rendered_name = signin.name;
@@ -357,7 +367,7 @@ fun draw_signin_field()
     if (signin.rendered_account != signin.account)
       {
         signin.account_image = text_image(signin.account, look.label_size,
-                                          look.dim.red, look.dim.green, look.dim.blue);
+                                          look.dim.red, look.dim.green, look.dim.blue, 0);
         signin.rendered_account = signin.account;
       }
     if (signin.account_image)
@@ -368,26 +378,21 @@ fun draw_signin_field()
     else
       signin.account_sprite.SetOpacity(0);
 
+    # The field is labelled above, as the login screen labels it, and empty
+    # until something is typed.
     local.field = signin.entry_image;
     if (signin.note_class == "wrong" && !signin.checking)
       field = signin.entry_invalid_image;
-    local.entry_top = below_name + 24;
     local.entry_x = center_x - field.GetWidth() / 2;
+    local.label_top = below_name + 24;
+    local.label = signin.label_password;
+    if (signin.kind == "pin")
+      label = signin.label_pin;
+    place_left(signin.field_label, label, entry_x, label_top, 110);
+    local.entry_top = label_top + look.label_line + look.field_label_gap;
     place_left(signin.entry, field, entry_x, entry_top, 110);
     if (signin.checking)
       signin.entry.SetOpacity(0.5);
-
-    if (signin.kind == "pin")
-      signin.placeholder.SetImage(signin.placeholder_pin);
-    else
-      signin.placeholder.SetImage(signin.placeholder_password);
-    signin.placeholder.SetPosition(entry_x + 12,
-                                   entry_top + look.field_height / 2
-                                     - signin.placeholder_pin.GetHeight() / 2, 111);
-    if (signin.bullets == 0 && !signin.checking)
-      signin.placeholder.SetOpacity(1);
-    else
-      signin.placeholder.SetOpacity(0);
 
     # Very long passphrases stay visually bounded while accepted in full.
     local.visible = signin.bullets;
@@ -418,7 +423,7 @@ fun draw_signin_field()
     else if (signin.note_class != "none")
       {
         note_image = text_image(signin.note_text, look.label_size,
-                                look.danger.red, look.danger.green, look.danger.blue);
+                                look.danger.red, look.danger.green, look.danger.blue, 0);
         if (note_image)
           drawn = 1;
         else if (signin.note_class == "wait")
@@ -480,7 +485,7 @@ fun draw_signin_list()
         local.label = NULL;
         if (i < signin.count)
           {
-            label = text_image(signin.person[i], 20, 0.94, 0.94, 0.98);
+            label = text_image(signin.person[i], 20, 0.94, 0.94, 0.98, 0);
             if (!label)
               label = Image("account-" + (i + 1) + ".png");
           }
@@ -639,15 +644,14 @@ fun display_password(prompt, bullets)
 
     # Keep very long passphrases visually bounded while accepting them in full.
     local.visible_bullets = bullets;
-    if (visible_bullets > 24)
-      visible_bullets = 24;
+    if (visible_bullets > 26)
+      visible_bullets = 26;
     for (index = 0; dialog.bullet[index] || index < visible_bullets; index++)
       {
         if (!dialog.bullet[index])
           {
             global.dialog.bullet[index] = Sprite(dialog.bullet_image);
-            dialog.bullet[index].SetPosition(dialog.entry_x + 64 + index * 11,
-                                              dialog.entry_y + 24, 102);
+            place_dialog_bullet(index);
           }
         if (index < visible_bullets)
           dialog.bullet[index].SetOpacity(1);

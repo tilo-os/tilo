@@ -98,6 +98,46 @@ pub(crate) struct OfflinePanel {
     progress_bar: ProgressBar,
 }
 
+/// What the download form says under its controls: the running download's
+/// count, how it ended, or the estimate for the area chosen.
+fn download_readout(progress: DownloadProgress, estimate: u32) -> String {
+    let count = |value: u32| ui::i18n::ArgValue::from(i64::from(value));
+    if progress.is_active() {
+        crate::failure::t_args(
+            "maps-offline-progress",
+            &[
+                ("done", count(progress.done)),
+                ("total", count(progress.total)),
+            ],
+        )
+    } else if progress.stopped {
+        crate::failure::t_args(
+            "maps-offline-stopped-count",
+            &[("total", count(progress.total))],
+        )
+    } else if progress.total > 0 && progress.done >= progress.total {
+        if progress.failed > 0 {
+            crate::failure::t_args(
+                "maps-offline-done-failed",
+                &[
+                    ("total", count(progress.total)),
+                    ("failed", count(progress.failed)),
+                ],
+            )
+        } else {
+            crate::failure::t_args("maps-offline-done", &[("total", count(progress.total))])
+        }
+    } else {
+        crate::failure::t_args(
+            "maps-offline-estimate",
+            &[(
+                "size",
+                ui::format::size(u64::from(estimate) * TILE_BYTES).into(),
+            )],
+        )
+    }
+}
+
 impl OfflinePanel {
     pub fn new(cache_bytes: u64) -> Self {
         Self {
@@ -117,7 +157,7 @@ impl OfflinePanel {
                 .with_id("maps_download_levels")
                 .with_range(1.0, f64::from(MAX_EXTRA_ZOOM) + 1.0)
                 .with_step(1.0)
-                .with_accessible_name(&crate::failure::t("maps-offline-zoom-levels"))
+                .with_accessible_name(crate::failure::t("maps-offline-zoom-levels"))
                 .compact(),
             levels_rect: None,
             targets: Vec::new(),
@@ -265,7 +305,7 @@ impl OfflinePanel {
                 })
                 .collect();
             AccessNode::new(Role::Dialog)
-                .with_name(&crate::failure::t("maps-offline-title"))
+                .with_name(crate::failure::t("maps-offline-title"))
                 .with_state(AccessState::new().modal(true))
                 .with_children(children)
         })
@@ -326,7 +366,7 @@ impl OfflinePanel {
                 targets.push((
                     levels,
                     OfflineAction::ZoomDelta(action),
-                    label.to_string(),
+                    label.clone(),
                     target.to_string(),
                 ));
             }
@@ -354,7 +394,7 @@ impl OfflinePanel {
                 }
             };
             if rect.area() > 0.0 && !targets.iter().any(|(_, _, _, seen)| seen == &target) {
-                targets.push((*rect, action.clone(), label.to_string(), target));
+                targets.push((*rect, action.clone(), label.clone(), target));
             }
         }
         targets
@@ -798,44 +838,7 @@ impl OfflinePanel {
 
         // The estimate, or the running download.
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
-        let count = |value: u32| ui::i18n::ArgValue::from(i64::from(value));
-        let readout = if frame.progress.is_active() {
-            crate::failure::t_args(
-                "maps-offline-progress",
-                &[
-                    ("done", count(frame.progress.done)),
-                    ("total", count(frame.progress.total)),
-                ],
-            )
-        } else if frame.progress.stopped {
-            crate::failure::t_args(
-                "maps-offline-stopped-count",
-                &[("total", count(frame.progress.total))],
-            )
-        } else if frame.progress.total > 0 && frame.progress.done >= frame.progress.total {
-            if frame.progress.failed > 0 {
-                crate::failure::t_args(
-                    "maps-offline-done-failed",
-                    &[
-                        ("total", count(frame.progress.total)),
-                        ("failed", count(frame.progress.failed)),
-                    ],
-                )
-            } else {
-                crate::failure::t_args(
-                    "maps-offline-done",
-                    &[("total", count(frame.progress.total))],
-                )
-            }
-        } else {
-            crate::failure::t_args(
-                "maps-offline-estimate",
-                &[(
-                    "size",
-                    ui::format::size(u64::from(estimate) * TILE_BYTES).into(),
-                )],
-            )
-        };
+        let readout = download_readout(frame.progress, estimate);
         let mut ctx = PaintCtx::new(scene, transform, text, ink);
         draw::text_clip(
             &mut ctx,

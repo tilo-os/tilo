@@ -103,6 +103,8 @@ tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-fea
 [dev-dependencies]
 # The integration tests use the test tools behind `test-support`.
 tilo-app = { path = ".", features = ["test-support"] }
+# Each device of a chain test keeps its records in a store of its own.
+durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 
 [lints]

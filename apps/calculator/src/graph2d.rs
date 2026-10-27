@@ -809,8 +809,10 @@ mod tests {
     /// or accumulated `sx += 1.5`, would miss that here.
     #[test]
     fn a_line_samples_at_exact_columns_and_lands_on_the_line() {
-        let mut screen = Graph2dScreen::default();
-        screen.canvas = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let mut screen = Graph2dScreen {
+            canvas: Rect::new(0.0, 0.0, 300.0, 200.0),
+            ..Graph2dScreen::default()
+        };
         let model = CalcModel {
             funcs: vec![crate::model::PlotFn {
                 expr: "x".into(),

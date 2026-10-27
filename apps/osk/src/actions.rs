@@ -193,6 +193,18 @@ fn asking(id: &str, effect: &OskEffect) -> ActionSpec {
 /// layout, the suggestions and the recent emoji as they stand, each with the
 /// changes it offers.
 pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
+    vec![
+        layout_row(preferences),
+        size_row(preferences),
+        language_row(preferences),
+        autocorrect_row(preferences),
+        suggestions_row(preferences),
+        emoji_row(preferences),
+    ]
+}
+
+/// The letter layout row, offering each bundled layout.
+fn layout_row(preferences: &OskPreferences) -> LiveRow {
     let mut layout = LiveRow::new(
         "osk.keyboard.layout",
         "osk.layout",
@@ -213,6 +225,11 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
             },
         ));
     }
+    layout
+}
+
+/// The keyboard size row, offering each size.
+fn size_row(preferences: &OskPreferences) -> LiveRow {
     let mut size = LiveRow::new(
         "osk.keyboard.size",
         "osk.size",
@@ -233,12 +250,17 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
             },
         ));
     }
+    size
+}
+
+/// The typing-language row; the dictionary language need not match the layout.
+fn language_row(preferences: &OskPreferences) -> LiveRow {
     let language_name = preferences
         .typing_language
         .as_deref()
         .and_then(Language::from_code)
         .map_or("Match layout", Language::code);
-    let language = LiveRow::new(
+    LiveRow::new(
         "osk.keyboard.language",
         "osk.language",
         format!("Typing language ({language_name})"),
@@ -272,8 +294,12 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
         &OskEffect::SetTypingLanguage {
             value: "fr".to_owned(),
         },
-    ));
-    let autocorrect = LiveRow::new("osk.keyboard.autocorrect", "osk.autocorrect", "Autocorrect")
+    ))
+}
+
+/// The autocorrect row.
+fn autocorrect_row(preferences: &OskPreferences) -> LiveRow {
+    LiveRow::new("osk.keyboard.autocorrect", "osk.autocorrect", "Autocorrect")
         .operation(asking(
             "set",
             &OskEffect::SetAutocorrect {
@@ -289,8 +315,12 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
             "disable",
             "Never correct words",
             &OskEffect::SetAutocorrect { value: false },
-        ));
-    let suggestions = LiveRow::new(
+        ))
+}
+
+/// The suggestions and privacy row.
+fn suggestions_row(preferences: &OskPreferences) -> LiveRow {
+    LiveRow::new(
         "osk.keyboard.suggestions",
         "osk.suggestions",
         "Suggestions and privacy",
@@ -327,14 +357,17 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
         "Turn off personalized suggestions",
         &OskEffect::SetPersonalization { value: false },
     ))
-    .operation(OskEffect::ClearPersonal.bound());
-    let emoji = LiveRow::new("osk.keyboard.emoji", "osk.emoji", "Recent emoji").operation(asking(
+    .operation(OskEffect::ClearPersonal.bound())
+}
+
+/// The recent-emoji row.
+fn emoji_row(preferences: &OskPreferences) -> LiveRow {
+    LiveRow::new("osk.keyboard.emoji", "osk.emoji", "Recent emoji").operation(asking(
         "set-recents",
         &OskEffect::SetEmojiRecents {
             value: preferences.emoji_recents.clone(),
         },
-    ));
-    vec![layout, size, language, autocorrect, suggestions, emoji]
+    ))
 }
 
 #[cfg(test)]

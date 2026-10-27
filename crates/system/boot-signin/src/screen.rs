@@ -17,12 +17,15 @@ use std::sync::mpsc;
 use zeroize::Zeroizing;
 
 use crate::flow::{Entry, Pick, Prompt, Screen};
+use crate::glyphs::Glyphs;
 use crate::people::Person;
 
 pub struct BootScreen {
     pub ask_password: PathBuf,
     /// Plymouth, when it is drawing the boot.
     pub plymouth: Option<Plymouth>,
+    /// What the screen's font draws, so a name is shown in a form it can.
+    pub glyphs: Glyphs,
     pub volume: String,
 }
 
@@ -58,7 +61,11 @@ impl BootScreen {
             .iter()
             .enumerate()
             .map(|(index, person)| {
-                format!("{} for {}", index.saturating_add(1), person.display_name)
+                format!(
+                    "{} for {}",
+                    index.saturating_add(1),
+                    person.shown_name(&self.glyphs)
+                )
             })
             .collect();
         let question = format!(
@@ -101,7 +108,7 @@ impl Screen for BootScreen {
         for (index, person) in people.iter().enumerate() {
             plymouth.message(&format!(
                 "tilo-signin-person:{index}:{}",
-                person.display_name
+                person.shown_name(&self.glyphs)
             ));
         }
         // The last row is "Can't sign in".
@@ -129,10 +136,14 @@ impl Screen for BootScreen {
     fn ask(&mut self, prompt: &Prompt<'_>) -> Entry {
         let person = prompt.person;
         let label = person.secret.label();
-        let (slot, initials) = person.face();
+        let name = person.shown_name(&self.glyphs);
+        let (slot, initials) = person.face(&self.glyphs);
         self.tell(&format!("tilo-signin-face:{slot}:{initials}"));
-        self.tell(&format!("tilo-signin-name:{}", person.display_name));
-        self.tell(&format!("tilo-signin-account:{}", person.account()));
+        self.tell(&format!("tilo-signin-name:{name}"));
+        self.tell(&format!(
+            "tilo-signin-account:{}",
+            person.account(&self.glyphs)
+        ));
         self.tell(&format!("tilo-signin-kind:{}", person.secret.wire()));
         self.tell(&format!("tilo-signin-back:{}", u8::from(prompt.several)));
         let note = prompt.note.text();
@@ -142,7 +153,7 @@ impl Screen for BootScreen {
         } else {
             "leave it empty for other ways to sign in"
         };
-        let mut text = format!("{label} for {}, or {empty}", person.display_name);
+        let mut text = format!("{label} for {name}, or {empty}");
         if !note.is_empty() {
             text = format!("{note} {text}");
         }
@@ -364,6 +375,7 @@ printf '%s' "$answer"
             plymouth: with_plymouth.then(|| {
                 Plymouth::running(program(dir, "plymouth", PLYMOUTH)).expect("the stub pings")
             }),
+            glyphs: Glyphs::any(),
             volume: "root".into(),
         }
     }

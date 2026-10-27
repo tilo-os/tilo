@@ -133,9 +133,12 @@ in: the initials of their name in the colour their account name derives
 greeter's own test keeps current). It shows no account picture. A picture would
 have to sit in the volume header beside the name, readable by anyone holding the
 disk, and the header carries only what the list of people needs: uid, account
-name, display name and the kind of secret. Plymouth draws text in the one font the
-initrd carries, at regular weight, so names and messages there are set in that
-font rather than the login screen's.
+name, display name and the kind of secret. Names, initials and messages are set
+in the login screen's face, which the initrd carries cut from the greeter's own
+font file to the two weights the login screen uses for them (the
+`93tilo-boot-face` dracut module). Plymouth has no fallback face, so a display
+name in a script that face lacks is shown as the account name instead
+(`glyphs.txt`, which the build writes from the face).
 
 ### 3.3 What the person sees
 

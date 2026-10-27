@@ -126,7 +126,7 @@ impl StarterQueries {
         let state = ui::LocalState::new(String::new());
         let menu = Dropdown::from_state(names.clone(), &state)
             .with_id("db.query.snippets")
-            .with_accessible_name(&t("db-starter-queries"))
+            .with_accessible_name(t("db-starter-queries"))
             .with_placeholder(&t("db-starter-queries"))
             .on_change(move |name| {
                 if let Some(index) = names.iter().position(|candidate| candidate == name) {
@@ -207,10 +207,10 @@ fn results_content(link: &Link, result: Option<Arc<QueryResult>>) -> Element {
         .is_some_and(|result| !result.columns.is_empty());
     let body: Element = if has_columns {
         let mut table = ResultsTable::new("db.query.results").reporting_to(link);
-        table.bind(result.clone());
         // A cut result says so, and says what to do about it, above the grid
         // rather than through a "+" nobody can read.
         let cut = result.as_ref().and_then(|result| result.cut_note());
+        table.bind(result);
         match cut {
             Some(note) => Box::new(
                 Column::new()

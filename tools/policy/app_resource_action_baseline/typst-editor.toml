@@ -1,0 +1,3 @@
+[ratchets.closure_control]
+"apps/typst-editor/src/chrome.rs" = 1
+"apps/typst-editor/src/outline.rs" = 1

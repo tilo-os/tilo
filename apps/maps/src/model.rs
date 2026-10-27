@@ -307,6 +307,16 @@ pub struct Route {
     pub to: LatLon,
 }
 
+impl Route {
+    /// Whether `other` is the same trip: the service's alternatives differ in
+    /// length and time by far more than the half metre and half second
+    /// within which two routes are one.
+    pub fn is_same_trip(&self, other: &Route) -> bool {
+        (self.duration_s - other.duration_s).abs() < 0.5
+            && (self.distance_m - other.distance_m).abs() < 0.5
+    }
+}
+
 /// Mode of one public-transport leg.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum TransitMode {

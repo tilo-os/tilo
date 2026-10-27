@@ -43,7 +43,7 @@ fn new_library() -> AutoCommit {
     doc
 }
 
-fn synced(app: &mut FeedsApp) -> AutoCommit {
+pub(super) fn synced(app: &mut FeedsApp) -> AutoCommit {
     sync_over(app, new_library())
 }
 
@@ -62,7 +62,7 @@ fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     doc
 }
 
-fn loaded(doc: &AutoCommit) -> Library {
+pub(super) fn loaded(doc: &AutoCommit) -> Library {
     Library::read(doc).unwrap()
 }
 

@@ -230,13 +230,12 @@ fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
                 &[arg("time", clock(position as f64 / 1000.0))],
             )
         });
-    match resume {
-        Some(resume) => card = card.meta(&resume),
-        None => {
-            let reach = reach(v);
-            if !reach.is_empty() {
-                card = card.meta(reach);
-            }
+    if let Some(resume) = resume {
+        card = card.meta(&resume);
+    } else {
+        let reach = reach(v);
+        if !reach.is_empty() {
+            card = card.meta(reach);
         }
     }
     card = if v.live {
@@ -796,7 +795,6 @@ fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banne
 /// Hand the shared player this video's `SponsorBlock` segments, the quality
 /// choice and, inside a segment the person skips by hand, the Skip command.
 fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
-    use ui::widget::video_player::PlayerSetting;
     let model = ui.model;
     let duration = v.duration.max(1) as f32;
     let marks = if model.settings.sponsorblock_enabled {
@@ -816,7 +814,16 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     };
     let mut player = player.borrow_mut();
     player.set_sponsor_marks(marks);
+    set_quality_setting(model, &mut player);
+    set_speed_setting(model, &mut player);
+    set_captions_setting(model, &mut player);
+    set_skip_setting(model, v, &mut player);
+}
 
+/// The player's resolution menu: the qualities on offer, and what the stream
+/// actually is when that is not what was asked for.
+fn set_quality_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     let qualities: Vec<String> = crate::app::QUALITIES
         .iter()
         .map(std::string::ToString::to_string)
@@ -842,7 +849,11 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         qualities,
         selected,
     ));
+}
 
+/// The player's playback-speed menu, set to the person's chosen speed.
+fn set_speed_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     let speeds: Vec<String> = crate::app::PLAYBACK_SPEEDS
         .iter()
         .map(|speed| t_args("tube-speed-value", &[arg("rate", speed.to_string())]))
@@ -859,6 +870,11 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         speeds,
         speed,
     ));
+}
+
+/// The player's caption-track menu: what this video offers, plus Off.
+fn set_captions_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     // Captions: what this video offers, plus Off. The label says what the
     // choice is doing: off, on, or why it cannot be on.
     let mut captions: Vec<String> = vec![t("tube-captions-off")];
@@ -894,7 +910,12 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         captions,
         chosen,
     ));
+}
 
+/// The player's Skip command, present only inside a segment the person skips
+/// by hand.
+fn set_skip_setting(model: &TubeModel, v: &Video, player: &mut ui::widget::VideoPlayer) {
+    use ui::widget::video_player::PlayerSetting;
     let manual = v
         .sponsor
         .iter()

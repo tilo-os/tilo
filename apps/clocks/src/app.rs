@@ -441,10 +441,6 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     )
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
-)]
 /// The repeat-day strip, shared by the new-alarm form and the editor.
 fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static str) -> Element {
     let source = selection.clone();
@@ -582,9 +578,6 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
     let editor = {
         let state = state.clone();
         let controls = controls.clone();
-        let edit_label = edit_label.clone();
-        let edit_time = edit_time.clone();
-        let edit_repeat = edit_repeat.clone();
         let editing_state = editing.clone();
         ModelView::from_state(&editing, move |shown_editing| -> Element {
             let editing = editing_state.clone();
@@ -597,12 +590,12 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                     as Element;
             }
             let save = controls.dispatcher.clone();
-            let save_id = id.clone();
+            let save_id = id;
             let save_label = edit_label.clone();
             let save_time = edit_time.clone();
             let save_repeat = edit_repeat.clone();
             let save_editing = editing.clone();
-            let cancel_editing = editing.clone();
+            let cancel_editing = editing;
             Box::new(clock_card(
                 "Edit alarm",
                 Box::new(
@@ -642,7 +635,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                     },
                                 ))
                                 .push(button("clocks.alarm.edit.cancel", "Cancel", move || {
-                                    cancel_editing.set(None)
+                                    cancel_editing.set(None);
                                 })),
                         )),
                 ),

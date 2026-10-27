@@ -39,15 +39,23 @@ pub(crate) struct Header {
     pub mode: Mode,
     /// A comparison with changes is loaded, so there is somewhere to go.
     pub changes: bool,
-    /// A merge is open, so its result can be saved.
-    pub merge_open: bool,
-    /// The merged result holds nothing that is not already saved.
-    pub saved: bool,
+    pub merge: MergeResult,
     /// A folder comparison is open, so its listing can be shown again.
     pub folders: bool,
     /// The window is too narrow for the controls' labels: they drop to short
     /// labels and icons.
     pub compact: bool,
+}
+
+/// The merged result the Save control offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MergeResult {
+    /// No merge is open, so there is nothing to save.
+    None,
+    /// The merged result holds something not yet written.
+    Unsaved,
+    /// The merged result holds nothing that is not already written.
+    Saved,
 }
 
 /// The state the header and the comparison share. Clones refer to the same
@@ -64,8 +72,7 @@ impl Chrome {
             header: LocalState::new(Header {
                 mode: Mode::Diff,
                 changes: false,
-                merge_open: false,
-                saved: false,
+                merge: MergeResult::None,
                 folders: false,
                 compact: false,
             }),
@@ -184,7 +191,7 @@ impl Chrome {
                 // It stays available once saved, writing to the same place
                 // again, so the label says whether anything is pending
                 // rather than disabling the control.
-                let label = if header.saved {
+                let label = if header.merge == MergeResult::Saved {
                     t(if header.compact {
                         "toolbar-saved-short"
                     } else {
@@ -204,7 +211,7 @@ impl Chrome {
                 };
                 button
                     .role(ButtonRole::Primary)
-                    .with_enabled(header.merge_open)
+                    .with_enabled(header.merge != MergeResult::None)
                     .on_own_device_effect(self.request(Command::SaveMerged))
             }
             Command::ShowFolders => {

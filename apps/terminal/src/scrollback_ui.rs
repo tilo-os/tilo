@@ -303,8 +303,8 @@ impl TerminalWidget {
         self.draw_peer_marks(&mut peers, marks, theme, presence);
         scene.append(&peers, None);
         scene.pop_layer();
-        // A themed scrollbar indicator in the reserved right gutter, shown only
-        // when the buffer overflows the viewport.
+        // The overlay history bar over the right padding, while the buffer
+        // overflows the viewport.
         let mut bar = Scene::new();
         self.draw_scrollbar(&mut bar, transform, theme, frame.visible_rows);
         scene.append(&bar, None);
