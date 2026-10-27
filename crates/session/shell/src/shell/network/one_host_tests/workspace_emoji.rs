@@ -53,7 +53,7 @@ struct CodeWindow {
 
 impl CodeWindow {
     fn open(launch: AppLaunch, profile: std::path::PathBuf, room: RoomId, person: String) -> Self {
-        let (add, told) = mpsc::channel::<String>();
+        let (asked, told) = mpsc::channel::<String>();
         let (shown, seen) = mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
         let thread = {
@@ -111,7 +111,7 @@ impl CodeWindow {
             })
         };
         Self {
-            add,
+            add: asked,
             seen,
             last: Shown::default(),
             done,

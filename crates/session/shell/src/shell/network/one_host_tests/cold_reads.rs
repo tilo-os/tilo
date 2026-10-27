@@ -3,7 +3,6 @@
 //! device or another, comes from the room's host when this device holds
 //! none of it, through the app's own committed read.
 
-use std::cell::RefCell;
 use std::os::fd::IntoRawFd as _;
 use std::path::Path;
 use std::rc::Rc;
@@ -362,10 +361,9 @@ fn open_in_fresh_profile(
                         views,
                         device_id: device_id.clone(),
                         instance_id: 1,
-                        permissions: Rc::new(RefCell::new(PermissionContext::member(
-                            author,
-                            Role::Owner,
-                        ))),
+                        permissions: ui::permissions::SharedPermissions::new(
+                            PermissionContext::member(author, Role::Owner),
+                        ),
                         author: UserId(author.to_owned()),
                         action_context: tilo_actions::ActionContext::default(),
                     },

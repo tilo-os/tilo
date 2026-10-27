@@ -890,6 +890,7 @@ mod tests {
             grant: vec![migrates[0].clone()],
             triggers: vec![],
             saved_by: None,
+            saved_proof: None,
         };
         assert!(unused_rules(&shortcut).is_empty());
     }

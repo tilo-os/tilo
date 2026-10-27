@@ -19473,7 +19473,7 @@ dependencies = [
  "agent-provider-config",
  "anyhow",
  "app-cli",
- "base64",
+ "base64 0.22.1",
  "blake3",
  "bounded-command",
  "bytes",
@@ -20390,6 +20390,7 @@ dependencies = [
 name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde_json",
  "tempfile",
  "tilo-automerge",

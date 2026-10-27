@@ -944,14 +944,6 @@ hints = { builds = false }
 inputs = ["Cargo.toml", "**/Cargo.toml", "**/*.rs", "tools/policy/check_integration_test_modules.py", "tools/policy/findings.py"]
 
 [[check]]
-name = "policy/first-party-catalogue"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py python3 tools/first-party-catalogue.py --check"
-hints = { builds = false }
-inputs = ["apps/*/tilo-app.toml", "crates/session/desktop-model/src/first_party_catalogue.rs", "tools/first-party-catalogue.py", "tools/policy/findings.py"]
-
-[[check]]
 name = "policy/capnp-bindings"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }

@@ -1002,6 +1002,7 @@ impl Rooms {
             this.bind(&room).await?;
             this.settle(&mut room).await?;
             this.recall(&mut room).await?;
+            this.prepare_workspace_layout(&mut room).await?;
             // What the relay's log revoked while the room was closed.
             this.carry_revocations(&mut room, &[]).await?;
         }

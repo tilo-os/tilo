@@ -7,7 +7,8 @@
 //! Two trees stand for two machines in one room: the device whose person
 //! made it, which also has a workspace only its person is in, and a
 //! collaborator admitted to it. What crosses between them is the room's
-//! document as its host admits the first device's layout, as on the wire.
+//! layout record as the first device writes it, as its record route carries
+//! it.
 
 use shell::shell::state::{RoomId, TabId, TileContent, WorkspaceId, WorkspaceTree};
 use shell::shell::tab_binding;
@@ -18,6 +19,8 @@ const GUEST: &str = "bob";
 /// their own, so the person's windows are a peer's to the collaborator.
 const HOST_SALT: u16 = 0xA11C;
 const GUEST_SALT: u16 = 0xBEEF;
+/// The key of the person's own machine, which signs its layout record.
+const HOST_DEVICE: [u8; 32] = [0xA1; 32];
 
 struct Room {
     host: WorkspaceTree,
@@ -60,12 +63,12 @@ fn shared_room() -> Room {
     }
 }
 
-/// The person's layout of the room, admitted by the room's host, taken in
-/// on the guest's machine as its native owner takes the admitted room.
+/// The person's layout of the room, written into its layout record and taken
+/// in on the guest's machine as the room's record route delivers it.
 fn ship(room: &mut Room) {
-    let admitted = room.host.admit_own_layout_for_test(room.id);
     room.guest
-        .project_room_document_for_test(room.id, &admitted);
+        .hear_layout(&mut room.host, room.id, HOST_DEVICE)
+        .expect("the guest takes in the room's layout");
 }
 
 /// The workspace holding `tab` in `tree`.

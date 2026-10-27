@@ -372,6 +372,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         self.opened_owner("native membership owner unavailable")
             .and_then(|owner| {
                 super::launcher::native_app_open_access(&owner, room, certificate, app)
+                    .map_err(|error| error.to_string())
             })
             .is_ok_and(|access| access == super::launcher::NativeAppOpenAccess::Delegate)
     }

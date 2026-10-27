@@ -1,10 +1,19 @@
 //! A window a member shares with a room whose layout is personal, from the
 //! room's record of the share to the tab every other member shows.
 
-use crate::shell::state::TileContent;
+use crate::shell::state::{Strip, Tab, TileContent, WindowGroup, WindowWidth};
 
 mod personal_app_shares;
 mod personal_window_shares;
+
+fn tab(id: u64, tile: TileContent) -> Tab {
+    Tab {
+        id,
+        title: format!("tab {id:x}"),
+        tile,
+        app_title: None,
+    }
+}
 
 /// A room `host` governs whose owner admitted `person` as an editor, and
 /// whose governance holds the device `device` of theirs: what tells which
