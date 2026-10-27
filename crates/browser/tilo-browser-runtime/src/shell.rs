@@ -2497,39 +2497,6 @@ impl Widget for BrowserShell {
         }
     }
 
-    /// The open People popover takes the keyboard and the pointer over it; a
-    /// press elsewhere closes it, and the bar's avatars toggle it. Answers
-    /// whether the popover took the event.
-    fn people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
-        if !(self.people_open || self.people.wants_pointer_capture()) {
-            return false;
-        }
-        let on_bar = self
-            .cursor
-            .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
-        let hit = self
-            .people
-            .handle_event(event, ctx, self.people_open, self.cursor);
-        if let Some(hit) = hit {
-            if !(hit == CollaboratorsHit::Dismiss && on_bar) {
-                self.apply_people_hit(hit);
-            }
-            *ctx.handled = !(hit == CollaboratorsHit::Dismiss && on_bar);
-        }
-        if let WindowEvent::KeyboardInput { event: key, .. } = event
-            && self.people_open
-            && !*ctx.handled
-            && key.state == ElementState::Pressed
-            && let Some(hit) = self
-                .people
-                .key(&key.logical_key, ctx.modifiers.state().shift_key())
-        {
-            self.apply_people_hit(hit);
-            *ctx.handled = true;
-        }
-        *ctx.handled
-    }
-
     /// The desktop surface's strip pan is view-only, while nothing above
     /// the strip takes the wheel first: the People popover, the Tilo menu,
     /// the overview, or the bar under the pointer (its centre cycles
@@ -2681,6 +2648,39 @@ impl Widget for BrowserShell {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The open People popover takes the keyboard and the pointer over it; a
+    /// press elsewhere closes it, and the bar's avatars toggle it. Answers
+    /// whether the popover took the event.
+    fn people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        if !(self.people_open || self.people.wants_pointer_capture()) {
+            return false;
+        }
+        let on_bar = self
+            .cursor
+            .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
+        let hit = self
+            .people
+            .handle_event(event, ctx, self.people_open, self.cursor);
+        if let Some(hit) = hit {
+            if !(hit == CollaboratorsHit::Dismiss && on_bar) {
+                self.apply_people_hit(hit);
+            }
+            *ctx.handled = !(hit == CollaboratorsHit::Dismiss && on_bar);
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && self.people_open
+            && !*ctx.handled
+            && key.state == ElementState::Pressed
+            && let Some(hit) = self
+                .people
+                .key(&key.logical_key, ctx.modifiers.state().shift_key())
+        {
+            self.apply_people_hit(hit);
+            *ctx.handled = true;
+        }
+        *ctx.handled
     }
 }
 
