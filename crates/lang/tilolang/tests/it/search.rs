@@ -19,11 +19,11 @@ type Message {
     attachments: Collection<File>
 
     search {
-        filter unread "Unread"
+        filter unread "Unread" (icon: .mail)
         filter from
         filter received
         filter labels
-        filter "Has attachment" = not attachments.is_empty()
+        filter "Has attachment" = not attachments.is_empty() (icon: .paperclip)
         sort received newest
         hide to
     }
@@ -44,10 +44,6 @@ type Mailbox {
     messages: Collection<Message>
 }
 
-/// Marks a message read or unread.
-action mark(m: Message, unread: Bool = not m.unread) (icon: .mail, on: m.unread) {
-    m.unread = unread
-}
 "#;
 
 fn type_meta<'m>(meta: &'m tilolang::PackageMeta, name: &str) -> &'m TypeMeta {
@@ -93,10 +89,16 @@ fn a_search_block_declares_the_filters_in_order_the_sort_and_the_hidden_fields()
             FilterKind::Predicate
         ]
     );
-    // A toggle shows the icon of the action whose state its field is.
+    // A filter's icon is the one its declaration names.
     assert_eq!(
         search.filter("unread").and_then(|f| f.icon.as_deref()),
         Some("mail")
+    );
+    assert_eq!(
+        search
+            .filter("has_attachment")
+            .and_then(|f| f.icon.as_deref()),
+        Some("paperclip")
     );
     assert_eq!(search.filter("from").and_then(|f| f.icon.clone()), None);
     let from = search.filter("from").expect("from");
@@ -126,7 +128,11 @@ fn a_search_block_declares_the_filters_in_order_the_sort_and_the_hidden_fields()
     let src = format!("app t.x \"X\"\n\n{MAIL}");
     let printed = print_module(&parse(&src).expect("parses"));
     assert!(
-        printed.contains("    search {\n        filter unread \"Unread\"\n"),
+        printed.contains("    search {\n        filter unread \"Unread\" (icon: .mail)\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("not attachments.is_empty() (icon: .paperclip)"),
         "{printed}"
     );
     assert_eq!(print_module(&parse(&printed).expect("parses")), printed);
@@ -261,6 +267,12 @@ fn a_bad_declaration_is_an_error_that_names_the_type_by_its_doc() {
             "it sorts `newest` or `oldest`",
         ),
         ("        sort due latest", "E103", "is not an order"),
+        (
+            "        filter done (colour: .red)",
+            "E090",
+            "takes the option `icon:`",
+        ),
+        ("        filter done (icon: .nope)", "E090", "not an icon"),
         (
             "        filter done\n        filter done",
             "E104",

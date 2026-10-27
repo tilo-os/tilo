@@ -101,6 +101,39 @@ impl Ctx<'_> {
         self.diags.push(Diagnostic::new(code, span, msg));
     }
 
+    /// A filter's `(icon: .x)`, as an enum case's is written.
+    fn icon(&mut self, opts: &[ast::ActionOpt]) -> Option<String> {
+        let mut icon = None;
+        for opt in opts {
+            match (opt.name.name.as_str(), &opt.value.kind) {
+                ("icon", _) if icon.is_some() => {
+                    self.err("E090", opt.name.span, "`icon:` is given twice");
+                }
+                ("icon", ExprKind::Variant { name, args: None }) => {
+                    match crate::prims::icon(&name.name) {
+                        Some(kebab) => icon = Some(kebab.to_owned()),
+                        None => self.err(
+                            "E090",
+                            name.span,
+                            format!("`.{}` is not an icon of the platform's set", name.name),
+                        ),
+                    }
+                }
+                ("icon", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`icon:` takes an icon written with a dot, such as `icon: .circle`",
+                ),
+                (other, _) => self.err(
+                    "E090",
+                    opt.name.span,
+                    format!("a filter takes the option `icon:`; `{other}:` is not one"),
+                ),
+            }
+        }
+        icon
+    }
+
     fn field(&mut self, name: &ast::Ident, what: &str) -> Option<&FieldInfo> {
         if self.info.field(&name.name).is_none() {
             let msg = format!(
@@ -269,8 +302,10 @@ pub fn resolve(
     let mut hidden_names: Vec<(String, Span)> = Vec::new();
     for entry in &block.entries {
         match &entry.kind {
-            SearchEntryKind::Field { field, label } => {
-                if let Some(filter) = ctx.field_filter(field, label.as_deref()) {
+            SearchEntryKind::Field { field, label, opts } => {
+                let icon = ctx.icon(opts);
+                if let Some(mut filter) = ctx.field_filter(field, label.as_deref()) {
+                    filter.icon = icon;
                     push_filter(&mut ctx, &mut out, filter, entry.span);
                 }
             }
@@ -278,8 +313,11 @@ pub fn resolve(
                 label,
                 label_span,
                 expr,
+                opts,
             } => {
-                if let Some(filter) = ctx.named_filter(label, *label_span, expr) {
+                let icon = ctx.icon(opts);
+                if let Some(mut filter) = ctx.named_filter(label, *label_span, expr) {
+                    filter.icon = icon;
                     push_filter(&mut ctx, &mut out, filter, entry.span);
                 }
             }

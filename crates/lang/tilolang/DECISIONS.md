@@ -273,10 +273,10 @@ search.md sections 2.2 and 3.3.
   field), E101 (a type no filter compares), E102 (a named filter the index cannot keep), E103
   (an order the field does not have), E104 (repeated, hidden and filtered, a reserved key),
   each naming the type with its doc comment's first line.
-- **A toggle's icon is its action's.** search.md gives filters no icon of their own (a
-  variant's icon is its case's). A filter on a Bool field shows the icon of the type's action
-  whose state is that field (`action pin(n: Note) (icon: .pin, on: n.pinned)` gives `Pinned`
-  the pin), so a list's places keep the icons their apps declared; a named filter has none.
+- **A filter's icon is declared** with the annotation enum cases and actions take:
+  `filter done (icon: .circle_check)`, `filter "Open" = not done (icon: .circle)`. After a
+  named filter's predicate the parenthesis would read as a call; one that names only options
+  is the filter's options. A filter that declares none has no icon.
 - **Named filters are predicates of the existing vocabulary.** They read fields with `not`,
   `and`, `or`, comparisons, `.len()` and `.is_empty()`. search.md's
   `attachments.count > 0` is written `not attachments.is_empty()` or
@@ -305,5 +305,6 @@ search.md sections 2.2 and 3.3.
   body; it is the expanding view's, kept under `<view id>:<template>.<name>` and listed in that
   view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
-  (`all`), each counted by `items.matching(p.query).len()`. The `filter:` and `count:`
+  (`all`, named from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
+  the place a window starts on, the state's default (Letters starts on `is:drafts`), each counted by `items.matching(p.query).len()`. The `filter:` and `count:`
   parameters are gone.

@@ -6,6 +6,11 @@ type Note {
     body: Text (body)
     pinned: Bool = false
     tags: Set<Text>
+
+    search {
+        filter pinned (icon: .pin)
+        filter tags
+    }
 }
 
 /// The workspace's notes.

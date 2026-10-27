@@ -118,6 +118,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Its type's name, in words: `New note` for `NewNote`.",
             ),
             ("noun", "Text", "What one is called in a sentence: `note`."),
+            (
+                "plural",
+                "Text",
+                "What several are called in a sentence: `notes`.",
+            ),
             ("icon", "Option<Text>", "The name of its app's icon."),
             (
                 "opens",

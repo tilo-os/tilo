@@ -54,9 +54,9 @@ view compose(d: Draft) {
 }
 
 /// The desk's window: its letters, each opening in a window of its own, drafts and sent ones
-/// apart as a letter's filters say.
+/// apart as a letter's filters say. It opens on the drafts.
 view desk(desk: Desk) {
-    std.list(desk, desk.drafts, empty: "No letters here")
+    std.list(desk, desk.drafts, place: "is:drafts", empty: "No letters here")
 }
 
 /// One letter in a list: its subject and who it goes to.

@@ -492,7 +492,10 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
     let rows = room.rows();
     assert!(rows.len() >= 3, "{rows:?}");
     let shell = room.composed();
-    assert_eq!(shell.props.get("overview_title"), Some(&Value::text("All")));
+    assert_eq!(
+        shell.props.get("overview_title"),
+        Some(&Value::text("All notes"))
+    );
     assert_eq!(
         header_labels(&shell, "overview_actions"),
         ["Sort", "search", "New note"],

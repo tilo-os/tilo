@@ -10,23 +10,26 @@
 /// the primary action. The places in the sidebar are the item type's filters that are on or
 /// off (`filters(T)`), after all of the items, each with how many it holds; the one chosen is
 /// the window's query, as people type it in search (`is:done`), so everyone looking sees the
-/// same list. A `sort` view state is the header's sort menu. Items whose type has a window of
+/// same list; a window starts on `place` (all of the items when empty). A `sort` view state is
+/// the header's sort menu. Items whose type has a window of
 /// their own open in the next column; the list follows which one is open.
 view list<R, T, S>(
     of: R,
     items: List<T>,
     sort: Option<State<S>> = .none,
+    place: Text = "",
     empty: Text = phrase("tilolang-empty"),
     row: (T) -> View
 ) {
-    window query: Text = ""
+    window query: Text = place
     let kind = meta(T)
+    let everything = phrase("tilolang-all", kind: kind.plural)
     let offered = actions(of)
     let places = filters(T).filter(f -> f.toggle)
     let shown = items.matching(query)
     let title = match places.find(p -> p.query == query) {
         .some(p) => p.label,
-        .none => if places.is_empty() { meta(of).title } else { phrase("tilolang-all") },
+        .none => if places.is_empty() { meta(of).title } else { everything },
     }
     // An empty list offers the primary action while nothing was made yet; one a filter emptied
     // says only that.
@@ -42,7 +45,7 @@ view list<R, T, S>(
         sidebar: {
             if not places.is_empty() {
                 ui.NavList(selected: if query == "" { "all" } else { query }) {
-                    ui.NavItem("all", phrase("tilolang-all"), icon: kind.icon, count: .some(items.len())) {
+                    ui.NavItem("all", everything, icon: kind.icon, count: .some(items.len())) {
                         on select: set(query, "")
                     }
                     for p in places {

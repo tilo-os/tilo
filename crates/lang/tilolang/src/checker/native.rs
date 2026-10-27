@@ -609,10 +609,15 @@ impl Checker<'_> {
                     ty,
                 )
             };
-            let title = field(0, Ty::Text);
+            let at = |name: &str| {
+                crate::host::value_field("Meta", name)
+                    .and_then(|at| i32::try_from(at).ok())
+                    .unwrap_or(0)
+            };
+            let title = field(at("title"), Ty::Text);
             self.prop(node.clone(), "title", title, value.span);
             let icon_ty = Ty::Option(Box::new(Ty::Text));
-            let icon = field(3, icon_ty);
+            let icon = field(at("icon"), icon_ty);
             self.set_when_some(node, "icon", icon, &Ty::Text, value.span);
             return None;
         }

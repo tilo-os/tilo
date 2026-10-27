@@ -600,7 +600,6 @@ pub fn resolve(
     r.types(module, lock);
     r.callables(module, lock);
     r.package_decls(module);
-    r.toggle_icons(module);
     r.env
 }
 
@@ -1617,51 +1616,6 @@ impl Resolver<'_> {
             }
         }
         out
-    }
-
-    /// The icons of the toggles on Bool fields: an action whose state is the field
-    /// (`action pin(n: Note) (icon: .pin, on: n.pinned)`) shows its icon, and so does the
-    /// field's filter.
-    fn toggle_icons(&mut self, module: &ast::Module) {
-        for item in &module.items {
-            let Item::Action(a) = item else { continue };
-            let Some(on) = a.opts.iter().find(|o| o.name.name == "on") else {
-                continue;
-            };
-            let ExprKind::Field { base, name: field } = &on.value.kind else {
-                continue;
-            };
-            let ExprKind::Ident(param) = &base.kind else {
-                continue;
-            };
-            let Some(Ty::Record(key)) = a
-                .params
-                .iter()
-                .find(|p| p.name.name == *param)
-                .map(|p| resolve_type_expr(&self.env, &p.ty, &mut Vec::new()))
-            else {
-                continue;
-            };
-            let Some(icon) = self
-                .env
-                .own_callable(&a.name.name)
-                .and_then(|c| c.present.icon.clone())
-            else {
-                continue;
-            };
-            let Some(ty) = self.env.types.iter_mut().find(|t| t.key == key) else {
-                continue;
-            };
-            if ty.field(&field.name).is_some_and(|f| f.ty == Ty::Bool)
-                && let Some(filter) = ty
-                    .search
-                    .filters
-                    .iter_mut()
-                    .find(|f| f.key == field.name && f.icon.is_none())
-            {
-                filter.icon = Some(icon);
-            }
-        }
     }
 
     /// The kebab-case name of the icon `.name`, or an error naming close ones.

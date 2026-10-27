@@ -51,6 +51,26 @@ pub fn sentence(name: &str) -> String {
     })
 }
 
+/// What several of a noun are called, as English writes most: `notes`, `entries`, `boxes`.
+#[must_use]
+pub fn plural(noun: &str) -> String {
+    let consonant_y = noun.strip_suffix('y').is_some_and(|stem| {
+        stem.chars()
+            .last()
+            .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+    });
+    if consonant_y {
+        format!("{}ies", noun.strip_suffix('y').unwrap_or(noun))
+    } else if ["s", "x", "z", "ch", "sh"]
+        .iter()
+        .any(|end| noun.ends_with(end))
+    {
+        format!("{noun}es")
+    } else {
+        format!("{noun}s")
+    }
+}
+
 /// The label an action is shown with: as the compiler derived it, else its name in sentence
 /// case.
 #[must_use]
@@ -208,6 +228,7 @@ impl Core {
             Value::Text(title),
             Value::Text(type_name.clone()),
             Value::Text(type_name.to_lowercase()),
+            Value::Text(plural(&type_name.to_lowercase())),
             meta.icon
                 .clone()
                 .map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
