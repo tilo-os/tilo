@@ -394,19 +394,21 @@ impl AgentActions {
 
     /// Open for `owner` and ask its agent for `title`'s work, described by
     /// `body`: an issue in Tasks whose run the asking starts, as the composer
-    /// asks; with `show`, the issue's page opens once it is asked. Whether
-    /// it was asked.
+    /// asks; with `show`, the issue's page opens once it is asked. A
+    /// `quick` ask is a question: its task ends when the run answers it.
+    /// Whether it was asked.
     pub(super) fn open_and_ask(
         &mut self,
         source: ActionSessionSource,
         owner: &ComposerOwner,
         (title, body): (&str, &str),
         show: bool,
+        quick: bool,
     ) -> bool {
         if !self.open(source, owner.clone()) {
             return false;
         }
-        let mut operation = queue_operation(owner, None, (title, body), None, None);
+        let mut operation = queue_operation(owner, None, (title, body), None, None, quick);
         if let Purpose::Queue { show: shown, .. } = &mut operation.purpose {
             *shown = show;
         }
@@ -456,6 +458,7 @@ impl AgentActions {
             (title, &instruction),
             about,
             None,
+            false,
         ));
     }
 
@@ -700,6 +703,7 @@ fn request_queue(request: &ComposerRequest, title: Option<String>) -> Operation 
         (&title, &instruction),
         request.about.as_ref(),
         request.model.as_ref(),
+        false,
     )
 }
 
@@ -714,6 +718,7 @@ fn queue_operation(
     (title, instruction): (&str, &str),
     about: Option<&SelectionSeed>,
     model: Option<&runtime_collab::TaskRunModel>,
+    quick: bool,
 ) -> Operation {
     let title: String = title.trim().chars().take(TITLE_CHARS).collect();
     let mut arguments = Map::from_iter([
@@ -736,6 +741,11 @@ fn queue_operation(
         .and_then(|subject| serde_json::from_str::<Value>(&subject).ok())
     {
         arguments.insert("subject".into(), subject);
+    }
+    // A question is a small task, and says so where it is asked: its run's
+    // answer ends it.
+    if quick {
+        arguments.insert("quick".into(), true.into());
     }
     if let Some(about) = about {
         tracing::info!(
@@ -1750,6 +1760,7 @@ mod tests {
                 &owner,
                 (query, query),
                 show,
+                show,
             ));
             let mut composer = AgentQuickComposer::default();
             settle(&mut actions, &mut composer, &Tracker::default());
@@ -1758,6 +1769,13 @@ mod tests {
             assert_eq!(asked["title"], query);
             assert_eq!(asked["body"], query);
             assert_eq!(asked["agent"], "agent:tide");
+            // A question typed into search is a quick one: answered, it is
+            // over, rather than waiting in review.
+            assert_eq!(
+                asked.get("quick").and_then(Value::as_bool),
+                show.then_some(true),
+                "show: {show}"
+            );
             let issue = format!(
                 "{}{}",
                 tilo_action_broker::services::TRACKER_ISSUE_PREFIX,

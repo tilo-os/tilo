@@ -12,7 +12,7 @@ use ui::prelude::*;
 use crate::model::{Status, Tracker, tracker};
 use crate::{Filter, Nav, Place};
 
-pub(crate) const SCENARIOS: &[&str] = &["issues", "board", "issue", "mine"];
+pub(crate) const SCENARIOS: &[&str] = &["issues", "board", "issue", "mine", "thread", "todo"];
 
 /// One issue of the scene: its title, where it stands, whose it is, and its
 /// label.
@@ -98,26 +98,49 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         {
             continue;
         }
+        // Some of the tasks have been talked about, so the thread view has
+        // something to read and the person's own voice is in it.
+        if matches!(issue.status, Status::InProgress | Status::InReview)
+            && let Some(id) = made(&replica, issue.title)
+        {
+            at = at.saturating_add(1_000);
+            replica = replica.as_author(person);
+            replica.set_now_ms(at);
+            replica
+                .apply(Tracker::COMMENT.with(tracker::Comment {
+                    issue: id.clone(),
+                    text: format!(
+                        "Started on {}: the first draft is in the folder.",
+                        issue.title
+                    ),
+                }))
+                .ok();
+        }
         let Some(label) = issue.label else {
             continue;
         };
-        let made = replica.state().ok().and_then(|state| {
-            state
-                .issues
-                .iter()
-                .find(|(_, shown)| shown.title == issue.title)
-                .map(|(id, _)| id.clone())
-        });
-        if let Some(id) = made {
-            at = at.saturating_add(1_000);
-            replica.set_now_ms(at);
-            let _ = replica.apply(Tracker::ADD_LABEL.with(tracker::AddLabel {
-                issue: id,
-                label: label.to_owned(),
-            }));
-        }
+        let Some(id) = made(&replica, issue.title) else {
+            continue;
+        };
+        at = at.saturating_add(1_000);
+        replica.set_now_ms(at);
+        let _ = replica.apply(Tracker::ADD_LABEL.with(tracker::AddLabel {
+            issue: id,
+            label: label.to_owned(),
+        }));
     }
     replica.state().unwrap_or_default()
+}
+
+/// The issue `title` names, as the replica has it now.
+fn made(replica: &Replica<Tracker>, title: &str) -> Option<Id> {
+    replica.state().ok().and_then(|state| {
+        state
+            .issues
+            .iter()
+            .find(|(_, shown)| shown.title == title)
+            .map(|(id, _)| id.clone())
+    })
 }
 
 /// The view state a scenario shows.
@@ -133,6 +156,11 @@ pub(crate) fn stage(scenario: Option<&str>, nav: &Nav, tracker: &Tracker) {
             if let Some((id, _)) = tracker.by_number(1) {
                 nav.open(id);
             }
+        }
+        Some("thread") => nav.place.set(Place::Thread),
+        Some("todo") => {
+            nav.place.set(Place::List);
+            nav.filter.set(Some(Filter::Todo.key()));
         }
         _ => nav.place.set(Place::List),
     }

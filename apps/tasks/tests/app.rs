@@ -677,6 +677,12 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
     assert_eq!(shown.len(), 1, "one issue is unassigned: {shown:?}");
     assert!(shown[0].contains("Record the demo"), "{shown:?}");
 
+    // Todos: the tasks nobody has started. All three are as they were
+    // made, so all three are todos, an agent's included until its run
+    // takes the task up.
+    choose(&mut app, "Todos");
+    assert_eq!(rows(&mut app).len(), 3, "nothing has been started");
+
     // An agent's: the one handed to the room's agent.
     choose(&mut app, "An agent's");
     let shown = rows(&mut app);
@@ -708,6 +714,54 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
     press_view(&mut app, "Issues");
     choose(&mut app, "All issues");
     assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
+}
+
+/// One task, read through every view the app has: the conversation it is
+/// is the thread, and the card on the board and the row in the list open the
+/// same page rather than a copy of it.
+#[test]
+fn a_task_with_a_conversation_reads_in_the_thread_and_opens_its_own_page() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Which venue seats 120?" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(
+        &issue_resource(&issue),
+        "comment",
+        json!({ "text": "The old depot on Mill Street does." }),
+    )
+    .expect("say something on it");
+
+    // The thread reads it as a conversation, saying who last spoke.
+    press_view(&mut app, "Thread");
+    app.settle();
+    let row = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label().is_some_and(|label| {
+                label.contains("#1") && label.contains("Which venue seats 120?")
+            })
+        })
+        .map(|(id, _)| id)
+        .expect("the task reads in the thread");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+
+    // Its row opens the issue's page, the same one the other views open.
+    assert!(
+        app.harness().targets().contains_key("tasks-issue-title"),
+        "the thread's row opens the issue"
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named("The old depot on Mill Street does.")
+            .is_some(),
+        "and the page it opens is the issue that was read in the thread"
+    );
 }
 
 /// Press the window bar's view `name`, as a press on it does.
