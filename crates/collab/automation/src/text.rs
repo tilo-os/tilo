@@ -1376,13 +1376,14 @@ fn inside_quote(text: &str, at: usize) -> bool {
 /// `text` cut at each space outside a quoted text, shortest first, so the
 /// longest one that names something is the reading a line is given.
 fn prefixes(text: &str) -> Vec<&str> {
-    let mut cuts: Vec<usize> = text
+    let spaces = text
         .char_indices()
         .filter(|(index, ch)| *ch == ' ' && !inside_quote(text, *index))
-        .map(|(index, _)| index)
-        .collect();
-    cuts.push(text.len());
-    cuts.into_iter().filter_map(|end| text.get(..end)).collect()
+        .map(|(index, _)| index);
+    spaces
+        .chain(std::iter::once(text.len()))
+        .filter_map(|end| text.get(..end))
+        .collect()
 }
 
 /// A quoted text, and what follows the closing quote.
