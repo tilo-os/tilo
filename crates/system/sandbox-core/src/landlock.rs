@@ -661,10 +661,11 @@ mod tests {
         use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 
         let abi = kernel_abi();
-        if abi < FS_ABI as i32 {
-            eprintln!("skipped: kernel Landlock ABI {abi} is below the ABI 5 floor");
-            return;
-        }
+        tilo_test_env::require_capability!(
+            Landlock,
+            abi >= FS_ABI as i32,
+            "this kernel's Landlock ABI {abi} is below the ABI {FS_ABI} floor"
+        );
         let spec = RulesetSpec::application(Vec::new(), NetRestriction::Unrestricted);
         let enforced = effective_scopes(&spec);
         let id = std::process::id();

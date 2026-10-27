@@ -125,26 +125,29 @@ mod tests {
             // Honest device test: opt-in only. This opens a real camera when one is
             // present, which is not hermetic, so a plain `cargo test` (now that
             // `live-capture` is a default feature) must not touch hardware. Set
-            // CAMERA_LIVE_TEST=1 to exercise it on a machine with a webcam.
+            // CAMERA_LIVE_TEST=1 to exercise it on a machine with a webcam; where
+            // it is set, a missing or unopenable camera takes the shared gate, so
+            // a lane that promises one fails instead of looking green.
             if std::env::var("CAMERA_LIVE_TEST").is_err() {
                 eprintln!("CAMERA_LIVE_TEST not set — skipping live-open device test");
             } else {
-                // Honest device test: skip cleanly when no camera is present.
                 let devs = list_devices();
-                if let Some(dev) = devs.first() {
-                    match Capture::open(dev, 640, 480) {
-                        Ok(cap) => {
-                            // A real pipeline opened; the frame channel is live. We don't
-                            // assert a frame arrives — CI cameras may be present but not
-                            // streamable — only that the pipeline built and plays.
-                            drop(cap);
-                        }
-                        Err(e) => {
-                            eprintln!("device {dev} present but not openable here: {e}");
-                        }
-                    }
-                } else {
-                    eprintln!("no /dev/video* device present — skipping live-open test");
+                let Some(dev) = devs.first() else {
+                    tilo_test_env::capability_unavailable(
+                        tilo_test_env::Capability::Camera,
+                        format_args!("no /dev/video* device present"),
+                    );
+                    return;
+                };
+                match Capture::open(dev, 640, 480) {
+                    // A real pipeline opened; the frame channel is live. We don't
+                    // assert a frame arrives — CI cameras may be present but not
+                    // streamable — only that the pipeline built and plays.
+                    Ok(cap) => drop(cap),
+                    Err(error) => tilo_test_env::capability_unavailable(
+                        tilo_test_env::Capability::Camera,
+                        format_args!("{dev} is present but does not open: {error}"),
+                    ),
                 }
             }
         }
