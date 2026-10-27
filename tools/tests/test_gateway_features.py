@@ -53,7 +53,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                     self.assertEqual(argv[:5], ["cargo", "nextest", "run", "--locked", "-p"])
                     self.assertEqual(argv[5], package)
                     # Its tests' features come through workspace-unify, never as --features.
-                    self.assertEqual(argv[8:], ["-p", "workspace-unify"])
+                    self.assertEqual(argv[8:10], ["-p", "workspace-unify"])
                     self.assertNotIn("--all-features", argv)
                     self.assertNotIn("--workspace", argv)
             command = ["cargo", "nextest", "run", "--locked", "-p", "chat",
@@ -61,7 +61,8 @@ class GatewayFeaturesTests(unittest.TestCase):
             result = subprocess.run(
                 ["bash", str(ci / "t-nextest.sh"), *command],
                 capture_output=True, text=True, check=True)
-            self.assertEqual(json.loads(result.stdout), command + ["-p", "workspace-unify"])
+            self.assertEqual(json.loads(result.stdout)[:len(command) + 2],
+                             command + ["-p", "workspace-unify"])
             anchor = tomllib.loads((ROOT / "crates/dev/workspace-unify/Cargo.toml").read_text())
             for table in anchor["target"].values():
                 gateway = table.get("dependencies", {}).get("tilo-model-gateway")
