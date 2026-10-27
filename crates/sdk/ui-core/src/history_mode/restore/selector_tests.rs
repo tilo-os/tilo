@@ -49,7 +49,7 @@ static CONTENT_EXCEPT: HistoryRestoreSchema = HistoryRestoreSchema {
 
 #[test]
 fn map_content_except_restores_authored_keys_and_preserves_excluded_state() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
     doc.put(&profile, "name", "target").unwrap();
@@ -123,12 +123,15 @@ fn restore(
     schema: &'static HistoryRestoreSchema,
     target: &[ChangeHash],
 ) -> RestoreOutcome {
+    // Written at the version the schema reads: version admission has its own
+    // test, and these scenarios are about what the selectors restore.
+    tilo_resource::evolution::write_version(doc, schema.version).unwrap();
     let live = doc.get_heads();
     let prepared = prepare_content_restore(doc, schema, &live, target).unwrap();
     apply_prepared_content_restore(doc, &prepared).unwrap()
 }
 fn sheets_fixture() -> (AutoCommit, ObjId, Vec<ChangeHash>) {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let wb = doc.put_object(ROOT, "wb", ObjType::Map).unwrap();
     let sheets = doc.put_object(&wb, "sheets", ObjType::List).unwrap();
     doc.insert(&sheets, 0, "sheet-a").unwrap();
@@ -137,6 +140,14 @@ fn sheets_fixture() -> (AutoCommit, ObjId, Vec<ChangeHash>) {
     doc.insert(&sheets, 1, "sheet-b").unwrap();
     doc.put(&wb, "active", 1_i64).unwrap();
     (doc, wb, target)
+}
+
+/// A document written at the storage version the sheets schema reads, for
+/// scenarios that check selectors rather than version admission.
+fn at_sheets_version() -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    tilo_resource::evolution::write_version(&mut doc, SHEETS.version).unwrap();
+    doc
 }
 
 #[test]
@@ -182,7 +193,7 @@ fn selectors_restore_only_selected_children_of_mixed_containers() {
     }
     // phase: optional_selected_child_absence_preserves_present_parent_and_unknown_children
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let wb = doc.put_object(ROOT, "wb", ObjType::Map).unwrap();
         doc.put(&wb, "active", 0_i64).unwrap();
         let target = doc.get_heads();
@@ -198,7 +209,7 @@ fn selectors_restore_only_selected_children_of_mixed_containers() {
     }
     // phase: omission_is_admitted_only_when_combined_result_validator_accepts_it
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
         profile(&mut doc, &connections, "stable-id", "historical");
         let target = doc.get_heads();
@@ -260,7 +271,7 @@ fn selectors_keep_protected_content_and_refuse_selected_conflicts() {
     }
     // phase: recursive_overlays_keep_every_mixed_ancestor_and_protected_object
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let document = doc.put_object(ROOT, "document", ObjType::Map).unwrap();
         let wb = doc.put_object(&document, "wb", ObjType::Map).unwrap();
         let sheets = doc.put_object(&wb, "sheets", ObjType::List).unwrap();
@@ -289,7 +300,7 @@ fn selectors_keep_protected_content_and_refuse_selected_conflicts() {
     }
     // phase: reject_policy_refuses_new_entity_but_allows_retained_profile_edits
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
         let retained = profile(&mut doc, &connections, "stable-id", "original");
         let target = doc.get_heads();
@@ -401,7 +412,7 @@ fn profile(doc: &mut AutoCommit, connections: &ObjId, key: &str, name: &str) -> 
 fn selectors_preserve_identity_membership_and_roll_back_failures() {
     // phase: remote_retains_operational_identity_deletes_entities_and_resurrects_content_only
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
         let retained = profile(&mut doc, &connections, "retained", "old-name");
         profile(&mut doc, &connections, "resurrect", "old-resurrect");
@@ -439,7 +450,7 @@ fn selectors_preserve_identity_membership_and_roll_back_failures() {
     }
     // phase: browser_add_remove_membership_and_tombstone_resurrection
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let add = doc
             .put_object(ROOT, "browser.bookmarks.v2.add:tag-a", ObjType::Map)
             .unwrap();
@@ -497,7 +508,7 @@ fn selectors_preserve_identity_membership_and_roll_back_failures() {
     // phase: real_browser_tags_and_unicode_family_identities_restore
     // Browser's actual tags contain colons; UTF-8 identity captures are byte-bounded.
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         for key in [
             "browser.bookmarks.v2.add:bookmark:0123456789abcdef",
             "browser.bookmarks.v2.add:legacy:0123456789abcdef",
@@ -651,7 +662,7 @@ fn selector_families_and_overlays_are_validated_at_registration_and_capture() {
     {
         let good = family("notifications.app.", ".banners", 32, STRING);
         let disjoint = family("notifications.app.", ".sounds", 32, STRING);
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let target = doc.get_heads();
         doc.put(ROOT, "notifications.app.org.example.banners", "yes")
             .unwrap();
@@ -702,7 +713,7 @@ fn selector_families_and_overlays_are_validated_at_registration_and_capture() {
     // phase: family_capture_bounds_and_required_membership_are_checked_on_current_and_target
     {
         let bounded = schema(vec![family("draft.", "", 3, STRING)]);
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         doc.put(ROOT, "draft.abc", "old").unwrap();
         let target = doc.get_heads();
         doc.put(ROOT, "draft.abc", "new").unwrap();
@@ -734,7 +745,7 @@ fn selector_families_and_overlays_are_validated_at_registration_and_capture() {
     }
     // phase: invalid_overlay_shapes_and_recursive_static_graphs_fail_registration
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         let heads = doc.get_heads();
         assert!(prepare_content_restore(&doc, &SHEETS, &heads, &heads).is_ok());
         for node in [
@@ -970,7 +981,7 @@ fn complement_row(doc: &mut AutoCommit, parent: &ObjId, key: &str, name: &str) -
 
 #[test]
 fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
-    let mut fixed = AutoCommit::new();
+    let mut fixed = at_sheets_version();
     let outer = fixed.put_object(ROOT, "outer", ObjType::Map).unwrap();
     let profile = fixed.put_object(&outer, "profile", ObjType::Map).unwrap();
     let outer_view = fixed.put_object(&outer, "view", ObjType::Map).unwrap();
@@ -996,7 +1007,7 @@ fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
         Some("current")
     );
 
-    let mut entries = AutoCommit::new();
+    let mut entries = at_sheets_version();
     let connections = entries
         .put_object(ROOT, "connections", ObjType::Map)
         .unwrap();
@@ -1010,7 +1021,7 @@ fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
     assert_eq!(object(&entries, &connections, "a"), row);
     assert_eq!(object(&entries, &row, "presence"), presence);
 
-    let mut family = AutoCommit::new();
+    let mut family = at_sheets_version();
     let record = family
         .put_object(ROOT, "record:item-a", ObjType::Map)
         .unwrap();
@@ -1033,7 +1044,7 @@ fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
 
 #[test]
 fn complement_membership_resurrection_omits_excluded_fields_and_never_revives_ids() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
     let retained = complement_row(&mut doc, &connections, "a", "target-a");
     let retained_presence = object(&doc, &retained, "presence");
@@ -1076,11 +1087,13 @@ fn complement_membership_resurrection_omits_excluded_fields_and_never_revives_id
 
 #[test]
 fn complement_reject_policy_allows_retained_edits_but_refuses_empty_resurrection() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
     let retained = complement_row(&mut doc, &connections, "a", "target");
     let target = doc.get_heads();
     doc.put(&retained, "name", "live").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_ROWS_REJECT_SCHEMA.version)
+        .unwrap();
     let live = doc.get_heads();
     assert!(prepare_content_restore(&doc, &COMPLEMENT_ROWS_REJECT_SCHEMA, &live, &target).is_ok());
 
@@ -1104,11 +1117,12 @@ fn complement_reject_policy_allows_retained_edits_but_refuses_empty_resurrection
 
 #[test]
 fn complement_omit_resurrection_still_obeys_the_combined_result_validator() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let connections = doc.put_object(ROOT, "connections", ObjType::Map).unwrap();
     complement_row(&mut doc, &connections, "missing", "target");
     let target = doc.get_heads();
     doc.delete(&connections, "missing").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REQUIRE_PRESENCE.version).unwrap();
     let live = doc.get_heads();
     let before = doc.clone().save();
     assert!(matches!(
@@ -1121,7 +1135,7 @@ fn complement_omit_resurrection_still_obeys_the_combined_result_validator() {
 
 #[test]
 fn complement_live_validator_failure_rolls_back_multiple_writes_and_identities() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
     doc.put(&presence, "status", "current").unwrap();
@@ -1131,6 +1145,7 @@ fn complement_live_validator_failure_rolls_back_multiple_writes_and_identities()
     doc.put(&profile, "a", "live-a").unwrap();
     doc.delete(&profile, "b").unwrap();
     doc.put(&profile, "c", "live-c").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REFUSE_LIVE.version).unwrap();
     let live = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(b"selector-live".as_slice()));
     let prepared = prepare_content_restore(&doc, &COMPLEMENT_REFUSE_LIVE, &live, &target).unwrap();
@@ -1150,7 +1165,7 @@ fn complement_live_validator_failure_rolls_back_multiple_writes_and_identities()
 
 #[test]
 fn complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     doc.put(&profile, "name", "target").unwrap();
     let runtime_text = doc
@@ -1185,6 +1200,7 @@ fn complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text()
     peer.put(&right_presence, "status", "right").unwrap();
     doc.merge(&mut peer).unwrap();
     doc.put(&profile, "name", "live").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
     let live = doc.get_heads();
     let last_used: Vec<_> = doc
         .get_all(&profile, "last_used")
@@ -1229,7 +1245,7 @@ fn complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text()
 
 #[test]
 fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registration() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let nested_map = doc.put_object(&profile, "map", ObjType::Map).unwrap();
     doc.put(&nested_map, "value", "map").unwrap();
@@ -1268,6 +1284,7 @@ fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registrat
     doc.splice_text(&text, 0, 4, "live").unwrap();
     doc.delete(&profile, "target-only").unwrap();
     doc.put(&profile, "current-only", "current").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
     let live = doc.get_heads();
     let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
     let target_projection = prepared.target_projection().clone();
@@ -1300,7 +1317,7 @@ fn complement_schema(fields: &'static [&'static str]) -> &'static HistoryRestore
 
 #[test]
 fn complement_registration_enforces_only_declared_count_name_and_byte_bounds() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let heads = doc.get_heads();
     let long_1024: &'static str = Box::leak("é".repeat(512).into_boxed_str());
     let long_1025: &'static str = Box::leak(format!("{}a", "é".repeat(512)).into_boxed_str());
@@ -1373,7 +1390,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced() {
 }
 
 fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
-    let mut boundary = AutoCommit::new();
+    let mut boundary = at_sheets_version();
     let profile = boundary.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let ancestors = nested_map_chain_ids(&mut boundary, &profile, 255);
     let deepest = ancestors.last().unwrap().clone();
@@ -1405,6 +1422,8 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         .unwrap();
     boundary
         .insert(&replacement_live, 0, "current-list")
+        .unwrap();
+    tilo_resource::evolution::write_version(&mut boundary, COMPLEMENT_REFUSE_TRIAL.version)
         .unwrap();
     let live = boundary.get_heads();
     let before_trial = boundary.clone().save();
@@ -1479,20 +1498,22 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     drop(loaded);
     drop(boundary);
 
-    let mut too_deep = AutoCommit::new();
+    let mut too_deep = at_sheets_version();
     let profile = too_deep.put_object(ROOT, "profile", ObjType::Map).unwrap();
     nested_map_chain(&mut too_deep, &profile, 256);
+    tilo_resource::evolution::write_version(&mut too_deep, CONTENT_EXCEPT.version).unwrap();
     let heads = too_deep.get_heads();
     assert!(matches!(
         prepare_content_restore(&too_deep, &CONTENT_EXCEPT, &heads, &heads),
         Err(RestoreError::UnsupportedContent(_))
     ));
 
-    let mut deep_target = AutoCommit::new();
+    let mut deep_target = at_sheets_version();
     let profile = deep_target
         .put_object(ROOT, "profile", ObjType::Map)
         .unwrap();
     nested_map_chain(&mut deep_target, &profile, 256);
+    tilo_resource::evolution::write_version(&mut deep_target, CONTENT_EXCEPT.version).unwrap();
     let target = deep_target.get_heads();
     deep_target.delete(ROOT, "profile").unwrap();
     deep_target
@@ -1504,11 +1525,12 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         Err(RestoreError::UnsupportedContent(_))
     ));
 
-    let mut deep_current = AutoCommit::new();
+    let mut deep_current = at_sheets_version();
     let profile = deep_current
         .put_object(ROOT, "profile", ObjType::Map)
         .unwrap();
     deep_current.put(&profile, "leaf", true).unwrap();
+    tilo_resource::evolution::write_version(&mut deep_current, CONTENT_EXCEPT.version).unwrap();
     let target = deep_current.get_heads();
     deep_current.delete(ROOT, "profile").unwrap();
     let profile = deep_current
@@ -1524,22 +1546,24 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     assert_eq!(deep_current.clone().save(), before);
 
     let protected_schema = complement_schema(&["presence"]);
-    let mut protected = AutoCommit::new();
+    let mut protected = at_sheets_version();
     let profile = protected.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let presence = protected
         .put_object(&profile, "presence", ObjType::Map)
         .unwrap();
     nested_map_chain(&mut protected, &presence, 256);
+    tilo_resource::evolution::write_version(&mut protected, protected_schema.version).unwrap();
     let heads = protected.get_heads();
     assert!(matches!(
         prepare_content_restore(&protected, protected_schema, &heads, &heads),
         Err(RestoreError::UnsupportedContent(_))
     ));
 
-    let mut far_over = AutoCommit::new();
+    let mut far_over = at_sheets_version();
     let profile = far_over.put_object(ROOT, "profile", ObjType::Map).unwrap();
     far_over.put(&profile, "accepted-first", true).unwrap();
     nested_map_chain(&mut far_over, &profile, 1024);
+    tilo_resource::evolution::write_version(&mut far_over, CONTENT_EXCEPT.version).unwrap();
     let heads = far_over.get_heads();
     let before = far_over.clone().save();
     assert!(matches!(
@@ -1549,24 +1573,26 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     assert_eq!(far_over.clone().save(), before);
 
     for wrong in [ObjType::List, ObjType::Text] {
-        let mut doc = AutoCommit::new();
+        let mut doc = at_sheets_version();
         doc.put_object(ROOT, "profile", wrong).unwrap();
+        tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
         let heads = doc.get_heads();
         assert!(matches!(
             prepare_content_restore(&doc, &CONTENT_EXCEPT, &heads, &heads),
             Err(RestoreError::SchemaInvalid(_))
         ));
     }
-    let mut scalar = AutoCommit::new();
+    let mut scalar = at_sheets_version();
     scalar.put(ROOT, "profile", "wrong").unwrap();
+    tilo_resource::evolution::write_version(&mut scalar, CONTENT_EXCEPT.version).unwrap();
     let heads = scalar.get_heads();
     assert!(matches!(
         prepare_content_restore(&scalar, &CONTENT_EXCEPT, &heads, &heads),
         Err(RestoreError::SchemaInvalid(_))
     ));
-    let missing = AutoCommit::new();
-    let mut copy = missing.clone();
-    let heads = copy.get_heads();
+    let mut missing = at_sheets_version();
+    tilo_resource::evolution::write_version(&mut missing, CONTENT_EXCEPT.version).unwrap();
+    let heads = missing.get_heads();
     assert!(matches!(
         prepare_content_restore(&missing, &CONTENT_EXCEPT, &heads, &heads),
         Err(RestoreError::SchemaInvalid(_))
@@ -1616,7 +1642,7 @@ fn accepted_selector_and_protected_codec_boundaries() {
 
 fn accepted_selector_and_protected_codec_boundaries_inner() {
     let deep_schema = deepest_entry_schema();
-    let mut selected = AutoCommit::new();
+    let mut selected = at_sheets_version();
     let deep = selected.put_object(ROOT, "deep", ObjType::Map).unwrap();
     let parent = nested_map_chain_ids(&mut selected, &deep, 255)
         .pop()
@@ -1638,7 +1664,7 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
     drop(selected);
 
     let protected_schema = complement_schema(&["presence"]);
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     doc.put(&profile, "name", "target").unwrap();
     let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
@@ -1682,6 +1708,7 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
 
     let target = doc.get_heads();
     doc.put(&profile, "name", "current").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, protected_schema.version).unwrap();
     let live = doc.get_heads();
     let protected_values = doc
         .get_all(&alternative_parent, "leaf")
@@ -1912,14 +1939,17 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
 #[test]
 fn complement_normalized_absence_noop_and_private_excluded_key_refusal_are_exact() {
     let optional = complement_schema(&["presence"]);
-    let mut doc = AutoCommit::new();
-    let missing = doc.get_heads();
+    // The version stamp comes before the target: the empty state the schema
+    // normalises is the one it reads.
+    let mut doc = at_sheets_version();
+    tilo_resource::evolution::write_version(&mut doc, optional.version).unwrap();
+    let target = doc.get_heads();
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let presence = doc.put_object(&profile, "presence", ObjType::Map).unwrap();
     doc.put(&presence, "status", "current").unwrap();
     let live = doc.get_heads();
     let before = doc.clone().save();
-    let prepared = prepare_content_restore(&doc, optional, &live, &missing).unwrap();
+    let prepared = prepare_content_restore(&doc, optional, &live, &target).unwrap();
     assert_eq!(
         apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
         RestoreOutcome::Unchanged
@@ -1966,12 +1996,13 @@ fn complement_normalized_absence_noop_and_private_excluded_key_refusal_are_exact
 
 #[test]
 fn complement_freshness_checks_excluded_changes_before_writing() {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     doc.put(&profile, "name", "target").unwrap();
     doc.put(&profile, "last_used", 1_i64).unwrap();
     let target = doc.get_heads();
     doc.put(&profile, "name", "live").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
     let live = doc.get_heads();
     let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
     doc.put(&profile, "last_used", 2_i64).unwrap();
@@ -1992,7 +2023,7 @@ fn whole_identity_reconciliation_applies_under_fields_entries_and_family_roots()
         required: true,
         node: WHOLE_MAP_FIELD,
     }]);
-    let mut fixed_doc = AutoCommit::new();
+    let mut fixed_doc = at_sheets_version();
     let outer = fixed_doc.put_object(ROOT, "outer", ObjType::Map).unwrap();
     let payload = fixed_doc
         .put_object(&outer, "payload", ObjType::Map)
@@ -2008,7 +2039,7 @@ fn whole_identity_reconciliation_applies_under_fields_entries_and_family_roots()
         required: true,
         node: WHOLE_MAP_ENTRIES,
     }]);
-    let mut entry_doc = AutoCommit::new();
+    let mut entry_doc = at_sheets_version();
     let rows = entry_doc.put_object(ROOT, "rows", ObjType::Map).unwrap();
     let row = entry_doc.put_object(&rows, "a", ObjType::Map).unwrap();
     entry_doc.put(&row, "value", "target").unwrap();
@@ -2018,7 +2049,7 @@ fn whole_identity_reconciliation_applies_under_fields_entries_and_family_roots()
     assert_eq!(object(&entry_doc, &rows, "a"), row);
 
     let family_schema = schema(vec![family("whole:", "", 45, WHOLE_MAP)]);
-    let mut family_doc = AutoCommit::new();
+    let mut family_doc = at_sheets_version();
     let family_root = family_doc
         .put_object(ROOT, "whole:item", ObjType::Map)
         .unwrap();

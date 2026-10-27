@@ -2715,13 +2715,13 @@ impl Widget for NotesApp {
                 .next_wake_deadline()
                 .is_some_and(|deadline| deadline <= ui::time::now());
         // A dragged block's pointer at the page's edge scrolls the page.
-        let dragged = self.main.autoscroll_block_drag();
+        self.main.autoscroll_block_drag();
         // A lifted touchpad gesture glides the page on; only the view moves.
         self.main.advance_glide();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path) || feedback_expired || dragged
+        self.shell.update(state, path) || feedback_expired
     }
 
     fn native_input_snapshot(

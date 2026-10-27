@@ -807,6 +807,7 @@ fn membership_action(
         resource_label: label.into(),
         action_label: action_label.into(),
         keywords: Vec::new(),
+        icon: None,
         description: None,
         operation_kind: tilo_actions::OperationKind::Effect,
         params,

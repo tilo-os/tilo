@@ -463,8 +463,9 @@ impl DesktopSurface {
     }
 
     /// Open search over what window `group` shows: its shown tab's
-    /// resources and search providers, the in-app search its search control
-    /// and the app's own search button offer, narrowed to the part of the
+    /// resources, what its search providers find and its actions
+    /// ([`tilo_desktop_search::window::WindowSearch`]), the in-app search its
+    /// search control and the app's own search button offer, narrowed to the part of the
     /// app `request` names and with its query typed. Opens over everything
     /// when the window is gone.
     fn open_window_search(
@@ -490,10 +491,11 @@ impl DesktopSurface {
             .map(|scope| scope.label.clone())
             .or_else(|| window_app(&self.shared.borrow().tree, group))
             .filter(|name| !name.is_empty());
+        let published = host.window_search(doc);
         let data = SearchData {
-            resources: ui::widget::published_resources(host, doc),
-            providers: ui::widget::published_search_providers(host),
-            content_only: true,
+            resources: published.resources,
+            providers: published.providers,
+            window: true,
             scope: scope.map(|scope| scope.anchor.clone()),
             placeholder: searched.map(|name| {
                 crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])

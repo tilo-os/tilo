@@ -518,6 +518,31 @@ impl DesktopSurface {
         result
     }
 
+    /// Hand `invocation`, chosen in the search over tab `tab`'s window, to
+    /// that tab's app, which runs it as its own control would, under its
+    /// own custody and permissions.
+    ///
+    /// # Errors
+    /// Gives the invocation back when no window here shows the tab, or its
+    /// app takes no controls.
+    pub fn queue_window_control(
+        &mut self,
+        tab: u64,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> Result<(), tilo_actions::ControlInvocation> {
+        for strip in self.strip_ids() {
+            let Some(row) = self.row_mut(strip) else {
+                continue;
+            };
+            for group in &mut row.groups {
+                if let Some(host) = group.host_for_tab_mut(tab) {
+                    return host.queue_control(invocation);
+                }
+            }
+        }
+        Err(invocation)
+    }
+
     /// Visit each tab's in-process app, across every strip.
     fn for_each_app(&mut self, mut visit: impl FnMut(u64, &mut dyn ui::widget::AppWidget)) {
         for strip in self.strip_ids() {
@@ -1346,6 +1371,10 @@ impl Widget for DesktopSurface {
         self.root.apply_layout(tree, node, origin);
         let reveal_pending = self.apply_navigation();
         self.end_transition(reveal_pending);
+        // A group still to be framed is framed in a later layout.
+        if reveal_pending {
+            ui::widget::note_layout_moved();
+        }
     }
     fn draw(
         &mut self,

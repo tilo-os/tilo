@@ -283,7 +283,8 @@ fn places<'a>(
     }
 }
 
-/// Move to strip and Move to workspace, each a nested menu of places.
+/// Move to strip, Move to workspace and Move to display, each a nested menu
+/// of places.
 fn move_rows(facts: &WindowMenuFacts) -> Vec<WindowMenuRow> {
     vec![
         places(
@@ -361,7 +362,8 @@ fn width_row() -> WindowMenuRow {
 /// shortcuts `config` binds:
 ///
 /// 1. Full screen and Maximize (or Exit full screen and Restore);
-/// 2. Move to strip and Move to workspace, each a nested menu of places;
+/// 2. Move to strip, Move to workspace and Move to display, each a nested
+///    menu of places, and Width;
 /// 3. New tab, Rename tab for a host window's tab, and for a tabbed window
 ///    Split right and Move to new group;
 /// 4. Close tab, for a tabbed window, then Close window;

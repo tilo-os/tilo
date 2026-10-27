@@ -852,33 +852,24 @@ mod tests {
     }
 
     #[test]
-    fn an_overlay_the_host_still_routes_has_its_kind_and_its_band() {
+    fn an_overlay_the_host_still_routes_has_its_kind_and_no_band() {
         let stack = OverlayStack::default();
         for id in LayerId::ALL {
             let surface = stack.surface(id);
             assert_eq!(surface.lifecycle, Lifecycle::Closed, "{id:?}");
             assert_eq!(surface.owner, Owner::Shell, "{id:?}");
-            if stack.layer(id).is_some() {
-                continue;
-            }
-            // A layer that joins the stack answers for itself; until then
-            // the declaration is the only answer, and it has to say what
-            // the host's own routing already does.
-            let band = id.band();
             assert_eq!(
                 Band::of(surface.lifecycle, surface.modality),
                 None,
                 "{id:?} is closed"
             );
-            assert!(
-                band.is_some(),
-                "{id:?} has a band, so it is routed as a surface"
-            );
-            let shown = Lifecycle::Shown;
+            // A stacked layer is offered input in its band; one the host
+            // still routes itself is offered none by the stack until it
+            // joins it.
             assert_eq!(
-                Band::of(shown, surface.modality),
-                Some(band.unwrap()),
-                "{id:?}: its modality decides the band its input is offered in"
+                id.band().is_some(),
+                stack.layer(id).is_some(),
+                "{id:?}: only a stacked layer has a band"
             );
         }
     }
@@ -929,7 +920,7 @@ mod tests {
         let geometry = LayerGeometry {
             viewport: left.union(right),
             outputs: &outputs,
-            focused_output: None,
+            focused_output: Some(right),
         };
         let caret = Rect::new(2000.0, 100.0, 2002.0, 120.0);
         let beside = Surface::shell(

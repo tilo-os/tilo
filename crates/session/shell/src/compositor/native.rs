@@ -11252,7 +11252,12 @@ pub fn run() {
             session_changed = true;
         }
         let mut event_step = "accessibility";
+        // Pointer events a touch contact became, still at the front of the
+        // queue: the input-route lines say a click came from a finger.
+        let mut from_touch_ahead = 0_usize;
         while let Some(event) = pending_events.pop_front() {
+            let from_touch = from_touch_ahead > 0;
+            from_touch_ahead = from_touch_ahead.saturating_sub(1);
             // Another of the person's devices' input is this device's own,
             // except that it does not say someone is here.
             let (event, origin) = match event {
@@ -11731,6 +11736,20 @@ pub fn run() {
                                 wev,
                                 &test_control_ctx.modifiers,
                             );
+                        if let WindowEvent::MouseInput { state: button, .. } = wev {
+                            // Where a click went before the chrome saw it: a
+                            // client's surface, or on to the chrome.
+                            tracing::info!(
+                                target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                                ?button,
+                                from_touch,
+                                to_client,
+                                cursor = ?state.client_input.pointer_position(),
+                                grab = %state.client_input.grab_label(),
+                                pointer_focus = ?state.client_input.pointer_focus(),
+                                "click routed"
+                            );
+                        }
                         if let Some(steps) = key_steps.as_mut() {
                             steps.steps.mark("client");
                         }
@@ -11760,6 +11779,15 @@ pub fn run() {
                                 &mut test_control_ctx.focus,
                             );
                             session_changed |= chrome_handled;
+                            if let WindowEvent::MouseInput { state: button, .. } = wev {
+                                tracing::info!(
+                                    target: tilo_startup_metrics::INPUT_ROUTE_TARGET,
+                                    ?button,
+                                    from_touch,
+                                    chrome_handled,
+                                    "click reached the chrome"
+                                );
+                            }
                             if let Some(steps) = key_steps.as_mut() {
                                 steps.steps.mark("chrome");
                             }
@@ -11790,6 +11818,7 @@ pub fn run() {
                         .rev()
                         {
                             pending_events.push_front(BackendEvent::Input(event));
+                            from_touch_ahead = from_touch_ahead.saturating_add(1);
                         }
                     }
                 }
@@ -14151,6 +14180,20 @@ pub fn run() {
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
+        // Input, a session change, a marker gone or an output presentation
+        // may move what the desktop lays out; a client's new buffer, the
+        // cursor, peers' pointers or an animation alone do not. The tree's
+        // revisions and the widgets' own notes count apart
+        // (`FrameBuilder::relayout_if_owed`).
+        if redraw_reasons.force
+            || redraw_reasons.backend_event
+            || redraw_reasons.session
+            || redraw_reasons.presentation
+            || markers_retired
+            || accessibility_changed
+        {
+            frame_builder.owe_layout();
+        }
         let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
@@ -14334,7 +14377,7 @@ pub fn run() {
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
             let paint_cpu = metrics.cpu_snapshot();
-            frame_builder.relayout();
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             let relaid_out = Instant::now();
             metrics::profile::record_phase(
@@ -14856,8 +14899,8 @@ pub fn run() {
             }
         } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
-            // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
-            frame_builder.relayout();
+            // event hit-tests post-input rects, not the pre-overlay tree.
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // The post-dispatch `flush_configures` below sends this layout's sizes.
             publish_layout_to_clients(
@@ -20340,6 +20383,7 @@ mod tests {
                         resource_label: "A presentation label without routing metadata".into(),
                         action_label: "Hide".into(),
                         keywords: Vec::new(),
+                        icon: None,
                         description: Some("Do not infer identity from this text".into()),
                         locus: tilo_actions::ExecutionLocus::default(),
                         kind: tilo_actions::OperationKind::View,

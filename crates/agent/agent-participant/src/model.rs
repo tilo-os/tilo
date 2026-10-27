@@ -592,6 +592,7 @@ fn app_open_offer(app: &str, second: bool) -> Offer {
             resource_label: app.to_owned(),
             action_label: format!("open {app} on a new, empty document"),
             keywords: Vec::new(),
+            icon: None,
             description: Some(description),
             locus: tilo_actions::ExecutionLocus::ServerPreferred,
             kind: tilo_actions::OperationKind::Effect,
@@ -861,6 +862,7 @@ fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> Actio
         resource_label,
         action_label,
         keywords: Vec::new(),
+        icon: None,
         description: Some(format!(
             "A {app} document this room already has, which people may be looking at. \
              Opening it puts its operations on the list, and they change this document: \

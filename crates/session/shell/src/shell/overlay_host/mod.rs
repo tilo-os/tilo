@@ -547,6 +547,9 @@ pub struct ShellOverlayHost {
     /// The live application directory, kept to narrow search to one part of
     /// an app when the app asks (`AppHostIntent::OpenSearch`).
     app_actions: Option<std::rc::Rc<crate::shell::search::providers::LiveAppActionsProvider>>,
+    /// An app's search, answered by its window: lent what the focused window
+    /// publishes for each query ([`Self::lend_focused_window`]).
+    focused_window: std::rc::Rc<crate::shell::search::providers::FocusedWindowProvider>,
     /// Starts an installed desktop app through the session launcher. Kept as
     /// an explicit service so fixture hosts can remain process-free.
     app_launcher: AppLauncher,

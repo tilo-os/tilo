@@ -12,6 +12,7 @@ fn action(label: &str, id: &str, keywords: &[&str]) -> PublishedAction {
         resource_label: "Fixture".into(),
         action_label: label.into(),
         keywords: keywords.iter().map(|word| (*word).to_owned()).collect(),
+        icon: None,
         description: None,
         operation_kind: tilo_actions::OperationKind::View,
         params: Vec::new(),

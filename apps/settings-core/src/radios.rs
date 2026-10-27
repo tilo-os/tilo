@@ -56,6 +56,9 @@ impl Present {
 #[derive(Clone)]
 pub struct Radios {
     latest: Arc<Mutex<Option<Present>>>,
+    /// What the window took in of `latest`: a frame being laid out reads
+    /// what the frame began with ([`Self::now`]).
+    taken: Arc<Mutex<Option<Present>>>,
     /// Asks the reading thread to look again now; `None` for a fixed answer.
     again: Option<Arc<Sender<()>>>,
 }
@@ -67,6 +70,7 @@ impl Radios {
     pub fn unread() -> Self {
         Self {
             latest: Arc::new(Mutex::new(None)),
+            taken: Arc::new(Mutex::new(None)),
             again: None,
         }
     }
@@ -112,13 +116,23 @@ impl Radios {
         }
         Self {
             latest,
+            taken: Arc::new(Mutex::new(None)),
             again: Some(Arc::new(again)),
         }
     }
 
-    /// The radios as last read; `None` until the first read ends.
+    /// The radios as last read; `None` until the first read ends. While a
+    /// frame is laid out on this thread, as they were when it began: a read
+    /// that ends meanwhile is taken in by the next frame, which it wakes
+    /// ([`ui::motion::frame_laying_out`]).
     pub fn now(&self) -> Option<Present> {
-        self.latest.lock().ok().and_then(|latest| *latest)
+        let Ok(mut taken) = self.taken.lock() else {
+            return None;
+        };
+        if !ui::motion::frame_laying_out() {
+            *taken = self.latest.lock().ok().and_then(|latest| *latest);
+        }
+        *taken
     }
 
     /// Read the device again now rather than at the next interval.

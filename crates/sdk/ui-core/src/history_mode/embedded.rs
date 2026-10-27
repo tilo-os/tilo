@@ -102,8 +102,20 @@ pub(crate) fn needs_refresh(
     fallback_width: f64,
     status: Option<&crate::widget::WindowStatus>,
 ) -> bool {
+    surfaces_need_refresh(root, doc, fallback_width, status).0
+}
+
+/// [`needs_refresh`], and whether `root` holds any History surface.
+pub(crate) fn surfaces_need_refresh(
+    root: &dyn Widget,
+    doc: &automerge::AutoCommit,
+    fallback_width: f64,
+    status: Option<&crate::widget::WindowStatus>,
+) -> (bool, bool) {
     let mut needed = false;
+    let mut found = false;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
+        found = true;
         let width = if history.get_rect().width() > 0.0 {
             history.get_rect().width()
         } else {
@@ -113,7 +125,7 @@ pub(crate) fn needs_refresh(
             || !history.sync_status_matches(status)
             || history.needs_refresh(doc, width);
     });
-    needed
+    (needed, found)
 }
 /// One walk for a frame that changes nothing History reads: `None` when any
 /// surface is not at rest (`HistoryHost::at_rest`), otherwise whether any needs a

@@ -411,6 +411,35 @@ fn keyword_list(list: &syn::LitStr) -> syn::Result<Vec<String>> {
     Ok(words)
 }
 
+/// `icon = "folder-plus"`: a picture by its Lucide name, lowercase words
+/// joined by hyphens. Whether the toolkit draws that name is checked where
+/// the toolkit is: each app's tests resolve every icon it declares.
+fn icon_name(name: &syn::LitStr) -> syn::Result<String> {
+    let value = name.value();
+    let well_formed = !value.is_empty()
+        && value.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if !well_formed {
+        return Err(syn::Error::new(
+            name.span(),
+            "an icon is named by its Lucide name, such as `folder-plus`",
+        ));
+    }
+    Ok(value)
+}
+
+/// `Some("…")` or `None`, as tokens of an `Option<&'static str>`.
+fn optional_str(value: Option<&str>) -> proc_macro2::TokenStream {
+    value.map_or_else(
+        || quote::quote!(::core::option::Option::None),
+        |value| quote::quote!(::core::option::Option::Some(#value)),
+    )
+}
+
 fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>> {
     let fields = meta.value()?.parse::<syn::LitStr>()?;
     Ok(fields
@@ -1722,7 +1751,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// Result<serde_json::Value, String>`), `read_content_in_doc = path` (the same
 /// read, `fn(&Self, &Doc, Option<&Id>) -> ...`, for one that needs the
 /// document itself), `facts = path` (`fn(&Self) -> Result<serde_json::Value,
-/// String>`, the compact summary `Resource::facts` states) and `views = path`.
+/// String>`, the compact summary `Resource::facts` states), `history_text`
+/// (History shows this type's versions as text) and `views = path`.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = match verbs::resource_options(attr) {

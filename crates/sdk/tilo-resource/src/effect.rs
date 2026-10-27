@@ -452,6 +452,8 @@ pub struct EffectRow {
     /// The other words people use for it (`keywords = "…"`), comma
     /// separated: search finds it by them as by its label.
     pub keywords: &'static [&'static str],
+    /// Its own picture (`icon = "…"`), by its Lucide name.
+    pub icon: Option<&'static str>,
     pub description: &'static str,
     pub params: fn() -> Vec<ActionParam>,
     pub kind: OperationKind,
@@ -528,6 +530,8 @@ pub struct EffectDecl {
     /// The other words people use for it (`keywords = "…"`), comma
     /// separated: search finds it by them as by its label.
     pub keywords: &'static [&'static str],
+    /// Its own picture (`icon = "…"`), by its Lucide name.
+    pub icon: Option<&'static str>,
     pub description: &'static str,
     pub params: Vec<ActionParam>,
     /// `View` for an effect that only changes what its caller sees, else
@@ -647,6 +651,7 @@ impl EffectDecl {
             id: row.id,
             label: row.label,
             keywords: row.keywords,
+            icon: row.icon,
             description: row.description,
             params: (row.params)(),
             kind: row.kind,
@@ -712,6 +717,7 @@ impl EffectDecl {
         if !self.keywords.is_empty() {
             spec = spec.with_keywords(self.keywords.iter().copied());
         }
+        spec.icon = self.icon.map(str::to_owned);
         let base = if view {
             ActionContract::view()
         } else {

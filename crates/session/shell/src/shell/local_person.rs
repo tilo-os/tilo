@@ -115,6 +115,7 @@ mod tests {
                         resource_label: "Displays".into(),
                         action_label: id.into(),
                         keywords: Vec::new(),
+                        icon: None,
                         description: None,
                         operation_kind: tilo_actions::OperationKind::View,
                         params: vec![],

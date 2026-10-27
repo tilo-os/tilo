@@ -142,7 +142,7 @@ impl Project {
     ///
     /// A new file named `name` in the folder `folder` (the project's root
     /// when none), holding `text`.
-    #[action(keywords = "create file, add file, touch")]
+    #[action(keywords = "create file, add file, touch", icon = "file-plus")]
     pub fn new_file(
         &mut self,
         cx: &mut ActionCx,
@@ -165,7 +165,10 @@ impl Project {
     ///
     /// A new folder named `name` in the folder `folder` (the project's root
     /// when none).
-    #[action(keywords = "mkdir, make directory, create folder")]
+    #[action(
+        keywords = "mkdir, make directory, create folder",
+        icon = "folder-plus"
+    )]
     pub fn new_folder(
         &mut self,
         cx: &mut ActionCx,
@@ -179,7 +182,7 @@ impl Project {
     /// Rename
     ///
     /// Give the file or folder another name, unique in its folder.
-    #[action(item = files)]
+    #[action(item = files, icon = "pencil")]
     pub fn rename(
         &mut self,
         entry: &Id,
@@ -198,7 +201,7 @@ impl Project {
     ///
     /// Move the file or folder into the folder `folder` (the project's root
     /// when none), before `before` among its entries or after them all.
-    #[action(item = files)]
+    #[action(item = files, icon = "arrow-right")]
     pub fn move_entry(
         &mut self,
         entry: &Id,
@@ -241,7 +244,7 @@ impl Project {
     /// Replace the file's whole text with `text`, written as the smallest
     /// change to the text it has, so a collaborator's typing elsewhere in
     /// the file stays.
-    #[action(keywords = "find and replace, search and replace, substitute", item = files)]
+    #[action(keywords = "find and replace, search and replace, substitute", item = files, icon = "type")]
     pub fn replace_text(
         &mut self,
         file: &Id,
@@ -263,7 +266,7 @@ impl Project {
     /// Replace a range of one file's text with `text`, or insert `text` at a
     /// caret, counting characters; the rest of the file stays as it is. A
     /// place a person selected is passed exactly as given.
-    #[action]
+    #[action(icon = "type")]
     pub fn replace_range(
         &mut self,
         #[param(
@@ -310,7 +313,7 @@ impl Project {
     /// Delete
     ///
     /// Delete the file and its text, or the folder once it is empty.
-    #[action(keywords = "remove file, delete file", item = files, destructive)]
+    #[action(keywords = "remove file, delete file", item = files, destructive, icon = "trash-2")]
     pub fn delete(&mut self, entry: &Id) -> Result<(), Refusal> {
         self.files.get(entry).ok_or("no such file")?;
         if self
@@ -331,7 +334,7 @@ impl Project {
     /// time the editor reads it, under the id the editor gave it. An entry
     /// already recorded, or at a path a collaborator recorded under another
     /// id, is left as it is.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn record_entry(
         &mut self,
         #[param("The id it is kept under")] id: Id,
@@ -373,7 +376,7 @@ impl Project {
     /// Keep `text`, read from disk, as the text of `file` the first time
     /// the editor opens it. Text already there — a collaborator's or an
     /// earlier session's unsaved edits — is left as it is.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn record_text(
         &mut self,
         #[param("The file's id")] file: String,
@@ -391,7 +394,7 @@ impl Project {
     /// Record terminal target
     ///
     /// Record where the embedded terminal's session runs.
-    #[action(external, id = "record-target")]
+    #[action(external, id = "record-target", audience = "agents")]
     pub fn record_terminal_target(
         &mut self,
         #[param("An encoded session target")] target: String,
@@ -405,7 +408,7 @@ impl Project {
     ///
     /// Record the relay session the embedded terminal re-attaches to, or
     /// forget it.
-    #[action(external, id = "record-relay-session")]
+    #[action(external, id = "record-relay-session", audience = "agents")]
     pub fn record_terminal_relay(
         &mut self,
         #[param("The relay session's id; none to forget it")] session: Option<String>,
@@ -418,7 +421,7 @@ impl Project {
     /// Claim terminal pane
     ///
     /// Scope presence to a new process's pane of the embedded terminal.
-    #[action(external, id = "claim-pane")]
+    #[action(external, id = "claim-pane", audience = "agents")]
     pub fn claim_terminal_pane(
         &mut self,
         #[param("The pane's id")] pane: String,
@@ -432,7 +435,7 @@ impl Project {
     ///
     /// Run a command line in the embedded terminal's session, and answer
     /// with the run once it ends.
-    #[action(keywords = "run command, execute, build", id = "run")]
+    #[action(keywords = "run command, execute, build", id = "run", icon = "play")]
     pub fn run_in_terminal(
         &mut self,
         cx: &mut ActionCx,
@@ -445,7 +448,7 @@ impl Project {
     /// Rerun in terminal
     ///
     /// Run one of the embedded terminal's runs again.
-    #[action(id = "rerun")]
+    #[action(id = "rerun", icon = "repeat")]
     pub fn rerun_in_terminal(
         &mut self,
         cx: &mut ActionCx,
@@ -459,7 +462,7 @@ impl Project {
     ///
     /// Run one test of one of the embedded terminal's runs again, the way
     /// its tool runs one test.
-    #[action(id = "rerun-test")]
+    #[action(id = "rerun-test", icon = "repeat-1")]
     pub fn rerun_test_in_terminal(
         &mut self,
         cx: &mut ActionCx,
@@ -474,7 +477,7 @@ impl Project {
     /// Record terminal run
     ///
     /// Record a run the embedded terminal's session ended.
-    #[action(external, id = "record-run")]
+    #[action(external, id = "record-run", audience = "agents")]
     pub fn record_terminal_run(
         &mut self,
         cx: &mut ActionCx,
@@ -664,11 +667,17 @@ impl Project {
         self.files
             .iter()
             .map(|(id, entry)| {
-                SearchEntry::new(
-                    entry.name.clone(),
-                    self.path_of(id).unwrap_or_else(|| entry.name.clone()),
-                )
-                .anchored(crate::actions::file_resource_id(id))
+                let path = self.path_of(id).unwrap_or_else(|| entry.name.clone());
+                let icon = ui::icons::icon_for_path(
+                    std::path::Path::new(&path),
+                    entry.kind == EntryKind::Folder,
+                );
+                // Listed as the project's files, each with the picture its
+                // kind of file wears in the explorer.
+                SearchEntry::new(entry.name.clone(), path)
+                    .anchored(crate::actions::file_resource_id(id))
+                    .grouped(FILES_GROUP)
+                    .with_icon(icon.name())
             })
             .collect()
     }
@@ -685,6 +694,9 @@ impl Project {
             .collect()
     }
 }
+
+/// The heading the project's files are listed under in a search.
+const FILES_GROUP: &str = "Files";
 
 fn untitled(name: Option<String>) -> String {
     name.filter(|name| !name.trim().is_empty())

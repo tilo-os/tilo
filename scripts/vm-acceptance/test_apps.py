@@ -25,7 +25,8 @@ from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  #
                                     first_textured, lingering, parse_procs)
 from acceptance.checks.startup import (ATSPI_CLIENT, ATSPI_PROBE, GUEST_ATSPI_CLIENT,  # noqa: E402
                                        first_frame_budget, judge_listing, kpi_p95_target, open_segments, p95, parse_launch_latencies,
-                                       parse_launch_latency, parse_startup_marks, segment_series)
+                                       parse_launch_latency, parse_startup_marks, segment_series,
+                                       describe_before_main)
 import gpu_check  # noqa: E402
 import run  # noqa: E402
 
@@ -959,6 +960,18 @@ class TerminalShellPerformanceTests(unittest.TestCase):
             with self.subTest(seconds=seconds), self.assertRaises(core.CheckFailed):
                 core.assert_terminal_shell_performance(seconds)
 
+
+
+
+class BeforeMain(unittest.TestCase):
+    def test_a_late_warm_open_says_where_its_time_before_main_went(self):
+        medians = {"request_to_launcher": 310.0, "launcher": 90.0, "sandbox_to_main": 70.0,
+                   "launcher_phase.sandbox-argv-ready": 60.0, "launcher_phase.checks": 20.0,
+                   "dispatch_phase.authority": 250.0, "request_to_spawn": 300.0}
+        self.assertEqual(describe_before_main(medians),
+                         "request_to_launcher 310.0 ms; launcher 90.0 ms; sandbox_to_main 70.0 ms; "
+                         "launcher_phases sandbox-argv-ready 60.0, checks 20.0; dispatch_phases authority 250.0")
+        self.assertEqual(describe_before_main({}), "not split (no launcher marks)")
 
 if __name__ == "__main__":
     unittest.main()

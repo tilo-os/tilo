@@ -285,23 +285,36 @@ fn listing_pages_newest_first_and_refuses_a_cursor_the_history_outgrew() {
     ));
 }
 
+/// Looking at a past state is a read: someone who may only read (a viewer,
+/// an agent granted reading) lists, looks at a version, compares and closes
+/// what they opened, and is refused only what writes.
 #[test]
-fn reader_neither_sees_nor_invokes_write_gated_history() {
+fn a_reader_looks_at_past_states_and_is_refused_only_writes() {
     let mut app = document(&["v1", "v2"]);
     reader(&mut app);
     present(&mut app);
-    assert_eq!(local_actions(&app), [LIST, OPEN]);
+    assert_eq!(local_actions(&app), [CLOSE, COMPARE, LIST, OPEN, VIEW_AT]);
 
     let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
-    let v1 = entries(&listing)[1].clone();
+    let ids = entries(&listing);
+    let (v2, v1) = (ids[0].clone(), ids[1].clone());
     let changes = app.state.doc.get_changes(&[]).len();
+    let preview = invoke(&mut app, VIEW_AT, Some(json!({"entry": v1}))).unwrap();
+    assert_eq!(preview["document"]["title"], "v1", "{preview}");
+    let comparison = invoke(&mut app, COMPARE, Some(json!({"entries": [v2]}))).unwrap();
+    assert_eq!(comparison["before"]["title"], "v1", "{comparison}");
+    let session = preview["session"].as_str().unwrap();
+    assert_eq!(
+        invoke(&mut app, CLOSE, Some(json!({"session": session}))).unwrap()["closed"],
+        true
+    );
+
     for (action, args) in [
-        (VIEW_AT, json!({"entry": v1})),
-        (COMPARE, json!({"entries": [v1]})),
         (
             RESTORE,
             json!({"entry": v1, "reviewed_live_heads": listing["live_heads"]}),
         ),
+        (NAME, json!({"first": v1, "last": v2, "label": "Draft"})),
     ] {
         let refused = invoke(&mut app, action, Some(args));
         assert!(
@@ -314,7 +327,7 @@ fn reader_neither_sees_nor_invokes_write_gated_history() {
 }
 
 #[test]
-fn published_catalogue_declares_write_so_the_broker_withholds_it() {
+fn published_catalogue_declares_what_writes_so_the_broker_withholds_it() {
     let mut app = document(&["v1"]);
     reader(&mut app);
     present(&mut app);
@@ -324,10 +337,10 @@ fn published_catalogue_declares_write_so_the_broker_withholds_it() {
         .collect();
     assert_eq!(history.len(), 7);
     for descriptor in history {
-        let expected = if matches!(descriptor.address.action.as_str(), OPEN | LIST) {
-            tilo_actions::ActionKind::Read
-        } else {
+        let expected = if matches!(descriptor.address.action.as_str(), RESTORE | NAME) {
             tilo_actions::ActionKind::Undoable
+        } else {
+            tilo_actions::ActionKind::Read
         };
         assert_eq!(
             descriptor.contract.kind, expected,
@@ -335,6 +348,40 @@ fn published_catalogue_declares_write_so_the_broker_withholds_it() {
             descriptor.address.action
         );
     }
+}
+
+/// An agent granted only reading looks at a past state through the broker:
+/// the invocation runs as a read and leaves the document as it was.
+#[test]
+fn a_broker_delivered_view_at_runs_for_an_agent_that_may_only_read() {
+    let mut app = document(&["v1", "v2"]);
+    reader(&mut app);
+    present(&mut app);
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    let v1 = entries(&listing)[1].clone();
+    let argument = format!(
+        "{}{}",
+        tilo_actions::ARGUMENTS_JSON_PREFIX,
+        json!({"entry": v1})
+    );
+    let changes = app.state.doc.get_changes(&[]).len();
+    app.collaboration.manager = super::semantic_tree_app_tests::admitted_delivery_manager();
+    app.apply_collab_event_for_test(CollabEvent::Invocation {
+        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(8)),
+        id: 8,
+        resource: RESOURCE.into(),
+        action: VIEW_AT.into(),
+        argument: Some(argument),
+        actor: "agent:Scribe".into(),
+        context: None,
+    });
+    assert_eq!(
+        app.actions.history_previews.opened_by("agent:Scribe"),
+        1,
+        "the agent's look opened its preview"
+    );
+    assert_eq!(title(&app).as_deref(), Some("v2"));
+    assert_eq!(app.state.doc.get_changes(&[]).len(), changes);
 }
 
 #[test]

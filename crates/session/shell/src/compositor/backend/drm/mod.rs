@@ -1907,6 +1907,15 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
             // performance record. Verbose per-frame output remains opt-in in DrmPresenter;
             // ordinary sessions emit only one aggregate every two seconds.
             bridge.set_phase_timing_enabled(true);
+            // The present thread asked for realtime before it knew what it renders on; a CPU
+            // "GPU" (lavapipe) rasterizes here for far longer than a realtime thread may run.
+            #[cfg(target_os = "linux")]
+            if bridge
+                .adapter_info()
+                .is_ok_and(|adapter| adapter.device_type == "Cpu")
+            {
+                ::launcher::priority::leave_realtime("the renderer is a CPU rasteriser");
+            }
             *paint = Some(bridge);
             true
         }

@@ -414,6 +414,7 @@ fn descriptor(
         resource_label: "Brief".into(),
         action_label: label.into(),
         keywords: Vec::new(),
+        icon: None,
         description: None,
         operation_kind: kind,
         params,

@@ -409,6 +409,7 @@ mod tests {
                 resource_label: resource.into(),
                 action_label: action.into(),
                 keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
                 kind: OperationKind::Document,

@@ -712,6 +712,9 @@ pub(crate) struct AgentAsk {
     pub body: String,
     /// The issue's page opens once it is asked, so the person watches it.
     pub show: bool,
+    /// The asker put a question rather than handing over work: the task it
+    /// makes is small and ends when the agent answers it.
+    pub quick: bool,
 }
 
 #[derive(Debug)]
@@ -989,6 +992,8 @@ pub struct ChromeState {
     /// Invocations of those actions waiting for the overlay host.
     pub(crate) device_local_invocations:
         Vec<crate::shell::device_local_actions::DeviceLocalInvocation>,
+    /// Rows chosen in the focused window's search, for the overlay host.
+    pub(crate) window_controls: Vec<crate::shell::search::providers::focused_window::WindowControl>,
     cancel_tab_drag_requested: bool,
     axis_navigation_enabled: bool,
     axis_gather_requested: bool,
@@ -1215,6 +1220,7 @@ impl ChromeState {
             device_local_windows: Vec::new(),
             device_local_revision: 0,
             device_local_invocations: Vec::new(),
+            window_controls: Vec::new(),
             cancel_tab_drag_requested: false,
             axis_navigation_enabled: false,
             axis_gather_requested: false,
@@ -4106,6 +4112,27 @@ impl ChromeState {
             title,
             body,
             show: false,
+            quick: false,
+        });
+    }
+
+    /// Ask `agent` in `room` a question: the same issue in Tasks, made as
+    /// one that ends when its run answers, so what was asked and what came
+    /// back stay findable without waiting in the lists. Its page opens once
+    /// it is asked.
+    pub fn ask_agent_question(
+        &mut self,
+        room: crate::shell::state::RoomId,
+        agent: String,
+        (title, body): (String, String),
+    ) {
+        self.agent_asks.push(AgentAsk {
+            room,
+            agent,
+            title,
+            body,
+            show: true,
+            quick: true,
         });
     }
 
@@ -4122,6 +4149,7 @@ impl ChromeState {
             title,
             body,
             show: true,
+            quick: false,
         });
     }
 

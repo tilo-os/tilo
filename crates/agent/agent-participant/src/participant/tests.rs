@@ -299,6 +299,7 @@ fn an_unknown_action_names_what_is_offered() {
         resource_label: "Sheet".into(),
         action_label: action.into(),
         keywords: Vec::new(),
+        icon: None,
         description: None,
         locus: tilo_actions::ExecutionLocus::ClientLocal,
         kind: tilo_actions::OperationKind::Effect,

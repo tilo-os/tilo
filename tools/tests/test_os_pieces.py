@@ -152,6 +152,13 @@ class OciLayersTests(unittest.TestCase):
             digest = layers.sha256_bytes(b"base")
             self.assertTrue(Path(layers.blob_path(str(root / "view/oci"), digest)).is_symlink())
             self.assertFalse(Path(layers.blob_path(str(root / "kept/oci"), digest)).is_symlink())
+            self.assertEqual(Path(layers.blob_path(str(root / "kept/oci"), digest)).stat().st_nlink, 2)
+            copied = layers.compose(str(root / "copied"), [str(root / "base")], "0", copy=True)
+            self.assertEqual(copied["digest"], first["digest"])
+            blob = Path(layers.blob_path(str(root / "copied/oci"), digest))
+            self.assertFalse(blob.is_symlink())
+            self.assertEqual(blob.stat().st_nlink, 1)
+            self.assertEqual(blob.read_bytes(), b"base")
 
     def test_take_refuses_an_image_not_built_on_its_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -3,6 +3,7 @@
 //! here words them for the panes.
 
 pub use settings_sections::desktop::*;
+pub use settings_sections::device_vpn::DeviceVpnPrefs;
 pub use settings_sections::osk::{KEYBOARD_APP_ID, OskSourceSettings};
 pub use settings_sections::prefs::*;
 pub use settings_sections::providers::AgentProviders;

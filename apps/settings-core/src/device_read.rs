@@ -90,11 +90,17 @@ impl ErasedRead {
         true
     }
 
+    /// While a frame is laid out on this thread, a read still on its way
+    /// is not finished, however it stands: the next frame takes it in
+    /// ([`crate::channel::Receiver::try_recv`]).
     fn is_finished(&self) -> bool {
         let mut pending = self.pending.borrow_mut();
         let Some(receiver) = pending.as_ref() else {
             return true;
         };
+        if ui::motion::frame_laying_out() {
+            return false;
+        }
         match receiver.try_recv() {
             Ok(value) => {
                 *self.done.borrow_mut() = Some(value);
@@ -373,8 +379,13 @@ impl Landing {
         }
     }
 
-    /// [`Self::poll`], its result left erased.
+    /// [`Self::poll`], its result left erased. Still running while a frame
+    /// is laid out on this thread: what lands then is taken in by the next
+    /// frame ([`crate::channel::Receiver::try_recv`]).
     pub fn poll_erased(&self) -> Landed<Erased> {
+        if ui::motion::frame_laying_out() {
+            return Landed::Pending;
+        }
         match self.0.try_recv() {
             Ok(value) => Landed::Done(value),
             Err(TryRecvError::Empty) => Landed::Pending,

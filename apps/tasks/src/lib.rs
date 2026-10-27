@@ -30,6 +30,7 @@ pub mod locales;
 pub mod model;
 mod note;
 mod sample;
+mod thread;
 mod window_bar;
 
 pub(crate) use filter::Filter;
@@ -49,16 +50,19 @@ pub enum Place {
     List,
     /// A lane per status.
     Board,
+    /// The tasks that have said something, as their conversations.
+    Thread,
 }
 
 impl Place {
     /// The places the window shows, in the bar's order.
-    pub(crate) const ALL: [Self; 2] = [Self::List, Self::Board];
+    pub(crate) const ALL: [Self; 3] = [Self::List, Self::Board, Self::Thread];
 
     pub(crate) const fn key(self) -> &'static str {
         match self {
             Self::List => "list",
             Self::Board => "board",
+            Self::Thread => "thread",
         }
     }
 
@@ -72,6 +76,7 @@ impl Place {
         match self {
             Self::List => tr("tasks-place-list"),
             Self::Board => tr("tasks-place-board"),
+            Self::Thread => tr("tasks-place-thread"),
         }
     }
 }
@@ -203,6 +208,7 @@ impl ResourceApp for App {
             cx.switch(&content_nav.place, move |cx, place| match place {
                 Place::List => list::view(cx, &nav),
                 Place::Board => board::view(cx, &nav),
+                Place::Thread => thread::view(cx, &nav),
             })
         });
 

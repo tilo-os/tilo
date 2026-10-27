@@ -72,4 +72,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 mod columns;
 
 #[cfg(test)]
+mod action_icons_tests;
+#[cfg(test)]
 mod action_keywords_tests;

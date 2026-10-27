@@ -1,6 +1,6 @@
 //! Settings' common actions are found by every word people use for them.
 
-use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::{Effect as _, Resource as _, declaration_spec};
 
 /// Each word people use for one of the app's common actions ranks that
 /// action among the app's first three, on the fields every search ranks an
@@ -38,6 +38,17 @@ fn people_find_settings_actions_by_the_words_they_use() {
                 effect.spec(<settings::panes::keyboard_shortcuts::ShortcutEffect>::OPERATION)
             }),
     );
+    // Shortcuts are rebound by the `shortcuts` section's own verbs.
+    actions.extend(
+        <settings::shortcut_settings::ShortcutPrefs as ui::tilo_resource::Resource>::declarations()
+            .iter()
+            .map(ui::tilo_resource::declaration_spec),
+    );
+    actions.extend(
+        <settings::shortcut_settings::ShortcutPrefs>::declarations()
+            .iter()
+            .map(declaration_spec),
+    );
     actions.extend(
         <settings::panes::network::NetworkEffect>::declarations()
             .iter()
@@ -61,7 +72,7 @@ fn people_find_settings_actions_by_the_words_they_use() {
         ("portrait", "rotate-display"),
         ("narrator", "set-screen-reader"),
         ("wallpaper", "choose-wallpaper"),
-        ("hotkey", "bind-shortcut"),
+        ("hotkey", "rebind"),
         ("tethering", "set-hotspot"),
         ("microphone", "select-input"),
         ("compose", "set-compose-key"),

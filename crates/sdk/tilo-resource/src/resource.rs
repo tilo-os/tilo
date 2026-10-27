@@ -323,6 +323,16 @@ pub trait Resource: Sized + 'static {
     /// from a screenshot.
     const READABLE: bool = false;
 
+    /// Whether History shows this type's versions as text: the type's
+    /// [`read`](Self::read) adapter renders its record as text, so a version
+    /// can be shown and two of them diffed as lines. A type that reads its
+    /// record as a structure (a collection of records, a record of fields)
+    /// says so here, and History lists and compares its versions by content
+    /// address instead of inventing a text rendering. A type that declares no
+    /// restore schema and no text rendering — a file of bytes — reports
+    /// metadata and exact bytes only, never a diff.
+    const HISTORY_READS_TEXT: bool = false;
+
     /// Whether this exact child is part of the public document projection
     /// answered by `read_content`. Defaults to false even for readable parents.
     /// This is a structural declaration, not a permission check: it must not
@@ -2049,6 +2059,9 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     }
     if !decl.keywords.is_empty() {
         spec = spec.with_keywords(decl.keywords.iter().cloned());
+    }
+    if let Some(icon) = &decl.icon {
+        spec = spec.with_icon(icon.clone());
     }
     if decl.destructive {
         spec = spec.destructive();

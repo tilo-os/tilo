@@ -314,6 +314,8 @@ impl DesktopSurface {
                 } else {
                     row.scroll_group_into_view_animated(group, ui::motion::frame_now(), source);
                 }
+                // The pan starts after the row was placed in this layout.
+                ui::widget::note_layout_moved();
             }
             if opened.is_some() {
                 self.navigation.opened.retain(|(s, _)| *s != strip);

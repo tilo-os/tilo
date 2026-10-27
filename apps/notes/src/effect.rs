@@ -40,23 +40,27 @@ pub enum NotesEffect {
     ///
     /// Return to the note shown before this one.
     #[effect(view)]
+    #[effect(icon = "arrow-left")]
     Back,
     /// Forward
     ///
     /// Go to the note shown after this one.
     #[effect(view)]
+    #[effect(icon = "arrow-right")]
     Forward,
     /// Import Markdown
     ///
     /// Choose a Markdown file and add it to the notebook as a note.
     #[effect(attended, job, cancellable)]
     #[effect(keywords = "open markdown, import md")]
+    #[effect(icon = "download")]
     ImportMarkdownFile,
     /// Import Notion export
     ///
     /// Choose a Notion export and add every page in it to the notebook as one
     /// action, so one undo takes the whole import back.
     #[effect(attended, job, cancellable)]
+    #[effect(icon = "download")]
     ImportNotionExport,
     /// Import Markdown content
     ///
@@ -73,6 +77,7 @@ pub enum NotesEffect {
     /// Save a note as a Markdown file, its images inside it.
     #[effect(attended, job, cancellable, row, item = pages)]
     #[effect(keywords = "save as markdown, download, export md")]
+    #[effect(icon = "upload")]
     ExportMarkdown {
         #[param("The note")]
         page: Uuid,
@@ -95,6 +100,7 @@ pub enum NotesEffect {
     /// Choose an image and add it to a note.
     #[effect(attended, job, cancellable, row, item = pages)]
     #[effect(keywords = "add picture, add photo, insert picture")]
+    #[effect(icon = "image")]
     InsertImage {
         #[param("The note")]
         page: Uuid,
@@ -104,6 +110,7 @@ pub enum NotesEffect {
     /// Copy a link to a note that pastes into another note.
     #[effect(row, item = pages)]
     #[effect(keywords = "share link, link to note")]
+    #[effect(icon = "link")]
     CopyLink {
         #[param("The note")]
         page: Uuid,
@@ -112,6 +119,7 @@ pub enum NotesEffect {
     ///
     /// Open a web or mail link in the person's browser.
     #[effect(job)]
+    #[effect(icon = "external-link")]
     OpenLink {
         #[param("The address, http(s) or mailto")]
         url: String,
@@ -121,6 +129,7 @@ pub enum NotesEffect {
     /// Open something another app keeps — a file, an event, a message — by
     /// the address a link in a note gives it, and show it where it lives.
     #[effect(view)]
+    #[effect(icon = "external-link")]
     OpenResource {
         #[param("The resource's link address, as tilo://open#…")]
         href: String,
@@ -129,6 +138,7 @@ pub enum NotesEffect {
     ///
     /// Show a note, and the block in it when one is named.
     #[effect(view, idempotent, item = pages)]
+    #[effect(icon = "file-text")]
     OpenNote {
         #[param("The note")]
         page: Uuid,
@@ -139,6 +149,7 @@ pub enum NotesEffect {
     ///
     /// Select an exact range in a note block without changing its text.
     #[effect(view, idempotent, row, item = pages, audience = "agents")]
+    #[effect(icon = "locate-fixed")]
     RevealBlockRange {
         #[param("The note")]
         page: Uuid,
@@ -155,6 +166,7 @@ pub enum NotesEffect {
     ///
     /// Show the notes carrying a tag.
     #[effect(view, idempotent, item = tags)]
+    #[effect(icon = "tag")]
     OpenTag {
         #[param("The tag")]
         tag: Uuid,

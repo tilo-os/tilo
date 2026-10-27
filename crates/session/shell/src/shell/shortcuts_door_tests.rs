@@ -212,6 +212,7 @@ fn exported(
         resource_label: "Inbox".into(),
         action_label: label.into(),
         keywords: Vec::new(),
+        icon: None,
         description: None,
         operation_kind: OperationKind::Document,
         params: params.to_vec(),

@@ -2,8 +2,10 @@
 //!
 //! One `tilo.history` resource puts History on the app's public surface, so the
 //! palette, `tilo-control`, agents and assistive technology all use the same
-//! door. Listing needs Read. Previewing a version, comparing, closing a preview
-//! and restoring need Write; each action declares its requirement, so the
+//! door. Listing, looking at a version, comparing and closing a preview are
+//! reads: they change what the caller sees, never the document, so Read is
+//! enough. Restoring and naming write and need Write; each action declares
+//! its requirement, so the
 //! broker leaves it out of the catalogue of any caller without that grant and
 //! refuses the invocation, and a local actor without it never resolves it.
 //! Every operation reads through the History model behind the pane, and
@@ -110,6 +112,14 @@ impl HistoryPreviews {
         self.open
             .retain(|preview| !(preview.session == session && preview.actor == actor));
         self.open.len() != before
+    }
+
+    #[cfg(test)]
+    pub(super) fn opened_by(&self, actor: &str) -> usize {
+        self.open
+            .iter()
+            .filter(|preview| preview.actor == actor)
+            .count()
     }
 
     /// A replaced document ends every preview taken from the old one.
@@ -230,7 +240,7 @@ pub(crate) fn resource() -> Resource {
         VIEW_AT,
         "history-action-view-at",
         vec![resource_param(), entry_param()],
-        json_contract(ActionKind::Undoable, RetryPolicy::AtMostOnce),
+        json_contract(ActionKind::Read, RetryPolicy::AtMostOnce),
         |args| Command::ViewAt {
             resource: text(args, "resource"),
             entry: text(args, "entry").unwrap_or_default(),
@@ -252,7 +262,7 @@ pub(crate) fn resource() -> Resource {
                 "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
             })),
         ],
-        json_contract(ActionKind::Undoable, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Read, RetryPolicy::Idempotent),
         |args| Command::Compare {
             resource: text(args, "resource"),
             entries: strings(args, "entries"),
@@ -269,7 +279,7 @@ pub(crate) fn resource() -> Resource {
             )
             .with_schema(serde_json::json!({"format": "uuid"})),
         ],
-        json_contract(ActionKind::Undoable, RetryPolicy::Idempotent),
+        json_contract(ActionKind::Read, RetryPolicy::Idempotent),
         |args| Command::Close {
             session: text(args, "session").unwrap_or_default(),
         },
@@ -526,7 +536,6 @@ impl App {
                 self.compare_history(&entries)
             }
             Command::Close { session } => {
-                self.require_history_write()?;
                 let session = uuid::Uuid::parse_str(&session).map_err(|_| {
                     DoorError::InvalidArguments(lookup("history-action-unknown-session"))
                 })?;
@@ -594,11 +603,10 @@ impl App {
     }
 
     fn view_history_at(&mut self, actor: &str, entry: &str) -> Result<ActionOutput, DoorError> {
-        self.require_history_write()?;
         let id = parse_entry(entry)?;
         let (review, version) = self
             .with_history_model(|model, context| {
-                let review = model.review_restore(context, id)?;
+                let review = model.view_at(context, id)?;
                 let version = crate::history_mode::frozen_root::document_at(
                     context.document,
                     review.target_heads(),
@@ -624,7 +632,6 @@ impl App {
     }
 
     fn compare_history(&self, entries: &[String]) -> Result<ActionOutput, DoorError> {
-        self.require_history_write()?;
         if entries.is_empty() || entries.len() > DEFAULT_MAX_ENTRIES {
             return Err(DoorError::InvalidArguments(lookup(
                 "history-action-unknown-entry",

@@ -373,6 +373,13 @@ impl ShellOverlayHost {
         inputs.search_registry.register_or_replace(std::rc::Rc::new(
             crate::shell::search::providers::authentication_prompts::AuthenticationPromptsProvider::new(inputs.portal_dialogs.queue().clone()),
         ));
+        // An app's search: what its window publishes, read from the window.
+        let focused_window =
+            std::rc::Rc::new(crate::shell::search::providers::FocusedWindowProvider::default());
+        inputs
+            .search_registry
+            .register_or_replace(std::rc::Rc::clone(&focused_window)
+                as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         let file_picker_overlay = FilePickerOverlay::default();
         inputs.search_registry.register_or_replace(std::rc::Rc::new(
             crate::shell::search::providers::file_picker::FilePickerProvider::new(
@@ -422,6 +429,7 @@ impl ShellOverlayHost {
             outputs: Vec::new(),
             palette,
             app_actions: None,
+            focused_window,
             palette_visible: false,
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,

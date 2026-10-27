@@ -2131,6 +2131,7 @@ impl FrameHarness {
     /// The root widget, mutably, for a test that pokes what it mounted
     /// between the events it sends.
     pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
+        self.invalidate_local();
         self.root.as_mut()
     }
 
