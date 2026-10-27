@@ -343,59 +343,62 @@ mod tests {
 
     #[test]
     fn host_identify_uses_the_existing_request_section_without_creating_a_preview() {
-        // Freshness is judged in wall time; it stands still here.
-        tilo_clock::freeze_wall(tilo_clock::wall());
-        let source = HostDocument::new(
-            serde_json::json!({"unrelated":{"keep":true}})
-                .as_object()
-                .unwrap()
-                .clone(),
-            |_| Ok(()),
-        );
-        let reply = execute(&source, observed(), DisplayCommand::Identify).unwrap();
-        let request = reply.identify.expect("host stamped the identify request");
-        assert!(request.is_fresh(tilo_clock::unix_now_ms()));
-        assert_eq!(
-            source.load()["display_identify"]["requested_unix_ms"],
-            request.requested_unix_ms
-        );
-        assert_eq!(source.load()["unrelated"]["keep"], true);
-        assert!(source.load().get("display_transaction").is_none());
-        assert!(reply.transaction.is_none());
+        // Freshness is judged in wall time; it stands still on this thread and
+        // leaves the other tests of the process their own clock.
+        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+            let source = HostDocument::new(
+                serde_json::json!({"unrelated":{"keep":true}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                |_| Ok(()),
+            );
+            let reply = execute(&source, observed(), DisplayCommand::Identify).unwrap();
+            let request = reply.identify.expect("host stamped the identify request");
+            assert!(request.is_fresh(tilo_clock::unix_now_ms()));
+            assert_eq!(
+                source.load()["display_identify"]["requested_unix_ms"],
+                request.requested_unix_ms
+            );
+            assert_eq!(source.load()["unrelated"]["keep"], true);
+            assert!(source.load().get("display_transaction").is_none());
+            assert!(reply.transaction.is_none());
+        });
     }
 
     #[test]
     fn identifying_one_display_flashes_it_alone_and_refuses_an_unknown_one() {
-        tilo_clock::freeze_wall(tilo_clock::wall());
-        let source = HostDocument::new(serde_json::Map::new(), |_| Ok(()));
-        let reply = execute(
-            &source,
-            observed(),
-            DisplayCommand::IdentifyDisplay {
-                display: "eDP-1".into(),
-            },
-        )
-        .unwrap();
-        let request = reply.identify.expect("the flash is stamped");
-        assert_eq!(request.display.as_deref(), Some("eDP-1"));
-        assert_eq!(source.load()["display_identify"]["display"], "eDP-1");
-        assert!(reply.transaction.is_none(), "a flash is no preview");
-        let every = execute(&source, observed(), DisplayCommand::Identify).unwrap();
-        assert_eq!(every.identify.and_then(|request| request.display), None);
-        assert!(
-            source.load()["display_identify"]["display"].is_null(),
-            "the next request for every display is not narrowed by the last flash"
-        );
-        assert!(
-            execute(
+        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+            let source = HostDocument::new(serde_json::Map::new(), |_| Ok(()));
+            let reply = execute(
                 &source,
                 observed(),
                 DisplayCommand::IdentifyDisplay {
-                    display: "Virtual-1".into(),
+                    display: "eDP-1".into(),
                 },
             )
-            .is_err()
-        );
+            .unwrap();
+            let request = reply.identify.expect("the flash is stamped");
+            assert_eq!(request.display.as_deref(), Some("eDP-1"));
+            assert_eq!(source.load()["display_identify"]["display"], "eDP-1");
+            assert!(reply.transaction.is_none(), "a flash is no preview");
+            let every = execute(&source, observed(), DisplayCommand::Identify).unwrap();
+            assert_eq!(every.identify.and_then(|request| request.display), None);
+            assert!(
+                source.load()["display_identify"]["display"].is_null(),
+                "the next request for every display is not narrowed by the last flash"
+            );
+            assert!(
+                execute(
+                    &source,
+                    observed(),
+                    DisplayCommand::IdentifyDisplay {
+                        display: "Virtual-1".into(),
+                    },
+                )
+                .is_err()
+            );
+        });
     }
 
     #[test]
@@ -515,81 +518,83 @@ mod tests {
         assert!(source.load().get("display_transaction").is_none());
     }
 
+    /// The confirmation deadline is wall time: it stands still on this thread
+    /// alone, and the other tests of the process keep their own clock.
     #[test]
     fn decisions_require_the_current_host_transaction_and_connected_outputs() {
-        // The confirmation deadline is wall time; it stands still here.
-        tilo_clock::freeze_wall(tilo_clock::wall());
-        let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
-        let mut transaction = execute(&source, observed(), request(&observed()))
-            .unwrap()
-            .transaction
-            .unwrap();
-        transaction.state = DisplayTransactionState::AwaitingConfirmation;
-        transaction.deadline_unix_ms = Some(tilo_clock::unix_now_ms() + 15_000);
-        source
-            .update_section(
-                "display_transaction",
-                serde_json::to_value(&transaction)
-                    .unwrap()
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            )
-            .unwrap();
-        assert!(
-            execute(
+        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+            let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
+            let mut transaction = execute(&source, observed(), request(&observed()))
+                .unwrap()
+                .transaction
+                .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.deadline_unix_ms = Some(tilo_clock::unix_now_ms() + 15_000);
+            source
+                .update_section(
+                    "display_transaction",
+                    serde_json::to_value(&transaction)
+                        .unwrap()
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+            assert!(
+                execute(
+                    &source,
+                    observed(),
+                    DisplayCommand::Keep {
+                        transaction: transaction.id + 1
+                    }
+                )
+                .is_err()
+            );
+            assert!(
+                execute(
+                    &source,
+                    DisplayHardwareSnapshot::default(),
+                    DisplayCommand::Keep {
+                        transaction: transaction.id
+                    }
+                )
+                .is_err()
+            );
+            assert!(
+                execute(
+                    &source,
+                    DisplayHardwareSnapshot::default(),
+                    DisplayCommand::Revert {
+                        transaction: transaction.id
+                    }
+                )
+                .is_err()
+            );
+            let reply = execute(
                 &source,
                 observed(),
                 DisplayCommand::Keep {
-                    transaction: transaction.id + 1
-                }
+                    transaction: transaction.id,
+                },
             )
-            .is_err()
-        );
-        assert!(
-            execute(
+            .unwrap();
+            assert_eq!(
+                reply.transaction.unwrap().state,
+                DisplayTransactionState::ConfirmRequested
+            );
+            let reply = execute(
                 &source,
-                DisplayHardwareSnapshot::default(),
-                DisplayCommand::Keep {
-                    transaction: transaction.id
-                }
-            )
-            .is_err()
-        );
-        assert!(
-            execute(
-                &source,
-                DisplayHardwareSnapshot::default(),
+                observed(),
                 DisplayCommand::Revert {
-                    transaction: transaction.id
-                }
+                    transaction: transaction.id,
+                },
             )
-            .is_err()
-        );
-        let reply = execute(
-            &source,
-            observed(),
-            DisplayCommand::Keep {
-                transaction: transaction.id,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            reply.transaction.unwrap().state,
-            DisplayTransactionState::ConfirmRequested
-        );
-        let reply = execute(
-            &source,
-            observed(),
-            DisplayCommand::Revert {
-                transaction: transaction.id,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            reply.transaction.unwrap().state,
-            DisplayTransactionState::RevertRequested
-        );
+            .unwrap();
+            assert_eq!(
+                reply.transaction.unwrap().state,
+                DisplayTransactionState::RevertRequested
+            );
+        });
     }
 
     #[test]

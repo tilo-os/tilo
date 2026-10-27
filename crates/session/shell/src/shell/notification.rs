@@ -1234,18 +1234,21 @@ mod tests {
             let chrome = new_chrome();
             let bridge = NotificationBridge::new();
             chrome.borrow_mut().set_notification_bridge(bridge.clone());
-            // The projection lives 10 ms: hold the clock the pump reads so it
-            // is still live when the pump first shows it.
-            tilo_clock::freeze_wall(tilo_clock::wall());
+            // The projection lives 10 ms: the pump is handed the clock it
+            // judges it by, so it is still live when it first shows it and
+            // has lapsed a moment later.
             let now = tilo_clock::unix_now_ms();
             let mut projection = live_remote_projection(8, "Brief");
             projection.expires_unix_ms = now.saturating_add(10);
             let id = projection.id;
             assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
-            chrome.borrow_mut().pump_dbus_notifications();
+            chrome
+                .borrow_mut()
+                .pump_remote_continuity_notifications_at(&bridge, now);
             assert_eq!(chrome.borrow().notifications().len(), 1);
-            bridge.expire_remote_continuity(now.saturating_add(11));
-            chrome.borrow_mut().pump_dbus_notifications();
+            chrome
+                .borrow_mut()
+                .pump_remote_continuity_notifications_at(&bridge, now.saturating_add(11));
             assert!(chrome.borrow().notifications().is_empty());
             assert!(chrome.borrow().notification_history().is_empty());
             assert!(!bridge.retire_remote_continuity("phone", id));

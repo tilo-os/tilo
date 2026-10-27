@@ -3909,18 +3909,23 @@ mod tests {
     /// it up however long the frame takes.
     #[test]
     fn a_capture_keeps_the_import_notice_in_the_window_bar() {
-        ui::clock::freeze_for_capture();
-        let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
-        app.notify(
-            "Imported Project brief",
-            ui::widget::toast::ToastKind::Success,
-        );
-        app.frame(&mut state.doc, &state.root);
-        app.frame(&mut state.doc, &state.root);
-        assert_eq!(
-            ui::window_toolbar::notice().map(|notice| notice.text),
-            Some("Imported Project brief".to_owned())
-        );
+        // A capture pins the clock for the rest of the process, which would
+        // stop it under every test beside this one: the frames that must
+        // keep the notice up run on this thread, held at the capture time.
+        let at = ui::clock::capture_wall().expect("the capture time exists in the local zone");
+        ui::time::testing::with_wall(at, || {
+            let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
+            app.notify(
+                "Imported Project brief",
+                ui::widget::toast::ToastKind::Success,
+            );
+            app.frame(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
+            assert_eq!(
+                ui::window_toolbar::notice().map(|notice| notice.text),
+                Some("Imported Project brief".to_owned())
+            );
+        });
     }
 
     #[test]

@@ -19,10 +19,16 @@ fn open(root: &Path) -> EncryptedBackend {
     EncryptedBackend::open_with_key(root, owner(), fixture_key()).unwrap()
 }
 
-fn group_review_fixture() -> groups::Review {
-    // The review expires 90 s of wall time after it is made; the wall clock
-    // stands still from here, so a slow run cannot outlast it.
-    tilo_clock::freeze_wall(tilo_clock::wall());
+/// A store whose wall clock is this test's, pinned here on this thread: the
+/// blocking pool it works on would otherwise read the system's clock, which a
+/// thread-scoped pin does not reach.
+fn open_at(root: &Path, at: u64) -> EncryptedBackend {
+    open(root).with_wall_clock(move || Some(at))
+}
+
+fn group_review_fixture(at: u64) -> groups::Review {
+    // The review expires 90 s of wall time after it is made, however long a
+    // loaded run takes.
     groups::Review {
         group: "123@g.us".into(),
         identity: ("123@s.whatsapp.net".into(), Some("456@lid".into())),
@@ -30,7 +36,7 @@ fn group_review_fixture() -> groups::Review {
         members: vec![("456@lid".into(), "admin".into())],
         announcement: false,
         restricted: false,
-        expires: tilo_clock::try_unix_now().unwrap().saturating_add(90),
+        expires: at.saturating_add(90),
     }
 }
 fn group_operation_fixture() -> groups::Operation {
@@ -47,8 +53,12 @@ fn group_operation_fixture() -> groups::Operation {
 #[tokio::test]
 async fn group_journal_encrypts_reviews_and_never_replays_uncertain_writes_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
-    let backend = open(dir.path());
-    let review = backend.review_group(group_review_fixture()).await.unwrap();
+    let now = tilo_clock::try_unix_now().unwrap();
+    let backend = open_at(dir.path(), now);
+    let review = backend
+        .review_group(group_review_fixture(now))
+        .await
+        .unwrap();
     assert!(
         backend
             .reserve_group_operation("operation-a", &review, group_operation_fixture())
@@ -110,8 +120,12 @@ async fn group_journal_encrypts_reviews_and_never_replays_uncertain_writes_after
 async fn group_store_uses_original_revocable_custody_for_every_read_and_write() {
     let dir = tempfile::tempdir().unwrap();
     let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(true)));
-    let backend = open(dir.path()).guarded(grant.clone()).unwrap();
-    let review = backend.review_group(group_review_fixture()).await.unwrap();
+    let now = tilo_clock::try_unix_now().unwrap();
+    let backend = open_at(dir.path(), now).guarded(grant.clone()).unwrap();
+    let review = backend
+        .review_group(group_review_fixture(now))
+        .await
+        .unwrap();
     backend
         .reserve_group_operation("operation-a", &review, group_operation_fixture())
         .await
@@ -120,7 +134,12 @@ async fn group_store_uses_original_revocable_custody_for_every_read_and_write() 
     grant.0.store(false, std::sync::atomic::Ordering::Release);
     assert!(backend.group_review(&review).await.is_err());
     assert!(backend.group_operations("123@g.us").await.is_err());
-    assert!(backend.review_group(group_review_fixture()).await.is_err());
+    assert!(
+        backend
+            .review_group(group_review_fixture(now))
+            .await
+            .is_err()
+    );
     assert!(
         backend
             .reserve_group_operation("operation-b", &review, group_operation_fixture())

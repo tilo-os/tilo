@@ -2299,6 +2299,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-app",
+ "tilo-clock",
  "tilo-history",
  "tilo-test-env",
  "tilo-timezone-engine",
