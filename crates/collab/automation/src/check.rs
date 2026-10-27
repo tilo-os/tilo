@@ -466,9 +466,16 @@ impl Checker<'_> {
         let known = match self.value(count, scope, path) {
             Some(Ty::Integer) => {
                 if let Binding::Literal(value) = count
-                    && value.as_u64() == Some(0)
+                    && let Some(times) = value.as_u64()
+                    && times > crate::run::MAX_REPEAT
                 {
-                    self.fail(path, CheckErrorKind::UnboundedLoop);
+                    self.fail(
+                        path,
+                        CheckErrorKind::NotCountable(format!(
+                            "{times} times, and a repeat runs at most {} times",
+                            crate::run::MAX_REPEAT
+                        )),
+                    );
                 }
                 true
             }
@@ -496,193 +503,252 @@ impl Checker<'_> {
     /// neither is the other's kind, a `map` over a field the elements do not
     /// all have.
     fn expression(&mut self, expr: &Expr, scope: &Scope, path: &StepPath) -> Ty {
-        let report = |checker: &mut Self, reason: String| {
-            checker.fail(path, CheckErrorKind::Expression(reason));
-        };
         match expr {
             Expr::Value { binding } => self.value(binding, scope, path).unwrap_or(Ty::Any),
-            Expr::Compare { op, left, right } => {
-                let (left_ty, right_ty) = (
-                    self.expression(left, scope, path),
-                    self.expression(right, scope, path),
-                );
-                if let Err(reason) = comparable(op, &left_ty, &right_ty) {
-                    report(
-                        self,
-                        format!("{left_ty} is not comparable with {right_ty}: {reason}"),
-                    );
-                }
-                Ty::Boolean
-            }
-            Expr::Logic { op, left, right } => {
-                for side in [left, right] {
-                    let ty = self.expression(side, scope, path);
-                    if let Err(reason) = truth_value(&ty) {
-                        report(
-                            self,
-                            format!("`{}` needs truth values: {reason}", op.as_str()),
-                        );
-                    }
-                }
-                Ty::Boolean
-            }
-            Expr::Math { op, left, right } => {
-                let (left_ty, right_ty) = (
-                    self.expression(left, scope, path),
-                    self.expression(right, scope, path),
-                );
-                if let Err(reason) = arithmetic_operands(*op, &left_ty, &right_ty) {
-                    report(
-                        self,
-                        format!("`{}` of {left_ty} and {right_ty}: {reason}", op.as_str()),
-                    );
-                }
-                match op {
-                    Op::Concat => Ty::Text,
-                    // A whole division of two whole numbers may still not be
-                    // whole, so every arithmetic answer is a number.
-                    _ => Ty::Number,
-                }
-            }
-            Expr::Negate { value } => {
-                let ty = self.expression(value, scope, path);
-                if let Err(reason) = arithmetic_operands(Op::Subtract, &Ty::zero(), &ty) {
-                    report(self, reason);
-                }
-                Ty::Number
-            }
-            Expr::Truthy { value } | Expr::Not { value } => {
-                self.expression(value, scope, path);
-                Ty::Boolean
-            }
-            Expr::Length { value } => {
-                let ty = self.expression(value, scope, path);
-                if let Err(reason) = countable(&ty) {
-                    report(self, reason);
-                }
-                Ty::Integer
-            }
+            Expr::Compare { op, left, right } => self.comparison(*op, left, right, scope, path),
+            Expr::Logic { op, left, right } => self.logic(*op, left, right, scope, path),
+            Expr::Math { op, left, right } => self.math(*op, left, right, scope, path),
+            Expr::Negate { value } => self.negation(value, scope, path),
+            Expr::Truthy { value } | Expr::Not { value } => self.truth_of(value, path),
+            Expr::Length { value } => self.length_of(value, path),
             Expr::Replace {
                 text,
                 find,
                 replace,
-            } => {
-                for side in [text, find, replace] {
-                    let ty = self.expression(side, scope, path);
-                    if let Err(reason) = textual(&ty) {
-                        report(self, reason);
-                    }
-                }
-                Ty::Text
-            }
-            Expr::Split { text, separator } => {
-                for side in std::iter::once(text.as_ref()).chain(separator.as_deref()) {
-                    let ty = self.expression(side, scope, path);
-                    if let Err(reason) = textual(&ty) {
-                        report(self, reason);
-                    }
-                }
-                Ty::Array(Some(serde_json::json!({"type": "string"})))
-            }
-            Expr::Take { items, count } => {
-                let ty = self.expression(items, scope, path);
-                let element = match ty {
-                    Ty::Array(items) => Ty::Array(items),
-                    Ty::Any | Ty::Null => Ty::Array(None),
-                    other => {
-                        report(self, format!("take needs a list, and it is given {other}"));
-                        Ty::Array(None)
-                    }
-                };
-                let count_ty = self.expression(count, scope, path);
-                if let Err(reason) = whole_number(&count_ty) {
-                    report(self, reason);
-                }
-                element
-            }
-            Expr::Field { value, field } => {
-                let ty = self.expression(value, scope, path);
-                match field_ty(&ty, field) {
-                    Ok(field) => field,
-                    Err(reason) => {
-                        report(self, reason);
-                        Ty::Any
-                    }
-                }
-            }
+            } => self.replacing(text, find, replace, path),
+            Expr::Split { text, separator } => self.splitting(text, separator.as_deref(), path),
+            Expr::Take { items, count } => self.taking(items, count, scope, path),
+            Expr::Field { value, field } => self.reading_field(value, field, scope, path),
             Expr::Object { members } => {
                 for member in members {
                     self.expression(&member.value, scope, path);
                 }
                 Ty::Object(expr.schema())
             }
-            Expr::Filter { items, test } => {
-                let ty = self.expression(items, scope, path);
-                let (items, element) = match ty {
-                    Ty::Array(items) => {
-                        let element = items.as_ref().map_or(Ty::Any, Ty::of_schema);
-                        (Ty::Array(items), element)
-                    }
-                    Ty::Any | Ty::Null => (Ty::Array(None), Ty::Any),
-                    other => {
-                        report(
-                            self,
-                            format!("filter needs a list, and it is given {other}"),
-                        );
-                        (Ty::Array(None), Ty::Any)
-                    }
-                };
-                // The test reads the element it judges as `item`, as a loop
-                // body reads its loop variable.
-                let mut inner = scope.clone();
-                inner.vars.insert(FILTER_ITEM.to_owned(), element);
-                let test_ty = self.expression(test, &inner, path);
-                if let Err(reason) = truth_value(&test_ty) {
-                    report(self, reason);
-                }
-                items
-            }
-            Expr::Map { items, field } => {
-                let ty = self.expression(items, scope, path);
-                let element = match &ty {
-                    Ty::Array(items) => items.as_ref().map_or(Ty::Any, Ty::of_schema),
-                    Ty::Any | Ty::Null => Ty::Any,
-                    other => {
-                        report(self, format!("map needs a list, and it is given {other}"));
-                        Ty::Any
-                    }
-                };
-                match field_ty(&element, field) {
-                    Ok(Ty::Any) if element == Ty::Any => Ty::Array(None),
-                    Ok(field) => Ty::Array(Some(field.schema())),
-                    Err(reason) => {
-                        report(self, reason);
-                        Ty::Array(None)
-                    }
-                }
-            }
-            Expr::Sort { items } => {
-                let ty = self.expression(items, scope, path);
-                match ty {
-                    Ty::Array(_) | Ty::Any | Ty::Null => ty,
-                    other => {
-                        report(self, format!("sort needs a list, and it is given {other}"));
-                        Ty::Array(None)
-                    }
-                }
-            }
-            Expr::First { items } => {
-                let ty = self.expression(items, scope, path);
-                match ty {
-                    Ty::Array(items) => items.as_ref().map_or(Ty::Any, Ty::of_schema),
-                    Ty::Any | Ty::Null => Ty::Any,
-                    other => {
-                        report(self, format!("first needs a list, and it is given {other}"));
-                        Ty::Any
-                    }
-                }
+            Expr::Filter { items, test } => self.filtering(items, test, scope, path),
+            Expr::Map { items, field } => self.mapping(items, field, scope, path),
+            Expr::Sort { items } => self.sorting(items, scope, path),
+            Expr::First { items } => self.first_of(items, scope, path),
+        }
+    }
+
+    /// A comparison of two values, which answers a truth value.
+    fn comparison(
+        &mut self,
+        op: Op,
+        left: &Expr,
+        right: &Expr,
+        scope: &Scope,
+        path: &StepPath,
+    ) -> Ty {
+        let (left_ty, right_ty) = (
+            self.expression(left, scope, path),
+            self.expression(right, scope, path),
+        );
+        if let Err(reason) = comparable(op, &left_ty, &right_ty) {
+            self.report(
+                path,
+                format!("{left_ty} is not comparable with {right_ty}: {reason}"),
+            );
+        }
+        Ty::Boolean
+    }
+
+    /// Two truth values combined, which answers a truth value.
+    fn logic(&mut self, op: Op, left: &Expr, right: &Expr, scope: &Scope, path: &StepPath) -> Ty {
+        for side in [left, right] {
+            let ty = self.expression(side, scope, path);
+            if let Err(reason) = truth_value(&ty) {
+                self.report(
+                    path,
+                    format!("`{}` needs truth values: {reason}", op.as_str()),
+                );
             }
         }
+        Ty::Boolean
+    }
+
+    /// Arithmetic on two values, which answers a number — or a text, when the
+    /// operation joins rather than computes.
+    fn math(&mut self, op: Op, left: &Expr, right: &Expr, scope: &Scope, path: &StepPath) -> Ty {
+        let (left_ty, right_ty) = (
+            self.expression(left, scope, path),
+            self.expression(right, scope, path),
+        );
+        if let Err(reason) = arithmetic_operands(op, &left_ty, &right_ty) {
+            self.report(
+                path,
+                format!("`{}` of {left_ty} and {right_ty}: {reason}", op.as_str()),
+            );
+        }
+        match op {
+            Op::Concat => Ty::Text,
+            // A whole division of two whole numbers may still not be whole,
+            // so every arithmetic answer is a number.
+            _ => Ty::Number,
+        }
+    }
+
+    /// A value's sign flipped, which answers a number.
+    fn negation(&mut self, value: &Expr, scope: &Scope, path: &StepPath) -> Ty {
+        let ty = self.expression(value, scope, path);
+        if let Err(reason) = arithmetic_operands(Op::Subtract, &Ty::zero(), &ty) {
+            self.report(path, reason);
+        }
+        Ty::Number
+    }
+
+    /// Asking whether a value counts as true, which answers a truth value.
+    fn truth_of(&mut self, value: &Expr, path: &StepPath) -> Ty {
+        let ty = self.expression(value, &Scope::default(), path);
+        if let Err(reason) = truth_value(&ty) {
+            self.report(path, reason);
+        }
+        Ty::Boolean
+    }
+
+    /// How many members a value has, which answers a whole number.
+    fn length_of(&mut self, value: &Expr, path: &StepPath) -> Ty {
+        let ty = self.expression(value, &Scope::default(), path);
+        if let Err(reason) = countable(&ty) {
+            self.report(path, reason);
+        }
+        Ty::Integer
+    }
+
+    /// Replacing within a text, which answers a text.
+    fn replacing(&mut self, text: &Expr, find: &Expr, replace: &Expr, path: &StepPath) -> Ty {
+        for side in [text, find, replace] {
+            let ty = self.expression(side, &Scope::default(), path);
+            if let Err(reason) = textual(&ty) {
+                self.report(path, reason);
+            }
+        }
+        Ty::Text
+    }
+
+    /// Splitting a text, which answers a list of texts.
+    fn splitting(&mut self, text: &Expr, separator: Option<&Expr>, path: &StepPath) -> Ty {
+        let sides: Vec<&Expr> = std::iter::once(text).chain(separator).collect();
+        for side in sides {
+            let ty = self.expression(side, &Scope::default(), path);
+            if let Err(reason) = textual(&ty) {
+                self.report(path, reason);
+            }
+        }
+        Ty::Array(Some(serde_json::json!({"type": "string"})))
+    }
+
+    /// The first `count` members of a list, which answers a list of the same
+    /// elements.
+    fn taking(&mut self, items: &Expr, count: &Expr, scope: &Scope, path: &StepPath) -> Ty {
+        let ty = self.expression(items, scope, path);
+        let element = match ty {
+            Ty::Array(items) => Ty::Array(items),
+            Ty::Any | Ty::Null => Ty::Array(None),
+            other => {
+                self.report(path, format!("take needs a list, and it is given {other}"));
+                Ty::Array(None)
+            }
+        };
+        let count_ty = self.expression(count, scope, path);
+        if let Err(reason) = whole_number(&count_ty) {
+            self.report(path, reason);
+        }
+        element
+    }
+
+    /// A part of a value, of whatever type that part declares.
+    fn reading_field(&mut self, value: &Expr, field: &str, scope: &Scope, path: &StepPath) -> Ty {
+        let ty = self.expression(value, scope, path);
+        match field_ty(&ty, field) {
+            Ok(field) => field,
+            Err(reason) => {
+                self.report(path, reason);
+                Ty::Any
+            }
+        }
+    }
+
+    /// The members of a list whose test holds, which answers a list of the
+    /// same elements.
+    fn filtering(&mut self, items: &Expr, test: &Expr, scope: &Scope, path: &StepPath) -> Ty {
+        let ty = self.expression(items, scope, path);
+        let (items, element) = match ty {
+            Ty::Array(items) => {
+                let element = items.as_ref().map_or(Ty::Any, Ty::of_schema);
+                (Ty::Array(items), element)
+            }
+            Ty::Any | Ty::Null => (Ty::Array(None), Ty::Any),
+            other => {
+                self.report(
+                    path,
+                    format!("filter needs a list, and it is given {other}"),
+                );
+                (Ty::Array(None), Ty::Any)
+            }
+        };
+        // The test reads the element it judges as `file`, as a loop body
+        // reads its loop variable.
+        let mut inner = scope.clone();
+        inner.vars.insert(FILTER_ITEM.to_owned(), element);
+        let test_ty = self.expression(test, &inner, path);
+        if let Err(reason) = truth_value(&test_ty) {
+            self.report(path, reason);
+        }
+        items
+    }
+
+    /// One field of each member of a list, which answers a list of that
+    /// field's type.
+    fn mapping(&mut self, items: &Expr, field: &str, scope: &Scope, path: &StepPath) -> Ty {
+        let ty = self.expression(items, scope, path);
+        let element = match &ty {
+            Ty::Array(items) => items.as_ref().map_or(Ty::Any, Ty::of_schema),
+            Ty::Any | Ty::Null => Ty::Any,
+            other => {
+                self.report(path, format!("map needs a list, and it is given {other}"));
+                Ty::Any
+            }
+        };
+        match field_ty(&element, field) {
+            Ok(Ty::Any) if element == Ty::Any => Ty::Array(None),
+            Ok(field) => Ty::Array(Some(field.schema())),
+            Err(reason) => {
+                self.report(path, reason);
+                Ty::Array(None)
+            }
+        }
+    }
+
+    /// A list in order, which answers the same list.
+    fn sorting(&mut self, items: &Expr, scope: &Scope, path: &StepPath) -> Ty {
+        let ty = self.expression(items, scope, path);
+        match ty {
+            Ty::Array(_) | Ty::Any | Ty::Null => ty,
+            other => {
+                self.report(path, format!("sort needs a list, and it is given {other}"));
+                Ty::Array(None)
+            }
+        }
+    }
+
+    /// The first member of a list, of that element's type.
+    fn first_of(&mut self, items: &Expr, scope: &Scope, path: &StepPath) -> Ty {
+        let ty = self.expression(items, scope, path);
+        match ty {
+            Ty::Array(items) => items.as_ref().map_or(Ty::Any, Ty::of_schema),
+            Ty::Any | Ty::Null => Ty::Any,
+            other => {
+                self.report(path, format!("first needs a list, and it is given {other}"));
+                Ty::Any
+            }
+        }
+    }
+
+    /// Refuse `reason` at `path`, as an expression that cannot hold.
+    fn report(&mut self, path: &StepPath, reason: String) {
+        self.fail(path, CheckErrorKind::Expression(reason));
     }
 
     fn ai(
@@ -1197,15 +1263,32 @@ fn recursion(root: &Shortcut, resolver: &impl ShortcutResolver) -> Vec<CheckErro
     errors
 }
 
-/// The type of the part of a `ty` value a pointer addresses: the value
-/// itself for an empty pointer, else whatever it holds there.
+/// The part of `ty` that `pointer` names, as a result schema addresses it:
+/// the value itself for an empty pointer, else whatever it holds there.
 fn part_ty(ty: Ty, pointer: &str) -> Ty {
-    if pointer.is_empty() { ty } else { Ty::Any }
+    if pointer.is_empty() {
+        return ty;
+    }
+    match &ty {
+        Ty::Object(Some(schema)) => match crate::types::schema_at(schema, pointer) {
+            Ok(Some(part)) => Ty::of_schema(&part),
+            _ => Ty::Any,
+        },
+        // A list addressed by position: `items.0` is the type of an element.
+        Ty::Array(items)
+            if pointer == "/items" || pointer.trim_start_matches('/').parse::<usize>().is_ok() =>
+        {
+            items.as_ref().map_or(Ty::Any, Ty::of_schema)
+        }
+        // Everything else is a shape the checker cannot follow, or a value
+        // with no parts.
+        _ => Ty::Any,
+    }
 }
 
 /// The variable a [`Filter`](Expr::Filter)'s test reads each element as, so a
 /// filter reads like a loop body.
-pub(crate) const FILTER_ITEM: &str = "item";
+pub(crate) const FILTER_ITEM: &str = "file";
 
 impl Ty {
     /// A zero of this type, for reading a unary operation as a binary one.
@@ -1266,11 +1349,11 @@ fn truth_value(ty: &Ty) -> Result<(), String> {
 /// Equality holds between any two values of the same kind. Order holds
 /// between numbers, between texts, and between dates — a date is written as
 /// text, so the two meet as text at run time — and never across them.
-fn comparable(op: &Op, left: &Ty, right: &Ty) -> Result<(), String> {
+fn comparable(op: Op, left: &Ty, right: &Ty) -> Result<(), String> {
     if !op.is_comparison() {
         return Err(format!("`{}` is not a comparison", op.as_str()));
     }
-    if *op == Op::Equals || *op == Op::NotEquals {
+    if op == Op::Equals || op == Op::NotEquals {
         // A null is what an optional value has when it was not given, so it
         // compares with anything.
         if matches!(left, Ty::Null) || matches!(right, Ty::Null) {
@@ -1315,14 +1398,19 @@ fn arithmetic_operands(op: Op, left: &Ty, right: &Ty) -> Result<(), String> {
             if left.textual() && right.textual() {
                 Ok(())
             } else {
-                Err("only texts join into text".into())
+                Err(format!(
+                    "`concat` needs two texts, and it is given {left} and {right}"
+                ))
             }
         }
         Op::Add | Op::Subtract | Op::Multiply | Op::Divide | Op::Modulo => {
             if left.numeric() && right.numeric() {
                 Ok(())
             } else {
-                Err("arithmetic needs numbers".into())
+                Err(format!(
+                    "`{}` needs two numbers, and it is given {left} and {right}",
+                    op.as_str()
+                ))
             }
         }
         other => Err(format!("`{}` is not arithmetic", other.as_str())),
@@ -1360,10 +1448,11 @@ fn whole_number(ty: &Ty) -> Result<(), String> {
 /// that the checker cannot type (an `Any`, or a dictionary whose members are
 /// not all declared).
 fn field_ty(ty: &Ty, field: &str) -> Result<Ty, String> {
+    // An empty field is the value itself: `step("x", "")` names a result
+    // whole, and an expression reads it the same way.
     let mut current = ty.clone();
     for token in field_tokens(field) {
         current = match (&current, token) {
-            (Ty::Any, _) => return Ok(Ty::Any),
             (Ty::Object(Some(schema)), token) => {
                 match crate::types::schema_at(schema, &format!("/{token}")) {
                     Ok(Some(property)) => Ty::of_schema(&property),
@@ -1371,13 +1460,14 @@ fn field_ty(ty: &Ty, field: &str) -> Result<Ty, String> {
                     Err(reason) => return Err(format!("`{field}`: {reason}")),
                 }
             }
-            (Ty::Object(None), _) => return Ok(Ty::Any),
             (Ty::Array(items), token) => {
                 if token.parse::<usize>().is_err() {
                     return Err(format!("a list has positions, not a field `{token}`"));
                 }
-                items.as_ref().map_or(Ty::Any, |items| Ty::of_schema(items))
+                items.as_ref().map_or(Ty::Any, Ty::of_schema)
             }
+            // A shape the checker cannot follow has every part it might need.
+            (Ty::Any | Ty::Object(None), _) => return Ok(Ty::Any),
             (other, _) => {
                 return Err(format!("{other} has no field `{token}`"));
             }

@@ -1409,26 +1409,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 prompt,
                 output,
                 input,
-            } => {
-                // A secret handed to the agent would reach a model provider.
-                if input.as_ref().is_some_and(|input| self.is_secret(input)) {
-                    let refused = StepFailure::Binding {
-                        reason: "an AI step may not read a secret".into(),
-                    };
-                    return Ok(Done::local(Err(refused)));
-                }
-                let transform = AiTransform::Freeform {
-                    prompt: prompt.clone(),
-                    output: output.clone(),
-                };
-                let done = self
-                    .ai(step, path, &transform, input.as_ref(), output.as_ref())
-                    .await;
-                if let Some(invocation) = done.invocation {
-                    sent.push(invocation);
-                }
-                Ok(done)
-            }
+            } => Ok(self
+                .ask_ai(step, path, prompt, output.as_ref(), input.as_ref())
+                .await),
             StepKind::Task {
                 instruction,
                 allow,
@@ -1465,24 +1448,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 self.for_each(step, path.clone(), items, item, body).await?;
                 Ok(Done::recorded())
             }
-            StepKind::SetVar { name, value } => {
-                let result = match self.evaluate(value) {
-                    Ok(Some(evaluated)) => {
-                        if self.is_secret(value) {
-                            self.secret_vars.insert(name.clone());
-                        } else {
-                            self.secret_vars.remove(name);
-                        }
-                        self.vars.insert(name.clone(), evaluated);
-                        Ok(None)
-                    }
-                    Ok(None) => Err(StepFailure::Binding {
-                        reason: format!("nothing to assign to `{name}`"),
-                    }),
-                    Err(failure) => Err(failure),
-                };
-                Ok(Done::local(result))
-            }
+            StepKind::SetVar { name, value } => Ok(Done::local(self.assign(name, value))),
             StepKind::Ask { param } => Ok(Done::local(self.ask(step, path, param).await)),
             // A loop records itself, counts its passes as it goes and answers
             // an empty record: what it does is its body's, one pass at a
@@ -1505,6 +1471,46 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 Ok(Done::local(result))
             }
         }
+    }
+
+    /// A freeform AI step: hand `prompt` to the agent for what it answers. A
+    /// secret never goes to a model provider.
+    async fn ask_ai(
+        &mut self,
+        step: &'a Step,
+        path: &StepPath,
+        prompt: &str,
+        output: Option<&Value>,
+        input: Option<&Binding>,
+    ) -> Done {
+        if input.is_some_and(|input| self.is_secret(input)) {
+            let refused = StepFailure::Binding {
+                reason: "an AI step may not read a secret".into(),
+            };
+            return Done::local(Err(refused));
+        }
+        let transform = AiTransform::Freeform {
+            prompt: prompt.to_owned(),
+            output: output.cloned(),
+        };
+        self.ai(step, path, &transform, input, output).await
+    }
+
+    /// Assign `value` to `name`, remembering whether what it now holds is a
+    /// secret.
+    fn assign(&mut self, name: &str, value: &Binding) -> Result<Option<Value>, StepFailure> {
+        let Some(evaluated) = self.evaluate(value)? else {
+            return Err(StepFailure::Binding {
+                reason: format!("nothing to assign to `{name}`"),
+            });
+        };
+        if self.is_secret(value) {
+            self.secret_vars.insert(name.to_owned());
+        } else {
+            self.secret_vars.remove(name);
+        }
+        self.vars.insert(name.to_owned(), evaluated);
+        Ok(None)
     }
 
     /// A loop step: bind `item` to each element of `items` in turn and run
@@ -1571,20 +1577,27 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 Ok(count)
             }
         });
-        let reported = count.as_ref().map(|count| Some(Value::from(*count)));
-        self.record_block(step, &path, Done::local(reported.map_err(Clone::clone)));
-        let count = count.unwrap_or_default();
+        let reported = count
+            .as_ref()
+            .map(|count| Some(Value::from(*count)))
+            .map_err(Clone::clone);
+        self.record_block(step, &path, Done::local(reported));
+        // The count is the loop's own: one it cannot honour fails the step
+        // rather than leaving an empty body looking like a run's own work.
+        if let Err(failure) = count {
+            return Err((path, failure));
+        }
+        // Bounded above by `MAX_REPEAT`, which a `usize` always holds.
+        let count = usize::try_from(count.unwrap_or_default()).unwrap_or(usize::MAX);
         let shadowed = self.vars.get(index).cloned();
         let shadowed_secret = self.secret_vars.contains(index);
         // A counter is a number the program made up: it is never a secret,
         // whatever the variable or binding it shadows was.
         self.secret_vars.remove(index);
-        let iterations = usize::try_from(count).unwrap_or(usize::MAX);
-        for iteration in 0..iterations {
-            self.vars
-                .insert(index.to_owned(), Value::from(iteration as u64));
-            self.block(body, path.repeat(Some(iteration as usize)))
-                .await?;
+        for iteration in 0..count {
+            let position = u64::try_from(iteration).unwrap_or(u64::MAX);
+            self.vars.insert(index.to_owned(), Value::from(position));
+            self.block(body, path.repeat(Some(iteration))).await?;
         }
         if shadowed_secret {
             self.secret_vars.insert(index.to_owned());
@@ -1608,27 +1621,27 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         max: u64,
         body: &'a [Step],
     ) -> Result<(), Stop> {
-        let limit = max.min(MAX_REPEAT);
+        let limit = usize::try_from(max.min(MAX_REPEAT)).unwrap_or(usize::MAX);
         let mut iterations = 0_usize;
         loop {
-            let holds = self.condition(cond);
-            let taken = holds.as_ref().ok().copied().unwrap_or(false);
-            // What the loop step records is the number of passes it made,
-            // unless reading the condition is itself what failed.
-            if let Err(failure) = holds {
-                self.record_block(step, &path, Done::local(Err(failure)));
-                return Ok(());
-            }
-            if !taken {
+            let holds = match self.condition(cond) {
+                Ok(holds) => holds,
+                Err(failure) => {
+                    self.record_block(step, &path, Done::local(Err(failure.clone())));
+                    return Err((path, failure));
+                }
+            };
+            if !holds {
                 let passes = u64::try_from(iterations).unwrap_or(u64::MAX);
-                self.record_block(step, &path, Done::local(Ok(Some(Value::from(passes)))));
+                let done = Done::local(Ok(Some(Value::from(passes))));
+                self.record_block(step, &path, done);
                 return Ok(());
             }
-            let passes = u64::try_from(iterations).unwrap_or(u64::MAX);
-            if passes >= limit {
+            if iterations >= limit {
+                let limit = u64::try_from(limit).unwrap_or(u64::MAX);
                 let failure = StepFailure::LoopExhausted { limit };
-                self.record_block(step, &path, Done::local(Err(failure)));
-                return Ok(());
+                self.record_block(step, &path, Done::local(Err(failure.clone())));
+                return Err((path, failure));
             }
             // The record of a loop that fails in its body is the body's own;
             // what this step does is counted when it finishes.
@@ -1778,7 +1791,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     fn first(&mut self, items: &Value) -> Result<Value, StepFailure> {
         match items {
             Value::Array(elements) => elements.first().cloned().ok_or(StepFailure::Expression {
-                error: expression::ExprError::Empty,
+                error: expression::ExprError::Empty {},
             }),
             other => Err(StepFailure::Expression {
                 error: expression::ExprError::Type {

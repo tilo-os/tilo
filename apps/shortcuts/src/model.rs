@@ -167,110 +167,86 @@ type Blocks<'a> = Vec<(&'static str, &'a [Step])>;
 impl Head {
     /// The head of `kind`, its arguments, and its blocks by branch name.
     fn split(kind: &StepKind) -> (Self, BTreeMap<String, Binding>, Blocks<'_>) {
+        // A step that carries a block answers it; a step that carries none is
+        // one row, its head and its arguments.
+        let args = match kind {
+            StepKind::Invoke { args, .. } => args.clone(),
+            _ => BTreeMap::new(),
+        };
+        let blocks: Blocks<'_> = match kind {
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                vec![(THEN, then.as_slice()), (ELSE, otherwise.as_slice())]
+            }
+            StepKind::ForEach { body, .. } => vec![(EACH, body.as_slice())],
+            StepKind::Repeat { body, .. } | StepKind::While { body, .. } => {
+                vec![(BODY, body.as_slice())]
+            }
+            _ => Vec::new(),
+        };
+        (Self::of(kind), args, blocks)
+    }
+
+    /// The head of `kind`, which is everything of the step but its arguments
+    /// and the steps inside its blocks.
+    fn of(kind: &StepKind) -> Self {
         match kind {
             StepKind::Invoke {
                 action,
                 resource,
-                args,
                 appearance,
-            } => (
-                Self::Invoke {
-                    action: action.clone(),
-                    resource: resource.clone(),
-                    appearance: appearance.clone(),
-                },
-                args.clone(),
-                Vec::new(),
-            ),
-            StepKind::If {
-                cond,
-                then,
-                otherwise,
-            } => (
-                Self::If { cond: cond.clone() },
-                BTreeMap::new(),
-                vec![(THEN, then.as_slice()), (ELSE, otherwise.as_slice())],
-            ),
-            StepKind::ForEach { items, item, body } => (
-                Self::ForEach {
-                    items: items.clone(),
-                    item: item.clone(),
-                },
-                BTreeMap::new(),
-                vec![(EACH, body.as_slice())],
-            ),
-            StepKind::SetVar { name, value } => (
-                Self::SetVar {
-                    name: name.clone(),
-                    value: value.clone(),
-                },
-                BTreeMap::new(),
-                Vec::new(),
-            ),
-            StepKind::Compute { expr } => (
-                Self::Compute { expr: expr.clone() },
-                BTreeMap::new(),
-                Vec::new(),
-            ),
-            StepKind::Repeat { count, index, body } => (
-                Self::Repeat {
-                    count: count.clone(),
-                    index: index.clone(),
-                },
-                BTreeMap::new(),
-                vec![(BODY, body.as_slice())],
-            ),
-            StepKind::While { cond, max, body } => (
-                Self::While {
-                    cond: cond.clone(),
-                    max: *max,
-                },
-                BTreeMap::new(),
-                vec![(BODY, body.as_slice())],
-            ),
-            StepKind::Return { value } => (
-                Self::Return {
-                    value: value.clone(),
-                },
-                BTreeMap::new(),
-                Vec::new(),
-            ),
-            StepKind::Ask { param } => (
-                Self::Ask {
-                    param: param.clone(),
-                },
-                BTreeMap::new(),
-                Vec::new(),
-            ),
+                ..
+            } => Self::Invoke {
+                action: action.clone(),
+                resource: resource.clone(),
+                appearance: appearance.clone(),
+            },
+            StepKind::If { cond, .. } => Self::If { cond: cond.clone() },
+            StepKind::ForEach { items, item, .. } => Self::ForEach {
+                items: items.clone(),
+                item: item.clone(),
+            },
+            StepKind::Repeat { count, index, .. } => Self::Repeat {
+                count: count.clone(),
+                index: index.clone(),
+            },
+            StepKind::While { cond, max, .. } => Self::While {
+                cond: cond.clone(),
+                max: *max,
+            },
+            StepKind::SetVar { name, value } => Self::SetVar {
+                name: name.clone(),
+                value: value.clone(),
+            },
+            StepKind::Compute { expr } => Self::Compute { expr: expr.clone() },
+            StepKind::Return { value } => Self::Return {
+                value: value.clone(),
+            },
+            StepKind::Ask { param } => Self::Ask {
+                param: param.clone(),
+            },
             StepKind::Ai {
                 prompt,
                 output,
                 input,
-            } => (
-                Self::Ai {
-                    prompt: prompt.clone(),
-                    output: output.clone(),
-                    input: input.clone(),
-                },
-                BTreeMap::new(),
-                Vec::new(),
-            ),
+            } => Self::Ai {
+                prompt: prompt.clone(),
+                output: output.clone(),
+                input: input.clone(),
+            },
             StepKind::Task {
                 instruction,
                 allow,
                 output,
-            } => (
-                Self::Task {
-                    instruction: instruction.clone(),
-                    allow: allow
-                        .iter()
-                        .filter_map(|rule| serde_json::to_value(rule).ok())
-                        .collect(),
-                    output: output.clone(),
-                },
-                BTreeMap::new(),
-                Vec::new(),
-            ),
+            } => Self::Task {
+                instruction: instruction.clone(),
+                allow: allow
+                    .iter()
+                    .filter_map(|rule| serde_json::to_value(rule).ok())
+                    .collect(),
+                output: output.clone(),
+            },
         }
     }
 
@@ -1143,8 +1119,8 @@ pub fn block_mut<'a>(steps: &'a mut Vec<Step>, block: &str) -> Option<&'a mut Ve
     match (&mut step.kind, branch) {
         (StepKind::If { then, .. }, "then") => Some(then),
         (StepKind::If { otherwise, .. }, "else") => Some(otherwise),
-        (StepKind::ForEach { body, .. }, "each") => Some(body),
-        (StepKind::Repeat { body, .. } | StepKind::While { body, .. }, "body") => Some(body),
+        (StepKind::ForEach { body, .. }, "each")
+        | (StepKind::Repeat { body, .. } | StepKind::While { body, .. }, "body") => Some(body),
         _ => None,
     }
 }

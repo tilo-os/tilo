@@ -370,14 +370,15 @@ pub enum Condition {
         left: Binding,
         right: Binding,
     },
-    /// An expression that answers a truth value: an ordering comparison, a
-    /// bare boolean, or a value judged by its truthiness. A comparison is
-    /// refused here before anything runs when its two sides cannot be
-    /// compared.
-    Holds(Expr),
     Not(Box<Condition>),
     All(Vec<Condition>),
     Any(Vec<Condition>),
+    /// An expression that answers a truth value: an ordering comparison, a
+    /// bare boolean, or a value judged by its truthiness. A comparison is
+    /// refused here before anything runs when its two sides cannot be
+    /// compared. Declared last: a stored condition names its variant by
+    /// place.
+    Holds(Expr),
 }
 
 /// What an [`Ai`](StepKind::Ai) step asks of the agent.

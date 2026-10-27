@@ -190,6 +190,17 @@ pub struct Member {
     pub value: Expr,
 }
 
+impl Member {
+    /// The member `name`, whose value is `value`.
+    #[must_use]
+    pub fn new(name: &str, value: Expr) -> Self {
+        Self {
+            name: name.to_owned(),
+            value,
+        }
+    }
+}
+
 impl Expr {
     /// A binary operation whose operator decides which kind it is. Parsed
     /// from a program, an operator and its operands may arrive under the
@@ -300,6 +311,7 @@ impl Expr {
             Self::Object { members } => members
                 .iter()
                 .any(|member| member.value.reads(binding_reads)),
+            Self::Filter { items, test } => items.reads(binding_reads) || test.reads(binding_reads),
         }
     }
 }
@@ -350,7 +362,7 @@ impl fmt::Display for Expr {
 /// one, its value otherwise.
 fn describe_binding(binding: &Binding) -> String {
     match binding {
-        Binding::Literal(Value::String(text)) => format!("“{text}”"),
+        Binding::Literal(Value::String(text)) | Binding::Template(text) => format!("“{text}”"),
         Binding::Literal(value) => value.to_string(),
         Binding::Input(name) => format!("input {name}"),
         Binding::Var(name) => format!("variable {name}"),
@@ -361,9 +373,7 @@ fn describe_binding(binding: &Binding) -> String {
                 format!("step {step} {pointer}")
             }
         }
-        Binding::Template(text) => format!("“{text}”"),
         Binding::Object(_) => "a dictionary".into(),
-        Binding::Expression(expr) => expr.to_string(),
         Binding::List(_) => "a list".into(),
         Binding::Expression(expr) => expr.to_string(),
     }
@@ -452,9 +462,15 @@ pub fn compare(op: Op, left: &Value, right: &Value) -> Result<Value, ExprError> 
             _ => Err(unordered(l, r)),
         }
     };
+    // A whole number and the same number written with a fraction are the
+    // same number: `1` and `1.0` are one value, not two kinds.
+    let equal = match (left, right) {
+        (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
+        _ => left == right,
+    };
     let holds = match op {
-        Op::Equals => left == right,
-        Op::NotEquals => left != right,
+        Op::Equals => equal,
+        Op::NotEquals => !equal,
         Op::Less => ordered(left, right)?.is_lt(),
         Op::LessOrEquals => ordered(left, right)?.is_le(),
         Op::Greater => ordered(left, right)?.is_gt(),
@@ -480,14 +496,7 @@ fn unordered(left: &Value, right: &Value) -> ExprError {
 /// outside the numbers JSON holds.
 pub fn arithmetic(op: Op, left: &Value, right: &Value) -> Result<Value, ExprError> {
     if op == Op::Concat {
-        let text = |value: &Value| match value {
-            Value::String(text) => Ok(text.clone()),
-            other => Err(wrong(format!(
-                "only texts join into text, and {} cannot",
-                type_name(other)
-            ))),
-        };
-        return Ok(Value::String(format!("{}{}", text(left)?, text(right)?)));
+        return Ok(Value::String(format!("{}{}", joins(left)?, joins(right)?)));
     }
     let number = |value: &Value| -> Result<f64, ExprError> {
         match value {
@@ -503,9 +512,8 @@ pub fn arithmetic(op: Op, left: &Value, right: &Value) -> Result<Value, ExprErro
         Op::Add => a + b,
         Op::Subtract => a - b,
         Op::Multiply => a * b,
-        Op::Divide if b == 0.0 => return Err(ExprError::DivideByZero {}),
+        Op::Divide | Op::Modulo if b == 0.0 => return Err(ExprError::DivideByZero {}),
         Op::Divide => a / b,
-        Op::Modulo if b == 0.0 => return Err(ExprError::DivideByZero {}),
         Op::Modulo => a % b,
         _ => {
             return Err(wrong(format!("`{}` is not arithmetic", op.as_str())));
@@ -516,12 +524,33 @@ pub fn arithmetic(op: Op, left: &Value, right: &Value) -> Result<Value, ExprErro
     }
     // A whole answer stays whole: a person who adds 1 and 2 expects 3, not
     // 3.0, and an integer parameter refuses the latter.
-    let integral = computed.fract() == 0.0 && computed.abs() < 9.0e15;
-    Ok(if integral {
-        Value::from(computed as i64)
-    } else {
-        Value::from(computed)
+    Ok(match exact(computed) {
+        Some(whole) => Value::from(whole),
+        None => Value::from(computed),
     })
+}
+
+/// `number` as a whole number, when it is one that an `i64` holds exactly.
+fn exact(number: f64) -> Option<i64> {
+    if number.fract() != 0.0 || number.abs() >= 9.0e18 {
+        return None;
+    }
+    let number = number.to_string();
+    number.parse().ok()
+}
+
+/// How a value reads once it is joined into text: a person writing a name
+/// from a counter or a count expects that number in it.
+fn joins(value: &Value) -> Result<String, ExprError> {
+    match value {
+        Value::String(text) => Ok(text.clone()),
+        Value::Number(number) => Ok(number.to_string()),
+        Value::Bool(flag) => Ok(flag.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => Err(wrong(format!(
+            "only a text, a number or a truth value joins into text, and {} cannot",
+            type_name(value)
+        ))),
+    }
 }
 
 /// `Negate`.
@@ -587,7 +616,6 @@ pub fn field(value: &Value, field: &str) -> Result<Value, ExprError> {
 
 /// The parts of a dotted field path, so `channels.0.name` reaches into a list
 /// as a JSON pointer would.
-#[must_use]
 pub fn field_tokens(field: &str) -> impl Iterator<Item = &str> {
     field.split('.').filter(|token| !token.is_empty())
 }

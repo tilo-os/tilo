@@ -18,6 +18,9 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, Pending, pending,
 };
 
+#[path = "tests/expression_tests.rs"]
+mod expression;
+
 use crate::{
     AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION,
     AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, Binding, CatchUp, CheckErrorKind, Condition,
@@ -141,6 +144,8 @@ struct FakeHost {
 struct HostState {
     ledger: InvocationLedger<InvocationUpdate>,
     started: Vec<InvokeRequest>,
+    /// What the files app's `list` answers, for the tests that read one.
+    files: Option<Value>,
 }
 
 impl FakeHost {
@@ -261,7 +266,19 @@ impl FakeHost {
         self.state.lock().unwrap().started.clone()
     }
 
-    fn output(request: &InvokeRequest) -> ActionOutput {
+    /// Offer `row` beside the apps this host already publishes.
+    fn add_row(&mut self, row: CatalogueRow) {
+        self.rows.push(row);
+    }
+
+    /// Answer the files app's `list` with `files` from now on.
+    fn answer_files(&self, files: Value) {
+        self.state.lock().unwrap().files = Some(files);
+    }
+
+    /// What a step invoking `request` answers. `files` is what this host's
+    /// files app lists, when it offers one.
+    fn output(request: &InvokeRequest, files: Option<&Value>) -> ActionOutput {
         // The shape a step declared for its answer, when it declared one. The
         // agent validates the answer against it as it stands.
         let schema = || {
@@ -282,8 +299,13 @@ impl FakeHost {
             InvokeArgument::None | InvokeArgument::Text(_) => None,
         };
         match request.target.address.action.as_str() {
+            // The notes app answers its inbox; a files app answers the folder
+            // the test gave it.
             "list" => ActionOutput {
-                value: Some(json!({"titles": ["a", "b"], "count": 2})),
+                value: Some(match files {
+                    Some(files) => files.clone(),
+                    None => json!({"titles": ["a", "b"], "count": 2}),
+                }),
                 resources: Vec::new(),
             },
             "create" | "send" => ActionOutput {
@@ -341,13 +363,16 @@ impl ActionHost for FakeHost {
             }));
         }
         let mut state = self.state.lock().unwrap();
-        let HostState { ledger, started } = &mut *state;
+        let answered = state.files.clone();
+        let HostState {
+            ledger, started, ..
+        } = &mut *state;
         let receipt = ledger
             .admit(caller, &request, || {
                 started.push(request.clone());
                 Ok(InvocationUpdate::Succeeded {
                     invocation: request.invocation,
-                    output: Self::output(&request),
+                    output: Self::output(&request, answered.as_ref()),
                 })
             })
             .map(|(update, _)| InvocationState::new(request.invocation, update.clone()).receipt());
@@ -431,6 +456,11 @@ fn notes_grant() -> Vec<Rule> {
 }
 
 fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
+    shortcut_over(id, steps, notes_grant())
+}
+
+/// A shortcut over `steps` whose grant is exactly `grant`.
+fn shortcut_over(id: &str, steps: Vec<Step>, grant: Vec<Rule>) -> Shortcut {
     Shortcut {
         id: id.into(),
         name: "Tidy inbox".into(),
@@ -438,7 +468,7 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         steps,
         step_timeout_secs: None,
         output: None,
-        grant: notes_grant(),
+        grant,
         triggers: Vec::new(),
         saved_by: None,
     }

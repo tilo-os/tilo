@@ -114,7 +114,9 @@ pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> S
                 .unwrap_or_else(|| name.clone());
             format!("{label} needs a value")
         }
-        CheckErrorKind::Incompatible(reason) => capitalised(reason),
+        CheckErrorKind::Incompatible(reason) | CheckErrorKind::Expression(reason) => {
+            capitalised(reason)
+        }
         CheckErrorKind::BadPointer { step, .. } => format!(
             "This points at a part of the result of {} that does not exist",
             step_label(step)
@@ -130,7 +132,6 @@ pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> S
         CheckErrorKind::UnboundedLoop => {
             String::from("A loop has to stop at a limit this program sets")
         }
-        CheckErrorKind::Expression(reason) => capitalised(reason),
         CheckErrorKind::OutsideGrant { app_id, .. } => {
             format!(
                 "This shortcut is not allowed to act in {}",
@@ -236,11 +237,11 @@ pub fn describe_expression(expr: &Expr, steps: &[Step]) -> String {
     let say = |inner: &Expr| describe_expression(inner, steps);
     match expr {
         Expr::Value { binding } => describe(binding, steps),
-        Expr::Compare { op, left, right } => {
+        Expr::Compare { op, left, right }
+        | Expr::Logic { op, left, right }
+        | Expr::Math { op, left, right } => {
             format!("{} {} {}", say(left), op.as_str(), say(right))
         }
-        Expr::Logic { op, left, right } => format!("{} {} {}", say(left), op.as_str(), say(right)),
-        Expr::Math { op, left, right } => format!("{} {} {}", say(left), op.as_str(), say(right)),
         Expr::Negate { value } => format!("-{}", say(value)),
         Expr::Truthy { value } => format!("{} is set", say(value)),
         Expr::Not { value } => format!("not ({})", say(value)),
@@ -552,12 +553,9 @@ pub fn outline(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> Vec<Stri
                     walk(inner, catalog, steps, out);
                 }
             }
-            StepKind::ForEach { body, .. } => {
-                for inner in body {
-                    walk(inner, catalog, steps, out);
-                }
-            }
-            StepKind::Repeat { body, .. } | StepKind::While { body, .. } => {
+            StepKind::ForEach { body, .. }
+            | StepKind::Repeat { body, .. }
+            | StepKind::While { body, .. } => {
                 for inner in body {
                     walk(inner, catalog, steps, out);
                 }

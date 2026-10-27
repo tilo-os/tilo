@@ -480,8 +480,9 @@ fn step_count(steps: &[Step]) -> usize {
                 StepKind::If {
                     then, otherwise, ..
                 } => step_count(then) + step_count(otherwise),
-                StepKind::ForEach { body, .. } => step_count(body),
-                StepKind::Repeat { body, .. } | StepKind::While { body, .. } => step_count(body),
+                StepKind::ForEach { body, .. }
+                | StepKind::Repeat { body, .. }
+                | StepKind::While { body, .. } => step_count(body),
                 StepKind::Invoke { .. }
                 | StepKind::SetVar { .. }
                 | StepKind::Compute { .. }
