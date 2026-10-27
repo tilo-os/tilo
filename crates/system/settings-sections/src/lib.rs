@@ -9,6 +9,7 @@
 pub mod accessibility;
 pub mod continuity;
 pub mod desktop;
+pub mod device_vpn;
 pub mod osk;
 pub mod prefs;
 pub mod providers;
@@ -63,6 +64,7 @@ sections!(
     desktop::SharedDisplayPrefs,
     desktop::AutomaticDisplayPrefs,
     osk::OskSourceSettings,
+    device_vpn::DeviceVpnPrefs,
 );
 
 #[cfg(test)]
