@@ -33,6 +33,7 @@ pub enum FilesEffect {
     /// Replaces this window's selection with the currently published rows.
     #[effect(view, returns)]
     #[effect(icon = "list-checks")]
+    #[effect(audience = "agents")]
     SelectEntries {
         #[param("Published entry row ids in the folder shown; at most 256")]
         entries: Vec<String>,
@@ -52,6 +53,7 @@ pub enum FilesEffect {
     /// request is about the selection.
     #[effect(view, kind = "read", returns, idempotent)]
     #[effect(icon = "list")]
+    #[effect(audience = "agents")]
     SelectedEntries,
     /// Hand over a file.
     ///
@@ -60,6 +62,7 @@ pub enum FilesEffect {
     /// the file and changes nothing.
     #[effect(content, kind = "read", idempotent)]
     #[effect(icon = "send")]
+    #[effect(audience = "agents")]
     HandOver {
         #[param("The file: an absolute path, a name in the folder shown, or its entry row id")]
         file: String,
@@ -72,6 +75,7 @@ pub enum FilesEffect {
     /// parts: read on from the `next` an answer gives.
     #[effect(kind = "read", returns, idempotent)]
     #[effect(icon = "file-text")]
+    #[effect(audience = "agents")]
     ReadText {
         #[param("The file: an absolute path, a name in the folder shown, or its entry row id")]
         file: String,
@@ -94,6 +98,7 @@ pub enum FilesEffect {
     /// not read payloads, grant access, or change this window's selection.
     #[effect(kind = "read", job, returns)]
     #[effect(icon = "clipboard-paste")]
+    #[effect(audience = "agents")]
     ClipboardStatus,
     /// Recover interrupted clipboard transfers.
     ///
@@ -141,6 +146,7 @@ pub enum FilesEffect {
     /// its resource and entries.
     #[effect(view, returns)]
     #[effect(icon = "folder-open")]
+    #[effect(audience = "agents")]
     OpenFolder {
         #[param("Absolute path of the folder to show")]
         path: String,
@@ -257,6 +263,7 @@ pub enum FilesEffect {
     /// New file from template.
     ///
     /// Creates a file from a template in the folder shown.
+    #[effect(row)]
     #[effect(keywords = "new file, create file, empty file")]
     #[effect(icon = "file-plus")]
     NewFromTemplate {
@@ -279,6 +286,7 @@ pub enum FilesEffect {
     /// Browse a provider folder without mounting it.
     #[effect(label = "Browse account", view)]
     #[effect(icon = "cloud")]
+    #[effect(audience = "agents")]
     BrowseCloud {
         account: String,
         folder: Option<String>,
@@ -290,6 +298,7 @@ pub enum FilesEffect {
     /// Toggle a cloud entry in the selection.
     #[effect(view)]
     #[effect(icon = "check")]
+    #[effect(audience = "agents")]
     SelectCloud { entry: String },
     /// Import selected files and folders to an explicit folder, or choose one.
     #[effect(label = "Import selection", view)]
@@ -298,6 +307,7 @@ pub enum FilesEffect {
     /// Observe enumeration, export and copy progress.
     #[effect(label = "Import progress", kind = "read", returns)]
     #[effect(icon = "hourglass")]
+    #[effect(audience = "agents")]
     CloudProgress,
     /// Cancel the current transfer, retaining completed independent copies.
     #[effect(label = "Cancel import", view)]
@@ -539,5 +549,10 @@ pub fn row_action(
     let mut spec = effect.bound();
     spec.id = id.into();
     spec.label = label.into();
+    // A row's copy names what it acts on, so a person takes it from the row
+    // even where the effect itself, its target typed out by id, is listed
+    // for agents only (browsing a cloud folder, selecting a cloud entry).
+    spec.contract
+        .set_audience(ui::tilo_actions::Audience::Everyone);
     spec
 }

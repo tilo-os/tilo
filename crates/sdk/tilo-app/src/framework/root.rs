@@ -335,7 +335,10 @@ fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
-    );
+    )
+    // Typed data for a program to reason about; a person reads what the
+    // app shows.
+    .for_audience(tilo_actions::Audience::Agents);
     spec.contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
@@ -2683,6 +2686,12 @@ impl RootPublishes for ResourceRoot {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         RootPublishes::resource_for(self, None, doc, id)
+    }
+    /// A live row a surface is still reading.
+    fn resource_pending(&self, id: &str) -> bool {
+        let mut pending = false;
+        self.surfaces(&mut |surface| pending = pending || surface.live_row_pending(id));
+        pending
     }
     /// Resource `id` in the published tree, or one the tree leaves out: a
     /// child the resource resolves by id, or a live row a surface resolves.

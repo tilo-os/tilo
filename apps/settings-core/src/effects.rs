@@ -486,22 +486,32 @@ pub fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
     rows
 }
 
-/// The live row `id`, published or not: an address an agent kept or a
-/// search hit names reads the area it belongs to.
+/// The live row `id` among the areas read: an address an agent kept or a
+/// search hit names. A row of an area not read yet is not known until its
+/// read lands ([`row_pending`]); asking never reads it here.
 pub fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow> {
-    fn find(rows: Vec<ui::framework::LiveRow>, id: &str) -> Option<ui::framework::LiveRow> {
-        rows.into_iter().find(|row| row.id() == id)
+    rows(app).into_iter().find(|row| row.id() == id)
+}
+
+/// Whether row `id`, which no area read so far shows, may be one of an area
+/// not read yet: that area's read is started, and the agent addressing the
+/// row is answered once it lands.
+pub fn row_pending(app: &SettingsApp, id: &str) -> bool {
+    let _ = id;
+    let mut pending = false;
+    for area in crate::area::registry().live_areas.iter().copied() {
+        if app.publishes_area(area) {
+            continue;
+        }
+        pending = true;
+        if let Some(read) = &area.background {
+            (read.start)(app);
+        }
     }
-    // The areas that have read are asked first, so a published row never
-    // reads another area.
-    find(rows(app), id).or_else(|| {
-        crate::area::registry()
-            .live_areas
-            .iter()
-            .copied()
-            .filter(|area| !app.publishes_area(area))
-            .find_map(|area| find((area.rows)(app), id))
-    })
+    if pending {
+        app.read_areas_now();
+    }
+    pending
 }
 
 /// The effects that differ from their declaration on this device now.

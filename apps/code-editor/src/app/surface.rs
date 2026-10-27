@@ -301,10 +301,23 @@ impl CodeApp {
             ]);
         }
         if self.session.active_buffer().is_none() {
-            let nothing_open = |effect| {
-                EffectStatus::unavailable(effect, "code_editor.no_file", "No file is open")
-            };
-            statuses.extend([nothing_open(CodeEditorEffect::REVERT_FILE)]);
+            const CODE: &str = "code_editor.no_file";
+            const REASON: &str = "No file is open";
+            // What acts on the open file (its text, its lines, the caret's
+            // place) has nothing to act on.
+            statuses.extend([
+                EffectStatus::unavailable(CodeEditorEffect::REVERT_FILE, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::SAVE_AS, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::FORMAT_FILE, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::FIND, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::REPLACE, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::GO_TO_LINE, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::DUPLICATE_LINE, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::MOVE_LINE_UP, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::MOVE_LINE_DOWN, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::DELETE_LINE, CODE, REASON),
+                EffectStatus::unavailable(CodeEditorEffect::TOGGLE_COMMENT, CODE, REASON),
+            ]);
         }
         statuses
     }

@@ -109,6 +109,7 @@ pub(crate) trait RootPublishes {
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource>;
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource>;
+    fn resource_pending(&self, id: &str) -> bool;
     fn resource_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
@@ -439,6 +440,10 @@ impl PublishesResources for RootWidget {
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         self.0.resource(doc, id)
+    }
+
+    fn resource_pending(&self, id: &str) -> bool {
+        self.0.resource_pending(id)
     }
 
     fn resource_for(

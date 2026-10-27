@@ -578,7 +578,10 @@
           "schema": {
             "type": "object"
           }
-        }
+        },
+        "tags": [
+          "audience:agents"
+        ]
       },
       "input": {
         "Text": {
@@ -692,7 +695,10 @@
           "schema": {
             "type": "object"
           }
-        }
+        },
+        "tags": [
+          "audience:agents"
+        ]
       },
       "input": {
         "Text": {
@@ -743,7 +749,10 @@
           "schema": {
             "type": "object"
           }
-        }
+        },
+        "tags": [
+          "audience:agents"
+        ]
       },
       "input": {
         "Text": {

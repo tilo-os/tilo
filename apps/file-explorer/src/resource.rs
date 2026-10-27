@@ -284,11 +284,19 @@ fn record_native(
     search = FileExplorer::search
 )]
 impl FileExplorer {
+    // Every verb names what it changes outright: the device, absolute paths,
+    // a stored place. Agents and scripts pass those; a person acts on what
+    // the window shows, through these verbs bound to it (the folder shown,
+    // the selection, an entry's row: `bound_declarations` and
+    // `row_declarations` below). So the verbs themselves are listed for
+    // agents only, and only the bound ones a person can take now are rows.
+
     /// Pin a folder to the Favorites in the sidebar.
     #[action(
         keywords = "bookmark, pin folder, favourite, favorite",
         label = "Add to Favorites",
-        icon = "star"
+        icon = "star",
+        audience = "agents"
     )]
     pub fn add_bookmark(
         &mut self,
@@ -315,7 +323,7 @@ impl FileExplorer {
     }
 
     /// Unpin a folder from the Favorites.
-    #[action(label = "Remove from Favorites", icon = "x")]
+    #[action(label = "Remove from Favorites", icon = "x", audience = "agents")]
     pub fn remove_bookmark(
         &mut self,
         #[param("Folder path on this device, or a stored place such as xdg:documents")]
@@ -328,7 +336,7 @@ impl FileExplorer {
     }
 
     /// Create a folder.
-    #[action(keywords = "mkdir, make directory, create folder, new directory, add folder", label = "New folder", undo = Self::revert_queued, icon = "folder-plus")]
+    #[action(keywords = "mkdir, make directory, create folder, new directory, add folder", label = "New folder", undo = Self::revert_queued, icon = "folder-plus", audience = "agents")]
     pub fn new_folder(
         &mut self,
         cx: &mut ActionCx,
@@ -345,7 +353,7 @@ impl FileExplorer {
     }
 
     /// Rename an entry.
-    #[action(keywords = "change name, rename file", label = "Rename", undo = Self::revert_queued, icon = "pencil")]
+    #[action(keywords = "change name, rename file", label = "Rename", undo = Self::revert_queued, icon = "pencil", audience = "agents")]
     pub fn rename(
         &mut self,
         cx: &mut ActionCx,
@@ -363,7 +371,7 @@ impl FileExplorer {
     }
 
     /// Move entries to Trash; undo puts them back.
-    #[action(keywords = "delete, remove, bin, recycle bin, throw away", label = "Move to Trash", undo = Self::revert_queued, icon = "trash-2")]
+    #[action(keywords = "delete, remove, bin, recycle bin, throw away", label = "Move to Trash", undo = Self::revert_queued, icon = "trash-2", audience = "agents")]
     pub fn trash(
         &mut self,
         cx: &mut ActionCx,
@@ -379,7 +387,7 @@ impl FileExplorer {
     }
 
     /// Move entries into another folder in one step, keeping their names.
-    #[action(id = "move", label = "Move entries to folder", undo = Self::revert_queued, icon = "arrow-right")]
+    #[action(id = "move", label = "Move entries to folder", undo = Self::revert_queued, icon = "arrow-right", audience = "agents")]
     pub fn move_entries(
         &mut self,
         cx: &mut ActionCx,
@@ -401,7 +409,7 @@ impl FileExplorer {
 
     /// Copy entries into a folder; a copy whose name is taken gets a free
     /// one.
-    #[action(label = "Copy entries to folder", undo = Self::revert_queued, icon = "copy")]
+    #[action(label = "Copy entries to folder", undo = Self::revert_queued, icon = "copy", audience = "agents")]
     pub fn copy_into(
         &mut self,
         cx: &mut ActionCx,
@@ -419,7 +427,7 @@ impl FileExplorer {
     }
 
     /// Copy mounted representations into independent editable files.
-    #[action(label = "Make editable copies", undo = Self::revert_queued, icon = "file-plus")]
+    #[action(label = "Make editable copies", undo = Self::revert_queued, icon = "file-plus", audience = "agents")]
     pub fn import_mounted(
         &mut self,
         cx: &mut ActionCx,
@@ -456,7 +464,7 @@ impl FileExplorer {
 
     /// Import independent local copies from a cloud account; undo removes
     /// only the local outputs recorded by the transfer.
-    #[action(label = "Import from account", undo = Self::revert_queued, icon = "cloud-download")]
+    #[action(label = "Import from account", undo = Self::revert_queued, icon = "cloud-download", audience = "agents")]
     pub fn cloud_import(
         &mut self,
         cx: &mut ActionCx,
@@ -536,7 +544,7 @@ impl FileExplorer {
     /// `.rtf`) is Writer's: write Markdown here and convert it with Writer's
     /// `convert-file`. With `replace`, a file of that name goes to Trash
     /// first; undo puts it back and takes the new one away.
-    #[action(label = "Write file", undo = Self::revert_queued, icon = "file-text")]
+    #[action(label = "Write file", undo = Self::revert_queued, icon = "file-text", audience = "agents")]
     pub fn write_file(
         &mut self,
         cx: &mut ActionCx,
@@ -575,7 +583,7 @@ impl FileExplorer {
     /// folder that holds them, under a free name: zip by default, which
     /// opens everywhere, or tar compressed with zstd, which keeps
     /// permissions and is smaller. Undo moves the archive to Trash.
-    #[action(label = "Compress", undo = Self::revert_queued, icon = "archive")]
+    #[action(label = "Compress", undo = Self::revert_queued, icon = "archive", audience = "agents")]
     pub fn compress(
         &mut self,
         cx: &mut ActionCx,
@@ -636,7 +644,7 @@ impl FileExplorer {
     /// else into a new folder named after the archive. Nothing lands
     /// outside that folder; links pointing out, device files and setuid
     /// bits are refused. Undo moves the extracted folder to Trash.
-    #[action(id = "extract", label = "Extract", undo = Self::revert_queued, icon = "folder-open")]
+    #[action(id = "extract", label = "Extract", undo = Self::revert_queued, icon = "folder-open", audience = "agents")]
     pub fn extract(
         &mut self,
         cx: &mut ActionCx,
@@ -689,7 +697,8 @@ impl FileExplorer {
         id = "record-clipboard-transfer",
         label = "Paste files",
         undo = Self::revert_queued,
-        icon = "clipboard-paste"
+        icon = "clipboard-paste",
+        audience = "agents"
     )]
     pub fn record_transfer(
         &mut self,
@@ -704,7 +713,7 @@ impl FileExplorer {
 
     /// Record a restore from Trash the native host already carried out, so
     /// it is in history and undoable.
-    #[action(id = "record-trash-restore", label = "Restore file", undo = Self::revert_queued, icon = "rotate-ccw")]
+    #[action(id = "record-trash-restore", label = "Restore file", undo = Self::revert_queued, icon = "rotate-ccw", audience = "agents")]
     pub fn record_restore(
         &mut self,
         cx: &mut ActionCx,
@@ -718,7 +727,7 @@ impl FileExplorer {
 
     /// Take back a filesystem change: the device that made it compensates
     /// what it recorded, in reverse order.
-    #[action(item = ops, label = "Take back change", undo = Self::revert_queued, icon = "undo-2")]
+    #[action(item = ops, label = "Take back change", undo = Self::revert_queued, icon = "undo-2", audience = "agents")]
     pub fn revert(
         &mut self,
         cx: &mut ActionCx,
@@ -1444,8 +1453,8 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         self.effect_statuses()
     }
 
-    /// Pin the folder shown to the Favorites, or unpin it; change the
-    /// files of the folder shown.
+    /// Pin the folder shown to the Favorites, or unpin it; rename or trash
+    /// what the person selected; change the files of the folder shown.
     fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
         let mut declarations = Vec::new();
         if let Some(place) = self.current_place() {
@@ -1462,6 +1471,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                     .declaration("add-current-bookmark", "Add this folder to Favorites")
             });
         }
+        declarations.extend(self.selection_declarations());
         declarations.extend(self.file_op_declarations());
         declarations
     }

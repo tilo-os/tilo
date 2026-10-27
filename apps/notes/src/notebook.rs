@@ -212,7 +212,8 @@ pub fn page_of(id: &Id) -> Option<PageId> {
     read_content_in_doc = Notebook::read_note,
     document_child = Notebook::document_projection_child,
     answer = Notebook::created_page,
-    effects = crate::effect::NotesEffect
+    effects = crate::effect::NotesEffect,
+    available = Notebook::available
 )]
 impl Notebook {
     /// New note
@@ -663,6 +664,23 @@ impl Notebook {
             markdown,
         });
         Ok(())
+    }
+}
+
+impl Notebook {
+    /// A verb on a tag needs a tag to act on: until the notebook has one,
+    /// "Delete tag" is not offered, rather than offered asking for a tag
+    /// there is none of.
+    fn available(&self, verb: notebook::Verb) -> ui::tilo_actions::Availability {
+        match verb {
+            notebook::Verb::DeleteTag if self.tags.is_empty() => {
+                ui::tilo_actions::Availability::Unavailable {
+                    code: "notes.no_tags".into(),
+                    reason: "The notebook has no tags".into(),
+                }
+            }
+            _ => ui::tilo_actions::Availability::Available,
+        }
     }
 }
 

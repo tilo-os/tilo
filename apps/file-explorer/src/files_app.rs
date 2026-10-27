@@ -1398,6 +1398,86 @@ impl FileExplorerWidget {
         }
     }
 
+    /// What the person selected, named: a single entry by its name, more by
+    /// how many there are. `None` while nothing is selected.
+    pub(crate) fn selection_named(&self) -> Option<(usize, String)> {
+        let selected = self.selected_paths();
+        let first = selected.first()?;
+        let name = first.file_name().map_or_else(
+            || first.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        Some((selected.len(), name))
+    }
+
+    /// `key` naming the selection (`files-trash-selected`): "Move
+    /// “report.pdf” to Trash", or "Move 3 items to Trash".
+    pub(crate) fn selection_label(key: &str, (count, name): &(usize, String)) -> String {
+        crate::i18n::t_args(
+            key,
+            &[
+                crate::i18n::arg("count", *count),
+                crate::i18n::arg("name", name.as_str()),
+            ],
+        )
+    }
+
+    /// Filesystem changes bound to what the person selected, each naming it:
+    /// rename the one selected entry, move the selection to Trash. They act
+    /// on the selection (their contract says so, and an app's search lists
+    /// them first) and are offered only while there is one.
+    pub(crate) fn selection_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
+        use crate::resource::{FileExplorer, file_explorer};
+        const SELECTION: &str = ui::tilo_actions::ContextRequirement::Selection.tag();
+        let Some(device) = self.device.clone() else {
+            return Vec::new();
+        };
+        if self.is_trash_view() {
+            return Vec::new();
+        }
+        let Some(named) = self.selection_named() else {
+            return Vec::new();
+        };
+        let paths: Vec<String> = self
+            .selected_paths()
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        let mut declarations = Vec::new();
+        if let [path] = paths.as_slice() {
+            declarations.extend(
+                FileExplorer::RENAME
+                    .bind(file_explorer::Rename::paths().device, device.clone())
+                    .and(file_explorer::Rename::paths().folder, String::new())
+                    .and(file_explorer::Rename::paths().entry, path.clone())
+                    .declaration(
+                        "rename-selected",
+                        Self::selection_label("files-rename-selected", &named),
+                    ),
+            );
+        }
+        declarations.extend(
+            FileExplorer::TRASH
+                .bind(file_explorer::Trash::paths().device, device)
+                .and(file_explorer::Trash::paths().folder, String::new())
+                .and(file_explorer::Trash::paths().entries, paths)
+                .declaration(
+                    "trash-selected",
+                    Self::selection_label("files-trash-selected", &named),
+                )
+                .map(|mut trash| {
+                    trash.destructive = true;
+                    trash
+                }),
+        );
+        declarations
+            .into_iter()
+            .map(|decl| decl.tagged(SELECTION))
+            .collect()
+    }
+
     /// Filesystem changes bound to the entry row `row`: rename, move to a
     /// folder, move to Trash — the resource's queued, undoable verbs with
     /// this device and the entry bound, for an agent acting on the row.
@@ -1485,7 +1565,7 @@ impl FileExplorerWidget {
         let new_folder = FileExplorer::NEW_FOLDER
             .bind(file_explorer::NewFolder::paths().device, device.clone())
             .and(file_explorer::NewFolder::paths().parent, folder.clone())
-            .declaration("new-folder-here", "New folder here");
+            .declaration("new-folder-here", t("files-menu-new-folder"));
         let rename = FileExplorer::RENAME
             .bind(file_explorer::Rename::paths().device, device.clone())
             .and(file_explorer::Rename::paths().folder, folder.clone())
@@ -1517,8 +1597,15 @@ impl FileExplorerWidget {
             .bind(file_explorer::Extract::paths().device, device)
             .and(file_explorer::Extract::paths().to, Some(folder))
             .declaration("extract-here", "Extract an archive into this folder");
-        [
-            new_folder,
+        // Each of these names the entries it changes by name or path, which
+        // an agent or a script passes and a person picks in the listing: a
+        // person renames, moves or trashes what they selected, or a row's
+        // entry, through the actions bound to it. Only a new folder asks
+        // nothing but its name.
+        let for_agents = |decl: ui::tilo_resource::ActionDecl<FileExplorer>| {
+            decl.for_audience(ui::tilo_actions::Audience::Agents)
+        };
+        let by_entry = [
             rename,
             trash,
             moving,
@@ -1529,8 +1616,8 @@ impl FileExplorerWidget {
         ]
         .into_iter()
         .flatten()
-        .map(shown)
-        .collect()
+        .map(for_agents);
+        new_folder.into_iter().chain(by_entry).map(shown).collect()
     }
 
     /// Show the bookmarked `places`, resolved on this device.
@@ -6022,7 +6109,17 @@ impl FileExplorerWidget {
                 ]);
             }
         }
-        if self.selected_paths().is_empty() {
+        if let Some(named) = self.selection_named() {
+            // What they act on, named: "Copy “report.pdf”".
+            statuses.push(ui::framework::EffectStatus::labelled(
+                FilesEffect::COPY_SELECTION,
+                Self::selection_label("files-copy-selected", &named),
+            ));
+            statuses.push(ui::framework::EffectStatus::labelled(
+                FilesEffect::CUT_SELECTION,
+                Self::selection_label("files-cut-selected", &named),
+            ));
+        } else {
             for id in [FilesEffect::COPY_SELECTION, FilesEffect::CUT_SELECTION] {
                 statuses.push(ui::framework::EffectStatus::unavailable(
                     id,
@@ -6031,6 +6128,46 @@ impl FileExplorerWidget {
                 ));
             }
         }
+        if self.selected_paths().is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::CLEAR_SELECTION,
+                "selection_empty",
+                t("files-selection-empty"),
+            ));
+        }
+        // Pasting from this window's own clipboard needs something on it; a
+        // hosted clipboard is the workspace's, which this window cannot see.
+        let hosted_paste =
+            matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard();
+        if !hosted_paste && self.clipboard.is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::PASTE,
+                "clipboard_empty",
+                "The clipboard is empty",
+            ));
+        }
+        if self.history.is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::BACK,
+                "no_previous_folder",
+                "No folder before this one",
+            ));
+        }
+        if self.forward.is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::FORWARD,
+                "no_next_folder",
+                "No folder after this one",
+            ));
+        }
+        if self.current_path.parent().is_none() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::UP,
+                "at_root",
+                "This folder has no parent",
+            ));
+        }
+        statuses.extend(self.cloud_statuses());
         if !self.is_trash_view() {
             statuses.push(ui::framework::EffectStatus::unavailable(
                 FilesEffect::EMPTY_TRASH,
@@ -10727,6 +10864,15 @@ pub(crate) mod published {
             "Files",
             &FileExplorer::default(),
         );
+        // What the window binds over the folder shown and the selection,
+        // as the framework's surface host publishes it.
+        for decl in <FileExplorerWidget as ui::framework::ResourceSurface<
+            FileExplorer,
+            FilesEffect,
+        >>::bound_declarations(files)
+        {
+            root = ui::tilo_resource::bind_declaration(root, &decl);
+        }
         root.actions.extend(FilesEffect::specs());
         let _ = doc;
         root.children.extend(files.published_rows());

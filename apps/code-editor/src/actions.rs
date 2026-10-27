@@ -248,11 +248,13 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
             command: run.command,
         }),
         TerminalAction::Rerun(rerun) => {
-            ProjectAction::RerunInTerminal(project::project::RerunInTerminal { run: rerun.runs })
+            ProjectAction::RerunInTerminal(project::project::RerunInTerminal {
+                run: rerun.runs.to_string(),
+            })
         }
         TerminalAction::RerunTest(rerun) => {
             ProjectAction::RerunTestInTerminal(project::project::RerunTestInTerminal {
-                run: rerun.runs,
+                run: rerun.runs.to_string(),
                 test: rerun.test,
             })
         }

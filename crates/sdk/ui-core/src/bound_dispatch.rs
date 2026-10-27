@@ -1134,6 +1134,42 @@ pub(crate) fn resolve_component_resource(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+/// Whether any widget of `widget`'s tree, whatever component it is part
+/// of, may resolve resource `id` once what it reads lands.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn any_resource_pending(widget: &dyn Widget, id: &str) -> bool {
+    let mut pending = crate::resources::resource_pending(widget, id);
+    widget.for_each_child(&mut |child| {
+        pending = pending || any_resource_pending(child, id);
+    });
+    pending
+}
+
+/// [`unbound_resource_pending`] in the component `binding` hosts.
+pub(crate) fn component_resource_pending(
+    root: &mut dyn Widget,
+    binding: &CallbackBinding,
+    resource: &str,
+) -> bool {
+    let Ok(_entry) = binding.enter() else {
+        return false;
+    };
+    let mut pending = false;
+    let mut visit = |_: &CallbackBinding,
+                     widget: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        pending = unbound_resource_pending(widget, resource);
+        None
+    };
+    root.visit_components(&mut ComponentRequest {
+        target: Some(binding),
+        found: false,
+        visit: &mut visit,
+    })
+    .is_ok()
+        && pending
+}
+
 pub(crate) fn publication_visibility(
     root: &dyn Widget,
     doc: &AutoCommit,
@@ -3373,6 +3409,20 @@ pub(crate) fn collect_participant_resources(
     widget.for_each_child(&mut |child| {
         collect_participant_resources(child, doc, participant, resources);
     });
+}
+
+/// Whether resource `id`, which `widget`'s subtree resolves to nothing now,
+/// may resolve once what it reads lands
+/// ([`crate::resources::PublishesResources::resource_pending`]).
+pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
+    if widget.has_separate_document_owner() {
+        return false;
+    }
+    let mut pending = crate::resources::resource_pending(widget, id);
+    widget.for_each_child(&mut |child| {
+        pending = pending || unbound_resource_pending(child, id);
+    });
+    pending
 }
 
 pub(crate) fn resolve_unbound_resource(

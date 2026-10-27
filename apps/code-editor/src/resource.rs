@@ -476,9 +476,11 @@ mod tests {
         let readme = file_id(&state, "ferris-cli/README.md");
         sample
             .app
-            .effect(&CodeEditorEffect::ShowFile {
-                file: readme.clone(),
-            })
+            .call_on(
+                &crate::actions::file_resource_id(&readme),
+                "show-file",
+                serde_json::json!({}),
+            )
             .unwrap();
         sample.app.settle();
         let text = sample
