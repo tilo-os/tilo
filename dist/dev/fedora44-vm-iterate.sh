@@ -26,7 +26,7 @@ container=${TILO_FEDORA44_CONTAINER:-tilo-app-fedora44}
 image=${TILO_FEDORA44_IMAGE:-localhost/tilo-app-fedora44:current}
 target_rel=${TILO_FEDORA44_TARGET_REL:-target/fedora44-dev}
 vm_host=${TILO_VM_HOST:-127.0.0.1}
-vm_user=${TILO_VM_USER:-quickuser}
+vm_user=${TILO_VM_USER:-tester}
 vm_root=${TILO_VM_DEV_ROOT:-.local/share/tilo-app}
 
 # Some build scripts embed CARGO_MANIFEST_DIR. The vendored Vello shader

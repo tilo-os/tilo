@@ -17,7 +17,7 @@ if [ ! -f "$OVMF" ]; then
 fi
 
 echo "Starting Tilo VM with disk: $DISK"
-echo "Login: quickuser / tilo"
+echo "Login: tester / tilo"
 
 qemu-system-x86_64 \
     -enable-kvm \

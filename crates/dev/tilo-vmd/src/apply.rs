@@ -1563,17 +1563,17 @@ mod tests {
     #[test]
     fn vm_greeter_update_preserves_only_a_verified_active_owner_login() {
         for (name, mut apply, defer) in [
-            ("owner", RecordingApply::with_login("quickuser"), true),
+            ("owner", RecordingApply::with_login("tester"), true),
             ("ordinary-vm", RecordingApply::default(), false),
             (
                 "board-session",
-                RecordingApply::with_device("quickuser"),
+                RecordingApply::with_device("tester"),
                 false,
             ),
             (
                 "logged-out",
                 {
-                    let mut apply = RecordingApply::with_login("quickuser");
+                    let mut apply = RecordingApply::with_login("tester");
                     apply.device = apply.device.take().map(DeviceSession::logged_out);
                     apply
                 },
@@ -1582,7 +1582,7 @@ mod tests {
             (
                 "incomplete-login",
                 {
-                    let mut apply = RecordingApply::with_login("quickuser");
+                    let mut apply = RecordingApply::with_login("tester");
                     apply
                         .device
                         .as_mut()
@@ -1726,7 +1726,7 @@ mod tests {
             }
         }
         {
-            let mut apply = RecordingApply::with_device("quickuser");
+            let mut apply = RecordingApply::with_device("tester");
             let mut device = record("device", SlotKind::Device);
             device.device = apply.device.clone();
             let g = generation(1, &[("shell", "h1", Scope::Session, &[])]);
@@ -1741,11 +1741,11 @@ mod tests {
                 SessionChange::Keep,
             )
             .unwrap();
-            let unit = "tilo-board-headless-session@quickuser.service";
+            let unit = "tilo-board-headless-session@tester.service";
             assert_eq!(
                 apply.calls,
                 [
-                    "account_uid quickuser",
+                    "account_uid tester",
                     "write_dropin user@1000.service 50-tilo-vm-layers.conf",
                     &format!("write_dropin {unit} 50-tilo-vm-layers.conf"),
                     "write_dropin tilo-board-drm-session.service 50-tilo-vm-layers.conf",
@@ -1770,7 +1770,7 @@ mod tests {
             );
             let session = device.session().unwrap();
             assert!(!session.stand_in);
-            assert_eq!(session.user, "quickuser");
+            assert_eq!(session.user, "tester");
             assert_eq!(
                 session.control_socket,
                 PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
@@ -1779,7 +1779,7 @@ mod tests {
             assert_eq!(device.session(), None);
         }
         {
-            let mut apply = RecordingApply::with_login("quickuser");
+            let mut apply = RecordingApply::with_login("tester");
             let mut device = record("device", SlotKind::Device);
             device.device = apply.device.clone();
             let g = generation(1, &[("shell", "h1", Scope::Session, &[])]);
@@ -1804,11 +1804,11 @@ mod tests {
             assert_eq!(
                 apply.calls,
                 [
-                    "account_uid quickuser",
+                    "account_uid tester",
                     "link_sysext 2",
                     "sysext_refresh",
-                    "restart_user_unit quickuser tilo-ush.service",
-                    "restart_desktop quickuser",
+                    "restart_user_unit tester tilo-ush.service",
+                    "restart_desktop tester",
                 ],
                 "no drop-ins, no unit stopped: the login stays"
             );
@@ -1816,7 +1816,7 @@ mod tests {
             assert_eq!(
                 actions.last(),
                 Some(&Action::RestartDesktop {
-                    user: "quickuser".into()
+                    user: "tester".into()
                 })
             );
             // Logged out: the layers still merge and wait for the next login.
@@ -1838,7 +1838,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 apply.calls,
-                ["account_uid quickuser", "link_sysext 2", "sysext_refresh"]
+                ["account_uid tester", "link_sysext 2", "sysext_refresh"]
             );
             assert!(
                 matches!(actions.last(), Some(Action::Deferred { reason }) if reason.contains("next login")),

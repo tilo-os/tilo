@@ -384,10 +384,10 @@ impl CliError {
                 hint
             }
             Self::RootKeyRefused { install, credentials: true, .. } => format!(
-                "the key goes in at creation as the systemd credential ssh.authorized_keys.root, and this VM did not take it (created before that, or from another disk). Install it once, with the dev account's password from os/account.env (quickuser, tilo): {install}"
+                "the key goes in at creation as the systemd credential ssh.authorized_keys.root, and this VM did not take it (created before that, or from another disk). Install it once, with the dev account's password from os/account.env (tester, tilo): {install}"
             ),
             Self::RootKeyRefused { install, .. } => format!(
-                "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (quickuser, tilo): {install}"
+                "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (tester, tilo): {install}"
             ),
             Self::SudoRefused { vm, ssh, user, .. } => format!(
                 "tilo-vm runs tilo-vmd and its own commands as root, through sudo when it logs in as {user}; allow that once, typing {user}'s password on this terminal: tilo-vm vm add {vm} --ssh {ssh} --grant-sudo   (or log in as root: --ssh root@<host>)"
@@ -709,13 +709,13 @@ mod tests {
             CliError::RootKeyRefused {
                 vm: "dev".into(),
                 key: "/cfg/keys/dev_ed25519".into(),
-                install: "ssh -t quickuser@vm '...'".into(),
+                install: "ssh -t tester@vm '...'".into(),
                 credentials: true,
             },
             CliError::RootKeyRefused {
                 vm: "dev".into(),
                 key: "/cfg/keys/dev_ed25519".into(),
-                install: "ssh -t quickuser@vm '...'".into(),
+                install: "ssh -t tester@vm '...'".into(),
                 credentials: false,
             },
             CliError::SudoRefused {

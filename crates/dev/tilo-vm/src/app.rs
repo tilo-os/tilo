@@ -8048,7 +8048,7 @@ mod tests {
                 error.hint()
             );
             assert!(
-                error.hint().contains("quickuser@192.168.64.5"),
+                error.hint().contains("tester@192.168.64.5"),
                 "{}",
                 error.hint()
             );
@@ -8249,7 +8249,7 @@ mod tests {
             let error = app
                 .vm_add(&AddArgs {
                     key: Some(dir.path().join("missing")),
-                    ..add("pi2", "quickuser@10.0.0.109")
+                    ..add("pi2", "tester@10.0.0.109")
                 })
                 .err()
                 .unwrap();

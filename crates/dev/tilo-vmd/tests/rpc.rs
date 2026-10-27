@@ -608,7 +608,7 @@ fn the_device_slot_is_the_machines_own_session() {
         let mut daemon = Daemon::spawn_with(root.path(), "record-device");
         let client = &mut daemon.client;
         client.hello("test").unwrap();
-        let unit = "tilo-board-headless-session@quickuser.service";
+        let unit = "tilo-board-headless-session@tester.service";
         // Listed before anything was swapped into it: it is the machine's session.
         let fresh = client.call(Status { slot: None }).unwrap();
         assert_eq!(fresh.slots.len(), 1, "{:?}", fresh.slots);
@@ -671,7 +671,7 @@ fn the_device_slot_is_the_machines_own_session() {
             .unwrap();
         let device = &status.slots[0];
         assert_eq!(device.kind, SlotKind::Device);
-        assert_eq!(device.user.as_deref(), Some("quickuser"));
+        assert_eq!(device.user.as_deref(), Some("tester"));
         assert_eq!(device.components["shell"], v2);
         assert_eq!(device.generations, [0, 1, 2]);
         assert!(status.issues.is_empty(), "{:?}", status.issues);

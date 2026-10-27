@@ -200,8 +200,8 @@ const TOOLKIT: &str = "2026.07+native.0123456789abcdef0123456789abcdef";
 fn user_package(id: &str, runtime: &str) -> package_store::registry::InstalledPackage {
     serde_json::from_value(serde_json::json!({
         "id": id,
-        "payload_root": format!("/home/quickuser/.local/share/tilo-apps/pkgs/{id}"),
-        "manifest_path": format!("/home/quickuser/.local/share/tilo-apps/pkgs/{id}.pkg/manifest.toml"),
+        "payload_root": format!("/home/tester/.local/share/tilo-apps/pkgs/{id}"),
+        "manifest_path": format!("/home/tester/.local/share/tilo-apps/pkgs/{id}.pkg/manifest.toml"),
         "runtime": runtime,
     }))
     .unwrap()
@@ -217,7 +217,7 @@ fn roll_cohort_back_to_image(
 ) -> (Result<ApplyResult, DaemonError>, usize, usize, u64) {
     let root = tempfile::tempdir().unwrap();
     let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut apply = RecordingApply::with_login("quickuser");
+    let mut apply = RecordingApply::with_login("tester");
     apply.mirror = Some(mirror.clone());
     apply.user_packages = packages;
     apply.image_runtimes = image_runtimes.iter().map(|v| (*v).to_owned()).collect();
@@ -448,7 +448,7 @@ fn a_swap_that_leaves_the_app_host_unable_to_read_the_declaration_is_refused() {
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
-        Box::new(RecordingApply::with_login("quickuser")),
+        Box::new(RecordingApply::with_login("tester")),
         None,
         BaseInfo::default(),
     );
@@ -519,7 +519,7 @@ fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused()
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
-        Box::new(RecordingApply::with_login("quickuser")),
+        Box::new(RecordingApply::with_login("tester")),
         None,
         BaseInfo::default(),
     );
@@ -601,7 +601,7 @@ fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused()
 fn vm_component_refresh_restarts_declared_live_owner_user_services() {
     let root = tempfile::tempdir().unwrap();
     let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut apply = RecordingApply::with_login("quickuser");
+    let mut apply = RecordingApply::with_login("tester");
     apply.mirror = Some(mirror.clone());
     let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
     daemon
@@ -628,11 +628,11 @@ fn vm_component_refresh_restarts_declared_live_owner_user_services() {
     )
     .unwrap();
     let user_service = Action::RestartUserUnit {
-        user: "quickuser".into(),
+        user: "tester".into(),
         unit: "tilo-fs-cloud.service".into(),
     };
     let desktop = Action::RestartDesktop {
-        user: "quickuser".into(),
+        user: "tester".into(),
     };
     let user_ix = result
         .actions
@@ -653,7 +653,7 @@ fn vm_component_refresh_restarts_declared_live_owner_user_services() {
     assert!(
         calls
             .iter()
-            .any(|call| call == "restart_user_unit quickuser tilo-fs-cloud.service")
+            .any(|call| call == "restart_user_unit tester tilo-fs-cloud.service")
     );
     assert!(
         !calls.iter().any(|call| call == "restart user@1000.service"),
@@ -666,7 +666,7 @@ fn a_vm_component_outside_sessions_leaves_desktops_running() {
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
-        Box::new(RecordingApply::with_login("quickuser")),
+        Box::new(RecordingApply::with_login("tester")),
         None,
         BaseInfo::default(),
     );
@@ -698,7 +698,7 @@ fn a_vm_component_outside_sessions_leaves_desktops_running() {
         .unwrap()
     };
     let restarted = Action::RestartDesktop {
-        user: "quickuser".into(),
+        user: "tester".into(),
     };
     let vmd = swap("vmd", 1, true);
     assert_eq!(vmd.policy, Policy::VmRefresh);
@@ -719,7 +719,7 @@ fn a_vm_component_outside_sessions_leaves_desktops_running() {
 fn a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot() {
     let root = tempfile::tempdir().unwrap();
     let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut apply = RecordingApply::with_login("quickuser");
+    let mut apply = RecordingApply::with_login("tester");
     apply.mirror = Some(mirror.clone());
     let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
     daemon
@@ -745,7 +745,7 @@ fn a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot() {
         })
     };
     let restarted = Action::RestartDesktop {
-        user: "quickuser".into(),
+        user: "tester".into(),
     };
 
     let shell = apply(swap(DEVICE_SLOT, "shell", &layer(1), Scope::Session));
@@ -1065,7 +1065,7 @@ fn a_board_session_running_before_restore_restarts_onto_its_view() {
     let slots = SlotStore::new(root.path());
     let layers = LayerStore::new(root.path());
     let locks = Locks::new(root.path());
-    let mut apply = RecordingApply::with_device("quickuser");
+    let mut apply = RecordingApply::with_device("tester");
     let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
     slots.save(&record).unwrap();
     let hash = "07".repeat(32);
@@ -1080,7 +1080,7 @@ fn a_board_session_running_before_restore_restarts_onto_its_view() {
         .unwrap()
         .unwrap();
     slots.set_current(&mut record, generation.number).unwrap();
-    let unit = "tilo-board-headless-session@quickuser.service";
+    let unit = "tilo-board-headless-session@tester.service";
     // Enabled at boot, it started before the restore.
     apply.start_unit(unit).unwrap();
     let issues = restore_slots(&slots, &layers, &locks, &mut apply);

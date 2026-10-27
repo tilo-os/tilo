@@ -252,11 +252,11 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         | AuthScenario::Fingerprint
         | AuthScenario::Starting
         | AuthScenario::PersonalAuthenticating
-        | AuthScenario::PersonalStarting => Some(("quinten", "")),
+        | AuthScenario::PersonalStarting => Some(("ada", "")),
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
-        _ => Some(("quinten", "hunter2")),
+        _ => Some(("ada", "hunter2")),
     }
 }
 

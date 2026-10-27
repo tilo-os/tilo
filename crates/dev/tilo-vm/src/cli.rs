@@ -1761,24 +1761,24 @@ mod tests {
                 "scenario",
                 "install",
                 "--username",
-                "xaver",
+                "bob",
                 "--credentials-stdin",
             ])
             .unwrap();
             let Some(Command::Scenario(ScenarioCommand::Install(args))) = retained.command else {
                 panic!("not the install scenario");
             };
-            assert_eq!(args.username.as_deref(), Some("xaver"));
+            assert_eq!(args.username.as_deref(), Some("bob"));
             assert!(args.credentials_stdin);
             for invalid in [
-                vec!["tilo-vm", "scenario", "install", "--username", "xaver"],
+                vec!["tilo-vm", "scenario", "install", "--username", "bob"],
                 vec!["tilo-vm", "scenario", "install", "--credentials-stdin"],
                 vec![
                     "tilo-vm",
                     "scenario",
                     "install",
                     "--username",
-                    "xaver",
+                    "bob",
                     "--credentials-stdin",
                     "--dry-run",
                 ],

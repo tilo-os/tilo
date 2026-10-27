@@ -60,7 +60,7 @@ pub struct SlotRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceSession {
     /// The unit that runs it: the board session's system unit, e.g.
-    /// `tilo-board-headless-session@quickuser.service`; the login's
+    /// `tilo-board-headless-session@tester.service`; the login's
     /// `session-<id>.scope`; or `greetd.service` while the owner is logged
     /// out.
     pub unit: String,
@@ -824,7 +824,7 @@ mod tests {
         let store = SlotStore::new(root.path());
         let login = DeviceSession {
             unit: "session-3.scope".into(),
-            account: "quickuser".into(),
+            account: "tester".into(),
             units: Vec::new(),
             control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
             login: Some(Login {
@@ -842,11 +842,11 @@ mod tests {
         let device = out.device.unwrap();
         assert_eq!(device.unit, crate::apply::GREETER_UNIT);
         assert_eq!(device.login, Some(Login::default()));
-        assert_eq!(device.account, "quickuser");
+        assert_eq!(device.account, "tester");
 
         let board = DeviceSession {
             login: None,
-            unit: "tilo-board-headless-session@quickuser.service".into(),
+            unit: "tilo-board-headless-session@tester.service".into(),
             ..login
         };
         let record = store.load_with(DEVICE_SLOT, Some(board)).unwrap();

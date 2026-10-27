@@ -595,7 +595,7 @@ class SignIn(unittest.TestCase):
                          {"error": "no-greeter-socket"})
 
     def test_the_dev_account_comes_from_account_env(self):
-        self.assertEqual(resources.dev_account(), ("quickuser", "tilo"))
+        self.assertEqual(resources.dev_account(), ("tester", "tilo"))
 
 
 if __name__ == "__main__":
