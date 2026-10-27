@@ -14,7 +14,7 @@ use ui::tilo_actions::{
     InputSpec, OperationKind, ParamType, ResultSpec,
 };
 
-use crate::door::{DoorState, Drafting, RunRecord, RunStatus};
+use crate::door::{DoorState, Drafting, Refined, RunRecord, RunStatus};
 use crate::drafting::Drafted;
 use crate::model::Workbench;
 use crate::view;
@@ -236,10 +236,36 @@ fn drafted() -> Option<Drafting> {
         ]
     });
     let shortcut = serde_json::from_value(shortcut).ok()?;
-    Some(Drafting::Ready(Box::new(Drafted {
-        shortcut,
-        problems: Vec::new(),
+    Some(Drafting::Ready(Box::new(Refined {
+        drafted: Drafted {
+            shortcut,
+            problems: Vec::new(),
+        },
+        changes: Vec::new(),
     })))
+}
+
+/// Repeated work the app noticed: the same two steps, three times in a row.
+fn proposal() -> crate::proposal::Proposal {
+    crate::proposal::Proposal {
+        steps: vec![
+            occurrence("list", "List notes in Inbox"),
+            occurrence("create", "New note"),
+        ],
+        times: 3,
+        resources: Vec::new(),
+    }
+}
+
+/// One action the person took, as a catalogue names it.
+fn occurrence(action: &str, label: &str) -> crate::proposal::Occurrence {
+    crate::proposal::Occurrence {
+        app: NOTES.into(),
+        kind: "notes.folder".into(),
+        action: action.into(),
+        resource: Some("notes.folder:inbox".into()),
+        label: Some(label.into()),
+    }
 }
 
 /// A shortcut with a repeat and a condition.
@@ -349,6 +375,8 @@ pub fn stage(
             } else {
                 None
             },
+            proposal: (scenario == Some("repeat")).then(proposal),
+            feedback: String::new(),
         });
         let draft = |name: &str| {
             live.with(|workbench| {

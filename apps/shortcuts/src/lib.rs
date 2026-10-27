@@ -23,12 +23,93 @@ pub mod drafting;
 pub mod editor;
 pub mod locales;
 pub mod model;
+pub mod proposal;
 mod samples;
 mod view;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use ui::prelude::*;
 
 pub use model::{Draft, Program, Workbench};
+
+/// What the app was handed that shows repeated work: the actions the person
+/// invoked in this window, in order ([`proposal::Occurrence`]). Code driving
+/// the app hands it a log; a window the person opened sees none, because
+/// nothing else keeps one (Tilo has no hidden memory store).
+#[derive(Clone, Default)]
+pub struct Observed {
+    invocations: Rc<RefCell<Vec<proposal::Occurrence>>>,
+}
+
+impl Observed {
+    /// Read `text` as the log of the actions taken, one action per line:
+    /// `app/resource-kind/action`, then ` on <resource>` and ` as <label>`
+    /// when known. Lines that do not read are skipped.
+    #[must_use]
+    pub fn from_log(text: &str) -> Self {
+        let seen = Self::default();
+        seen.record(text);
+        seen
+    }
+
+    /// Add `text` to the log, one action per line.
+    pub fn record(&self, text: &str) {
+        let mut invocations = self.invocations.borrow_mut();
+        for line in text.lines() {
+            if let Some(occurrence) = parse_occurrence(line) {
+                invocations.push(occurrence);
+            }
+        }
+        let excess = invocations.len().saturating_sub(proposal::MAX_OBSERVED);
+        invocations.drain(..excess);
+    }
+
+    /// Every action taken, oldest first.
+    #[must_use]
+    pub fn invocations(&self) -> Vec<proposal::Occurrence> {
+        self.invocations.borrow().clone()
+    }
+}
+
+/// One line of an action log:
+/// `app/resource-kind/action[ on <resource>][ as <label>]`.
+fn parse_occurrence(line: &str) -> Option<proposal::Occurrence> {
+    let line = line.trim();
+    let (key, rest) = line.split_once(" on ").unwrap_or((line, ""));
+    let mut parts = key.split('/');
+    let (app, kind, action) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some()
+        || [app, kind, action]
+            .iter()
+            .any(|part| part.trim().is_empty())
+    {
+        return None;
+    }
+    let (resource, label) = rest.split_once(" as ").unwrap_or((rest, ""));
+    let word = |text: &str| {
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    };
+    Some(proposal::Occurrence {
+        app: app.trim().to_owned(),
+        kind: kind.trim().to_owned(),
+        action: action.trim().to_owned(),
+        resource: word(resource),
+        label: word(label),
+    })
+}
+
+/// The log a drive of the app was handed, when the scenario says the person
+/// has been repeating work: `--shots <scenario>` reads
+/// `TILO_SHORTCUTS_OBSERVED` as its lines. A window the person opens is
+/// handed nothing.
+#[must_use]
+pub fn observed_from_environment(name: Option<&str>) -> Observed {
+    let _ = name;
+    Observed::default()
+}
 
 /// The application id. The session publishes the shortcut library under
 /// the same id, which is what makes it this app's own.
