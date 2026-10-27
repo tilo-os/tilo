@@ -19,8 +19,11 @@ started=$SECONDS
 # ccache stores each entry compressed already.
 cache=$scratch/compiler-cache
 rm -rf "$cache" && mkdir -p "$cache"
+# Keyed by the buildroot alone, it compiles whatever the commit's patches and configuration
+# make, and a check or compile they fail leaves it with what compiled: the kernel build, keyed
+# by them, is what enforces them.
 b build --layers --timestamp 0 --file os/kernel/Containerfile --target compile-cache \
-  "${args[@]}" --volume "$cache:/work/compiler-cache" .
+  "${args[@]}" --build-arg TILO_KERNEL_CHECKS=advisory --volume "$cache:/work/compiler-cache" .
 tar -cf "$out/compiler-cache.tar" -C "$cache" .
 printf 'compiler cache of the %s kernel: %s in %ss\n' "$arch" \
   "$(du -sh "$out/compiler-cache.tar" | cut -f1)" "$((SECONDS - started))"

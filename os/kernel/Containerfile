@@ -156,13 +156,23 @@ COPY os/kernel/patches.toml /work/kernel-patches.toml
 COPY os/kernel/check-patches.py /work/check-patches.py
 
 # Patches, the libcrypto-free signing shim, the fragment merge and every
-# required-option check (build-support.sh prepare-source).
+# required-option check (build-support.sh prepare-source). `advisory` is the
+# compiler cache's (tools/ci/publish/kernel-compile-cache.sh): it is keyed by the
+# buildroot alone, not by the patches and configuration it compiles, so a check
+# they fail must not fail it, or it would keep that failure until the buildroot
+# moves. The kernel build, keyed by them, enforces every check.
+ARG TILO_KERNEL_CHECKS=strict
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
     ARCH="${KERNEL_ARCH:-$(uname -m)}"; \
     sh /work/kernel-build-support.sh validate-arch "$ARCH"; \
-    sh /work/kernel-build-support.sh prepare-source "$ARCH" "$KSRC"
+    case "$TILO_KERNEL_CHECKS" in \
+      strict) sh /work/kernel-build-support.sh prepare-source "$ARCH" "$KSRC" ;; \
+      advisory) sh /work/kernel-build-support.sh prepare-source "$ARCH" "$KSRC" \
+        || echo "the kernel's checks failed (see above); the compiler cache compiles what it can" >&2 ;; \
+      *) echo "TILO_KERNEL_CHECKS must be strict or advisory" >&2; exit 1 ;; \
+    esac
 
 # ---- Rebuild as tilo-kernel-* -----------------------------------------------
 # `make binrpm-pkg` uses scripts/package/kernel.spec (upstream template) to
@@ -184,8 +194,8 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
 
 # ---- Compiler cache ----------------------------------------------------------
 # Every object of the kernel and its modules, compiled into the directory
-# mounted at /work/compiler-cache, which tools/ci/publish/kernel.sh
-# (`compile-cache`, the image-kernel-cache-<arch> check) packs. Its key is the
+# mounted at /work/compiler-cache, which tools/ci/publish/kernel-compile-cache.sh
+# (the image-kernel-cache-<arch> check) packs. Its key is the
 # buildroot (the Fedora source and the toolchain), not the patches or the
 # configuration: after either changes, the kernel build below finds every
 # object the change leaves alone, and compiles only the rest.
@@ -203,7 +213,8 @@ RUN set -eu; \
     JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
     TILO_KERNEL_COMPILER_CACHE=/work/compiler-cache \
       sh /work/kernel-build-support.sh compile "${KERNEL_ARCH:-$(uname -m)}" "$KSRC" "$JOBS" \
-        /work/v4l2loopback-0.15.3; \
+        /work/v4l2loopback-0.15.3 \
+      || echo "the compile failed (see above); the compiler cache keeps what it compiled" >&2; \
     case "$KSRC" in /work/rpmbuild/BUILD/*) ;; \
         *) echo "refusing to remove kernel source outside the build root" >&2; exit 1;; esac; \
     rm -rf -- "$KSRC"
