@@ -13,6 +13,8 @@
 
 pub mod action_api;
 pub mod app_content_index;
+#[cfg(test)]
+mod fallback_tests;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod launcher;
@@ -719,11 +721,18 @@ pub trait SearchProvider {
         Availability::OnDevice
     }
 
-    /// Whether `result` is the row that answers any query, after every
-    /// match (searching the web for it): a person typing sees it last, below
-    /// whatever matched, and it never takes a row from a match.
+    /// Whether `result` is a row that answers any query (asking an agent,
+    /// searching the web for it): it never takes a row from a match, follows
+    /// a direct match and leads when nothing matched directly.
     fn is_fallback(&self, _result: &SearchResult) -> bool {
         false
+    }
+
+    /// Where `result`, a row that answers any query, goes among the others
+    /// like it: lower first. Asking an agent leads while it can take the
+    /// request and follows searching the web while it cannot.
+    fn fallback_rank(&self, _result: &SearchResult, _chrome: &ChromeState) -> u8 {
+        1
     }
 
     /// What `needle` says about `result` beyond the lexical fit of its title,
@@ -1605,6 +1614,9 @@ impl SearchRegistry {
         let interactive = !exhaustive && !include_programmatic;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut fallbacks: Vec<(SearchResult, f32)> = Vec::new();
+        // Whether anything matched the query directly; until it does, the
+        // rows that answer any query lead.
+        let mut direct = false;
         let mut loose: HashSet<(String, String)> = HashSet::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
         let mut incomplete = Vec::new();
@@ -1617,7 +1629,8 @@ impl SearchRegistry {
                     continue;
                 }
                 if interactive && provider.is_fallback(&r) {
-                    fallbacks.push((r, 0.0));
+                    let rank = f32::from(provider.fallback_rank(&r, chrome));
+                    fallbacks.push((r, rank));
                     continue;
                 }
                 // A score above `top` exceeds strength 1.0 and silently
@@ -1630,6 +1643,16 @@ impl SearchRegistry {
                     r.score,
                 );
                 let proximity = proximity_boost(provider, &r, args);
+                let intent = provider.intent_strength(&r, needle);
+                let chosen = if interactive {
+                    window_intent(needle, &r, top) + usage_strength(needle, &r)
+                } else {
+                    0.0
+                };
+                if interactive && !direct && directly_matched(provider, &r, needle, intent + chosen)
+                {
+                    direct = true;
+                }
                 let strength = system::merged_strength(
                     needle,
                     &r.kind,
@@ -1638,12 +1661,8 @@ impl SearchRegistry {
                     r.score,
                     top,
                     proximity,
-                ) + provider.intent_strength(&r, needle)
-                    + if interactive {
-                        window_intent(needle, &r, top) + usage_strength(needle, &r)
-                    } else {
-                        0.0
-                    };
+                ) + intent
+                    + chosen;
                 let key = (r.provider_id.clone(), r.id.clone());
                 if interactive && only_loosely_matched(needle, &r, top) {
                     loose.insert(key.clone());
@@ -1679,10 +1698,18 @@ impl SearchRegistry {
                 });
             (&row.kind, availability)
         });
-        // The rows that answer any query (searching the web for it) come
-        // last, after every match, in their own group.
+        // The rows that answer any query (asking an agent, searching the
+        // web) follow a direct match, which Enter runs; with none, they lead,
+        // so Enter hands the query on. Among themselves they go by rank, in
+        // their providers' order on a tie.
         if interactive && !needle.trim().is_empty() {
-            merged.append(&mut fallbacks);
+            fallbacks.sort_by(|a, b| a.1.total_cmp(&b.1));
+            if direct {
+                merged.append(&mut fallbacks);
+            } else {
+                fallbacks.append(&mut merged);
+                merged = fallbacks;
+            }
         }
         let completion = QueryCompletion {
             complete: incomplete.is_empty(),
@@ -1934,6 +1961,36 @@ fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
 )]
 fn loose_share() -> f32 {
     provider_score(tilo_search::SPANNING_RANK) as f32 / system::MAX_PROVIDER_SCORE as f32
+}
+
+/// Whether `row` matches `needle` directly, as a thing the person named:
+/// the whole query fits its title or another of its names (a keyword, a
+/// name in another language: [`SearchProvider::match_reason`]), however
+/// loosely (a typo, initials); every word of it shows in its title or
+/// subtitle; or the query names it some other way the merge already
+/// credits (`boost`: a service it searches, an open window it names, the
+/// row chosen for this text before). A row found only by what is inside it,
+/// or by a stray word of a longer sentence, is not.
+fn directly_matched(
+    provider: &dyn SearchProvider,
+    row: &SearchResult,
+    needle: &str,
+    boost: f32,
+) -> bool {
+    use ui::search::FieldWeight;
+    let named = |name: &str| system::lexical_strength(needle, &row.kind, name, None) > 0.0;
+    let shown = |word: &str| {
+        tilo_search::locate(word, &row.title, FieldWeight::TITLE).is_some()
+            || row.subtitle.as_deref().is_some_and(|subtitle| {
+                tilo_search::locate(word, subtitle, FieldWeight::SUBTITLE).is_some()
+            })
+    };
+    boost > 0.0
+        || named(&row.title)
+        || needle.split_whitespace().all(shown)
+        || provider
+            .match_reason(row, needle)
+            .is_some_and(|name| named(&name))
 }
 
 /// Whether `row` matched `needle` only loosely: by a typo, with nothing of

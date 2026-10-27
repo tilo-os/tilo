@@ -1410,6 +1410,13 @@ search-answer-copied = Copied
 search-answer-money-stale = { $amount } = · rates from { $age }
 search-matches = Matches “{ $word }”
 search-answer-open-address = Open { $address }
+search-provider-ask-agent = Ask an agent
+search-kind-agent = Agent
+search-ask-agent = Ask an agent: { $query }
+search-ask-agent-subtitle = A task for { $agent }
+search-ask-agent-no-agent = No agent works in this workspace yet. Add one to ask.
+search-ask-agent-no-model = The agent has no AI model. Choose one in Settings.
+search-ask-agent-offline = You’re offline, and the agent’s model is on the internet.
 search-provider-web = Web
 search-kind-web = Web
 search-kind-websites = Websites

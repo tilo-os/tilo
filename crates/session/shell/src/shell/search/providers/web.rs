@@ -1,12 +1,13 @@
 //! The web as a search provider: searching the web for what was typed, and
 //! the web services people search by name.
 //!
-//! - **"Search the web for …"** answers every query and is always the last
-//!   row ([`SearchProvider::is_fallback`]). Enter hands the query to the
-//!   browser as `web+search:`, and the browser runs it on the search engine
-//!   the person chose in its preferences: the desktop never needs to know
-//!   the engine. With no browser that takes the scheme, the query opens on
-//!   `FALLBACK_ENGINE` in whatever opens web addresses.
+//! - **"Search the web for …"** answers every query
+//!   ([`SearchProvider::is_fallback`]): after a direct match, and after
+//!   asking an agent while one can take the query. Choosing it hands the
+//!   query to the browser as `web+search:`, and the browser runs it on the
+//!   search engine the person chose in its preferences: the desktop never
+//!   needs to know the engine. With no browser that takes the scheme, the
+//!   query opens on `FALLBACK_ENGINE` in whatever opens web addresses.
 //! - **Known services** ([`SERVICES`], one table) answer a query that starts
 //!   with their name or a keyword: "youtube cats" offers "Search `YouTube` for
 //!   cats", which ranks like an exact name, so among the first rows. A

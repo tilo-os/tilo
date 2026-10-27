@@ -5,6 +5,7 @@
 pub mod actions;
 pub mod app_content;
 pub mod applications;
+pub mod ask_agent;
 pub(crate) mod authentication_prompts;
 mod background_index;
 pub mod continue_places;
@@ -33,6 +34,7 @@ pub mod web;
 pub use actions::ActionsProvider;
 pub use app_content::AppContentProvider;
 pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
+pub use ask_agent::AskAgentProvider;
 pub use continue_places::ContinueProvider;
 pub use continuity::{
     CallContinuityActionsProvider, ContinueFromDeviceProvider, DeviceContinuityActionsProvider,

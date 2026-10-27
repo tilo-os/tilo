@@ -29,8 +29,8 @@ use crate::shell::search::providers::store_catalogue::{
     StoreCatalogueTestSource, StoreCatalogueTestState,
 };
 use crate::shell::search::providers::{
-    ActionsProvider, ApplicationsProvider, ContinueProvider, FilesProvider, SessionActionPolicy,
-    SessionActionsProvider, SettingsPagesProvider, WebProvider,
+    ActionsProvider, ApplicationsProvider, AskAgentProvider, ContinueProvider, FilesProvider,
+    SessionActionPolicy, SessionActionsProvider, SettingsPagesProvider, WebProvider,
 };
 use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
 use crate::shell::search::{
@@ -245,6 +245,24 @@ impl Palette {
     fn with_web(mut self) -> Self {
         self.registry
             .register(Rc::new(WebProvider::with_installed(|_| None)));
+        self
+    }
+
+    /// The palette in a workspace whose agent has a model and takes any
+    /// query.
+    fn with_agent(mut self) -> Self {
+        use tilo_action_broker::test_support::{Grants as _, KindSet};
+        self.chrome
+            .borrow()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("the palette's workspace")
+            .admit_agent("tide", KindSet::READ);
+        self.registry
+            .register(Rc::new(AskAgentProvider::with_models(|_| {
+                Some(agent_provider_config::EndpointLocation::Hosted)
+            })));
         self
     }
 
@@ -583,7 +601,18 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
 
 #[test]
 fn the_palette_finds_what_people_type() {
-    let palette = Palette::new();
+    leads_with_what_people_type(&Palette::new());
+}
+
+/// What a person names stays first, where Enter runs it, with an agent
+/// ready to take any query and the web beside it: a typo, initials or
+/// another of a thing's names is a direct match.
+#[test]
+fn what_people_type_still_leads_with_an_agent_and_the_web_beside_it() {
+    leads_with_what_people_type(&Palette::new().with_web().with_agent());
+}
+
+fn leads_with_what_people_type(palette: &Palette) {
     let mut failures = Vec::new();
     let mut report = String::new();
     for (query, expect) in table() {
