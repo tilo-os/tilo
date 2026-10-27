@@ -19893,6 +19893,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "tilo-clock",
+ "tilo-desktop-model",
  "tilo-files",
  "tilo-lock",
  "tilo-moq",
