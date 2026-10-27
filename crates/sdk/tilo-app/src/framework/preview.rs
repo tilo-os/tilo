@@ -132,16 +132,18 @@ fn history_definition_of(
 /// field holds is accepted by type; the resource's own `read` is the validator,
 /// so a version is restorable exactly when the app can open it.
 fn restore_schema<R: Resource>() -> Option<&'static HistoryRestoreSchema> {
-    restore_schema_of(R::shape(), R::KIND, readable::<R>)
+    restore_schema_of(R::shape(), R::KIND, R::VERSION, readable::<R>)
 }
 
-/// [`restore_schema`] of the resource `kind` stored as `shape`, which
-/// `readable` validates. Not generic, so it is compiled once rather than for
-/// every resource type.
+/// [`restore_schema`] of the resource `kind` stored as `shape` at `version`,
+/// which `readable` validates. The schema reads the version the resource
+/// reads, so a restore is admitted exactly for the records the app opens. Not
+/// generic, so it is compiled once rather than for every resource type.
 #[inline(never)]
 fn restore_schema_of(
     shape: Option<Shape>,
     kind: &'static str,
+    version: u32,
     readable: fn(&AutoCommit) -> Result<(), String>,
 ) -> Option<&'static HistoryRestoreSchema> {
     let Some(Shape::Record(fields)) = shape else {
@@ -160,7 +162,7 @@ fn restore_schema_of(
         .collect::<Vec<_>>();
     Some(Box::leak(Box::new(HistoryRestoreSchema {
         id: kind,
-        version: 1,
+        version,
         roots: &[],
         selectors: Box::leak(selectors.into_boxed_slice()),
         preserved_roots: &[],
