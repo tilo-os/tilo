@@ -147,6 +147,7 @@ pub mod remote;
 pub mod resource;
 pub mod schema;
 pub mod selection;
+pub mod selectors;
 pub mod surface;
 pub mod task_step;
 
