@@ -4,6 +4,8 @@ use super::{
 };
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
+mod scrollback;
+
 fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
     use accounts::person::PersonAccounts;
     let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
@@ -41,12 +43,20 @@ pub async fn run() {
     );
     let mut options = std::env::args().skip(2);
     let option = options.next();
+    if option.as_deref() == Some("--scrollback") {
+        assert!(
+            options.next().is_none(),
+            "unexpected mounted-resource argument"
+        );
+        scrollback::run(&bundle).await;
+        return;
+    }
     let disconnect_retry = option.as_deref() == Some("--disconnect-retry");
     let voice_journey = option.as_deref() == Some("--voice");
     let encrypted_restart = option.as_deref() == Some("--encrypted-restart");
     assert!(
         option.is_none() || disconnect_retry || voice_journey || encrypted_restart,
-        "expected --disconnect-retry, --voice or --encrypted-restart"
+        "expected --disconnect-retry, --voice, --encrypted-restart or --scrollback"
     );
     assert!(
         options.next().is_none(),
