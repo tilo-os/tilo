@@ -211,7 +211,7 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                 out.push(filter(
                     &f.key,
                     &f.label,
-                    None,
+                    f.icon.as_deref(),
                     format!("is:{}", f.key),
                     true,
                 ));

@@ -187,6 +187,45 @@ control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or 
 action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`.
 
+**Search** (search.md section 2.2). A type may end with a `search` block: its filters in
+order (the first are the visible chips), its default order, and fields kept out of filters.
+Without one, every Bool, enum, Date, Time, number, reference, identifier and Set field is a
+filter in field order, and the first Time the default order, newest first.
+
+```
+type Message {
+    subject: Text (title)
+    from: std.Identifier
+    received: Time
+    unread: Bool = true
+    attachments: Collection<File>
+
+    search {
+        filter unread "Unread"                          // a field; its label
+        filter from
+        filter "Has attachment" = not attachments.is_empty()   // a named filter
+        sort received newest                            // newest, oldest, a_z, z_a
+        hide subject
+    }
+}
+```
+
+A named filter reads only the type's own fields and literals (`not done`, `due != .none`,
+`effort > 2`, `tags.len() > 0`), so the index keeps it as fields change. A `std.Identifier`
+is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com")`, a bare
+`jane@x.com` or `+4930…` taken as `mailto:` or `tel:`; `.scheme` and `.value` read its parts.
+
+`query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
+that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,
+checked against what each compares: a Bool; a case, or several (`[.open, .blocked]`); a Date
+or Time, `today`, `now`, either plus or minus a duration, a duration from now (`-7d`), or a
+range of them (`today..today + 7d`, `2026-10-01..`); a number or a range; a resource; an
+identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold no value. Without
+`sort:`, the type's own order. Outside a view (an action, a flow) a query may leave out `in:`
+and look across the workspace. `items.matching("is:done due:-7d")` asks the same of a list,
+written as people type it in search, and `filters(T)` gives a type's filters as places and
+chips show them (`host.Filter`).
+
 **Native vocabulary.** Some smaller pieces of syntax:
 
 - An enum case takes an icon: `all (icon: .file_text)`.

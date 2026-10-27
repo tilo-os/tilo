@@ -43,6 +43,11 @@ type File {
 type Mailbox {
     messages: Collection<Message>
 }
+
+/// Marks a message read or unread.
+action mark(m: Message, unread: Bool = not m.unread) (icon: .mail, on: m.unread) {
+    m.unread = unread
+}
 "#;
 
 fn type_meta<'m>(meta: &'m tilolang::PackageMeta, name: &str) -> &'m TypeMeta {
@@ -88,6 +93,12 @@ fn a_search_block_declares_the_filters_in_order_the_sort_and_the_hidden_fields()
             FilterKind::Predicate
         ]
     );
+    // A toggle shows the icon of the action whose state its field is.
+    assert_eq!(
+        search.filter("unread").and_then(|f| f.icon.as_deref()),
+        Some("mail")
+    );
+    assert_eq!(search.filter("from").and_then(|f| f.icon.clone()), None);
     let from = search.filter("from").expect("from");
     assert_eq!(from.doc, "Who sent it.");
     assert_eq!(
