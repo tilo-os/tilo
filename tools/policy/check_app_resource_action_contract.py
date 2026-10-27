@@ -129,7 +129,7 @@ TRUNCATING_SEARCH = re.compile(
 # the same name called on `self` is no control.
 CONTROL_CALLBACKS = frozenset(
     {
-        "on_activate", "on_activate_entry", "on_back", "on_change", "on_check",
+        "on_activate", "on_activate_entry", "on_change", "on_check",
         "on_chosen_change", "on_clear_filters", "on_click", "on_context_menu_item",
         "on_delete", "on_dismiss", "on_drop", "on_edit_requested", "on_expand",
         "on_files", "on_header_click", "on_heading_action", "on_move",
@@ -148,6 +148,7 @@ NOT_CONTROL_CALLBACKS = {
     "on_effect": "activates a published native effect action",
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
+    "on_back": "answers the navigation shell's Back, a published native view action",
     "on_context": "pointer gesture that places a context menu",
     "on_context_menu": "pointer gesture that places a context menu",
     "on_row_context_menu": "pointer gesture that places a context menu",

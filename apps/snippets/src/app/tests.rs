@@ -1123,3 +1123,13 @@ fn a_snippet_holding_a_credential_is_treated_as_one() {
     assert!(!looks_like_a_credential("kubectl apply -f deployment.yaml"));
     assert!(!looks_like_a_credential("SELECT * FROM tracks;"));
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<SnippetsShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}

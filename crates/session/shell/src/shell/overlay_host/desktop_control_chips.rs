@@ -169,7 +169,7 @@ impl ShellOverlayHost {
     /// build of their app, by who installed it there
     /// ([`crate::shell::room_app_versions::dev_build_by`]). Whether a bar
     /// changed.
-    pub(super) fn sync_dev_build_chips(&mut self) -> bool {
+    pub(super) fn sync_dev_build_chips(&self) -> bool {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };

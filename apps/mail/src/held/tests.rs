@@ -426,3 +426,13 @@ fn held_mail_shows_in_the_window_and_moves_with_the_mailbox_verbs() {
         ))
     );
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(|| {
+        ui::framework::testing::TestApp::<MailShell>::drive("wide")
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+}
