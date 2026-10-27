@@ -651,6 +651,13 @@ RUNTIME_SIZE_MEASURE = ["tools/perf/runtime_size_ratchet.py", "tools/perf/runtim
 # The packages package-apps.sh compiles for every selection: the runtime, its engines (the runtime
 # bundle and so every tapp's runtime id cover them) and the packing tools.
 SIZE_PACKING_TOOLS = {"tilo-app-package-cli", "runtime-bundle"}
+# and beyond those, what the whole collection's gate (app-sizes-<arch>) runs: the publication
+# settings, the apps' and examples' manifests the catalogue reads, the release tools and the
+# GitHub asset cache its packaging takes binaries from.
+APP_SIZES_EXTRA = ["os/publication.env", "apps/*/Cargo.toml", "examples/apps/*/tilo-app.toml",
+                   "examples/apps/*/Cargo.toml", "dist/apps/**", "tools/apps/**", "tools/perf/**",
+                   "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv",
+                   "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh"]
 RUNTIME_SIZE_BUDGET = ROOT / "tools/perf/runtime-size-budget/budget.toml"
 # What `thin-runtime-<arch>` hands the checks that need it, under its build directory: the thin
 # graph's profile directory with only its units, the list of its files, and the packing tools.
@@ -740,13 +747,37 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
                           [*SIZE_COMPILE, *SIZE_MEASURE, *RUNTIME_SIZE_MEASURE,
                            *(f"apps/{app}/**" for app in media_free), *manifests], f"thin-runtime-{arch}")
                     for arch, node in SIZE_ARCHES]
+
+    def app_sizes(arch: str, node: str, names: set[str], inputs: list[str]) -> str:
+        spec = {"packages": lambda packages, root: names, "dev": False, "inputs": list(dict.fromkeys(inputs)),
+                "drop_covered": True,
+                "cargo_packages": sorted(names - engines) + (engine_names if names & engines else [])}
+        lines = ["[[check]]", f'name = "app-sizes-{arch}"', f'run = "bash tools/apps/t-release.sh sizes {arch}"',
+                 f"requires = [{json.dumps(node)}]",
+                 # The runtime library's link and the apps' one-unit codegen run side by side.
+                 'requirement = { cores = 16, memory = "32GiB" }', "timeout_secs = 5400", 'cost = "heavy"',
+                 'on = ["stable", "dispatch", "idle"]', "default = false", "heavy = true"]
+        return "\n".join(lines) + "\n" + cargo_check(f"app-sizes-{arch}", spec, manifest, packages, ROOT)
+
+    # The whole collection's gate (tools/apps/t-release.sh sizes): every app of the default
+    # collection, the runtime and its engines compiled, packaged and held to their budgets
+    # (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs on every release
+    # candidate, on demand, and on main's newest head when t has room left (`idle`), where a
+    # failure is bisected to the commit that took an app over its budget; not on every push: each
+    # run builds the whole collection, 10 to 16 minutes on 16 cores. Keyed by what that compiles
+    # and the scripts it runs, so a commit that touches only packages no app or the runtime builds
+    # (the shell, the relay, the OS tools) takes its result.
+    whole = [app_sizes(arch, node, graph, [*SIZE_COMPILE, *SHARED_BUILD, *SIZE_MEASURE, *APP_SIZE_PACKAGING,
+                                           *RUNTIME_SIZE_MEASURE, *APP_SIZES_EXTRA, *manifests])
+             for arch, node in SIZE_ARCHES]
+
     app_size = {app: [check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",
                             node, {catalog[app]["package"]},
                             [*SIZE_COMPILE, *SIZE_MEASURE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests],
                             f"thin-runtime-{arch}")
                       for arch, node in SIZE_ARCHES]
                 for app in apps}
-    return size_matrices([shared, runtime_size], app_size, apps)
+    return size_matrices([shared, runtime_size, whole], app_size, apps)
 
 
 def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], apps: list[str]) -> str:
