@@ -10,7 +10,7 @@
 
 use serde_json::{Map, Value, json};
 use tilo_actions::{
-    ActionArgs, ActionContract, ActionOutput, ActionParam, ActionSpec, Availability,
+    ActionArgs, ActionContract, ActionKind, ActionOutput, ActionParam, ActionSpec, Availability,
     ConfirmationPolicy, EncodedAction, OperationKind, ParamType, Resource, ResourcePresentation,
     ResultSpec, RiskLevel,
 };
@@ -962,6 +962,9 @@ impl InstallerApp {
                         reason,
                     }
                 }),
+            // Erasing a disk reaches past the installer's own state; Undo
+            // cannot bring it back.
+            kind: ActionKind::Outside,
             risk: RiskLevel::Destructive,
             confirmation: ConfirmationPolicy::Phrase { phrase },
             ..ActionContract::default()
