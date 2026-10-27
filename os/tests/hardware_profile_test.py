@@ -274,6 +274,19 @@ class HardwareProfileTest(unittest.TestCase):
         }}}))
         with self.assertRaisesRegex(ValueError, "development repository policy"):
             validate_target_imgref(ref, root=self.root)
+        # What a dev image carries (os/scripts/finalize-dev-image.py): the dev
+        # channel signed with the development key, which must be installed.
+        policy.write_text(json.dumps({"transports": {"docker": {
+            "registry.tilo.so/tilo/tilo-vm": [{"type": "sigstoreSigned",
+                "keyPath": "/usr/share/tilo/cosign-dev.pub",
+                "signedIdentity": {"type": "matchRepository"}}],
+        }}}))
+        with self.assertRaises((ValueError, OSError)):
+            validate_target_imgref(ref, root=self.root)
+        dev_key = self.root / "usr/share/tilo/cosign-dev.pub"
+        dev_key.parent.mkdir(parents=True, exist_ok=True)
+        dev_key.write_text("dev key\n")
+        self.assertEqual(validate_target_imgref(ref, root=self.root), ref)
         policy.write_text(json.dumps({"transports": {"docker": {
             "registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}],
         }}}))

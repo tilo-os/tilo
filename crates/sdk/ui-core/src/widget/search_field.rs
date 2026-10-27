@@ -437,6 +437,7 @@ impl SearchField {
                 query: None,
                 offer: None,
                 action: None,
+                ..SearchRequest::default()
             }
             .with_query(self.input.value()),
         );

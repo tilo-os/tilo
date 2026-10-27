@@ -441,6 +441,7 @@ impl SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 
@@ -467,6 +468,7 @@ impl SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -532,6 +534,7 @@ fn retirement_result() -> SearchResult {
             })
         })),
         on_begin_invoke: None,
+        resource: None,
     }
 }
 

@@ -151,6 +151,7 @@ impl TerminalDeviceShellProvider {
                 let request = operation_from_args(operation, args)?;
                 provider.begin(connection, request)
             })),
+            resource: None,
         }
     }
 
