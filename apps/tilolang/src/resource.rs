@@ -25,6 +25,7 @@ use tilolang_tilo::publish::{
 };
 use tilolang_tilo::search::{Hit, SearchIndex};
 use ui::tilo_actions::{ActionInvoker, ActorKind};
+use ui::tilo_resource::profiling::Phase;
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry, SearchWeight};
 
 /// The resource a tilolang app's window shows: the room record of its packages.
@@ -53,6 +54,11 @@ impl Published {
     /// Bring what is published up to date with the record, waiting for records still being
     /// read off the frame when `wait`.
     fn update(&mut self, wait: bool) {
+        let _phase = Phase::start(if wait {
+            "tl.publish_settle"
+        } else {
+            "tl.publish"
+        });
         if wait {
             self.publications.settle(&self.host, &self.planner);
         } else {
@@ -240,6 +246,7 @@ impl Resource for Room {
     /// the room publishes is then read from the record this state is of, not from the one
     /// before a peer's change arrived.
     fn read(doc: &Doc) -> Result<RoomState, ModelError> {
+        let _phase = Phase::start("tl.read");
         if let Some(host) = live_host() {
             host.sync_from(doc);
         }

@@ -10,6 +10,7 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 
+mod frame_demand;
 mod held_frame;
 mod ime;
 #[cfg(target_os = "linux")]
@@ -2539,6 +2540,7 @@ impl AppHandler {
         if self.surface_suspended {
             return;
         }
+        crate::input_frame::frame_started();
         if first_primary_frame {
             // The frame budget local reads get is one refresh of the display
             // the window opens on.
@@ -2717,7 +2719,8 @@ impl AppHandler {
         // dirty, whose damage the frame collects below. Only what damage
         // cannot describe repaints the whole window: a rebuilt tree, moved
         // geometry, a resized surface, and layers drawn over the widgets.
-        let mut full_redraw_required = app.layout.structure_dirty;
+        let mut repaint_why = crate::input_frame::RepaintWhy::default();
+        let mut full_redraw_required = repaint_why.note("structure", app.layout.structure_dirty);
         // Armed for this frame: each rebuild it does clears it unless the
         // widgets behind it described the change (a long list mounting the
         // rows a scroll brought near).
@@ -2731,7 +2734,7 @@ impl AppHandler {
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
         // A different record is a different document under the same tree.
-        full_redraw_required |= record_changed;
+        full_redraw_required |= repaint_why.note("record", record_changed);
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| crate::time::now());
         // Drain model notifications and advance update-driven widgets before
@@ -2852,7 +2855,8 @@ impl AppHandler {
                 && app.layout.last_layout_logical == layout_before.1
                 && (app.layout.rebuilds == layout_before.0 || app.layout.frame_rebuilds_described)
         });
-        full_redraw_required |= structure_rebuilt || (geometry_changed && moved_from.is_none());
+        full_redraw_required |= repaint_why.note("rebuilt", structure_rebuilt)
+            | repaint_why.note("moved", geometry_changed && moved_from.is_none());
         if geometry_changed {
             // A rebuild marks it in `rebuild_structure`; a moved control
             // under a still pointer has not seen it either.
@@ -2876,15 +2880,18 @@ impl AppHandler {
         damage_regions.clear();
         // Presented pixels lost geometry to a GPU scratch overflow; damage
         // cannot describe where.
-        full_redraw_required |= render.take_full_repaint();
-        full_redraw_required |= app.debug_mode
-            || app.actions.action_palette.is_some()
-            || app.input.tooltip_host.needs_frame()
-            || app.input.tooltip_host.visible().is_some()
-            || app
-                .profiler
-                .as_ref()
-                .is_some_and(crate::profiling::FrameProfiler::hud_enabled);
+        full_redraw_required |= repaint_why.note("render", render.take_full_repaint());
+        full_redraw_required |= repaint_why.note(
+            "overlay",
+            app.debug_mode
+                || app.actions.action_palette.is_some()
+                || app.input.tooltip_host.needs_frame()
+                || app.input.tooltip_host.visible().is_some()
+                || app
+                    .profiler
+                    .as_ref()
+                    .is_some_and(crate::profiling::FrameProfiler::hud_enabled),
+        );
         // The worker resets scenes before returning them to this pool; the
         // pre-seeded scenes are empty too.
 
@@ -2940,10 +2947,11 @@ impl AppHandler {
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, over, transform);
-            full_redraw_required |= self.decorations.take_repaint();
+            full_redraw_required |=
+                repaint_why.note("decorations", self.decorations.take_repaint());
         }
         self.slot_bar.draw(app, over, transform);
-        full_redraw_required |= self.slot_bar.take_repaint();
+        full_redraw_required |= repaint_why.note("slot-bar", self.slot_bar.take_repaint());
         let decorated = over.encoding().draw_tags.len() != before_decorations;
         // Culled, the floating surfaces drawn into the frame's scenes reach
         // its scene once they are composed into it.
@@ -2970,7 +2978,7 @@ impl AppHandler {
             crate::time::now(),
         );
         over.append(self.presence_layer.scene(), None);
-        full_redraw_required |= presence_damage.is_none();
+        full_redraw_required |= repaint_why.note("presence", presence_damage.is_none());
         let content_draw_tags = over.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
@@ -3019,8 +3027,10 @@ impl AppHandler {
         // frame, or one erased since the last, covers pixels no widget's
         // damage reports. (The presence layer reports its own.)
         top_layer |= over.encoding().draw_tags.len() != content_draw_tags;
-        full_redraw_required |=
-            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
+        full_redraw_required |= repaint_why.note(
+            "layer",
+            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer),
+        );
 
         // Animated widgets update their visual bounds while drawing (for
         // example, an indeterminate progress segment records its old and new
@@ -3056,7 +3066,7 @@ impl AppHandler {
                     Some(moves) if moves.besides.is_empty() => {
                         damage_regions.extend(moves.carried);
                     }
-                    _ => full_redraw_required = true,
+                    _ => full_redraw_required = repaint_why.note("moves", true),
                 }
             }
             // Peer marks and a header bar paint over the content without
@@ -3092,6 +3102,9 @@ impl AppHandler {
                     window,
                 )
             {
+                if !full_redraw_required {
+                    repaint_why.note("marks", true);
+                }
                 full_redraw_required = true;
                 damage_regions.clear();
             } else {
@@ -3230,6 +3243,13 @@ impl AppHandler {
                 crate::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
 
+            let key_record = crate::input_frame::submitted(if full_redraw_required {
+                crate::input_frame::Repaint::Full(repaint_why)
+            } else {
+                crate::input_frame::Repaint::Damage(
+                    damage_regions.iter().map(KurboRect::area).sum(),
+                )
+            });
             let req = RenderRequest::Frame {
                 cpu_frame_id,
                 scene,
@@ -3241,11 +3261,7 @@ impl AppHandler {
                 full_redraw: full_redraw_required,
                 partial,
                 backdrop,
-                on_present: self.dev_reload_timing.take().map(|timing| {
-                    let submitted = crate::time::wall();
-                    Box::new(move |presented| timing.record(submitted, presented))
-                        as crate::render_thread::PresentHook
-                }),
+                on_present: present_hook(self.dev_reload_timing.take(), key_record),
             };
             record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
             if let Some((origin, entered)) = native_redraw_entry {
@@ -3267,6 +3283,7 @@ impl AppHandler {
                 RenderRequest::Shutdown { .. } => None,
             };
             announce_frame(window);
+            frame_demand::submitted();
             let (send_result, send_bounds) = crate::render_thread::timing::around(
                 crate::render_thread::timing::enabled(),
                 || render.render_tx.send(req),
@@ -3530,11 +3547,13 @@ impl AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
+        crate::input_frame::key_dispatched(&event);
         let admitted = self.route_window_event(
             window_id,
             event,
             native_input_isolation::EventOrigin::Platform,
         );
+        crate::input_frame::event_handled();
         if let Some(input) = physical_input {
             let mut row = crate::physical_input_trace::Trace::effect(
                 input,
@@ -4540,6 +4559,46 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             )
             .chain(self.occluded_tick_at)
             .min();
+        if frame_demand::enabled() {
+            let mut askers = Vec::new();
+            if widget_animation {
+                askers.extend(
+                    animation_schedule::animating_leaves(self.app.root_widget.as_ref())
+                        .into_iter()
+                        .map(|leaf| format!("animating:{leaf}")),
+                );
+                askers.extend(
+                    crate::motion::frames_wanted_by(crate::time::now())
+                        .into_iter()
+                        .map(|wish| format!("motion:{wish}")),
+                );
+                if self.slot_bar.needs_frame() {
+                    askers.push("slot-bar".to_owned());
+                }
+            }
+            if needs_frame && !widget_animation {
+                askers.push("presence".to_owned());
+            }
+            if spinner_due {
+                askers.push("room-sync-spinner".to_owned());
+            }
+            if held_due {
+                askers.push("held-frame".to_owned());
+            }
+            if tooltip_pending {
+                askers.push("tooltip".to_owned());
+            }
+            if scheduled_due {
+                askers.push(format!(
+                    "deadline:{}",
+                    animation_schedule::waking_leaves(self.app.root_widget.as_ref()).join("+")
+                ));
+            }
+            if retry_due || auxiliary_retry_due {
+                askers.push("render-retry".to_owned());
+            }
+            frame_demand::asked(askers);
+        }
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5340,6 +5399,26 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
     }
     #[cfg(not(target_os = "android"))]
     let _ = (app, window);
+}
+
+/// What the render thread calls once it presented a frame: the dev reload's
+/// timing and the key record ([`crate::input_frame`]) the frame answers.
+fn present_hook(
+    reload: Option<super::DevReloadTiming>,
+    key: Option<Box<dyn FnOnce() + Send>>,
+) -> Option<crate::render_thread::PresentHook> {
+    if reload.is_none() && key.is_none() {
+        return None;
+    }
+    let submitted = crate::time::wall();
+    Some(Box::new(move |presented| {
+        if let Some(timing) = reload {
+            timing.record(submitted, presented);
+        }
+        if let Some(key) = key {
+            key();
+        }
+    }))
 }
 
 /// A due `next_wake_deadline` runs sync. Present only when that sync

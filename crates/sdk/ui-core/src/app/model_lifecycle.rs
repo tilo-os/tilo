@@ -331,6 +331,7 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.frame_update");
         // The room's presence is state of the frame, lent under the window's
         // authority, as the draw sees it.
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
