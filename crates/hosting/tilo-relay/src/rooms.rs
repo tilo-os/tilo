@@ -64,6 +64,7 @@ pub(crate) mod tests;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
+pub(crate) use voice::carried_call_room;
 mod wait_list;
 
 use std::collections::{BTreeMap, HashMap};
@@ -768,6 +769,18 @@ pub struct Rooms {
     inner: Arc<RoomsInner>,
 }
 
+/// [`Rooms`] for whoever must not keep them alive: the browser plane, which
+/// hands sessions the calls of the rooms this relay carries.
+#[derive(Clone)]
+pub(crate) struct WeakRooms(std::sync::Weak<RoomsInner>);
+
+impl WeakRooms {
+    /// The rooms, while the relay still has them.
+    pub(crate) fn upgrade(&self) -> Option<Rooms> {
+        self.0.upgrade().map(|inner| Rooms { inner })
+    }
+}
+
 struct RoomsInner {
     host: RoomHost,
     dir: PathBuf,
@@ -894,6 +907,11 @@ impl std::fmt::Debug for Rooms {
 }
 
 impl Rooms {
+    /// These rooms, held without keeping them alive.
+    pub(crate) fn downgrade(&self) -> WeakRooms {
+        WeakRooms(Arc::downgrade(&self.inner))
+    }
+
     /// Open every room recorded under `dir` and bind each to the relay:
     /// its workspace pinned and admitting only governed members, its
     /// unpublished governance retained, its members' new records created.
