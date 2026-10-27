@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use ui::framework::ActionControl;
 use ui::tilo_resource::{Edit, Path};
+use vello::kurbo::{Point, Rect};
 
 use crate::model::Id;
 use crate::resource::Workspace;
@@ -130,7 +131,19 @@ pub(crate) enum Cmd {
     SetBodyMode(usize),
     SetAuthKind(usize),
     LoadRequest(usize, usize),
+    /// Open the sent request at `index` in the builder again.
     ReplayHistory(usize),
+    /// Keep the sent request at `index` as a saved request: the sheet names
+    /// it and says where it goes.
+    SaveHistory(usize),
+    /// Forget the sent request at `index`; Undo brings it back.
+    DeleteHistory(usize),
+    /// Show the actions of the sidebar row `id`, under its `lift`, at `at`.
+    RowMenu {
+        id: String,
+        lift: Rect,
+        at: Point,
+    },
     Edit {
         table: Table,
         row: String,
@@ -149,6 +162,8 @@ pub(crate) enum Cmd {
 pub(crate) enum FormMode {
     NewCollection,
     SaveRequest,
+    /// Name a sent request being kept as a saved one.
+    SaveSent,
     RenameCollection,
     RenameRequest,
     NewEnvironment,
@@ -162,7 +177,7 @@ impl FormMode {
     pub(crate) fn heading(self) -> &'static str {
         match self {
             Self::NewCollection => "New collection",
-            Self::SaveRequest => "Save request",
+            Self::SaveRequest | Self::SaveSent => "Save request",
             Self::RenameCollection => "Rename collection",
             Self::RenameRequest => "Rename request",
             Self::NewEnvironment => "New environment",
@@ -176,7 +191,7 @@ impl FormMode {
     pub(crate) fn confirm_label(self) -> &'static str {
         match self {
             Self::NewCollection | Self::NewEnvironment => "Create",
-            Self::SaveRequest => "Save",
+            Self::SaveRequest | Self::SaveSent => "Save",
             Self::RenameCollection | Self::RenameRequest | Self::RenameEnvironment => "Rename",
             Self::NewVariable => "Add variable",
             Self::DeleteVariable => "Delete variable",
@@ -205,6 +220,8 @@ impl FormMode {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FormTarget {
     pub(crate) collection: Option<Id>,
+    /// The sent request a form acts on (a history entry's id).
+    pub(crate) sent: Option<Id>,
     pub(crate) request: Option<Id>,
 }
 

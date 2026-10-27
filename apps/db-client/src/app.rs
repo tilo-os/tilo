@@ -562,15 +562,19 @@ impl DbClientApp {
                 };
                 match write_csv(&path, &result) {
                     Ok(()) => {
-                        self.session.status = RunStatus::Ok(format!(
-                            "Exported {} rows to {}",
-                            result.rows.len(),
-                            path.display()
+                        self.session.status = RunStatus::Ok(crate::i18n::t_args(
+                            "db-exported",
+                            &[
+                                ("count", crate::i18n::count(result.rows.len())),
+                                ("path", crate::i18n::text(&path.display().to_string())),
+                            ],
                         ));
                     }
                     Err(error) => {
-                        self.session.status =
-                            RunStatus::Error(format!("CSV export failed: {error}"));
+                        self.session.status = RunStatus::Error(crate::i18n::t_args(
+                            "db-export-failed",
+                            &[("error", crate::i18n::text(&error))],
+                        ));
                     }
                 }
             }
@@ -582,15 +586,17 @@ impl DbClientApp {
             Ok(ui::portal::PortalOutcome::Failed(error)) => {
                 self.export_rx = None;
                 self.export_snapshot = None;
-                self.session.status =
-                    RunStatus::Error(format!("Couldn't open the save dialog: {error}"));
+                self.session.status = RunStatus::Error(crate::i18n::t_args(
+                    "db-export-dialog-failed",
+                    &[("error", crate::i18n::text(&error))],
+                ));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.export_rx = None;
                 self.export_snapshot = None;
                 self.session.status =
-                    RunStatus::Error("CSV save dialog closed unexpectedly".into());
+                    RunStatus::Error(crate::i18n::t("db-export-dialog-closed"));
             }
         }
     }
@@ -750,7 +756,7 @@ impl DbClientApp {
     fn live_job_label(&self) -> Option<String> {
         match &self.session.status {
             RunStatus::Busy(label) => Some(label.clone()),
-            _ if self.effect_reply.is_some() => Some("Database operation…".into()),
+            _ if self.effect_reply.is_some() => Some(crate::i18n::t("db-busy-operation")),
             _ => None,
         }
     }
@@ -1437,17 +1443,18 @@ impl DbClientApp {
                 self.export_snapshot = Some(result);
                 self.export_rx = Some(
                     ui::portal::PickRequest::save(
-                        "Export query results",
-                        "Export CSV",
+                        &crate::i18n::t("db-export-title"),
+                        &crate::i18n::t("db-export-accept"),
                         "query-results.csv",
                     )
                     .filter(
-                        ui::portal::FileFilter::new("CSV (comma-separated values)").glob("*.csv"),
+                        ui::portal::FileFilter::new(&crate::i18n::t("db-export-filter"))
+                            .glob("*.csv"),
                     )
                     .thread_name("db-client-export-csv")
                     .send(),
                 );
-                self.session.status = RunStatus::Busy("Choose where to save the CSV…".into());
+                self.session.status = RunStatus::Busy(crate::i18n::t("db-export-choosing"));
             }
         }
 
