@@ -848,3 +848,62 @@ fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
         }
     }
 }
+
+/// A grant set the Permissions pane shows is the set of records the room
+/// holds, each read as its own sentence: the exception on the deep node
+/// first, then the broad grant it narrows, named in the words people know the
+/// room's parts by.
+#[test]
+fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+
+    let ws = ws_with_grants();
+    let room = TreePath::room(ws.policy.room.clone());
+    let grant = |id: &str, node: TreePath, kinds: KindSet, answer: Answer| {
+        Grant::new(
+            id,
+            Subject::person("bob"),
+            node,
+            kinds,
+            answer,
+            Subject::person(OWNER),
+        )
+    };
+    let grants = [
+        grant("room", room.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
+        grant(
+            "mail",
+            room.clone().app("mail"),
+            KindSet::ALL,
+            Answer::Allow,
+        ),
+        grant(
+            "mail-send",
+            room.clone().app("mail").rest().action("send"),
+            KindSet::OUTSIDE,
+            Answer::Ask,
+        ),
+    ];
+    let sentence = grant_set_sentence(&grants, &NoAppDirectory);
+    assert_eq!(
+        sentence,
+        format!(
+            "room {} › mail › anywhere › send: outside effects ask first. \
+             room {} › mail: everything allowed. room {}: reading and undoable \
+             changes allowed.",
+            ws.policy.room, ws.policy.room, ws.policy.room
+        ),
+        "an exception reads beside the grant it narrows"
+    );
+    assert_eq!(
+        grant_set_sentence(&[], &NoAppDirectory),
+        "Nothing is granted."
+    );
+
+    // The one-grant view the Permissions rows show is the same sentence.
+    let single = grant("mail", room.app("mail"), KindSet::READ, Answer::Deny);
+    assert_eq!(
+        grant_allows(&single, &NoAppDirectory),
+        format!("room {} › mail: reading not allowed.", ws.policy.room)
+    );
+}

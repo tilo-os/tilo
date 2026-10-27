@@ -121,6 +121,7 @@ impl super::App {
                 "pending_remote": !entry.pending.is_empty(),
                 "committed_read_ready": self.collaboration.manager.document_route_ready(Some(&entry.route)),
                 "committed_read_phase": self.collaboration.manager.controlled_document_read_phase_for_test(&entry.route),
+                "join_failure": self.collaboration.manager.route_join_failure(&entry.route),
                 "committed_queue": self.committed_documents.iter().filter(|(route, _)| route == &entry.route).count(),
             })
         }).collect()

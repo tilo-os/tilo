@@ -396,3 +396,108 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
             .is_err()
     );
 }
+
+#[test]
+fn an_issue_reads_its_goal_its_urgency_and_its_cost_and_its_agent_records_what_it_used() {
+    use crate::model::Area;
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Quarterly numbers", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Quarterly numbers");
+    let goal = Area {
+        resource: "notes/finance/q3".into(),
+        app: "so.tilo.notes".into(),
+        kind: "notes.note".into(),
+        label: "Q3 financials".into(),
+    };
+    person
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: issue.clone(),
+            area: Some(goal.clone()),
+            priority: Some(2),
+            cost_budget: Some(5_000),
+            due_ms: Some(1_800_000_000_000),
+        }))
+        .unwrap();
+    let planned = person.state().unwrap();
+    let read = planned.issues.get(&issue).unwrap();
+    assert_eq!(read.area.as_ref(), Some(&goal));
+    assert_eq!(read.priority, Some(2));
+    assert_eq!(read.cost_budget, Some(5_000));
+    assert_eq!(read.due_ms, Some(1_800_000_000_000));
+
+    // Planning is a person's: an agent does not set its own budget.
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    assert!(
+        agent
+            .apply(Tracker::PLAN.with(tracker::Plan {
+                issue: issue.clone(),
+                area: None,
+                priority: Some(1),
+                cost_budget: Some(1_000_000),
+                due_ms: None,
+            }))
+            .is_err(),
+        "only a person plans"
+    );
+    // Nor is an urgency outside 1 to 4, or a goal that names no resource.
+    for wrong in [
+        tracker::Plan {
+            issue: issue.clone(),
+            area: None,
+            priority: Some(5),
+            cost_budget: None,
+            due_ms: None,
+        },
+        tracker::Plan {
+            issue: issue.clone(),
+            area: None,
+            priority: None,
+            cost_budget: Some(0),
+            due_ms: None,
+        },
+        tracker::Plan {
+            issue: issue.clone(),
+            area: Some(Area::default()),
+            priority: None,
+            cost_budget: None,
+            due_ms: None,
+        },
+    ] {
+        assert!(person.apply(Tracker::PLAN.with(wrong)).is_err());
+    }
+
+    // The run's agent says where it runs and what it used; nobody else does.
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    let mut other = agent.fork().as_agent_for("agent:other", "ada");
+    let on_steam_deck = || {
+        Tracker::RUN_ON_DEVICE.with(tracker::RunOnDevice {
+            issue: issue.clone(),
+            device: "Ada's laptop".into(),
+        })
+    };
+    assert!(other.apply(on_steam_deck()).is_err());
+    agent.apply(on_steam_deck()).unwrap();
+    agent
+        .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
+            issue: issue.clone(),
+            spent: 1_200,
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+    let started = person.state().unwrap();
+    let run = started.issues.get(&issue).unwrap();
+    assert_eq!(
+        run.run.as_ref().unwrap().device.as_deref(),
+        Some("Ada's laptop")
+    );
+    assert_eq!(run.spend, Some(1_200));
+    assert_eq!(run.cost_budget, Some(5_000));
+}

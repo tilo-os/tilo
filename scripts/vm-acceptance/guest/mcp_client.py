@@ -179,7 +179,11 @@ def session(out: dict) -> None:
         out["list_apps"] = tool_until(client, "tilo_ls", {}, lambda text: any(
             line.startswith("notes ") and line.endswith("running") for line in text.splitlines()))
         out["apps_text"] = text_of(out["list_apps"])
-        # A new note through the action Notes publishes, then found by its title.
+        # A new note through the action Notes publishes, then found by its title. Notes
+        # lists as running before its directory carries its actions: wait for new-note,
+        # as an agent reading `tilo_ls notes` would.
+        out["notes_listing"] = tool_until(client, "tilo_ls", {"path": "notes"},
+                                          lambda text: "#new-note" in text)
         out["new_note_params"] = client.tool("tilo_ls", {"path": "notes#new-note"})
         out["new_note"] = client.tool("tilo_do", {"path": "notes#new-note", "args": {"title": TITLE}})
         out["found_note"] = tool_until(client, "tilo_find", {"query": TITLE, "app": "notes"},

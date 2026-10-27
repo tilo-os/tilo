@@ -506,7 +506,7 @@ pub fn role_preset(role: Role, room: &str) -> Preset {
         Role::Viewer => "Can read everything in the room.",
         Role::Commenter => "Can read everything and comment.",
         Role::Editor => {
-            "Can read and make undoable changes; outside effects ask first; cannot moderate or govern the room."
+            "Can read and make undoable changes, except the room's own settings; outside effects ask first."
         }
         Role::Moderator => {
             "Can do what an Editor can, moderate other people's content, and remove or ban members ranked below Moderator."

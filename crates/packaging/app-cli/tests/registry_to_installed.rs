@@ -89,11 +89,27 @@ pub(crate) fn author_tapp_version(
     version: &str,
     identity: &SigningIdentity,
 ) -> Vec<u8> {
+    author_tapp_with_files(package_id, version, identity, &[])
+}
+
+/// [`author_tapp_version`] with `files` (path under the payload, bytes)
+/// beside the entrypoint, for a package the size of a real app.
+pub(crate) fn author_tapp_with_files(
+    package_id: &str,
+    version: &str,
+    identity: &SigningIdentity,
+    files: &[(String, Vec<u8>)],
+) -> Vec<u8> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\ntilo app\n").unwrap();
+    for (path, bytes) in files {
+        let path = payload.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
     let manifest_toml = format!(
         r#"
 [package]

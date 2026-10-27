@@ -21,6 +21,10 @@
 //! agent sleeps until a message arrives. An item that could not be done
 //! goes to the coordinator, which has it done again, adjusts the items
 //! after it, or lets them go on without it.
+//!
+//! The items' agents may plan with a model of their own, a cheaper one,
+//! while the coordinator plans with the agent's
+//! ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`], [`crate::ModelPlanner`]).
 
 mod items;
 

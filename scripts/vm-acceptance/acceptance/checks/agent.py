@@ -209,6 +209,8 @@ def live_apps(ctx, res):
 def new_note(ctx, res):
     t = _session(ctx)
     title = t["title"]
+    expect("#new-note" in text_of(t.get("notes_listing")),
+           f"Notes never listed its new-note action on the door: {str(t.get('notes_listing'))[:300]}")
     params = text_of(t.get("new_note_params"))
     expect(is_error(t.get("new_note_params")) is False and "title" in params,
            f"Notes' new-note action names no title parameter: {str(t.get('new_note_params'))[:300]}")

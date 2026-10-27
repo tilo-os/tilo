@@ -114,6 +114,28 @@ pub struct ModelChoice {
     pub model: String,
 }
 
+/// What an issue's goal is: an ordinary resource of the workspace, above the
+/// tasks written for it.
+#[derive(Model, Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Area {
+    /// The resource's address in the app that keeps it.
+    pub resource: String,
+    /// The app that keeps it (`so.tilo.notes`).
+    pub app: String,
+    /// The resource's kind (`notes.note`).
+    pub kind: String,
+    /// How it reads where it is named, such as its title.
+    pub label: String,
+}
+
+impl Area {
+    /// Whether this names a resource: an address and the app keeping it.
+    #[must_use]
+    pub fn names_a_resource(&self) -> bool {
+        !self.resource.trim().is_empty() && !self.app.trim().is_empty()
+    }
+}
+
 /// What a run asks its person about, as the door that paused it says.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Question {
@@ -192,6 +214,10 @@ pub struct Run {
     /// The model the run plans with, as the issue chose it when the run
     /// started; the agent's own without.
     pub model: Option<ModelChoice>,
+    /// The device it runs on (its name, as Devices lists it): the device the
+    /// last person to hand it over ran it from. Absent until one says so,
+    /// and on a run that never ran anywhere.
+    pub device: Option<String>,
     pub started_ms: i64,
     /// When it last reported, or ended.
     pub updated_ms: i64,

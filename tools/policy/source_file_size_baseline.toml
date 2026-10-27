@@ -17,7 +17,6 @@
 "apps/file-explorer/src/files_app.rs" = 11000
 "apps/file-explorer/src/files_app/tests.rs" = 8000
 "apps/file-explorer/src/views/file_view.rs" = 3500
-"apps/git-client/src/app.rs" = 4000
 "apps/imager/src/app.rs" = 6000
 "apps/imager/src/setup/import_view.rs" = 5000
 "apps/imager/src/setup/journey/mod.rs" = 12000
@@ -25,7 +24,6 @@
 "apps/imager/src/setup/view.rs" = 6500
 "apps/mail/src/app.rs" = 8500
 "apps/mail/src/compose.rs" = 3500
-"apps/maps/src/app.rs" = 5500
 "apps/maps/src/app/tests.rs" = 3500
 "apps/music/src/app.rs" = 6000
 "apps/music/src/app/render.rs" = 5000
@@ -42,7 +40,6 @@
 "apps/settings/src/panes/display.rs" = 3500
 "apps/settings/src/panes/mouse_keyboard.rs" = 3500
 "apps/settings/src/panes/network.rs" = 4000
-"apps/sheets/src/app.rs" = 7000
 "apps/sheets/src/formula.rs" = 3500
 "apps/sheets/src/grid.rs" = 4000
 "apps/slides/src/app.rs" = 5000
@@ -52,7 +49,6 @@
 "apps/video-editor/src/app.rs" = 9000
 "apps/video-editor/src/app/tests.rs" = 11000
 "apps/video-editor/src/model.rs" = 5000
-"apps/video-player/src/app.rs" = 4500
 "apps/word-processor/src/widget/tests.rs" = 9000
 "crates/agent/local-model-service/src/lib.rs" = 3500
 "crates/agent/model-gateway/src/service.rs" = 4000
@@ -113,10 +109,8 @@
 "crates/sdk/ui-core/src/widget/list_row.rs" = 4000
 "crates/sdk/ui-core/src/widget/mod.rs" = 4000
 "crates/sdk/ui-core/src/widget/nav_shell.rs" = 5000
-"crates/sdk/ui-core/src/widget/scrollable.rs" = 4500
 "crates/sdk/ui-core/src/widget/tabs.rs" = 10500
 "crates/sdk/ui-core/src/widget/text_input.rs" = 7500
-"crates/sdk/ui-core/src/widget/text_input_tests.rs" = 5500
 "crates/sdk/ui-core/src/widget/tile_host.rs" = 4000
 "crates/sdk/ui-core/src/widget/toggle_group.rs" = 4000
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
@@ -126,7 +120,6 @@
 "crates/session/desktop-surface/src/activity/pane.rs" = 4000
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
-"crates/session/desktop/src/topbar.rs" = 7500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
 "crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500

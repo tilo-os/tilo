@@ -386,6 +386,26 @@ pub enum BrowserEffect {
         )]
         frame: Option<String>,
     },
+    /// See the page as it is shown
+    ///
+    /// Answers with a picture of the page: an element's own box when one is
+    /// named, the viewport otherwise. What a page says in pixels — a scanned
+    /// letter, a chart, letters drawn rather than written — reaches it and
+    /// nothing else does. The engine paints it, so the page cannot see or
+    /// answer it.
+    #[effect(row, job, returns, content, idempotent, audience = "agents", untrusted)]
+    CapturePage {
+        #[param(
+            "Element ref from the page outline, such as d1e5: the picture is that element's box"
+        )]
+        element: Option<String>,
+        #[param("How wide the picture may be, in pixels (default and most 1600)")]
+        max_width: Option<u32>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the element is then read in that frame's own document"
+        )]
+        frame: Option<String>,
+    },
     /// What changed on the page
     ///
     /// Answers with the outline lines added and removed since the last read,
@@ -848,6 +868,15 @@ impl BrowserEffect {
                 BrowserOperation::AnswerPermission { request, allow }
             }
             Self::ReadPage { frame } => page(PageRequest::Outline {
+                frame: page_frame(frame),
+            }),
+            Self::CapturePage {
+                element,
+                max_width,
+                frame,
+            } => page(PageRequest::Capture {
+                element: element.filter(|element| !element.is_empty()),
+                max_width,
                 frame: page_frame(frame),
             }),
             Self::ReadPageChanges { frame } => page(PageRequest::Changes {

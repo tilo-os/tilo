@@ -232,6 +232,7 @@ pub struct ChatApp {
     pub(crate) reveal_scroll_pending: bool,
     pub(crate) revealed_person: Option<Id>,
     pub(crate) emoji_open: bool,
+    /// The message the open picker reacts to.
     pub(crate) emoji_target: Option<Id>,
     pub(crate) emoji_anchor: Rect,
     /// The toolkit's shared picker, placed at `emoji_anchor` while
@@ -640,9 +641,6 @@ impl ChatApp {
         reason = "the complete app state is deliberately initialized together so bounded channels and their lifecycles cannot drift"
     )]
     fn bare(content: ContentStore) -> Self {
-        // The shared picker and reaction strip name and search emoji through
-        // Chat's catalogue.
-        crate::i18n::offer_emoji_catalogue();
         // The host call tile is a real VideoPlayer with no frame until a live
         // capture feeds one; there is no synthesised stand-in. Its honest
         // "camera off" state is painted over the empty surface.

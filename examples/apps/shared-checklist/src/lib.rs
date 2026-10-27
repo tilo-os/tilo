@@ -96,10 +96,10 @@ impl Checklist {
 
 fn item_row(row: &mut ViewCx<Checklist, Item>) -> Element {
     let p = row.paths();
-    let done = row.checkbox("checklist-done-label", p.done);
+    let done = row.checkbox(crate::locales::keys::CHECKLIST_DONE_LABEL, p.done);
     let title = row
         .input(p.title)
-        .with_placeholder("checklist-title-placeholder");
+        .with_placeholder(crate::locales::keys::CHECKLIST_TITLE_PLACEHOLDER);
     Box::new(ui::row![done, title])
 }
 
@@ -138,20 +138,26 @@ impl ResourceApp for App {
         let name = cx
             .input(p.name)
             .with_id("name-input")
-            .with_placeholder("checklist-name-placeholder");
+            .with_placeholder(crate::locales::keys::CHECKLIST_NAME_PLACEHOLDER);
         // The next item's title is this window's own until it is added.
         let next = cx.form::<checklist::Add>();
         let draft = cx
             .input(next.paths().title)
             .with_id("draft-input")
-            .with_placeholder("checklist-draft-placeholder");
-        let add = cx.button("checklist-add", next.submit());
+            .with_placeholder(crate::locales::keys::CHECKLIST_DRAFT_PLACEHOLDER);
+        let add = cx.button(crate::locales::keys::CHECKLIST_ADD, next.submit());
         let progress = cx.text(progress_text).with_id("progress");
         let rows = cx.each(|checklist| &checklist.items, item_row);
-        let clear = cx.button("checklist-clear-done", Checklist::CLEAR_DONE.invoke());
+        let clear = cx.button(
+            crate::locales::keys::CHECKLIST_CLEAR_DONE,
+            Checklist::CLEAR_DONE.invoke(),
+        );
         Box::new(ui::column![
-            labeled_field("checklist-name-label", name),
-            ui::row![labeled_field("checklist-draft-label", draft), add],
+            labeled_field(crate::locales::keys::CHECKLIST_NAME_LABEL, name),
+            ui::row![
+                labeled_field(crate::locales::keys::CHECKLIST_DRAFT_LABEL, draft),
+                add
+            ],
             progress,
             rows,
             clear,

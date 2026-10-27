@@ -147,6 +147,39 @@ class Parse(unittest.TestCase):
         self.assertNotIn("smaps", core.PROCESSES)
 
 
+class SpawnedApps(unittest.TestCase):
+    """Apps the session's shared spawner starts have no `tilo-launcher --app-id` of their own
+    above them: their cgroup's unit names them."""
+
+    SCOPE = f"{APPS}/tilo-apps-3093.scope"
+
+    def table(self):
+        lines = [
+            proc(3093, 1, SLOT, "tilo-launcher", f"{self.SCOPE}/spawner", 6, 1),
+            proc(4100, 3093, SLOT, "bwrap", f"{self.SCOPE}/app-so.tilo.file\\x2dexplorer-5/main", 2, 1),
+            proc(4101, 4100, SLOT, "file-explorer", f"{self.SCOPE}/app-so.tilo.file\\x2dexplorer-5/main", 40, 19),
+            proc(4200, 3093, SLOT, "terminal", f"{self.SCOPE}/app-so.tilo.terminal-4/main", 20, 14),
+            proc(4201, 1, SLOT, "bash", f"{self.SCOPE}/app-so.tilo.terminal-4/job-1", 8, 6),
+            proc(3080, 1, SLOT, "shell", SHELL_CG, 900, 600),
+        ]
+        return core.parse_processes("\n".join(lines))
+
+    def test_an_app_is_found_by_its_cgroup(self):
+        table = self.table()
+        files = core.app_cgroup(table, "so.tilo.file-explorer")
+        self.assertEqual(files["pids"], [4100, 4101])
+        self.assertEqual(files["cgroups"], [f"{self.SCOPE}/app-so.tilo.file\\x2dexplorer-5/main"])
+        self.assertEqual(files["shared_with"], {})
+        terminal = core.app_cgroup(table, "so.tilo.terminal")
+        self.assertEqual(terminal["pids"], [4200, 4201], "its shell's job is the app's too")
+
+    def test_the_spawner_and_the_compositor_are_no_app(self):
+        table = self.table()
+        self.assertIsNone(table["procs"][3093]["app"])
+        self.assertIsNone(table["procs"][3080]["app"])
+        self.assertIsNone(core.app_of_cgroup(f"{APPS}/app-dbus\\x2d:1.63\\x2dorg.a11y.atspi.Registry.slice/x"))
+
+
 class Footprint(unittest.TestCase):
     def test_buckets_cover_every_cgroup_once(self):
         fp = footprint()
@@ -297,6 +330,22 @@ class ShellMemoryMap(unittest.TestCase):
         parts = resources.shell_parts_mib(resources.parse_shell_memory_map(shell_report()))
         self.assertEqual(list(parts), ["heap_arenas", "gpu_memfd", "thread_stacks", "malloc_in_use", "malloc_free"])
         self.assertEqual((parts["heap_arenas"], parts["gpu_memfd"], parts["malloc_free"]), (80.0, 72.5, 39.1))
+
+    def test_a_failure_says_how_much_is_heap_in_use_free_and_by_kind(self):
+        text = resources.describe_shell_parts(shell_report())
+        self.assertTrue(text.startswith("heap in use "), text)
+        self.assertIn("heap free 39.1 MiB", text)
+        self.assertIn("heap_arenas 80.0 MiB, gpu_memfd 72.5 MiB", text)
+
+    def test_the_heap_timeline_keeps_the_start_and_the_latest(self):
+        log = "\n".join([
+            "[x] HEAP-MILESTONE what=start in_use_mib=31 free_mib=2 rss_anon_mib=40",
+            "HEAP-MILESTONE what=renderer-first-frame in_use_mib=214 free_mib=190 rss_anon_mib=420",
+        ] + [f"HEAP-MILESTONE what=trim in_use_mib={200 + i} free_mib=12 rss_anon_mib=230"
+             for i in range(9)])
+        self.assertEqual(resources.heap_milestones(log, n=4),
+                         "start 31/2, …, trim 206/12, trim 207/12, trim 208/12")
+        self.assertEqual(resources.heap_milestones(""), "")
 
     def test_records_are_valid_kpis_in_one_unit(self):
         ctx = Recorder()

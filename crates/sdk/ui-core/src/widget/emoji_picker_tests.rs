@@ -9,14 +9,21 @@ use crate::emoji_catalogue::{EmojiCatalogue, EmojiInfo};
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
 use crate::workspace_emoji::{Adding, CustomEmoji, EmojiSource, WorkspaceEmoji};
 
-/// A catalogue of two small groups. It names no emoji the reaction strip's
-/// tests name, so their tooltips read the same with or without it.
+/// A catalogue of two small groups. It names emoji as the real catalogue
+/// does, so another module's tooltip reads the same whichever of the two is
+/// installed (their catalogues share one process).
 struct Fake;
 
 const SMILEYS: &[(&str, &str)] = &[
     ("😀", "grinning face"),
     ("😂", "face with tears of joy"),
     ("👍", "thumbs up"),
+    // Named as the real catalogue names them too, so a tooltip that reads a
+    // name here reads the same whether this fake or the toolkit's own
+    // catalogue is in (the two share the process).
+    ("🎉", "party popper"),
+    ("🙌", "raising hands"),
+    ("🔥", "fire"),
 ];
 const FOOD: &[(&str, &str)] = &[("🍕", "pizza"), ("🍔", "hamburger")];
 const TONED: [&str; 6] = ["👍", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿"];
@@ -214,6 +221,9 @@ fn the_workspace_comes_first_then_the_recents_then_the_group() {
             Some("😀"),
             Some("😂"),
             Some("👍"),
+            Some("🎉"),
+            Some("🙌"),
+            Some("🔥"),
         ],
         "workspace emoji with the add tile, the recents (custom ones too), the group"
     );

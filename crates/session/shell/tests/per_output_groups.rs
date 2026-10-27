@@ -1427,3 +1427,74 @@ fn capture_studio_opens_on_the_focused_display() {
         assert!(!desk.fb.host().capture_studio_open(), "Escape closes it");
     }
 }
+
+/// The Print key, pressed while a window on either display is focused,
+/// shows the capture bar wholly on that display: its outputs, its targets
+/// and its shutter, never only the grey canvas with the bar on the other
+/// display or below the panel's last row. Escape closes it and leaves
+/// nothing of it on screen.
+#[test]
+fn the_print_key_shows_the_capture_bar_on_the_focused_display() {
+    const BAR: [&str; 8] = [
+        "capture.bar",
+        "capture.output.screenshot",
+        "capture.output.recording",
+        "capture.target.selection",
+        "capture.target.window",
+        "capture.target.screen",
+        "capture.target.strip",
+        "capture.shutter",
+    ];
+    for fixture in ["laptop-beside-1080p", "mixed-scale-offset"] {
+        let mut desk = Desk::fixture(fixture);
+        for (display, group) in [(0, ON_PRIMARY[0]), (1, ON_SECOND[0]), (0, ON_PRIMARY[1])] {
+            desk.focus(group);
+            assert_eq!(
+                desk.focused_display(),
+                Some(display),
+                "{fixture}: focus is on {display}"
+            );
+            desk.dispatch(
+                &ui::synthetic_input::named_key(NamedKey::PrintScreen),
+                ModifiersState::empty(),
+            );
+            desk.settle();
+            assert!(
+                desk.fb.host().capture_studio_open(),
+                "{fixture}: Print opens the capture tool"
+            );
+            let on = desk.display(display);
+            for name in BAR {
+                let rect = desk
+                    .fb
+                    .widget_registry()
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| panic!("{fixture}: {name} is on screen after Print"));
+                assert!(
+                    rect.width() > 0.0
+                        && rect.height() > 0.0
+                        && rect.x0 >= on.x0 - 0.5
+                        && rect.x1 <= on.x1 + 0.5
+                        && rect.y0 >= on.y0 - 0.5
+                        && rect.y1 <= on.y1 + 0.5,
+                    "{fixture}: {name} {rect:?} is wholly on display {display} {on:?}"
+                );
+            }
+            desk.dispatch(
+                &ui::synthetic_input::named_key(NamedKey::Escape),
+                ModifiersState::empty(),
+            );
+            desk.settle();
+            assert!(
+                !desk.fb.host().capture_studio_open(),
+                "{fixture}: Escape closes the capture tool"
+            );
+            let registry = desk.fb.widget_registry();
+            assert!(
+                !registry.contains_key("capture.canvas") && !registry.contains_key("capture.bar"),
+                "{fixture}: nothing of the capture tool stays on screen after Escape"
+            );
+        }
+    }
+}

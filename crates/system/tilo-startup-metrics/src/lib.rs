@@ -89,10 +89,11 @@ pub const XWAYLAND_TARGET: &str = "tilo::xwayland";
 /// that changes nothing must still say why, in the log a device keeps.
 pub const REPAIR_TARGET: &str = "tilo::repair";
 
-/// The `tracing` target of where a person's touch went: each finger
-/// contact's route as it begins (raw to a client or widget, or turned into
-/// pointer input) and each launchpad card that activated. One line per
-/// contact, so a tap that did nothing says in the device's log where it went.
+/// The `tracing` target of where a person's input went: each input device
+/// the compositor opened or lost, each finger contact's route as it begins
+/// (raw to a client or widget, or turned into pointer input) and each
+/// launchpad card that activated. One line per device and per contact, so a
+/// key or tap that did nothing says in the device's log where it went.
 pub const INPUT_ROUTE_TARGET: &str = "tilo::input_route";
 
 /// Targets the session log keeps at `info` whatever the base filter: rare

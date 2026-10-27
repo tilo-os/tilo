@@ -63,6 +63,17 @@ pub(crate) mod dictation_layer;
 mod displays;
 mod emoji_layer;
 mod history;
+// The surface model. Its vocabulary (`Role`, `Anchor`, `Modality`, `Owner`,
+// `Material`, `Lifecycle`, `Surface`) is what every overlay is migrating onto:
+// the stacked layers answer `ShellLayer::surface` today, and the overlays the
+// host still routes itself answer `LayerId::surface_kind` until they join them
+// (docs/architecture/surfaces.md, "Migration"). Nothing reads the model to
+// make a decision yet, so the arms no overlay uses are declared here, once,
+// rather than per type; the last migration step removes this.
+#[allow(
+    dead_code,
+    reason = "the surface model's vocabulary, published before input, scrim and focus are served from it; docs/architecture/surfaces.md, Migration"
+)]
 pub(crate) mod layers;
 mod live_shares;
 mod now_playing;

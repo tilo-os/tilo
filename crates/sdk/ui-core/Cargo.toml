@@ -140,6 +140,11 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
+# The emoji catalogue the toolkit's picker, reaction strip and text fields
+# read: a text field resolves `:name:` without the app naming a catalogue
+# crate, and every app's field offers emoji by default. A workspace's own
+# emoji are added to it (`workspace_emoji`), never a replacement for it.
+emoji = { version = "0.1.0", path = "../../text/emoji" }
 # The paint stream: a page as a layered display list the WebView can draw
 # instead of the engine's pixels, natively and in the WASM client alike. Its
 # SVG parser (`svg`, usvg) is native only, below: the browser toolkit core

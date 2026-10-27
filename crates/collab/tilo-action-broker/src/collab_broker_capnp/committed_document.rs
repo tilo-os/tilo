@@ -434,10 +434,25 @@ impl CapnpChannelHandle {
             .as_ref()
             .and_then(|lease| lease.local_media.clone());
         let peer = self.peer_id;
+        let workspace_record = local
+            .as_ref()
+            .and_then(|local| launch_workspace_record(local, &route));
         let creation = local
             .as_ref()
             .filter(|_| admitted.agent_id.is_none())
-            .and_then(|local| local.creation.clone());
+            .and_then(|local| local.creation.clone())
+            .map(|evidence| match workspace_record {
+                // A workspace record's kind is declared by the platform's
+                // list of them, not by the package of the window that
+                // opens it; the launch's signed original still stands for
+                // who creates it, and the room's grants decide whether they
+                // may.
+                Some(record) => crate::services::ApplicationCreationEvidence {
+                    declared_kinds: vec![record.kind.to_owned()],
+                    ..evidence
+                },
+                None => evidence,
+            });
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
         let revalidate = Arc::new(move || {
@@ -453,8 +468,12 @@ impl CapnpChannelHandle {
                 let local = local
                     .as_ref()
                     .ok_or("committed read requires launcher custody")?;
+                // The launch's own routes, or a record every app of its
+                // room opens: the owner's grants decide the rest, below and
+                // in the owner's own authorization.
                 if !local.current()
-                    || local.app_id != checked_route.app_id
+                    || (local.app_id != checked_route.app_id
+                        && launch_workspace_record(local, &checked_route).is_none())
                     || local.workspace_id != checked_route.cluster_id
                     || admitted.agent_id.is_some()
                 {
@@ -496,6 +515,14 @@ impl CapnpChannelHandle {
         else {
             return Ok(None);
         };
+        // Another app's workspace record is no record of this window's own:
+        // it carries no private binding.
+        if local.current()
+            && local.app_id != route.app_id
+            && launch_workspace_record(local, &route).is_some()
+        {
+            return Ok(None);
+        }
         if !local.current()
             || local.app_id != route.app_id
             || local.workspace_id != route.cluster_id
@@ -664,6 +691,18 @@ impl CapnpChannelHandle {
         }
         Ok(reply)
     }
+}
+
+/// The record every app of `local`'s launch room opens that `route` names
+/// ([`collab_types::workspace_record`]), when it does: the one route of
+/// another app a launch reads and commits to, and only in its own room.
+fn launch_workspace_record(
+    local: &super::native_media::LocalAppConnection,
+    route: &CrdtRoute,
+) -> Option<&'static collab_types::WorkspaceRecord> {
+    (local.workspace_id == route.cluster_id)
+        .then(|| collab_types::workspace_record(&route.app_id, &route.record_id))
+        .flatten()
 }
 
 /// What an Open reads with: the channel's checked custody and admission
