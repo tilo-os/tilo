@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::{
-    RawBattery, RawDevice, RawDisk, RawDisplay, RawGraphics, RawIdentity, RawNetwork, RawReport,
-    RawSoundCard, SupportReport,
+    RawBattery, RawBoard, RawDevice, RawDisk, RawDisplay, RawGraphics, RawIdentity, RawNetwork,
+    RawReport, RawSoundCard, SupportReport,
 };
 
 pub(super) fn probe() -> SupportReport {
@@ -32,7 +32,52 @@ pub(super) fn probe_root(root: &Path) -> SupportReport {
     firmware(&sys, &mut raw);
     storage(&sys, &mut raw.disks);
     input(&sys, &mut raw.inputs);
+    raw.virtualization = virtualization(&sys, &proc);
+    raw.board = board(root);
     raw.into_report()
+}
+
+/// The hardware-accelerated virtualization this process could open. A machine
+/// without it still installs; the desktop and the apps only lose virtual
+/// machines, so this is read as a fact rather than a verdict.
+fn virtualization(sys: &Path, proc: &Path) -> Vec<String> {
+    let kvm = sys.join("class/misc/kvm");
+    if !kvm.exists() {
+        return Vec::new();
+    }
+    // The capability is only usable when the kernel exposes it to this
+    // process; a module loaded but unwritable to us is not a promise.
+    let mut names = vec!["KVM".to_string()];
+    if let Ok(cpuinfo) = std::fs::read_to_string(proc.join("cpuinfo")) {
+        if cpuinfo.contains("vmx") {
+            names.push("VT-x".to_string());
+        } else if cpuinfo.contains("svm") {
+            names.push("AMD-V".to_string());
+        }
+    }
+    names
+}
+
+/// The board profile the running image was built for. A generic image carries
+/// no record, which is a fact in itself: the boot chain is the firmware's.
+fn board(root: &Path) -> Option<RawBoard> {
+    let document = std::fs::read_to_string(root.join("usr/lib/tilo/hardware-profile.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&document).ok()?;
+    let id = parsed.get("id")?.as_str()?.to_string();
+    if id.is_empty() || id == "generic" {
+        return None;
+    }
+    Some(RawBoard {
+        id,
+        architecture: parsed
+            .get("architecture")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        devicetree: parsed
+            .get("devicetree")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    })
 }
 
 fn identity(sys: &Path) -> RawIdentity {
