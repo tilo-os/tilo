@@ -161,6 +161,14 @@ pub fn tick(
 ) -> Tick {
     let mut found = Tick::default();
     let now_ms = now_utc.timestamp_millis();
+    ring_snoozes(clocks, delivery, now_ms, &mut found);
+    ring_alarms(clocks, delivery, now_ms, now_local, &mut found);
+    ring_timers(clocks, delivery, now_ms, &mut found);
+    found
+}
+
+/// Ring the snoozes that are due, and drop those whose alarm changed.
+fn ring_snoozes(clocks: &Clocks, delivery: &mut Delivery, now_ms: i64, found: &mut Tick) {
     let mut snoozed_due = Vec::new();
     delivery.snoozes.retain(|id, snooze| {
         let Some(alarm) = clocks.alarms.get(&Id::from_raw(id.as_str())) else {
@@ -187,6 +195,16 @@ pub fn tick(
             native_scheduled: false,
         });
     }
+}
+
+/// Ring the alarms that are due and arm their next occurrence.
+fn ring_alarms(
+    clocks: &Clocks,
+    delivery: &mut Delivery,
+    now_ms: i64,
+    now_local: DateTime<Local>,
+    found: &mut Tick,
+) {
     delivery
         .alarms
         .retain(|id, _| clocks.alarms.contains(&Id::from_raw(id.as_str())));
@@ -246,6 +264,10 @@ pub fn tick(
                 .map(|deadline| deadline.timestamp_millis());
         }
     }
+}
+
+/// Ring the timers that ended and have not rung yet.
+fn ring_timers(clocks: &Clocks, delivery: &mut Delivery, now_ms: i64, found: &mut Tick) {
     delivery
         .timers_rung
         .retain(|id, _| clocks.timers.contains(&Id::from_raw(id.as_str())));
@@ -264,7 +286,6 @@ pub fn tick(
             native_scheduled,
         });
     }
-    found
 }
 
 /// The next occurrence of `alarm` after `after`, on this device's clock.
