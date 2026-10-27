@@ -268,6 +268,22 @@ fn launched(path: &Path, app_id: &str, room: &str) -> UnixStream {
     stream
 }
 
+/// What `connect` makes, made on a thread of its own, as an app connects
+/// in its own process beside the session: its connection waits on the
+/// broker, whose answers can wait on the session's network, which turns
+/// here meanwhile as the compositor's loop turns it.
+fn connect_beside(
+    net: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    connect: impl FnOnce() -> CollaborationManager + Send + 'static,
+) -> CollaborationManager {
+    let connecting = std::thread::spawn(connect);
+    while !connecting.is_finished() {
+        net.tick();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    connecting.join().expect("the app connects")
+}
+
 /// An application with two document actions: `draft` writes a draft and
 /// returns its id, `publish` publishes a draft by id.
 struct FixtureApp {
@@ -288,15 +304,17 @@ impl FixtureApp {
         net: &std::sync::Arc<crate::shell::network::ShellNetwork>,
     ) -> Self {
         let stream = launched(path, FIXTURE, &room.to_string());
-        let mut manager = CollaborationManager::for_route_fd_with_identity(
-            stream.into_raw_fd(),
-            FIXTURE,
-            room.to_string().parse().expect("a room is a UUID"),
-            Some(RECORD.to_string()),
-            Some(FIXTURE_HANDLE.to_string()),
-            identity,
-        )
-        .expect("start the collaboration client");
+        let mut manager = connect_beside(net, move || {
+            CollaborationManager::for_route_fd_with_identity(
+                stream.into_raw_fd(),
+                FIXTURE,
+                room.to_string().parse().expect("a room is a UUID"),
+                Some(RECORD.to_string()),
+                Some(FIXTURE_HANDLE.to_string()),
+                identity,
+            )
+            .expect("start the collaboration client")
+        });
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, "created", true).expect("seed");
         doc.commit();
@@ -1694,15 +1712,20 @@ impl AppConnection {
             app_id,
             &door.room.to_string(),
         );
-        let manager = CollaborationManager::for_route_fd_with_identity(
-            stream.into_raw_fd(),
-            app_id,
-            door.room.to_string().parse().expect("a room is a UUID"),
-            Some(record),
-            None,
-            door.hosted.device.endpoint_identity(door.room),
-        )
-        .expect("start the collaboration client");
+        let app_id = app_id.to_owned();
+        let room = door.room;
+        let identity = door.hosted.device.endpoint_identity(room);
+        let manager = connect_beside(door.hosted.network(), move || {
+            CollaborationManager::for_route_fd_with_identity(
+                stream.into_raw_fd(),
+                &app_id,
+                room.to_string().parse().expect("a room is a UUID"),
+                Some(record),
+                None,
+                identity,
+            )
+            .expect("start the collaboration client")
+        });
         Self {
             manager,
             next_correlation: 1,
