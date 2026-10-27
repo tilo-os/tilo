@@ -849,6 +849,27 @@ impl NetworkSnapshot {
 /// enough that the radio is not kept busy.
 const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// What a snapshot sets of the model, to tell whether adopting one changed
+/// what the pane shows.
+#[derive(PartialEq)]
+struct Adopted {
+    loaded: bool,
+    networks: Vec<WifiNetworkInfo>,
+    wifi_enabled: bool,
+    wired: WiredInfo,
+    radios: os_actions::RadioState,
+    connectivity: ConnectivityState,
+    profiles: Vec<SavedNetworkProfile>,
+    profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
+    wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
+    hotspot_clients: Vec<os_actions::HotspotClient>,
+    vpns: Vec<VpnInfo>,
+    link: Option<WifiLinkDetails>,
+    plugins: Vec<VpnPlugin>,
+    device_vpn: Option<DeviceVpnStatus>,
+    read_errors: NetworkReadErrors,
+}
+
 /// The parts of the last snapshot that could not be read, each with the
 /// reason. A part listed here is shown as unreadable, never as a state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2247,9 +2268,41 @@ impl NetworkModel {
         self.changed = true;
     }
 
-    /// Adopt a snapshot; what refreshing reports.
+    /// Adopt a snapshot; what refreshing reports. The pane is composed
+    /// again only when the snapshot changed what it shows: a read again of
+    /// a device that did not change (the status read once a pane follows
+    /// the device) rebuilds nothing.
     fn adopt_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
-        self.changed = true;
+        let before = self.adopted();
+        let outcome = self.take_snapshot(snapshot);
+        if self.adopted() != before {
+            self.changed = true;
+        }
+        outcome
+    }
+
+    /// What [`Self::take_snapshot`] writes that the pane shows.
+    fn adopted(&self) -> Adopted {
+        Adopted {
+            loaded: self.loaded,
+            networks: self.networks.clone(),
+            wifi_enabled: self.wifi_enabled,
+            wired: self.wired.clone(),
+            radios: self.radios.clone(),
+            connectivity: self.connectivity,
+            profiles: self.profiles.clone(),
+            profile_settings: self.profile_settings.clone(),
+            wake_settings: self.wake_settings.clone(),
+            hotspot_clients: self.hotspot_clients.clone(),
+            vpns: self.vpns.clone(),
+            link: self.link.clone(),
+            plugins: self.plugins.clone(),
+            device_vpn: self.vpn.devices.status.clone(),
+            read_errors: self.read_errors.clone(),
+        }
+    }
+
+    fn take_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
         // A whole snapshot says which Wi-Fi link is in use, also none.
         let whole = snapshot.wifi_enabled.is_some();
         let outcome = match snapshot.networks {
@@ -3872,7 +3925,8 @@ impl NetworkModel {
             match receiver.try_recv() {
                 Ok(snapshot) => {
                     self.snapshot = None;
-                    self.scan_in_flight = false;
+                    // "Scanning…" gives way to the list, whatever it holds.
+                    self.changed |= std::mem::take(&mut self.scan_in_flight);
                     let _ = self.adopt_snapshot(snapshot);
                 }
                 Err(crate::channel::TryRecvError::Disconnected) => {
