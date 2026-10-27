@@ -96,6 +96,22 @@ export function workspaceAt(workspaces, origin) {
   return workspaces.find(workspace => originOf(workspace.host.origin) === wanted) ?? null;
 }
 
+/**
+ * The listed workspace the room `scope` names, when it is one: its host
+ * lists a workspace and the room is that workspace's, as the listing names
+ * it, else the room this browser was let into through its door
+ * (`admittedRoom` on this visit, or the membership it kept). Another room
+ * on the same host is not the listed one, and goes by no name or count of
+ * the listed one's.
+ */
+export function listedAt(workspaces, scope, admittedRoom = null, memberships = globalThis.localStorage) {
+  if (scope?.kind !== 'room') return null;
+  const listed = workspaceAt(workspaces, scope.host);
+  if (!listed) return null;
+  const room = listed.room ?? admittedRoom ?? keptMembership(listed, memberships)?.room ?? null;
+  return scope.room == null || scope.room === room ? listed : null;
+}
+
 const ENTERED = 'tilo-entered-workspaces';
 const CHOSEN = 'tilo-chosen-workspace';
 /** The most rooms remembered as entered; the least recently opened go first. */
