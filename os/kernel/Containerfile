@@ -60,27 +60,25 @@ RUN echo '1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034  /wor
     && mv /work/v4l2loopback-a7e4a4dea36187ad3550c797d647bcc50faced42 /work/v4l2loopback-0.15.3 \
     && test -f /work/v4l2loopback-0.15.3/COPYING
 
-# Compile the Rust-native signer on the selected native architecture. The
-# compiler and crate dependencies are frozen by the buildroot and Cargo.lock; this
-# avoids smuggling an x86-only CI builder into an ARM64 kernel build.
-COPY Cargo.toml Cargo.lock /work/workspace/
-COPY crates/system/tilo-crypto/Cargo.toml /work/crypto-member.toml
+# Compile the Rust-native signer on the selected native architecture, with the
+# buildroot's frozen compiler. Its crate comes in as the `signer-crate` build
+# context (tools/ci/publish/kernel.sh signer-crate): tilo-crypto projected into
+# a crate of its own whose lockfile holds only what it links, checked against
+# the root lockfile there. The workspace's Cargo.lock is not read here, so the
+# many commits that move it leave this kernel alone. TLS fixture generation is
+# a default-feature path left out of this build.
+COPY --from=signer-crate Cargo.toml Cargo.lock /work/tilo-crypto/
+COPY --from=signer-crate src/ /work/tilo-crypto/src/
 COPY os/kernel/project-crate.py /work/project-crate.py
-# Signing sources only: TLS fixture generation is a default-feature path
-# excluded from the kernel recipe so fixture-only edits do not rebuild.
-COPY crates/system/tilo-crypto/src/lib.rs /work/tilo-crypto/src/lib.rs
-COPY crates/system/tilo-crypto/src/main.rs /work/tilo-crypto/src/main.rs
 # bootc keeps /root as a symlink into an unpopulated /var. Cargo's registry
 # and lock files need a real writable build directory, independent of HOME.
 ENV CARGO_HOME=/work/cargo-home
-# Prune workspace-wide optional feature edges in the private lock copy, then
-# prove every version/checksum/edge still comes from the unchanged root lock.
-RUN python3 /work/project-crate.py --workspace /work/workspace/Cargo.toml \
-        --member /work/crypto-member.toml --lockfile /work/workspace/Cargo.lock \
-        --output /work/tilo-crypto \
-    && cd /work/tilo-crypto \
+# This cargo may prune the lock further; whatever it resolves must still be
+# what the projected lock holds.
+RUN cd /work/tilo-crypto \
+    && cp Cargo.lock /work/signer-crate.lock \
     && cargo fetch \
-    && python3 /work/project-crate.py --lockfile /work/workspace/Cargo.lock \
+    && python3 /work/project-crate.py --lockfile /work/signer-crate.lock \
         --verify-lock /work/tilo-crypto/Cargo.lock \
     && RUSTC_WRAPPER= cargo build --release --frozen --no-default-features \
     && strip target/release/tilo-crypto \
