@@ -83,12 +83,11 @@ fn mount_on(config: &crate::support::ScratchConfig, category: Category) -> Frame
     )
 }
 
-fn click_row(app: &mut Framed<SettingsApp>, category: Category) {
-    let rect = crate::support::nav_row(&**app, &category.label())
-        .unwrap_or_else(|| panic!("no row for {category:?}"))
-        .rect;
-    let c = rect.center();
-    Framed::harness_mut(app).click_at(c.x, c.y);
+/// Switch to `category`'s page the way the open action does, and lay the
+/// window out again. The hosted click around it is measured in [`hosted`].
+fn switch(app: &mut Framed<SettingsApp>, category: Category) {
+    Framed::split(app).0.select(category);
+    Framed::harness_mut(app).relayout();
 }
 
 #[test]
@@ -118,16 +117,16 @@ fn page_switch() {
     ];
     // Warm the shaping caches like a person's second visit.
     for c in cats {
-        click_row(&mut app, c);
+        switch(&mut app, c);
     }
     let mut samples = Vec::new();
     Framed::harness_mut(&mut app).begin_profiling();
     for _ in 0..4 {
         for c in cats {
             let t = Instant::now();
-            click_row(&mut app, c);
+            switch(&mut app, c);
             samples.push(t.elapsed().as_micros() as u64);
-            assert_eq!(app.selected(), c, "the click must switch the page");
+            assert_eq!(app.selected(), c, "the switch must show the page");
         }
     }
     passes(
@@ -152,16 +151,16 @@ fn drawn_pages_switch() {
         Category::Sound,
     ];
     for c in cats {
-        click_row(&mut app, c);
+        switch(&mut app, c);
     }
     let mut samples = Vec::new();
     Framed::harness_mut(&mut app).begin_profiling();
     for _ in 0..4 {
         for c in cats {
             let t = Instant::now();
-            click_row(&mut app, c);
+            switch(&mut app, c);
             samples.push(t.elapsed().as_micros() as u64);
-            assert_eq!(app.selected(), c, "the click must switch the page");
+            assert_eq!(app.selected(), c, "the switch must show the page");
         }
     }
     passes(
@@ -252,7 +251,7 @@ fn page_switch_attribution() {
     let config = crate::support::ScratchConfig::new();
     let mut app = mount(&config);
     for c in [Category::Sound, Category::Displays, Category::Network] {
-        click_row(&mut app, c);
+        switch(&mut app, c);
     }
     let (mut select, mut layout) = (Vec::new(), Vec::new());
     for _ in 0..5 {
@@ -303,16 +302,16 @@ fn resize_step() {
 /// technology is attached.
 #[test]
 fn accessibility_tree_per_frame() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount(&config);
+    let mut app = crate::support::window((W as u32, H as u32));
     for category in [
         Category::Sound,
         Category::Displays,
         Category::Network,
         Category::Keyboard,
     ] {
-        click_row(&mut app, category);
-        let h = Framed::harness_mut(&mut app);
+        crate::support::click_category(&mut app, category);
+        assert_eq!(crate::support::selected(&mut app), category);
+        let h = app.harness();
         let mut samples = Vec::new();
         let mut nodes = 0;
         for _ in 0..10 {

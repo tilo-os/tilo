@@ -13,6 +13,12 @@ use std::cell::Cell;
 const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
 /// The window bar's Back up now ([`BackupsApp::sync_window_toolbar`]).
 const BACK_UP_NOW: &str = "back-up-now";
+
+/// Who raises a job or a notice: this app, in the jobs band and in what
+/// wants the person.
+fn owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.backups", "Backups").with_icon(ui::icons::Icon::Archive)
+}
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -61,6 +67,10 @@ struct ViewKey {
 pub struct BackupsApp {
     shell: NavShell,
     intents: Intents,
+    /// What the jobs band reports back: the person pressing Stop.
+    jobs: ui::jobs::Presses,
+    /// What the stack of what wants the person reports back.
+    needs: ui::attention::Presses,
     catalog: Catalog,
     catalog_rev: u64,
     catalog_key: String,
@@ -109,6 +119,15 @@ enum Work {
 /// progress banner.
 type JobProgress = Arc<Mutex<Option<String>>>;
 
+/// A backup, verification or restore under way: the progress line the page
+/// reads, the job the window's band shows (with its Stop), and the flag
+/// between them, so pressing Stop ends the work instead of hiding it.
+struct Run {
+    progress: JobProgress,
+    job: ui::jobs::Running,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
+
 fn report(progress: &JobProgress, status: String) {
     if let Ok(mut shown) = progress.lock() {
         *shown = Some(status);
@@ -155,18 +174,42 @@ impl Default for BackupsApp {
 fn now() -> NaiveDateTime {
     ui::clock::local_now().naive_local()
 }
+
+/// A verification under way, for a capture: the window's band says what it is
+/// doing, how far through it is, and offers Stop, exactly as a live one does.
+fn sample_job() {
+    if ui::jobs::is_active() {
+        return;
+    }
+    ui::jobs::clear();
+    let job = ui::jobs::start(
+        ui::jobs::Spec::new("Verifying")
+            .subject(ui::jobs::Subject::new(owner(), "Workspace".to_owned()))
+            .unit(ui::jobs::Unit::Files)
+            .phase("Verifying")
+            .stoppable(|| {}),
+    );
+    job.progress(642, 1_502);
+}
 impl BackupsApp {
     pub fn new() -> Self {
         Self::with_catalog(Catalog::empty())
     }
     fn with_catalog(catalog: Catalog) -> Self {
         let policy = RetentionPolicy::default();
+        // What runs, across the window's foot: it stays whatever page the
+        // window shows, so a backup outlives the page that started it and its
+        // Stop is reachable from every page.
+        let jobs = ui::jobs::Presses::new();
         Self {
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::List)
                 .with_window_toolbar()
-                .with_id("backups-shell"),
+                .with_id("backups-shell")
+                .bottom_band(Box::new(ui::jobs::Band::with_presses(jobs.clone()))),
             intents: Intents::default(),
+            jobs,
+            needs: ui::attention::Presses::new(),
             catalog,
             catalog_rev: 0,
             catalog_key: String::new(),
@@ -542,16 +585,57 @@ impl BackupsApp {
         )
     }
 
-    fn start_job(&mut self, status: &str) -> JobProgress {
+    /// Begin a job: the page's progress row, and the window's band, which
+    /// offers Stop. `subject` names what it works on, so Stop and "Show me"
+    /// point at the same thing the person chose.
+    fn start_job(&mut self, kind: JobKind, subject: &str, status: &str) -> Run {
         self.work = Work::Running;
         self.job_progress = JobProgress::new(Mutex::new(Some(status.to_owned())));
         self.operation_status = Some(status.to_owned());
-        Arc::clone(&self.job_progress)
+        self.job_kind = Some(kind);
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let job = ui::jobs::start(
+            ui::jobs::Spec::new(kind.title())
+                .subject(ui::jobs::Subject::new(owner(), subject.to_owned()))
+                .unit(ui::jobs::Unit::Files)
+                .phase(kind.phase())
+                .stoppable({
+                    let stopped = Arc::clone(&stopped);
+                    move || stopped.store(true, std::sync::atomic::Ordering::Release)
+                }),
+        );
+        Run {
+            progress: Arc::clone(&self.job_progress),
+            job,
+            stopped,
+        }
     }
 
     fn finish_job(&mut self) {
         self.work = Work::Idle;
         self.operation_status = None;
+    }
+
+    /// End `run` the way its result says: stopped by the person, failed with
+    /// its reason, or done. A stop is recorded in the ledger as something
+    /// that happened, because the person asked for it rather than it failing.
+    fn end_job(
+        kind: JobKind,
+        run: &Run,
+        result: &Result<(), crate::engine::BackupError>,
+        done: &str,
+    ) {
+        match result {
+            Ok(()) => run.job.done(done.to_owned()),
+            Err(error) if error.is_stopped() => {
+                run.job.stopped();
+                ui::attention::publish(ui::attention::Notice::did(
+                    owner(),
+                    format!("Stopped {}", kind.title().to_lowercase()),
+                ));
+            }
+            Err(error) => run.job.failed(error.to_string()),
+        }
     }
 
     fn start_backup(&mut self, cx: &mut EffectCx<Backups, Self>) -> Effected {
@@ -561,39 +645,88 @@ impl BackupsApp {
             return Effected::done();
         };
         let policy = cx.live().get().policy;
-        let shown = self.start_job("Preparing files…");
+        let subject = self.source_title();
+        let run = self.start_job(JobKind::Backup, &subject, "Preparing files…");
+        let shown = Arc::clone(&run.progress);
+        let job = run.job.clone();
+        let stopped = Arc::clone(&run.stopped);
         cx.thread(
             move |progress| {
-                let created = crate::engine::create_snapshot(&source, &destination, |step| {
+                let asked = || stopped.load(std::sync::atomic::Ordering::Acquire);
+                let stop = crate::engine::Stop::on(&asked);
+                let created = crate::engine::create_snapshot(&source, &destination, stop, |step| {
                     report(
                         &shown,
                         format!("{} files totaling {}", step.files, ui::format::size(step.bytes)),
                     );
-                    progress.report("copying", Some(step.files), None);
-                })
-                .map_err(|error| error.to_string())?;
-                progress.report("pruning", None, None);
+                    job.seen(step.files);
+                    progress.report("Copying", Some(step.files), None);
+                })?;
+                progress.report("Removing snapshots the policy no longer keeps", None, None);
+                job.phase("Removing snapshots the policy no longer keeps");
                 let pruned = crate::engine::prune_snapshots(&destination, &policy)
                     .map_err(|error| error.to_string());
-                Ok::<_, String>((created, pruned))
+                Ok::<_, crate::engine::BackupError>((created, pruned))
             },
-            |app: &mut Self, result, _| {
+            move |app: &mut Self, result, _| {
                 app.finish_job();
-                let (manifest, pruned) = result.inspect_err(|error| {
-                    app.toast_error(error.clone());
-                })?;
+                let (manifest, pruned) = match result {
+                    Ok(both) => both,
+                    Err(error) if error.is_stopped() => {
+                        // The person stopped it: nothing failed, so nothing
+                        // is reported as a failure. The ledger says what
+                        // happened instead.
+                        BackupsApp::end_job(JobKind::Backup, &run, &Err(error), "");
+                        return Ok(Effected::done());
+                    }
+                    Err(error) => {
+                        let reason = error.to_string();
+                        BackupsApp::end_job(JobKind::Backup, &run, &Err(error), "");
+                        app.toast_error(reason.clone());
+                        return Err(reason);
+                    }
+                };
                 if let Err(error) = app.reload_repository() {
+                    // The backup itself succeeded; it is the history that
+                    // could not be read back here.
+                    BackupsApp::end_job(
+                        JobKind::Backup,
+                        &run,
+                        &Err(crate::engine::BackupError::InvalidSnapshot(error.clone())),
+                        "",
+                    );
                     app.toast_error(
                         "Backup finished, but its history could not be reopened. Choose the location again before another operation.",
                     );
                     return Err(error);
                 }
+                let done = format!(
+                    "Backed up {} files totaling {}.",
+                    manifest.files,
+                    ui::format::size(manifest.bytes)
+                );
+                BackupsApp::end_job(JobKind::Backup, &run, &Ok(()), &done);
+                // Pruning deletes snapshots: say which ones went, so history
+                // never shrinks without a word.
                 match &pruned {
-                    Ok(_) => app.toast_now(format!(
+                    Ok(removed) if removed.is_empty() => app.toast_now(format!(
                         "Backup complete: {} files totaling {}.",
                         manifest.files,
                         ui::format::size(manifest.bytes)
                     )),
+                    Ok(removed) => {
+                        let dates: Vec<String> = removed
+                            .iter()
+                            .map(|id| app.snapshot_when(id))
+                            .collect();
+                        app.toast_now(format!(
+                            "Backup complete: {} files totaling {}. Removed {} older snapshots the policy no longer keeps: {}.",
+                            manifest.files,
+                            ui::format::size(manifest.bytes),
+                            removed.len(),
+                            dates.join(", ")
+                        ));
+                    }
                     Err(error) => app.toast_error(format!(
                         "Backup complete, but older snapshots could not be removed: {error}"
                     )),
@@ -608,24 +741,96 @@ impl BackupsApp {
         )
     }
 
+    /// The name the person knows this backup's source by, for the job's
+    /// subject and its Stop.
+    fn source_title(&self) -> String {
+        self.source_path.as_ref().map_or_else(
+            || "this folder".to_owned(),
+            |path| {
+                path.file_name().map_or_else(
+                    || path.to_string_lossy().into_owned(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+            },
+        )
+    }
+
+    /// When the snapshot `id` was taken, as the person's clock reads it: a
+    /// snapshot the policy removed is no longer in the catalog, so its id
+    /// (the second it was taken) answers instead.
+    fn snapshot_when(&self, id: &str) -> String {
+        if let Some(snapshot) = self.catalog.snapshots.iter().find(|s| s.id == id) {
+            return crate::actions::taken_label(snapshot);
+        }
+        id.split('-')
+            .next()
+            .and_then(|seconds| seconds.parse::<i64>().ok())
+            .map(|seconds| ui::format::timestamp(&ui::format::UnixSecs(seconds)))
+            .filter(|when| !when.is_empty())
+            .unwrap_or_else(|| id.to_owned())
+    }
+
     fn start_verify(&mut self, id: String, cx: &mut EffectCx<Backups, Self>) -> Effected {
         let Some(destination) = self.destination_path.clone() else {
             return Effected::done();
         };
-        self.start_job("Checking every file…");
+        let subject = self.snapshot_when(&id);
+        let run = self.start_job(JobKind::Verify, &subject, "Checking every file…");
+        let shown = Arc::clone(&run.progress);
+        let job = run.job.clone();
+        let stopped = Arc::clone(&run.stopped);
         cx.thread(
-            move |_| crate::engine::verify_snapshot(&destination, &id),
-            |app: &mut Self, result, _| {
+            move |progress| {
+                let asked = || stopped.load(std::sync::atomic::Ordering::Acquire);
+                let stop = crate::engine::Stop::on(&asked);
+                crate::engine::verify_snapshot(&destination, &id, stop, |step| {
+                    report(
+                        &shown,
+                        match step.of {
+                            Some(total) => format!(
+                                "{} of {} files checked, {}",
+                                step.files,
+                                total,
+                                ui::format::size(step.bytes)
+                            ),
+                            None => format!(
+                                "{} files checked totaling {}",
+                                step.files,
+                                ui::format::size(step.bytes)
+                            ),
+                        },
+                    );
+                    if let Some(total) = step.of {
+                        job.progress(step.files, total);
+                        progress.report("Verifying", Some(step.files), Some(total));
+                    } else {
+                        job.seen(step.files);
+                        progress.report("Verifying", Some(step.files), None);
+                    }
+                })
+            },
+            move |app: &mut Self, result, _| {
                 app.finish_job();
-                let result = result.map_err(|error| {
-                    app.toast_error(error.to_string());
-                    error.to_string()
-                })?;
-                app.toast_now(format!(
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) if error.is_stopped() => {
+                        BackupsApp::end_job(JobKind::Verify, &run, &Err(error), "");
+                        return Ok(Effected::done());
+                    }
+                    Err(error) => {
+                        let reason = error.to_string();
+                        BackupsApp::end_job(JobKind::Verify, &run, &Err(error), "");
+                        app.toast_error(reason.clone());
+                        return Err(reason);
+                    }
+                };
+                let done = format!(
                     "Verified {} files totaling {}.",
                     result.files,
                     ui::format::size(result.bytes)
-                ));
+                );
+                BackupsApp::end_job(JobKind::Verify, &run, &Ok(()), &done);
+                app.toast_now(done);
                 Ok(Effected::value(serde_json::json!({
                     "files": result.files,
                     "bytes": result.bytes,
@@ -668,32 +873,70 @@ impl BackupsApp {
         let Some(destination) = self.destination_path.clone() else {
             return Effected::done();
         };
-        let shown = self.start_job("Restoring and checking files…");
+        let subject = self.snapshot_when(&id);
+        let run = self.start_job(JobKind::Restore, &subject, "Restoring and checking files…");
+        let shown = Arc::clone(&run.progress);
+        let job = run.job.clone();
+        let stopped = Arc::clone(&run.stopped);
         cx.thread(
             move |progress| {
-                crate::engine::restore_snapshot(&destination, &id, &restore_to, false, |step| {
-                    report(
-                        &shown,
-                        format!(
-                            "{} files totaling {}",
-                            step.files,
-                            ui::format::size(step.bytes)
-                        ),
-                    );
-                    progress.report("restoring", Some(step.files), None);
-                })
+                let asked = || stopped.load(std::sync::atomic::Ordering::Acquire);
+                let stop = crate::engine::Stop::on(&asked);
+                crate::engine::restore_snapshot(
+                    &destination,
+                    &id,
+                    &restore_to,
+                    false,
+                    stop,
+                    |step| {
+                        report(
+                            &shown,
+                            match step.of {
+                                Some(total) => format!(
+                                    "{} of {} files restored, {}",
+                                    step.files,
+                                    total,
+                                    ui::format::size(step.bytes)
+                                ),
+                                None => format!(
+                                    "{} files totaling {}",
+                                    step.files,
+                                    ui::format::size(step.bytes)
+                                ),
+                            },
+                        );
+                        if let Some(total) = step.of {
+                            job.progress(step.files, total);
+                            progress.report("Restoring", Some(step.files), Some(total));
+                        } else {
+                            job.seen(step.files);
+                            progress.report("Restoring", Some(step.files), None);
+                        }
+                    },
+                )
             },
-            |app: &mut Self, result, _| {
+            move |app: &mut Self, result, _| {
                 app.finish_job();
-                let result = result.map_err(|error| {
-                    app.toast_error(error.to_string());
-                    error.to_string()
-                })?;
-                app.toast_now(format!(
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) if error.is_stopped() => {
+                        BackupsApp::end_job(JobKind::Restore, &run, &Err(error), "");
+                        return Ok(Effected::done());
+                    }
+                    Err(error) => {
+                        let reason = error.to_string();
+                        BackupsApp::end_job(JobKind::Restore, &run, &Err(error), "");
+                        app.toast_error(reason.clone());
+                        return Err(reason);
+                    }
+                };
+                let done = format!(
                     "Restored {} files totaling {}.",
                     result.files,
                     ui::format::size(result.bytes)
-                ));
+                );
+                BackupsApp::end_job(JobKind::Restore, &run, &Ok(()), &done);
+                app.toast_now(done);
                 Ok(Effected::value(serde_json::json!({
                     "files": result.files,
                     "bytes": result.bytes,
@@ -733,6 +976,14 @@ impl BackupsApp {
         result
     }
     fn refresh_runtime(&mut self) {
+        // Stop and "read" are the registry's own; "show me" is already here,
+        // because a snapshot job's subject is the page this app is showing.
+        for press in self.jobs.take() {
+            let _ = ui::jobs::apply(press);
+        }
+        for press in self.needs.take() {
+            let _ = ui::attention::apply(press);
+        }
         if let Some(location) = self.location.as_ref().map(Setting::get)
             && location != self.loaded
             && self.work != Work::Running
@@ -767,8 +1018,9 @@ impl BackupsApp {
                 self.say_health(failed);
             }
             "progress" => {
-                self.operation_status = Some("642 files totaling 3.8 GB verified so far".into());
+                self.operation_status = Some("642 of 1,502 files checked, 3.8 GB".into());
                 self.job_kind = Some(JobKind::Verify);
+                sample_job();
             }
             "failure" => self.toast_error(
                 "Backup paused: the destination is unavailable. Reconnect it, then retry.",
@@ -1121,10 +1373,12 @@ impl ui::widget::Decorator for BackupsApp {
                 .job_progress
                 .lock()
                 .is_ok_and(|shown| *shown != self.operation_status);
+        // A job's rows move when one starts, reports or ends.
+        let jobs_moved = self.jobs.changed();
         self.sync_window_toolbar();
         self.drain_intents();
         self.refresh_view();
-        self.shell.update(state, path) || self.dirty || progressed
+        self.shell.update(state, path) || self.dirty || progressed || jobs_moved
     }
 
     /// A running job reports progress through a shared line; the app reads
@@ -1252,6 +1506,27 @@ mod tests {
     use vello::kurbo::Point;
     fn demo() -> BackupsApp {
         BackupsApp::with_catalog(Catalog::sample(now()))
+    }
+
+    /// The wire between the band's Stop and the work: a backup, verification
+    /// or restore starts as a job that offers Stop, and pressing it sets the
+    /// flag the engine checks between files.
+    #[test]
+    fn a_backup_job_offers_stop_and_stop_reaches_the_worker() {
+        let mut app = demo();
+        let run = app.start_job(JobKind::Backup, "Home", "Preparing files…");
+        let job = ui::jobs::rows()
+            .into_iter()
+            .find(|job| job.id() == run.job.id())
+            .expect("the job is in the registry");
+        assert!(job.can_stop(), "a backup can be stopped");
+        assert!(!run.stopped.load(std::sync::atomic::Ordering::Acquire));
+        ui::jobs::stop(run.job.id());
+        assert!(
+            run.stopped.load(std::sync::atomic::Ordering::Acquire),
+            "pressing Stop reaches the worker"
+        );
+        app.finish_job();
     }
     fn frame(app: BackupsApp, width: f64, height: f64, scale: f32) -> Framed<BackupsApp> {
         let mut theme = Theme::dark();

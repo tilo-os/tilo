@@ -55,6 +55,7 @@ checked and found genuinely well handled, so the list is not read as "everything
 | **E** | Cross-app duplication | 9 (`DUP-*`) |
 | **F** | Visual review of rendered frames | 7 verified (`VIS-*`); 6 of 7 old-artifact leads killed |
 | **G** | Individual apps, by domain (G1–G5) | ~75 (`APP-<app>-*`) |
+| G6 | Where those per-app findings stand now (verified 2026-10-27) | fixed / open / wrong, per app |
 | **H** | Prioritised backlog, 6 tiers | 75 ranked items |
 | Appendix A | Coverage: every app, chrome class, depth | — |
 | Appendix B | What is genuinely well handled | — |
@@ -2684,6 +2685,125 @@ page, the library and the prompt rather than about tabs.
   reported by the shared save indicator (`tilo-app/src/framework/saves.rs:342`).
 
 ---
+
+## G6. Where these findings stand now — verified against the tree, 2026-10-27
+
+The findings above are unchanged: they are the record of what was seen at
+`3203631d96`. This table is the answer to "is it still true?", checked app by app
+against the tree at `bfc51f9c52` plus the fixes below it. **fixed** means the
+behaviour a person hit is there now (the commit or file that does it is named
+where one commit carried it); **open** means the gap is still reachable; **wrong**
+means the audit misread the code — the finding is retracted, not satisfied.
+
+Roughly two thirds of the list landed between the audit and this check, most of it
+in `b3ae484fec` (facts and privilege), `abd2637249` (the conversation substrate),
+`41c7b8ea0f` (reading: resume, speed, captions, full size, staleness),
+`d2bce18b2a` (jobs and attention), `81b8fa7d6d`/`713f3a9661`/`0e9ca1d9a2` (the
+developer tools) and `20c8a87032`/`bc7a75fceb`/`d454bae25d`/`f40af5263b`/
+`0fb352d8c7`/`9e0bc47ba8` (the document ring). Six of the ten findings reported as
+`WRONG` were already contradicted by the code at the audit's own commit — the same
+failure mode F2 records for old captures.
+
+### G1 — Document and editing apps
+
+| App | Verdict | Evidence |
+|---|---|---|
+| notes | **fixed** | `APP-notes-01/02` in `20c8a87032` (outline, per-note scroll); `APP-notes-03` in `5b1e10af3e` — the bar marks a note whose save is in flight or failed. |
+| word-processor | **2 fixed, 2 open** | `APP-word-processor-01/02` in `d454bae25d` (paging keys, "Page N of M" that survives the footer). `03` open: `lifecycle.dirty` is a *repaint* flag — `mark_drawn` clears it — so wiring it to `ToolbarLocation::edited` would be a false marker; the honest fix needs an unsaved-work signal the document does not carry yet. `04` open: the app's own Ctrl+= still claims the chord, so window text zoom has no key here; the honest fix is a `ContentZoom` impl, not deleting the page zoom. |
+| sheets | **2 fixed, 1 open** | `APP-sheets-01/02` in `bc7a75fceb` (cell context menu; workbook find/replace through the bar's search). `03` open: the grid still has no motion — structural edits cut, and `ui::motion` appears nowhere in the crate. |
+| slides | **fixed** | `APP-slides-01/02/03` in `6fec2e1fce`, `499101ef12` (pinned zoom with pan and a bar readout; chords guarded behind `if ctrl`; tagged element clipboard). Residual: an image on the clipboard still cannot be pasted, and slides copy only as duplicates. |
+| canvas | **fixed** | `CHROME-03` in `b608dd3055` — the artwork's commands are the bar's slots; `APP-canvas-01` in `3394a3c2bc`, where only the bare zoom keys and the command key on its own still zoom. |
+| typst-editor | **fixed** | `APP-typst-02` and `CHROME-02` in `2bf3c8c1ab`; `APP-typst-01` in `5b1e10af3e` — the source's `Findable` existed since `18fa75428a` but the editor is not a widget in the tree, so nothing offered it and Ctrl+F still left the app. The app now offers it, as the PDF viewer does. |
+| code-editor | **fixed** | `APP-code-editor-01` in `9e0bc47ba8` — per-person text zoom through `ContentZoom`, so Ctrl+±/0, Ctrl+scroll and pinch all reach it. |
+| pdf-viewer | **fixed** | `APP-pdf-viewer-01` in `0fb352d8c7` — `reading_position` (page, fraction, zoom) on the record, written on settle and taken up after open. |
+| ebook | **open** | `CHROME-01`: the reader and the library still paint their own header rows; the crate declares no window-bar slots. It is now the last of the three stragglers — canvas, typst and hex all declare slots. |
+| hex-editor | **fixed** | `APP-hex-editor-01` in `f40af5263b` — copy/cut/paste in the focus column, hex parsed by the existing byte parser, one undo step. |
+
+### G2 — Communication and scheduling
+
+| App | Verdict | Evidence |
+|---|---|---|
+| chat | **not checked** | Owned elsewhere. `APP-chat-*` untouched by this pass; `087a40ab47`/`b3b4a554e5` (dividers, paging back) and the conversation substrate bear on them. |
+| mail | **1 fixed, 3 open** | `APP-mail-01` in `99ccd69a0e` — the notice offering Undo is put back up for as long as a send can still be taken back. `02` open: the outbox is a real resource with reasons and a `cancel-send` verb, but no surface renders it and `Folder` has no Outbox row. `03` open: select-all still walks the loaded page only. `04` open: still no search facets. |
+| contacts | **1 open, 1 fixed** | `APP-contacts-02` in `abd2637249` (the "Save changes?" dialog has Keep editing). `APP-contacts-01` open: a contact still offers Copy and Edit only — no call, text or email. |
+| calendar | **open** | `APP-calendar-01` (no quick-add; every event starts at 12:00 with a full form) and `APP-calendar-02` (single-key map, no shortcut sheet) both stand. |
+| messages | **3 fixed, 1 open** | `APP-messages-01/02/03` in `abd2637249` — day dividers and times, Enter to send, drafts on the person's record. `04` open: history is still one fixed page of 128 with no cursor, and the "Showing recent messages" caption was removed, so older SMS now ends with no indication at all. |
+| feeds | **fixed** | `APP-feeds-01` in `41c7b8ea0f` — per-subscription failures are kept, blamed on the row, with a typed reason. |
+| discord | **not checked** | Owned elsewhere; `b8228a0007` reports `APP-discord-01` closed (channels, account, link and unlink on the page). |
+| tasks | **mostly fixed** | `APP-tasks-02` in `077189d0c3` (due date and priority on the issue). `APP-tasks-01` half-fixed by `e860081928` (Mine/Unassigned/Agent/per-label filters); **sorting** is still absent, and rows still show number, title and status only. |
+
+### G3 — Media, maps and browsing
+
+| App | Verdict | Evidence |
+|---|---|---|
+| browser | **not checked** | Owned elsewhere; `APP-browser-*` untouched by this pass. |
+| tube | **fixed** | `APP-tube-01..04` in `41c7b8ea0f` — per-video resume positions and a "Resume at" line, quality that reaches the stream, playback speed, WebVTT captions with honest "not offered"/"could not be loaded". Residual: the history card has no progress bar (`watched_fraction` has no caller). |
+| maps | **3 fixed, 1 open** | `APP-maps-01` and `-03` in `8915fb6573` (alternatives requested and cycled; StopDownload kills the tile fetch); `APP-maps-02` in `3394a3c2bc`, which takes the last raw transport message — the endpoint suggestion — through the same sentence as the other four paths, logging the raw error. `APP-maps-04` open: no `de-DE` and roughly three dozen inline English strings, mostly the accessibility labels. |
+| weather | **fixed** | `APP-weather-01/02/03` in `41c7b8ea0f` — a precipitation unit that follows Imperial, a row per hourly and daily reading, and a "5 min ago"/"out of date" staleness line. |
+| photos | **1 fixed, 1 open** | `APP-photos-01` in `41c7b8ea0f` (presentation and slide show through `FullscreenProvider`). `APP-photos-02` open: `thumbnail`'s batch is still all-or-nothing and still fails with a deduplicated index. |
+| camera | **fixed, one **wrong** | `APP-camera-01` in `41c7b8ea0f` — the notice carries its `ToastKind`. `APP-camera-02` **wrong**: the app has always declared Photo/Video/Codes/Documents and the page actions as window-bar slots (`d169193ce8`, two days before the audit); there is no `WindowHeader` in the crate. |
+| music | **no finding** | The audit's "good" reading still holds; `DUP-07` is tracked separately. |
+| video-player | **fixed** | `APP-video-player-01` in `41c7b8ea0f` — volume and rate are settings, each item keeps a `position_ms`, and opening seeks. |
+| video-editor | **fixed** | `APP-video-editor-01` in `3394a3c2bc` — the sheet's keys go through `ui::spell_shortcut`, which is Notes' own speller moved into the toolkit, so a Mac reads ⌘ where a PC reads Ctrl. |
+| web-search | **1 open, 1 fixed** | `APP-web-search-02` in `41c7b8ea0f` (offset declared and paged uniformly, though no engine is asked deeper than its first page). `APP-web-search-01` open: Google still sends `safe=off`, and asking for strict is refused rather than honoured, so a household profile cannot get filtered results. |
+| thumbnails | **open** | Same finding as `APP-photos-02`; unchanged since before the audit. |
+
+### G4 — System, storage and administration
+
+| App | Verdict | Evidence |
+|---|---|---|
+| file-explorer | **1 fixed, 1 open, 1 wrong** | `APP-file-explorer-01` in `d2bce18b2a` (the window-search filter narrows the open folder). `02` open: widths persist and restore, but `store_widths` is only called from the sort/zoom/view setters — never when a resize drag ends, so a width still dies with the session. `03` **wrong**: the toolbar's sort button is grid-only (`toolbar.rs:316`); list mode has one sort affordance, not two. |
+| terminal | **fixed** | `APP-terminal-01/02` in `acd11489a8` — copy-on-select and OSC 52 are person preferences; BEL rings a visible wash, with a stored Off/Visual choice. Residual: the default is Off, and the window bar still gets no attention hint. |
+| settings | **wrong** | `01` **wrong**: no pane prints a store path — the quoted `/home/user/.config/qos/…` predates the qOS→Tilo rename and was never in the tree. `02` **wrong**: connection status is a tinted chip carrying its word ("Up to date", "Offline"), not colour alone. `03` **wrong**: the `VIS-03` cross-reference is to calculator strings, and Settings collapses list↔content with a back arrow at narrow width, asserted by a test. |
+| store | **2 fixed, 1 open** | `APP-store-02/03` in `d2bce18b2a` (size on the row and a total; a remove per row). `APP-store-01` open, made honest by `e0a0ed245d`: an operation is a job the whole system sees and the Store stays usable, but `flatpak` is another process, so the Stop that only stopped the watching is gone and the page says the operation finishes anyway. |
+| logs | **fixed** | `APP-logs-01` in `1a0c3ec83e` (Copy message, Copy entry with its provenance). `MOTION-07` ("Follow never follows") was already fixed at the audit's base by `b3ae484fec`'s predecessor work — `view.rs` reveals the newest row while the tail follows. |
+| monitor | **wrong** (one residual) | `01` **wrong** for range and scale: the tiles have always carried "0–100%", "of RAM", a peak and "last 30 s", and the dashboard charts have axis labels; the *hover readout of a past point* is still missing. `02` **wrong**: the tile says "Memory in use" and the column says "Memory (RSS)" — the capture compared two labelled measures. `03` **wrong**: the process card has End and Kill, and `Kill` is a `destructive` effect that the framework confirms. `04` **wrong**: the app draws no clock; the `19:38:39` in that frame is the desktop's own top bar. |
+| disks | **fixed** | `APP-disks-01` in `fe98cd270e` — "Open in Files" and "How much space is left?" on a mounted row and on the drive page. |
+| disk-usage | **fixed** | `APP-disk-usage-01` in `d2bce18b2a` — a scan is a job with bytes, files and a Stop the scanner honours between entries. |
+| activity | **2 fixed, 1 open** | `APP-activity-01` in `fd598d1d11` (the bar's search narrows the history) and `-03` in `98b083e50b` (before and after per changed field). `APP-activity-02` open: Undo and Restore still fire on one click, and the contract still declares undoable actions with no confirmation — the fix belongs in that contract, not only in this app. |
+| clocks | **fixed** | `APP-clocks-01/02/03` in `866b1938e4` — snooze beside Dismiss, an alarm edited in place without resetting its enablement, and "Next today, 07:30" per row. |
+| calculator | **1 fixed, 1 open** | `APP-calculator-01` in `aa51fb68b5` (Ctrl+C copies the result, per-value copy on the display) with `VIS-01` in `89f256af65` (the narrow keypad pages its functions behind `fx`). `APP-calculator-02` open: still no unit or currency conversion. |
+| passwords | **fixed** | `APP-passwords-01` in `c60e48f662` — Edit is the bar's action while hosted and a secondary button in the page fallback. |
+| totp | **fixed** | `APP-totp-01/02/03` in `b3ae484fec` — codes veiled until revealed, a clock-drift warning that asks the platform, and a clipboard lifetime taken from the account's period. |
+| backups | **fixed** | `APP-backups-01/02/07` in `b3ae484fec` — no invented kind, retention or health, an honest "no scheduler runs on this device", and a failure reason on the row. `03/04/05/06` in `a52433df4f` — back up, verify and restore are stoppable jobs, verification reports each file, the outcome names the snapshots pruning removed, and the retention page says what the counts on screen would drop. |
+| imager | **fixed** | `APP-imager-01/02` in `027e5c9689` — a too-small drive says how big its contents are and what it needs; Eject is offered on Linux through `udisksctl power-off`. |
+| containers | **fixed** | `APP-containers-01..04` in `47c1d813df` — logs read beside every probe so the tab follows the container, verbs that wait with the container named, and a pull whose Stop kills the process while the sheet keeps every line and the bytes fetched. |
+| firewall | **fixed** | `APP-firewall-01..06` in `b3ae484fec`, `4483029bd2` and `efada35b99` — `TILO_FIREWALL_APPLY` and `Mode::DryRun` are gone and the backend is a capability door; a blocked-traffic page reads the journal and groups by rule; rules are edited in place; the switches that cut traffic are irreversible verbs the framework confirms; `applying` reaches the view. Residual: the capability is granted from "firewalld answered", and every rule change is pushed without an ask. |
+| remote | **2 fixed, 1 open** | `APP-remote-01` (Stop while connecting, a 45 s deadline) and `-02` (disconnect asks first) in `d2bce18b2a`. `APP-remote-03` open: still no file transfer of any kind. |
+| osk | **3 fixed, 1 open** | `APP-osk-01/02/03` in `69f50973bf` — key size, autocorrect and suggestions as separate preferences, and a typing language independent of the layout (English and French dictionaries only). `APP-osk-04` open: the keyboard still cannot be moved or parked. |
+| themes | **fixed** | `APP-themes-01/02` in `67bc0c86f0` — Import validates through `ThemeDocument`, and the preview switches between desktop, list, dialog and presence (no form surface). |
+| print-centre | **open** | Both stand: the form is Printer / Copies / two sides with no page range, paper size, orientation or colour, and the document card is one page with no pager. |
+| publisher | **fixed** | `APP-publisher-01/02` in `b3ae484fec` — the key-creation notice says the key is in this device's keychain and Export writes `publisher-key.json`; the proof section lists each DNS TXT name and `.well-known` URL. |
+| shortcuts | **fixed** | `APP-shortcuts-01/02` in `780e766470` — the action picker is `Filterable` and the bar narrows it; Duplicate exists as a bar action. |
+| snippets | **fixed** | `APP-snippets-01/02/03` in `9f590bc7ed` — folder, tags and description are editable; copy-only is stated as the contract; a credential-looking body takes the expiring secret path and the toast follows the outcome. |
+| agent, model-providers | **not checked** | Owned elsewhere; `714e1a6e28` reports `APP-agent-03` (usage and which model planned a run) and `61129d699d` `APP-agent-04/05` (no "the backend", results filed under their provider). `APP-agent-06` stands as written: three crates have no surface to audit. |
+
+### G5 — Developer tools
+
+| App | Verdict | Evidence |
+|---|---|---|
+| git-client | **not checked** | Owned elsewhere; `feat(diffmerge,git-client)` reports the branch/conflict half (`APP-git-client-01/04`) landed in this window. |
+| diffmerge | **fixed** | `APP-diffmerge-01/02/03` in `0e9ca1d9a2` — Save merged (to the last place or a chosen one) with the manifest now saying what it writes, `o`/`t`/`b` to accept a side, and a bounded folder comparison. |
+| db-client | **4 fixed, 1 open** | `APP-db-client-01/02/04` in `81b8fa7d6d` — Cancel in the bar and on Escape, a cut-result note that names the limit and the remedy, and row/result copy through the bar; `03` in `5568b8cd41`, where export sits in the bar's result menu beside them. `05` mostly fixed by the 149-key `en-US`/`de-DE` catalogue; a few strings remain literal (the connect modal's "This runs on …", the export statuses, palette subtitles). |
+| api-tester | **3 fixed, 1 open** | `APP-api-tester-01/02/03` in `713f3a9661` — a cancellable send with a 30 s timeout, a history snapshot that replays headers/body/params/auth, and a response whose body, headers or request can be copied. `04` open: history rows still offer no actions while saved requests get rename and delete. |
+| chip-design | **fixed** | `APP-chip-design-01/02` in `66722138f2` — the graph is a zoomable, pannable viewport that fits on open, and an Operators list makes every node reachable without hunting the canvas. |
+| poker | **fixed** | `APP-poker-01` in `cf63ab6703` — the fold is offered only while someone is to act, captioned with the seconds left, and disabled until the 30 s is up. |
+| windows | **fixed** | `APP-windows-01` in `61ffabd50c` — every appliance sentence resolves through the app's catalogue, with a test that they resolve. |
+| speed-test, scratchpad | **no finding** | Both "good" readings still hold. |
+
+**What this pass fixed itself**, in this table's terms: `APP-backups-03/04/05/06`
+(`a52433df4f`), `APP-containers-01..04` (`47c1d813df`), `APP-notes-03` and
+`APP-typst-01` (`5b1e10af3e`), `APP-store-01`'s honesty half (`e0a0ed245d`),
+`APP-logs-01` (`1a0c3ec83e`), `APP-canvas-01`, `APP-maps-02` and
+`APP-video-editor-01` (`3394a3c2bc`), `APP-mail-01` (`99ccd69a0e`) and
+`APP-db-client-03` (`5568b8cd41`). Everything else marked **fixed** came from the
+work that landed in the two days before this check. What is marked **open** is
+still to do — the notable ones being mail's outbox and facets, activity's
+one-click undo, contacts' missing verbs, ebook's header, print-centre's form,
+remote's file transfer, and the shared causes behind them: `APP-activity-02`
+needs the action contract to ask before an undoable action runs, `APP-word-
+processor-03` needs an unsaved-work signal the document does not carry, and
+`APP-file-explorer-02` needs the table to report the end of a resize drag.
 
 # Part H — Prioritised backlog
 

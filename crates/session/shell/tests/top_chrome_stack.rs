@@ -665,3 +665,130 @@ fn a_fullscreen_windows_bar_collapses_when_idle_and_comes_back_over_it() {
     );
     assert_eq!(panel.group().0.group, window, "nothing moved");
 }
+
+impl Panel {
+    /// The way out of full screen, while it is up, as `(began, gone)`.
+    fn fullscreen_hint_at(
+        &self,
+        now: ui::time::Instant,
+    ) -> Option<(ui::time::Instant, ui::time::Instant)> {
+        self.fb.host().fullscreen_hint_life(now)
+    }
+}
+
+/// A window that fills the display hides the bar that carries the control
+/// leaving it, so the shell says that way out once, over the window, and
+/// says it for every app: the hint appears as the window enters, and goes on
+/// its own after its delay, without anybody dismissing it.
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the panel is the test's subject for the whole test, not a guard to drop early"
+)]
+fn entering_fullscreen_says_the_way_out_once_and_then_stops() {
+    let mut panel = Panel::new();
+    let before = ui::time::now();
+    assert!(
+        panel.fullscreen_hint_at(before).is_none(),
+        "nothing fills the display yet, so there is nothing to leave"
+    );
+
+    panel
+        .fb
+        .with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(GROUP)));
+    panel.settle();
+    let shown_at = ui::time::now();
+    let (entered, gone) = panel
+        .fullscreen_hint_at(shown_at)
+        .expect("entering full screen says how to leave it");
+    assert!(
+        entered <= shown_at && shown_at < gone,
+        "it is up as the window enters"
+    );
+    assert_eq!(
+        gone - entered,
+        std::time::Duration::from_secs(3),
+        "it stays up long enough to read once"
+    );
+
+    // Nothing touched it, and it is up: the window keeps its whole size, so
+    // the hint takes no room from it.
+    let window = panel.group().0.group;
+    panel.settle();
+    assert!(panel.fullscreen_hint_at(ui::time::now()).is_some());
+    assert_eq!(panel.group().0.group, window, "the window did not move");
+
+    // A moment before its delay runs out it is still up; its delay spent, it
+    // is gone, and the full screen itself stays.
+    let edge = gone
+        .checked_sub(std::time::Duration::from_millis(1))
+        .expect("a moment before the hint's delay is inside the clock's range");
+    assert!(
+        panel.fullscreen_hint_at(edge).is_some(),
+        "still said a moment before its delay runs out"
+    );
+    assert!(
+        panel.fullscreen_hint_at(gone).is_none(),
+        "after its delay nothing is said any more"
+    );
+    assert!(
+        panel.fb.host().fullscreen_hint_wake_deadline().is_some(),
+        "while it is up it owes the frame clock the moment it goes"
+    );
+    assert!(
+        panel.fb.chrome().is_fullscreen(),
+        "the window is still full screen"
+    );
+
+    // Nothing asks for it again: the frames that follow say nothing, and the
+    // window never moved to make room for words that are gone.
+    panel.fb.host_mut().sync_top_bar_presence(gone);
+    panel.settle();
+    assert!(
+        panel.fullscreen_hint_at(gone).is_none(),
+        "it is said once, not said again by the frames after it"
+    );
+    assert_eq!(panel.group().0.group, window, "and nothing moved");
+
+    // Leaving full screen takes the words with it, so entering again says
+    // them afresh for the window that now fills the display.
+    panel
+        .fb
+        .with_chrome(|chrome| chrome.set_user_fullscreen_group(None));
+    panel.settle();
+    assert!(panel.fullscreen_hint_at(gone).is_none());
+    panel
+        .fb
+        .with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(GROUP)));
+    panel.settle();
+    let again = ui::time::now();
+    assert!(
+        panel.fullscreen_hint_at(again).is_some(),
+        "entering full screen again says how to leave it again"
+    );
+}
+
+/// The hint is one sentence in the catalogue, and the key arrives labelled:
+/// the words name the leaving key the way the person's keyboard does.
+#[test]
+fn the_way_out_is_one_sentence_naming_the_leaving_key() {
+    let said = shell::shell::i18n::t_args(
+        "shell-fullscreen-way-out",
+        &[(
+            "key",
+            ui::i18n::ArgValue::Text(ui::keycaps::active().key("Esc")),
+        )],
+    );
+    assert!(
+        said.contains("Esc"),
+        "the sentence names the leaving key: {said:?}"
+    );
+    assert!(
+        said.to_lowercase().contains("full screen"),
+        "and says what it leaves: {said:?}"
+    );
+    assert!(
+        !said.contains('\n') && !said.contains('{'),
+        "it reads as one filled sentence: {said:?}"
+    );
+}

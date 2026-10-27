@@ -82,6 +82,7 @@ pub mod shell_start;
 pub mod store;
 pub mod supervisor;
 pub mod terminal_sessions;
+pub mod version;
 
 pub use store::Store;
 /// The package id every `ush` grant is written against.
@@ -129,6 +130,10 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "append",
     "history",
     "undo",
+    // A file's own history, read and restored through the mount's own
+    // protocols, so a script or an agent reads the same revisions the file
+    // manager's History view lists instead of a second store beside them.
+    "version",
 ];
 
 /// Commands for the user's installed legacy apps, from the legacy VM's

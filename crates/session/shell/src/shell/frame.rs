@@ -855,6 +855,10 @@ pub struct FrameBuilder {
     /// matching `ui::App`; an explicit focus-reset ignores it and starts the
     /// replacement wizard step at its first enabled control.
     native_focus_ordinal: Option<usize>,
+    /// The focused widget's address and the identity it is served to the
+    /// input method under. Only compared, never dereferenced.
+    native_field: Option<(*const (), u64)>,
+    native_field_serial: u64,
     /// Return to the same named control, not a node id from a discarded tree.
     palette_focus_return: Option<(Option<crate::shell::state::TabId>, Vec<String>)>,
     palette_focus_active: bool,
@@ -1225,6 +1229,8 @@ impl FrameBuilder {
             lock_surfaces: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
+            native_field: None,
+            native_field_serial: 0,
             palette_focus_return: None,
             palette_focus_active: false,
             last_produced_sections: None,
@@ -5578,6 +5584,27 @@ impl FrameBuilder {
         ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
     }
 
+    /// Identity of the focused native field for the input method. Layout
+    /// node ids are renumbered whenever the tree is rebuilt (a window opens
+    /// elsewhere, full screen collapses the bars), so they are not the
+    /// field's identity: the same widget keeps its identity across rebuilds,
+    /// and any other focused widget gets a fresh one.
+    pub fn native_field_identity(&mut self, focus: Option<NodeId>) -> Option<u64> {
+        let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
+            self.native_field = None;
+            return None;
+        };
+        let address = widget.cast::<()>().cast_const();
+        match self.native_field {
+            Some((current, identity)) if current == address => Some(identity),
+            _ => {
+                self.native_field_serial = self.native_field_serial.wrapping_add(1);
+                self.native_field = Some((address, self.native_field_serial));
+                Some(self.native_field_serial)
+            }
+        }
+    }
+
     pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
         if self.host.overlay_owns_ime() {
             return false;
@@ -8017,7 +8044,7 @@ mod tests {
             .cloned()
     }
 
-    fn axis_a11y_tree() -> (
+    pub(super) fn axis_a11y_tree() -> (
         crate::shell::state::WorkspaceTree,
         crate::shell::state::StripId,
         Vec<crate::shell::state::GroupId>,
@@ -10778,6 +10805,14 @@ mod window_bar_keyboard_tests;
 #[cfg(test)]
 #[path = "frame_quiet_pump_tests.rs"]
 mod quiet_pump_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+#[path = "frame_native_field_tests.rs"]
+mod native_field_tests;
 
 #[cfg(test)]
 #[allow(

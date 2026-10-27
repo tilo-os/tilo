@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-pub(crate) const HOST_SOURCE_NAMES: [&str; 31] = [
+pub(crate) const HOST_SOURCE_NAMES: [&str; 32] = [
     "root-transition",
     "quick-settings",
     "workspace-settings",
@@ -40,6 +40,7 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 31] = [
     "feedback-picker",
     "control-hints",
     "onboarding",
+    "fullscreen-hint",
 ];
 
 #[allow(
@@ -83,10 +84,15 @@ pub(crate) struct HostDemandInputs {
     /// Pointing at what is wrong, to report it.
     pub feedback_picker: bool,
     pub control_hints: bool,
+    /// The way out of full screen, fading out over the window.
+    pub fullscreen_hint: bool,
 }
 
 /// The bit of [`host_bits`] that says the workspace content animates.
 pub(crate) const CONTENT_BIT: u32 = 1 << 8;
+
+/// The bit of [`host_bits`] that says the way out of full screen animates.
+pub(crate) const FULLSCREEN_HINT_BIT: u32 = 1 << 31;
 
 pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
     if inputs.onboarding {
@@ -123,6 +129,11 @@ pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
         | (u32::from(inputs.display_confirm) << 27)
         | (u32::from(inputs.feedback_picker) << 28)
         | (u32::from(inputs.control_hints) << 29)
+        | if inputs.fullscreen_hint {
+            FULLSCREEN_HINT_BIT
+        } else {
+            0
+        }
 }
 
 pub(crate) fn host_labels(bits: u32) -> impl Iterator<Item = &'static str> {
@@ -249,6 +260,7 @@ mod tests {
             display_confirm: false,
             feedback_picker: false,
             control_hints: false,
+            fullscreen_hint: false,
         };
         assert_eq!(host_bits(&inputs(false, false)), 0);
         assert_eq!(

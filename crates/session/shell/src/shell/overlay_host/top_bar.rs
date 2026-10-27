@@ -135,6 +135,16 @@ impl ShellOverlayHost {
             .unwrap_or(self.input_source);
         self.fullscreen_bar_reveal
             .follow(fullscreen, entered_by, now);
+        // A window that just filled the display says how to leave it, once:
+        // the bar that would carry that control is hidden with the rest of
+        // the chrome. Leaving full screen takes the words away with it.
+        match self.fullscreen_bar_reveal.entered_at() {
+            Some((_, entered)) if self.fullscreen_hint != Some(entered) => {
+                self.say_fullscreen_way_out(entered);
+            }
+            Some(_) => {}
+            None => self.forget_fullscreen_way_out(),
+        }
         let in_use = self.fullscreen_bar_in_use();
         self.fullscreen_bar_reveal.settle(now, in_use);
         let bar_over = self
@@ -371,5 +381,20 @@ impl ShellOverlayHost {
     /// When a fullscreen window's bar next has something to settle.
     pub fn fullscreen_bar_reveal_deadline(&self) -> Option<Instant> {
         self.fullscreen_bar_reveal.deadline()
+    }
+
+    /// The way out of full screen, while it is up at `now`: when it began
+    /// and when it is gone. Exposed so a test can watch it appear as a window
+    /// fills the display and go after its delay without reaching into the
+    /// paint.
+    pub fn fullscreen_hint_life(&self, now: Instant) -> Option<(Instant, Instant)> {
+        self.fullscreen_hint_shown(now)
+            .map(|entered| (entered, fullscreen_hint::hint_gone_at(entered)))
+    }
+
+    /// When the way out of full screen next has something to settle without
+    /// input: its fade, or the moment it goes.
+    pub fn fullscreen_hint_wake_deadline(&self) -> Option<Instant> {
+        self.fullscreen_hint_deadline(ui::time::now())
     }
 }

@@ -7,7 +7,7 @@ use tilo_feedback_review::{ReviewProposals, ReviewTraceRequest};
 
 use super::Composer;
 use crate::report::{CropCapture, CropRef, ReportDraft, ReportReview, attach_crops, compose_crops};
-use crate::{Error, MaskedScreenshot, Submission};
+use crate::{Error, MaskedScreenshot, Recorded, Submission};
 
 /// What the desktop picked, with each part's masked crop in the order of
 /// the picks. The crops become the report's one picture when it is first
@@ -25,6 +25,8 @@ pub struct ReportWords {
     pub notes: Vec<String>,
     /// "This was slow": the frame timings go with the report.
     pub slow: bool,
+    /// A recording of the window's record goes with the report.
+    pub recording: bool,
 }
 
 /// How far a model looked over the review. `by` names the model that
@@ -63,6 +65,8 @@ pub(super) struct Picked {
     model: Option<ReviewProposals>,
     check: ModelCheck,
     review: Option<ReportReview>,
+    /// The recording the person chose to include, made at review.
+    recording: Option<Recorded>,
     /// Queued: the review stays shown, as what was sent, and no longer
     /// changes.
     sent: bool,
@@ -80,6 +84,7 @@ impl Composer {
             model: None,
             check: ModelCheck::Unavailable,
             review: None,
+            recording: None,
             sent: false,
         });
     }
@@ -109,6 +114,14 @@ impl Composer {
             .and_then(|picked| picked.review.as_ref())
     }
 
+    /// The recording that goes with the reviewed report, when the person
+    /// chose one.
+    pub fn report_recording(&self) -> Option<&Recorded> {
+        let picked = self.picked.as_ref()?;
+        picked.review.as_ref()?;
+        picked.recording.as_ref()
+    }
+
     /// Whether the picked report was queued to send.
     pub fn report_sent(&self) -> bool {
         self.picked.as_ref().is_some_and(|picked| picked.sent)
@@ -126,11 +139,18 @@ impl Composer {
     /// a report beyond its bounds.
     pub fn review_report(&mut self, words: &ReportWords) -> Result<(), Error> {
         self.settle_sent()?;
-        let picked = self.picked.as_mut().ok_or(Error::Invalid("report"))?;
-        if picked.sent {
+        let sent = self.picked.as_ref().ok_or(Error::Invalid("report"))?.sent;
+        if sent {
             return Err(Error::Conflict);
         }
+        let recording = if words.recording {
+            Some(self.record()?)
+        } else {
+            None
+        };
+        let picked = self.picked.as_mut().ok_or(Error::Invalid("report"))?;
         picked.review = None;
+        picked.recording = recording;
         if picked.words.as_ref() != Some(words) {
             picked.model = None;
             picked.check = ModelCheck::Unavailable;
@@ -244,6 +264,9 @@ impl Composer {
         if let Some((picture, _)) = &picked.picture {
             self.host.persist_screenshot(picture)?;
         }
+        if let Some(recording) = &picked.recording {
+            self.host.persist_recording(recording)?;
+        }
         if let Err(error) = self.outbox.queue(submission) {
             if matches!(error, Error::Store(_)) {
                 self.active = Some(id);
@@ -265,6 +288,10 @@ impl Picked {
         if let Some((picture, places)) = &self.picture {
             attach_crops(&mut review.feedback, picture.reference(), places);
         }
+        review.feedback.recording = self
+            .recording
+            .as_ref()
+            .map(|recording| recording.reference().clone());
         Ok(review)
     }
 

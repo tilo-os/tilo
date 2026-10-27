@@ -661,12 +661,7 @@ impl SettingsApp {
     /// Create the persistent [`NavShell`] with the current nav + content +
     /// search and the seeded shot state. Shared layout resolves scaled metrics.
     fn build_shell(&self) -> NavShell {
-        let nav = sidebar::build(
-            &self.cx,
-            self.selected,
-            &self.staged_filter,
-            &self.sidebar_selection,
-        );
+        let nav = sidebar::build(&self.cx, self.selected, &self.staged_filter);
         // A page a pane drilled into has the shell's Back chip; Back leaves
         // it for the page under it.
         let can_go_back = self.cx.pages().clone();
@@ -716,12 +711,7 @@ impl SettingsApp {
                     nav.set_selected(Some(self.selected.slug()));
                 }
             } else {
-                shell.set_sidebar(Some(sidebar::build(
-                    &self.cx,
-                    self.selected,
-                    "",
-                    &self.sidebar_selection,
-                )));
+                shell.set_sidebar(Some(sidebar::build(&self.cx, self.selected, "")));
             }
             shell.set_content(content);
             shell.set_content_title(title);
@@ -1680,8 +1670,11 @@ mod tests {
 
     #[test]
     fn selecting_a_scrolled_sidebar_row_keeps_the_navigation_in_place() {
-        fn row_rect(app: &Framed<SettingsApp>, category: Category) -> Option<vello::kurbo::Rect> {
-            Framed::harness(app)
+        use ui::prelude::TestApp;
+
+        type Window = TestApp<crate::SettingsShell>;
+        fn row_rect(app: &mut Window, category: Category) -> Option<vello::kurbo::Rect> {
+            app.harness()
                 .a11y_nodes()
                 .into_iter()
                 .find_map(|(_, node)| {
@@ -1695,11 +1688,18 @@ mod tests {
                     })
                 })
         }
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = layout_at(config.app(), 1200.0, 520.0);
-        let home = app.selected();
-        let home_row = row_rect(&app, home).expect("the selected row starts visible");
-        let harness = Framed::harness_mut(&mut app);
+        fn selected(app: &mut Window) -> Category {
+            app.surface::<SettingsApp, _>(|settings| settings.selected())
+                .expect("settings hosts its surface")
+        }
+        let mut app = Window::new().expect("settings opens headlessly");
+        app.harness()
+            .resize((1200, 520))
+            .expect("settings lays out");
+        app.settle();
+        let home = selected(&mut app);
+        let home_row = row_rect(&mut app, home).expect("the selected row starts visible");
+        let harness = app.harness();
         harness.send(&ui::synthetic_input::cursor_moved(100.0, 300.0));
         harness.scroll(0.0, -3.0);
         // A wheel step glides on after it lands; measure where it rests.
@@ -1708,7 +1708,7 @@ mod tests {
             "the wheel's glide comes to rest"
         );
         assert!(
-            row_rect(&app, home).is_none_or(|row| row.y0 < home_row.y0),
+            row_rect(&mut app, home).is_none_or(|row| row.y0 < home_row.y0),
             "the real wheel route scrolled the sidebar"
         );
         // Shared lists publish the actual visible rows, so choose a measured
@@ -1716,15 +1716,20 @@ mod tests {
         let (category, scrolled) = Category::ALL
             .iter()
             .filter_map(|&category| {
-                let rect = row_rect(&app, category)?;
+                let rect = row_rect(&mut app, category)?;
                 (category != home && rect.y0 >= 0.0 && rect.y1 <= 520.0).then_some((category, rect))
             })
             .max_by(|a, b| a.1.y0.total_cmp(&b.1.y0))
             .expect("a real visible navigation row");
         let center = scrolled.center();
-        Framed::harness_mut(&mut app).click_at(center.x, center.y);
-        assert_eq!(app.selected(), category, "the actual row selected its pane");
-        let selected = row_rect(&app, category).expect("selected navigation row");
+        app.harness().click_at(center.x, center.y);
+        app.settle();
+        assert_eq!(
+            selected(&mut app),
+            category,
+            "the actual row selected its pane"
+        );
+        let selected = row_rect(&mut app, category).expect("selected navigation row");
         assert_eq!(
             selected, scrolled,
             "selection must retain the navigation's scroll offset"

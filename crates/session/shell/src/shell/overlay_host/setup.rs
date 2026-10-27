@@ -236,6 +236,10 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::QuickAnswersProvider::new(),
         ));
+        // Asking an agent: the first suggestion when nothing here matches.
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::AskAgentProvider::new(),
+        ));
         // The web, the last tier: searching it for what was typed, and the
         // web services people search by name.
         search_registry.register(std::rc::Rc::new(
@@ -495,6 +499,7 @@ impl ShellOverlayHost {
             session_action_policy: inputs.session_action_policy,
             top_bar_reveal: top_bar_reveal::TopBarReveal::default(),
             fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal::default(),
+            fullscreen_hint: None,
             top_edge_swipe: None,
             strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,

@@ -3,6 +3,19 @@ feedback-describe = What happened, and what did you expect?
 feedback-about = About { $app }
 feedback-context = Include which app this is about
 feedback-screenshot = Include one masked screenshot of this app
+feedback-recording = Include a recording of what happened
+feedback-recording-scope = The { $app } record as it was at { $from }, then { $steps ->
+    [one] its one change
+   *[other] each of its { $steps } changes
+} until { $to }, with who made { $steps ->
+    [one] it
+   *[other] them
+}. Whoever can read the report can step through them.
+feedback-recording-included = Recording of { $app } from { $from } to { $to }, { $steps ->
+    [one] one change
+   *[other] { $steps } changes
+}
+feedback-remove-recording = Leave the recording out
 feedback-privacy = Only what you include is sent. Review it and hide anything private before sending.
 feedback-review = Review what will be sent
 feedback-remove-screenshot = Remove screenshot

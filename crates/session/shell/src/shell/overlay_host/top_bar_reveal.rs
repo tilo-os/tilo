@@ -194,6 +194,9 @@ pub(crate) struct FullscreenBarReveal {
     /// What last showed or hid it, which its fade follows: the pointer's
     /// reach and its leaving fade, a key or an action lands at once.
     source: MotionSource,
+    /// The window that entered full screen most recently, and when it did:
+    /// what the hint saying how to leave it follows.
+    entered: Option<(u64, Instant)>,
 }
 
 impl FullscreenBarReveal {
@@ -207,10 +210,17 @@ impl FullscreenBarReveal {
             self.linger = None;
             self.on_bar = false;
             self.source = source;
+            self.entered = group.map(|group| (group, now));
             if group.is_some() {
                 self.show_for_idle(source, now);
             }
         }
+    }
+
+    /// The window that entered full screen most recently, and when, while
+    /// one is full screen; `None` once none is.
+    pub(crate) fn entered_at(&self) -> Option<(u64, Instant)> {
+        self.entered.filter(|(group, _)| self.group == Some(*group))
     }
 
     fn show_for_idle(&mut self, source: MotionSource, now: Instant) -> bool {

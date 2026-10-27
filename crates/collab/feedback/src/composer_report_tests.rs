@@ -102,6 +102,7 @@ fn words(summary: &str) -> ReportWords {
         summary: summary.into(),
         notes: vec!["the row is cut off".into()],
         slow: false,
+        recording: false,
     }
 }
 

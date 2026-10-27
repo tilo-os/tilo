@@ -23,8 +23,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -429,13 +427,13 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
 
 type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 
-/// An operation as a job: what the whole system sees, and the flag the
-/// person's Stop sets. The package manager cannot be interrupted from here,
-/// so what stops is the Store's part — and the job's outcome says exactly
-/// that.
+/// An operation as a job the whole system sees. It offers no Stop: the
+/// package manager runs it to the end from another process, and a job whose
+/// stopping would not be honoured must not show one (`APP-store-01`). What
+/// the Store can promise is that it stays usable meanwhile and says how the
+/// operation ended.
 pub(crate) struct OperationJob {
     job: ui::jobs::Running,
-    stopped: Arc<AtomicBool>,
 }
 
 /// The verb a failure's row carries: open the app's page, where its own
@@ -1263,22 +1261,11 @@ impl StoreApp {
         }
     }
 
-    /// End the job the operation ran as: what came of it, or that the person
-    /// stopped following it.
+    /// End the job the operation ran as: what came of it.
     fn finish_operation_job(&mut self, app: &str, outcome: Result<String, String>) {
-        let Some(OperationJob { job, stopped }) = self.operation_jobs.remove(app) else {
+        let Some(OperationJob { job }) = self.operation_jobs.remove(app) else {
             return;
         };
-        if stopped.load(Ordering::Acquire) {
-            job.stopped();
-            "Stopped following this operation. The package manager may still be finishing it."
-                .clone_into(&mut self.status_line);
-            ui::attention::publish(ui::attention::Notice::did(
-                store_owner(),
-                self.status_line.clone(),
-            ));
-            return;
-        }
         match outcome {
             Ok(status) => {
                 // The ledger records it: `publish_status` writes the same
@@ -2047,8 +2034,8 @@ impl StoreApp {
             self.structure_dirty = true;
             // The operation is a job of the whole system: it keeps running
             // when the person leaves this page, and its row says what the
-            // package manager is doing.
-            let stopped = Arc::new(AtomicBool::new(false));
+            // package manager is doing. No Stop: `flatpak` is another
+            // process, so stopping here would only stop watching.
             let job = ui::jobs::start(
                 ui::jobs::Spec::new(self.status_line.clone())
                     .subject(
@@ -2056,14 +2043,10 @@ impl StoreApp {
                             .opens(item.id.clone()),
                     )
                     .unit(ui::jobs::Unit::Steps)
-                    .phase(self.status_line.clone())
-                    .stoppable({
-                        let stopped = Arc::clone(&stopped);
-                        move || stopped.store(true, Ordering::Release)
-                    }),
+                    .phase(self.status_line.clone()),
             );
             self.operation_jobs
-                .insert(item.id.clone(), OperationJob { job, stopped });
+                .insert(item.id.clone(), OperationJob { job });
             return Ok(Job::admitted(
                 Request::Act(Box::new(item), action),
                 Finish::Package,

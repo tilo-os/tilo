@@ -439,6 +439,16 @@ impl DesktopSurface {
         }
         pending
     }
+    /// A mounted app woke the surface and its work waits for the next
+    /// [`Widget::update`]; unlike [`Widget::needs_redraw`], nothing to paint.
+    pub fn has_pending_component_wake(&self) -> bool {
+        self.component_wake
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .retained_wakes
+                .iter()
+                .any(|wake| wake.load(std::sync::atomic::Ordering::Acquire))
+    }
     pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceId, RoomId)> {
         self.context
     }
@@ -1343,13 +1353,7 @@ impl Widget for DesktopSurface {
         self.root.update(doc, path) || wake
     }
     fn needs_redraw(&self) -> bool {
-        self.component_wake
-            .load(std::sync::atomic::Ordering::Acquire)
-            || self
-                .retained_wakes
-                .iter()
-                .any(|wake| wake.load(std::sync::atomic::Ordering::Acquire))
-            || self.root.needs_redraw()
+        self.has_pending_component_wake() || self.root.needs_redraw()
     }
     fn build_layout(
         &mut self,

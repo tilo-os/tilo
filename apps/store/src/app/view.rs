@@ -836,6 +836,7 @@ impl StoreApp {
                 })
             });
         }
+        let this_action_runs = primary.progress.is_some();
         let mut row = Row::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(taffy::AlignItems::Center)
@@ -863,6 +864,23 @@ impl StoreApp {
                 button = button.on_action(binding);
             }
             row = row.push(Box::new(button));
+        }
+        if this_action_runs {
+            // No Stop stands beside it: the package manager runs this to the
+            // end in its own process, so the page says so rather than
+            // offering a control that would only stop the watching.
+            return Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_no_padding()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(row))
+                    .push(Box::new(
+                        Text::new(&ui::i18n!("store-progress-continues"))
+                            .with_role(TextRole::Caption)
+                            .dimmed(),
+                    )),
+            );
         }
         Box::new(row)
     }

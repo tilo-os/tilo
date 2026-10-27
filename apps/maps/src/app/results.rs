@@ -86,7 +86,10 @@ impl MapsApp {
                     Err(e) => {
                         self.endpoints
                             .finish_search(endpoint_of(origin), Vec::new());
-                        self.model.status = format!("Search failed: {e}");
+                        // The person reads what they can do about it, not the
+                        // transport's own words; the raw error is logged
+                        // (`APP-maps-02`).
+                        self.model.status = failure::say(failure::SEARCH, &e);
                     }
                 },
                 NetMsg::ReverseGeocode(r) => {
