@@ -46,6 +46,7 @@ mod import_inbox;
 mod input_context;
 pub mod model;
 mod outbox;
+mod quick_add;
 mod reminders;
 pub mod resource;
 pub mod setup;
