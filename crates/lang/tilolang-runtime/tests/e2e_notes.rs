@@ -242,10 +242,10 @@ mod cases {
         view.set_lazy_rows(false).unwrap();
         assert_eq!(titles(&view), ["b", "a"]);
         assert_eq!(
-            node_with(view.tree(), "ui.NavItem", "key", "pinned").props["count"],
+            node_with(view.tree(), "ui.NavItem", "key", "is:pinned").props["count"],
             Value::Int(1)
         );
-        fire_on(&view, "ui.NavItem", "key", "pinned", "select");
+        fire_on(&view, "ui.NavItem", "key", "is:pinned", "select");
         view.poll_patches().unwrap();
         assert_eq!(titles(&view), ["a"]);
         fire_on(&view, "ui.NavItem", "key", "all", "select");

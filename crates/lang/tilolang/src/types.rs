@@ -74,6 +74,9 @@ pub enum Ty {
     /// An instant, held as ISO-8601 UTC text `YYYY-MM-DDTHH:MM:SSZ`; not a `Text`. ISO text
     /// orders chronologically, so both compare as text.
     Time,
+    /// `std.Identifier`: an account of some service, held as its URI `scheme:value`
+    /// (`mailto:jane@x.com`, `tel:+4930123456`); not a `Text` (see [`crate::identifier`]).
+    Identifier,
     /// No value.
     #[default]
     Unit,
@@ -196,6 +199,7 @@ impl Ty {
             Self::Principal => "Principal".into(),
             Self::Date => "Date".into(),
             Self::Time => "Time".into(),
+            Self::Identifier => "std.Identifier".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -398,6 +402,7 @@ impl MetaTy<'_> {
             "Principal" => Some(Ty::Principal),
             "Date" => Some(Ty::Date),
             "Time" => Some(Ty::Time),
+            "std.Identifier" => Some(Ty::Identifier),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "Result" => {

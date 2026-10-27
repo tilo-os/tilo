@@ -6,19 +6,16 @@ type Draft {
     subject: Text (title)
     body: Text (body)
     sent: Bool = false
+
+    search {
+        filter "Drafts" = not sent
+        filter sent
+    }
 }
 
 /// The workspace's letters.
 type Desk {
     drafts: Collection<Draft>
-}
-
-/// Which letters the desk lists.
-enum Shelf {
-    /// Drafts
-    drafts
-    /// Sent
-    sent
 }
 
 root Desk
@@ -56,16 +53,10 @@ view compose(d: Draft) {
     }
 }
 
-/// The letters on a shelf.
-fn shelved(desk: Desk, shelf: Shelf) -> List<Draft> {
-    desk.drafts.filter(d -> d.sent == (shelf == .sent))
-}
-
-/// The desk's window: its letters, each opening in a window of its own. Which shelf it shows
-/// is the window's.
+/// The desk's window: its letters, each opening in a window of its own, drafts and sent ones
+/// apart as a letter's filters say. It opens on the drafts.
 view desk(desk: Desk) {
-    window shelf: Shelf = .drafts
-    std.list(desk, shelved(desk, shelf), filter: shelf, count: s -> shelved(desk, s).len(), empty: "No letters here")
+    std.list(desk, desk.drafts, place: "is:drafts", everything: "All letters", empty: "No letters here")
 }
 
 /// One letter in a list: its subject and who it goes to.

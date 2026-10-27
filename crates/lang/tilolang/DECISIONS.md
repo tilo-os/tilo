@@ -257,3 +257,54 @@ Convergence design section 1.1.
   both fixes: an outcome, a parameter with a default; a delta, a counter. Other computations from
   the same register (`t.tag = tidy(t.tag)`, `t.n = t.n * 2`) are legitimate replays. E030's
   advice no longer suggests writing the read and the write out.
+
+## Search
+
+search.md sections 2.2 and 3.3.
+
+- **`search` blocks.** `search` is contextual: a type body's line `search {` starts the block,
+  one per type (a second is a syntax error). Lines: `filter field ["Label"]`,
+  `filter "Label" = expr`, `sort field newest|oldest|a_z|z_a`, `hide field`. A filter's key is
+  the field's name, a named filter's its label in snake case (`Has attachment` is
+  `has_attachment`); `is`, `sort`, `in` and `text` are search's own words and no key. A
+  field's label is its name in sentence case; its doc comment's first line is its description.
+  Metadata carries the effective search of every type (`TypeMeta.search`), its defaults
+  included, so the platform and other packages read one shape. New codes: E100 (no such
+  field), E101 (a type no filter compares), E102 (a named filter the index cannot keep), E103
+  (an order the field does not have), E104 (repeated, hidden and filtered, a reserved key),
+  each naming the type with its doc comment's first line.
+- **A filter's icon is declared** with the annotation enum cases and actions take:
+  `filter done (icon: .circle_check)`, `filter "Open" = not done (icon: .circle)`. After a
+  named filter's predicate the parenthesis would read as a call; one that names only options
+  is the filter's options. A filter that declares none has no icon.
+- **Named filters are predicates of the existing vocabulary.** They read fields with `not`,
+  `and`, `or`, comparisons, `.len()` and `.is_empty()`. search.md's
+  `attachments.count > 0` is written `not attachments.is_empty()` or
+  `attachments.len() > 0`: `count` is the counting method that takes a predicate.
+- **`std.Identifier` is a built-in value type**, held as its URI text like `Date` and `Time`
+  are ISO text, with `.scheme` and `.value` (`ident_part`). search.md has services' types
+  (`MailAddress`, `DiscordUser`) implement `std.Identifier`; declaring that a type implements an
+  interface needs syntax search.md does not give, so it is not built: fields hold
+  `std.Identifier` itself.
+- **Query values are search's text.** `query(T, ...)` lowers each argument to the text a typed
+  search writes for it (`done` and `false`, `due` and `today..today+7d`, a pattern normalized
+  as it is held) and the type's default order as a `sort` term when none is given; one import,
+  `query(type, scope, terms, text)`, resolves the terms and the typed search `text` against
+  the type's filters at run time (`tilolang_runtime::query`). So `find("from:*@x.com is:unread
+  received:-7d")` and `query(Message, from: "*@x.com", unread: true, received: -7d)` are one
+  query. `today` and `now` are bare words in a query's values, as `now` is in an action;
+  search.md's `today()` is accepted too. Durations (`7d`, `-30d`; units s, m, h, d, w) and
+  ranges (`a..b`, `a..`, `..b`) are values of filters only (E105 elsewhere).
+- **Relative times resolve to the minute.** `-7d` and `today` read the host's clock rounded
+  to the minute, so a view asks one query a minute; a list does not move by itself as time
+  passes.
+- **A query in a view looks inside a resource (`in:`).** A view's dependencies are kept per
+  collection; one across the workspace would follow no change. Actions and flows may query
+  the workspace (`Store::select`, answered by the index's columns across the workspace).
+- **`std.list` owns its query.** A template may declare `window`/`lens` state at the top of its
+  body; it is the expanding view's, kept under `<view id>:<template>.<name>` and listed in that
+  view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
+  it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
+  (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
+  the place a window starts on, the state's default (Letters starts on `is:drafts`), each counted by `items.matching(p.query).len()`. The `filter:` and `count:`
+  parameters are gone.

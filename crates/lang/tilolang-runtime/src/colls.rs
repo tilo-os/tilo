@@ -15,8 +15,8 @@ use std::rc::Rc;
 
 use crate::core::{Core, HResult, trap};
 use crate::handles::FrameKind;
-use crate::meta::{FieldKind, Ty};
-use crate::store::{FieldRead, FieldSpec, Listing, Lit, Store, StoreError};
+use crate::meta::FieldKind;
+use crate::store::{FieldRead, FieldSpec, Listing, Store, StoreError};
 use crate::value::{CollRef, Value};
 
 /// What a view saw of one collection: its length, its first and last item, and the item at
@@ -65,6 +65,7 @@ impl CollSeen {
         self.coll.field == coll.field
             && self.coll.target == coll.target
             && self.coll.filter == coll.filter
+            && self.coll.order == coll.order
     }
 
     /// Whether everything seen is still so in `listing`.
@@ -72,8 +73,8 @@ impl CollSeen {
         // Read whole, it depends on the collection's field instead.
         self.whole
             || self.len.is_none_or(|len| len == listing.len())
-                && self.first.holds(listing.first().as_ref())
-                && self.last.holds(listing.last().as_ref())
+                && self.first.holds_in(|| listing.first())
+                && self.last.holds_in(|| listing.last())
                 && self
                     .at
                     .iter()
@@ -111,11 +112,13 @@ pub(crate) enum End {
 }
 
 impl End {
-    /// Whether the end still has the item seen, `now` being the item there now.
-    fn holds(&self, now: Option<&Rc<str>>) -> bool {
+    /// Whether the end still has the item seen, `now` reading the item there now: read only
+    /// when an item was seen there, so a collection whose length alone was seen reads none of
+    /// its items.
+    fn holds_in(&self, now: impl FnOnce() -> Option<Rc<str>>) -> bool {
         match self {
             Self::Unread => true,
-            Self::Read(seen) => seen.as_ref() == now,
+            Self::Read(seen) => *seen == now(),
         }
     }
 }
@@ -140,10 +143,25 @@ pub(crate) fn listing_of(store: &dyn Store, coll: &CollRef) -> Result<Rc<Listing
         id: coll.field.clone(),
         kind: FieldKind::Collection,
     };
-    match coll.filter.as_deref() {
-        None => store.listing(&coll.target, &spec),
-        Some(pred) => store.listing_where(&coll.target, &spec, &coll.item, pred),
+    match (coll.filter.as_deref(), &coll.order) {
+        (None, None) => store.listing(&coll.target, &spec),
+        (Some(pred), None) => store.listing_where(&coll.target, &spec, &coll.item, pred),
+        (pred, Some(order)) => {
+            store.listing_query(&coll.target, &spec, &coll.item, pred, Some(order))
+        }
     }
+}
+
+/// `pred`, its fields (by id) resolved to what the store reads of items of the type `item`:
+/// `None` when it reads a field the type lacks or one no filter reads.
+pub(crate) fn field_reads(
+    pred: &tilolang::pred::Pred<String>,
+    item: &crate::registry::TypeInfo,
+) -> Option<crate::store::Pred> {
+    pred.resolve(&mut |id: &String| {
+        let field = item.fields.iter().find(|f| f.id == *id)?;
+        FieldRead::of(&field.id, field.kind, &field.ty, field.default.as_ref())
+    })
 }
 
 /// One read of a collection, recorded as what it saw.
@@ -216,9 +234,10 @@ impl Core {
                 seen.at.push((i, id));
             }
         }
-        // A filtered collection read whole still depends on what it saw item by item: an item
-        // changing whether it is in is no change to the collection's field.
-        if seen.sweep == len && len > 0 && coll.filter.is_none() {
+        // A filtered or ordered collection read whole still depends on what it saw item by
+        // item: an item changing whether it is in, or where, is no change to the collection's
+        // field.
+        if seen.sweep == len && len > 0 && !coll.derived() {
             seen.whole = true;
             seen.at = Vec::new();
             vs.reads.push((seen.resource.clone(), coll.field.clone()));
@@ -240,30 +259,7 @@ impl Core {
         let Some((_, item)) = self.registry.borrow().type_info(&coll.item) else {
             return Ok(Value::none());
         };
-        let resolved = written.resolve(&mut |id: &String| {
-            let field = item.fields.iter().find(|f| f.id == *id)?;
-            let absent = match (field.kind, &field.ty) {
-                (FieldKind::Register, Ty::Bool | Ty::Int | Ty::Text) => {
-                    crate::host_res::declared_default(&field.ty, field.default.as_ref()).ok()?
-                }
-                (FieldKind::Counter, Ty::Int) => Value::Int(0),
-                (FieldKind::Text, Ty::Text) => Value::text(""),
-                _ => return None,
-            };
-            let absent = match absent {
-                Value::Bool(b) => Lit::Bool(b),
-                Value::Int(i) => Lit::Int(i),
-                Value::Text(t) => Lit::Text(t),
-                _ => return None,
-            };
-            Some(FieldRead {
-                spec: FieldSpec {
-                    id: field.id.clone(),
-                    kind: field.kind,
-                },
-                absent,
-            })
-        });
+        let resolved = field_reads(&written, &item);
         Ok(resolved.map_or_else(Value::none, |pred| {
             Value::some(Value::Coll(Rc::new(coll.filtered(pred))))
         }))
@@ -320,7 +316,7 @@ impl Core {
     /// A message when the store cannot list the collection.
     pub(crate) fn coll_items(&self, coll: &Rc<CollRef>) -> Result<Vec<Value>, String> {
         let listing = self.coll_listing(coll)?;
-        if coll.filter.is_some() {
+        if coll.derived() {
             self.saw(coll, Read::Len(listing.len()), listing.len());
             for (i, id) in listing.iter().enumerate() {
                 self.saw(coll, Read::At(i, id), listing.len());

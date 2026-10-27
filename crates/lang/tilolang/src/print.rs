@@ -2,7 +2,8 @@
 
 use crate::ast::{
     ActionOpt, AppHeader, Arg, Block, Expr, ExprKind, FieldDecl, Item, Module, Param, Pattern,
-    Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
+    SearchBlock, SearchEntryKind, Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind, UiCall, UiKind,
+    UiStmt, UnOp,
 };
 
 /// A block of one expression whose text is at most this long prints on one line: `{ x }`.
@@ -162,7 +163,7 @@ fn float_text(v: f64) -> String {
 /// Binding strength used to decide parentheses; see the grammar's levels.
 fn prec_of(e: &Expr) -> u8 {
     match &e.kind {
-        ExprKind::Lambda { .. } => 0,
+        ExprKind::Lambda { .. } | ExprKind::Range { .. } => 0,
         ExprKind::Binary { op, .. } => op.prec(),
         ExprKind::Unary { op: UnOp::Not, .. } => 3,
         ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Try(_) => 7,
@@ -181,6 +182,15 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
         ExprKind::Int(v) => v.to_string(),
         ExprKind::Float(v) => float_text(*v),
         ExprKind::Length(v, u) => format!("{v}{}", u.text()),
+        ExprKind::Duration(v, u) => format!("{v}{u}"),
+        ExprKind::Range { lo, hi } => {
+            let end = |x: &Option<Box<Expr>>| {
+                x.as_deref()
+                    .map(|x| expr_text(x, 1, level))
+                    .unwrap_or_default()
+            };
+            format!("{}..{}", end(lo), end(hi))
+        }
         ExprKind::Bool(b) => b.to_string(),
         ExprKind::Str(parts) => {
             let mut out = String::from("\"");
@@ -360,6 +370,12 @@ impl Printer {
                 for f in &t.fields {
                     self.field(f);
                 }
+                if let Some(search) = &t.search {
+                    if !t.fields.is_empty() {
+                        self.out.push('\n');
+                    }
+                    self.search(search);
+                }
                 self.level -= 1;
                 self.line("}");
             }
@@ -490,6 +506,36 @@ impl Printer {
             text.push_str(&format!(" = {}", self.ex(d)));
         }
         self.line(&text);
+    }
+
+    fn search(&mut self, search: &SearchBlock) {
+        self.line("search {");
+        self.level += 1;
+        for entry in &search.entries {
+            let text = match &entry.kind {
+                SearchEntryKind::Field { field, label, opts } => match label {
+                    Some(label) => {
+                        format!("filter {} {}{}", field.name, quote(label), self.opts(opts))
+                    }
+                    None => format!("filter {}{}", field.name, self.opts(opts)),
+                },
+                SearchEntryKind::Named {
+                    label, expr, opts, ..
+                } => format!(
+                    "filter {} = {}{}",
+                    quote(label),
+                    self.ex(expr),
+                    self.opts(opts)
+                ),
+                SearchEntryKind::Sort { field, order } => {
+                    format!("sort {} {}", field.name, order.name)
+                }
+                SearchEntryKind::Hide { field } => format!("hide {}", field.name),
+            };
+            self.line(&text);
+        }
+        self.level -= 1;
+        self.line("}");
     }
 
     fn block_body(&mut self, b: &Block) {

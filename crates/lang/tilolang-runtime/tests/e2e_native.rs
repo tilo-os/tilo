@@ -1,5 +1,6 @@
-//! The native vocabulary run: `std.list`'s items and rows, its sort and filter as view state
-//! with counts per filter, a row view, and the choice and facts a document shows.
+//! The native vocabulary run: `std.list`'s items and rows, its sort as view state and its
+//! places as the item type's filters with a count each, a row view, and the choice and facts a
+//! document shows.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -42,21 +43,13 @@ primary action add(nb: Notebook, title: Text, pinned: Bool) -> Note (icon: .plus
     return nb.notes.insert(Note(title: title, pinned: pinned))
 }
 
-fn listed(nb: Notebook, filter: NoteFilter) -> List<Note> {
-    return match filter {
-        .all => nb.notes.filter(n -> true),
-        .pinned => nb.notes.filter(n -> n.pinned),
-    }
-}
-
 view note_row(n: Note) {
     row(n.title, mark: if n.pinned { .pin })
 }
 
 view notebook(nb: Notebook) {
     window order: NoteOrder = .created
-    window filter: NoteFilter = .all
-    std.list(nb, listed(nb, filter), sort: order, filter: filter, count: f -> listed(nb, f).len(), empty: "No notes yet") { n ->
+    std.list(nb, nb.notes, sort: order, empty: "No notes yet") { n ->
         row(n.title, checkbox: n.pinned)
     }
 }
@@ -179,13 +172,13 @@ view detail(n: Note) {
     }
 
     #[test]
-    fn sort_and_filter_are_view_state_with_a_count_per_filter() {
+    fn the_sort_is_view_state_and_the_places_the_item_types_filters_with_counts() {
         let (rt, app, nb) = setup();
         let mut view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
             .unwrap();
         let counts = |tree: &UiNode| -> Vec<Value> {
-            ["all", "pinned"]
+            ["all", "is:pinned"]
                 .iter()
                 .map(|place| node_with(tree, "ui.NavItem", "key", place).props["count"].clone())
                 .collect()
@@ -203,7 +196,7 @@ view detail(n: Note) {
         assert_ne!(checked(tree, "Title"), Some(Value::Int(1)));
         // Rows are read here as a host that draws every row does.
         view.set_lazy_rows(false).unwrap();
-        let pinned = node_with(view.tree(), "ui.NavItem", "key", "pinned")
+        let pinned = node_with(view.tree(), "ui.NavItem", "key", "is:pinned")
             .key
             .clone();
         view.fire(&pinned, "select").unwrap();
@@ -211,7 +204,7 @@ view detail(n: Note) {
         let tree = view.tree();
         assert_eq!(
             text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
-            "pinned"
+            "is:pinned"
         );
         assert_eq!(titles(tree), ["Q3 plan"]);
         assert_eq!(

@@ -1021,25 +1021,50 @@ mod cases {
         let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
         assert_eq!(row_titles(v.tree()), ["milk", "eggs"]);
         let before = w.rt.history(&list.doc).unwrap().len();
-        choose(&v, "open");
+        choose(&v, "is:done");
         v.poll_patches().unwrap();
-        assert_eq!(row_titles(v.tree()), ["eggs"]);
+        assert_eq!(row_titles(v.tree()), ["milk"]);
         let tree = v.tree();
         assert_eq!(
             text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
-            "open"
+            "is:done"
         );
         assert_eq!(
             (
                 &node_with(tree, "ui.NavItem", "key", "all").props["count"],
-                &node_with(tree, "ui.NavItem", "key", "done").props["count"]
+                &node_with(tree, "ui.NavItem", "key", "is:open").props["count"],
+                &node_with(tree, "ui.NavItem", "key", "is:done").props["count"]
             ),
-            (&Value::Int(2), &Value::Int(1))
+            (&Value::Int(2), &Value::Int(1), &Value::Int(1))
         );
+
         assert_eq!(
             w.rt.history(&list.doc).unwrap().len(),
             before,
             "view state is no change to the list"
+        );
+    }
+
+    #[test]
+    fn a_desk_opens_on_its_drafts_as_the_app_chose() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let desk = w.create("Desk");
+        let v = w.view(&apps.letters, "desk", vec![res(&desk)]);
+        let tree = v.tree();
+        assert_eq!(
+            text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
+            "is:drafts"
+        );
+        let keys: Vec<String> = of_kind(tree, "ui.NavItem")
+            .iter()
+            .map(|item| text_prop(item, "key"))
+            .collect();
+        assert_eq!(keys, ["all", "is:drafts", "is:sent"]);
+        assert_eq!(
+            text_prop(&node_with(tree, "ui.NavItem", "key", "all"), "label"),
+            "All letters",
+            "the app names the place of every letter"
         );
     }
 

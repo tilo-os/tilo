@@ -192,6 +192,10 @@ pub struct CollRef {
         with = "shared_filter"
     )]
     pub filter: Option<Rc<crate::store::Pred>>,
+    /// The order its items are listed in (`query(T, in: x, sort: .due_oldest)`); the
+    /// collection's own when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<crate::query::Order>,
 }
 
 impl CollRef {
@@ -206,6 +210,39 @@ impl CollRef {
             filter: Some(Rc::new(pred)),
             ..self.clone()
         }
+    }
+
+    /// The same collection, only the items `pred` holds of (and the ones it held of before),
+    /// in the order `order` when there is one.
+    #[must_use]
+    pub fn queried(&self, pred: crate::store::Pred, order: Option<crate::query::Order>) -> Self {
+        let mut out = self.filtered(pred);
+        if order.is_some() {
+            out.order = order;
+        }
+        out
+    }
+
+    /// Whether it lists other items than its collection's, or in another order: which items it
+    /// holds, and where, depend on fields of each item.
+    #[must_use]
+    pub fn derived(&self) -> bool {
+        self.filter.is_some() || self.order.is_some()
+    }
+
+    /// Whether a change to the item field `field` may change which items it holds or their
+    /// order.
+    #[must_use]
+    pub fn reads_field(&self, field: &str) -> bool {
+        field == crate::store::ANY_FIELD
+            || self
+                .filter
+                .as_deref()
+                .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
+            || self
+                .order
+                .as_ref()
+                .is_some_and(|order| order.field == field)
     }
 
     /// A reference to the item `id` of the collection.

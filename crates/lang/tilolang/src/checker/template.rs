@@ -556,10 +556,69 @@ impl Checker<'_> {
             let local = self.declare(&p.name.name, v.ty.clone());
             self.emit(Stmt::Set(local, v));
         }
-        let node = self.template_body(&view.body, parent);
+        let body = self.template_state(view, &view.body);
+        let node = self.template_body(&body, parent);
         self.st.expanding.pop();
         self.leave(saved);
         node
+    }
+
+    /// Lowers the `window` and `lens` declarations at the top of a template's body: state of
+    /// the view it expands in, kept under that view's id and the template's name
+    /// (`<view id>:list.query`), as the view's own is under its name. Returns the rest of the
+    /// body.
+    fn template_state(&mut self, view: &ast::ViewDecl, body: &[UiStmt]) -> Vec<UiStmt> {
+        let mut rest = Vec::new();
+        for s in body {
+            let UiKind::State(d) = &s.kind else {
+                rest.push(s.clone());
+                continue;
+            };
+            let types = self.st.types.clone();
+            let ty = self.type_in(&d.ty, &types);
+            let base = format!("{}:{}.{}", self.st.view_id, view.name.name, d.name.name);
+            let taken = |id: &str| self.states.iter().any(|(_, s)| s.id == id);
+            let mut id = base.clone();
+            let mut n = 2;
+            while taken(&id) {
+                id = format!("{base}#{n}");
+                n += 1;
+            }
+            let fallback = match &d.default {
+                Some(e) => self.expr_as(e, &ty),
+                None => self.zero_of(&ty, d.name.span),
+            };
+            let layer = Ex::new(Ek::I32(d.layer.code()), Ty::Bool);
+            let args = vec![layer, Ex::str(&id), Self::handle_of(fallback)];
+            let value = if ty.is_scalar() {
+                let boxed = Ty::Option(Box::new(ty.clone()));
+                Self::unwrap_opt(Ex::host(Imp::StateGet, args, boxed), &ty)
+            } else {
+                Ex::host(Imp::StateGet, args, ty.clone())
+            };
+            let local = self.declare(&d.name.name, ty.clone());
+            self.emit(Stmt::Set(local, value));
+            self.st.states.insert(
+                d.name.name.clone(),
+                StateRef {
+                    layer: d.layer,
+                    id: id.clone(),
+                    ty: ty.clone(),
+                    local,
+                },
+            );
+            self.states.push((
+                self.st.view_id.clone(),
+                crate::resolve::StateInfo {
+                    view: self.st.view_id.clone(),
+                    name: d.name.name.clone(),
+                    id,
+                    layer: d.layer,
+                    ty,
+                },
+            ));
+        }
+        rest
     }
 
     /// The caller's view state a `State<E>` parameter is given: a plain name.

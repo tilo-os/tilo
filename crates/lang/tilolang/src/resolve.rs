@@ -27,6 +27,8 @@ pub struct TypeInfo {
     pub id: String,
     pub doc: String,
     pub fields: Vec<FieldInfo>,
+    /// Its filters, default order and hidden fields (search.md section 2.2).
+    pub search: crate::meta::SearchMeta,
 }
 
 impl TypeInfo {
@@ -455,6 +457,7 @@ impl Env {
                 id: t.id.clone(),
                 doc: t.doc.clone(),
                 fields,
+                search: t.search.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -719,7 +722,7 @@ impl Resolver<'_> {
         for e in enums {
             self.enum_decl(e, lock);
         }
-        for t in decls {
+        for t in &decls {
             let mut fields: Vec<FieldInfo> = Vec::new();
             for f in &t.fields {
                 if fields.iter().any(|x| x.name == f.name.name) {
@@ -742,7 +745,26 @@ impl Resolver<'_> {
                 id: id_of(lock, &t.name.name),
                 doc: t.doc.join("\n"),
                 fields,
+                search: crate::meta::SearchMeta::default(),
             });
+        }
+        // Every type's fields are known: each one's search reads its own, and the enums.
+        for t in decls {
+            let Some(at) = self
+                .env
+                .types
+                .iter()
+                .position(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+            else {
+                continue;
+            };
+            let search = crate::search::resolve(
+                &self.env.types[at],
+                t.search.as_ref(),
+                &self.env,
+                self.diags,
+            );
+            self.env.types[at].search = search;
         }
     }
 
@@ -1079,6 +1101,23 @@ impl Resolver<'_> {
                 }
             };
         }
+        if let Some(args) = identifier_call(e) {
+            return match identifier_value(args) {
+                Ok(text) if ty.same(&Ty::Identifier) => Some(serde_json::Value::String(text)),
+                Ok(_) => {
+                    self.err(
+                        "E020",
+                        e.span,
+                        format!("the default is std.Identifier but the field has type {ty}"),
+                    );
+                    None
+                }
+                Err(msg) => {
+                    self.err("E099", e.span, msg);
+                    None
+                }
+            };
+        }
         let Some((lt, value)) = lit(e) else {
             self.err(
                 "E019",
@@ -1203,9 +1242,20 @@ impl Resolver<'_> {
             self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, Principal, Date, Time, Action, View and {known}"));
             return Ty::Error;
         }
+        if dotted == ["std", "Identifier"] {
+            return Ty::Identifier;
+        }
         let (prefix, name) = dotted.split_at(dotted.len().saturating_sub(1));
         let prefix = prefix.join(".");
         let name = name.first().copied().unwrap_or("");
+        if prefix == crate::stdlib::NS && self.env.find_import(&prefix).is_none() {
+            self.err(
+                "E013",
+                span,
+                format!("the standard library has no type `{name}`; its type is `std.Identifier`"),
+            );
+            return Ty::Error;
+        }
         let Some(import) = self.env.find_import(&prefix) else {
             self.err("E013", span, format!("unknown type `{}`: `{prefix}` is not an imported package; add `use <app id> as {prefix}`", dotted.join(".")));
             return Ty::Error;
@@ -1834,8 +1884,34 @@ pub fn date_value(kind: &str, args: &[ast::Arg]) -> Result<(Ty, String), String>
     Ok((ty, text))
 }
 
+/// The arguments of `std.Identifier(...)`, when `e` is that call.
+pub fn identifier_call(e: &Expr) -> Option<&[ast::Arg]> {
+    let ExprKind::Call { callee, args } = &e.kind else {
+        return None;
+    };
+    let ExprKind::Field { base, name } = &callee.kind else {
+        return None;
+    };
+    (matches!(&base.kind, ExprKind::Ident(ns) if ns == crate::stdlib::NS)
+        && name.name == "Identifier")
+        .then_some(args.as_slice())
+}
+
+/// `std.Identifier("mailto:jane@x.com")`, or a bare form (`std.Identifier("jane@x.com")`): the
+/// identifier as it is held, checked at compile time.
+pub fn identifier_value(args: &[ast::Arg]) -> Result<String, String> {
+    let text = match args {
+        [ast::Arg { name: None, value }] => plain_text(value),
+        _ => None,
+    };
+    let Some(text) = text else {
+        return Err("`std.Identifier(...)` takes one string literal, such as `std.Identifier(\"mailto:jane@example.com\")`".into());
+    };
+    crate::identifier::normalize(&text)
+}
+
 /// The text of a string literal without interpolation.
-fn plain_text(e: &Expr) -> Option<String> {
+pub fn plain_text(e: &Expr) -> Option<String> {
     let ExprKind::Str(parts) = &e.kind else {
         return None;
     };

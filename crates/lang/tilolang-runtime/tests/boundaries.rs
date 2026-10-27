@@ -18,6 +18,11 @@ mod cases {
 type Item {
     title: Text
     done: Bool = false
+
+    search {
+        filter "Open" = not done
+        filter done
+    }
 }
 
 type Bag {
@@ -61,21 +66,8 @@ action open_titles(bag: Bag) -> List<Text> {
     return bag.items.filter(item -> not item.done).map(item -> item.title)
 }
 
-enum Which {
-    all
-    open
-}
-
-fn shown(bag: Bag, which: Which) -> List<Item> {
-    match which {
-        .all => bag.items,
-        .open => bag.items.filter(item -> not item.done),
-    }
-}
-
 view chosen(bag: Bag) {
-    window which: Which = .all
-    std.list(bag, shown(bag, which), filter: which) { item ->
+    std.list(bag, bag.items) { item ->
         row(item.title, checkbox: item.done)
     }
 }
@@ -692,9 +684,17 @@ view count(bag: Bag) {
         assert_eq!(held, row_keys(&view, &list));
         built_in_order(&view, &list, &held);
 
-        // Another filter: the rows that stay are kept, the others leave.
-        choose(&view, "open");
+        // Another filter: rows of another query, which the host reads anew; the list builds
+        // the rows it shows.
+        choose(&view, "is:open");
         let chosen = view.poll_patches().unwrap();
+        assert!(
+            chosen
+                .iter()
+                .any(|p| matches!(p, Patch::Insert { node, .. } if node.key == list)),
+            "the host reads the rows anew: {chosen:?}"
+        );
+        assert!(chosen.len() < 10, "no step per row: {chosen:?}");
         follow(&view, &list, &mut held, &chosen);
         assert_eq!(held, row_keys(&view, &list));
         assert_eq!(held.len(), 27, "{chosen:?}");
@@ -787,7 +787,7 @@ view count(bag: Bag) {
         let rows = Rows::new(30);
         let mut view = rows.view("chosen");
         let list = list_key(&view);
-        choose(&view, "open");
+        choose(&view, "is:open");
         let mut held = row_keys(&view, &list);
         let chosen = view.poll_patches().unwrap();
         follow(&view, &list, &mut held, &chosen);

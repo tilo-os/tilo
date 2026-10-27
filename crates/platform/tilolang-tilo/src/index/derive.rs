@@ -9,9 +9,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use automerge::{ObjId, ObjType, ReadDoc, Value as AmValue};
 use tilo_resource::collection::{collection_entries, in_stored_order, read_entry};
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
-use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, Scalar};
+use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue};
 use tilolang_runtime::value::ResourceRef;
 
+use super::columns::{
+    self, reversed, scope_entry, scope_list, scope_prefix, type_entry, type_list,
+};
 use super::lists::Entry;
 use super::text::{NAMING, OTHER, words};
 use super::{IndexError, KEY, TYPE, Writer};
@@ -26,18 +29,27 @@ pub fn member_list(resource: &str, field: &str) -> String {
     format!("m\u{1}{resource}\u{1}{field}")
 }
 
-/// What starts the names of the filter columns of the items of the collection `field` of
-/// `resource`, for the item field `item_field`.
+/// The pseudo-field holding the values a resource's column `column` holds, as the column's
+/// lists have them: what a change replaces there, and a removal takes out.
 #[must_use]
-pub fn column_prefix(resource: &str, field: &str, item_field: &str) -> String {
-    format!("c\u{1}{resource}\u{1}{field}\u{1}{item_field}\u{1}")
+pub fn column_field(column: &str) -> String {
+    format!("$c\u{1}{column}")
 }
 
-/// The list of the items of the collection `field` of `resource` whose `item_field` holds
-/// the value written `value` ([`column_value`]).
-#[must_use]
-pub fn column_list(resource: &str, field: &str, item_field: &str, value: &str) -> String {
-    format!("{}{value}", column_prefix(resource, field, item_field))
+/// The values held under a [`column_field`].
+fn split_values(held: &str) -> Vec<String> {
+    held.split(columns::SEP).map(str::to_owned).collect()
+}
+
+fn join_values(values: &[String]) -> String {
+    let mut out = String::new();
+    for (at, value) in values.iter().enumerate() {
+        if at > 0 {
+            out.push(columns::SEP);
+        }
+        out.push_str(value);
+    }
+    out
 }
 
 /// The prefixes of the lists of the resource `resource` and of everything inside it.
@@ -48,46 +60,6 @@ fn lists_within(resource: &str) -> [String; 4] {
         format!("c\u{1}{resource}\u{1}"),
         format!("c\u{1}{resource}/"),
     ]
-}
-
-/// A value a filter column holds of, as its list is named: `None` for one a filter does not
-/// compare (a list of its own, `x`, which a filter over the field does not answer from).
-#[must_use]
-pub fn column_value(value: &FieldValue) -> String {
-    match value {
-        FieldValue::Absent => "a".to_owned(),
-        FieldValue::Scalar(Scalar::Bool(flag)) => format!("b{}", u8::from(*flag)),
-        FieldValue::Scalar(Scalar::Int(value)) | FieldValue::Counter(value) => format!("i{value}"),
-        FieldValue::Scalar(Scalar::Text(text)) => format!("t{text}"),
-        _ => "x".to_owned(),
-    }
-}
-
-/// The value a filter column's list holds of: `None` for the list of values a filter does not
-/// compare.
-#[must_use]
-pub fn value_of_column(written: &str) -> Option<FieldValue> {
-    let mut chars = written.chars();
-    let tag = chars.next()?;
-    let rest = chars.as_str();
-    Some(match tag {
-        'a' => FieldValue::Absent,
-        'b' => FieldValue::Scalar(Scalar::Bool(rest == "1")),
-        'i' => FieldValue::Scalar(Scalar::Int(rest.parse().ok()?)),
-        't' => FieldValue::Scalar(Scalar::Text(rest.to_owned())),
-        _ => return None,
-    })
-}
-
-/// Whether the index keeps a filter column of `field` of an item: a register of a flag, a
-/// number or a text, or a counter, as a filter reads.
-#[must_use]
-pub fn columned(field: &FieldSchema) -> bool {
-    match field.kind {
-        MergeKind::Register => !field.composite,
-        MergeKind::Counter => true,
-        _ => false,
-    }
 }
 
 /// The resource holding the item at `path`, its collection and the item's id.
@@ -155,6 +127,19 @@ pub trait Sink {
     /// What it holds cannot be read.
     fn entries(&mut self, list: &str) -> Result<Vec<Entry>, IndexError>;
 
+    /// How many entries `list` holds.
+    ///
+    /// # Errors
+    /// What it holds cannot be read.
+    fn len(&mut self, list: &str) -> Result<usize, IndexError>;
+
+    /// Add `delta` to how many entries of the column list `list` hold `value`
+    /// ([`columns::counted`]).
+    ///
+    /// # Errors
+    /// It cannot be written.
+    fn count(&mut self, list: &str, value: &str, delta: i64) -> Result<(), IndexError>;
+
     /// Drop every list whose name starts with `prefix`.
     ///
     /// # Errors
@@ -201,7 +186,38 @@ impl Sink for Writer<'_> {
     }
 
     fn remove(&mut self, resource: &str) -> Result<(), IndexError> {
-        for (held, field, bytes) in self.subtree(resource)? {
+        let held_fields = self.subtree(resource)?;
+        // Out of the type's columns across the workspace, as each resource holds them.
+        let mut types: BTreeMap<&str, String> = BTreeMap::new();
+        for (held, field, bytes) in &held_fields {
+            if field == TYPE {
+                types.insert(held.as_str(), super::codec::get_text(bytes)?);
+            }
+        }
+        for (held, field, bytes) in &held_fields {
+            let Some(name) = field.strip_prefix("$c\u{1}") else {
+                continue;
+            };
+            let Some(column) = types
+                .get(held.as_str())
+                .and_then(|ty| lookup(ty))
+                .and_then(|schema| schema.column(name))
+                .filter(|column| column.filter)
+            else {
+                continue;
+            };
+            let ty = types.get(held.as_str()).cloned().unwrap_or_default();
+            for value in split_values(&super::codec::get_text(bytes)?) {
+                self.list_remove(&type_list(&ty, name), &type_entry(&value, held))?;
+                if column.kind == crate::schema::ColumnKind::Ident {
+                    self.list_remove(
+                        &super::columns::reversed_list(&ty, name),
+                        &type_entry(&reversed(&value), held),
+                    )?;
+                }
+            }
+        }
+        for (held, field, bytes) in held_fields {
             if !field.starts_with('$')
                 && let Ok(FieldValue::Text(text)) = super::codec::get_value(&bytes)
             {
@@ -238,6 +254,14 @@ impl Sink for Writer<'_> {
 
     fn entries(&mut self, list: &str) -> Result<Vec<Entry>, IndexError> {
         self.list(list)
+    }
+
+    fn len(&mut self, list: &str) -> Result<usize, IndexError> {
+        self.list_len(list)
+    }
+
+    fn count(&mut self, list: &str, value: &str, delta: i64) -> Result<(), IndexError> {
+        Writer::count(self, list, value, delta)
     }
 
     fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError> {
@@ -298,7 +322,14 @@ pub struct Derive<'d> {
     pub reads: DocReads,
     /// Resources derived whole in this pass: a change naming them again is done.
     done: BTreeSet<String>,
+    /// While a whole package is derived into an empty index: the entries of its types'
+    /// columns across the workspace, each list written whole at the end rather than entry by
+    /// entry.
+    bulk: Option<BTreeMap<String, Vec<Entry>>>,
 }
+
+/// The collection an item is in, and its order key: where its columns' entries go.
+type Scope<'a> = (&'a str, &'a str, &'a str);
 
 /// What a set of changes reached: per document the fields (none: the document as a whole),
 /// and per collection the items added, removed or moved.
@@ -316,6 +347,22 @@ impl Reached {
 
 fn map_of(value: &AmValue<'_>, id: &ObjId) -> Option<ObjId> {
     matches!(value, AmValue::Object(ObjType::Map)).then(|| id.clone())
+}
+
+/// The value of `field` of the resource at `path` as the sink holds it, its default when it
+/// holds none; a collection as the [`FieldValue::Counter`] of its items.
+fn field_value(
+    sink: &mut impl Sink,
+    path: &str,
+    field: &FieldSchema,
+) -> Result<FieldValue, IndexError> {
+    if field.kind == MergeKind::Collection {
+        let len = sink.len(&member_list(path, &field.id))?;
+        return Ok(FieldValue::Counter(i64::try_from(len).unwrap_or(i64::MAX)));
+    }
+    Ok(sink
+        .field(path, &field.id)?
+        .unwrap_or_else(|| default_value(field)))
 }
 
 /// The weight of the words of the text field `field` of `schema`: the text that names a
@@ -341,6 +388,7 @@ impl<'d> Derive<'d> {
             docs,
             reads: DocReads::default(),
             done: BTreeSet::new(),
+            bulk: None,
         }
     }
 
@@ -355,8 +403,14 @@ impl<'d> Derive<'d> {
             .filter(|(_, (a, _))| a == app)
             .map(|(doc, (_, ty))| (doc.clone(), ty.clone()))
             .collect();
+        self.bulk = Some(BTreeMap::new());
         for (doc, ty) in records {
             self.record(sink, app, &doc, &ty)?;
+        }
+        for (list, mut entries) in self.bulk.take().unwrap_or_default() {
+            entries.sort();
+            entries.dedup();
+            sink.replace(&list, entries)?;
         }
         Ok(())
     }
@@ -384,19 +438,18 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive the resource at `path` (its map `obj`, of the type `schema`) and everything
-    /// inside it; returns the values of its fields a filter column holds.
+    /// inside it; returns the values of its columns, for the lists of the collection it is in.
     fn tree(
         &mut self,
         sink: &mut impl Sink,
         path: &str,
         obj: Option<&ObjId>,
         schema: &'static TypeSchema,
-    ) -> Result<Vec<(&'static FieldSchema, FieldValue)>, IndexError> {
+    ) -> Result<Vec<(String, Vec<String>)>, IndexError> {
         let ty = obj
             .and_then(|obj| type_at(self.doc, obj))
             .unwrap_or_else(|| schema.id.clone());
         sink.put_text(path, TYPE, &ty)?;
-        let mut columns = Vec::new();
         for field in &schema.fields {
             match field.kind {
                 MergeKind::Collection => self.collection(sink, path, field, obj)?,
@@ -409,15 +462,158 @@ impl<'d> Derive<'d> {
                         sink.words(path, None, Some(text), weight_of(schema, field))?;
                     }
                     sink.put_field(path, &field.id, &value)?;
-                    if columned(field) {
-                        columns.push((field, value));
-                    }
                 }
             }
         }
-        Ok(columns)
+        let schema = lookup(&ty).unwrap_or(schema);
+        self.index_columns(sink, path, schema, None, None)
     }
 
+    /// Bring the columns of the resource at `path` (of the type `schema`) in line with its
+    /// fields: those reading `changed`, or all of them. Its entries across the workspace move
+    /// with its values; so do those of the collection it is in, at the order key `scope` gives.
+    /// Returns the columns' values.
+    fn index_columns(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        schema: &TypeSchema,
+        scope: Option<Scope<'_>>,
+        changed: Option<&str>,
+    ) -> Result<Vec<(String, Vec<String>)>, IndexError> {
+        let mut out = Vec::new();
+        if !sink.keeps_columns() {
+            return Ok(out);
+        }
+        for column in &schema.columns {
+            if changed.is_some_and(|field| !columns::reads(column, field)) {
+                continue;
+            }
+            let now = columns::values(column, schema, &mut |field| field_value(sink, path, field))?;
+            let held = sink
+                .text(path, &column_field(&column.name))?
+                .map(|h| split_values(&h));
+            if held.as_ref() != Some(&now) {
+                let before = held.unwrap_or_default();
+                if column.filter {
+                    let ty = &schema.id;
+                    for value in before.iter().filter(|v| !now.contains(v)) {
+                        sink.remove_entry(&type_list(ty, &column.name), &type_entry(value, path))?;
+                        if column.kind == crate::schema::ColumnKind::Ident {
+                            sink.remove_entry(
+                                &columns::reversed_list(ty, &column.name),
+                                &type_entry(&reversed(value), path),
+                            )?;
+                        }
+                    }
+                    for value in now.iter().filter(|v| !before.contains(v)) {
+                        self.add(sink, type_list(ty, &column.name), type_entry(value, path))?;
+                        if column.kind == crate::schema::ColumnKind::Ident {
+                            self.add(
+                                sink,
+                                columns::reversed_list(ty, &column.name),
+                                type_entry(&reversed(value), path),
+                            )?;
+                        }
+                    }
+                }
+                if let Some((parent, coll, key)) = scope
+                    && let Some((_, _, id)) = item_of(path)
+                {
+                    let list = scope_list(parent, coll, &column.name);
+                    let counted = columns::counted(column);
+                    for value in before.iter().filter(|v| !now.contains(v)) {
+                        sink.remove_entry(&list, &scope_entry(value, key, id))?;
+                        if counted {
+                            sink.count(&list, value, -1)?;
+                        }
+                    }
+                    for value in now.iter().filter(|v| !before.contains(v)) {
+                        sink.insert(&list, scope_entry(value, key, id))?;
+                        if counted {
+                            sink.count(&list, value, 1)?;
+                        }
+                    }
+                }
+                sink.put_text(path, &column_field(&column.name), &join_values(&now))?;
+            }
+            out.push((column.name.clone(), now));
+        }
+        Ok(out)
+    }
+
+    /// Put `entry` in `list`: now, or with the rest of a whole derivation's.
+    fn add(&mut self, sink: &mut impl Sink, list: String, entry: Entry) -> Result<(), IndexError> {
+        match &mut self.bulk {
+            Some(bulk) => {
+                bulk.entry(list).or_default().push(entry);
+                Ok(())
+            }
+            None => sink.insert(&list, entry),
+        }
+    }
+
+    /// Take the item at `child` (order key `key`) out of the lists of the columns of the
+    /// collection `field` of `resource` (`into` false), or put it in them, as its columns hold.
+    fn scope_columns(
+        sink: &mut impl Sink,
+        (resource, field): (&str, &str),
+        child: &str,
+        item_schema: &TypeSchema,
+        (key, into): (&str, bool),
+    ) -> Result<(), IndexError> {
+        if !sink.keeps_columns() {
+            return Ok(());
+        }
+        let Some((_, _, id)) = item_of(child) else {
+            return Ok(());
+        };
+        for column in &item_schema.columns {
+            let Some(held) = sink.text(child, &column_field(&column.name))? else {
+                continue;
+            };
+            let list = scope_list(resource, field, &column.name);
+            let counted = columns::counted(column);
+            for value in split_values(&held) {
+                let entry = scope_entry(&value, key, id);
+                if into {
+                    sink.insert(&list, entry)?;
+                } else {
+                    sink.remove_entry(&list, &entry)?;
+                }
+                if counted {
+                    sink.count(&list, &value, if into { 1 } else { -1 })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The collection `field` of `resource` gained or lost items: the columns of `resource`
+    /// that read how many it holds.
+    fn holder_columns(
+        &mut self,
+        sink: &mut impl Sink,
+        resource: &str,
+        field: &str,
+    ) -> Result<(), IndexError> {
+        let Some(schema) = sink.text(resource, TYPE)?.and_then(|ty| lookup(&ty)) else {
+            return Ok(());
+        };
+        if !schema
+            .columns
+            .iter()
+            .any(|c| c.pred.is_some() && columns::reads(c, field))
+        {
+            return Ok(());
+        }
+        let key = sink.text(resource, KEY)?;
+        let scope = item_of(resource)
+            .zip(key.as_deref())
+            .map(|((parent, coll, _), key)| (parent, coll, key));
+        self.index_columns(sink, resource, schema, scope, Some(field))?;
+        Ok(())
+    }
     /// The value of `field` in the resource map `obj`, as the store reads it; its default
     /// when the map holds none, or one of the wrong shape.
     fn value(&mut self, obj: Option<&ObjId>, field: &FieldSchema) -> FieldValue {
@@ -465,7 +661,7 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive the collection `field` of the resource at `path` whole: its list, its items
-    /// and their filter columns.
+    /// and their columns.
     fn collection(
         &mut self,
         sink: &mut impl Sink,
@@ -476,9 +672,10 @@ impl<'d> Derive<'d> {
         let item_schema = field.record.as_deref().and_then(lookup);
         let stored = self.stored(obj, &field.id);
         let mut members = Vec::with_capacity(stored.len());
-        let mut columns: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+        let mut lists: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+        let mut counts: BTreeMap<(String, String), i64> = BTreeMap::new();
         if sink.keeps_columns() {
-            sink.drop_lists(&format!("c\u{1}{path}\u{1}{}\u{1}", field.id))?;
+            sink.drop_lists(&scope_prefix(path, &field.id))?;
         }
         for (key, id, item_obj) in stored {
             members.push((key.clone(), id.clone()));
@@ -487,24 +684,28 @@ impl<'d> Derive<'d> {
             let Some(item_schema) = item_schema else {
                 continue;
             };
-            let values = self.tree(sink, &child, item_obj.as_ref(), item_schema)?;
-            if sink.keeps_columns() {
-                for (item_field, value) in values {
-                    columns
-                        .entry(column_list(
-                            path,
-                            &field.id,
-                            &item_field.id,
-                            &column_value(&value),
-                        ))
+            for (column, values) in self.tree(sink, &child, item_obj.as_ref(), item_schema)? {
+                let counted = item_schema.column(&column).is_some_and(columns::counted);
+                let name = scope_list(path, &field.id, &column);
+                for value in values {
+                    if counted {
+                        let n = counts.entry((name.clone(), value.clone())).or_default();
+                        *n = n.saturating_add(1);
+                    }
+                    lists
+                        .entry(name.clone())
                         .or_default()
-                        .push((key.clone(), id.clone()));
+                        .push(scope_entry(&value, &key, &id));
                 }
             }
         }
         sink.replace(&member_list(path, &field.id), members)?;
-        for (list, entries) in columns {
+        for (list, mut entries) in lists {
+            entries.sort();
             sink.replace(&list, entries)?;
+        }
+        for ((list, value), n) in counts {
+            sink.count(&list, &value, n)?;
         }
         Ok(())
     }
@@ -646,65 +847,62 @@ impl<'d> Derive<'d> {
             (Some(key), None) => {
                 sink.remove_entry(&list, &(key.clone(), id.to_owned()))?;
                 if let Some(item_schema) = item_schema {
-                    Self::columns(sink, (resource, field), &child, item_schema, (&key, false))?;
+                    Self::scope_columns(
+                        sink,
+                        (resource, &field.id),
+                        &child,
+                        item_schema,
+                        (&key, false),
+                    )?;
                 }
                 sink.remove(&child)?;
                 self.done.insert(child);
+                self.holder_columns(sink, resource, &field.id)?;
             }
             (None, Some((key, obj))) => {
                 sink.remove(&child)?;
-                if let Some(item_schema) = item_schema {
-                    self.tree(sink, &child, obj.as_ref(), item_schema)?;
-                }
                 sink.put_text(&child, KEY, &key)?;
                 if let Some(item_schema) = item_schema {
-                    Self::columns(sink, (resource, field), &child, item_schema, (&key, true))?;
+                    let values = self.tree(sink, &child, obj.as_ref(), item_schema)?;
+                    for (column, held) in values {
+                        let counted = item_schema.column(&column).is_some_and(columns::counted);
+                        let list = scope_list(resource, &field.id, &column);
+                        for value in held {
+                            sink.insert(&list, scope_entry(&value, &key, id))?;
+                            if counted {
+                                sink.count(&list, &value, 1)?;
+                            }
+                        }
+                    }
                 }
                 sink.insert(&list, (key, id.to_owned()))?;
                 self.done.insert(child);
+                self.holder_columns(sink, resource, &field.id)?;
             }
             (Some(old), Some((key, _))) if old != key => {
                 sink.remove_entry(&list, &(old.clone(), id.to_owned()))?;
                 sink.insert(&list, (key.clone(), id.to_owned()))?;
                 if let Some(item_schema) = item_schema {
-                    Self::columns(sink, (resource, field), &child, item_schema, (&old, false))?;
+                    Self::scope_columns(
+                        sink,
+                        (resource, &field.id),
+                        &child,
+                        item_schema,
+                        (&old, false),
+                    )?;
                 }
                 sink.put_text(&child, KEY, &key)?;
                 if let Some(item_schema) = item_schema {
-                    Self::columns(sink, (resource, field), &child, item_schema, (&key, true))?;
+                    Self::scope_columns(
+                        sink,
+                        (resource, &field.id),
+                        &child,
+                        item_schema,
+                        (&key, true),
+                    )?;
                 }
             }
             _ => {}
-        }
-        Ok(())
-    }
-
-    /// Take the item at `child` (order key `key`) out of its filter columns (`into` false), or
-    /// put it in them as its fields now hold.
-    fn columns(
-        sink: &mut impl Sink,
-        (resource, field): (&str, &FieldSchema),
-        child: &str,
-        item_schema: &TypeSchema,
-        (key, into): (&str, bool),
-    ) -> Result<(), IndexError> {
-        if !sink.keeps_columns() {
-            return Ok(());
-        }
-        let Some((_, _, id)) = item_of(child) else {
-            return Ok(());
-        };
-        for item_field in item_schema.fields.iter().filter(|f| columned(f)) {
-            let value = sink
-                .field(child, &item_field.id)?
-                .unwrap_or_else(|| default_value(item_field));
-            let list = column_list(resource, &field.id, &item_field.id, &column_value(&value));
-            let entry = (key.to_owned(), id.to_owned());
-            if into {
-                sink.insert(&list, entry)?;
-            } else {
-                sink.remove_entry(&list, &entry)?;
-            }
         }
         Ok(())
     }
@@ -744,7 +942,7 @@ impl<'d> Derive<'d> {
         if let Some(key) = sink.text(path, KEY)? {
             // Out of the columns as it was, and out of its list: put back below as it is.
             if let Some(item_schema) = field.record.as_deref().and_then(lookup) {
-                Self::columns(sink, (parent, field), path, item_schema, (&key, false))?;
+                Self::scope_columns(sink, (parent, coll), path, item_schema, (&key, false))?;
             }
             sink.remove_entry(&member_list(parent, coll), &(key, id.to_owned()))?;
             sink.remove(path)?;
@@ -771,22 +969,6 @@ impl<'d> Derive<'d> {
                 if before.as_ref() == Some(&now) {
                     return Ok(());
                 }
-                if columned(spec)
-                    && sink.keeps_columns()
-                    && let Some((parent, coll, id)) = item_of(path)
-                    && let Some(key) = sink.text(path, KEY)?
-                {
-                    let old = before.clone().unwrap_or_else(|| default_value(spec));
-                    let entry = (key, id.to_owned());
-                    sink.remove_entry(
-                        &column_list(parent, coll, field, &column_value(&old)),
-                        &entry,
-                    )?;
-                    sink.insert(
-                        &column_list(parent, coll, field, &column_value(&now)),
-                        entry,
-                    )?;
-                }
                 if spec.kind == MergeKind::Text {
                     let old = match &before {
                         Some(FieldValue::Text(text)) => Some(text.as_str()),
@@ -798,7 +980,17 @@ impl<'d> Derive<'d> {
                     };
                     sink.words(path, old, new, weight_of(schema, spec))?;
                 }
-                sink.put_field(path, field, &now)
+                sink.put_field(path, field, &now)?;
+                // The columns reading the field, in the collection the resource is in and across
+                // the workspace.
+                if sink.keeps_columns() && schema.columns.iter().any(|c| columns::reads(c, field)) {
+                    let key = sink.text(path, KEY)?;
+                    let scope = item_of(path)
+                        .zip(key.as_deref())
+                        .map(|((parent, coll, _), key)| (parent, coll, key));
+                    self.index_columns(sink, path, schema, scope, Some(field))?;
+                }
+                Ok(())
             }
         }
     }

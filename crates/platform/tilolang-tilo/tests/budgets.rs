@@ -137,6 +137,20 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
             }
         }
     }
+    // Choosing a filter: its query's first page reads the same at 10k as at 1k, from the
+    // index's columns; no item is checked one by one.
+    if let Some((small, large)) = both(records, "filter", Work::of_record) {
+        same_shown(app, "filter", (small, large), misses);
+        for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
+            if at_large != at_small {
+                misses.push(format!(
+                    "{app} filter: {name} {at_large} at 10k, {at_small} at 1k: a filter reads the room"
+                ));
+            }
+        }
+    } else if matches!(app, "todo" | "notes") {
+        misses.push(format!("{app}: no filter was chosen"));
+    }
     let nodes = |size: &str| find(records, "open", size).and_then(|r| r.meta.get("nodes"));
     if nodes("1k") != nodes("10k") {
         misses.push(format!(
