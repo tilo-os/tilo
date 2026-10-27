@@ -4858,14 +4858,7 @@ impl ForeignSurfaceWidget {
         }
         let tile = self.rect;
         let surface = self.surface_id;
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &tile,
-        );
-        crate::shell::live_embeds::paint_over(surface, scene, transform, |rect| {
+        crate::shell::live_embeds::paint_over(surface, scene, transform, tile, |rect| {
             let store = store();
             match (
                 store.tile_point(surface, tile, (rect.x0, rect.y0)),
@@ -4875,7 +4868,6 @@ impl ForeignSurfaceWidget {
                 _ => Rect::ZERO,
             }
         });
-        scene.pop_layer();
     }
 
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
