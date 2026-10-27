@@ -697,3 +697,220 @@ fn targets_with_area<A: ResourceApp>(
         })
         .collect()
 }
+
+/// What one pointer sweep over a window's sidebar cost and repainted, as a
+/// window of its own runs it: the real [`ui_core::App`] fed each motion
+/// through [`ui_core::App::surface_input`] and painted by
+/// [`ui_core::App::surface_frame_with_damage`], which decides what the
+/// window submits.
+#[cfg(feature = "native")]
+pub struct Sweep {
+    /// Wall time of each motion, its frames included.
+    pub report: Report,
+    /// What each measured motion did, in order.
+    pub steps: Vec<SweepStep>,
+}
+
+/// One motion of a [`Sweep`]: from one row to the next.
+#[cfg(feature = "native")]
+#[derive(Clone, Debug)]
+pub struct SweepStep {
+    /// The row the pointer left and the row it came to.
+    pub from: String,
+    pub to: String,
+    /// Where the two rows are, in logical pixels: what a hover change has
+    /// to repaint.
+    pub rows: [ui_core::vello::kurbo::Rect; 2],
+    /// What the frames after the motion damaged, or why they repainted the
+    /// window whole.
+    pub damage: Result<Vec<ui_core::vello::kurbo::Rect>, &'static str>,
+    /// The motion left a sync or a layout for the frame to run.
+    pub unsettled: bool,
+}
+
+#[cfg(feature = "native")]
+impl SweepStep {
+    /// The logical pixels the motion repainted: the window whole when it
+    /// could not say where. Overlapping rects count twice, so this never
+    /// says less than was repainted.
+    #[must_use]
+    pub fn damaged_area(&self) -> f64 {
+        let window =
+            ui_core::vello::kurbo::Rect::new(0.0, 0.0, f64::from(YOGA.0), f64::from(YOGA.1));
+        match &self.damage {
+            Ok(rects) => rects.iter().map(|rect| rect.intersect(window).area()).sum(),
+            Err(_) => window.area(),
+        }
+    }
+
+    /// The logical pixels of the two rows the hover moved between.
+    #[must_use]
+    pub fn rows_area(&self) -> f64 {
+        self.rows
+            .iter()
+            .map(ui_core::vello::kurbo::Rect::area)
+            .sum()
+    }
+}
+
+#[cfg(feature = "native")]
+impl Sweep {
+    /// Write each motion that repainted more than its two rows, then the
+    /// timing report.
+    #[allow(
+        clippy::print_stderr,
+        reason = "a measurement reports on stderr, as the perf tests do"
+    )]
+    pub fn print(&self) -> &Self {
+        for step in &self.steps {
+            eprintln!(
+                "perf {} {:?} -> {:?}: damaged {:.0}px of rows {:.0}px unsettled={} {:?}",
+                self.report.label,
+                step.from,
+                step.to,
+                step.damaged_area(),
+                step.rows_area(),
+                step.unsettled,
+                step.damage,
+            );
+        }
+        self.report.print();
+        self
+    }
+}
+
+/// The window [`sidebar_sweep`] paints into: [`YOGA`] at scale 1.
+#[cfg(feature = "native")]
+struct SweepSurface;
+
+#[cfg(feature = "native")]
+impl ui_core::app::AppSurface for SweepSurface {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> ui_core::winit::dpi::PhysicalSize<u32> {
+        ui_core::winit::dpi::PhysicalSize::new(YOGA.0, YOGA.1)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _: ui_core::winit::window::CursorIcon) {}
+}
+
+/// Sweep the pointer over the sidebar rows ([`Role::TreeItem`]) of the
+/// window `A`'s live launch opens, row to row and back, `rounds` times
+/// after one unmeasured round, as a person moves the pointer down the list
+/// and up again. Each step is one motion and the frames the window runs
+/// after it until it rests.
+#[cfg(feature = "native")]
+pub fn sidebar_sweep<A: ResourceApp>(rounds: usize) -> Result<Sweep, LaunchError> {
+    super::drive_live_window::<A, _>(|app| {
+        sweep_rows(&format!("{} sidebar hover", A::ID), app, rounds)
+    })
+}
+
+#[cfg(feature = "native")]
+#[allow(
+    clippy::panic,
+    reason = "a measurement fails loudly when the window shows no sidebar"
+)]
+fn sweep_rows(label: &str, app: &mut ui_core::App, rounds: usize) -> Sweep {
+    use ui_core::app::SurfaceDamage;
+    use ui_core::vello::Scene;
+    let surface = SweepSurface;
+    let mut damage = SurfaceDamage::default();
+    let mut scene = Scene::new();
+    // One frame, then up to two more while it left work to settle, as a
+    // window runs frames until it rests.
+    let mut frame = |app: &mut ui_core::App, damage: &mut SurfaceDamage| {
+        for _ in 0..3 {
+            scene.reset();
+            let again = app.surface_frame_with_damage(&surface, &mut scene, damage);
+            if !again || !app.unsettled() {
+                break;
+            }
+        }
+    };
+    app.init_layout();
+    for _ in 0..5 {
+        frame(app, &mut damage);
+    }
+    let _ = app.refresh_semantic_tree();
+    let (width, height) = (f64::from(YOGA.0), f64::from(YOGA.1));
+    let rows: Vec<(String, ui_core::vello::kurbo::Rect)> = app
+        .semantic_tree()
+        .iter()
+        .filter(|node| node.role == ui_core::a11y::Role::TreeItem)
+        .filter_map(|node| {
+            let bounds = node.bounds?;
+            let inside = bounds.x0 >= 0.0
+                && bounds.y0 >= 0.0
+                && bounds.x1 <= width
+                && bounds.y1 <= height
+                && bounds.width() > 0.0
+                && bounds.height() > 0.0;
+            inside.then(|| (node.name.clone().unwrap_or_default(), bounds))
+        })
+        .collect();
+    assert!(
+        rows.len() >= 2,
+        "{label}: a sweep needs two sidebar rows, found {rows:?}"
+    );
+    // Down the rows and back up, each round from the row after the last
+    // round's end.
+    let path: Vec<usize> = (0..rows.len())
+        .chain((1..rows.len().saturating_sub(1)).rev())
+        .collect();
+    let mut at = path.first().copied().unwrap_or_default();
+    let mut motion = |app: &mut ui_core::App, damage: &mut SurfaceDamage, to: usize| {
+        let (_, rect) = &rows[to];
+        let centre = rect.center();
+        app.surface_input(
+            &surface,
+            ui_core::synthetic_input::cursor_moved(centre.x, centre.y),
+            false,
+        );
+        let unsettled = app.unsettled();
+        frame(app, damage);
+        unsettled
+    };
+    let _ = motion(app, &mut damage, at);
+    let _ = damage.take();
+    for &to in path.iter().skip(1) {
+        let _ = motion(app, &mut damage, to);
+        let _ = damage.take();
+        at = to;
+    }
+    let mut report = Report {
+        label: label.to_owned(),
+        samples: Vec::new(),
+        phases: BTreeMap::new(),
+        frames: Vec::new(),
+    };
+    let mut steps = Vec::new();
+    for _ in 0..rounds {
+        for &to in &path {
+            let start = ui_core::time::now();
+            let (unsettled, scopes) =
+                tilo_resource::profiling::observe(|| motion(app, &mut damage, to));
+            report
+                .samples
+                .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+            for scope in scopes {
+                let entry = report.phases.entry(scope.phase).or_default();
+                entry.0 = entry.0.saturating_add(scope.elapsed_ns);
+                entry.1 = entry.1.saturating_add(scope.calls);
+            }
+            let repainted = damage
+                .take()
+                .ok_or_else(|| damage.repainted().unwrap_or("no reason given"));
+            steps.push(SweepStep {
+                from: rows[at].0.clone(),
+                to: rows[to].0.clone(),
+                rows: [rows[at].1, rows[to].1],
+                damage: repainted,
+                unsettled,
+            });
+            at = to;
+        }
+    }
+    Sweep { report, steps }
+}
