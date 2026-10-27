@@ -19,8 +19,10 @@ pub(crate) fn in_text(text: &str, query: &str, options: FindOptions) -> Vec<Find
         found
             .into_iter()
             .filter(|found| {
-                let before = text[..found.start].chars().next_back();
-                let after = text[found.end..].chars().next();
+                let before = text
+                    .get(..found.start)
+                    .and_then(|head| head.chars().next_back());
+                let after = text.get(found.end..).and_then(|tail| tail.chars().next());
                 !before.is_some_and(is_word) && !after.is_some_and(is_word)
             })
             .collect()

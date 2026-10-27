@@ -426,9 +426,11 @@ impl TypstApp {
             &name,
             self.unsaved(),
             self.err_count + self.warn_count,
-            self.show_diagnostics,
-            self.outline.visible(),
-            matches!(self.compact_view, CompactPane::Preview),
+            crate::chrome::Panels {
+                problems: self.show_diagnostics,
+                outline: self.outline.visible(),
+                preview: matches!(self.compact_view, CompactPane::Preview),
+            },
         );
         self.chrome.declare();
     }
