@@ -236,7 +236,7 @@ impl WordProcessorWidget {
                 // frame is drawn (a repaint flag) would say "Edited" at
                 // random, and say nothing the moment after a save.
                 edited: self
-                    .with_live(|document| document.unsaved())
+                    .with_live(tilo_document::RichTextState::unsaved)
                     .unwrap_or(false),
                 ..ToolbarLocation::default()
             }),
