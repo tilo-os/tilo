@@ -1,11 +1,39 @@
-//! The dialog's close control as the host reaches it: its published view
-//! action, the host's custody of its emitter, and the operation that runs
-//! the dismissal ([`ModalDialog::on_dismiss`]).
+//! The dialog's own controls as the host reaches them: its close control
+//! ([`ModalDialog::on_dismiss`]) and its footer buttons, each published as
+//! an action of control `<dialog>.<close|primary|secondary|tertiary>`; the
+//! host's custody of the close control's emitter; and the operations that
+//! run them.
+//!
+//! A person's press runs at once, as it always did. An agent's or a
+//! script's arrives as the `invoke` of the published control: Cancel and the
+//! close control are view actions, the primary and third answers effects,
+//! which the host admits under the invoker's grants.
 
 use automerge::ObjId;
 
-use super::ModalDialog;
+use super::{ModalDialog, Slot};
 use crate::widget::Widget;
+use crate::widget::activation::{NATIVE_INVOKE, NativeControl, invoked_control};
+
+/// Every footer slot, with the name its control is published under and its
+/// operation kind.
+const FOOTER: [(Slot, &str, tilo_actions::OperationKind); 3] = [
+    (
+        Slot::Primary,
+        "primary",
+        tilo_actions::OperationKind::Effect,
+    ),
+    (
+        Slot::Secondary,
+        "secondary",
+        tilo_actions::OperationKind::View,
+    ),
+    (
+        Slot::Tertiary,
+        "tertiary",
+        tilo_actions::OperationKind::Effect,
+    ),
+];
 
 impl<C: Widget + 'static> ModalDialog<C> {
     /// Fires on Escape, on a scrim click and on the close control. A dialog
@@ -46,6 +74,21 @@ impl<C: Widget + 'static> ModalDialog<C> {
 /// The dialog's close control as the host reaches it, compiled once for
 /// every content type: each `ModalDialog<C>` capability forwards here.
 impl ModalDialog<dyn Widget> {
+    /// The published id of the footer control in `slot`.
+    fn footer_id(&self, name: &str) -> String {
+        format!("{}.{name}", self.test_id.as_deref().unwrap_or(&self.title))
+    }
+
+    /// The footer buttons the dialog shows and can take now, with their
+    /// published name and kind.
+    fn published_footer(
+        &self,
+    ) -> impl Iterator<Item = (Slot, &'static str, tilo_actions::OperationKind)> + '_ {
+        FOOTER.into_iter().filter(|(slot, _, _)| {
+            self.open && self.slot_action(*slot).is_some() && self.slot_enabled(*slot)
+        })
+    }
+
     fn start_dismissal(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -58,17 +101,37 @@ impl ModalDialog<dyn Widget> {
         {
             return Ok(Some(started));
         }
+        let invoked = invoked_control(op)?;
+        let slot = invoked.and_then(|control| {
+            self.published_footer()
+                .find(|(_, name, _)| self.footer_id(name) == control)
+                .map(|(slot, _, _)| slot)
+        });
+        if let Some(slot) = slot {
+            self.activate(slot);
+            return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    /// The close control while the dialog is open.
+    /// The close control and the footer buttons while the dialog is open.
     fn dismissal_resources(&self) -> Vec<tilo_actions::Resource> {
-        self.dismiss
+        let close = self
+            .dismiss
             .as_ref()
             .filter(|_| self.open)
-            .and_then(crate::widget::dismissal::Dismissal::resource)
-            .into_iter()
-            .collect()
+            .and_then(crate::widget::dismissal::Dismissal::resource);
+        let footer = self.published_footer().filter_map(|(slot, name, kind)| {
+            let action = self.slot_action(slot)?;
+            Some(NativeControl::resource_of(
+                &self.footer_id(name),
+                &crate::i18n!(&action.label),
+                kind,
+            ))
+        });
+        close.into_iter().chain(footer).collect()
     }
 
     fn install_dismissal_custody(
@@ -95,9 +158,25 @@ impl ModalDialog<dyn Widget> {
             })
     }
 
-    /// The children's controls, with the close control bound to its action.
+    /// The children's controls, with the close control and the footer
+    /// buttons bound to their actions.
     fn dismissal_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let mut bindings = crate::widget::controls::default_bindings(self);
+        for (slot, name, _) in self.published_footer() {
+            let target = self.slot_target(slot);
+            if bindings.iter().any(|binding| binding.control_id == target) {
+                bindings.retain(|binding| binding.control_id != target);
+                bindings.push(crate::widget::ControlBindingMetadata {
+                    control_id: target,
+                    kind: crate::widget::ControlBindingKind::Action(
+                        tilo_actions::ActionAddress::new(
+                            format!("tilo.control:{}", self.footer_id(name)),
+                            "invoke",
+                        ),
+                    ),
+                });
+            }
+        }
         // The close control stands where the dialog shows it: with no way
         // out of its own, Escape and the scrim keep their meaning.
         if self.open
@@ -124,9 +203,16 @@ impl ModalDialog<dyn Widget> {
 
 impl<C: Widget + 'static> crate::widget::ResourceOperations for ModalDialog<C> {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        self.dismiss
-            .as_ref()
-            .map_or(&[], crate::widget::dismissal::Dismissal::handlers)
+        let footer = self.primary_action.is_some()
+            || self.secondary_action.is_some()
+            || self.tertiary_action.is_some();
+        if footer {
+            &[NATIVE_INVOKE]
+        } else {
+            self.dismiss
+                .as_ref()
+                .map_or(&[], crate::widget::dismissal::Dismissal::handlers)
+        }
     }
 
     fn start_operation(
