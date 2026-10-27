@@ -31,8 +31,10 @@ pub(crate) struct SidebarView<'a> {
     pub(crate) selected: Option<(usize, usize)>,
 }
 
+/// The one row action: it opens the row's own menu.
+const MORE: &str = "more";
+/// The collection header's action.
 const RENAME: &str = "rename";
-const DELETE: &str = "delete";
 
 /// The "New collection" action in the sidebar's header.
 pub(crate) fn new_collection(sink: &Sink) -> Element {
@@ -82,9 +84,14 @@ fn collection_section_id(ci: usize) -> String {
 }
 
 /// Parse `request:{ci}:{ri}`.
-fn parse_request(id: &str) -> Option<(usize, usize)> {
+pub(crate) fn parse_request(id: &str) -> Option<(usize, usize)> {
     let (ci, ri) = id.strip_prefix("request:")?.split_once(':')?;
     Some((ci.parse().ok()?, ri.parse().ok()?))
+}
+
+/// Parse `history:{hi}`.
+pub(crate) fn parse_history(id: &str) -> Option<usize> {
+    id.strip_prefix("history:")?.parse().ok()
 }
 
 /// The sections the list shows.
@@ -129,7 +136,6 @@ fn sections(view: &SidebarView<'_>) -> Vec<NavSection> {
                 .badge(entry.method.as_str())
                 .meta(entry.status.to_string())
                 .status(status)
-                .without_actions()
         })
         .collect();
     sections
@@ -185,9 +191,8 @@ pub(crate) struct RequestsNav {
 pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHandle) {
     let ids: Ids = Rc::new(RefCell::new(ids_of(view)));
     let select_sink = sink.clone();
-    let action_sink = sink.clone();
+    let menu_sink = sink.clone();
     let section_sink = sink.clone();
-    let action_ids = Rc::clone(&ids);
     let section_ids = Rc::clone(&ids);
     let mut list = NavList::new(sections(view))
         .with_id("api.nav")
@@ -202,31 +207,21 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
             };
             select_sink.borrow_mut().push(cmd);
         })
+        // One More on every row, opening that row's own actions: a saved
+        // request is renamed or deleted, a sent one is replayed, kept as a
+        // request, or forgotten (`APP-api-tester-04`). The app decides what a
+        // row offers, so a history row is never offered a rename.
         .item_actions(
-            vec![
-                NavAction::new(RENAME, Icon::Pencil, "Rename request"),
-                NavAction::new(DELETE, Icon::Trash, "Delete request"),
-            ],
-            move |id, action| {
-                let Some((ci, ri)) = parse_request(id) else {
-                    return;
-                };
-                let ids = action_ids.borrow();
-                let collection = ids.get(ci);
-                let target = FormTarget {
-                    collection: collection.map(|(id, _)| id.clone()),
-                    request: collection
-                        .and_then(|(_, requests)| requests.get(ri))
-                        .cloned(),
-                };
-                let cmd = if action == DELETE {
-                    Cmd::DeleteRequest(target)
-                } else {
-                    Cmd::OpenForm(FormMode::RenameRequest, target)
-                };
-                action_sink.borrow_mut().push(cmd);
-            },
+            vec![NavAction::new(MORE, Icon::MoreHorizontal, "More").opens_context_menu()],
+            |_, _| {},
         )
+        .on_context_menu(move |id, lift, at| {
+            menu_sink.borrow_mut().push(Cmd::RowMenu {
+                id: id.to_owned(),
+                lift,
+                at,
+            });
+        })
         .on_section_action(move |section, _| {
             let Some(ci) = section
                 .strip_prefix("collection:")
@@ -238,6 +233,7 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
                 FormMode::RenameCollection,
                 FormTarget {
                     collection: section_ids.borrow().get(ci).map(|(id, _)| id.clone()),
+                    sent: None,
                     request: None,
                 },
             ));
