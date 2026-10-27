@@ -627,13 +627,15 @@ impl AgentQuickComposer {
     }
 
     /// Let the person pick the model the run plans with, among `models`;
-    /// the agent's own until they do.
+    /// the model Settings chose for a short answer starts it when the picker
+    /// offers that model, and the agent's own otherwise.
     fn offer_models(&mut self, models: Vec<(String, Option<runtime_collab::TaskRunModel>)>) {
         self.view.picks_model.set(models.len() > 1);
         self.model_picker = PickerListing::for_choices(models.len());
-        if let Some((own, _)) = models.first() {
-            self.view.model.set(own.clone());
-        }
+        let start = short_answer_label()
+            .or_else(|| models.first().map(|(own, _)| own.clone()))
+            .unwrap_or_default();
+        self.view.model.set(start);
         self.models = models;
         self.list_agents();
     }
@@ -1211,6 +1213,24 @@ fn models_of() -> Vec<(String, Option<runtime_collab::TaskRunModel>)> {
         )
     }));
     models
+}
+
+/// The label of the model Settings chose for a short answer, when that model
+/// is one the picker offers: what the composer starts on, so asking for a
+/// translation does not run on the model kept for tasks.
+fn short_answer_label() -> Option<String> {
+    let config = agent_provider_config::ProviderConfig::load();
+    let (profile, model) =
+        config.interaction_selection(agent_provider_config::Interaction::OneShot)?;
+    let (profile, model) = (profile.id.as_str(), model.id.as_str());
+    models_of()
+        .into_iter()
+        .find(|(_, chosen)| {
+            chosen
+                .as_ref()
+                .is_some_and(|chosen| chosen.profile == profile && chosen.model == model)
+        })
+        .map(|(label, _)| label)
 }
 
 fn set_picker_options(widget: &mut dyn Widget, id: &str, options: &[String]) -> bool {
