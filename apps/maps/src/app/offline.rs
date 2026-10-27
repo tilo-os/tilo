@@ -1,6 +1,6 @@
 //! The offline areas a person saved: the regions their tiles cover, naming them, and recording, deleting or following the set the resource holds.
 
-use super::*;
+use super::{GeoBounds, MapsApp, TileId, bounds_contains, format_bytes};
 
 impl MapsApp {
     /// The tile ids a saved region covers — used for delete/keep set arithmetic
