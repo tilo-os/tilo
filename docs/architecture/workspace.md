@@ -98,7 +98,10 @@ a colleague's writes the midpoint of that gap and lands exactly there.
 Writing an index instead made the two tie and let their ids decide, so a
 move between someone else's strips silently did not happen. Every device
 writes only its own entries' positions; the neighbours are read, never
-rewritten, and a position stays one bounded number.
+rewritten, and a position stays one bounded number. A room written before
+this normalises one device at a time: each device re-spaces its own entries
+the next time it publishes, and precision between two entries is only as
+fine as the gap their own writer left.
 
 Following someone (focus, scroll position) is presence, not room state.
 

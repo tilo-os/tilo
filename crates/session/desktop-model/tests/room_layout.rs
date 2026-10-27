@@ -462,12 +462,14 @@ fn a_moved_strip_lands_between_another_devices_strips() {
         ["Notes", "Mail", "Chat"]
     );
 
-    // Ben moves his strip between Ada's two and publishes the move.
+    // Ben reads the room as it now stands, moves his strip between Ada's two
+    // and publishes the move.
+    let mut ben = fork(&mut doc);
+    let since = ben.get_heads();
     let mut moved = room_layout::read(&ben, None).unwrap();
     let his = moved.tree.workspaces[0].strips.remove(2);
     assert_eq!(his.id.raw(), chat, "Ben moves his own strip");
     moved.tree.workspaces[0].strips.insert(1, his);
-    let since = ben.get_heads();
     assert!(
         room_layout::write(&mut ben, &moved, BEN, Some("ben")).unwrap(),
         "the move is a change of the room"
