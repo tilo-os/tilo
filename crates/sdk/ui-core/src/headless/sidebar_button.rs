@@ -162,22 +162,27 @@ impl FrameHarness {
     }
 
     /// Lay out frames as the window's host draws them: the one asked for,
-    /// then more only while the app asks. Motion lands at once here, so a
-    /// window still asking after many frames never comes to rest.
+    /// then more while the app asks, until the shell's motion has landed.
+    /// Motion lands at once here, so a shell still moving after many
+    /// frames never comes to rest. Work the window queues of its own (a
+    /// scenario's service that never answers) is not the sidebar's: it may
+    /// go on.
     ///
     /// # Errors
-    /// When the window never stops asking for frames.
+    /// When the shell's motion never lands.
     fn relayout_until_still(&mut self) -> Result<(), String> {
         self.relayout();
         for _ in 0..64 {
             let schedule = self.frame_schedule();
-            if !(schedule.needs_animation_frame || schedule.queued_work) {
+            let shell_moving = window_sidebar_shell(self.root.as_ref())
+                .is_some_and(NavShell::needs_animation_frame);
+            if !(shell_moving || schedule.needs_animation_frame) {
                 return Ok(());
             }
             self.relayout();
         }
         Err(format!(
-            "the window still asks for frames 64 frames after the motion landed: {}",
+            "the sidebar still moves 64 frames after its motion landed: {}",
             self.sidebar_diagnosis()
         ))
     }
