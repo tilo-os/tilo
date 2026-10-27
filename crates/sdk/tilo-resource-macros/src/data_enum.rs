@@ -1,11 +1,15 @@
 //! `#[derive(Model)]` for an enum whose variants carry fields.
 //!
 //! A value is a map: the variant's name under `$variant`
-//! (`tilo_resource::VARIANT_KEY`), and each of the variant's fields under its
-//! own key, stored as its type stores it. Concurrent edits of one variant
-//! merge field by field (two people editing a text field of the same variant
-//! splice it); changing the variant is one last-writer-wins write of its name,
-//! and storing a variant removes the fields another one left.
+//! (`tilo_resource::VARIANT_KEY`), and each of the variant's fields under a
+//! key of its own (`tilo_resource::model::field_key`), stored as its type
+//! stores it.
+//! Concurrent edits of one variant merge field by field (two people editing a
+//! text field of the same variant splice it); changing the variant is one
+//! last-writer-wins write of its name. A field belongs to the variant that
+//! stored it: another variant naming a field alike — with another type, even —
+//! never reads it, and what a variant stored stays when the value leaves it,
+//! so an undo of the change reads its fields again.
 //!
 //! Named fields keep their names (`#[model(rename = "key")]` changes one,
 //! `#[model(skip)]` leaves one out: its `Default` on read); the fields of a
@@ -86,6 +90,12 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
                 return Err(syn::Error::new(
                     field.span(),
                     "`$variant` names the variant; store this field under another key",
+                ));
+            }
+            if key.starts_with('$') {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "a field's key may not begin with `$`: those name where a variant's fields are stored",
                 ));
             }
             fields.push(Field {
@@ -204,15 +214,22 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
 
     let load = variants.iter().map(|variant| {
         let key = &variant.key;
-        let built = variant.construct(|field| {
+        let keys: Vec<&String> = variant.stored().map(|field| &field.key).collect();
+        let read = variant.construct(|field| {
             if field.skip {
                 quote!(::core::default::Default::default())
             } else {
                 let field_key = &field.key;
-                quote!(#krate::read_key(doc, id, #field_key)?)
+                let ty = &field.ty;
+                quote!(__fields.read::<#ty>(#field_key)?)
             }
         });
-        quote!(#key => ::core::result::Result::Ok(#built),)
+        quote! {
+            #key => {
+                let __fields = #model::variant_fields(doc, value, id, #key, &[#(#keys),*])?;
+                ::core::result::Result::Ok(#read)
+            }
+        }
     });
 
     let store = variants.iter().map(|variant| {
@@ -220,6 +237,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         let key = &variant.key;
         let keys: Vec<&String> = variant.stored().map(|field| &field.key).collect();
         let bindings = variant.stored().map(|field| &field.binding);
+        let field_keys = variant.stored().map(|field| &field.key);
         let unused = variant
             .fields
             .iter()
@@ -229,7 +247,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             #pattern => {
                 #(let _ = #unused;)*
                 let __obj = #model::variant_map(doc, slot, #key, &[#(#keys),*])?;
-                #(#krate::write_key(doc, &__obj, #keys, #bindings)?;)*
+                #(#model::write_variant_key(doc, &__obj, #key, #field_keys, #bindings)?;)*
                 ::core::result::Result::Ok(())
             }
         }

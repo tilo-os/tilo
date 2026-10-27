@@ -583,7 +583,10 @@ of an example: there is no ceiling to raise. What to write instead:
   struct the bound arguments are read into; a registered read publishes a
   typed `JsonSchema` parameter struct (`semantic_document_read::read_action`).
 - **A stored value** is a model type chosen for its merge (§1): a struct, an
-  enum (a data enum is a map naming its variant), `Collection`, `Map`, `Set`,
+  enum (a data enum is a map naming its variant, each field of a variant under
+  a key of that variant — so two variants naming a field alike, even with
+  different types, never read each other's, and what a variant stored stays
+  when the value leaves it), `Collection`, `Map`, `Set`,
   `RichText`, and `serde_json::Value` for JSON another party shapes. A value
   that is genuinely opaque — written whole, never merged, such as a retained
   import tree compared whole on retry — implements `Model` through
@@ -592,7 +595,9 @@ of an example: there is no ceiling to raise. What to write instead:
   (`#[resource(version, migrate)]`) and a test's fixture of an older shape
   write through the model's storage helpers: `write_key`, `Slot`,
   `evolution::retype_json` (an old JSON-string field rewritten as its model
-  type), `evolution::collection_items` and `evolution::fixture`.
+  type), `evolution::retype_variant_fields` (a data enum's fields rewritten
+  by their variant, reading the flat keys an older layout stored them under),
+  `evolution::collection_items` and `evolution::fixture`.
 
 Three apps act on other apps' published actions as data rather than through a
 resource of their own: the agent (it plans and invokes what the broker's
