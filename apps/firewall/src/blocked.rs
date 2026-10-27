@@ -74,19 +74,24 @@ impl BlockedGroup {
     /// height; [`Self::trend_scale`] names what a full bar is, so the shape
     /// is a scale and not a decoration.
     pub fn trend(&self) -> String {
-        let peak = self.buckets.iter().copied().max().unwrap_or(0);
-        if peak == 0 {
-            return String::new();
-        }
         const BARS: [char; 8] = [
             '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
             '\u{2588}',
         ];
+        const FULL: char = '\u{2588}';
+        let peak = self.buckets.iter().copied().max().unwrap_or(0);
+        if peak == 0 {
+            return String::new();
+        }
         self.buckets
             .iter()
             .map(|count| {
-                let level = (u64::from(*count) * 7 / u64::from(peak)) as usize;
-                BARS[level.min(BARS.len() - 1)]
+                // No bucket holds more than the peak, so the level is 0..=7.
+                let level = u64::from(*count) * 7 / u64::from(peak);
+                usize::try_from(level)
+                    .ok()
+                    .and_then(|level| BARS.get(level).copied())
+                    .unwrap_or(FULL)
             })
             .collect()
     }
@@ -94,7 +99,7 @@ impl BlockedGroup {
     /// What a full bar means, and over how long a bucket.
     pub fn trend_scale(&self) -> String {
         let peak = self.buckets.iter().copied().max().unwrap_or(0);
-        let minutes = (self.window_minutes / BUCKETS as u32).max(1);
+        let minutes = (self.window_minutes / u32::try_from(BUCKETS).unwrap_or(u32::MAX)).max(1);
         format!("{peak} per {minutes} min")
     }
 }
@@ -203,10 +208,12 @@ pub fn parse(text: &str, window_minutes: u32) -> BlockedReport {
                 drop.port.clone(),
                 drop.interface.clone(),
             ))
-            .or_insert_with(Group::default);
+            .or_default();
         entry.packets += 1;
         entry.last_seen = entry.last_seen.max(at);
-        entry.buckets[index] = entry.buckets[index].saturating_add(1);
+        if let Some(slot) = entry.buckets.get_mut(index) {
+            *slot = slot.saturating_add(1);
+        }
         if let Some(source) = drop.source {
             entry.sources.insert(source);
         } else {

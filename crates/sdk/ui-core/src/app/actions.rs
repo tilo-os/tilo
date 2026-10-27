@@ -680,6 +680,7 @@ impl App {
             self.refresh_document_routes();
         }
         self.publish_action_surface_after_refresh();
+        self.actions.published_stamp = self.publication_stamp();
     }
 
     /// Publish the surface a handled input left for the frame after its

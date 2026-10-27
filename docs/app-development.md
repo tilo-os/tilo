@@ -1733,9 +1733,16 @@ State the facts that let a caller plan safely:
   stable code and useful reason; the door checks it again immediately before
   execution.
 - `kind`: what the action is able to do — `ActionKind::Read`, `Undoable` or
-  `Outside`, which the framework derives from the code; the broker decides it
-  against the caller's grants at both discovery and invocation. An action
-  declares no permission of its own.
+  `Outside`, which the framework derives from the code. It decides whether
+  Undo takes the action back and whether it asks first, never authority.
+  What a grant must allow is the action's need (`ActionContract::need`):
+  its kind, unless its scope reaches nothing a room governs. A change of
+  the person's own record (`OWN_RECORD_SCOPE`, which the framework puts on
+  every verb of a record kept in their records) and an outside effect on
+  their own device (`OWN_DEVICE_SCOPE`) need only what reading needs. The
+  broker, agents and shortcuts decide the need against the caller's grants
+  at both discovery and invocation. An action declares no permission of its
+  own.
 - `risk` and `confirmation`: privileged and sensitive actions, and
   destructive ones Undo cannot take back, require a confirmation policy.
   A destructive action Undo takes back (`ActionKind::Undoable`, or a

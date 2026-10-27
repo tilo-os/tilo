@@ -1981,7 +1981,8 @@ impl FeedsApp {
         }
         let pane = self.core.borrow_mut().show_pane.take();
         if let Some(pane) = pane {
-            // Only a narrow window has screens to bring forward.
+            // Only a narrow window has screens to bring forward; a wide one
+            // already shows the pane the choice was made in.
             if !self.shell.geometry().stack.is_empty() {
                 self.shell.show(pane);
             }
@@ -2566,6 +2567,8 @@ impl ui::undo::UndoControl for FeedsApp {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod window_test;
 
 impl Core {
     pub(crate) fn follow_read_settings(&mut self, setting: ui::framework::Setting<ReadSettings>) {

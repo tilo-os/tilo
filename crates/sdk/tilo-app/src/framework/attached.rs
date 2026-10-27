@@ -306,7 +306,6 @@ impl AttachedView {
         // room and its other holders take it rather than diverge.
         let mut frontier = DocumentFrontier::default();
         let start = joined_at
-            .clone()
             .or_else(|| records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads));
         if let Some(heads) = start {
             frontier.advance(heads);

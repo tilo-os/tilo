@@ -238,10 +238,6 @@ impl AccountsPersist {
     }
 }
 
-/// The configuration directory of the profile `storage` belongs to: the
-/// person's own in a session, else the directory of the settings document a
-/// test, capture or `--data-dir` host gave the app, so such a profile never
-/// reads or writes the person's accounts.
 /// A wake for a worker thread: it wakes the window once a live surface has
 /// handed over its waker, and does nothing before.
 fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> crate::engine::Wake {
@@ -294,15 +290,6 @@ const ACCOUNT_SETTINGS_LINK: &str = "settings://external_accounts";
 const NOTIFICATION_SCHEME: &str = "tilo-mail";
 /// The one tag new-mail notifications share: a newer one replaces the last.
 const NOTIFICATION_TAG: &str = "mail-new";
-
-fn profile_config_root(storage: &ui::storage::AppStorage) -> Option<std::path::PathBuf> {
-    match storage.settings_document() {
-        ui::storage::SettingsDocument::Session => accounts::config_root(),
-        ui::storage::SettingsDocument::File(path) => {
-            path.parent().map(std::path::Path::to_path_buf)
-        }
-    }
-}
 
 /// A request posted to the engine and not yet acknowledged: what it does
 /// and the account it acts for, so a late answer stays with that account.
@@ -600,7 +587,8 @@ impl MailApp {
         storage: &ui::storage::AppStorage,
         content: Option<ContentStore>,
     ) -> Self {
-        let persist = profile_config_root(storage)
+        let persist = storage
+            .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         let accounts = persist.load();
         let shared = MailState::shared(MailState::new_live(
@@ -2101,6 +2089,7 @@ impl MailApp {
             let account_id = account.email.clone();
             let request_id = self.post_engine(EngineRequest::fetch(account, folder))?;
             report_account_sync(
+                self.accounts_persist.root().as_deref(),
                 &account_id,
                 accounts::AccountSyncHealth::Syncing,
                 false,
@@ -2332,6 +2321,7 @@ impl MailApp {
         // The account works again: a failure it showed is over.
         st.sync_error = None;
         report_account_sync(
+            self.accounts_persist.root().as_deref(),
             account_id,
             accounts::AccountSyncHealth::Healthy,
             true,
@@ -2499,7 +2489,13 @@ impl MailApp {
         } else {
             accounts::AccountSyncHealth::Error
         };
-        report_account_sync(&account_id, health, false, Some(&detail));
+        report_account_sync(
+            self.accounts_persist.root().as_deref(),
+            &account_id,
+            health,
+            false,
+            Some(&detail),
+        );
         if let Some(pending) = self.pending_send.remove(&request_id) {
             // The server refused it: it stays in the outbox with the reason,
             // and comes back to the composer to be fixed and sent again.
@@ -2538,6 +2534,7 @@ impl MailApp {
                 account_id,
             } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
                 report_account_sync(
+                    self.accounts_persist.root().as_deref(),
                     &account_id,
                     accounts::AccountSyncHealth::Syncing,
                     false,
@@ -3327,16 +3324,23 @@ fn draft_from_message(m: &Message) -> Draft {
     }
 }
 
+/// Record `account_id`'s sync health in the profile at `config_root`; a
+/// window without a profile directory (a capture, a past version) records
+/// nothing.
 fn report_account_sync(
+    config_root: Option<&std::path::Path>,
     account_id: &str,
     health: accounts::AccountSyncHealth,
     _success: bool,
     _message: Option<&str>,
 ) {
+    let Some(config_root) = config_root else {
+        return;
+    };
     if account_id.trim().is_empty() {
         return;
     }
-    let reporter = accounts::AccountSyncReporter::new(account_id.to_string());
+    let reporter = accounts::AccountSyncReporter::in_root(account_id.to_string(), config_root);
     let persisted = match health {
         accounts::AccountSyncHealth::Never | accounts::AccountSyncHealth::Syncing => {
             reporter.started()
@@ -6568,6 +6572,20 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         let status = app.shared.borrow().status.clone().unwrap_or_default();
         assert!(status.contains("asking@example.test"), "{status}");
         assert!(!status.contains("selected@example.test"), "{status}");
+        // Its sync health is kept for that account, in this app's profile.
+        let root = app.accounts_persist_root().expect("sandboxed profile");
+        let health = accounts::AccountSyncStatusStore::load_in(&root);
+        assert_eq!(
+            health
+                .get(&accounts::AccountId::from("asking@example.test"))
+                .map(|status| status.health),
+            Some(accounts::AccountSyncHealth::NeedsAuthentication)
+        );
+        assert!(
+            health
+                .get(&accounts::AccountId::from("selected@example.test"))
+                .is_none()
+        );
     }
 
     /// What the document still has to tell the server goes to the engine on
@@ -8112,17 +8130,14 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             // A session window keeps the person's accounts; a test, capture or
             // `--data-dir` profile keeps its own beside its settings document.
             let session = ui::storage::AppStorage::for_app("so.tilo.mail");
-            assert_eq!(profile_config_root(&session), accounts::config_root());
+            assert_eq!(session.config_root(), accounts::config_root());
             let profile = tempfile::tempdir().unwrap();
             let storage = ui::storage::AppStorage::new(
                 "so.tilo.mail",
                 session.secrets(),
                 ui::storage::SettingsDocument::File(profile.path().join("settings.json")),
             );
-            assert_eq!(
-                profile_config_root(&storage).as_deref(),
-                Some(profile.path())
-            );
+            assert_eq!(storage.config_root().as_deref(), Some(profile.path()));
             let app = MailApp::for_window(&storage, Some(ContentStore::memory()));
             assert_eq!(
                 app.accounts_persist_root().as_deref(),

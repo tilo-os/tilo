@@ -246,7 +246,7 @@ fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<
     if (!matches!(
         action.operation_kind,
         tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
-    ) && action.contract.kind != tilo_actions::ActionKind::Read)
+    ) && action.contract.need().kind != tilo_actions::ActionKind::Read)
         || (action.operation_kind != tilo_actions::OperationKind::Document
             && !request.mutation_hashes.is_empty())
     {

@@ -11,6 +11,8 @@ pub mod actors;
 pub mod add_item_work;
 #[path = "attached_view.rs"]
 pub mod attached_view;
+#[path = "chain_list.rs"]
+pub mod chain_list;
 #[path = "child_records.rs"]
 pub mod child_records;
 #[path = "child_resources.rs"]

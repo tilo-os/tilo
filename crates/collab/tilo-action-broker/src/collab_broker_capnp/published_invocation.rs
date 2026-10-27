@@ -524,7 +524,7 @@ impl OriginalInvocationData {
                 if !person.may_in(
                     workspace,
                     &self.node(workspace),
-                    self.spec.contract.kind,
+                    self.spec.contract.need().kind,
                     seconds,
                 ) {
                     return Err("original invocation caller is no longer authorized");
@@ -1141,7 +1141,7 @@ impl OriginalInvocation {
             if !actor.may_in(
                 workspace,
                 &self.data.node(workspace),
-                self.data.spec.contract.kind,
+                self.data.spec.contract.need().kind,
                 seconds,
             ) {
                 return Err("original invocation caller is no longer authorized".to_string());

@@ -30,6 +30,18 @@ fn a_deadlocked_main_loop_is_recorded_and_the_compositor_ends() {
     // The harness's own monitor fails a test on the first stall; here the
     // stall is the subject.
     desktop.stop_monitor();
+    // The compositor symbolizes every thread's stack on the way out, and the
+    // first dump in a process parses this build's debug information: ~20 s of
+    // the 25 s it allows its own report, against 2 s once that is cached.
+    // Production ships the symbol table without debug info (`profile.release`),
+    // where the same dump is milliseconds, so the parse is the harness's build
+    // and not the recovery under test. Pay it here, through the production
+    // dump, before the deadline this test measures starts.
+    let warm = desktop.thread_dump();
+    assert!(
+        warm.contains("thread "),
+        "the liveness dump names every thread before the hang:\n{warm}"
+    );
     let injected = Instant::now();
     desktop.send(&json!({"op": "deadlock_main_loop"}));
 

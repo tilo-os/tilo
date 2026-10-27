@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use tilo_automation::{
-    ActionCatalog, AiTransform, Binding, BindingOption, CheckError, CheckErrorKind, Condition,
-    ResourceTarget, Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
+    ActionCatalog, Binding, BindingOption, CheckError, CheckErrorKind, Condition, ResourceTarget,
+    Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
 };
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
@@ -238,7 +238,8 @@ pub fn step_number(steps: &[Step], id: &str) -> Option<usize> {
                 StepKind::Invoke { .. }
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
-                | StepKind::Ai { .. } => None,
+                | StepKind::Ai { .. }
+                | StepKind::Task { .. } => None,
             };
             if found.is_some() {
                 return found;
@@ -389,16 +390,11 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
         }
         StepKind::SetVar { name, value } => format!("Set {name} to {}", say(value)),
         StepKind::Ask { param } => format!("Ask for {}", param.description),
-        StepKind::Ai { transform, input } => match transform {
-            AiTransform::Summarise => format!("Summarise {}", say(input)),
-            AiTransform::Extract { .. } => format!("Extract from {}", say(input)),
-            AiTransform::Classify { choices } => {
-                format!("Classify {} as {}", say(input), choices.join(" or "))
-            }
-            AiTransform::Freeform { prompt } => {
-                format!("Ask the agent “{prompt}” about {}", say(input))
-            }
+        StepKind::Ai { prompt, input, .. } => match input {
+            Some(input) => format!("{prompt} {}", say(input)),
+            None => prompt.clone(),
         },
+        StepKind::Task { instruction, .. } => instruction.clone(),
     }
 }
 

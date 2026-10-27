@@ -276,7 +276,7 @@ impl Workspace {
         let method = HttpMethod::from_str(&method);
         let mut replay = crate::model::RequestSnapshot::of(&self.request_shown());
         replay.method = method;
-        replay.url = url.clone();
+        replay.url.clone_from(&url);
         let sent = Sent::new(method, &url, status, duration_ms, cx.now_ms(), Some(replay));
         self.history
             .insert(0, Id::from_raw(cx.uuid().to_string()), sent);

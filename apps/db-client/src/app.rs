@@ -297,7 +297,7 @@ impl DbClientApp {
             .zip(row)
             .and_then(|(result, row)| result.row_text(row));
         match text {
-            Some(text) => self.copy_to_clipboard(text, "db-copied-row"),
+            Some(text) => self.copy_to_clipboard(&text, "db-copied-row"),
             None => {
                 self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
             }
@@ -308,7 +308,7 @@ impl DbClientApp {
     fn copy_result(&mut self) {
         let result = self.link.read(|model| model.query.clone());
         match result {
-            Some(result) => self.copy_to_clipboard(result.text(), "db-copied-result"),
+            Some(result) => self.copy_to_clipboard(&result.text(), "db-copied-result"),
             None => {
                 self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
             }
@@ -318,8 +318,8 @@ impl DbClientApp {
     /// Put `text` on the clipboard and say so — or say it did not take. A
     /// copy can fail after it returns, so it is watched and the failure it
     /// reports later replaces the confirmation.
-    fn copy_to_clipboard(&mut self, text: String, done: &str) {
-        if self.copy.watch(ui::try_clipboard_copy(&text)) {
+    fn copy_to_clipboard(&mut self, text: &str, done: &str) {
+        if self.copy.watch(ui::try_clipboard_copy(text)) {
             self.session.status = RunStatus::Ok(crate::i18n::t(done));
         } else {
             self.session.status = RunStatus::Error(crate::i18n::t("db-copy-failed"));
@@ -1137,7 +1137,7 @@ impl DbClientApp {
                 .into_iter()
                 .map(|tab| ToolbarView {
                     id: tab.view_id().to_owned(),
-                    label: tab.label().to_owned(),
+                    label: tab.label(),
                 })
                 .collect(),
             chosen: tab.view_id().to_owned(),

@@ -37,6 +37,7 @@ impl Bell {
     }
 
     /// The other setting: what choosing the menu row does.
+    #[must_use]
     pub fn toggled(self) -> Self {
         match self {
             Self::Off => Self::Visual,

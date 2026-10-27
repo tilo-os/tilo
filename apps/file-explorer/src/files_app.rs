@@ -1570,7 +1570,7 @@ impl FileExplorerWidget {
 
     /// Keep the widths the person dragged as their preferences, so a column
     /// stays where they put it after a relaunch.
-    fn store_widths(&mut self) {
+    fn store_widths(&self) {
         let widths = self.list_slot.widths();
         let stored = self.preferences.as_ref().map(ui::framework::Setting::get);
         if stored.as_ref().is_some_and(|prefs| prefs.widths == widths) {
@@ -9943,7 +9943,7 @@ impl ui::widget::Filterable for FileExplorerWidget {
         if self.find == query {
             return;
         }
-        self.find = query.to_owned();
+        query.clone_into(&mut self.find);
         self.structure_dirty = true;
     }
 

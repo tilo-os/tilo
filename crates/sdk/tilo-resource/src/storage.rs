@@ -49,7 +49,10 @@ impl Model for () {
 /// A number whose concurrent changes add up: two people each adding one make
 /// two. Change it with [`Self::add`]; writing it back records the difference
 /// as an increment rather than a new value.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
 pub struct Counter(i64);
 
 impl Counter {
