@@ -441,6 +441,25 @@ impl Checker<'_> {
         exp: Option<&Ty>,
         span: Span,
     ) -> Ex {
+        if let Some(held) = self.static_option(scrutinee) {
+            let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
+            let Some((index, binder)) = self.static_arm(&held, &patterns, span) else {
+                return Ex::error();
+            };
+            let saved = (self.st.macros.clone(), self.st.states.clone());
+            self.push_sink();
+            if let (Some(b), Some(m)) = (binder, held.given()) {
+                self.bind_static(b, m);
+            }
+            let v = match exp {
+                Some(want) => self.expr_as(&arms[index].body, want),
+                None => self.expr(&arms[index].body, None),
+            };
+            let stmts = self.pop_sink();
+            (self.st.macros, self.st.states) = saved;
+            let ty = v.ty.clone();
+            return Ex::new(Ek::Seq(stmts, Box::new(v)), ty);
+        }
         let (tmp, ty, set) = self.scrutinee(scrutinee);
         let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
         let Some((shape, plan)) = self.plan_match(&ty, &patterns, span) else {
@@ -486,6 +505,22 @@ impl Checker<'_> {
 
     /// `match` as a statement: arms are run for their effects.
     pub(super) fn match_stmt(&mut self, scrutinee: &ast::Expr, arms: &[ast::MatchArm], span: Span) {
+        if let Some(held) = self.static_option(scrutinee) {
+            let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
+            let Some((index, binder)) = self.static_arm(&held, &patterns, span) else {
+                return;
+            };
+            let saved = (self.st.macros.clone(), self.st.states.clone());
+            self.push_sink();
+            if let (Some(b), Some(m)) = (binder, held.given()) {
+                self.bind_static(b, m);
+            }
+            self.expr_stmt(&arms[index].body);
+            let stmts = self.pop_sink();
+            (self.st.macros, self.st.states) = saved;
+            self.st_extend(stmts);
+            return;
+        }
         let (tmp, ty, set) = self.scrutinee(scrutinee);
         self.emit(set);
         let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
@@ -511,6 +546,22 @@ impl Checker<'_> {
         parent: LocalId,
         span: Span,
     ) {
+        if let Some(held) = self.static_option(scrutinee) {
+            let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
+            let Some((index, binder)) = self.static_arm(&held, &patterns, span) else {
+                return;
+            };
+            let saved = (self.st.macros.clone(), self.st.states.clone());
+            self.push_sink();
+            if let (Some(b), Some(m)) = (binder, held.given()) {
+                self.bind_static(b, m);
+            }
+            self.ui_stmts(&arms[index].body, parent);
+            let stmts = self.pop_sink();
+            (self.st.macros, self.st.states) = saved;
+            self.st_extend(stmts);
+            return;
+        }
         let (tmp, ty, set) = self.scrutinee(scrutinee);
         self.emit(set);
         let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();

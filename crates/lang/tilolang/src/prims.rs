@@ -24,16 +24,15 @@ const fn prim_of(
 }
 
 pub const PRIMS: &[Prim] = &[
-    // Frames: what a window's view is (native-apps.md section 3.1).
-    prim_of("list", &["items"], &["sort", "filter", "empty"]),
-    prim_of("document", &[], &[]),
-    prim_of("page", &[], &[]),
-    prim_of("canvas", &[], &[]),
-    // The frame's side columns.
-    prim_of("sidebar", &[], &[]),
-    prim_of("inspector", &["item"], &[]),
-    // The frame's entry bar along its foot: what a chat types and sends.
-    prim_of("composer", &[], &[]),
+    // A list of resources in the content (a window's own list is `std.list`), and a page:
+    // content at the readable measure, or the column's full width with `full`.
+    prim_of("list", &["items"], &[]),
+    Prim {
+        name: "page",
+        positional: &[],
+        named: &[],
+        flags: &["full"],
+    },
     // Content groups and native controls (section 3.3).
     prim_of("section", &["title"], &[]),
     prim_of("facts", &[], &[]),
@@ -77,9 +76,6 @@ pub const PRIMS: &[Prim] = &[
 /// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it
 /// opens for the whole list. The list node carries it as its `preview` property.
 pub const PREVIEW_ROWS: i64 = 5;
-
-/// The frames: one of them is the whole of a window's view.
-pub const FRAMES: &[&str] = &["list", "document", "page", "canvas"];
 
 /// The named arguments of a layout row: `row(gap: ...) { ... }`.
 pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", "wrap"];

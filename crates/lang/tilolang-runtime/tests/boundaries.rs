@@ -75,7 +75,7 @@ fn shown(bag: Bag, which: Which) -> List<Item> {
 
 view chosen(bag: Bag) {
     window which: Which = .all
-    list(shown(bag, which), filter: which) { item ->
+    std.list(bag, shown(bag, which), filter: which) { item ->
         row(item.title, checkbox: item.done)
     }
 }
@@ -220,7 +220,25 @@ view count(bag: Bag) {
     }
 
     fn list_key(view: &ViewInstance) -> String {
-        of_kind(view.tree(), "list")[0].key.clone()
+        lists(view.tree())[0].key.clone()
+    }
+
+    /// The lists under `tree` whose rows render as they show: the content's and the toolkit's.
+    fn lists(tree: &UiNode) -> Vec<&UiNode> {
+        let mut out = of_kind(tree, "list");
+        out.extend(of_kind(tree, "ui.VirtualList"));
+        out
+    }
+
+    /// Choose the place `name` of the window's filter, in its sidebar.
+    fn choose(view: &ViewInstance, name: &str) {
+        let place = of_kind(view.tree(), "ui.NavItem")
+            .into_iter()
+            .find(|item| text_prop(item, "key") == name)
+            .unwrap_or_else(|| panic!("no place {name}"))
+            .key
+            .clone();
+        view.fire(&place, "select").unwrap();
     }
 
     #[test]
@@ -530,7 +548,7 @@ view count(bag: Bag) {
         let retitled = view.poll_patches().unwrap();
         assert_eq!(retitled.len(), 1, "{retitled:?}");
         assert_eq!(view.stats().renders, shown + 1);
-        let row = &of_kind(view.tree(), "list")[0].children[6];
+        let row = &lists(view.tree())[0].children[6];
         assert_eq!(titles(row), ["five"]);
 
         // A removed item takes its row with it; the rows below keep following.
@@ -545,7 +563,7 @@ view count(bag: Bag) {
         );
         rows.retitle(5, "fünf");
         view.poll_patches().unwrap();
-        let row = &of_kind(view.tree(), "list")[0].children[5];
+        let row = &lists(view.tree())[0].children[5];
         assert_eq!(titles(row), ["fünf"]);
 
         // Hidden after it moved, a row is forgotten where it is now.
@@ -606,7 +624,7 @@ view count(bag: Bag) {
 
     /// The keys of the rows built in the tree are among the rows, in their order.
     fn built_in_order(view: &ViewInstance, list: &str, held: &[String]) {
-        let built: Vec<&String> = of_kind(view.tree(), "list")
+        let built: Vec<&String> = lists(view.tree())
             .into_iter()
             .find(|n| n.key == list)
             .unwrap()
@@ -675,7 +693,7 @@ view count(bag: Bag) {
         built_in_order(&view, &list, &held);
 
         // Another filter: the rows that stay are kept, the others leave.
-        view.fire(&list, "filter.open").unwrap();
+        choose(&view, "open");
         let chosen = view.poll_patches().unwrap();
         follow(&view, &list, &mut held, &chosen);
         assert_eq!(held, row_keys(&view, &list));
@@ -769,7 +787,7 @@ view count(bag: Bag) {
         let rows = Rows::new(30);
         let mut view = rows.view("chosen");
         let list = list_key(&view);
-        view.fire(&list, "filter.open").unwrap();
+        choose(&view, "open");
         let mut held = row_keys(&view, &list);
         let chosen = view.poll_patches().unwrap();
         follow(&view, &list, &mut held, &chosen);

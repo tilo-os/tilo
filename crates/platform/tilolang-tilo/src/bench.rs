@@ -877,12 +877,16 @@ const PAGE: usize = 40;
 /// Rows one scroll frame brings into view.
 const SCROLL_STEP: usize = 3;
 
-/// The key of the window's list frame: the view's root when it is a `list`.
+/// The key of the window's own list: the toolkit's virtual list its shell holds in a column
+/// (`std.list`'s, `std.transcript`'s).
 fn frame_list(tree: &UiNode) -> Option<String> {
-    (tree.kind == "list").then(|| tree.key.clone())
+    if tree.kind == "ui.VirtualList" {
+        return Some(tree.key.clone());
+    }
+    tree.children.iter().find_map(frame_list)
 }
 
-/// The keys of the lists inside a view's content: every `list` but the frame.
+/// The keys of the lists inside a view's content: every `list`, the frame not being one.
 fn content_lists(node: &UiNode, out: &mut Vec<String>) {
     for child in &node.children {
         if child.kind == "list" {

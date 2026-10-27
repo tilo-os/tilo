@@ -656,6 +656,10 @@ impl Checker<'_> {
         match b.ty.clone() {
             Ty::Error => Ex::error(),
             Ty::Record(key) => {
+                if crate::host::value_type(&key.name).is_some() && key.app == crate::host::HOST_APP
+                {
+                    return self.value_field(b, &key, name).unwrap_or_else(Ex::error);
+                }
                 let env = self.env;
                 let Some(info) = env.type_info(&key) else {
                     return Ex::error();

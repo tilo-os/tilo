@@ -76,7 +76,7 @@ view note_row(n: Note) {
 
 view notebook(nb: Notebook) {
     window filter: NoteFilter = .all
-    list(nb.notes, filter: filter, empty: "No notes yet")
+    std.list(nb, nb.notes, filter: filter, empty: "No notes yet")
 }
 
 scenario "a week of notes" {
@@ -575,51 +575,39 @@ fn a_scenario_reaches_the_roots_of_the_packages_it_uses() {
     );
 }
 
-// USER REQUIREMENT (2026-10-20, native-apps.md section 3.1): "An app's root view returns one
-// frame."
+// A window's view is what it builds: a frame of the standard library (`std.list`,
+// `std.document`, `std.page`), the toolkit's components composed (`ui.NavShell`), or any view.
+// The library's frames check their parts as any view's parameters are checked.
 #[test]
-fn e095_a_window_is_one_frame() {
+fn a_window_is_what_its_view_builds_and_std_frames_check_their_parts() {
     let head = with_t("root T\ndefault view v for T\n");
-    expect(
-        "E095",
-        &format!("{head}view v(x: T) {{\n    stack {{\n        text(x.t)\n    }}\n}}"),
-    );
-    expect(
-        "E095",
-        &format!(
-            "{head}view v(x: T) {{\n    page {{\n        text(x.t)\n    }}\n    text(x.t)\n}}"
-        ),
-    );
     ok(&format!(
-        "{head}view v(x: T) {{\n    window n: Int = 0\n    let s = x.t\n    canvas {{\n        text(s)\n    }}\n}}"
+        "{head}view v(x: T) {{\n    stack {{\n        text(x.t)\n    }}\n}}"
     ));
     ok(&format!(
-        "{head}view v(x: T) {{\n    list(x.items) {{ i ->\n        row(i.t)\n    }}\n}}"
+        "{head}view v(x: T) {{\n    window n: Int = 0\n    let s = x.t\n    std.page(x, canvas: true) {{\n        text(s)\n    }}\n}}"
+    ));
+    ok(&format!(
+        "{head}view v(x: T) {{\n    std.list(x, x.items) {{ i ->\n        row(i.t)\n    }}\n}}"
+    ));
+    ok(&format!(
+        "{head}view v(x: T) {{\n    page(full) {{\n        text(x.t)\n    }}\n}}"
     ));
     expect(
-        "E095",
-        &format!("{head}view v(x: T) {{\n    page(full) {{\n        text(x.t)\n    }}\n}}"),
-    );
-    expect(
-        "E095",
+        "E060",
         &with_t(
             "view v(x: T) {\n    stack {\n        sidebar {\n            text(x.t)\n        }\n    }\n}",
         ),
     );
-    ok(&with_t(
-        "view v(x: T) {\n    document {\n        sidebar {\n            text(x.t)\n        }\n        inspector(x) {\n            text(x.t)\n        }\n    }\n}",
-    ));
-    ok(&with_t(
-        "view v(x: T) {\n    stack {\n        page {\n            text(x.t)\n        }\n    }\n}",
-    ));
-    ok(&with_t(
-        "view v(x: T) {\n    page {\n        text(x.t)\n        composer {\n            input(bind: x.t)\n        }\n    }\n}",
-    ));
     expect(
-        "E095",
+        "E066",
         &with_t(
-            "view v(x: T) {\n    page {\n        stack {\n            composer {\n                text(x.t)\n            }\n        }\n    }\n}",
+            "view v(x: T) {\n    std.list(x, x.items, filter: x.n) { i ->\n        row(i.t)\n    }\n}",
         ),
+    );
+    expect(
+        "E097",
+        &with_t("view v(x: T) {\n    std.list(x, x.items)\n}"),
     );
 }
 
@@ -648,15 +636,9 @@ fn e097_lists_and_rows() {
         &with_t("view v(x: T) {\n    list(x.items) {\n        text(x.t)\n    }\n}"),
     );
     expect(
-        "E097",
+        "E096",
         &with_t(
             "view v(x: T) {\n    window s: Int = 0\n    list(x.items, sort: s) { i ->\n        row(i.t)\n    }\n}",
-        ),
-    );
-    expect(
-        "E097",
-        &with_t(
-            "enum K {\n    a(n: Int)\n    b\n}\nview v(x: T) {\n    window s: K = .b\n    list(x.items, filter: s) { i ->\n        row(i.t)\n    }\n}",
         ),
     );
     expect(
@@ -674,7 +656,7 @@ fn e097_lists_and_rows() {
         &with_t("view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, mark: i.t)\n    }\n}"),
     );
     ok(&with_t(
-        "view v(x: T) {\n    list(x.items, empty: \"Nothing\") { i ->\n        row(i.t, secondary: i.t, meta: \"m\", badge: \"b\", value: i.n, icon: .pin, checkbox: i.b, mark: if i.b { .pin } else { .check })\n    }\n}",
+        "view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, secondary: i.t, meta: \"m\", badge: \"b\", value: i.n, icon: .pin, checkbox: i.b, mark: if i.b { .pin } else { .check })\n    }\n}",
     ));
 }
 

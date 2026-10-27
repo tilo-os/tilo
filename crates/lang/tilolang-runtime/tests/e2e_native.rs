@@ -1,5 +1,5 @@
-//! The native vocabulary run: a list's items and rows, its sort and filter as view state with
-//! counts per filter, a row view, and the choice and facts a detail view shows.
+//! The native vocabulary run: `std.list`'s items and rows, its sort and filter as view state
+//! with counts per filter, a row view, and the choice and facts a document shows.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -56,7 +56,7 @@ view note_row(n: Note) {
 view notebook(nb: Notebook) {
     window order: NoteOrder = .created
     window filter: NoteFilter = .all
-    list(listed(nb, filter), sort: order, filter: filter, empty: "No notes yet") { n ->
+    std.list(nb, listed(nb, filter), sort: order, filter: filter, count: f -> listed(nb, f).len(), empty: "No notes yet") { n ->
         row(n.title, checkbox: n.pinned)
     }
 }
@@ -67,7 +67,7 @@ view rows(nb: Notebook) {
 
 view detail(n: Note) {
     lens shown: NoteFilter = .pinned
-    document {
+    std.document(n) {
         choice(bind: shown)
         facts {
             "Title": n.title
@@ -103,6 +103,7 @@ view detail(n: Note) {
     fn list(tree: &UiNode) -> &UiNode {
         of_kind(tree, "list")
             .into_iter()
+            .chain(of_kind(tree, "ui.VirtualList"))
             .next()
             .unwrap_or_else(|| panic!("no list in\n{}", dump(tree)))
     }
@@ -114,6 +115,14 @@ view detail(n: Note) {
             .collect()
     }
 
+    /// The node of `kind` whose `prop` is `value`.
+    fn node_with<'a>(tree: &'a UiNode, kind: &str, prop: &str, value: &str) -> &'a UiNode {
+        of_kind(tree, kind)
+            .into_iter()
+            .find(|node| node.props.get(prop) == Some(&Value::text(value)))
+            .unwrap_or_else(|| panic!("no {kind} with {prop} {value} in\n{}", dump(tree)))
+    }
+
     #[test]
     fn a_list_holds_one_item_per_resource_keyed_by_it_with_its_row() {
         let (rt, app, nb) = setup();
@@ -121,17 +130,17 @@ view detail(n: Note) {
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
             .unwrap();
         let tree = view.tree();
-        let l = list(tree);
-        assert_eq!(l.key, tree.key, "the frame is the view's root");
         assert_eq!(
-            l.props["item_type"],
-            Value::text(app.meta().types[0].id.clone())
+            tree.kind,
+            "ui.NavShell",
+            "the window is a shell: {}",
+            dump(tree)
         );
-        assert_eq!(text_prop(l, "empty"), "No notes yet");
+        let l = list(tree);
         let key = l.key.clone();
         assert_eq!(view.list_len(&key), Some(3), "{}", dump(tree));
         assert!(
-            of_kind(tree, "item").is_empty(),
+            of_kind(tree, "ui.ListItem").is_empty(),
             "no row renders before the host shows it: {}",
             dump(tree)
         );
@@ -143,7 +152,7 @@ view detail(n: Note) {
             let [item] = row.children.as_slice() else {
                 panic!("a shown row holds its item: {}", dump(&row));
             };
-            assert_eq!(item.kind, "item");
+            assert_eq!(item.kind, "ui.ListItem");
             let Value::Ref(r) = &item.props["item"] else {
                 panic!("an item carries its resource: {}", dump(item));
             };
@@ -151,13 +160,22 @@ view detail(n: Note) {
                 row_key.ends_with(&format!("/{}", r.target.id_string())),
                 "a row is keyed by its resource: {row_key}"
             );
-            assert_eq!(item.children.len(), 1);
-            assert_eq!(item.children[0].kind, "ui.ListRow");
+            assert_eq!(of_kind(item, "ui.ListRow").len(), 1, "{}", dump(item));
             items.push(item.clone());
         }
         assert_eq!(titles(view.tree()), ["Q3 plan", "Groceries", "Ideas"]);
-        let row = &items[0].children[0];
+        let row = of_kind(&items[0], "ui.ListRow")[0];
         assert_eq!(view.bound_value(&row.key), Some(Value::Bool(true)));
+
+        // A notebook with nothing in it says so. Its primary action takes a title the empty
+        // state has none of, so it offers none.
+        let empty = rt.create("Notebook").unwrap();
+        let view = rt
+            .open_view(&me(), &app.view("notebook"), vec![Value::resource(&empty)])
+            .unwrap();
+        let state = of_kind(view.tree(), "ui.EmptyState")[0];
+        assert_eq!(text_prop(state, "title"), "No notes yet");
+        assert!(!state.props.contains_key("action"), "{}", dump(state));
     }
 
     #[test]
@@ -166,33 +184,45 @@ view detail(n: Note) {
         let mut view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
             .unwrap();
-        let l = list(view.tree());
-        assert_eq!(text_prop(l, "sort.selected"), "created");
-        assert_eq!(text_prop(l, "filter.selected"), "all");
-        assert_eq!(l.props["filter.count.all"], Value::Int(3));
-        assert_eq!(l.props["filter.count.pinned"], Value::Int(1));
-        for event in ["sort.created", "sort.title", "filter.all", "filter.pinned"] {
-            assert!(l.events.contains_key(event), "{event}: {}", dump(l));
-        }
-        let key = l.key.clone();
+        let counts = |tree: &UiNode| -> Vec<Value> {
+            ["all", "pinned"]
+                .iter()
+                .map(|place| node_with(tree, "ui.NavItem", "key", place).props["count"].clone())
+                .collect()
+        };
+        let tree = view.tree();
+        assert_eq!(text_prop(of_kind(tree, "ui.NavList")[0], "selected"), "all");
+        assert_eq!(counts(tree), [Value::Int(3), Value::Int(1)]);
+        let checked = |tree: &UiNode, label: &str| {
+            node_with(tree, "ui.MenuItem", "label", label)
+                .props
+                .get("checked")
+                .cloned()
+        };
+        assert_eq!(checked(tree, "Created"), Some(Value::Int(1)));
+        assert_ne!(checked(tree, "Title"), Some(Value::Int(1)));
         // Rows are read here as a host that draws every row does.
         view.set_lazy_rows(false).unwrap();
-        view.fire(&key, "filter.pinned").unwrap();
+        let pinned = node_with(view.tree(), "ui.NavItem", "key", "pinned")
+            .key
+            .clone();
+        view.fire(&pinned, "select").unwrap();
         view.poll_patches().unwrap();
-        let l = list(view.tree());
-        assert_eq!(text_prop(l, "filter.selected"), "pinned");
-        assert_eq!(titles(view.tree()), ["Q3 plan"]);
+        let tree = view.tree();
         assert_eq!(
-            (
-                &l.props["filter.count.all"],
-                &l.props["filter.count.pinned"]
-            ),
-            (&Value::Int(3), &Value::Int(1)),
+            text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
+            "pinned"
+        );
+        assert_eq!(titles(tree), ["Q3 plan"]);
+        assert_eq!(
+            counts(tree),
+            [Value::Int(3), Value::Int(1)],
             "the counts do not depend on the filter shown"
         );
-        view.fire(&key, "sort.title").unwrap();
+        let title = node_with(tree, "ui.MenuItem", "label", "Title").key.clone();
+        view.fire(&title, "choose").unwrap();
         view.poll_patches().unwrap();
-        assert_eq!(text_prop(list(view.tree()), "sort.selected"), "title");
+        assert_eq!(checked(view.tree(), "Title"), Some(Value::Int(1)));
     }
 
     #[test]
