@@ -131,7 +131,7 @@ fn restore(
     apply_prepared_content_restore(doc, &prepared).unwrap()
 }
 fn sheets_fixture() -> (AutoCommit, ObjId, Vec<ChangeHash>) {
-    let mut doc = AutoCommit::new();
+    let mut doc = at_sheets_version();
     let wb = doc.put_object(ROOT, "wb", ObjType::Map).unwrap();
     let sheets = doc.put_object(&wb, "sheets", ObjType::List).unwrap();
     doc.insert(&sheets, 0, "sheet-a").unwrap();
@@ -1092,6 +1092,8 @@ fn complement_reject_policy_allows_retained_edits_but_refuses_empty_resurrection
     let retained = complement_row(&mut doc, &connections, "a", "target");
     let target = doc.get_heads();
     doc.put(&retained, "name", "live").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_ROWS_REJECT_SCHEMA.version)
+        .unwrap();
     let live = doc.get_heads();
     assert!(prepare_content_restore(&doc, &COMPLEMENT_ROWS_REJECT_SCHEMA, &live, &target).is_ok());
 
@@ -1120,6 +1122,7 @@ fn complement_omit_resurrection_still_obeys_the_combined_result_validator() {
     complement_row(&mut doc, &connections, "missing", "target");
     let target = doc.get_heads();
     doc.delete(&connections, "missing").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REQUIRE_PRESENCE.version).unwrap();
     let live = doc.get_heads();
     let before = doc.clone().save();
     assert!(matches!(
@@ -1142,6 +1145,7 @@ fn complement_live_validator_failure_rolls_back_multiple_writes_and_identities()
     doc.put(&profile, "a", "live-a").unwrap();
     doc.delete(&profile, "b").unwrap();
     doc.put(&profile, "c", "live-c").unwrap();
+    tilo_resource::evolution::write_version(&mut doc, COMPLEMENT_REFUSE_LIVE.version).unwrap();
     let live = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(b"selector-live".as_slice()));
     let prepared = prepare_content_restore(&doc, &COMPLEMENT_REFUSE_LIVE, &live, &target).unwrap();
@@ -1196,7 +1200,6 @@ fn complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text()
     peer.put(&right_presence, "status", "right").unwrap();
     doc.merge(&mut peer).unwrap();
     doc.put(&profile, "name", "live").unwrap();
-    let live = doc.get_heads();
     tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
     let live = doc.get_heads();
     let last_used: Vec<_> = doc
@@ -1281,7 +1284,6 @@ fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registrat
     doc.splice_text(&text, 0, 4, "live").unwrap();
     doc.delete(&profile, "target-only").unwrap();
     doc.put(&profile, "current-only", "current").unwrap();
-    let live = doc.get_heads();
     tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
     let live = doc.get_heads();
     let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
@@ -1421,6 +1423,8 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     boundary
         .insert(&replacement_live, 0, "current-list")
         .unwrap();
+    tilo_resource::evolution::write_version(&mut boundary, COMPLEMENT_REFUSE_TRIAL.version)
+        .unwrap();
     let live = boundary.get_heads();
     let before_trial = boundary.clone().save();
     assert!(matches!(
@@ -1497,6 +1501,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     let mut too_deep = at_sheets_version();
     let profile = too_deep.put_object(ROOT, "profile", ObjType::Map).unwrap();
     nested_map_chain(&mut too_deep, &profile, 256);
+    tilo_resource::evolution::write_version(&mut too_deep, CONTENT_EXCEPT.version).unwrap();
     let heads = too_deep.get_heads();
     assert!(matches!(
         prepare_content_restore(&too_deep, &CONTENT_EXCEPT, &heads, &heads),
@@ -1508,6 +1513,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         .put_object(ROOT, "profile", ObjType::Map)
         .unwrap();
     nested_map_chain(&mut deep_target, &profile, 256);
+    tilo_resource::evolution::write_version(&mut deep_target, CONTENT_EXCEPT.version).unwrap();
     let target = deep_target.get_heads();
     deep_target.delete(ROOT, "profile").unwrap();
     deep_target
@@ -1524,6 +1530,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         .put_object(ROOT, "profile", ObjType::Map)
         .unwrap();
     deep_current.put(&profile, "leaf", true).unwrap();
+    tilo_resource::evolution::write_version(&mut deep_current, CONTENT_EXCEPT.version).unwrap();
     let target = deep_current.get_heads();
     deep_current.delete(ROOT, "profile").unwrap();
     let profile = deep_current
@@ -1545,6 +1552,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         .put_object(&profile, "presence", ObjType::Map)
         .unwrap();
     nested_map_chain(&mut protected, &presence, 256);
+    tilo_resource::evolution::write_version(&mut protected, protected_schema.version).unwrap();
     let heads = protected.get_heads();
     assert!(matches!(
         prepare_content_restore(&protected, protected_schema, &heads, &heads),
@@ -1555,6 +1563,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     let profile = far_over.put_object(ROOT, "profile", ObjType::Map).unwrap();
     far_over.put(&profile, "accepted-first", true).unwrap();
     nested_map_chain(&mut far_over, &profile, 1024);
+    tilo_resource::evolution::write_version(&mut far_over, CONTENT_EXCEPT.version).unwrap();
     let heads = far_over.get_heads();
     let before = far_over.clone().save();
     assert!(matches!(
@@ -1566,6 +1575,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     for wrong in [ObjType::List, ObjType::Text] {
         let mut doc = at_sheets_version();
         doc.put_object(ROOT, "profile", wrong).unwrap();
+        tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
         let heads = doc.get_heads();
         assert!(matches!(
             prepare_content_restore(&doc, &CONTENT_EXCEPT, &heads, &heads),
@@ -1574,14 +1584,15 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     }
     let mut scalar = at_sheets_version();
     scalar.put(ROOT, "profile", "wrong").unwrap();
+    tilo_resource::evolution::write_version(&mut scalar, CONTENT_EXCEPT.version).unwrap();
     let heads = scalar.get_heads();
     assert!(matches!(
         prepare_content_restore(&scalar, &CONTENT_EXCEPT, &heads, &heads),
         Err(RestoreError::SchemaInvalid(_))
     ));
-    let missing = at_sheets_version();
-    let mut copy = missing.clone();
-    let heads = copy.get_heads();
+    let mut missing = at_sheets_version();
+    tilo_resource::evolution::write_version(&mut missing, CONTENT_EXCEPT.version).unwrap();
+    let heads = missing.get_heads();
     assert!(matches!(
         prepare_content_restore(&missing, &CONTENT_EXCEPT, &heads, &heads),
         Err(RestoreError::SchemaInvalid(_))
@@ -1697,7 +1708,6 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
 
     let target = doc.get_heads();
     doc.put(&profile, "name", "current").unwrap();
-    let live = doc.get_heads();
     tilo_resource::evolution::write_version(&mut doc, protected_schema.version).unwrap();
     let live = doc.get_heads();
     let protected_values = doc
@@ -1992,7 +2002,6 @@ fn complement_freshness_checks_excluded_changes_before_writing() {
     doc.put(&profile, "last_used", 1_i64).unwrap();
     let target = doc.get_heads();
     doc.put(&profile, "name", "live").unwrap();
-    let live = doc.get_heads();
     tilo_resource::evolution::write_version(&mut doc, CONTENT_EXCEPT.version).unwrap();
     let live = doc.get_heads();
     let prepared = prepare_content_restore(&doc, &CONTENT_EXCEPT, &live, &target).unwrap();
