@@ -283,7 +283,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
 mod tests;
 
 /// `#[param("description", name = "public", example = expr)]`, each part
-/// optional.
+/// optional. `resource = "kind"` has a person pick an existing resource of
+/// that kind, the parameter a reference to it (`ResourceAt`).
 #[derive(Default)]
 struct ParamOptions {
     description: Option<String>,
@@ -294,6 +295,8 @@ struct ParamOptions {
     role: Role,
     /// The collection whose items the place names (`place = "field"`).
     place_in: Option<String>,
+    /// The kind of existing resource a person picks (`resource = "kind"`).
+    picks: Option<String>,
 }
 
 impl ParamOptions {
@@ -357,10 +360,12 @@ impl syn::parse::Parse for ParamOptions {
                 options.name = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "example" {
                 options.example = Some(input.parse()?);
+            } else if key == "resource" {
+                options.picks = Some(input.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `place = \"field\"`, `content`, `place`, `flatten` or `secret`",
+                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `place = \"field\"`, `resource = \"kind\"`, `content`, `place`, `flatten` or `secret`",
                 ));
             }
             if input.is_empty() {
@@ -385,6 +390,8 @@ struct Param {
     role: Role,
     /// The collection a place parameter's items come from, when named.
     place_in: Option<String>,
+    /// The kind of existing resource a person picks for it, when one.
+    picks: Option<String>,
 }
 
 /// What part a verb's parameter plays.
@@ -521,6 +528,7 @@ fn item_param(ident: &syn::Ident) -> Param {
         secret: false,
         role: Role::Plain,
         place_in: None,
+        picks: None,
     }
 }
 
@@ -605,6 +613,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     secret: param_options.secret,
                     role,
                     place_in: param_options.place_in,
+                    picks: param_options.picks,
                 });
             }
         }
@@ -664,10 +673,11 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
     };
     let content = param.role == Role::Content;
-    let schema = crate::byte_param(ty).map_or_else(
-        || quote!(<#ty as #krate::JsonSchema>::json_schema),
-        |(_, schema)| schema,
-    );
+    let schema = match (&param.picks, crate::byte_param(ty)) {
+        (Some(kind), _) => quote!(|| #krate::__private::picked_resource_schema(#kind)),
+        (None, Some((_, schema))) => schema,
+        (None, None) => quote!(<#ty as #krate::JsonSchema>::json_schema),
+    };
     quote! {
         #krate::__private::ParamDecl {
             name: #name,

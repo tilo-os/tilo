@@ -206,7 +206,7 @@ pub mod __private {
     pub use tilo_actions::{
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
         HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec,
-        RiskLevel,
+        RiskLevel, picked_resource_schema,
     };
 
     pub use crate::apply_cache::forget_all;
