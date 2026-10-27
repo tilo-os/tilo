@@ -36,6 +36,21 @@ struct SiteEnrollment<'a> {
     via: Via,
 }
 
+/// What a join knows of where its person arrives, for the one arrival rule
+/// ([`ShellNetwork::expect_arrival`]).
+#[derive(Default)]
+pub(super) struct Arriving<'a> {
+    /// The app the invitation or link names, when it names one.
+    pub invitation: Option<&'a str>,
+    /// The app the entry of the site whose door let the person in names.
+    pub site: Option<&'a str>,
+    /// The room's host, by device key, as the join met it.
+    pub hosts: &'a [[u8; 32]],
+    /// A site the join came by (a link's entry), whose entry may name the
+    /// room's host.
+    pub by: Option<&'a url::Url>,
+}
+
 /// Where joining a site's workspace stands once it was asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SiteJoin {
@@ -228,6 +243,63 @@ impl ShellNetwork {
         )
     }
 
+    /// Where the person arrives in `room` once its join installs, the same
+    /// whichever way they joined it: the app the invitation names, when it
+    /// names one, else the workspace's own, the app its site's entry names.
+    ///
+    /// A site's entry names its workspace by the host it is on, so the
+    /// workspace's site is the one whose door let the person in, else the
+    /// site whose host holds the room among those this device knows: the
+    /// sites it holds workspaces of, the site the join came by, and the
+    /// community it follows. A workspace no site names opens in nothing;
+    /// the person still arrives in it.
+    pub(super) fn expect_arrival(&self, room: RoomId, arriving: &Arriving<'_>) {
+        let app = arriving
+            .invitation
+            .or(arriving.site)
+            .map(str::to_owned)
+            .or_else(|| self.site_app_at(arriving.hosts, arriving.by));
+        tracing::info!(%room, app = app.as_deref().unwrap_or("none"), "the person arrives in the workspace once its join installs");
+        if let Err(error) = self.hosted_sites.expect_arrival(room, app) {
+            tracing::warn!(%error, %room, "where the person arrives is not kept across a restart");
+        }
+    }
+
+    /// The app the entry of the site whose host is one of `hosts` names,
+    /// among the sites this device knows ([`Self::expect_arrival`]).
+    fn site_app_at(&self, hosts: &[[u8; 32]], by: Option<&url::Url>) -> Option<String> {
+        if let Some(app) = hosts
+            .iter()
+            .find_map(|host| self.hosted_sites.site_app_at(&hex::encode(host)))
+        {
+            return Some(app);
+        }
+        if hosts.is_empty() {
+            return None;
+        }
+        let mut sites: Vec<url::Url> = by.cloned().into_iter().collect();
+        sites.extend(
+            self.hosted_sites
+                .community()
+                .filter(|community| Some(community) != by),
+        );
+        sites.into_iter().find_map(|entry| {
+            let site = self
+                .wait_on(async move { hosted_sites::resolve_site(&entry).await })
+                .ok()?
+                .ok()?;
+            let app = site.app?;
+            let http = HostHttp::new(&site.origin).ok()?;
+            let info = self
+                .wait_on(async move { tilo_relay_client::https::host_info(http.as_ref()).await })
+                .ok()?
+                .ok()?;
+            hosts
+                .contains(&info.host_cert.device_public_key)
+                .then_some(app)
+        })
+    }
+
     /// Redeem `enrollment`'s invitation into its slot, and say that the
     /// site's workspace is joining; its enrollment installs in the
     /// `background`, else by its caller.
@@ -252,6 +324,21 @@ impl ShellNetwork {
         // The slot says Joining… from the moment its exchange starts, not
         // once the host answered it.
         self.hosted_sites.set_join(joining(JoinProgress::Joining));
+        let hosts: Vec<[u8; 32]> = self
+            .hosted_sites
+            .hosted(room)
+            .and_then(|hosted| hosted.host)
+            .and_then(|host| hex::decode(host).ok()?.try_into().ok())
+            .into_iter()
+            .collect();
+        self.expect_arrival(
+            room,
+            &Arriving {
+                site: site.app.as_deref(),
+                hosts: &hosts,
+                ..Arriving::default()
+            },
+        );
         match self.accept_invitation_via(local, invitation, via) {
             Ok(PeerSyncResponse::EnrollmentPending { id }) => {
                 if let Err(error) = self.finish_when_enrolled(room, id, background) {
@@ -300,8 +387,9 @@ impl ShellNetwork {
         self.hosted_sites.joins()
     }
 
-    /// The site workspaces whose joins installed since this was last asked:
-    /// chrome brings the person into each, in the app its site names.
+    /// The workspaces whose joins installed since this was last asked:
+    /// chrome brings the person into each, in the app the arrival rule
+    /// chose ([`Self::expect_arrival`]).
     ///
     /// An arrival waits until this device shows the room's own desktop: its
     /// windows decide whether the site's app is already open there. Decided
@@ -313,8 +401,8 @@ impl ShellNetwork {
             .take_arrivals(|room| tree.read().room_docs.contains_key(&room))
     }
 
-    /// Open the app `arrival`'s site names in the workspace its join
-    /// installed: where the person arrives, once. Waits on the launch.
+    /// Open `arrival`'s app in the workspace its join installed: where the
+    /// person arrives, once. Waits on the launch.
     ///
     /// The workspace's windows are everyone's: when someone already has the
     /// app open there, the person arrives at that window (their own copy of
@@ -364,8 +452,9 @@ impl ShellNetwork {
 
     /// An enrollment into `room`'s workspace `local` ended: installed, or
     /// failed with its error, which is logged as the failure it is. A
-    /// workspace held through the web that installed is arrived in; one
-    /// that failed stays, saying why, for the person to try again.
+    /// workspace the person joined that installed is arrived in, however
+    /// they joined it ([`Self::expect_arrival`]); one that failed stays,
+    /// saying why, for the person to try again.
     pub(super) fn enrollment_ended(
         &self,
         room: RoomId,
@@ -373,12 +462,7 @@ impl ShellNetwork {
         outcome: Result<(), String>,
     ) {
         match outcome {
-            Ok(()) => {
-                self.hosted_sites.end_join(room);
-                if self.hosted_sites.hosted(room).is_some() {
-                    self.hosted_sites.arrive(room);
-                }
-            }
+            Ok(()) => self.hosted_sites.arrive(room),
             Err(error) => {
                 tracing::error!(%room, %error, "a workspace was not enrolled");
                 let mut state = self
