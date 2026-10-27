@@ -1292,13 +1292,13 @@ impl WordProcessorWidget {
                 ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Find);
             }
             WordProcessorEffect::ZoomIn => {
-                self.zoom_by(0.1);
+                self.zoom_page(ui::content_zoom::ZoomStep::In);
             }
             WordProcessorEffect::ZoomOut => {
-                self.zoom_by(-0.1);
+                self.zoom_page(ui::content_zoom::ZoomStep::Out);
             }
             WordProcessorEffect::ZoomReset => {
-                self.set_zoom(1.0);
+                self.zoom_page(ui::content_zoom::ZoomStep::Reset);
             }
             WordProcessorEffect::Spellcheck => self.toggle_spellcheck(),
             WordProcessorEffect::Markup => self.toggle_markup(),
