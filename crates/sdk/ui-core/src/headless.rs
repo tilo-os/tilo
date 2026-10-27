@@ -10262,6 +10262,7 @@ fn session_door(
 
 #[cfg(test)]
 mod tests {
+    use super::inspection::audit_access_node;
     use super::*;
 
     /// A theme change repaints everything on the next frame, retained caches
