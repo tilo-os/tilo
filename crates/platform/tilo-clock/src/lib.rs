@@ -115,17 +115,6 @@ pub mod testing {
         }
     }
 
-    /// What holds the wall clock of a whole process still: the [`WallHold`]
-    /// the test that pinned it keeps for its run.
-    #[derive(Clone, Default)]
-    pub(super) struct ProcessPin(std::sync::Arc<std::sync::atomic::AtomicU64>);
-
-    impl ProcessPin {
-        pub(super) fn frozen_ms(&self) -> u64 {
-            self.0.load(std::sync::atomic::Ordering::Relaxed)
-        }
-    }
-
     /// A test's right to pin the wall clock of its whole process. A test
     /// has one only inside `tilo_test_env::in_own_process`, which runs it in
     /// a process no other test shares; `policy/ui-clock-contract` refuses
@@ -151,9 +140,9 @@ pub mod testing {
     pub struct WallHold {
         // The test's right to the process, kept for as long as the pin is.
         _process: OwnProcess,
-        pinned: ProcessPin,
+        pinned: std::sync::Arc<super::AtomicU64>,
         // The pin this one replaced, back in force when this hold drops.
-        replaced: Option<ProcessPin>,
+        replaced: Option<std::sync::Arc<super::AtomicU64>>,
     }
 
     impl Drop for WallHold {
@@ -165,7 +154,7 @@ pub mod testing {
             // the one to keep.
             if process
                 .as_ref()
-                .is_some_and(|pin| std::sync::Arc::ptr_eq(&pin.0, &self.pinned.0))
+                .is_some_and(|pin| std::sync::Arc::ptr_eq(pin, &self.pinned))
             {
                 *process = self.replaced.take();
             }
@@ -178,10 +167,7 @@ pub mod testing {
     /// again moves the process to the time it names last; a test that only
     /// needs its own thread held reads [`with_wall`] instead.
     pub fn hold_wall_everywhere(process: OwnProcess, at: SystemTime) -> WallHold {
-        let pinned = ProcessPin(std::sync::Arc::default());
-        pinned
-            .0
-            .store(super::wall_ms(at), std::sync::atomic::Ordering::Relaxed);
+        let pinned = std::sync::Arc::new(super::AtomicU64::new(super::wall_ms(at)));
         // One test owns the process, so no earlier pin of another is in
         // force; a test pinning twice keeps its last time.
         let replaced = super::PROCESS
@@ -345,13 +331,6 @@ mod scoped_monotonic_tests {
     }
 }
 
-/// Wall time pinned by [`pin_wall`] for a capture's threads, in
-/// milliseconds since the Unix epoch; `0` while the clock runs. A test build
-/// has no [`pin_wall`]: it holds its own thread with [`testing::with_wall`],
-/// or the process it has to itself with [`testing::hold_wall_everywhere`].
-#[cfg(not(test))]
-static FROZEN_WALL_MS: AtomicU64 = AtomicU64::new(0);
-
 thread_local! {
     /// The wall time held on this thread: by [`testing::with_wall`], which
     /// wins over the thread's part in a pin for a whole process.
@@ -370,25 +349,18 @@ fn frozen_ms() -> u64 {
     }
 }
 
-/// The wall clock a whole process holds, which only a test with the process
-/// to itself may take.
-#[cfg(any(test, feature = "test-support"))]
-static PROCESS: std::sync::Mutex<Option<testing::ProcessPin>> = std::sync::Mutex::new(None);
+/// The wall clock a whole process holds: a capture pins it with
+/// [`pin_wall`], a test that has its process to itself with
+/// [`testing::hold_wall_everywhere`]. `None` while every thread reads its own
+/// clock, which is every live session.
+static PROCESS: std::sync::Mutex<Option<std::sync::Arc<AtomicU64>>> = std::sync::Mutex::new(None);
 
-#[cfg(any(test, feature = "test-support"))]
 fn pinned_ms() -> u64 {
     PROCESS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-        .unwrap_or_default()
-        .frozen_ms()
-}
-
-/// No process-wide pin: every thread reads its own clock.
-#[cfg(not(any(test, feature = "test-support")))]
-const fn pinned_ms() -> u64 {
-    0
+        .as_ref()
+        .map_or(0, |ms| ms.load(Ordering::Relaxed))
 }
 
 /// The wall time of the test clock this thread follows
@@ -428,7 +400,12 @@ pub fn wall() -> SystemTime {
 /// with `tilo_test_env::in_own_process` and [`testing::hold_wall_everywhere`].
 #[cfg(not(test))]
 pub fn pin_wall(at: SystemTime) {
-    FROZEN_WALL_MS.store(wall_ms(at), Ordering::Relaxed);
+    let pinned = std::sync::Arc::new(AtomicU64::new(wall_ms(at)));
+    // A capture pins once, at start; a second pin takes over from the first
+    // rather than stacking, and the first goes with it.
+    *PROCESS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pinned);
 }
 
 /// `at` as a pinned reading: milliseconds since the Unix epoch, never `0`

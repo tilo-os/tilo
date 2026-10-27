@@ -165,6 +165,28 @@ impl HistoryRootPattern {
     }
 }
 
+/// Refuse a document written at a schema version this registration does not
+/// read: its selectors, validators and writer describe content at
+/// `schema.version`, and a document at an older version names its content by
+/// another shape. Restoring it anyway would write through selectors that do
+/// not match it, or a validator that accepts a shape it never had. An older
+/// version is brought up by the resource's migration when it opens, and
+/// restored from then on.
+pub(super) fn check_version(
+    doc: &AutoCommit,
+    schema: &HistoryRestoreSchema,
+) -> Result<(), RestoreError> {
+    let stored = tilo_resource::evolution::stored_version(doc);
+    if stored == schema.version {
+        Ok(())
+    } else {
+        Err(RestoreError::SchemaVersion {
+            expected: schema.version,
+            stored,
+        })
+    }
+}
+
 pub(super) fn validate(schema: &HistoryRestoreSchema) -> Result<(), RestoreError> {
     let selectors = selectors(schema);
     if schema.id.is_empty() || schema.version == 0 || selectors.is_empty() {
