@@ -247,6 +247,10 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         crate::effects::row(self, id)
     }
+
+    fn live_row_pending(&self, id: &str) -> bool {
+        crate::effects::row_pending(self, id)
+    }
 }
 
 #[cfg(test)]

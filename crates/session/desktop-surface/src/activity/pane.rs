@@ -3172,15 +3172,15 @@ fn describe_room_changes(
 }
 
 /// The room keys a desktop writes to keep its projection consistent (the id
-/// counter, who owns each id namespace, the record index, schedule claims, a
-/// retained strip's marker): state about the room, not something anyone did
-/// in it.
+/// counter, the record index, schedule claims, and in older rooms who owned
+/// each id namespace and a kept strip's marker): state about the room, not
+/// something anyone did in it.
 const ROOM_BOOKKEEPING_KEYS: &[&str] = &[
     tilo_desktop_model::projection::ROOM_DESKTOP_COUNTER_KEY,
-    tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+    "contents_owners_v1",
     tilo_desktop_model::projection::ROOM_RECORDS_KEY,
     tilo_desktop_model::projection::ROOM_SCHEDULE_CLAIMS_KEY,
-    tilo_desktop_model::projection::STRIP_RETAINED_EMPTY_KEY,
+    "retained_empty_v1",
 ];
 
 /// Whether a change only wrote the room's bookkeeping.
@@ -3314,17 +3314,31 @@ impl PatchCounts {
             (automerge::PatchAction::DeleteMap { .. }, "grants" | "sandbox" | "members") => {
                 self.revokes = self.revokes.saturating_add(1);
             }
-            // A room's `contents` map: a window is an entry of a group's
-            // `tabs`, and a group closes with its last window.
-            (automerge::PatchAction::PutMap { value, .. }, "tabs")
+            // A room's layout: a window is an entry of its `windows`, and a
+            // group closes with its last window. (Older rooms kept each
+            // window under its group's `tabs`.)
+            (automerge::PatchAction::PutMap { value, .. }, "windows" | "tabs")
                 if matches!(value.0, Value::Object(_)) =>
             {
                 self.tabs_added = self.tabs_added.saturating_add(1);
             }
-            (automerge::PatchAction::DeleteMap { .. }, "tabs" | "groups") => {
+            (automerge::PatchAction::DeleteMap { .. }, "windows" | "tabs" | "groups") => {
                 self.tabs_removed = self.tabs_removed.saturating_add(1);
             }
-            (automerge::PatchAction::PutMap { key, .. }, _) if key == "order" => {
+            // A window's whole tab, its title among it.
+            (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "tab" => {
+                if let Some(title) = scalar_string(&value.0)
+                    .and_then(|json| serde_json::from_str::<tilo_desktop_model::Tab>(&json).ok())
+                    .map(|tab| tab.title)
+                    .filter(|title| !title.is_empty())
+                {
+                    self.tab_titles.push(title);
+                }
+            }
+            // Where an entry is: its order among its siblings, its parent.
+            (automerge::PatchAction::PutMap { key, .. }, _)
+                if key == "order" || key == "group" || key == "strip" =>
+            {
                 self.groups_moved = self.groups_moved.saturating_add(1);
             }
             // The workspace's own name, not a strip's.

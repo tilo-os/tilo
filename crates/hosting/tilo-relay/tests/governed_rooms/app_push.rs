@@ -37,7 +37,7 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     let relay = start(state.path(), &alice, &host).await;
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Lounge").await.unwrap();
-    super::topology_namespace::admit(&relay, &host, &laptop, &room.room).await;
+    super::members::admit(&relay, &host, &laptop, &room.room).await;
     let address = relay.node_addr();
     let link: RoomLink = RoomLink {
         relay: address.id,
@@ -185,8 +185,8 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
     let relay = start(state.path(), &alice, &host).await;
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Lounge").await.unwrap();
-    super::topology_namespace::admit(&relay, &host, &laptop, &room.room).await;
-    super::topology_namespace::admit(&relay, &host, &phone, &room.room).await;
+    super::members::admit(&relay, &host, &laptop, &room.room).await;
+    super::members::admit(&relay, &host, &phone, &room.room).await;
     let who = hex::encode(laptop.cert.user_public_key);
     rooms
         .put_room_grants(

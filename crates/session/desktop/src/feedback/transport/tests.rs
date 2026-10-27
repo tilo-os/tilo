@@ -178,7 +178,7 @@ fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
             views,
             device_id: "device".into(),
             instance_id: 7,
-            permissions: Rc::new(RefCell::new(admitted.permissions)),
+            permissions: ui::permissions::SharedPermissions::new(admitted.permissions),
             author: UserId(hex::encode([12; 32])),
             action_context: tilo_actions::ActionContext::default(),
         },

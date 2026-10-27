@@ -693,15 +693,15 @@ fn lay_out_bar(bar: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
     ) else {
         return;
     };
-    if taffy
-        .compute_layout(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(f32_of_f64(width)),
-                height: AvailableSpace::Definite(f32_of_f64(height)),
-            },
-        )
-        .is_err()
+    if crate::widget::solve_layout(
+        &mut taffy,
+        root,
+        taffy::Size {
+            width: AvailableSpace::Definite(f32_of_f64(width)),
+            height: AvailableSpace::Definite(f32_of_f64(height)),
+        },
+    )
+    .is_err()
     {
         return;
     }

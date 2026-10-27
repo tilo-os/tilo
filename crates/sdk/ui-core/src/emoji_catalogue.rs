@@ -8,7 +8,10 @@
 //! catalogue exists. A workspace's own emoji are *added* to it
 //! ([`crate::workspace_emoji`]), never a replacement for it; a program may
 //! still hand over a catalogue of its own before first use ([`CATALOGUE`]),
-//! which then wins over the built-in one.
+//! which then wins over the built-in one. A program built with
+//! `lazy-emoji` fetches the built-in one on first use instead
+//! ([`CATALOGUE`]'s loader, handing over [`builtin_catalogue`]); until it is
+//! in, [`catalogue`] is `None`.
 //!
 //! Recents are the person's own and stay on the device ([`EmojiRecents`]):
 //! a workspace emoji (`:name:`) is remembered like any other.
@@ -138,7 +141,8 @@ impl EmojiCatalogue for Builtin {
 
 /// The toolkit's catalogue in a language, one wrapper per locale ever asked
 /// for (a handful), kept for the process like the catalogues themselves.
-fn builtin(tag: &str) -> &'static dyn EmojiCatalogue {
+#[must_use]
+pub fn builtin_catalogue(tag: &str) -> &'static dyn EmojiCatalogue {
     static SHARED: Mutex<Vec<&'static Builtin>> = Mutex::new(Vec::new());
     let catalogue = emoji::Catalogue::for_locale(tag);
     let mut shared = SHARED
@@ -155,13 +159,24 @@ fn builtin(tag: &str) -> &'static dyn EmojiCatalogue {
 /// The catalogue in the language the interface speaks now: the one a program
 /// handed over, or the toolkit's own. Always present, so a text field's
 /// `:name:` completion and the picker never wait for a catalogue.
+#[cfg(not(feature = "lazy-emoji"))]
 #[must_use]
 pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
     let tag = crate::i18n::I18nManager::current_locale();
     Some(match CATALOGUE.get() {
         Some(for_locale) => for_locale(&tag),
-        None => builtin(&tag),
+        None => builtin_catalogue(&tag),
     })
+}
+
+/// The catalogue in the language the interface speaks now, or `None` while
+/// its code is still to come (and then fetched); what was drawn without it
+/// is drawn again once [`CATALOGUE`]'s generation moved.
+#[cfg(feature = "lazy-emoji")]
+#[must_use]
+pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
+    let for_locale = CATALOGUE.get()?;
+    Some(for_locale(&crate::i18n::I18nManager::current_locale()))
 }
 
 /// `name` as a shortcode writes it: lowercase, runs of anything that is not

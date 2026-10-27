@@ -12,7 +12,8 @@
 //! a person, an automation and an agent all get the same URL. A message's
 //! link is asked for once its controls are shown, ahead of a click: a browser
 //! copies only inside the click itself, and the room's host may answer well
-//! after it.
+//! after it. A click that comes before the answer claims the clipboard
+//! ([`ui::reserve_clipboard_copy`]) and fills it once the link is in.
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::InvokeArgument;
 use ui::{Arrival, InvocationCall, RemoteActions};
@@ -77,6 +78,8 @@ impl Default for Navigation {
 struct Pending {
     message: String,
     asked: Asked,
+    /// The clipboard the click claimed when its link was not in yet.
+    reserved: Option<ui::clipboard::ReservedCopy>,
 }
 
 /// What `call` came to: the link, why there is none, or `None` while it
@@ -313,10 +316,14 @@ impl ChatApp {
             }
             _ => self.ask_resource_link(reference, provider),
         };
+        let reserved = answer(&asked.call)
+            .is_none()
+            .then(ui::reserve_clipboard_copy);
         self.resource_navigation.status = None;
         self.resource_navigation.pending = Some(Pending {
             message: message.to_owned(),
             asked,
+            reserved,
         });
         Ok(())
     }
@@ -412,9 +419,10 @@ impl ChatApp {
             }
             None => return,
         };
-        let Some(pending) = self.resource_navigation.pending.take() else {
+        let Some(mut pending) = self.resource_navigation.pending.take() else {
             return;
         };
+        let reserved = pending.reserved.take();
         // The message may have changed while its link was fetched; a link
         // to what it no longer shows is not what the person asked for.
         let current = self.message(&pending.message).is_some_and(|row| {
@@ -424,11 +432,10 @@ impl ChatApp {
         let outcome = answer.and_then(|url| {
             if !current {
                 Err("The message no longer shares this resource".to_owned())
-            } else if self
-                .resource_navigation
-                .copy
-                .watch(ui::try_clipboard_copy(&url))
-            {
+            } else if self.resource_navigation.copy.watch(match reserved {
+                Some(reserved) => reserved.fill(&url),
+                None => ui::try_clipboard_copy(&url),
+            }) {
                 self.resource_navigation
                     .copied_for
                     .clone_from(&pending.message);
@@ -483,12 +490,16 @@ mod tests {
 
     const URL: &str = "https://tilo.so/app/#/host.example/room/so.tilo.notes/r/page:1";
 
+    type Answer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionHostError>>;
+
     /// The resource's app behind the door: answers `share-link` with `URL`,
     /// or refuses with `refusal`.
     #[derive(Default)]
     struct Door {
         refusal: Option<String>,
         asked: Mutex<Vec<InvokeRequest>>,
+        /// Answer only once the test hands the answer over.
+        held: Option<Mutex<Vec<Answer>>>,
     }
 
     impl ActionHost for Door {
@@ -507,6 +518,11 @@ mod tests {
         ) -> HostPending<Result<InvocationReceipt, ActionHostError>> {
             let invocation = request.invocation;
             self.asked.lock().unwrap().push(request);
+            if let Some(held) = &self.held {
+                let (answer, pending) = tilo_actions::remote::pending();
+                held.lock().unwrap().push(answer);
+                return pending;
+            }
             let status = match &self.refusal {
                 Some(message) => ReceiptStatus::Failed {
                     error: tilo_actions::ActionFailure {
@@ -652,6 +668,80 @@ mod tests {
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
         surface.begin_resource_navigation(&id);
         assert_eq!(door.asked.lock().unwrap().len(), asked);
+    }
+
+    /// A browser's clipboard: it takes a copy only inside the click, or one
+    /// the click claimed and filled later.
+    #[derive(Default)]
+    struct ClickClipboard {
+        text: Arc<Mutex<Option<String>>>,
+    }
+
+    impl ui::clipboard::ClipboardBackend for ClickClipboard {
+        fn set_text(&self, _: ui::clipboard::ClipboardTarget, _: &str) -> bool {
+            false
+        }
+
+        fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.text.lock().unwrap().clone()
+        }
+
+        fn reserve_text(&self) -> Option<ui::clipboard::ReservedCopy> {
+            let text = Arc::clone(&self.text);
+            Some(ui::clipboard::ReservedCopy::new(move |filled| {
+                let copied = filled.is_some();
+                if let Some(filled) = filled {
+                    *text.lock().unwrap() = Some(filled.to_owned());
+                }
+                ui::clipboard::ClipboardCopy::settled(copied)
+            }))
+        }
+
+        fn name(&self) -> &'static str {
+            "shared-resource-click-clipboard"
+        }
+    }
+
+    /// A click that comes before the host answered claims the clipboard in
+    /// the click, so the link still lands there once the answer arrives.
+    #[test]
+    fn a_click_before_the_link_arrived_copies_it_once_it_does() {
+        use crate::resource::ChatShell;
+        use ui::framework::testing::TestApp;
+        let door = Arc::new(Door {
+            held: Some(Mutex::default()),
+            ..Door::default()
+        });
+        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let services =
+            ui::host::HostServices::null().with_clipboard(Arc::new(ClickClipboard::default()));
+        let _scope = ui::host::enter(&services);
+        let id = shared(&mut app);
+        app.surface_mut::<ChatApp>().begin_resource_navigation(&id);
+        assert!(app.surface_mut::<ChatApp>().resource_navigation.pending());
+        assert_eq!(ui::clipboard_paste(), None);
+
+        let answers = std::mem::take(&mut *door.held.as_ref().unwrap().lock().unwrap());
+        assert!(!answers.is_empty(), "the link was asked for");
+        let asked = door.asked.lock().unwrap().clone();
+        for (answer, request) in answers.into_iter().zip(asked) {
+            answer.complete(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({"url": URL})),
+                        resources: Vec::new(),
+                    },
+                },
+            }));
+        }
+        app.settle();
+        app.surface_mut::<ChatApp>().settle_resource_navigation();
+        let surface = app.surface_mut::<ChatApp>();
+        assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
+        assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
+        assert!(!surface.resource_navigation.pending());
     }
 
     #[test]

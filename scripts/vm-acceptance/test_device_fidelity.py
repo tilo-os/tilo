@@ -164,7 +164,7 @@ def make_ctx(vm: FakeVm, out: Path):
     ctx = SimpleNamespace(vm=vm, facts={}, out=out, current=None)
     ctx.reset = lambda: None
     ctx.open_app = lambda *a, **k: ({"id": 1}, 0.0)
-    ctx.settle = lambda *a: None
+    ctx.wait_presented = lambda app_id, *a, **k: {"app_id": app_id, "presented": True, "frame_seq": 1}
     ctx.shot = lambda name: None
     ctx.write = lambda name, text: (out / name).write_text(text)
     # An unlocked desktop with nothing open: what the harness's after-check guards

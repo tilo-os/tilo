@@ -767,35 +767,101 @@ const NAMED_KEYS: &[&str] = &[
     "PageDown",
 ];
 
+/// How a key's name is read: without regard to case, so `END`, `End` and
+/// `end` name the same key, as do `CTRL` and `Ctrl` as a modifier.
+fn named_key(name: &str) -> Option<&'static str> {
+    NAMED_KEYS
+        .iter()
+        .copied()
+        .find(|named| named.eq_ignore_ascii_case(name))
+}
+
+/// The named keys `name` could have been misspelled for, as the closest ones
+/// first: the keys sharing its first letter, so an error can offer them.
+fn near_keys(name: &str) -> Vec<&'static str> {
+    let wanted = name.trim().to_ascii_lowercase();
+    let Some(first) = wanted.chars().next() else {
+        return Vec::new();
+    };
+    NAMED_KEYS
+        .iter()
+        .copied()
+        .filter(|named| named.to_ascii_lowercase().starts_with(first))
+        .collect()
+}
+
 impl PageKey {
     pub fn parse(chord: &str) -> Option<Self> {
-        let mut parts: Vec<&str> = chord.split('+').collect();
+        Self::parse_detailed(chord).ok()
+    }
+
+    /// [`Self::parse`], saying why the chord names no key: a caller needs to
+    /// know what to write instead, and that is never the same for a missing
+    /// modifier as for a key that does not exist.
+    ///
+    /// # Errors
+    /// The chord's own problem, phrased for the person who wrote it.
+    pub fn parse_detailed(chord: &str) -> Result<Self, String> {
+        let written = chord.trim();
+        if written.is_empty() {
+            return Err(
+                "press-page needs a key: name one, such as Enter, Tab, Escape, ArrowDown, End or Control+a"
+                    .into(),
+            );
+        }
+        let mut parts: Vec<&str> = written.split('+').collect();
         // `Control++` names the plus key itself.
-        if chord.ends_with("++") {
+        if written.ends_with("++") {
             parts.truncate(parts.len().saturating_sub(2));
             parts.push("+");
         }
-        let key = parts.pop()?;
+        let Some(key) = parts.pop().filter(|key| !key.is_empty()) else {
+            return Err(format!(
+                "press-page was given {written:?}, which ends before it names a key; write a key after the last +, such as Control+a"
+            ));
+        };
         let mut modifiers = KeyModifiers::default();
         for part in parts {
-            let flag = match part {
-                "Control" | "Ctrl" => &mut modifiers.ctrl,
-                "Shift" => &mut modifiers.shift,
-                "Alt" => &mut modifiers.alt,
-                "Meta" => &mut modifiers.meta,
-                _ => return None,
+            let flag = if part.eq_ignore_ascii_case("control") || part.eq_ignore_ascii_case("ctrl")
+            {
+                &mut modifiers.ctrl
+            } else if part.eq_ignore_ascii_case("shift") {
+                &mut modifiers.shift
+            } else if part.eq_ignore_ascii_case("alt") {
+                &mut modifiers.alt
+            } else if part.eq_ignore_ascii_case("meta") || part.eq_ignore_ascii_case("cmd") {
+                &mut modifiers.meta
+            } else {
+                return Err(format!(
+                    "{part:?} is not a key modifier; hold one of Control (or Ctrl), Shift, Alt or Meta before the key, as in Control+{key}"
+                ));
             };
             if std::mem::replace(flag, true) {
-                return None;
+                return Err(format!(
+                    "{part:?} is held twice in {written:?}; name each modifier once"
+                ));
             }
         }
-        let key = match key {
-            "Space" => " ",
-            named if NAMED_KEYS.contains(&named) => named,
-            character if character.chars().count() == 1 => character,
-            _ => return None,
+        let key: &str = if key.eq_ignore_ascii_case("space") {
+            " "
+        } else if let Some(named) = named_key(key) {
+            named
+        } else if key.chars().count() == 1 {
+            key
+        } else {
+            let near = near_keys(key);
+            let did_you_mean = if near.is_empty() {
+                String::new()
+            } else {
+                format!("; did you mean {}?", near.join(" or "))
+            };
+            return Err(format!(
+                "{key:?} is not a key name. Name a key as one of {} (in any letter case), or a single character such as a{main_did_you_mean}",
+                NAMED_KEYS.join(", "),
+                main_did_you_mean = did_you_mean
+            ));
         };
-        Some(Self {
+        Ok(Self {
             key: key.to_string(),
             modifiers,
         })
@@ -1252,6 +1318,50 @@ mod tests {
             for bad in ["", "Enterr", "Hyper+a", "Shift+Shift+a", "ab", "Control+"] {
                 assert!(PageKey::parse(bad).is_none(), "{bad}");
             }
+        }
+        // phase: key_names_are_read_in_any_letter_case
+        {
+            // A person writes END or end for the same key a keyboard has.
+            for (written, canonical) in [
+                ("END", "End"),
+                ("end", "End"),
+                ("arrowdown", "ArrowDown"),
+                ("PageUp", "PageUp"),
+                ("pageup", "PageUp"),
+                ("SPACE", "Space"),
+                ("ctrl+END", "Control+End"),
+                ("SHIFT+Tab", "Shift+Tab"),
+                ("cmd+a", "Meta+a"),
+            ] {
+                let key = PageKey::parse(written).unwrap_or_else(|| panic!("{written}"));
+                assert_eq!(key.chord(), canonical, "{written}");
+                assert_eq!(PageKey::parse(&key.chord()), Some(key), "{written}");
+            }
+            // A single character still means itself, whatever its case.
+            assert_eq!(PageKey::parse("A").unwrap().key, "A");
+            assert_eq!(PageKey::parse("a").unwrap().key, "a");
+        }
+        // phase: a_bad_key_says_what_a_key_is
+        {
+            let unknown = PageKey::parse_detailed("Homee").unwrap_err();
+            assert!(unknown.contains("\"Homee\" is not a key name"), "{unknown}");
+            assert!(unknown.contains("Home"), "{unknown}");
+            assert!(unknown.contains("did you mean Home?"), "{unknown}");
+            let modifier = PageKey::parse_detailed("Hyper+x").unwrap_err();
+            assert!(
+                modifier.contains("\"Hyper\" is not a key modifier"),
+                "{modifier}"
+            );
+            assert!(modifier.contains("Control"), "{modifier}");
+            let empty = PageKey::parse_detailed("  ").unwrap_err();
+            assert!(empty.contains("needs a key"), "{empty}");
+            let trailing = PageKey::parse_detailed("Control+").unwrap_err();
+            assert!(
+                trailing.contains("ends before it names a key"),
+                "{trailing}"
+            );
+            let twice = PageKey::parse_detailed("Shift+Shift+a").unwrap_err();
+            assert!(twice.contains("held twice"), "{twice}");
         }
         // phase: invalid_requests_are_refused_before_the_engine
         {

@@ -469,6 +469,8 @@ pub(crate) struct DurableRest {
     room_share_floor: std::collections::HashMap<RoomId, u64>,
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     strips_to_retain: std::collections::BTreeSet<crate::shell::state::StripId>,
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    layout_pending: std::collections::HashMap<RoomId, Vec<Vec<u8>>>,
     continuation_tabs: std::collections::BTreeSet<TabId>,
     continuation_rooms: std::collections::BTreeSet<RoomId>,
     continuation_owned_tabs: std::collections::HashMap<TabId, RoomId>,
@@ -533,6 +535,7 @@ impl DurableTree {
                 room_peer_identities: tree.room_peer_identities.clone(),
                 room_share_floor: tree.room_share_floor.clone(),
                 strips_to_retain: tree.strips_to_retain.clone(),
+                layout_pending: tree.layout_pending.clone(),
                 continuation_tabs: tree.continuation_tabs.clone(),
                 continuation_rooms: tree.continuation_rooms.clone(),
                 continuation_owned_tabs: tree.continuation_owned_tabs.clone(),
@@ -604,6 +607,9 @@ fn encode_durable(durable: &DurableTree) -> std::io::Result<EncodedTree> {
 /// `TreeSnapshot::write_to`.
 pub struct TreeSnapshot {
     durable: DurableTree,
+    /// The documents of the rooms this device's own engine holds, whose
+    /// changes since the previous save were cut with the tree's.
+    rooms: Vec<(RoomId, std::sync::Arc<DocLog>)>,
     runtime: super::native_workspace_owner::NativeStateRuntime,
     sequence: super::native_workspace_owner::store::StateSequence,
     /// Taken while an owner publication was in flight, whose install saves
@@ -616,7 +622,18 @@ impl TreeSnapshot {
     #[must_use]
     pub fn of(tree: &WorkspaceTree) -> Self {
         tree.native_runtime.document_log().cut(&tree.doc);
+        let rooms = tree
+            .room_docs
+            .iter()
+            .filter(|(room, _)| !tree.requires_native_owner(**room))
+            .map(|(room, doc)| {
+                let log = tree.native_runtime.room_document_log(*room);
+                log.cut_or_replace(doc);
+                (*room, log)
+            })
+            .collect();
         Self {
+            rooms,
             sequence: tree.native_runtime.next_sequence(),
             during_publication: tree.native_runtime.snapshot_during_publication(),
             runtime: tree.native_runtime.clone(),
@@ -654,6 +671,7 @@ impl TreeSnapshot {
         // Superseded or not, the changes cut for this snapshot are written:
         // the snapshot that superseded it may have been cut before them.
         write_document(&self.runtime, path);
+        write_room_documents(&self.rooms, path);
         #[cfg(test)]
         WRITES_ON_THIS_THREAD.with(|writes| {
             if published == super::native_workspace_owner::store::Publication::Written {
@@ -860,6 +878,59 @@ pub(crate) fn write_document(
     }
 }
 
+/// Where `room`'s document is kept beside the state file at `state`.
+pub fn room_doc_path(state: &Path, room: RoomId) -> PathBuf {
+    state
+        .with_extension("rooms")
+        .join(format!("{room}.automerge"))
+}
+
+/// Write each room document's pending changes beside the state file at
+/// `path`. Best-effort, like the tree document: a room's document that could
+/// not be written is written whole by a later save.
+fn write_room_documents(rooms: &[(RoomId, std::sync::Arc<DocLog>)], path: &Path) {
+    for (room, log) in rooms {
+        let doc_path = room_doc_path(path, *room);
+        let written = doc_path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| log.write(&doc_path, MAX_STATE_DOC_BYTES, |_| Ok(())));
+        if let Err(error) = written {
+            tracing::warn!(path = %doc_path.display(), %error, "could not save a room's document");
+        }
+    }
+}
+
+/// Take up the documents of the rooms this device's own engine holds, as
+/// saved beside the state file at `path`, so a room's history continues
+/// where it was rather than starting over from the tree.
+fn attach_room_docs(tree: &mut WorkspaceTree, path: &Path) {
+    let rooms: Vec<RoomId> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .chain(&tree.archived_workspaces)
+        .map(crate::shell::state::Workspace::room)
+        .filter(|room| !tree.requires_native_owner(*room))
+        .collect();
+    for room in rooms {
+        let doc_path = room_doc_path(path, room);
+        match doc_log::load(&doc_path, MAX_STATE_DOC_BYTES) {
+            Ok(Some(loaded)) => {
+                tree.native_runtime.room_document_log(room).attach(
+                    &doc_path,
+                    &loaded.doc,
+                    loaded.extent,
+                    None,
+                );
+                tree.room_docs.insert(room, loaded.doc);
+            }
+            Ok(None) => {}
+            Err(error) => set_aside_unreadable_doc(&doc_path, &error),
+        }
+    }
+}
+
 /// Keep a document and log that cannot be opened for recovery, out of the
 /// way of the next save.
 fn set_aside_unreadable_doc(doc_path: &Path, error: &dyn std::fmt::Display) {
@@ -978,6 +1049,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
     // Before the repairs below, so the seed after them records their outcome.
     attach_saved_doc(&mut tree, path);
+    attach_room_docs(&mut tree, path);
     bind_workspaces_to_rooms(&mut tree);
     drop_unidentifiable_windows(&mut tree);
     tree.prune_local_app_records();

@@ -1,5 +1,4 @@
 [ratchets.closure_control]
-"apps/canvas/src/lib.rs" = 3
 "apps/canvas/src/panels/brushes.rs" = 1
 "apps/canvas/src/panels/inspector.rs" = 5
 "apps/canvas/src/panels/layers.rs" = 2

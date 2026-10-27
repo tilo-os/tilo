@@ -4,16 +4,16 @@
 
 use std::time::{Duration, Instant};
 
-use super::paint::BridgePhaseTiming;
+use super::paint;
+use super::runtime::ScanoutCommand;
 use super::scanout;
 use super::{
-    DIRECT_RETIREMENT_TIMEOUT, DirectOutcome, DirectRender, DrmPresenter, FlipVblank, OutputId,
-    OwedFlip, PaintScanoutSample, ScanoutFrame, demote_direct, direct_failures, direct_reason,
+    DIRECT_RETIREMENT_TIMEOUT, DrmPresenter, FlipVblank, FlipWait, OwedFlip, PaintScanoutSample,
+    ScanoutFrame, apply_scanout_command, demote_direct, direct_failures, direct_reason,
     direct_status, fastest_direct_refresh, flip_wait, paint_scanouts, physical_flip_proof,
     publish_client_planes, quiesce_presentations, refresh_of, report_signal_status,
+    route_flip_completions, service_links,
 };
-use crate::compositor::frame::FramePaint;
-use crate::compositor::present::Presenter;
 use tilo_lock::MutexRecover as _;
 
 impl DrmPresenter {
@@ -24,7 +24,7 @@ impl DrmPresenter {
     /// DRM master for a VT switch (`DrmDispatchState::perform(SessionAction::DropMaster)`)
     /// waits until no output's page flip is queued or in flight. A `Pause` queued before
     /// that drop is drained here under the same gate, so the frame after it paints nothing.
-    fn submit(
+    pub(super) fn submit(
         &mut self,
         frame: ScanoutFrame<'_>,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
@@ -248,7 +248,7 @@ impl DrmPresenter {
     /// Wait up to `timeout` for the page flip queued on `scanouts[index]`.
     /// Every completion read on the way goes to the scanout it belongs to: the
     /// card's sibling outputs share this event stream.
-    fn retire_physical_flip(
+    pub(super) fn retire_physical_flip(
         &mut self,
         index: usize,
         timeout: Duration,
@@ -262,7 +262,7 @@ impl DrmPresenter {
 
     /// A flip on `scanouts[index]` did not retire in time: its completion can no
     /// longer prove a frame, and a direct output goes to the readback presenter.
-    fn retire_timed_out(&mut self, index: usize) {
+    pub(super) fn retire_timed_out(&mut self, index: usize) {
         let Some(entry) = self.scanouts.get_mut(index) else {
             return;
         };
@@ -288,7 +288,7 @@ impl DrmPresenter {
     /// the vblank of every completion read on the way and routing each to the scanout
     /// it belongs to. A timeout here is only an answer: [`Self::retire_physical_flip`]
     /// decides what an overdue flip costs.
-    fn await_flip(
+    pub(super) fn await_flip(
         &mut self,
         index: usize,
         timeout: Duration,
@@ -449,7 +449,7 @@ impl DrmPresenter {
 
     /// Apply every reconfiguration the loop thread has queued.
     /// Move every output's link along ([`service_links`]).
-    fn service_links(&mut self) {
+    pub(super) fn service_links(&mut self) {
         let completions = service_links(
             &mut self.scanouts,
             !self.paused,

@@ -78,9 +78,8 @@ impl NotesOutline {
         let pick = Rc::clone(&chosen);
         Self {
             list: NavList::new(Vec::new())
-                .with_id("notes.outline")
                 .with_accessible_name(ui::i18n!("notes-outline"))
-                .on_select(move |id| *pick.borrow_mut() = Some(id)),
+                .on_view("notes.outline", move |id| *pick.borrow_mut() = Some(id)),
             headings: Vec::new(),
             chosen,
             structure_dirty: false,

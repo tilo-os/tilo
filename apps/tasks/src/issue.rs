@@ -647,6 +647,15 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 .unwrap_or_default()
         }
     });
+    let running = cx.value({
+        let id = id.clone();
+        move |tracker: &Tracker| {
+            tracker
+                .issues
+                .get(&id)
+                .is_some_and(|issue| issue.active_run().is_some())
+        }
+    });
     let people = cx.people();
     let list = cx.switch(&messages, move |_, messages| {
         let mut column = Column::new()
@@ -664,24 +673,25 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         .with_id("tasks-thread-draft")
         .with_accessible_name(tr("tasks-thread-draft"))
         .with_placeholder("tasks-thread-placeholder");
-    let comment_draft = draft.clone();
-    let comment_id = id.clone();
-    let comment = cx.actions().bind(
-        Button::new("tasks-thread-comment", "tasks-thread-comment"),
-        Tracker::COMMENT.map(move |()| tracker::Comment {
-            issue: comment_id.clone(),
-            text: take(&comment_draft),
-        }),
-    );
-    let run_draft = draft;
-    let run_id = id.clone();
-    let to_run = cx.actions().bind(
-        Button::new("tasks-thread-to-run", "tasks-thread-to-run"),
+    // One message, sent with one button: to the run while one reads it, and
+    // into the thread otherwise, so a task nobody is running still carries
+    // the conversation its collaborators have about it.
+    let send_draft = draft;
+    let send_id = id.clone();
+    let send = cx.actions().bind(
+        Button::new("tasks-thread-send", "tasks-thread-send"),
         Tracker::SEND_MESSAGE.map(move |()| tracker::SendMessage {
-            issue: run_id.clone(),
-            text: take(&run_draft),
+            issue: send_id.clone(),
+            text: take(&send_draft),
         }),
     );
+    let label = cx.switch(&running, move |_, running| {
+        Box::new(Text::new(if *running {
+            "tasks-thread-send-to-agent"
+        } else {
+            "tasks-thread-send"
+        })) as Element
+    });
     Box::new(
         Column::new()
             .with_no_padding()
@@ -695,8 +705,8 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             .push(Box::new(
                 Row::new()
                     .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(comment))
-                    .push(Box::new(to_run)),
+                    .push(Box::new(send))
+                    .push(label),
             )),
     )
 }

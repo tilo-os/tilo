@@ -360,10 +360,20 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 
     /// The live row `id`, when [`live_rows`](Self::live_rows) leaves it out,
     /// so an action addressed to any entity the surface knows still reaches
-    /// it.
+    /// it. Never reads what the surface reads off the UI thread: a row it
+    /// has not read yet is [`live_row_pending`](Self::live_row_pending).
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         let _ = id;
         None
+    }
+
+    /// Whether the live row `id`, which [`live_row`](Self::live_row) does
+    /// not know now, may be known once what the surface is reading lands:
+    /// an agent addressing it is answered then. Start that read here if it
+    /// has not started; the window must be woken when it lands.
+    fn live_row_pending(&self, id: &str) -> bool {
+        let _ = id;
+        false
     }
 
     /// Whether [`row_declarations`](Self::row_declarations) binds edits on
@@ -462,6 +472,7 @@ pub(crate) trait SurfacePublication {
     fn availability(&self) -> Vec<EffectStatus>;
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
+    fn live_row_pending(&self, id: &str) -> bool;
     /// Whether the surface binds edits on rows at all
     /// ([`ResourceSurface::ROW_DECLARATIONS`]).
     fn binds_rows(&self) -> bool;
@@ -1158,7 +1169,16 @@ impl Decorator for HostedSurface {
 
 impl ResourceOperations for HostedSurface {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        ui_core::host_operation::resource_operation_handlers(self.host.surface())
+        let surface = self.host.surface();
+        let mut handlers = ui_core::host_operation::resource_operation_handlers(surface);
+        // A decorated container lists its own; the surface's children it
+        // shows over it (a dialog) answer theirs too.
+        if decorates_routing(surface) {
+            surface.for_each_child(&mut |child| {
+                handlers.extend(ui_core::host_operation::resource_operation_handlers(child));
+            });
+        }
+        handlers
     }
 
     fn start_operation(
@@ -1175,11 +1195,16 @@ impl ResourceOperations for HostedSurface {
         // answer theirs, never the surface by hand. A toolkit container the
         // surface decorates (its shell) routes them to its parts, those its
         // children do not list among them too (a header button shown in
-        // the window's bar), as it lists their handlers.
+        // the window's bar), as it lists their handlers. What it does not
+        // answer goes to the surface's own children: a dialog the surface
+        // shows over its shell.
         let before = doc.pending_ops();
         let surface = self.host.surface_mut();
         let started = if decorates_routing(surface) {
-            ui_core::host_operation::start_operation(surface, op, doc, path)
+            match ui_core::host_operation::start_operation(surface, op, doc, path) {
+                Ok(None) => ui_core::host_operation::start_in_children(surface, op, doc, path),
+                answered => answered,
+            }
         } else {
             ui_core::host_operation::start_in_children(surface, op, doc, path)
         };
@@ -1198,14 +1223,16 @@ impl ResourceOperations for HostedSurface {
             return Some(update);
         }
         let surface = self.host.surface_mut();
-        if decorates_routing(surface) {
-            return ui_core::host_operation::poll_resource_operation(
+        if decorates_routing(surface)
+            && let Some(update) = ui_core::host_operation::poll_resource_operation(
                 surface,
                 invocation,
                 cancellation_requested,
                 doc,
                 path,
-            );
+            )
+        {
+            return Some(update);
         }
         surface.children_mut().into_iter().find_map(|child| {
             ui_core::host_operation::poll_resource_operation(
@@ -1241,6 +1268,9 @@ impl SurfacePublication for HostedSurface {
     }
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.host.live_row(id)
+    }
+    fn live_row_pending(&self, id: &str) -> bool {
+        self.host.live_row_pending(id)
     }
     fn binds_rows(&self) -> bool {
         self.host.binds_rows()
@@ -1327,6 +1357,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.surface.live_row(id)
+    }
+
+    fn live_row_pending(&self, id: &str) -> bool {
+        self.surface.live_row_pending(id)
     }
 
     fn binds_rows(&self) -> bool {

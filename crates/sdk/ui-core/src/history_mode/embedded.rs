@@ -102,30 +102,46 @@ pub(crate) fn needs_refresh(
     fallback_width: f64,
     status: Option<&crate::widget::WindowStatus>,
 ) -> bool {
-    surfaces_need_refresh(root, doc, fallback_width, status).0
+    surfaces_need_refresh(root, doc, fallback_width, status).needed
 }
 
-/// [`needs_refresh`], and whether `root` holds any History surface.
+/// What one walk for the History surfaces in a tree found.
+#[derive(Default)]
+pub(crate) struct SurfacesWalk {
+    /// A surface needs a refresh ([`needs_refresh`]).
+    pub(crate) needed: bool,
+    /// The tree holds any History surface.
+    pub(crate) found: bool,
+    /// The earliest moment a surface asks for a refresh on its own
+    /// (`HistoryHost::next_refresh`).
+    pub(crate) due: Option<(crate::background::Background, crate::time::Instant)>,
+}
+
+/// [`needs_refresh`], and what else the walk found ([`SurfacesWalk`]).
 pub(crate) fn surfaces_need_refresh(
     root: &dyn Widget,
     doc: &automerge::AutoCommit,
     fallback_width: f64,
     status: Option<&crate::widget::WindowStatus>,
-) -> (bool, bool) {
-    let mut needed = false;
-    let mut found = false;
+) -> SurfacesWalk {
+    let mut walk = SurfacesWalk::default();
     crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
-        found = true;
+        walk.found = true;
+        if let Some((background, at)) = history.next_refresh()
+            && walk.due.as_ref().is_none_or(|(_, due)| at < *due)
+        {
+            walk.due = Some((background, at));
+        }
         let width = if history.get_rect().width() > 0.0 {
             history.get_rect().width()
         } else {
             fallback_width
         };
-        needed |= history.validate_root(live).is_err()
+        walk.needed |= history.validate_root(live).is_err()
             || !history.sync_status_matches(status)
             || history.needs_refresh(doc, width);
     });
-    (needed, found)
+    walk
 }
 /// One walk for a frame that changes nothing History reads: `None` when any
 /// surface is not at rest (`HistoryHost::at_rest`), otherwise whether any needs a

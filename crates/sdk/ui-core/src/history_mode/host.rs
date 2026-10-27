@@ -214,6 +214,7 @@ impl HistoryHost {
         }
         if !self.open {
             self.open_requested.set(true);
+            super::note_news();
         }
         true
     }
@@ -222,6 +223,7 @@ impl HistoryHost {
     pub(crate) fn request_close(&self) {
         if self.open {
             self.open_requested.set(true);
+            super::note_news();
         }
     }
 
@@ -232,6 +234,7 @@ impl HistoryHost {
             return false;
         }
         self.requested_entry = Some(entry);
+        super::note_news();
         true
     }
 
@@ -387,6 +390,7 @@ impl HistoryHost {
                     .with_preview_selection()
                     .on_open_entry(move |entry| {
                         opens.borrow_mut().push_back(Command::Open(*entry));
+                        super::note_news();
                     });
                 timeline.set_filters_people(true);
                 timeline
@@ -1066,6 +1070,7 @@ impl HistoryHost {
             .commands()
             .borrow_mut()
             .push_back(command);
+        super::note_news();
     }
     #[cfg(test)]
     pub(crate) fn pending_control_callback_for_test(
@@ -1322,6 +1327,18 @@ impl HistoryHost {
         } else {
             &mut self.after
         }
+    }
+    /// The earliest moment this surface asks for a refresh on its own (a
+    /// file history polling its activity), on the clock of the work that
+    /// polls.
+    pub(crate) fn next_refresh(
+        &self,
+    ) -> Option<(crate::background::Background, crate::time::Instant)> {
+        self.files
+            .iter()
+            .chain(&self.retired_files)
+            .filter_map(super::files_session::FileController::next_refresh)
+            .min_by_key(|(_, at)| *at)
     }
     pub(crate) fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
         self.refresh_without_owners(width)
@@ -1680,7 +1697,10 @@ impl HistoryHost {
     }
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label).on_click(move || queue.borrow_mut().push_back(command))
+        Button::new(id, label).on_click(move || {
+            queue.borrow_mut().push_back(command);
+            super::note_news();
+        })
     }
     fn preview_page_toolbar(&self, mut toolbar: Column) -> Column {
         if let Some(preview) = &self.canvas().preview {
@@ -1759,7 +1779,10 @@ impl HistoryHost {
                             "history-open",
                             crate::widget::window_header::HistoryControl::of(self.open),
                         )
-                        .on_click(move || clicked.set(true)),
+                        .on_click(move || {
+                            clicked.set(true);
+                            super::note_news();
+                        }),
                     )),
                 ));
             }
@@ -1840,7 +1863,8 @@ impl HistoryHost {
                                     confirm_token.clone(),
                                     typed.borrow().clone(),
                                 ),
-                            )
+                            );
+                            super::note_news();
                         });
                         #[cfg(test)]
                         self.pending_control_callbacks
@@ -1852,7 +1876,8 @@ impl HistoryHost {
                         let command =
                             super::pending_controls::ContinuationCommand::Review(token.clone());
                         let callback = PendingControlCallback::new(move || {
-                            commands.borrow_mut().push_back(command.clone())
+                            commands.borrow_mut().push_back(command.clone());
+                            super::note_news();
                         });
                         #[cfg(test)]
                         self.pending_control_callbacks
@@ -1866,7 +1891,8 @@ impl HistoryHost {
                     let callback = PendingControlCallback::new(move || {
                         commands.borrow_mut().push_back(
                             super::pending_controls::ContinuationCommand::Cancel(token.clone()),
-                        )
+                        );
+                        super::note_news();
                     });
                     #[cfg(test)]
                     self.pending_control_callbacks
@@ -2081,8 +2107,12 @@ impl HistoryHost {
             let label = I18nManager::lookup_plain("history-mode-back-to-live");
             let close = self.commands.clone();
             Some(
-                Button::icon_only("history-back-live", crate::icons::Icon::X, &label)
-                    .on_click(move || close.borrow_mut().push_back(Command::Live)),
+                Button::icon_only("history-back-live", crate::icons::Icon::X, &label).on_click(
+                    move || {
+                        close.borrow_mut().push_back(Command::Live);
+                        super::note_news();
+                    },
+                ),
             )
         } else if self.window_presents {
             // The window's bar holds History's control, which closes it as
@@ -2097,7 +2127,10 @@ impl HistoryHost {
                     "history-open",
                     crate::widget::window_header::HistoryControl::Open,
                 )
-                .on_click(move || clicked.set(true)),
+                .on_click(move || {
+                    clicked.set(true);
+                    super::note_news();
+                }),
             )
         };
         // The panel's name is painted beside the control
@@ -2181,6 +2214,7 @@ impl HistoryHost {
                             commands
                                 .borrow_mut()
                                 .push_back(Command::Review(review::ReviewCommand::Name));
+                            super::note_news();
                         }),
                 ));
             } else {
@@ -2228,7 +2262,10 @@ impl HistoryHost {
             .push(Box::new(
                 Button::new("history-back-now", "history-preview-now")
                     .role(ButtonRole::Plain)
-                    .on_click(move || now.borrow_mut().push_back(Command::Now)),
+                    .on_click(move || {
+                        now.borrow_mut().push_back(Command::Now);
+                        super::note_news();
+                    }),
             ));
     }
 

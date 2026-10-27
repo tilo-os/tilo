@@ -686,9 +686,9 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
                 views,
                 device_id: "D".into(),
                 instance_id: 1,
-                permissions: Rc::new(RefCell::new(
+                permissions: crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 author: crate::permissions::UserId("probe-author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -885,8 +885,9 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
                 .is_err()
         );
         assert_eq!(fixture.app.state.doc.pending_ops(), pending);
-        *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
+        fixture
+            .permissions
+            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
         assert!(fixture.app.document_history_snapshot().is_err());
         assert!(!fixture.app.document_history.is_open());
     }
@@ -923,7 +924,7 @@ struct ActionFixture {
     app: App,
     records: crate::record::RecordStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
-    permissions: Rc<RefCell<crate::permissions::PermissionContext>>,
+    permissions: crate::permissions::SharedPermissions,
 }
 
 impl ActionFixture {
@@ -957,7 +958,7 @@ impl ActionFixture {
             )
             .unwrap(),
         );
-        let permissions = Rc::new(RefCell::new(
+        let permissions = crate::permissions::SharedPermissions::new(
             crate::permissions::PermissionContext::granted(
                 "fixture-user",
                 &crate::permissions::TreePath::root(),
@@ -965,7 +966,7 @@ impl ActionFixture {
                 Some(110),
             )
             .at_unix_time(100),
-        ));
+        );
         let mut column = Column::new();
         let mut bindings: Vec<crate::bound_dispatch::CallbackBinding> = Vec::new();
         for (instance, create) in [
@@ -1000,7 +1001,7 @@ impl ActionFixture {
                     device_id: "D".into(),
                     instance_id: instance,
                     permissions: if separate && instance == 12 {
-                        Rc::new(RefCell::new(permissions.borrow().clone()))
+                        crate::permissions::SharedPermissions::new(permissions.borrow().clone())
                     } else {
                         permissions.clone()
                     },
@@ -1242,7 +1243,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         let _ = fixture.app.collect_resources();
         assert_eq!(DISCOVERY_COUNT.get(), first);
         let expired = fixture.permissions.borrow().clone().at_unix_time(120);
-        *fixture.permissions.borrow_mut() = expired;
+        fixture.permissions.set(expired);
         let resources = fixture.app.collect_resources();
         assert!(
             tilo_actions::door::resolve(
@@ -1253,7 +1254,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         );
         assert!(DISCOVERY_COUNT.get() > first);
         let expired = fixture.permissions.borrow().clone();
-        *fixture.permissions.borrow_mut() = expired.at_unix_time(100);
+        fixture.permissions.set(expired.at_unix_time(100));
         fixture
             .records
             .with_action_state(&fixture.bindings[0].checkout.id, |_, _, state| {
@@ -1390,8 +1391,9 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         }
         let alias = second.rows[0].resource.clone();
         let previous_permissions = fixture.permissions.borrow().clone();
-        *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
+        fixture
+            .permissions
+            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
         let stale = fixture
             .app
             .action_directory_page(runtime_collab::ActionDirectoryQuery {
@@ -1420,7 +1422,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 )
                 .is_err()
         );
-        *fixture.permissions.borrow_mut() = previous_permissions;
+        fixture.permissions.set(previous_permissions);
         for malformed in [
             format!("{}broken", crate::bound_dispatch::PUBLICATION_PREFIX),
             format!("{alias}:extra"),
@@ -1532,14 +1534,16 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
     // Case `task4_bound_control_authority_refreshes_without_an_outer_generation_change`.
     {
         let mut fixture = ActionFixture::new();
+        fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
         fixture.app.refresh_control_action_availability();
         assert_eq!(
             CONTROL_AUTHORITY.with_borrow(Clone::clone),
             vec![(false, true), (true, true)]
         );
-        *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
+        fixture
+            .permissions
+            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
         fixture.app.refresh_control_action_availability();
         assert_eq!(
@@ -1872,7 +1876,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             let denied =
                 crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
             if !initially_allowed {
-                *fixture.permissions.borrow_mut() = denied.clone();
+                fixture.permissions.set(denied.clone());
             }
             fixture.app.open_action_palette();
             fixture
@@ -1898,7 +1902,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                         .result_labels()
                         .contains(&"Hidden sealed write title".to_owned())
                 );
-                *fixture.permissions.borrow_mut() = denied;
+                fixture.permissions.set(denied);
                 fixture.app.refresh_action_palette_resources();
                 fixture
                     .app
@@ -2025,8 +2029,9 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             ticks += 1;
             assert!(ticks < 5, "the first owner must participate in this pass");
         }
-        *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
+        fixture
+            .permissions
+            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
         ticks = 0;
         loop {
             progress = step(palette);
@@ -2616,9 +2621,9 @@ fn a_hosted_components_search_request_becomes_a_host_intent() {
             views,
             device_id: "D".into(),
             instance_id: 21,
-            permissions: Rc::new(RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("fixture-user".into()),
             action_context: tilo_actions::ActionContext::default(),
         },
@@ -3031,8 +3036,9 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
             schema_version: 1,
             bytes: b"pending-peer-view".to_vec(),
         });
-    *fixture.permissions.borrow_mut() =
-        crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
+    fixture
+        .permissions
+        .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
     let heads = fixture.app.state.doc.get_heads();
     let mut actual_before = fixture
         .records
@@ -3060,7 +3066,7 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
         .read(&target.binding.checkout.id, Clone::clone)
         .unwrap();
     assert_eq!(actual_after.get_heads(), actual_heads);
-    *fixture.permissions.borrow_mut() = granted;
+    fixture.permissions.set(granted);
     let accepted = fixture.app.invoke_bound_target(
         &target,
         &ResourceInvocation::new(&target.address.address, &actor)
@@ -3179,9 +3185,11 @@ fn bound_hover_carries_snapshots_only_across_unwritten_records() {
 #[test]
 fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
     let mut fixture = ActionFixture::new();
+    // What constructing the fixture pushed is owed again.
+    fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
     let at = |fixture: &ActionFixture, time| {
         let moved = fixture.permissions.borrow().clone().at_unix_time(time);
-        *fixture.permissions.borrow_mut() = moved;
+        fixture.permissions.set(moved);
     };
     let availability = |fixture: &mut ActionFixture| {
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
@@ -3192,6 +3200,13 @@ fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
         availability(&mut fixture),
         vec![(false, true), (true, true)]
     );
+    assert_eq!(
+        availability(&mut fixture),
+        vec![],
+        "a frame that changed nothing, permissions included, walks no component"
+    );
+    // Owed again as after any change of the tree.
+    fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
     assert_eq!(
         availability(&mut fixture),
         vec![(false, true), (true, true)],
