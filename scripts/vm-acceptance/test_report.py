@@ -57,12 +57,44 @@ class FailureEvidence(unittest.TestCase):
 
     def test_the_whole_is_bounded(self):
         results = []
-        for i in range(40):
-            (self.out / "data" / f"{i}.log").write_text("y" * 5000)
-            results.append(self.result(f"C{i:02}", "fail", f"data/{i}.log"))
+        for i in range(80):
+            for j in range(3):
+                (self.out / "data" / f"{i}-{j}.log").write_text("Q" * 5000)
+            results.append(self.result(f"C{i:02}", "fail", *(f"data/{i}-{j}.log" for j in range(3))))
         text = report.failure_evidence(self.out, results)
-        self.assertLess(len(text), report.EVIDENCE_TOTAL_BYTES + 8192)
-        self.assertIn("left out", text)
+        self.assertLessEqual(text.count("Q"), report.EVIDENCE_TOTAL_BYTES)
+        self.assertIn("the run's printed evidence reached", text)
+
+    def test_each_check_has_its_own_share(self):
+        # A first check with many large files leaves the next check its own share.
+        big = [f"data/R01-{i}.log" for i in range(10)]
+        for rel in big:
+            (self.out / rel).write_text("m" * 5000)
+        (self.out / "data" / "I02-keyboards.json").write_text('{"compositor": "no profile keyboard"}')
+        r01 = self.result("R01", "fail", *big)
+        i02 = self.result("I02", "fail", "data/I02-keyboards.json")
+        text = report.failure_evidence(self.out, [r01, i02])
+        self.assertIn("R01's printed evidence reached", text)
+        r01_text = text[:text.index("==== I02")]
+        self.assertLessEqual(r01_text.count("m"), report.EVIDENCE_CHECK_BYTES)
+        self.assertIn('{"compositor":"no profile keyboard"}', text)
+
+    def test_a_checks_diagnosis_comes_before_its_bulky_files(self):
+        for rel, body in (("data/R01-shell-memory-map.json", '{"rows": 1}'),
+                          ("data/R01-samples.csv", "a,b\n1,2\n"),
+                          ("data/R01-idle-empty.json", '{"cpu": 1}'),
+                          ("data/R01-named.txt", "the cause"),
+                          ("errors/R01.txt", "Traceback")):
+            (self.out / rel).write_text(body)
+        r = self.result("R01", "fail", "data/R01-shell-memory-map.json", "data/R01-samples.csv",
+                        "data/R01-idle-empty.json", "data/R01-named.txt", "errors/R01.txt")
+        r.detail = "over budget (R01-named.txt names the cause)"
+        order = [line.split(": ", 1)[1].split(" ")[0]
+                 for line in report.failure_evidence(self.out, [r]).splitlines()
+                 if line.startswith("==== ")]
+        self.assertEqual(order[:2], ["data/R01-named.txt", "errors/R01.txt"])
+        self.assertEqual(order[2], "data/R01-idle-empty.json")
+        self.assertEqual(set(order[3:]), {"data/R01-shell-memory-map.json", "data/R01-samples.csv"})
 
     def test_nothing_failed_prints_nothing(self):
         self.assertEqual(report.failure_evidence(self.out, [self.result("A", "pass")]), "")
