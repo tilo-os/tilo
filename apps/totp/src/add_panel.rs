@@ -561,14 +561,14 @@ fn import_section(sheet: &Shared, values: &Values, uri_expanded: bool) -> Vec<El
                 .icon(Icon::Image)
                 .secondary(t("totp-add-scan-description"))
                 .disclosure()
-                .on_activate(queued(sheet, Msg::PickImage)),
+                .on_effect(queued(sheet, Msg::PickImage)),
         ),
         Box::new(
             ListRow::new("totp-paste-link", t("totp-add-link-title"))
                 .icon(Icon::ExternalLink)
                 .secondary(t("totp-add-link-description"))
                 .disclosure()
-                .on_activate(queued(sheet, Msg::ExpandLink)),
+                .on_view(queued(sheet, Msg::ExpandLink)),
         ),
     ]))];
     if uri_expanded {
