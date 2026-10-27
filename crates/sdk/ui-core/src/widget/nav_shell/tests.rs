@@ -2584,3 +2584,48 @@ fn a_shown_title_that_changes_keeps_the_tree_and_one_that_goes_rebuilds_it() {
         "a title that goes changes the header row"
     );
 }
+
+/// A header's actions that each take their change in place (a label, whether one is enabled)
+/// keep the row as it is; an action that comes or goes changes it.
+#[test]
+fn header_actions_changed_in_place_keep_the_row() {
+    use crate::component::Described as _;
+    use crate::widget::StructureChange;
+    let action = || -> Element { Probe::boxed("reply").0 };
+    let shell = mail_shell().content_header("Design review", vec![action(), action()]);
+    let mut h = harness(shell, 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let _ = h.root_mut::<NavShell>().take_structure_change();
+
+    {
+        let shell = h.root_mut::<NavShell>();
+        let views = shell
+            .slot_views("actions")
+            .expect("the content header's actions");
+        assert_eq!(views.len(), 2);
+        assert!(
+            views.view_mut(0).is_some(),
+            "an action, reconciled where it stands"
+        );
+        shell.finish_slot_edit();
+    }
+    assert_eq!(
+        h.root_mut::<NavShell>().take_structure_change(),
+        StructureChange::None,
+        "actions changed in place keep the header row"
+    );
+
+    {
+        let shell = h.root_mut::<NavShell>();
+        let views = shell
+            .slot_views("actions")
+            .expect("the content header's actions");
+        views.remove(1);
+        shell.finish_slot_edit();
+    }
+    assert_eq!(
+        h.root_mut::<NavShell>().take_structure_change(),
+        StructureChange::Rebuild,
+        "an action that goes changes the row"
+    );
+}
