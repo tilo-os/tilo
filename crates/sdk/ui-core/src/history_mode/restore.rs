@@ -168,6 +168,16 @@ impl PreparedContentRestore {
     }
 }
 
+/// Check a restore schema on its own, before a record exists: a schema that
+/// names no content selector, or that would rewrite the record's own
+/// bookkeeping, is refused at registration rather than at the first restore.
+///
+/// # Errors
+/// Returns the failure a person could act on.
+pub fn check_schema(schema: &'static HistoryRestoreSchema) -> Result<(), RestoreError> {
+    schema::validate(schema)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestoreOutcome {
     Changed,

@@ -9,6 +9,7 @@
 
 use std::any::TypeId;
 
+use tilo_resource::model::Model as _;
 use tilo_resource::{Reader, Resource, Shape};
 use ui_core::automerge::AutoCommit;
 use ui_core::history_mode::restore::{
@@ -17,8 +18,9 @@ use ui_core::history_mode::restore::{
     RestoreValueType,
 };
 use ui_core::history_mode::{
-    FrozenRootPreview, HistoryDefinition, HistoryPresentation, HistoryPreview,
-    HistoryScopeDefinition, PreviewInput, PreviewView,
+    BinaryVersion, FrozenRootPreview, HistoricalGap, HistoricalSupport, HistoryDefinition,
+    HistoryPresentation, HistoryPreview, HistoryScopeDefinition, PreviewInput, PreviewView,
+    TextRendering,
 };
 use ui_core::vello::kurbo::Rect;
 
@@ -236,6 +238,129 @@ fn restore_node(shape: Shape) -> HistoryRestoreNode {
 /// A version is valid content exactly when the resource reads from it.
 fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
     R::read(doc).map(drop).map_err(|error| error.to_string())
+}
+
+/// What History can do with `R`'s versions, from what the type declared:
+/// its restore schema (see [`restore_schema`]) and whether it renders its
+/// record as text.
+#[must_use]
+pub(crate) fn historical_support<R: Resource>() -> HistoricalSupport {
+    HistoricalSupport::of(
+        &HistoryScopeDefinition {
+            key: "resource",
+            title: R::LABEL,
+            presentation: HistoryPresentation::Domain {
+                create: unavailable_preview,
+            },
+            content_schema: restore_schema::<R>(),
+        },
+        text_rendering::<R>(),
+    )
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a HistoryPresentation factory's signature, never called"
+)]
+fn unavailable_preview(_: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
+    Err("this scope is a declaration, not a preview".into())
+}
+
+/// Whether `R` renders its record as text for History: an app may say so for
+/// its own type (`ResourceApp::HISTORY_RENDERS_TEXT`), else the type's `read`
+/// adapter is the test — a type that reads its record answers the same
+/// question at every version.
+#[must_use]
+pub(crate) fn text_rendering<R: Resource>() -> TextRendering {
+    TextRendering::from_declaration(R::READABLE, R::HISTORY_READS_TEXT)
+}
+
+/// One version of `R` as the read door answers it: the type's own `read`
+/// adapter over the frozen document — its semantic content, never the raw
+/// record — or the exact bytes it holds when the type shows no text, named by
+/// their content address and never as text.
+///
+/// # Errors
+/// A [`HistoricalGap`] to show: the version does not read as the type, or the
+/// type has nothing to show.
+#[inline(never)]
+pub(crate) fn historical_content<R: Resource>(
+    frozen: &AutoCommit,
+    item: Option<&str>,
+) -> Result<serde_json::Value, HistoricalGap> {
+    match historical_support::<R>() {
+        HistoricalSupport::Unsupported { .. } => Err(HistoricalGap::unsupported(format!(
+            "a {} shows no history of its content",
+            R::LABEL
+        ))),
+        HistoricalSupport::Content { .. } | HistoricalSupport::MetadataOnly { .. } => {
+            // The version must read as the app's type at all: one written by
+            // a newer app is incompatible, which is not the same as empty.
+            let state = R::read(frozen).map_err(|error| version_gap(&error))?;
+            match text_rendering::<R>() {
+                // The read door's answer states the type's content as its
+                // `content` beside the version's heads, so the adapter's own
+                // JSON goes there unwrapped.
+                TextRendering::Text => {
+                    R::read_content(&state, frozen, item).map_err(HistoricalGap::unavailable)
+                }
+                // A type that reads its record but declares no text
+                // rendering shows the exact bytes it holds: naming them as
+                // text would invent a document.
+                TextRendering::Structured | TextRendering::None => {
+                    binary_content::<R>(frozen, item)
+                }
+            }
+        }
+    }
+}
+
+/// Why a version does not read as `R`: written at another storage version,
+/// else the record's own reason.
+fn version_gap(error: &tilo_resource::ModelError) -> HistoricalGap {
+    HistoricalGap::unavailable(error.to_string())
+}
+
+/// The bytes a version holds, for a type with no text rendering: the exact
+/// content address and length, never a diff of them.
+fn binary_content<R: Resource>(
+    frozen: &AutoCommit,
+    item: Option<&str>,
+) -> Result<serde_json::Value, HistoricalGap> {
+    use automerge::{ROOT, ReadDoc as _};
+    let id = match item {
+        Some(key) => frozen
+            .get(ROOT, key)
+            .map_err(|error| HistoricalGap::unavailable(error.to_string()))?
+            .map_or_else(
+                || {
+                    Err(HistoricalGap::unavailable(format!(
+                        "a {} holds no {key}",
+                        R::LABEL
+                    )))
+                },
+                |(_, id)| Ok(id),
+            )?,
+        None => ROOT,
+    };
+    let bytes = frozen
+        .get(&id, "content")
+        .map_err(|error| HistoricalGap::unavailable(error.to_string()))?
+        .map_or_else(
+            || Err(HistoricalGap::unavailable("this version holds no content")),
+            |(value, content)| {
+                tilo_resource::Bytes::load(frozen, &value, &content)
+                    .map_err(|error| HistoricalGap::unavailable(error.to_string()))
+            },
+        )?;
+    let hash = bytes.hash();
+    let version = BinaryVersion {
+        hash: &hash,
+        len: bytes.len(),
+    };
+    Ok(serde_json::json!({
+        "binary": { "address": version.address(), "len": version.len },
+    }))
 }
 
 fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
