@@ -413,6 +413,9 @@ pub struct VirtualList<M: ListModel> {
     /// ([`crate::widget::StructureChange::Described`]).
     mounted_range: Range<usize>,
     remount: bool,
+    /// Mounted rows whose content changed ([`Self::invalidate_rows`]): the
+    /// next reconcile builds them anew, where they stand.
+    invalidated: HashSet<M::Key>,
     /// The list's node in the layout it last built, where its host lays out
     /// the rows a scroll brings near in place ([`Widget::remount_children`]).
     layout_node: Option<NodeId>,
@@ -532,6 +535,7 @@ impl<M: ListModel> VirtualList<M> {
             layout_offset: 0.0,
             mounted_range: 0..0,
             remount: false,
+            invalidated: HashSet::new(),
             scroll_dirty: false,
             layout_node: None,
             shown: crate::scroll_copy::ShownFrames::default(),
@@ -950,10 +954,21 @@ impl<M: ListModel> VirtualList<M> {
 
     pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = M::Key>) {
         let keys = keys.into_iter().collect::<HashSet<_>>();
-        let before = self.mounted.len();
-        self.mounted.retain(|row| !keys.contains(&row.key));
-        if self.mounted.len() != before {
-            self.structure_dirty = true;
+        let before = self.invalidated.len();
+        self.invalidated.extend(
+            self.mounted
+                .iter()
+                .filter(|row| keys.contains(&row.key))
+                .map(|row| row.key.clone()),
+        );
+        if self.invalidated.len() != before {
+            // Built anew and mounted where they stand, as rows a scroll
+            // brings near are: a changed row costs its own layout and paint,
+            // not the window's (`StructureChange::Children`). A row that
+            // comes back a different height moves the others, which the
+            // remount measures and lays out.
+            self.remount = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -1210,7 +1225,8 @@ impl<M: ListModel> VirtualList<M> {
             let mut row = old
                 .remove(&key)
                 .filter(|row| {
-                    row.state == mounted_state
+                    !self.invalidated.contains(&row.key)
+                        && row.state == mounted_state
                         && (!self.selection_aware
                             || row.selection == selection
                             || row
@@ -1243,10 +1259,17 @@ impl<M: ListModel> VirtualList<M> {
             .iter()
             .map(|row| row.key.clone())
             .collect::<Vec<_>>();
-        if replaced || old_keys != next_keys {
+        if old_keys != next_keys || (replaced && self.layout_node.is_none()) {
             self.structure_dirty = true;
+        } else if replaced {
+            // The same rows, some built anew (their content or selection
+            // changed): each new one is mounted where the old one stood
+            // (`remount_rows`), and the others keep their layout.
+            self.remount = true;
+            self.layout_dirty = true;
         }
         self.arrivals.retain(now, |key| seen.contains(key));
+        self.invalidated.clear();
         self.mounted = mounted;
         self.mounted_range = window;
     }
@@ -2358,18 +2381,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             regions.push(self.rect);
             return;
         }
+        let now = crate::motion::frame_now();
+        let own_redraw = self.momentum.give_needs_frame(now) || self.arrivals.needs_redraw(now);
         match self.shown.compare(self, regions) {
-            crate::scroll_copy::Since::Copied => {
-                let first = regions.len();
-                // The rows away from the box are clipped away.
-                for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
-                    row.widget.collect_damage(regions);
-                }
-                if let Some(changed) = regions.get_mut(first..) {
-                    for rect in changed {
-                        *rect = rect.intersect(self.rect);
-                    }
-                }
+            crate::scroll_copy::Since::Copied => self.collect_row_damage(regions),
+            // The same rows where they stood: what changed is what the rows
+            // repaint (a row built anew for new content paints itself whole),
+            // not the list.
+            crate::scroll_copy::Since::Still if !shown_changed && !own_redraw => {
+                self.collect_row_damage(regions);
             }
             crate::scroll_copy::Since::Still | crate::scroll_copy::Since::Repaint => {
                 if shown_changed || self.needs_redraw() {

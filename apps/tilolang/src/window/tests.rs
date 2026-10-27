@@ -87,6 +87,29 @@ impl Room {
         self.window.update(&self.doc, &root);
     }
 
+    /// Lay the window out at 1200x800, as a host does after a frame: what changed in place is
+    /// laid out in place from then on.
+    fn lay_out(&mut self) {
+        use ui::taffy::prelude::{AvailableSpace, Size};
+        let _ = self.window.take_structure_change();
+        let mut taffy = ui::taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = self
+            .window
+            .build_layout(&mut taffy, &ui::Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(1200.0),
+                    height: AvailableSpace::Definite(800.0),
+                },
+            )
+            .expect("the window lays out");
+        self.window
+            .apply_layout(&taffy, node, ui::kurbo::Point::ZERO);
+    }
+
     fn resources() -> Vec<ui::tilo_actions::Resource> {
         crate::resource::published()
     }
@@ -1467,4 +1490,35 @@ fn a_changed_value_on_a_page_sets_its_widget_and_keeps_every_other() {
     widget_identities(&pane, &mut removed);
     assert_eq!(removed, before);
     assert_eq!(pane.take_structure_change(), StructureChange::Described);
+}
+
+#[test]
+fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
+    use ui::widget::Widget as _;
+    let mut room = Room::seeded("todo");
+    let (key, _) = room.rows().remove(0);
+    room.ask(Request::Activate(key));
+    let detail = room.window.detail_tree().expect("the item is shown");
+    let input = first_input(&detail).expect("the item's title").key.clone();
+    // The list mounts the rows its laid-out height shows, then holds them.
+    room.lay_out();
+    room.settle();
+    room.lay_out();
+    let mut typed = String::new();
+    for letter in ['p', 'l', 'a', 'n'] {
+        typed.push(letter);
+        room.window
+            .act(true, UiEvent::Edit(input.clone(), typed.clone()));
+        room.settle();
+        let change = room.window.take_structure_change();
+        assert!(
+            matches!(
+                change,
+                ui::widget::StructureChange::None | ui::widget::StructureChange::Children
+            ),
+            "a keystroke rebuilt the window's tree ({change:?}): its row and its field change \
+             in place"
+        );
+        room.lay_out();
+    }
 }
