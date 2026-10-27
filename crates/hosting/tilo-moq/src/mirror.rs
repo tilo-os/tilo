@@ -220,8 +220,11 @@ async fn track(
             return;
         }
     };
+    // An ordered stream (`ops/<hex record>`): a change is never optional, so
+    // its groups are copied one after another rather than concurrently.
+    let ordered = crate::live::ops_record(request.name()).is_some();
     let output = request.accept(reader.info().clone());
-    copy(&mut reader, output, downlink).await;
+    copy(&mut reader, output, downlink, ordered).await;
 }
 
 enum Next {
@@ -272,6 +275,7 @@ async fn copy(
     input: &mut moq_net::track::Subscriber,
     mut output: moq_net::track::Producer,
     downlink: Option<Arc<Downlink>>,
+    ordered: bool,
 ) {
     let mut groups: VecDeque<Task> = VecDeque::new();
     let mut rebundler = voice::Rebundler::default();
@@ -300,12 +304,36 @@ async fn copy(
                 let _ = output.insert_datagram(datagram.sequence, datagram.timestamp, payload);
             }
             Next::Group(group) => {
+                if ordered {
+                    match copy_ordered(*group, &output, idle.as_mut()).await {
+                        Ordered::Copied | Ordered::Skipped => continue,
+                        Ordered::Failed => {
+                            let _ = output.abort(moq_net::Error::Cancel);
+                            return;
+                        }
+                        Ordered::Unused => {
+                            match output.abort_unused(moq_net::Error::Cancel) {
+                                Ok(()) => return,
+                                Err(active) => {
+                                    output = active;
+                                    idle.set(unused(&watched));
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
                 groups.retain(|task| !task.is_finished());
                 if groups.len() >= MAX_GROUPS_IN_FLIGHT {
                     groups.pop_front();
                 }
                 if let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence)) {
-                    groups.push_back(Task::spawn(copy_group(*group, out)));
+                    groups.push_back(Task::spawn({
+                        let mut input = *group;
+                        async move {
+                            copy_group(&mut input, out).await;
+                        }
+                    }));
                 }
             }
             Next::End => break,
@@ -347,21 +375,67 @@ async fn copy(
     let _ = output.finish();
 }
 
-async fn copy_group(mut input: moq_net::group::Consumer, mut output: moq_net::group::Producer) {
+/// What serving one group of an ordered stream did.
+enum Ordered {
+    /// The group reached the view whole.
+    Copied,
+    /// The view will not carry this sequence (its track ended, or already
+    /// holds it); the copy moves on.
+    Skipped,
+    /// The group could not be copied whole, so the view cannot continue.
+    Failed,
+    /// Nobody reads the view any more.
+    Unused,
+}
+
+/// Serve one group of an ordered stream to `output`, whole, before the copy
+/// takes the next: a session's view holds every group the source served it, in
+/// order, exactly once. Copying groups concurrently would let a newer group
+/// displace an older one still in flight — its frames never written, its
+/// sequence left published but unfinished, and free to be created again — which
+/// is a lost change or a re-delivered one for the session reading the view.
+async fn copy_ordered<I>(
+    group: moq_net::group::Consumer,
+    output: &moq_net::track::Producer,
+    mut idle: std::pin::Pin<&mut I>,
+) -> Ordered
+where
+    I: std::future::Future<Output = ()>,
+{
+    let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence)) else {
+        return Ordered::Skipped;
+    };
+    let mut input = group;
+    let copying = copy_group(&mut input, out);
+    tokio::pin!(copying);
+    tokio::select! {
+        copied = &mut copying => {
+            if copied { Ordered::Copied } else { Ordered::Failed }
+        }
+        () = &mut idle => Ordered::Unused,
+    }
+}
+
+/// Copy `input`'s frames into `output`, finishing it at the end of the group.
+/// False when the group could not be copied whole, so the copy is abandoned.
+async fn copy_group(
+    input: &mut moq_net::group::Consumer,
+    mut output: moq_net::group::Producer,
+) -> bool {
     loop {
         match input.read_frame().await {
             Ok(Some(frame)) => {
                 if output.write_frame(frame.timestamp, frame.payload).is_err() {
-                    return;
+                    return false;
                 }
             }
             Ok(None) => {
                 let _ = output.finish();
-                return;
+                return true;
             }
             Err(error) => {
                 let _ = output.abort(error);
-                return;
+                return false;
             }
         }
     }
@@ -381,7 +455,7 @@ mod tests {
             let mut reader = input.consume().subscribe(None).await?;
             let output = broadcast.create_track("copy", None)?;
             let access = output.clone();
-            let copying = copy(&mut reader, output, None);
+            let copying = copy(&mut reader, output, None, false);
             tokio::pin!(copying);
             let pending = std::future::poll_fn(|cx| {
                 Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_pending())
@@ -413,6 +487,76 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
     }
 
+    /// A backlog on an ordered stream's source reaches the session's view
+    /// whole and in order: a newer group never displaces one still being
+    /// copied, so nothing is dropped and no sequence is left half-published
+    /// for the reader (which would lose it or see it again).
+    #[tokio::test]
+    async fn an_ordered_tracks_backlog_reaches_the_view_group_by_group() {
+        const GROUPS: u64 = 12;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let (origin, _origin_task) =
+                OriginTask::produce(origin_config(1024 * 1024, Duration::from_secs(2)));
+            let path = "tilo-live/room/member/ops";
+            let name = format!("ops/{}", "a".repeat(64));
+            let broadcast = origin.create_broadcast(path)?;
+            let track = broadcast.create_track(name.as_str(), None)?;
+            broadcast.announce(moq_net::origin::Route::default())?;
+            let view = Mirror::start(
+                origin.consume(),
+                1024 * 1024,
+                Duration::from_secs(2),
+                Start::Egress,
+                None,
+            );
+            let subscription =
+                moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
+            let mut viewer = view
+                .consume()
+                .routed_broadcast(path)
+                .await?
+                .track(name.as_str())?
+                .subscribe(subscription)
+                .await?;
+            // Every group is finished before the session's copy takes one.
+            for sequence in 0..GROUPS {
+                let mut group = track.append_group()?;
+                group.write_frame(
+                    moq_net::Timestamp::from_millis(sequence)?,
+                    bytes::Bytes::from(format!("change-{sequence}")),
+                )?;
+                group.finish()?;
+            }
+            let read = tilo_test_env::within("the mirrored backlog", async {
+                let mut read = Vec::new();
+                while (read.len() as u64) < GROUPS {
+                    let mut group = viewer.recv_group().await?.expect("a mirrored group");
+                    let mut frames = Vec::new();
+                    while let Some(frame) = group.read_frame().await? {
+                        frames.push((
+                            group.sequence,
+                            String::from_utf8(frame.payload.to_vec()).unwrap(),
+                        ));
+                    }
+                    read.push(frames);
+                }
+                Ok::<_, moq_net::Error>(read)
+            })
+            .await?;
+            for (index, frames) in read.iter().enumerate() {
+                let expected = format!("change-{index}");
+                assert_eq!(
+                    frames,
+                    &[(index as u64, expected.clone())],
+                    "group {index} arrived as {frames:?}"
+                );
+            }
+            Ok(())
+        }
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
     #[tokio::test]
     async fn upstream_abort_is_not_a_clean_empty_video() {
         let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -424,7 +568,7 @@ mod tests {
             let output = broadcast.create_track("copy", None)?;
             let mut viewer = output.consume().subscribe(None).await?;
             input.abort(moq_net::Error::ProtocolViolation)?;
-            let task = tokio::spawn(async move { copy(&mut reader, output, None).await });
+            let task = tokio::spawn(async move { copy(&mut reader, output, None, false).await });
             let result =
                 tilo_test_env::within("the mirrored upstream failure", viewer.recv_group()).await;
             assert!(
@@ -452,7 +596,7 @@ mod tests {
         // while the replacement subscriber has not yet attached.
         let previous = output.consume();
         drop(previous);
-        let copying = copy(&mut reader, output, None);
+        let copying = copy(&mut reader, output, None, false);
         tokio::pin!(copying);
         let pending = std::future::poll_fn(|cx| {
             Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_pending())
@@ -572,7 +716,7 @@ mod tests {
             let mut reader = input.consume().subscribe(None).await?;
             let output = broadcast.create_track("copy", None)?;
             let mut viewer = output.consume().subscribe(None).await?;
-            let task = tokio::spawn(async move { copy(&mut reader, output, None).await });
+            let task = tokio::spawn(async move { copy(&mut reader, output, None, false).await });
             let group =
                 tilo_test_env::within("the cached mirrored group", viewer.recv_group()).await?;
             let Some(mut group) = group else {

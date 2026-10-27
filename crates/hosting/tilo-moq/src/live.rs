@@ -437,7 +437,9 @@ impl LiveRelay {
     /// the open group and opens a new one, so a subscriber that starts at the
     /// latest group receives it from its first frame; otherwise `frames` join
     /// the open group, and are dropped while none is open. Never blocks;
-    /// frames reach only current subscribers of that track.
+    /// frames reach only current subscribers of that track. A subscriber's
+    /// view copies each group whole before the next one
+    /// ([`crate::mirror`]), so one sequence's frames never displace another's.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard must stay held across the dependent state updates below"
