@@ -12,7 +12,7 @@ use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, Publications, publish_tree, resource_id,
 };
 use tilolang_tilo::record::DynValue;
-use tilolang_tilo::search::{SearchIndex, hits};
+use tilolang_tilo::search::{every_hit, hits};
 
 use crate::fixtures::{Replica, TODO, field_id};
 
@@ -110,76 +110,66 @@ fn all_hits(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> Vec
     out
 }
 
-fn indexed(index: &SearchIndex) -> Vec<String> {
-    let mut out: Vec<String> = index
-        .hits()
+/// Everything search finds, read from the index.
+fn indexed(replica: &Replica) -> Vec<String> {
+    let mut out: Vec<String> = every_hit(&replica.host)
+        .into_iter()
+        .filter(|hit| hit.resource.starts_with(&resource_id(APP, "")))
         .map(|hit| format!("{} {:?}", hit.resource, hit.texts))
         .collect();
     out.sort();
     out
 }
 
+/// The titles of what a query finds, best first.
+fn found(replica: &Replica, query: &str) -> Vec<String> {
+    tilolang_tilo::search::find(&replica.host, query, 10)
+        .into_iter()
+        .map(|hit| hit.title)
+        .collect()
+}
+
 #[test]
-fn search_reindexes_only_the_retyped_item() {
+fn search_reads_the_index_the_lists_read() {
     let (mut ada, meta, root) = room();
-    let mut index = SearchIndex::new(&ada.host);
-    let first = index.settle(&ada.host);
-    assert_eq!(first.upserted.len(), 3, "{first:?}");
-    assert!(index.update(&ada.host).is_empty(), "nothing changed");
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    assert_eq!(found(&ada, "milk"), ["milk"]);
 
     let ids = item_ids(&ada, &meta, &root);
     retype(&mut ada, &meta, &root, &ids[1], "oat milk");
-    let delta = index.update(&ada.host);
-    assert_eq!(delta.removed, Vec::<String>::new());
-    assert_eq!(
-        delta
-            .upserted
-            .iter()
-            .map(|hit| hit.resource.clone())
-            .collect::<Vec<_>>(),
-        vec![resource_id(
-            APP,
-            &format!("{root}/{}:{}", field_id(&meta, "TodoList", "items"), ids[1])
-        )],
-    );
-    assert_eq!(delta.upserted[0].title, "oat milk");
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    // Every word, the last as typed so far.
+    assert_eq!(found(&ada, "oat mi"), ["oat milk"]);
+    assert_eq!(found(&ada, "eggs"), Vec::<String>::new());
 
     add(&mut ada, &meta, &root, "jam");
-    let delta = index.update(&ada.host);
-    assert_eq!(delta.upserted.len(), 1, "{delta:?}");
-    assert_eq!(delta.upserted[0].title, "jam");
+    assert_eq!(found(&ada, "ja"), ["jam"]);
 
     // Emptied, an item has nothing to be found by.
     retype(&mut ada, &meta, &root, &ids[0], "");
-    let delta = index.update(&ada.host);
-    assert_eq!(delta.removed.len(), 1, "{delta:?}");
-    assert_eq!(indexed(&index), all_hits(&ada, &meta, &root));
+    assert_eq!(found(&ada, "milk"), ["oat milk"]);
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
 }
 
 #[test]
 fn search_follows_a_peer_and_matches_a_full_index() {
     let (mut ada, meta, root, lock) = room_with_ids();
     let mut grace = ada.fork("grace", &[(TODO, &lock)]);
-    let mut index = SearchIndex::new(&ada.host);
-    index.settle(&ada.host);
     let ids = item_ids(&ada, &meta, &root);
     retype(&mut grace, &meta, &root, &ids[2], "rye bread");
     add(&mut grace, &meta, &root, "tea");
     ada.sync_with(&mut grace);
-    let delta = index.update(&ada.host);
-    assert_eq!(delta.upserted.len(), 2, "{delta:?}");
-    assert_eq!(indexed(&index), all_hits(&ada, &meta, &root));
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    assert_eq!(found(&ada, "rye"), ["rye bread"]);
 
-    // A peer removes one item and moves another: one hit gone, none read again.
+    // A peer removes one item and moves another.
     let ids = item_ids(&ada, &meta, &root);
     remove(&mut grace, &meta, &root, &ids[1]);
     let moved = plan_move_first(&grace, &meta, &root, &ids[3]);
     grace.apply(&moved);
     ada.sync_with(&mut grace);
-    let delta = index.update(&ada.host);
-    assert!(delta.upserted.is_empty(), "{delta:?}");
-    assert_eq!(delta.removed.len(), 1, "{delta:?}");
-    assert_eq!(indexed(&index), all_hits(&ada, &meta, &root));
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    assert_eq!(found(&ada, "eggs"), Vec::<String>::new());
 }
 
 struct Refusing;
@@ -385,8 +375,7 @@ fn the_label_follows_whatever_names_the_record() {
 fn planning_an_action_changes_nothing_anyone_follows() {
     let (ada, meta, root) = room();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
-    let mut index = SearchIndex::new(&ada.host);
-    index.settle(&ada.host);
+    let before = indexed(&ada);
     let mut published = Publications::new(&ada.host);
     published.settle(&ada.host, &planner);
     let mut view = ada.view(APP);
@@ -404,30 +393,25 @@ fn planning_an_action_changes_nothing_anyone_follows() {
             caller: None,
         })
         .unwrap();
-    assert!(index.update(&ada.host).is_empty());
+    assert_eq!(indexed(&ada), before);
     assert!(published.update(&ada.host, &planner).is_empty());
     assert!(!view.is_stale(), "no view re-runs for a trial run");
     assert!(view.poll_patches().unwrap().is_empty());
 }
 
 #[test]
-fn the_first_index_and_publication_do_not_hold_up_the_frame() {
+fn the_first_publication_does_not_hold_up_the_frame() {
     let (mut ada, meta, root) = room();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
-    let mut index = SearchIndex::new(&ada.host);
     let mut published = Publications::new(&ada.host);
-    // The frame that starts them returns at once; the room is read on another thread.
-    assert!(index.update(&ada.host).is_empty());
-    assert!(index.is_reading());
+    // The frame that starts it returns at once; the room is read on another thread.
     assert!(published.update(&ada.host, &planner).is_empty());
     assert!(published.is_building());
-    // A change while they read is taken in after what they read.
+    // A change while it reads is taken in after what it read.
     let ids = item_ids(&ada, &meta, &root);
     retype(&mut ada, &meta, &root, &ids[1], "oat milk");
-    index.settle(&ada.host);
     published.settle(&ada.host, &planner);
-    assert!(!index.is_reading() && !published.is_building());
-    assert_eq!(indexed(&index), all_hits(&ada, &meta, &root));
+    assert!(!published.is_building());
     assert_eq!(
         shape(&published.trees()[&root]),
         published_anew(&ada, &meta, &root)
@@ -890,10 +874,11 @@ fn the_store_keeps_a_filtered_listing_by_the_items_a_change_touched() {
     };
     let evaluated = || store.read_stats().evaluated;
 
+    // Answered from the index's column of `done`: no item is evaluated.
     assert_eq!(filtered(), anew(&ada));
-    assert_eq!(evaluated(), 3, "listed once, each item evaluated once");
+    assert_eq!(evaluated(), 0, "answered from the column");
     assert_eq!(filtered(), anew(&ada));
-    assert_eq!(evaluated(), 3, "kept");
+    assert_eq!(evaluated(), 0, "answered from the column");
 
     // Finished here: it leaves, and only it is evaluated again.
     let ids = item_ids(&ada, &meta, &root);

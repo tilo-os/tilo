@@ -350,30 +350,6 @@ fn iconic_buttons(node: &mut UiNode) {
     }
 }
 
-/// A transcript: the content scrolls above the composer, which stays at the bottom of the
-/// column; it opens at its newest line and follows it, as a conversation does.
-fn transcript(content: Element, composer: Element) -> Element {
-    above_composer(
-        Box::new(
-            Scrollable::new_vertical()
-                .following_end()
-                .with_child(content),
-        ),
-        composer,
-    )
-}
-
-/// `top`, which scrolls itself, filling the column above `composer`.
-fn above_composer(top: Element, composer: Element) -> Element {
-    Box::new(
-        Stack::stack()
-            .fill_width()
-            .fill_height()
-            .push_slot(slot(top, Fit::fill(1.0)))
-            .push_slot(slot(composer, Fit::hug())),
-    )
-}
-
 /// The transcript of a frame whose content is one list ([`transcript::thread_list`]): where its
 /// rows come from, and the reconciler that builds them.
 struct ThreadOf {
@@ -496,9 +472,9 @@ fn fill_framed(
         let footer = reconciler.build(composer);
         pane.set(match thread {
             Some(ThreadOf { source, reconciler }) => {
-                above_composer(Box::new(transcript::thread(source, reconciler)), footer)
+                transcript::above_composer(Box::new(transcript::thread(source, reconciler)), footer)
             }
-            None => transcript(reconciler.build(node), footer),
+            None => transcript::scrolled(reconciler.build(node), footer),
         });
     }
     *built_content = Some(node.clone());
@@ -608,6 +584,8 @@ pub struct Window {
     settle_due: bool,
     sink: RefCell<Option<Box<dyn OutsideSink>>>,
     device: Option<String>,
+    /// Where the indexes of the rooms this window shows are kept: `None` keeps them in memory.
+    indexes: Option<std::path::PathBuf>,
     /// The destructive actions handed to the door and not yet answered, by action id, with the
     /// notice their undo shows.
     destructive: HashMap<String, String>,
@@ -878,6 +856,7 @@ impl Window {
             settle_due: false,
             sink: RefCell::new(Some(Box::new(LogSink::dev()))),
             device: None,
+            indexes: None,
             destructive: HashMap::new(),
             making: HashSet::new(),
             undo: ui::undo::UndoAccess::new(),
@@ -904,6 +883,14 @@ impl Window {
         self
     }
 
+    /// This window keeping the indexes of the rooms it shows under `dir`, so the room opens
+    /// next time over them rather than reading its whole record.
+    #[must_use]
+    pub fn keep_indexes_in(mut self, dir: std::path::PathBuf) -> Self {
+        self.indexes = Some(dir);
+        self
+    }
+
     /// This window sending the outside effects it settles to `sink` rather than the development
     /// log.
     #[must_use]
@@ -918,15 +905,26 @@ impl Window {
     /// hand.
     fn host_for(&mut self, doc: &ui::automerge::AutoCommit) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
-            if host.sync_from(doc) {
+            // An index built off the frame changes what every view reads, as a change does.
+            if host.sync_from(doc) | host.poll_index() {
                 self.moved = true;
             }
             return Some(host.clone());
         }
-        let built = Host::on_device(
-            doc,
+        // A past version is read once and kept nowhere.
+        let index_dir = self
+            .indexes
+            .as_deref()
+            .filter(|_| self.mode != RunMode::Past)
+            .and_then(|base| tilolang_tilo::index::room_dir(base, doc));
+        let opening = tilolang_tilo::host::Opening {
+            record: Some(doc),
+            index_dir,
+            device: self.device.as_deref(),
+        };
+        let built = Host::open(
+            opening,
             Principal::new(self.me.clone()),
-            self.device.as_deref(),
             |_: &Principal, _: &ActionInfo| {
                 // What the person may do in the room is decided where the change is committed:
                 // the door refuses a viewer's `commit`. Code authorship is the runtime's.
@@ -961,6 +959,8 @@ impl Window {
             // What is published and found of the room is read off the frame the first time;
             // the window takes it in when it is ready.
             let wake = ui::wake::WakeHandle::new();
+            let index_wake = wake.clone();
+            host.set_index_waker(Arc::new(move || index_wake.wake()));
             self.live = Some(Live::register(&host, Arc::new(move || wake.wake())));
         }
         *self.host.borrow_mut() = Some(host.clone());

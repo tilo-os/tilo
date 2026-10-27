@@ -221,16 +221,6 @@ pub fn default_value(field: &FieldSchema) -> FieldValue {
     }
 }
 
-/// How many items the collection `field` of the located resource holds.
-#[must_use]
-pub fn collection_len(doc: &Doc, located: &Located, field: &str) -> usize {
-    located
-        .obj
-        .as_ref()
-        .and_then(|obj| map_at(doc, obj, field))
-        .map_or(0, |coll| stored_ids(doc, &coll).len())
-}
-
 /// What a set of patches changed.
 #[derive(Debug, Default)]
 pub struct Changed {

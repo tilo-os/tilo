@@ -11,10 +11,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilolang_tilo::runtime::{UiNode, ViewInstance};
-use ui::widget::arrange::{Page, PageRowEdges, Slot};
-use ui::widget::{Element, Spacer, VirtualList};
+use ui::widget::arrange::{Fit, Page, PageRowEdges, Slot, Stack};
+use ui::widget::{Element, Scrollable, Spacer, VirtualList};
 
 use super::list::{RowRead, Rows};
+use super::slot;
 use crate::reconcile::Reconciler;
 
 /// What a message is estimated to take before it is measured.
@@ -86,4 +87,28 @@ pub fn thread_list(frame: &UiNode) -> Option<&UiNode> {
         .filter(|child| !matches!(child.kind.as_str(), "sidebar" | "inspector" | "composer"));
     let only = content.next().filter(|child| child.kind == "list")?;
     content.next().is_none().then_some(only)
+}
+
+/// A transcript of content that is not one list: it scrolls above the composer, which stays at
+/// the bottom of the column; it opens at its newest line and follows it, as a conversation does.
+pub(super) fn scrolled(content: Element, composer: Element) -> Element {
+    above_composer(
+        Box::new(
+            Scrollable::new_vertical()
+                .following_end()
+                .with_child(content),
+        ),
+        composer,
+    )
+}
+
+/// `top`, which scrolls itself, filling the column above `composer`.
+pub(super) fn above_composer(top: Element, composer: Element) -> Element {
+    Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_slot(slot(top, Fit::fill(1.0)))
+            .push_slot(slot(composer, Fit::hug())),
+    )
 }
