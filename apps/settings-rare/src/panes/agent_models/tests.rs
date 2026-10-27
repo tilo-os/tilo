@@ -396,15 +396,17 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     })
     .unwrap();
     assert_eq!(
-        with_provider_model(&mut app, |pane| pane
-            .vertex_action(&VertexChange::Vertex {
+        try_provider(
+            &mut app,
+            AgentModelsEffect::SetVertexProvider {
                 provider: None,
                 project: "tilo-509618".into(),
                 location: None,
                 model: None,
-            })
-            .unwrap_err())
-        .unwrap(),
+            },
+        )
+        .unwrap_err()
+        .to_string(),
         t("agent-vertex-sign-in-first"),
         "nothing is saved before the sign-in"
     );
@@ -428,15 +430,17 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     })
     .unwrap();
     assert_eq!(
-        with_provider_model(&mut app, |pane| pane
-            .vertex_action(&VertexChange::Vertex {
+        try_provider(
+            &mut app,
+            AgentModelsEffect::SetVertexProvider {
                 provider: None,
                 project: "Not A Project".into(),
                 location: None,
                 model: None,
-            })
-            .unwrap_err())
-        .unwrap(),
+            },
+        )
+        .unwrap_err()
+        .to_string(),
         t("agent-vertex-project-invalid")
     );
     assert!(
@@ -447,21 +451,16 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
             .is_empty()
     );
 
-    with_provider_model(&mut app, |pane| {
-        let (action, _) = pane
-            .vertex_action(&VertexChange::Vertex {
-                provider: None,
-                project: "tilo-509618".into(),
-                location: None,
-                model: None,
-            })
-            .unwrap();
-        pane.cx
-            .submit_section::<AgentProviders>(&stamped(action))
-            .unwrap();
-        pane.vertex = None;
-    })
-    .unwrap();
+    run_provider(
+        &mut app,
+        AgentModelsEffect::SetVertexProvider {
+            provider: None,
+            project: "tilo-509618".into(),
+            location: None,
+            model: None,
+        },
+    );
+    with_provider_model(&mut app, |pane| pane.vertex = None).unwrap();
     app.settle();
     let stored = app.settings::<AgentProviders>().get().config;
     let profile = &stored.profiles[0];
