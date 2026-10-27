@@ -293,6 +293,11 @@ impl SearchProvider for FocusedWindowProvider {
                     .cloned()
                     .collect();
                 let address = target.address();
+                // What the row is: the item a hit opens at, else what the
+                // action acts on.
+                let resource = preset
+                    .as_ref()
+                    .map_or_else(|| address.resource.clone(), |(_, anchor)| anchor.clone());
                 Some(SearchResult {
                     kind: hit.kind,
                     operation_kind: target.spec.kind,
@@ -327,6 +332,7 @@ impl SearchProvider for FocusedWindowProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: Some(resource),
                 })
             })
             .collect();
