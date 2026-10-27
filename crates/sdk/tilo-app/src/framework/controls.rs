@@ -53,6 +53,7 @@ action_control! {
     NumberInput => f64, |control| control.with_enabled(false);
     Dropdown => String, |control| control.with_enabled(false);
     ui_core::widget::ToggleGroup => usize, |control| control.with_enabled(false);
+    ui_core::widget::PictureChoice => usize, |control| control.with_enabled(false);
     ui_core::KeyboardMapSelection => String, |control| control.with_enabled(false);
     // Unavailable, a recorder records nothing it could commit.
     ui_core::widget::ShortcutRecorder => String, |control| control;

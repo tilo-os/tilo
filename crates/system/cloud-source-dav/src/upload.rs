@@ -88,11 +88,13 @@ impl SinglePut {
 
     fn put(&mut self, body: Body) -> Result<()> {
         let url = self.source.url(&self.id, false)?;
-        let response = self
-            .source
-            .client()?
-            .send("PUT", url, &[], body, self.condition.precondition())
-            .map_err(|_| Error::Offline)?;
+        let response = DavSource::answered(self.source.client()?.send(
+            "PUT",
+            url,
+            &[],
+            body,
+            self.condition.precondition(),
+        ))?;
         match response.status() {
             status if status.is_success() => {
                 self.offset = self.size;
@@ -176,16 +178,13 @@ impl Chunked {
             },
         };
         let destination = chunked.destination()?;
-        let response = source
-            .client()?
-            .send(
-                "MKCOL",
-                chunked.folder()?,
-                &[("Destination", destination.as_str())],
-                Body::Empty,
-                Precondition::None,
-            )
-            .map_err(|_| Error::Offline)?;
+        let response = DavSource::answered(source.client()?.send(
+            "MKCOL",
+            chunked.folder()?,
+            &[("Destination", destination.as_str())],
+            Body::Empty,
+            Precondition::None,
+        ))?;
         if !response.status().is_success() {
             return Err(source.status_error(&response));
         }
@@ -260,20 +259,16 @@ impl UploadSession for Chunked {
         let url = self.file(&format!("{index:05}"))?;
         let destination = self.destination()?;
         let total = self.state.size.to_string();
-        let response = self
-            .source
-            .client()?
-            .send(
-                "PUT",
-                url,
-                &[
-                    ("Destination", destination.as_str()),
-                    ("OC-Total-Length", total.as_str()),
-                ],
-                Body::Reader(data, len),
-                Precondition::None,
-            )
-            .map_err(|_| Error::Offline)?;
+        let response = DavSource::answered(self.source.client()?.send(
+            "PUT",
+            url,
+            &[
+                ("Destination", destination.as_str()),
+                ("OC-Total-Length", total.as_str()),
+            ],
+            Body::Reader(data, len),
+            Precondition::None,
+        ))?;
         match response.status() {
             status if status.is_success() => {
                 self.state.chunks = index;
@@ -301,17 +296,13 @@ impl UploadSession for Chunked {
                 .iter()
                 .map(|(name, value)| (*name, value.as_str())),
         );
-        let response = self
-            .source
-            .client()?
-            .send(
-                "MOVE",
-                self.file(".file")?,
-                &headers,
-                Body::Empty,
-                Precondition::None,
-            )
-            .map_err(|_| Error::Offline)?;
+        let response = DavSource::answered(self.source.client()?.send(
+            "MOVE",
+            self.file(".file")?,
+            &headers,
+            Body::Empty,
+            Precondition::None,
+        ))?;
         match response.status() {
             status if status.is_success() => {
                 let item = self.source.stat(&self.state.id)?;
@@ -329,11 +320,11 @@ impl UploadSession for Chunked {
     }
 
     fn abort(self: Box<Self>) -> Result<()> {
-        let response = self
-            .source
-            .client()?
-            .delete(self.folder()?, Precondition::None)
-            .map_err(|_| Error::Offline)?;
+        let response = DavSource::answered(
+            self.source
+                .client()?
+                .delete(self.folder()?, Precondition::None),
+        )?;
         if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
             Ok(())
         } else {
@@ -372,16 +363,13 @@ pub(crate) fn new_nextcloud_revision(
          <d:lastmodified>{}</d:lastmodified></d:prop></d:set></d:propertyupdate>",
         mtime.saturating_add(1)
     );
-    let response = source
-        .client()?
-        .send(
-            "PROPPATCH",
-            source.url(id, false)?,
-            &[("Content-Type", "application/xml; charset=utf-8")],
-            Body::Bytes(body.into_bytes()),
-            Precondition::IfMatch(replaced.as_str()),
-        )
-        .map_err(|_| Error::Offline)?;
+    let response = DavSource::answered(source.client()?.send(
+        "PROPPATCH",
+        source.url(id, false)?,
+        &[("Content-Type", "application/xml; charset=utf-8")],
+        Body::Bytes(body.into_bytes()),
+        Precondition::IfMatch(replaced.as_str()),
+    ))?;
     if !response.status().is_success() && response.status() != StatusCode::PRECONDITION_FAILED {
         return Err(source.status_error(&response));
     }

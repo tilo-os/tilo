@@ -1260,8 +1260,9 @@ pub fn note_layout_moved() {
     LAYOUT_MOVED.with(|moved| moved.set(true));
 }
 
-/// Whether [`note_layout_moved`] ran since the last call, clearing it.
-pub(crate) fn take_layout_moved() -> bool {
+/// Whether [`note_layout_moved`] ran since the last call, clearing it: a
+/// host asks after its widgets' update, and lays out again when it did.
+pub fn take_layout_moved() -> bool {
     LAYOUT_MOVED.with(|moved| moved.replace(false))
 }
 
@@ -3327,6 +3328,9 @@ pub mod color_picker;
 pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
+pub mod picture;
+pub mod picture_choice;
+pub use picture_choice::{ColourFilter, Picture, PictureChoice, PictureOption};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod emoji_picker;

@@ -18,8 +18,32 @@ pub(crate) fn open(st: &mut ChromeState) -> Result<(), ActionError> {
     match focused {
         Focused::Composer => bring_up(st),
         Focused::Nothing => about(st, None),
-        Focused::App(subject) => about(st, Some(subject)),
+        Focused::App(mut subject) => {
+            subject.record = shown_record(st, &subject.app);
+            about(st, Some(subject))
+        }
     }
+}
+
+/// The record the window in front shows, as the session's broker knows
+/// the windows' records: what a recording of the window records.
+fn shown_record(st: &ChromeState, app: &str) -> Option<tilo_desktop::feedback::ShownRecord> {
+    let (workspace, instance) = {
+        let tree = st.tree();
+        let tab = tilo_desktop::feedback::focused_tab(&tree.desktop)?;
+        let shown = tree
+            .local_app_window(tab)
+            .filter(|(_, shown, _)| *shown == app)
+            .map(|(room, _, instance)| (room.to_string(), instance));
+        drop(tree);
+        shown?
+    };
+    let record = st
+        .hosted_inputs
+        .in_process()?
+        .borrow()
+        .window_record(&workspace, app, instance)?;
+    Some(tilo_desktop::feedback::ShownRecord { workspace, record })
 }
 
 /// The next click picks what the report is about. Until then the desktop

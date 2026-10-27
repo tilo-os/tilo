@@ -330,7 +330,7 @@
       "resource_kind": "test.shelf",
       "resource_label": "Shelf",
       "action_label": "See the app",
-      "description": "See the app's window as a picture: answers with the image and the revision of the document it shows.",
+      "description": "See the app's window as a picture: answers with the image and the revision of the document it shows. With an anchor, shows that item first.",
       "locus": "ClientLocal",
       "kind": "View",
       "contract": {
@@ -374,6 +374,12 @@
           "name": "version",
           "ty": "text",
           "description": "A past version: change id from history, or checkpoint name",
+          "nullable": true
+        },
+        {
+          "name": "anchor",
+          "ty": "text",
+          "description": "An item of the app's to show first: the anchor of a search hit",
           "nullable": true
         }
       ]

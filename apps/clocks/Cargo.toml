@@ -40,6 +40,7 @@ workspace = true
 
 [dev-dependencies]
 tilo-history = { path = "../../crates/sdk/tilo-history" }
+tilo-clock = { version = "0.1.0", path = "../../crates/platform/tilo-clock", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 

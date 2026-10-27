@@ -74,7 +74,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AgentModelsArea> 
     app.areas().find()
 }
 
-pub use provider_settings_ui::AgentProviders;
+pub use crate::prefs::AgentProviders;
 
 /// Local models on this device and the person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]

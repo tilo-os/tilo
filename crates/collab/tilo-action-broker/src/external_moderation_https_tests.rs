@@ -18,7 +18,8 @@ mod https_completion {
     /// test reads the held time.
     fn scenario(test: &str, stage: &str, future: impl std::future::Future<Output = ()>) {
         tilo_test_env::in_own_process(module_path!(), test, || {
-            tilo_clock::freeze_wall(tilo_clock::wall());
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            let _held = tilo_clock::testing::hold_wall_everywhere(process, tilo_clock::wall());
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

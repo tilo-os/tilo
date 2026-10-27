@@ -2299,6 +2299,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-app",
+ "tilo-clock",
  "tilo-history",
  "tilo-test-env",
  "tilo-timezone-engine",
@@ -14701,6 +14702,8 @@ dependencies = [
 name = "settings-sections"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
+ "desktop-policy",
  "serde",
  "serde_json",
  "settings-store",
@@ -17410,6 +17413,7 @@ dependencies = [
  "tilo-clock",
  "tilo-control",
  "tilo-paths",
+ "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]

@@ -2715,13 +2715,13 @@ impl Widget for NotesApp {
                 .next_wake_deadline()
                 .is_some_and(|deadline| deadline <= ui::time::now());
         // A dragged block's pointer at the page's edge scrolls the page.
-        let dragged = self.main.autoscroll_block_drag();
+        self.main.autoscroll_block_drag();
         // A lifted touchpad gesture glides the page on; only the view moves.
         self.main.advance_glide();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path) || feedback_expired || dragged
+        self.shell.update(state, path) || feedback_expired
     }
 
     fn native_input_snapshot(
@@ -3909,18 +3909,23 @@ mod tests {
     /// it up however long the frame takes.
     #[test]
     fn a_capture_keeps_the_import_notice_in_the_window_bar() {
-        ui::clock::freeze_for_capture();
-        let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
-        app.notify(
-            "Imported Project brief",
-            ui::widget::toast::ToastKind::Success,
-        );
-        app.frame(&mut state.doc, &state.root);
-        app.frame(&mut state.doc, &state.root);
-        assert_eq!(
-            ui::window_toolbar::notice().map(|notice| notice.text),
-            Some("Imported Project brief".to_owned())
-        );
+        // A capture pins the clock for the rest of the process, which would
+        // stop it under every test beside this one: the frames that must
+        // keep the notice up run on this thread, held at the capture time.
+        let at = ui::clock::capture_wall().expect("the capture time exists in the local zone");
+        ui::time::testing::with_wall(at, || {
+            let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
+            app.notify(
+                "Imported Project brief",
+                ui::widget::toast::ToastKind::Success,
+            );
+            app.frame(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
+            assert_eq!(
+                ui::window_toolbar::notice().map(|notice| notice.text),
+                Some("Imported Project brief".to_owned())
+            );
+        });
     }
 
     #[test]

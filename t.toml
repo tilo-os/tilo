@@ -1995,7 +1995,7 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 requires = ["arch=x86_64"]
 writable_sources = true
 isolation = "vm"
-inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/test_app_cohort.py", "scripts/vm-acceptance/test_app_startup.py", "scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_basics.py", "scripts/vm-acceptance/test_ci_select.py", "scripts/vm-acceptance/test_clock.py", "scripts/vm-acceptance/test_component_replacement.py", "scripts/vm-acceptance/test_device_fidelity.py", "scripts/vm-acceptance/test_dialog_guard.py", "scripts/vm-acceptance/test_frames.py", "scripts/vm-acceptance/test_layer_artifacts.py", "scripts/vm-acceptance/test_lock_guard.py", "scripts/vm-acceptance/test_management.py", "scripts/vm-acceptance/test_provenance.py", "scripts/vm-acceptance/test_records.py", "scripts/vm-acceptance/test_report.py", "scripts/vm-acceptance/test_resources.py", "scripts/vm-acceptance/test_runtime_backing.py", "scripts/vm-acceptance/test_secrets.py", "scripts/vm-acceptance/test_session_guard.py", "scripts/vm-acceptance/test_session_restart.py", "scripts/vm-acceptance/test_skip.py", "scripts/vm-acceptance/test_store_chooser.py", "scripts/vm-acceptance/test_terminal_cohort.py", "scripts/vm-acceptance/test_ui.py", "scripts/vm-acceptance/test_vm_actions.py", "scripts/vm-acceptance/test_window_guard.py", "t.toml", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/vm-acceptance.sh", "tools/ci/vm-cohort.sh", "tools/perf/**", "tools/with-test-environment.sh"]
+inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/test_app_cohort.py", "scripts/vm-acceptance/test_app_startup.py", "scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_basics.py", "scripts/vm-acceptance/test_ci_select.py", "scripts/vm-acceptance/test_clock.py", "scripts/vm-acceptance/test_component_replacement.py", "scripts/vm-acceptance/test_device_fidelity.py", "scripts/vm-acceptance/test_dialog_guard.py", "scripts/vm-acceptance/test_frames.py", "scripts/vm-acceptance/test_layer_artifacts.py", "scripts/vm-acceptance/test_lock_guard.py", "scripts/vm-acceptance/test_management.py", "scripts/vm-acceptance/test_provenance.py", "scripts/vm-acceptance/test_records.py", "scripts/vm-acceptance/test_report.py", "scripts/vm-acceptance/test_resources.py", "scripts/vm-acceptance/test_runtime_backing.py", "scripts/vm-acceptance/test_secrets.py", "scripts/vm-acceptance/test_selected_groups.py", "scripts/vm-acceptance/test_session_guard.py", "scripts/vm-acceptance/test_session_restart.py", "scripts/vm-acceptance/test_skip.py", "scripts/vm-acceptance/test_store_chooser.py", "scripts/vm-acceptance/test_terminal_cohort.py", "scripts/vm-acceptance/test_ui.py", "scripts/vm-acceptance/test_vm_actions.py", "scripts/vm-acceptance/test_window_guard.py", "t.toml", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/vm-acceptance.sh", "tools/ci/vm-cohort.sh", "tools/perf/**", "tools/with-test-environment.sh"]
 on = ["stable", "dispatch", "idle"]
 default = false
 
@@ -4179,15 +4179,20 @@ name = "vm-acceptance-perf"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 needs = ["vm-acceptance"]
 run = """
-# Each shard of vm-acceptance writes the records of the checks it ran.
+# Each shard of vm-acceptance writes the records of the checks it ran, and the
+# selection it ran beside them: a dispatched `--only A14` owes A14's measurements,
+# never every check of the lane's.
 records=$TMPDIR/records.jsonl
 cat /target/vm-acceptance/*/report/records.jsonl > "$records" 2>/dev/null || true
 [[ -s $records ]] || { echo "the acceptance run wrote no performance records" >&2; exit 1; }
+[[ -s /target/vm-acceptance/only ]] || { echo "the acceptance run did not record the checks it ran" >&2; exit 1; }
+selection=$(cat /target/vm-acceptance/only)
 publish=false
 [[ -n ${T_REF:-} ]] && publish=true
 status=0
 python3 tools/perf/compare.py --results "$records" --store https://code.tilo.so --owner tilo \
-  --lane vm-acceptance --groups boot,session,idle,memory,disk,app,render --publish-dir "$TMPDIR/publish" \
+  --lane vm-acceptance --groups "$(python3 scripts/vm-acceptance/selected_groups.py "$selection")" \
+  --publish-dir "$TMPDIR/publish" \
   --run "t-${T_COMMIT:-tree}-vm" --summary "$TMPDIR/summary.md" || status=1
 if [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then
   manifest=$(mktemp)
@@ -4200,7 +4205,7 @@ fi
 cat "$TMPDIR/summary.md" 2>/dev/null || true
 exit "$status"
 """
-inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh"]
+inputs = ["tools/perf/**", "scripts/vm-acceptance/selected_groups.py", "tools/upload_immutable_packages.sh"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 cache = false
 default = false

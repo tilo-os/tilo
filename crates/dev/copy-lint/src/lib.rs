@@ -90,7 +90,8 @@ pub struct CopyLint<'a> {
 }
 
 impl<'a> CopyLint<'a> {
-    /// Scan every `.rs` file under `root` except `*_tests.rs`.
+    /// Scan every `.rs` file under `root` except test modules: `tests.rs`
+    /// and `*_tests.rs`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
@@ -205,6 +206,7 @@ impl<'a> CopyLint<'a> {
                     self.sources(&path, found);
                 }
             } else if path.extension().is_some_and(|ext| ext == "rs")
+                && name != "tests.rs"
                 && !name.ends_with("_tests.rs")
                 && !self.skip_files.contains(&name)
             {

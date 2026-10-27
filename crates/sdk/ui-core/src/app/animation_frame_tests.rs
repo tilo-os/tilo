@@ -1,8 +1,8 @@
 //! What a frame costs that only an animation asked for, through the native
 //! runner's frame passes (model update, sync, layout, draw): a frame whose
-//! animation only repaints is drawn without a relayout or a republication of
-//! the action surface; one whose animation moves what is laid out is laid
-//! out again.
+//! animation only repaints is drawn without a relayout, a republication of
+//! the action surface or a walk of the whole tree; one whose animation moves
+//! what is laid out is laid out again.
 //!
 //! `cargo test -p tilo-ui --lib animation_frame -- --nocapture` prints what
 //! each frame cost, per stage. Times are for reading; the counts are
@@ -79,6 +79,8 @@ struct FrameCost {
     laid_out: bool,
     /// Action surface publications attempted.
     publications: usize,
+    /// The walks of the whole tree the frame ran (`walk.*` spans).
+    walks: Vec<&'static str>,
     /// Every probed span of the frame, in microseconds.
     spans: Vec<(&'static str, u64)>,
 }
@@ -124,6 +126,11 @@ fn native_frame(app: &mut App) -> FrameCost {
             .iter()
             .any(|(label, _)| *label == "layout.compute" || *label == "layout.place"),
         publications: app.actions.action_surface_publication_attempts - publications,
+        walks: spans
+            .iter()
+            .map(|(label, _)| *label)
+            .filter(|label| label.starts_with("walk."))
+            .collect(),
         spans,
     }
 }
@@ -204,6 +211,11 @@ fn animation_frame_that_only_repaints_skips_layout_and_publication() {
     assert!(repainted >= 25, "the spinner steps 30 times a second");
     assert_eq!(frames.iter().filter(|f| f.laid_out).count(), 0);
     assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
+    let walked: Vec<_> = frames.iter().flat_map(|f| f.walks.clone()).collect();
+    assert!(
+        walked.is_empty(),
+        "spinner frames walked the tree: {walked:?}"
+    );
 }
 
 /// A scroll glide moves what its view lays out: each of its frames places
@@ -265,11 +277,20 @@ fn model_change_during_an_animation_is_published() {
     let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
     let quiet = with_monotonic_time(at(1), || native_frame(&mut app));
     assert_eq!(quiet.publications, 0);
+    assert!(quiet.walks.is_empty(), "{:?}", quiet.walks);
     app.needs_sync = true;
     let synced = with_monotonic_time(at(2), || native_frame(&mut app));
     assert_eq!(synced.publications, 1, "the sync's frame publishes");
+    for walk in ["walk.availability", "walk.routes", "walk.history"] {
+        assert!(
+            synced.walks.contains(&walk),
+            "the sync's frame runs {walk}: {:?}",
+            synced.walks
+        );
+    }
     let after = with_monotonic_time(at(3), || native_frame(&mut app));
     assert_eq!(after.publications, 0, "and only that frame");
+    assert!(after.walks.is_empty(), "{:?}", after.walks);
 }
 
 /// A row opening its body grows on the disclose motion: each frame of it

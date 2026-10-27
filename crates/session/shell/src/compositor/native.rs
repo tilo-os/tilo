@@ -8454,9 +8454,25 @@ fn attach_peer_presence(
         "collab: subscribed to {} room(s) for peer presence",
         rooms.len()
     );
+    bind_window_routes(frame_builder, broker);
     frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
         broker, net, rooms,
     ));
+}
+
+/// Tell the in-process apps which records the session's windows hold, as
+/// its broker knows them: what a report about a window records.
+fn bind_window_routes(
+    frame_builder: &mut FrameBuilder,
+    broker: &crate::shell::collab_broker::BrokerHandle,
+) {
+    let fanout = Arc::clone(&broker.fanout);
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_window_routes(Arc::new(move || fanout.window_records()));
+        }
+    });
 }
 
 fn spawn_session_identity_broker(
@@ -9482,6 +9498,9 @@ pub fn run() {
     //
     // The shell lays out the logical desktop spanning every output; each
     // output then draws its part into its own sub-rect of the scene.
+    // `HEAP-MILESTONE` lines through startup: which step the idle compositor's heap
+    // came from (`crate::shell::heap_trim::log_milestone`).
+    crate::shell::heap_trim::log_milestone("backend-ready");
     let initial_size = match logical_geometry(backend.outputs()) {
         (0, 0) => (1600, 900),
         size => size,
@@ -9610,6 +9629,7 @@ pub fn run() {
         peer_sync_possible: enable_peer_sync,
         notice: state_notice,
     } = load_session_tree(enable_peer_sync);
+    crate::shell::heap_trim::log_milestone("session-tree-loaded");
     let mut state = State::new_with_workspace_tree(
         event_loop.handle(),
         display_handle.clone(),
@@ -9680,6 +9700,7 @@ pub fn run() {
             tracing::warn!(%error, "could not create the history description wake source; descriptions are sent on the next wake");
         }
     }
+    crate::shell::heap_trim::log_milestone("desktop-built");
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -10847,6 +10868,7 @@ pub fn run() {
     // still asked to wait here is reported to the main-thread audit.
     super::liveness::audit_storage_waits();
     let no_storage_waits = durable_store::waiting::forbid_on_this_thread();
+    crate::shell::heap_trim::log_milestone("services-started");
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -14129,6 +14151,20 @@ pub fn run() {
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
+        // Input, a session change, a marker gone or an output presentation
+        // may move what the desktop lays out; a client's new buffer, the
+        // cursor, peers' pointers or an animation alone do not. The tree's
+        // revisions and the widgets' own notes count apart
+        // (`FrameBuilder::relayout_if_owed`).
+        if redraw_reasons.force
+            || redraw_reasons.backend_event
+            || redraw_reasons.session
+            || redraw_reasons.presentation
+            || markers_retired
+            || accessibility_changed
+        {
+            frame_builder.owe_layout();
+        }
         let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
@@ -14312,7 +14348,7 @@ pub fn run() {
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
             let paint_cpu = metrics.cpu_snapshot();
-            frame_builder.relayout();
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             let relaid_out = Instant::now();
             metrics::profile::record_phase(
@@ -14834,8 +14870,8 @@ pub fn run() {
             }
         } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
-            // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
-            frame_builder.relayout();
+            // event hit-tests post-input rects, not the pre-overlay tree.
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // The post-dispatch `flush_configures` below sends this layout's sizes.
             publish_layout_to_clients(

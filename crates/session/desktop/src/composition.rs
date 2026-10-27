@@ -1371,6 +1371,10 @@ impl Widget for DesktopSurface {
         self.root.apply_layout(tree, node, origin);
         let reveal_pending = self.apply_navigation();
         self.end_transition(reveal_pending);
+        // A group still to be framed is framed in a later layout.
+        if reveal_pending {
+            ui::widget::note_layout_moved();
+        }
     }
     fn draw(
         &mut self,

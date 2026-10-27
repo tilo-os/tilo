@@ -378,6 +378,9 @@ pub struct MainPanel {
     page_id: Option<PageId>,
     date_index: crate::metadata::NoteDateIndex,
     dates: crate::metadata::NoteDates,
+    /// The wall clock the dates are read against, when a test holds it: the
+    /// thread driving the app is not the thread that draws it.
+    clock: Option<ui::time::SystemTime>,
     /// Parent hierarchy for the open note. The editable leaf title is not
     /// repeated here.
     parent_path: String,
@@ -533,6 +536,7 @@ impl MainPanel {
             page_id: None,
             date_index: crate::metadata::NoteDateIndex::default(),
             dates: crate::metadata::NoteDates::default(),
+            clock: None,
             parent_path: String::new(),
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
@@ -926,8 +930,53 @@ impl MainPanel {
         if !self.parent_path.is_empty() {
             lines.push(self.parent_path_label());
         }
-        lines.extend(self.dates.labels());
+        let now = self.clock.map_or_else(ui::clock::local_now, |at| {
+            chrono::DateTime::<chrono::Local>::from(ui::time::to_std(at))
+        });
+        lines.extend(self.dates.labels_at(now));
         lines
+    }
+
+    /// Read the note's dates against `at` instead of the wall clock of the
+    /// thread that draws them. The app leaves the clock alone; a test whose
+    /// pinned time this thread cannot read holds it here.
+    pub fn set_clock(&mut self, at: ui::time::SystemTime) {
+        self.clock = Some(at);
+        self.refresh_captions();
+    }
+
+    /// Read the note's dates against the wall clock of the thread that draws
+    /// them again, after [`Self::set_clock`] named another.
+    pub fn clear_clock(&mut self) {
+        self.clock = None;
+        self.refresh_captions();
+    }
+
+    /// [`Self::set_clock`] on the first panel in `widget`'s tree (`false`
+    /// when it has none, as before the window shows a note).
+    pub fn hold_clock_at(widget: &mut dyn Widget, at: ui::time::SystemTime) -> bool {
+        Self::first_panel(widget).is_some_and(|panel| {
+            panel.set_clock(at);
+            true
+        })
+    }
+
+    /// [`Self::clear_clock`] on the first panel in `widget`'s tree.
+    pub fn release_clock_in(widget: &mut dyn Widget) -> bool {
+        Self::first_panel(widget).is_some_and(|panel| {
+            panel.clear_clock();
+            true
+        })
+    }
+
+    fn first_panel(widget: &mut dyn Widget) -> Option<&mut Self> {
+        if widget.as_any_mut().is_some_and(|any| any.is::<Self>()) {
+            return widget.as_any_mut()?.downcast_mut::<Self>();
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .find_map(Self::first_panel)
     }
 
     pub fn set_transclusion_previews(
@@ -1298,13 +1347,14 @@ impl MainPanel {
     }
 
     /// Scroll the page while a dragged block's pointer rests near the edge
-    /// of what is visible, so a target below the fold can be reached.
-    /// Returns whether the page moved.
-    pub fn autoscroll_block_drag(&mut self) -> bool {
+    /// of what is visible, so a target below the fold can be reached. Like
+    /// a glide it moves only the body: no change of the model, only the
+    /// move ([`ui::widget::note_layout_moved`]).
+    pub fn autoscroll_block_drag(&mut self) {
         let now = ui::time::now();
         if !self.editor.editor().block_drag_active() {
             self.drag_scroll_tick = None;
-            return false;
+            return;
         }
         let elapsed = self
             .drag_scroll_tick
@@ -1315,11 +1365,13 @@ impl MainPanel {
         let viewport = self.scroll_viewport();
         let delta = self.editor.editor_mut().tick_block_drag(viewport, elapsed);
         if delta == 0.0 {
-            return false;
+            return;
         }
         let before = self.scroll_y;
         self.set_scroll_offset(before + delta);
-        (self.scroll_y - before).abs() > f64::EPSILON
+        if self.scroll_y.to_bits() != before.to_bits() {
+            ui::widget::note_layout_moved();
+        }
     }
 
     fn scroll_viewport(&self) -> Rect {
@@ -1620,6 +1672,9 @@ impl Default for MainPanel {
 }
 
 impl Widget for MainPanel {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",

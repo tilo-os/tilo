@@ -325,15 +325,25 @@ fn only_a_single_tilo_runtime_directory_names_a_native_toolkit() {
 /// longer, reports it, and releases it, and the next hello takes it again.
 #[test]
 fn every_connection_keeps_the_machine_awake_until_released() {
-    // The lease is read against the clock it was taken by.
-    tilo_clock::freeze_wall(tilo_clock::wall());
+    // The lease is read against the clock it was taken by, and this test's
+    // daemon reads one of its own: no other test of the process sees the
+    // time this one took the lease at.
+    fn read_at() -> u64 {
+        READ_AT.with(std::cell::Cell::get)
+    }
+    thread_local! {
+        static READ_AT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    let taken_at = tilo_clock::unix_now();
+    READ_AT.with(|at| at.set(taken_at));
     let root = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(
         root.path(),
         Box::new(RecordingApply::default()),
         None,
         BaseInfo::default(),
-    );
+    )
+    .with_clock(read_at);
     let hello = |daemon: &mut Daemon| -> HelloResult {
         serde_json::from_value(
             daemon
@@ -353,17 +363,17 @@ fn every_connection_keeps_the_machine_awake_until_released() {
         )
         .unwrap()
     };
-    let now = tilo_clock::unix_now();
+    let now = read_at();
     let lease = hello(&mut daemon).awake.unwrap();
     assert!(lease.held, "{lease:?}");
     assert_eq!(lease.problem, None);
     let until = lease.until.unwrap();
-    assert_eq!(until, now + 1800);
+    assert_eq!(until, now.saturating_add(1800));
     assert!(root.path().join(awake::LEASE_FILE).is_file());
 
     let held = awake(&mut daemon, Some(7200), false);
     assert!(held.held);
-    assert!(held.until.unwrap() >= now + 7200);
+    assert!(held.until.unwrap() >= now.saturating_add(7200));
     assert_eq!(held.hold_until, held.until);
     // Reporting changes nothing; a new connection keeps the hold.
     assert_eq!(awake(&mut daemon, None, false).until, held.until);

@@ -655,7 +655,7 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
     let handoff = format!("tilo-signin-test-cli-{}", std::process::id());
     let run = |device: &Path, secret: &[u8]| {
         std::fs::write(&secret_file, secret).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_tilo-auth"))
+        Command::new(tilo_test_env::package_binary!("tilo-auth"))
             .arg("--tcti")
             .arg(f.tpm.tcti())
             .arg("boot-unlock")
@@ -696,7 +696,7 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
     let bare = f.luks_image_named("bare.img");
     assert_eq!(run(&bare, b"123456").status.code(), Some(2));
 
-    let people = Command::new(env!("CARGO_BIN_EXE_tilo-auth"))
+    let people = Command::new(tilo_test_env::package_binary!("tilo-auth"))
         .arg("boot-people")
         .arg("--device")
         .arg(&device)

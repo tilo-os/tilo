@@ -22,6 +22,7 @@ use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
+mod feedback_recording;
 #[cfg(target_os = "linux")]
 mod feedback_review;
 #[cfg(test)]
@@ -77,7 +78,15 @@ pub struct InProcessApps {
     /// The window each mounted tab is shown in, as lent to its app: the
     /// slots it declares for its bar and its asks to close its tab.
     windows: HashMap<u64, ui::hosted_window::HostedWindow>,
+    /// The records the session's windows hold, by the window instance the
+    /// launcher started each for: what a report about a window records.
+    window_routes: Option<WindowRoutes>,
 }
+
+/// The records the session's broker knows its windows to hold, by window
+/// instance.
+pub type WindowRoutes =
+    std::sync::Arc<dyn Fn() -> Vec<(u64, tilo_action_broker::route::CrdtRoute)> + Send + Sync>;
 
 /// Connects an app the session shows in its own process to the session's
 /// broker for `(app, room)`.
@@ -152,6 +161,7 @@ impl InProcessApps {
             receivers: Vec::new(),
             messaging_services: Vec::new(),
             windows: HashMap::new(),
+            window_routes: None,
         }
     }
 
@@ -669,6 +679,32 @@ impl InProcessApps {
         );
         self.lend_review_model();
         Ok(())
+    }
+
+    /// Learn the records the session's windows hold from its broker.
+    pub(crate) fn bind_window_routes(&mut self, routes: WindowRoutes) {
+        self.window_routes = Some(routes);
+    }
+
+    /// The record window `instance` of `app` in `room` shows: the one record
+    /// it holds there besides the app's own record of the workspace, or that
+    /// one alone. `None` when it holds none, or several.
+    pub(crate) fn window_record(&self, room: &str, app: &str, instance: u64) -> Option<String> {
+        let routes = self.window_routes.as_ref()?();
+        let mut held: Vec<String> = routes
+            .into_iter()
+            .filter(|(at, route)| {
+                *at == instance && route.app_id == app && route.cluster_id == room
+            })
+            .map(|(_, route)| route.record_id)
+            .collect();
+        held.sort();
+        held.dedup();
+        match held.as_slice() {
+            [only] => Some(only.clone()),
+            [primary, item] if primary.is_empty() => Some(item.clone()),
+            _ => None,
+        }
     }
 
     /// Feedback opened from now on, and an open composer, is about `subject`.

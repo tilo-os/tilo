@@ -1147,11 +1147,15 @@ impl TabBar {
         }
     }
 
-    /// The next instant a busy arc changes: its next step while one turns,
-    /// or the moment the last turning one comes to rest.
-    fn busy_deadline(&self, now: Instant) -> Option<Instant> {
-        let turning = self.busy_since.keys().any(|id| self.busy_turns(*id, now));
-        turning.then(|| crate::animation::next_indicator_step(busy_epoch(), now))
+    /// Whether busy arcs still need frames at `now`: one turns, or the pose
+    /// last drawn is not the one they show now (the frame showing them come
+    /// to rest, or gone, is owed). Only drawn: an arc lays nothing out and
+    /// changes nothing the app publishes.
+    fn busy_needs_frame(&self, now: Instant) -> bool {
+        self.busy_since.keys().any(|id| self.busy_turns(*id, now))
+            || self
+                .busy_drawn
+                .is_some_and(|drawn| drawn != self.busy_pose_at(now))
     }
 
     pub fn mark(&self, id: u64) -> Option<TabMark> {
@@ -3828,6 +3832,11 @@ impl Widget for TabBar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // The bar's curves advance as it is laid out: the next frame lays
+        // them out again, whether or not the host runs its update first.
+        if self.layout_curves_in_flight() {
+            crate::widget::note_layout_moved();
+        }
         if self.window_controls {
             let tabbed = self.tabs.len() > 1;
             if tabbed != self.tabbed {
@@ -4598,12 +4607,7 @@ impl Widget for TabBar {
     /// A dwell or an aim hold still to run out is a wait, not motion: the
     /// host sleeps until it is due and [`Widget::update`] settles it.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let now = crate::time::now();
-        self.hover_intent
-            .deadline(now)
-            .into_iter()
-            .chain(self.busy_deadline(now))
-            .min()
+        self.hover_intent.deadline(crate::time::now())
     }
 
     /// A dwell or aim hold that came due opens (or hands over) its pill;
@@ -4618,18 +4622,22 @@ impl Widget for TabBar {
         // The bar's curves (a pill revealing, tabs springing into place, the
         // title growing into tabs, the toolbar row following) advance as it
         // is laid out.
-        if self.needs_animation_frame() {
+        if self.layout_curves_in_flight() {
             crate::widget::note_layout_moved();
         }
-        // A busy arc's step (or its coming to rest) is due: paint it.
-        let now = crate::time::now();
-        let busy_step = self
-            .busy_drawn
-            .is_some_and(|drawn| drawn != self.busy_pose_at(now));
-        self.hover_intent.open() != before || busy_step
+        self.hover_intent.open() != before
     }
 
+    /// The bar's curves while they run, and busy arcs while they turn
+    /// ([`TabBar::busy_needs_frame`]).
     fn needs_animation_frame(&self) -> bool {
+        self.layout_curves_in_flight() || self.busy_needs_frame(crate::motion::frame_now())
+    }
+}
+
+impl TabBar {
+    /// Whether a curve of the bar that its layout places is in flight.
+    fn layout_curves_in_flight(&self) -> bool {
         // Keep pumping redraws while any curve is in flight: layout spring,
         // insert fade, close fade, drop-line fade-in, or reveal.
         let layout = self
@@ -4668,9 +4676,7 @@ impl Widget for TabBar {
             || self.tabbed_in_flight()
             || self.toolbar_row.needs_animation_frame(crate::time::now())
     }
-}
 
-impl TabBar {
     /// Visual-slot ordering (pinned first) plus each slot's fitted width and
     /// in-flight reveal growth — the inputs `apply_layout`'s placement loop turns
     /// into rects. Split out so `apply_layout` itself stays inside the
@@ -10309,35 +10315,45 @@ mod tests {
         }
     }
 
-    /// A busy arc turns in indicator steps on wake deadlines — not on
-    /// animation frames — and comes to rest after [`BUSY_TURNING`].
+    /// A busy arc turns on animation frames, which only draw it: it lays
+    /// nothing out and is no change of the model. It comes to rest after
+    /// [`BUSY_TURNING`], asking for the frame that shows it still.
     #[test]
-    fn a_busy_arc_steps_on_deadlines_and_rests_after_a_while() {
+    fn a_busy_arc_turns_on_frames_that_only_draw_and_rests_after_a_while() {
         let mut tabs = bar();
         tabs.set_mark(3, Some(TabMark::Busy));
         let since = tabs.busy_since[&3];
         let now = since + Duration::from_millis(5);
-        assert!(!tabs.needs_animation_frame(), "a busy mark is not motion");
-        let due = tabs.busy_deadline(now).expect("the arc's next step");
-        assert_eq!(
-            due,
-            crate::animation::next_indicator_step(busy_epoch(), now)
-        );
-        tabs.busy_drawn = Some(tabs.busy_pose_at(now));
         let doc = automerge::AutoCommit::new();
-        assert!(
-            crate::time::testing::with_monotonic_time(due, || {
-                Widget::update(&mut tabs, &doc, &automerge::ROOT)
-            }),
-            "the next step repaints"
-        );
+        crate::time::testing::with_monotonic_time(now, || {
+            assert!(
+                tabs.needs_animation_frame(),
+                "a turning arc asks for frames"
+            );
+            assert_eq!(tabs.next_wake_deadline(), None, "and sets no wake");
+            let _ = crate::widget::take_layout_moved();
+            assert!(
+                !Widget::update(&mut tabs, &doc, &automerge::ROOT),
+                "a step is no change of the model"
+            );
+            assert!(!crate::widget::take_layout_moved(), "nor of the layout");
+        });
+        tabs.busy_drawn = Some(tabs.busy_pose_at(now));
         let rested = since + BUSY_TURNING;
-        assert_eq!(
-            tabs.busy_deadline(rested),
-            None,
-            "a long-busy tab stands still"
-        );
         assert_eq!(tabs.busy_pose_at(rested), BusyPose::Still);
+        crate::time::testing::with_monotonic_time(rested, || {
+            assert!(
+                tabs.needs_animation_frame(),
+                "the frame showing the arc at rest is owed"
+            );
+        });
+        tabs.busy_drawn = Some(BusyPose::Still);
+        crate::time::testing::with_monotonic_time(rested, || {
+            assert!(
+                !tabs.needs_animation_frame(),
+                "a long-busy tab stands still"
+            );
+        });
     }
 
     #[test]
@@ -10367,9 +10383,8 @@ mod tests {
         tabs.set_mark(2, Some(TabMark::Playing));
         tabs.set_mark(3, Some(TabMark::Busy));
         lay_out_at_width_with(&mut tabs, 600.0, &theme);
-        assert_eq!(
-            tabs.busy_deadline(crate::time::now()),
-            None,
+        assert!(
+            !tabs.busy_needs_frame(crate::time::now()),
             "a busy mark under reduced motion stands still"
         );
         let speaker = tabs

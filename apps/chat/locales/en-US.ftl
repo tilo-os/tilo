@@ -356,6 +356,9 @@ chat-feedback-recording = Recording of { $app } from { $from } to { $to }, { $st
     [one] one change
    *[other] { $steps } changes
 }
+chat-feedback-replay = Replay the recording
+chat-feedback-replay-failed = The recording did not open
+chat-feedback-replay-description = Open the recording in { $app } and step through it
 chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
 # A hidden span of a reported text, by what it hid.
 chat-feedback-hidden = { $kind ->

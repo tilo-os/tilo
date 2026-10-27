@@ -4851,6 +4851,11 @@ impl Widget for GroupRow {
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased.
         self.tick_snap_at(now);
+        // A pan in motion moves on in the next frame's layout, whether or
+        // not the host runs this row's update first.
+        if self.snap_in_flight() {
+            crate::widget::note_layout_moved();
+        }
         // A maximized or fullscreen-promoted group drops the leading gutter
         // and any prior pan, pinning it flush at its viewport's left edge.
         let collapsed: Vec<bool> = (0..runs)

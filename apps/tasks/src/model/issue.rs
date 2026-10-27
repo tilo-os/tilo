@@ -62,6 +62,14 @@ impl Status {
         matches!(self, Self::Done | Self::Cancelled)
     }
 
+    /// Whether the issue has left where a task nobody has started waits:
+    /// someone, a person or an agent's run, has taken it up. A to-do is an
+    /// issue that has not.
+    #[must_use]
+    pub const fn started(self) -> bool {
+        !matches!(self, Self::Backlog | Self::Todo)
+    }
+
     /// The Fluent id naming the status.
     #[must_use]
     pub const fn label_key(self) -> &'static str {
@@ -174,6 +182,13 @@ pub struct Issue {
     /// tells its agent where to act and grants nothing.
     #[model(readonly)]
     pub subject: Option<serde_json::Value>,
+    /// A quick question
+    ///
+    /// A small task that ends when the agent answers it: its run's success
+    /// closes it as done instead of leaving it in review, so a question put
+    /// and answered does not stay in the lists. Set once, when it is asked.
+    #[model(readonly)]
+    pub quick: bool,
     /// Labels
     pub labels: Set<String>,
     /// Parent
@@ -365,6 +380,11 @@ pub struct AgentRequest {
     /// What the request is about: a `tilo_actions::SelectionSubject`.
     #[serde(default)]
     pub subject: Option<serde_json::Value>,
+    /// Whether this is a quick question: a small task that ends when its
+    /// run answers it, rather than one that waits for a person to review
+    /// what came back.
+    #[serde(default)]
+    pub quick: bool,
 }
 
 /// A task kept in the workspace's room before the tracker, as the import

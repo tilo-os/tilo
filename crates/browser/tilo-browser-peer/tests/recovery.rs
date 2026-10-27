@@ -18,7 +18,7 @@ mod steward;
 mod support;
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{FailureSubject, Host, LocalState, PeerSnapshot};
+use tilo_browser_peer::{FailureSubject, Host, LocalState, PeerEvent, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace};
@@ -111,12 +111,16 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     );
     peer.join(workspace()).unwrap();
     ready(&[&peer]).await;
-    let connected = peer.status().generation;
+    // Any status change bumps the generation (each envelope's contact
+    // time does); a reconnect is what subscribes the room anew.
+    let _ = peer.drain();
     peer.retry_now().unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert_eq!(
-        peer.status().generation,
-        connected,
+    assert!(
+        !peer
+            .drain()
+            .iter()
+            .any(|event| matches!(event, PeerEvent::Ready { .. })),
         "a connected session is left as it is"
     );
 

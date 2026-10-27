@@ -370,6 +370,7 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
                     model: "fast".into(),
                 }),
                 subject: None,
+                quick: false,
             },
         })
     };
@@ -844,4 +845,77 @@ fn stopping_a_paused_run_ends_it_and_leaves_what_it_did() {
     let run = stopped.run.as_ref().unwrap();
     assert_eq!(run.phase, RunPhase::Stopped);
     assert!(run.paused.is_none(), "a stopped run is not still paused");
+}
+
+#[test]
+fn a_quick_question_is_a_task_that_ends_when_its_agent_answers_it() {
+    let mut person = ada();
+    let id = Id::from_raw("quick");
+    person
+        .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+            ask: crate::model::AgentRequest {
+                id: id.clone(),
+                title: "Which venue seats 120?".into(),
+                body: None,
+                agent: "claude".into(),
+                model: None,
+                subject: None,
+                quick: true,
+            },
+        }))
+        .unwrap();
+    assert!(
+        person.state().unwrap().issues.get(&id).unwrap().quick,
+        "the task it made is a question"
+    );
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+            issue: id.clone(),
+            outcome: RunOutcome::Done,
+            summary: Some("The old depot on Mill Street seats 120.".into()),
+        }))
+        .unwrap();
+    let state = agent.state().unwrap();
+    let issue = state.issues.get(&id).unwrap();
+    assert_eq!(
+        issue.status,
+        Status::Done,
+        "an answered question ends rather than waiting for a review"
+    );
+    // What was asked and what came back stay in the task, findable later.
+    assert_eq!(issue.comments.len(), 1);
+    assert_eq!(issue.title, "Which venue seats 120?");
+}
+
+#[test]
+fn work_asked_of_an_agent_waits_for_a_person_to_review_what_came_back() {
+    let mut person = ada();
+    let id = Id::from_raw("work");
+    person
+        .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+            ask: crate::model::AgentRequest {
+                id: id.clone(),
+                title: "Write the launch notes".into(),
+                body: None,
+                agent: "claude".into(),
+                model: None,
+                subject: None,
+                quick: false,
+            },
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+            issue: id.clone(),
+            outcome: RunOutcome::Done,
+            summary: None,
+        }))
+        .unwrap();
+    assert_eq!(
+        agent.state().unwrap().issues.get(&id).unwrap().status,
+        Status::InReview,
+        "work done by an agent is reviewed, not closed"
+    );
 }

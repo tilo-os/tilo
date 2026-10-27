@@ -3,11 +3,13 @@ tasks-filters = Filters
 tasks-views = View
 tasks-place-list = Issues
 tasks-place-board = Board
+tasks-place-thread = Thread
 tasks-location-filtered = { $place }, { $filter }
 
 ## What the sidebar narrows the list and the board to
 tasks-filter-all = All issues
 tasks-filter-mine = Mine
+tasks-filter-todo = Todos
 tasks-filter-unassigned = Nobody's
 tasks-filter-agent = An agent's
 tasks-new-issue = New issue
@@ -68,6 +70,9 @@ tasks-run-stop = Stop
 tasks-run-approve = Start
 
 tasks-thread = Thread
+tasks-thread-last-from = { $speaker } said
+tasks-thread-empty-title = Nothing said yet
+tasks-thread-empty-message = Writing to a task in its thread puts the conversation here.
 tasks-thread-draft = Message
 tasks-thread-placeholder = Write a message
 tasks-thread-comment = Comment

@@ -826,6 +826,11 @@ impl Widget for DisclosureRow {
             control.apply_layout(taffy, node, centre);
             self.trailing_rect = control.get_rect();
         }
+        // A host that lays out only what moved lays the next frame of the
+        // reveal out too, whether or not it runs this row's update first.
+        if self.state.is_moving() {
+            crate::widget::note_layout_moved();
+        }
     }
 
     fn draw(

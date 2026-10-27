@@ -858,8 +858,13 @@ mod tests {
     #[test]
     fn notification_edits_write_the_policy() {
         // A mute counts from when it was asked for: the clock stands still
-        // here, so the end it writes is exact.
-        tilo_clock::freeze_wall(tilo_clock::wall());
+        // for this scenario's app, so the end it writes is exact.
+        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+            notification_edits_write_the_policy_at_once();
+        });
+    }
+
+    fn notification_edits_write_the_policy_at_once() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
         edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
@@ -938,7 +943,12 @@ mod tests {
     /// writes nothing.
     #[test]
     fn apps_are_live_rows_offering_their_rules() {
-        tilo_clock::freeze_wall(tilo_clock::wall());
+        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
+            apps_are_live_rows_offering_their_rules_at_once();
+        });
+    }
+
+    fn apps_are_live_rows_offering_their_rules_at_once() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let settings = app.settings::<NotificationPrefs>();
         assert!(
