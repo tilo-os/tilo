@@ -148,6 +148,7 @@ agent-downloads-value = Only with your approval
 agent-service-down-title = Local models unavailable
 agent-service-down-body = Local models can't be managed on this device right now. Hosted providers still work.
 agent-service-title = Local model service
+agent-notice-title = Provider status
 agent-models-empty-title = Models on this device
 agent-models-empty = No local models are installed. Setup shows the download, storage, source, revision, and license before anything changes.
 agent-notice-remove = Remove { $name }? This deletes its { $size } local snapshot. Tasks and workspace data are unchanged.

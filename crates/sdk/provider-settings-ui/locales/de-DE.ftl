@@ -148,6 +148,7 @@ agent-downloads-value = Nur mit deiner Zustimmung
 agent-service-down-title = Lokale Modelle nicht verfügbar
 agent-service-down-body = Lokale Modelle lassen sich auf diesem Gerät gerade nicht verwalten. Gehostete Anbieter funktionieren weiterhin.
 agent-service-title = Lokaler Modelldienst
+agent-notice-title = Anbieterstatus
 agent-models-empty-title = Modelle auf diesem Gerät
 agent-models-empty = Keine lokalen Modelle installiert. Die Einrichtung zeigt Download, Speicher, Quelle, Revision und Lizenz, bevor sich etwas ändert.
 agent-notice-remove = { $name } entfernen? Das löscht den lokalen Snapshot von { $size }. Aufgaben und Arbeitsbereichsdaten bleiben unverändert.

@@ -506,7 +506,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
     fn sections_with_sign_in(&self, include_sign_in: bool) -> Vec<SettingsSection> {
         let mut sections = Vec::new();
         if let Some(notice) = &self.notice {
-            sections.push(section(&t("agent-service-title"), rows(vec![note(notice)])));
+            // A result is about a provider, so it is filed under the providers
+            // rather than under the local model service it has nothing to do
+            // with.
+            sections.push(section(&t("agent-notice-title"), rows(vec![note(notice)])));
         }
         sections.push(self.hosted_profiles_with_sign_in(include_sign_in));
         if let Some(agents) = self.agent_models_card() {
