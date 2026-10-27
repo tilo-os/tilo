@@ -229,7 +229,7 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
         assert_eq!(failure.index, 0, "the first step is the one that failed");
         let reason = failure.error.clone().unwrap_or_default();
         assert!(reason.contains("unknown_action"), "{reason}");
-        assert_eq!(outcome.steps.len(), 1, "a step after the failure never ran",);
+        assert_eq!(outcome.steps.len(), 1, "a step after the failure never ran");
     }
 }
 
