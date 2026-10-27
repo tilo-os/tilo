@@ -98,6 +98,29 @@ pub(super) fn first_frame(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), La
     if let Some(line) = tilo_startup_metrics::summary_line(spec.app_id) {
         println!("{line}");
     }
+    // What the process holds once its first frame is drawn, and the most it held until then.
+    #[cfg(target_os = "linux")]
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        let kib = |field: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(field))
+                .and_then(|value| {
+                    value
+                        .trim()
+                        .trim_end_matches("kB")
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(0)
+        };
+        println!(
+            "FIRST-FRAME-MEMORY rss_kib={} peak_kib={}",
+            kib("VmRSS:"),
+            kib("VmHWM:")
+        );
+    }
     for (name, ns) in tilo_startup_metrics::events() {
         println!("FIRST-FRAME-MARK name={name} us={}", ns / 1000);
     }

@@ -861,9 +861,23 @@ impl ApplicationHost {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let records = self.records_for(definition)?;
         if definition.keeps_room_record() {
-            let target = definition
-                .unsaved_target(&records)
-                .map_err(LaunchError::Record)?;
+            let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+            // A window that shows before the room's record opens the record this device holds
+            // off the frame; the component takes it in (`HostContext::record_opening`).
+            let target = if definition.opens_before_record
+                && records
+                    .begin_opening(&primary)
+                    .map_err(LaunchError::Record)?
+            {
+                LaunchTarget::Record {
+                    checkout: primary,
+                    reveal: None,
+                }
+            } else {
+                definition
+                    .unsaved_target(&records)
+                    .map_err(LaunchError::Record)?
+            };
             let mut context = HostContext::prepare(
                 definition,
                 HostContextInputs {
@@ -1063,6 +1077,7 @@ mod native_process_tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: rejected_factory,
         }
     }

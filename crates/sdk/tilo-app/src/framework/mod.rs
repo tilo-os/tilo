@@ -332,6 +332,7 @@ pub mod history;
 mod kinds;
 mod launch;
 mod live;
+mod opening;
 pub mod page_part;
 mod people;
 mod person;
@@ -365,7 +366,10 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-pub use app::{AppName, FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
+pub use app::{
+    AppName, FileHistory, OpeningCx, OpeningView, ResourceApp, SURFACE_FLAG, SeedCx, definition,
+    run_helper,
+};
 pub use attached::{AttachedView, OpenView};
 pub use chain::{Chain, Chained};
 pub use children::{ChildRecord, Children, Listed, child_resource_id};
@@ -383,6 +387,7 @@ pub use form::{Form, FormSubmit};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
+pub use opening::Opened;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;

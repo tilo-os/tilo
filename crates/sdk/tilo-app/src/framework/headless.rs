@@ -2190,6 +2190,32 @@ impl HostedApp {
             TEST_ROOM.to_owned(),
             TEST_DEVICE.to_owned(),
         );
+        Self::open_in(definition, author, profile)
+    }
+
+    /// The app `definition` as its owner `author` opens it on the profile `--data-dir
+    /// directory` opens: what a test opens again to see what an earlier window kept. Only one
+    /// writer may hold a profile.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn open_data_dir(
+        definition: &'static ui_core::application::ApplicationDefinition,
+        author: &str,
+        directory: &std::path::Path,
+    ) -> Result<Self, LaunchError> {
+        Self::open_in(
+            definition,
+            author,
+            Profile::DataDir(directory.to_path_buf()),
+        )
+    }
+
+    fn open_in(
+        definition: &'static ui_core::application::ApplicationDefinition,
+        author: &str,
+        profile: Profile,
+    ) -> Result<Self, LaunchError> {
         let opening = Opening {
             definition,
             id: definition.app_id(),

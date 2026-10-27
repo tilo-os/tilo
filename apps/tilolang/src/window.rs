@@ -261,6 +261,14 @@ pub struct Window {
     device: Option<String>,
     /// Where the indexes of the rooms this window shows are kept: `None` keeps them in memory.
     indexes: Option<std::path::PathBuf>,
+    /// The room this window shows, which names where its indexes are kept: had from the launch,
+    /// before the room's record.
+    room: Option<String>,
+    /// The room's record, while it is read off the frame and the window shows what the indexes
+    /// hold ([`Self::opening`]).
+    opening: Option<ui::record::RecordOpening>,
+    /// Whether the window shows the platform's loading state, until the indexes are read from.
+    loading: bool,
     pending: Pending,
     undo: ui::undo::UndoAccess,
     /// The scenario a capture stages, until the host runs it.
@@ -332,9 +340,13 @@ impl Window {
                 let names = names.clone();
                 Rc::new(move |id: &str| names.label(id)) as crate::reconcile::People
             };
-            let registry = Rc::clone(&rows);
+            // Weakly: the rows' own readers share this reconciler's lookups, and a strong
+            // hold would keep the rows, their views and the room's indexes alive after the
+            // window closes.
+            let registry = Rc::downgrade(&rows);
             let rows_of: crate::adapter::RowsOf = Rc::new(move |key: &str| {
                 registry
+                    .upgrade()?
                     .borrow()
                     .get(key)
                     .map(|rows| Rc::clone(rows) as ui::component::SharedRows)
@@ -371,6 +383,9 @@ impl Window {
             sink: RefCell::new(Some(Box::new(LogSink::dev()))),
             device: None,
             indexes: None,
+            room: None,
+            opening: None,
+            loading: false,
             pending: Pending::default(),
             undo: ui::undo::UndoAccess::new(),
             staged: None,
@@ -404,6 +419,46 @@ impl Window {
         self
     }
 
+    /// This window in the room `room`, as its launch names it: where its indexes are kept is
+    /// known before the room's record is.
+    #[must_use]
+    pub fn in_room(mut self, room: &str) -> Self {
+        self.room = Some(room.to_owned());
+        self
+    }
+
+    /// This window shown before the room's record, which `record` reads off the frame: it opens
+    /// over the room's indexes, and a write, or a field no index holds, waits for the record
+    /// ([`tilolang_tilo::host::Host::set_record_loader`]). Its view takes it over once the
+    /// record is had ([`Self::taken_over`]).
+    #[must_use]
+    pub fn opening(mut self, record: ui::record::RecordOpening) -> Self {
+        self.opening = Some(record);
+        self
+    }
+
+    /// This window, shown before the room's record, taken over by the view of the record: it
+    /// reads the record from now on, through the framework as every window does.
+    #[must_use]
+    pub fn taken_over(mut self) -> Self {
+        self.opening = None;
+        self
+    }
+
+    /// Where the indexes of this window's room are kept, when they are kept on disk.
+    fn index_dir(&self) -> Option<std::path::PathBuf> {
+        if self.mode != RunMode::Live {
+            // A past version is read once and kept nowhere, and a capture shows its scenario
+            // on a profile of its own, thrown away with it: their indexes are built in memory,
+            // at once.
+            return None;
+        }
+        Some(tilolang_tilo::index::room_dir(
+            self.indexes.as_deref()?,
+            self.room.as_deref()?,
+        ))
+    }
+
     /// This window sending the outside effects it settles to `sink` rather than the development
     /// log.
     #[must_use]
@@ -414,24 +469,26 @@ impl Window {
 
     // ----- the host ------------------------------------------------------------------------
 
-    /// The host over the room record, built with the package the first time the record is at
-    /// hand.
-    fn host_for(&mut self, doc: &ui::automerge::AutoCommit) -> Option<Host> {
+    /// The host over the room record `doc`, built with the package the first time; without the
+    /// record (while it is read off the frame), over the room's indexes.
+    fn host_for(&mut self, doc: Option<&ui::automerge::AutoCommit>) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
             // An index built off the frame changes what every view reads, as a change does.
-            if host.sync_from(doc) | host.poll_index() {
+            let synced = doc.is_some_and(|doc| host.sync_from(doc));
+            if synced | host.poll_index() {
                 self.moved = true;
             }
             return Some(host.clone());
         }
-        // A past version is read once and kept nowhere.
-        let index_dir = self
-            .indexes
-            .as_deref()
-            .filter(|_| self.mode != RunMode::Past)
-            .and_then(|base| tilolang_tilo::index::room_dir(base, doc));
+        let index_dir = self.index_dir();
+        let loader = match (doc, &self.opening, &index_dir) {
+            (Some(_), _, _) => None,
+            (None, Some(record), Some(_)) => Some(record.clone()),
+            // Without the record, a window opens over the indexes it keeps or not at all.
+            (None, _, _) => return None,
+        };
         let opening = tilolang_tilo::host::Opening {
-            record: Some(doc),
+            record: doc,
             index_dir,
             device: self.device.as_deref(),
         };
@@ -451,6 +508,10 @@ impl Window {
                 return None;
             }
         };
+        if let Some(record) = loader {
+            // A write, or a field no index holds, waits for the record and lands on it.
+            host.set_record_loader(Box::new(move || record.document()));
+        }
         host.runtime().set_name_host(self.names.clone());
         // `now` is the toolkit's clock, as every time the window shows is: a capture pins it, so
         // a scenario's messages are stamped with the capture's time.
@@ -622,7 +683,7 @@ impl Window {
             *self.sink.borrow_mut() = Some(Box::new(LogSink::dev()));
         }
         self.started = false;
-        self.host_for(doc)
+        self.host_for(Some(doc))
     }
 
     /// Open the package's root window.
@@ -1134,7 +1195,11 @@ impl Window {
     }
 
     fn settle_outbox(&mut self) -> bool {
-        if !std::mem::take(&mut self.settle_due) || self.mode != RunMode::Live {
+        // What waits in the record is settled once the window reads the record.
+        if self.opening.is_some()
+            || !std::mem::take(&mut self.settle_due)
+            || self.mode != RunMode::Live
+        {
             return false;
         }
         let Some(host) = self.current_host() else {
@@ -1638,6 +1703,16 @@ fn peers_of(presence: &ui::presence::PresenceCtx, app: &str, me: &str) -> HashMa
         .collect()
 }
 
+impl Drop for Window {
+    /// What the indexes hold reaches the disk as the window closes: the next window of the room
+    /// opens over them before its record.
+    fn drop(&mut self) {
+        if let Some(host) = self.current_host() {
+            host.persist_index();
+        }
+    }
+}
+
 impl ui::presence::capability::PublishesPresence for Window {
     /// The resource the window shows beside its root, so a collaborator's list shows this
     /// participant at its row.
@@ -1729,16 +1804,38 @@ impl Widget for Window {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let _phase = Phase::start("tl.sync");
-        let (doc, _) = ui::doc::document_ref(state, path);
+        // Shown before the room's record, the window reads none: it opens over the indexes.
+        let doc = self
+            .opening
+            .is_none()
+            .then(|| ui::doc::document_ref(state, path).0);
         let Some(host) = self.host_for(doc) else {
             self.body.sync(state, path);
             return;
         };
-        let host = self.follow_updates(doc, host);
+        let host = match doc {
+            Some(doc) => self.follow_updates(doc, host),
+            None => host,
+        };
         if !self.started {
-            self.started = true;
-            self.open_root(&host);
-            self.compose();
+            // Until the indexes are read from, the lists would show nothing: the window shows
+            // the platform's loading state (or, before the room's first sync, that it connects).
+            if host.index_ready() {
+                self.started = true;
+                self.loading = false;
+                self.open_root(&host);
+                self.compose();
+            } else if !self.loading {
+                self.loading = true;
+                let loading = ui::widget::EmptyState::new(ui::i18n::I18nManager::lookup_plain(
+                    "arriving-loading",
+                ))
+                .busy();
+                if let Some(pane) = self.shell_pane() {
+                    pane.set(Box::new(loading));
+                }
+                self.structure_dirty = true;
+            }
         }
         if self.staged.is_some() {
             self.run_staged(&host);
