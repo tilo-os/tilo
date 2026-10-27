@@ -1413,6 +1413,9 @@ fn the_project_is_published_with_its_verbs_and_a_resource_of_its_own() {
     assert!(
         children.contains(&address.as_str()),
         "the project is a resource of its own: {children:?}"
+    );
+}
+
 /// A budget the tests set with only the limits they care about.
 fn limits(max_tokens: Option<u64>, max_cost_micros: Option<u64>, currency: &str) -> SpendLimits {
     SpendLimits {
