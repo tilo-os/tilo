@@ -17,18 +17,22 @@ fn packages() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
 }
 
+/// Copy the package at `from` into `to`, created.
+fn copy_package(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+    }
+}
+
 #[test]
 fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     let scratch = tempfile::tempdir().unwrap();
     // The packages are copied: a build writes new ids into their locks.
     let source = scratch.path().join("tl");
     for name in ["board", "notes", "todo", "chat"] {
-        let dir = source.join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        for entry in std::fs::read_dir(packages().join(name)).unwrap() {
-            let entry = entry.unwrap();
-            std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
-        }
+        copy_package(&packages().join(name), &source.join(name));
     }
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let options = BuildOptions {
@@ -145,11 +149,7 @@ fn setenv<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
 fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("tl/counter");
-    std::fs::create_dir_all(&dir).unwrap();
-    for entry in std::fs::read_dir(packages().join("counter")).unwrap() {
-        let entry = entry.unwrap();
-        std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
-    }
+    copy_package(&packages().join("counter"), &dir);
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let options = BuildOptions {
         dir,

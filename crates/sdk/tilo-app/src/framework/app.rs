@@ -1205,11 +1205,9 @@ fn create_component(
                 .clone()
                 .map(|source| (source, (app.file_history_witness)())),
         );
-    let permissions = context.live_permissions();
-    let me = context.author().0.clone();
     let editing = Editing::Live {
-        permissions,
-        me,
+        permissions: context.live_permissions(),
+        me: context.author().0.clone(),
         run,
     };
     let root = match (app.open)(&mut context, editing, capture, created)? {

@@ -2105,7 +2105,7 @@ fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
         .with_widget_mut(|root: &mut ResourceRoot| {
             let typed = root.typed::<A::Resource>()?;
             let views = <A::Resource as Resource>::views(&typed.live.get());
-            Some(ids_of(typed.effects.specs(), views))
+            Some(ids_of(&typed.effects.specs(), views))
         })
         .flatten()
         .unwrap_or_default()
@@ -2115,7 +2115,7 @@ fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
 /// every app's [`published_ids`].
 #[inline(never)]
 fn ids_of(
-    effects: Vec<tilo_actions::ActionSpec>,
+    effects: &[tilo_actions::ActionSpec],
     views: Vec<tilo_actions::ResourceViewSpec>,
 ) -> PublishedIds {
     (
