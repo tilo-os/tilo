@@ -62,6 +62,11 @@ pub enum WindowAction {
     MoveTabTo { group: GroupId, tab: TabId },
     /// [`Self::CopyTab`] to the workspace named in [`DESTINATION_PARAM`].
     CopyTabTo { group: GroupId, tab: TabId },
+    /// Share a window of this device's with the people of its workspace,
+    /// whose layout is otherwise each person's own.
+    ShareTab { group: GroupId, tab: TabId },
+    /// Stop sharing the window [`Self::ShareTab`] shared.
+    StopSharingTab { group: GroupId, tab: TabId },
 }
 
 /// The parameter naming the workspace a chosen move or copy goes to.
@@ -128,9 +133,16 @@ pub fn window_row_tile<'a>(tree: &'a DesktopTree, id: &str) -> Option<&'a TileCo
 }
 
 fn window_row_face(id: &str) -> Option<(GroupId, Option<TabId>)> {
-    let tab_rest = ["tab.focus:", "tab.close:", "tab.move:", "tab.copy:"]
-        .into_iter()
-        .find_map(|prefix| id.strip_prefix(prefix));
+    let tab_rest = [
+        "tab.focus:",
+        "tab.close:",
+        "tab.move:",
+        "tab.copy:",
+        "tab.share:",
+        "tab.unshare:",
+    ]
+    .into_iter()
+    .find_map(|prefix| id.strip_prefix(prefix));
     if let Some(rest) = tab_rest {
         let mut parts = rest.split(':');
         let group = parts.next()?.parse().ok()?;
@@ -150,6 +162,16 @@ pub fn tab_focus_id(group: GroupId, tab: TabId) -> String {
 /// The exact address of closing `tab` in `group`.
 pub fn tab_close_id(group: GroupId, tab: TabId) -> String {
     format!("tab.close:{group}:{tab}")
+}
+
+/// The exact address of sharing `tab` in `group` with its workspace.
+pub fn tab_share_id(group: GroupId, tab: TabId) -> String {
+    format!("tab.share:{group}:{tab}")
+}
+
+/// The exact address of no longer sharing `tab` in `group`.
+pub fn tab_unshare_id(group: GroupId, tab: TabId) -> String {
+    format!("tab.unshare:{group}:{tab}")
 }
 
 /// The exact address of closing `group`.
@@ -234,6 +256,7 @@ fn app_hint(tile: &TileContent) -> Option<String> {
 struct Verbs {
     close: bool,
     relocate: bool,
+    share: bool,
 }
 
 impl Verbs {
@@ -247,6 +270,7 @@ impl Verbs {
             return Self {
                 close: true,
                 relocate: true,
+                share: true,
             };
         }
         let names = |key: &str| {
@@ -260,6 +284,7 @@ impl Verbs {
         Self {
             close: names("search-window-verb-close"),
             relocate: names("search-window-verb-relocate"),
+            share: names("search-window-verb-share"),
         }
     }
 }
@@ -510,12 +535,63 @@ fn close_rows(
     }
 }
 
+/// The share row of `tab` in `group`: sharing it with the workspace while
+/// `shared` is false, stopping while it is true.
+fn share_row(
+    rows: &mut Vec<WindowRow>,
+    admit: &impl Fn(&str, bool) -> bool,
+    verbs: Verbs,
+    group: GroupId,
+    tab: &Tab,
+    shared: bool,
+) {
+    let (id, key, action) = if shared {
+        (
+            tab_unshare_id(group, tab.id),
+            "search-window-unshare-tab",
+            WindowAction::StopSharingTab { group, tab: tab.id },
+        )
+    } else {
+        (
+            tab_share_id(group, tab.id),
+            "search-window-share-tab",
+            WindowAction::ShareTab { group, tab: tab.id },
+        )
+    };
+    if !admit(&id, verbs.share) {
+        return;
+    }
+    let label = t_args(key, &[("tab", tab.title.as_str().into())]);
+    rows.push(WindowRow {
+        kind: WindowRowKind::Tab,
+        id,
+        names: vec![label.clone()],
+        title: label,
+        subtitle: None,
+        destinations: Vec::new(),
+        hint: app_hint(&tab.tile),
+        action,
+    });
+}
+
 /// Every window row of the active workspace that `needle` may be asking for.
 ///
 /// Rows are admitted, not ranked: the host ranks [`WindowRow::names`]
 /// against the same needle. A needle equal to a row's exact id always admits
 /// that row, which is how an address resolves.
 pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
+    window_rows_with_sharing(tree, needle, &|_, _| None)
+}
+
+/// [`window_rows`], with a share row for each window `sharing` says can be
+/// shared with its workspace: `Some(false)` while it is not shared,
+/// `Some(true)` while it is, `None` for a window that is not to be shared
+/// (another device's, or one of a workspace that shares every window).
+pub fn window_rows_with_sharing(
+    tree: &DesktopTree,
+    needle: &str,
+    sharing: &dyn Fn(&Workspace, &Tab) -> Option<bool>,
+) -> Vec<WindowRow> {
     let Some(workspace) = tree.active_workspace() else {
         return Vec::new();
     };
@@ -559,6 +635,9 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
             }
             close_rows(&mut rows, &admit, verbs, workspace, strip, group);
             for tab in &group.tabs {
+                if let Some(shared) = sharing(workspace, tab) {
+                    share_row(&mut rows, &admit, verbs, group_id, tab, shared);
+                }
                 move_rows(
                     &mut rows,
                     &|id: &str, _| !searching || exact == id,
