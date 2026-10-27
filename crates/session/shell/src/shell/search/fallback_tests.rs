@@ -57,7 +57,9 @@ impl SearchProvider for Notes {
                     title,
                     title,
                     None,
-                    60,
+                    // Found by a word inside, as content is: low on the
+                    // provider's scale.
+                    20,
                     |_, _, _| {},
                 )
             })
