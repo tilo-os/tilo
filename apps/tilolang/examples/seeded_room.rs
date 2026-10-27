@@ -8,14 +8,19 @@
 //! ```
 //!
 //! The room is the one `--data-dir` opens (`personal`), and the record is installed as the room's
-//! own document, as an earlier session of the app left it.
+//! own document, as an earlier session of the app left it. With `--index`, the room's index is
+//! kept beside it too, as that session's window kept it.
 
 use std::path::PathBuf;
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [package, items, out] = args.as_slice() else {
-        return Err("usage: seeded_room <package dir> <items> <out dir>".into());
+    let (index, args) = match args.split_first() {
+        Some((flag, rest)) if flag == "--index" => (true, rest),
+        _ => (false, args.as_slice()),
+    };
+    let [package, items, out] = args else {
+        return Err("usage: seeded_room [--index] <package dir> <items> <out dir>".into());
     };
     let items: usize = items
         .parse()
@@ -46,6 +51,45 @@ fn main() -> Result<(), String> {
         ui::record::transfer::Durability::Durable => {}
         other => return Err(format!("the room's record did not land: {other:?}")),
     }
+    if index {
+        keep_index(&packages, &doc, &data)?;
+    }
     println!("{} with {items} items in {}", main.meta.app, data.display());
+    Ok(())
+}
+
+/// Keep the index of the room `doc` is the record of where the window `--data-dir data` opens
+/// reads it.
+fn keep_index(
+    packages: &[tilolang_tilo::tilolang::Compiled],
+    doc: &ui::automerge::AutoCommit,
+    data: &std::path::Path,
+) -> Result<(), String> {
+    let main = packages.last().ok_or("no package")?;
+    let files = ui::storage::AppFiles::at(ui::storage::AppPaths::under(
+        data.join("files"),
+        &main.meta.app,
+    ));
+    let base = tilolang_app::app::indexes(&files).ok_or("the profile keeps no cache")?;
+    let host = tilolang_tilo::host::Host::open(
+        tilolang_tilo::host::Opening {
+            record: Some(doc),
+            index_dir: Some(tilolang_tilo::index::room_dir(&base, "personal")),
+            device: None,
+        },
+        tilolang_tilo::runtime::Principal::new("seed"),
+        |_: &tilolang_tilo::runtime::Principal, _: &tilolang_tilo::runtime::ActionInfo| {
+            tilolang_tilo::runtime::Decision::Deny
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    for compiled in packages {
+        host.load_compiled(compiled).map_err(|e| e.to_string())?;
+    }
+    host.wait_index();
+    if !host.index_ready() {
+        return Err("the index was not built".into());
+    }
+    host.persist_index();
     Ok(())
 }
