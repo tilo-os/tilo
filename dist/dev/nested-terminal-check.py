@@ -11,7 +11,8 @@ control socket and the actions people and agents use:
           shows a line `ok` on its screen
 
 A check that cannot observe its subject fails; nothing is skipped. The
-session's logs, a state dump and a snapshot are kept in --out.
+session's logs, state dumps, its window list and a snapshot are kept in
+--out; its state directory (with the env-runtime, hundreds of MiB) is not.
 """
 from __future__ import annotations
 
@@ -20,9 +21,11 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -86,6 +89,13 @@ def terminal(session: Session, operation: str, args: dict | None = None, timeout
         raise Failed(f"Terminal offers no {operation} in room {session.room}; it offers {offered}")
 
 
+def native(session: Session) -> bool:
+    """Whether the session's Home workspace is in a room this device governs,
+    as nested-session.sh's native.log confirms it: apps open there then."""
+    tree = session.state()["workspace_tree"]
+    return session.room in (tree.get("native_authority") or {}).get("rooms", {})
+
+
 def tail(path: pathlib.Path, lines: int = 60):
     try:
         kept = path.read_text(errors="replace").splitlines()[-lines:]
@@ -103,7 +113,9 @@ def main() -> int:
     args = parser.parse_args()
     out = (args.out or REPO / "target/nested-terminal-check" / time.strftime("%Y%m%d-%H%M%S")).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    state = out / "session"
+    # Outside --out: t keeps a failure's outputs only up to its evidence limit.
+    scratch = pathlib.Path(tempfile.mkdtemp(prefix="nested-terminal-", dir=os.environ.get("TMPDIR")))
+    state = scratch / "session"
     failed: list[str] = []
 
     def check(name: str, passed: bool, detail: str):
@@ -134,11 +146,14 @@ def main() -> int:
             return Session("a", control, str(active["room"])) if active and active.get("room") else None
         session = wait_for("the session to answer", up, START)
         print(f"the session is up in {time.monotonic() - began:.0f} s, room {session.room}", flush=True)
+        wait_for("the Home workspace to be native", lambda: native(session), START)
+        print(f"the Home workspace is native {time.monotonic() - began:.0f} s in", flush=True)
 
         try:
             row = session.action(lambda row: row.get("provider") == "applications" and row.get("id") == TERMINAL,
                                  "Terminal to open")
-            session.invoke(row)
+            print(f"opening Terminal: {json.dumps(row)[:300]} answered "
+                  f"{json.dumps(session.invoke(row), default=str)[:300]}", flush=True)
             tab = wait_for("a Terminal window", lambda: next(iter(terminal_tabs(session)), None), OPEN)
             # Terminal exits at once when the launcher finds no ush socket;
             # its window must still be there once its shell had time to start.
@@ -171,16 +186,24 @@ def main() -> int:
     finally:
         if session is not None:
             session.snapshot(out, "end")
+            try:
+                (out / "windows.json").write_text(json.dumps(ok(session.control, {"op": "windows"}), indent=1))
+            except (Failed, OSError, ValueError) as error:
+                print(f"   (no window list: {error})")
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)
             try:
                 process.wait(timeout=90)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
+        logs = state / "logs"
+        if logs.is_dir():
+            shutil.copytree(logs, out / "logs", dirs_exist_ok=True)
         if failed:
             tail(out / "session.log")
-            for name in ("ush.log", "shell.log"):
-                tail(state / "logs" / name, 120)
+            for name in ("native.log", "ush.log", "shell.log"):
+                tail(logs / name, 200)
+        shutil.rmtree(scratch, ignore_errors=True)
     print(f"took {time.monotonic() - began:.0f} s", flush=True)
     print("RESULT ok" if not failed else f"RESULT failed: {', '.join(failed)}", flush=True)
     return 1 if failed else 0
