@@ -5691,6 +5691,33 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
+# The tilolang runtime binary alone, thin, against the runtime library a nested session runs
+# (dist/dev/tilolang-runtime-build.sh): what `tilolang dev --build-runtime` swaps into a running
+# session, taken with `t outputs tilolang-runtime`, for the same reason the session takes its own.
+[[check]]
+name = "tilolang-runtime"
+run = "bash dist/dev/tilolang-runtime-build.sh /target/tilolang-runtime"
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["apps/tilolang/**", "crates/**", "vendor/**", "dist/dev/tilolang-runtime-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/tilolang-runtime/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "32GiB" }
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "tilolang-runtime-arm64"
+run = "bash dist/dev/tilolang-runtime-build.sh /target/tilolang-runtime"
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["apps/tilolang/**", "crates/**", "vendor/**", "dist/dev/tilolang-runtime-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/tilolang-runtime/**"]
+requires = ["arch=arm64"]
+requirement = { cores = 16, memory = "32GiB" }
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
 # The same build for an arm64 machine (a Snapdragon laptop): its binaries run only there.
 [[check]]
 name = "nested-session-arm64"

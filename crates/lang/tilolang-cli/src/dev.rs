@@ -39,24 +39,19 @@ const RUNTIME_SOURCES: [&str; 4] = [
     "crates/lang/tilolang",
 ];
 
-/// The profile the runtime is built with: the nested session's (dist/dev/nested-session-build.sh),
-/// optimised without the shipped profile's whole-program link, and incremental. An unoptimised
-/// runtime is several hundred megabytes.
-const RUNTIME_PROFILE: [&str; 10] = [
-    "--profile",
-    "nested",
-    "--config",
-    "profile.nested.inherits=\"release\"",
-    "--config",
-    "profile.nested.lto=false",
-    "--config",
-    "profile.nested.codegen-units=16",
-    "--config",
-    "profile.nested.incremental=true",
-];
+/// The build server's check that builds the runtime thin, against the runtime library a nested
+/// session runs (dist/dev/tilolang-runtime-build.sh), for this machine's architecture: a binary
+/// of a few megabytes, as the session's own runtime bundle carries.
+const RUNTIME_CHECK: &str = if cfg!(target_arch = "aarch64") {
+    "tilolang-runtime-arm64"
+} else {
+    "tilolang-runtime"
+};
 
-/// Where that build leaves the runtime binary, in the checkout.
-const RUNTIME_BINARY: &str = "target/nested/tilolang-app";
+/// Where `t outputs` leaves that build, in the checkout: the binary and the runtime library it
+/// links.
+const RUNTIME_BINARY: &str = "target/tilolang-runtime/tilolang-app";
+const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
 
 /// What `tilolang dev` was asked for.
 #[derive(Clone, Debug)]
@@ -335,11 +330,13 @@ impl Dev {
         Ok(())
     }
 
-    /// Build the runtime binary in its checkout, through `cargo`: on this repository's build
-    /// server, as every build of it goes.
+    /// Build the runtime binary in its checkout on this repository's build server, thin, and
+    /// take it with `t outputs`. A thin binary runs only on the runtime library of its build
+    /// graph, so the library it was built with must be the one the session runs.
     fn build_runtime(&self) -> Result<(), String> {
         let Some(DevRuntime {
             built_in: Some(repo),
+            binary,
             ..
         }) = &self.runtime
         else {
@@ -347,13 +344,31 @@ impl Dev {
         };
         let started = Instant::now();
         session::status(
-            Command::new("cargo")
+            Command::new("t")
                 .current_dir(repo)
-                .arg("build")
-                .args(RUNTIME_PROFILE)
-                .args(["-p", "tilolang-app", "--bin", "tilolang-app"]),
+                .args(["outputs", RUNTIME_CHECK, "--human"])
+                .stdout(std::process::Stdio::null()),
             "building the runtime",
         )?;
+        let built = repo.join(RUNTIME_LIBRARY);
+        let running = self
+            .bin
+            .with_file_name("thin-app")
+            .join("libruntime_dylib.so");
+        let same = |a: &Path, b: &Path| -> Result<bool, String> {
+            let read = |path: &Path| {
+                std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+            };
+            Ok(read(a)? == read(b)?)
+        };
+        if !same(&built, &running)? {
+            return Err(format!(
+                "the runtime was built against another runtime library than the session runs \
+                 ({}): start the session on a build of this checkout (dist/dev/nested-session.sh)",
+                running.display()
+            ));
+        }
+        set_executable(binary)?;
         eprintln!(
             "==> the runtime built in {:.1} s",
             started.elapsed().as_secs_f64()
@@ -578,4 +593,13 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
         }
     );
     dev.follow(&wakes, &mut watcher)
+}
+
+/// Mark `path` executable: a build server's outputs arrive as plain files.
+fn set_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let error = |error: std::io::Error| format!("{}: {error}", path.display());
+    let mut permissions = std::fs::metadata(path).map_err(error)?.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    std::fs::set_permissions(path, permissions).map_err(error)
 }
