@@ -8502,6 +8502,10 @@ fn attach_collab_broker_bridges(
         action_broker.set_app_action_consent(std::sync::Arc::new(
             crate::shell::app_action_consent::SheetPrompter::session(),
         ));
+        // Native openings asked for while the broker was binding run with it.
+        crate::shell::launcher::attach_native_app_opening(
+            crate::shell::launcher::NativeAppOpening(action_broker.downgrade()),
+        );
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
