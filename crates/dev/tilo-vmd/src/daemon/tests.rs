@@ -63,7 +63,13 @@ fn slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation() {
     ]);
     let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
     daemon
-        .create("proof", SlotKind::Headless, Owner::default(), &[], false)
+        .create(
+            "proof",
+            SlotKind::Headless,
+            Owner::default(),
+            &[],
+            IdentityRequest::None,
+        )
         .unwrap();
     assert!(daemon.show("proof").unwrap().provenance.is_empty());
     let info = Some(ComponentInfo::new(Scope::Session, vec![]));
@@ -125,7 +131,13 @@ fn failed_swap_restores_generation_and_reports_failed_recovery() {
         let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
         if slot != DEVICE_SLOT {
             daemon
-                .create(slot, SlotKind::Headless, Owner::default(), &[], false)
+                .create(
+                    slot,
+                    SlotKind::Headless,
+                    Owner::default(),
+                    &[],
+                    IdentityRequest::None,
+                )
                 .unwrap();
         }
         // Start with a real prior generation, then exercise the production
@@ -790,6 +802,7 @@ fn creating_with_outputs_applies_the_layout_every_time() {
             owner: Owner::default(),
             outputs: tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
             identity: false,
+            device_identity: false,
         })
     };
     for _ in 0..2 {
@@ -846,6 +859,7 @@ fn slot_create_identity_mints_in_the_session_and_restarts_it_fresh() {
             owner: Owner::default(),
             outputs: Vec::new(),
             identity,
+            device_identity: false,
         })
     };
     let session = session_unit("a");
@@ -1370,4 +1384,187 @@ fn dev_base() -> BaseInfo {
         target: Some("x86_64-unknown-linux-gnu".into()),
         cargo_lock_hash: Some("0123456789abcdef0123".into()),
     }
+}
+
+/// Onboarding's controls are pressed in a person's order, a checkbox once.
+#[test]
+fn onboarding_is_pressed_through_in_a_persons_order() {
+    let shown = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let page = shown(&["onboarding.understood.box", "onboarding.create.button"]);
+    assert_eq!(
+        next_onboarding_press(&page, &[]),
+        Some("onboarding.understood.box")
+    );
+    assert_eq!(
+        next_onboarding_press(&page, &shown(&["onboarding.understood.box"])),
+        Some("onboarding.create.button")
+    );
+    assert_eq!(
+        next_onboarding_press(&shown(&["onboarding.import.button"]), &[]),
+        None
+    );
+    assert_eq!(
+        onboarding_target_names(
+            r#"{"targets":[{"name":"onboarding.begin.button"},{"name":"shell.search"}]}"#
+        ),
+        ["onboarding.begin.button"]
+    );
+    assert_eq!(
+        onboarding_target_names(r#"{"answer":{"targets":[{"name":"onboarding.finish.button"}]}}"#),
+        ["onboarding.finish.button"]
+    );
+}
+
+/// A session whose onboarding shows its pages one after another as its
+/// controls are pressed, then the desktop.
+fn onboarding_session() -> RecordingApply {
+    use tilo_vm_protocol::ControlResult;
+    let reply = |stdout: String| ControlResult {
+        exit_code: 0,
+        stdout,
+        stderr: String::new(),
+    };
+    let targets = |names: &[&str]| {
+        let targets: Vec<_> = names
+            .iter()
+            .map(|name| serde_json::json!({ "name": name }))
+            .collect();
+        reply(serde_json::json!({ "targets": targets }).to_string())
+    };
+    let pages: [&[&str]; 5] = [
+        &["onboarding.begin.button"],
+        &["onboarding.understood.box", "onboarding.create.button"],
+        &["onboarding.understood.box", "onboarding.create.button"],
+        &[
+            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.continue.button",
+        ],
+        &[
+            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.continue.button",
+        ],
+    ];
+    let mut apply = RecordingApply::default();
+    for page in pages {
+        apply.control_replies.push_back(targets(page));
+        apply.control_replies.push_back(reply("{}".into()));
+    }
+    apply
+        .control_replies
+        .push_back(targets(&["onboarding.finish.button"]));
+    apply.control_replies.push_back(reply("{}".into()));
+    apply.control_replies.push_back(targets(&["shell.search"]));
+    apply
+}
+
+/// `slot create --identity device`: the session's own onboarding is pressed
+/// through by name, which certifies the machine and starts fs; a second
+/// person, or a VM that already holds an identity, is refused.
+#[test]
+fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
+    let mut apply = onboarding_session();
+    let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    apply.mirror = Some(mirror.clone());
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+    daemon
+        .handle(Request::Hello(tilo_vm_protocol::Hello {
+            protocol: PROTOCOL_VERSION,
+            client_version: String::new(),
+        }))
+        .unwrap();
+    let create = |name: &str| {
+        Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+            name: name.into(),
+            kind: SlotKind::Headless,
+            owner: Owner::default(),
+            outputs: Vec::new(),
+            identity: false,
+            device_identity: true,
+        })
+    };
+    let result: SlotCreateResult =
+        serde_json::from_value(daemon.handle(create("me")).unwrap()).unwrap();
+    let identity = result.identity.expect("the identity answer");
+    assert!(identity.created && !identity.throwaway);
+    assert!(
+        result
+            .actions
+            .contains(&Action::CompleteOnboarding { created: true })
+    );
+    assert!(result.actions.contains(&Action::ResetDesktopState));
+    let pressed: Vec<String> = mirror
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|call| {
+            let (_, rest) = call.split_once(r#""name":""#)?;
+            Some(rest.split('"').next()?.to_owned())
+        })
+        .collect();
+    assert_eq!(
+        pressed,
+        [
+            "onboarding.begin.button",
+            "onboarding.understood.box",
+            "onboarding.create.button",
+            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.continue.button",
+            "onboarding.finish.button",
+        ]
+    );
+    // Phase `a_second_person_is_refused`.
+    {
+        let error = daemon.handle(create("other")).unwrap_err();
+        assert!(
+            matches!(error, DaemonError::DeviceIdentity { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("'me'"), "{error}");
+    }
+    // Phase `the_person_is_kept_on_a_second_create`.
+    {
+        let result: SlotCreateResult =
+            serde_json::from_value(daemon.handle(create("me")).unwrap()).unwrap();
+        assert_eq!(
+            result.identity.map(|identity| identity.created),
+            Some(false)
+        );
+        assert!(!result.actions.contains(&Action::ResetDesktopState));
+    }
+}
+
+/// A VM whose identity tree already holds someone is never given a person.
+#[test]
+fn a_vm_holding_an_identity_gets_no_person() {
+    let mut apply = RecordingApply::default();
+    apply.machine.person = true;
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+    daemon
+        .handle(Request::Hello(tilo_vm_protocol::Hello {
+            protocol: PROTOCOL_VERSION,
+            client_version: String::new(),
+        }))
+        .unwrap();
+    let error = daemon
+        .handle(Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+            name: "me".into(),
+            kind: SlotKind::Headless,
+            owner: Owner::default(),
+            outputs: Vec::new(),
+            identity: false,
+            device_identity: true,
+        }))
+        .unwrap_err();
+    assert!(
+        matches!(error, DaemonError::DeviceIdentity { .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("never replaces"), "{error}");
 }
