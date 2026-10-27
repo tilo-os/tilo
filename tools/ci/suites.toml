@@ -870,7 +870,7 @@ scope = { inputs = [
 [[cargo]]
 package = "tilo-app-package"
 # Every app's search taglines are checked in each shipped language.
-inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/search/*.ftl"]
+inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/tilo-runtime.toml", "apps/*/search/*.ftl"]
 readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
   "crates/packaging/tilo-app-package/src/search_keywords.rs",
