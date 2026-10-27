@@ -150,7 +150,8 @@ MAIN_EXITED = re.compile(r"Main process exited, code=(\w+), status=(\S+)")
 
 
 # What ends a session from outside it: the kernel's OOM killer, systemd-oomd, a hung task.
-KILLER = re.compile(r"oom|out of memory|killed process|memory pressure|blocked for more", re.I)
+# `oom` only at a word start: a room id (`room=Some(...)`) is not an OOM kill.
+KILLER = re.compile(r"\boom|out of memory|killed process|memory pressure|blocked for more", re.I)
 
 
 def killer_evidence(dump_text: str) -> str | None:
