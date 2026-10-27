@@ -14,8 +14,8 @@ mod views;
 mod window_bar;
 use notice::{OperationNotice, Retry, Work};
 use views::{
-    device_view, diagnostics_view, discovery_view, history_view, live_view, loading_view,
-    print_setup_view, queue_view, scan_setup_view,
+    PrintForm, device_view, diagnostics_view, discovery_view, history_view, live_view,
+    loading_view, print_setup_view, queue_view, scan_setup_view,
 };
 type El = Box<dyn Widget>;
 
@@ -39,10 +39,22 @@ pub struct PrintCentre {
     picker: Option<ui::portal::PortalChannel>,
     pending_document: Option<PathBuf>,
     print_preview: PrintPreview,
-    print_preview_rx: Option<mpsc::Receiver<Option<thumbnail::RgbaThumb>>>,
+    print_preview_rx: Option<mpsc::Receiver<Option<PrintPagePreview>>>,
     selected_printer: Option<String>,
     print_copies: ui::LocalState<f64>,
     print_two_sided: ui::LocalState<bool>,
+    /// The pages to print, as typed; empty or unparsable sends the whole
+    /// document only after the range is read back at send time.
+    print_range: ui::LocalState<String>,
+    /// What the chosen printer's driver reports it can do. A form control is
+    /// drawn for an option only when it appears here.
+    print_options: os_actions::printing::PrinterOptions,
+    print_options_rx: Option<mpsc::Receiver<os_actions::printing::PrinterOptions>>,
+    /// The driver values the person chose, by the option CUPS takes them as.
+    print_choice: PrintChoice,
+    /// The document page the card shows, and how many the document has.
+    preview_page: usize,
+    preview_pages: usize,
     selected_scanner: Option<String>,
     scan: ScanState,
     /// The scan is being saved where the person chose.
@@ -92,17 +104,66 @@ enum PrintPreview {
         rgba: Arc<[u8]>,
         width: u32,
         height: u32,
+        /// Which page of the document this is (0-based), and how many the
+        /// document has, so the card can say "Page 3 of 40".
+        page: usize,
+        pages: usize,
     },
     #[default]
     Unavailable,
 }
 
-fn load_print_preview(path: &std::path::Path) -> Option<thumbnail::RgbaThumb> {
-    // A PDF's first page comes from the PDF engine, which Print Centre links
-    // and the thumbnailer every app shares leaves out.
+/// One page of the document being printed, with the document's page count.
+#[derive(Clone)]
+struct PrintPagePreview {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    page: usize,
+    pages: usize,
+}
+
+/// `path`'s page `page` (0-based) drawn to fit a preview box, and how many
+/// pages the document has.
+///
+/// A PDF pages through the PDF engine, which Print Centre links and the
+/// thumbnailer every app shares leaves out; an image or a text file is one
+/// page, and the thumbnailer already draws it.
+fn load_print_preview(path: &std::path::Path, page: usize) -> Option<PrintPagePreview> {
+    let bytes = std::fs::read(path).ok()?;
+    if let Some(document) = tilo_pdf::PagePreview::open(&bytes) {
+        let pages = document.page_count();
+        let page = page.min(pages.saturating_sub(1));
+        let (rgba, width, height) = document.render(page, 720, 960)?;
+        return Some(PrintPagePreview {
+            rgba,
+            width,
+            height,
+            page,
+            pages,
+        });
+    }
+    // Not a page format: the shared thumbnailer draws the whole file.
     thumbnail::set_pdf_rasteriser(tilo_pdf::first_page_preview);
     let category = thumbnail::category_for_path(path);
-    thumbnail::generate(&thumbnail::Source::Path(path), category, 720)
+    let thumb = thumbnail::generate(&thumbnail::Source::Path(path), category, 720)?;
+    Some(PrintPagePreview {
+        rgba: thumb.rgba,
+        width: thumb.width,
+        height: thumb.height,
+        page: 0,
+        pages: 1,
+    })
+}
+
+/// The options the driver offers, as the person chose them. Each is a value
+/// the driver reported; `None` is the printer's own default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PrintChoice {
+    pub(crate) page_size: Option<String>,
+    pub(crate) colour: Option<String>,
+    pub(crate) duplex: Option<String>,
+    pub(crate) orientation: Option<String>,
 }
 
 #[derive(Clone)]
@@ -219,6 +280,9 @@ enum UiCommand {
     ConfirmCancel(String),
     RetryJob(String),
     ChooseDocument,
+    PreviousPrintPage,
+    NextPrintPage,
+    SetPrintOption { option: String, value: String },
     SelectPrinter(String),
     PrintDocument,
     CancelPrintSetup,
@@ -269,6 +333,9 @@ impl Door {
             UiCommand::RetryJob(job) => E::RetryDocument { job },
             UiCommand::ChooseDocument => E::PrintDocument,
             UiCommand::SelectPrinter(printer) => E::ChoosePrinter { printer },
+            UiCommand::PreviousPrintPage => E::PreviousPrintPage,
+            UiCommand::NextPrintPage => E::NextPrintPage,
+            UiCommand::SetPrintOption { option, value } => E::SetPrintOption { option, value },
             UiCommand::PrintDocument => E::SendToPrinter,
             UiCommand::CancelPrintSetup => E::ClosePrintSetup,
             UiCommand::ScanSetup => E::ScanDocument,
@@ -636,6 +703,40 @@ fn demo_print_preview() -> PrintPreview {
         rgba: Arc::from(page.into_raw()),
         width,
         height,
+        // The scenario says how many pages the document stands for.
+        page: 0,
+        pages: 40,
+    }
+}
+
+/// What a colour duplex printer reports it can do, as a capture's stand-in
+/// for the machine it runs on.
+fn demo_printer_options() -> os_actions::printing::PrinterOptions {
+    use os_actions::printing::{OptionChoice, PrinterOptions};
+    let choice = |key: &str, label: &str, default: bool| OptionChoice {
+        key: key.to_owned(),
+        label: label.to_owned(),
+        default,
+    };
+    PrinterOptions {
+        page_sizes: vec![
+            choice("A4", "A4", true),
+            choice("A5", "A5", false),
+            choice("Letter", "Letter", false),
+        ],
+        colour_modes: vec![
+            choice("RGB", "Colour", true),
+            choice("Gray", "Black and white", false),
+        ],
+        duplex_modes: vec![
+            choice("None", "One side", true),
+            choice("DuplexNoTumble", "Two-sided, long edge", false),
+            choice("DuplexTumble", "Two-sided, short edge", false),
+        ],
+        orientations: vec![
+            choice("3", "Portrait", true),
+            choice("4", "Landscape", false),
+        ],
     }
 }
 
@@ -811,6 +912,12 @@ impl PrintCentre {
             print_preview: PrintPreview::default(),
             print_preview_rx: None,
             selected_printer: None,
+            print_range: ui::LocalState::new(String::new()),
+            print_options: os_actions::printing::PrinterOptions::default(),
+            print_options_rx: None,
+            print_choice: PrintChoice::default(),
+            preview_page: 0,
+            preview_pages: 0,
             print_copies: ui::LocalState::new(1.0),
             print_two_sided: ui::LocalState::new(defaults.two_sided),
             selected_scanner: None,
@@ -888,7 +995,17 @@ impl PrintCentre {
                 self.open_queue();
             }
             PrintCentreEffect::ChoosePrinter { printer } => {
-                self.selected_printer = Some(self.known_printer(printer)?);
+                let printer = self.known_printer(printer)?;
+                // What this printer's driver reports is what the form draws:
+                // a field it does not honour is not offered at all.
+                self.request_print_options(&printer);
+                self.selected_printer = Some(printer);
+                self.rebuild_print_setup();
+            }
+            PrintCentreEffect::PreviousPrintPage => self.turn_preview_page(-1),
+            PrintCentreEffect::NextPrintPage => self.turn_preview_page(1),
+            PrintCentreEffect::SetPrintOption { option, value } => {
+                self.set_print_option(&option, &value)?;
                 self.rebuild_print_setup();
             }
             PrintCentreEffect::SendToPrinter => return self.send_to_printer(cx),
@@ -1154,7 +1271,14 @@ impl PrintCentre {
             Some("print" | "print-narrow") => {
                 self.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
                 self.selected_printer = Some("Studio_printer".into());
+                // A forty-page document, so the pager and the page range are
+                // part of what a person sees rather than a claim in a comment.
+                self.preview_pages = 40;
                 self.print_preview = demo_print_preview();
+                // What this printer's driver reports, in place of asking the
+                // machine the capture runs on.
+                self.print_options = demo_printer_options();
+                self.print_range.set(String::new());
                 self.print_two_sided.set(self.defaults.two_sided);
                 self.rebuild_print_setup();
             }
@@ -1211,15 +1335,123 @@ impl PrintCentre {
         );
     }
 
-    fn request_print_preview(&mut self, path: PathBuf) {
+    /// Draw `path`'s `page` in the card, asking a worker for it.
+    fn request_print_preview(&mut self, path: PathBuf, page: usize) {
         let (tx, rx) = mpsc::channel();
         self.print_preview = PrintPreview::Loading;
         self.print_preview_rx = Some(rx);
         let _ = std::thread::Builder::new()
             .name("tilo-print-preview".into())
             .spawn(move || {
-                let _ = tx.send(load_print_preview(&path));
+                let _ = tx.send(load_print_preview(&path, page));
             });
+    }
+
+    /// Show the next or previous page of the document being set up, when
+    /// there is one either side.
+    fn turn_preview_page(&mut self, step: i32) {
+        let Some(path) = self.pending_document.clone() else {
+            return;
+        };
+        let pages = self.preview_pages;
+        if pages <= 1 {
+            return;
+        }
+        let last = pages.saturating_sub(1);
+        let current = self.preview_page.min(last);
+        let next = if step < 0 {
+            current.saturating_sub(1)
+        } else {
+            current.saturating_add(1).min(last)
+        };
+        if next == current {
+            return;
+        }
+        self.preview_page = next;
+        self.request_print_preview(path, next);
+    }
+
+    /// Choose one of the driver's options for the next document, or refuse a
+    /// value it never reported.
+    fn set_print_option(&mut self, option: &str, value: &str) -> Result<(), String> {
+        let offered = match option {
+            "page-size" => (
+                &self.print_options.page_sizes,
+                &mut self.print_choice.page_size,
+            ),
+            "colour" => (
+                &self.print_options.colour_modes,
+                &mut self.print_choice.colour,
+            ),
+            "two-sided" => (
+                &self.print_options.duplex_modes,
+                &mut self.print_choice.duplex,
+            ),
+            "orientation" => (
+                &self.print_options.orientations,
+                &mut self.print_choice.orientation,
+            ),
+            other => return Err(format!("{other} is not an option this printer reports")),
+        };
+        if os_actions::printing::PrinterOptions::choice(offered.0, value).is_none() {
+            return Err(format!("this printer does not offer {value}"));
+        }
+        *offered.1 = Some(value.to_owned());
+        Ok(())
+    }
+
+    /// Ask `queue`'s driver what it can do, off this thread.
+    fn request_print_options(&mut self, queue: &str) {
+        let (tx, rx) = mpsc::channel();
+        self.print_options_rx = Some(rx);
+        let queue = queue.to_owned();
+        let _ = std::thread::Builder::new()
+            .name("tilo-print-options".into())
+            .spawn(move || {
+                let reported = os_actions::printing::printer_options(&queue).unwrap_or_default();
+                let _ = tx.send(reported);
+            });
+    }
+
+    /// Take up what the driver said, if it has answered: the form then draws
+    /// only the options this printer reports.
+    fn poll_print_options(&mut self) -> bool {
+        let Some(receiver) = self.print_options_rx.as_ref() else {
+            return false;
+        };
+        let reported = match receiver.try_recv() {
+            Ok(reported) => reported,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                os_actions::printing::PrinterOptions::default()
+            }
+        };
+        self.print_options_rx = None;
+        self.take_print_options(reported);
+        self.rebuild_print_setup();
+        true
+    }
+
+    /// Adopt what the driver reported: the choices it no longer offers fall
+    /// back to its own default.
+    fn take_print_options(&mut self, reported: os_actions::printing::PrinterOptions) {
+        self.print_options = reported;
+        // A choice the new printer does not offer falls back to its default.
+        let kept = |choice: &Option<String>, offered: &[os_actions::printing::OptionChoice]| {
+            choice
+                .as_deref()
+                .filter(|key| os_actions::printing::PrinterOptions::choice(offered, key).is_some())
+                .map(str::to_owned)
+        };
+        self.print_choice = PrintChoice {
+            page_size: kept(&self.print_choice.page_size, &self.print_options.page_sizes),
+            colour: kept(&self.print_choice.colour, &self.print_options.colour_modes),
+            duplex: kept(&self.print_choice.duplex, &self.print_options.duplex_modes),
+            orientation: kept(
+                &self.print_choice.orientation,
+                &self.print_options.orientations,
+            ),
+        };
     }
 
     fn poll_print_preview(&mut self) -> bool {
@@ -1232,12 +1464,17 @@ impl PrintCentre {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
         };
         self.print_preview_rx = None;
-        self.print_preview =
-            result.map_or(PrintPreview::Unavailable, |preview| PrintPreview::Ready {
+        self.print_preview = result.map_or(PrintPreview::Unavailable, |preview| {
+            self.preview_page = preview.page;
+            self.preview_pages = preview.pages;
+            PrintPreview::Ready {
                 rgba: Arc::from(preview.rgba),
                 width: preview.width,
                 height: preview.height,
-            });
+                page: preview.page,
+                pages: preview.pages,
+            }
+        });
         self.rebuild_print_setup();
         true
     }
@@ -1267,7 +1504,10 @@ impl PrintCentre {
                     })
                 });
                 if let Some(path) = self.pending_document.clone() {
-                    self.request_print_preview(path);
+                    self.request_print_preview(path, 0);
+                }
+                if let Some(queue) = self.selected_printer.clone() {
+                    self.request_print_options(&queue);
                 }
                 self.rebuild_print_setup();
             }
@@ -1294,6 +1534,14 @@ impl PrintCentre {
                 self.selected_printer.as_deref(),
                 &self.print_copies,
                 &self.print_two_sided,
+                &PrintForm {
+                    copies: &self.print_copies,
+                    two_sided: &self.print_two_sided,
+                    range: &self.print_range,
+                    options: &self.print_options,
+                    choice: &self.print_choice,
+                    pages: self.preview_pages,
+                },
                 &Door(self.dispatcher.clone(), self.controls.clone()),
             );
         }
@@ -1469,18 +1717,42 @@ impl PrintCentre {
             .unwrap_or("Document")
             .to_string();
         let shown_queue = display_name(&queue);
-        self.print_preview = PrintPreview::Unavailable;
-        self.print_preview_rx = None;
+        // The typed range is read back here, so a range nobody can print is
+        // refused before the document leaves the window.
+        let typed = self.print_range.get();
+        let page_range = if typed.trim().is_empty() {
+            None
+        } else {
+            match os_actions::printing::PageRange::parse(&typed) {
+                Ok(range) => Some(range),
+                Err(reason) => {
+                    self.pending_document = Some(path);
+                    self.selected_printer = Some(queue);
+                    self.rebuild_print_setup();
+                    return Err(reason);
+                }
+            }
+        };
         let chosen_copies = self.print_copies.get();
         let copies = format!("{:.0}", chosen_copies.clamp(1.0, 99.0))
             .parse::<u16>()
             .unwrap_or(1);
         let two_sided = self.print_two_sided.get();
+        let settings = os_actions::printing::PrintSettings {
+            copies,
+            two_sided,
+            page_range,
+            page_size: self.print_choice.page_size.clone(),
+            colour: self.print_choice.colour.clone(),
+            duplex: self.print_choice.duplex.clone(),
+            orientation: self.print_choice.orientation.clone(),
+        };
+        self.print_preview = PrintPreview::Unavailable;
+        self.print_preview_rx = None;
         let retry = Retry::Print {
             path: path.clone(),
             printer: queue.clone(),
-            copies: chosen_copies,
-            two_sided,
+            settings: settings.clone(),
         };
         Ok(Self::run(
             cx,
@@ -1491,7 +1763,7 @@ impl PrintCentre {
             Work::Print {
                 printer: queue,
                 path,
-                settings: os_actions::printing::PrintSettings { copies, two_sided },
+                settings,
             },
             retry,
         ))
@@ -1503,6 +1775,12 @@ impl PrintCentre {
         self.print_preview_rx = None;
         self.selected_printer = None;
         self.print_copies.set(1.0);
+        self.print_range.set(String::new());
+        self.print_options = os_actions::printing::PrinterOptions::default();
+        self.print_options_rx = None;
+        self.print_choice = PrintChoice::default();
+        self.preview_page = 0;
+        self.preview_pages = 0;
         self.print_two_sided.set(self.defaults.two_sided);
         self.rebuild_dashboard();
     }
@@ -2046,6 +2324,10 @@ impl ui::widget::Decorator for PrintCentre {
             self.inner.sync(state, path);
             return true;
         }
+        if self.poll_print_options() {
+            self.inner.sync(state, path);
+            return true;
+        }
         if let Some(snapshot) = self.refresh.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh = None;
             self.snapshot = Some(snapshot);
@@ -2440,13 +2722,20 @@ mod tests {
                 let mut buttons = Vec::new();
                 collect_buttons(surface, &mut buttons);
                 buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
-                let footer_buttons = buttons.iter().collect::<Vec<_>>();
+                // The document's own pager sits in its card, above the form;
+                // the two answers to the sheet are the last two buttons.
+                let root_bottom_band = surface.rect[1] + surface.rect[3];
+                let mut footer_buttons: Vec<&Rect> = buttons
+                    .iter()
+                    .filter(|rect| rect.y1 > root_bottom_band * 0.85)
+                    .collect();
+                footer_buttons.sort_by(|left, right| left.x0.total_cmp(&right.x0));
                 assert_eq!(
                     footer_buttons.len(),
                     2,
                     "Cancel and Print must stay visible; buttons were {buttons:?}"
                 );
-                let root_bottom = surface.rect[1] + surface.rect[3];
+                let root_bottom = root_bottom_band;
                 for rect in footer_buttons {
                     assert!(
                         rect.width() >= 44.0,
@@ -2682,9 +2971,18 @@ mod tests {
             }
             source.save(&path).unwrap();
 
-            let preview = load_print_preview(&path).expect("a selected PNG has a real preview");
-            assert!(preview.is_valid());
-            assert_eq!(preview.max_edge(), 720);
+            let preview = load_print_preview(&path, 0).expect("a selected PNG has a real preview");
+            assert!(preview.width > 0 && preview.height > 0);
+            assert_eq!(
+                preview.width.max(preview.height),
+                720,
+                "the preview is drawn at the size it is kept"
+            );
+            assert_eq!(
+                (preview.page, preview.pages),
+                (0, 1),
+                "an image is one page"
+            );
             assert!(
                 preview
                     .rgba
@@ -2958,5 +3256,74 @@ mod tests {
             assert!(pdf.find("FIRST PAGE") < pdf.find("SECOND PAGE"));
             assert!(pdf.contains("3 Tr"));
         }
+    }
+
+    /// The print form offers the options the chosen printer reports, and
+    /// refuses a value it does not: a field the driver cannot honour is never
+    /// drawn, and a choice it never listed is never sent.
+    #[test]
+    fn the_form_offers_what_the_driver_reports_and_refuses_what_it_does_not() {
+        // The form's own state only: a print sheet here, not a window, so this
+        // test shares nothing with the ones that page a person for attention.
+        let mut centre = PrintCentre::new();
+        centre.selected_printer = Some("Studio_printer".into());
+        centre.print_options = demo_printer_options();
+
+        // A value the driver reported is taken.
+        centre
+            .set_print_option("page-size", "A5")
+            .expect("the printer reports A5");
+        assert_eq!(centre.print_choice.page_size.as_deref(), Some("A5"));
+        centre
+            .set_print_option("two-sided", "DuplexTumble")
+            .expect("the printer reports short-edge duplex");
+        assert_eq!(centre.print_choice.duplex.as_deref(), Some("DuplexTumble"));
+
+        // A value it did not report is refused, and nothing changes.
+        assert!(centre.set_print_option("page-size", "Tabloid").is_err());
+        assert_eq!(centre.print_choice.page_size.as_deref(), Some("A5"));
+        assert!(centre.set_print_option("staple", "yes").is_err());
+
+        // A printer that reports no duplex mode draws no duplex choice: the
+        // plain both-sides toggle stands in its place.
+        centre.print_options = os_actions::printing::PrinterOptions {
+            duplex_modes: Vec::new(),
+            ..demo_printer_options()
+        };
+        let reported = centre.print_options.clone();
+        centre.take_print_options(reported);
+        assert_eq!(
+            centre.print_choice.duplex, None,
+            "a mode the new printer does not offer is dropped"
+        );
+    }
+
+    /// A forty-page document's card pages through it, and the range typed is
+    /// what the job asks for — or the job does not leave the window.
+    #[test]
+    fn a_long_document_pages_and_a_range_is_checked_before_it_is_sent() {
+        let mut centre = PrintCentre::new();
+        centre.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
+        centre.selected_printer = Some("Studio_printer".into());
+        centre.preview_pages = 40;
+        centre.preview_page = 0;
+        centre.print_preview = demo_print_preview();
+
+        // The pager moves one page at a time and stops at either end.
+        centre.preview_page = 0;
+        centre.turn_preview_page(-1);
+        assert_eq!(centre.preview_page, 0, "page one has nothing before it");
+        centre.preview_page = 39;
+        centre.turn_preview_page(1);
+        assert_eq!(centre.preview_page, 39, "page forty has nothing after it");
+
+        // A range that `lp` cannot read is refused with its own reason.
+        assert!(os_actions::printing::PageRange::parse("9-2").is_err());
+        assert_eq!(
+            os_actions::printing::PageRange::parse("3-5")
+                .expect("a range")
+                .as_str(),
+            "3-5"
+        );
     }
 }

@@ -969,6 +969,8 @@ const SCENARIOS: &[&str] = &[
     "date_popover",
     "time_popover",
     "calendar_popover",
+    "quick_add",
+    "shortcuts",
     "task_detail",
     "task_due_picker",
     "task_priority_picker",

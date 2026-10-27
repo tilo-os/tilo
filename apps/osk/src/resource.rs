@@ -171,6 +171,9 @@ impl ResourceApp for OskShell {
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
             Some("emoji") => (720, 420),
+            // A parked keyboard is a strip: its capture is the size the panel
+            // shrinks to.
+            Some("parked") => (720, 96),
             _ => (720, 360),
         }
     }

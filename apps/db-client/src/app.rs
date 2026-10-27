@@ -595,8 +595,7 @@ impl DbClientApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.export_rx = None;
                 self.export_snapshot = None;
-                self.session.status =
-                    RunStatus::Error(crate::i18n::t("db-export-dialog-closed"));
+                self.session.status = RunStatus::Error(crate::i18n::t("db-export-dialog-closed"));
             }
         }
     }

@@ -298,12 +298,7 @@ fn rewriting_the_history_asks_before_it_runs() {
             .into_iter()
             .map(|descriptor| (descriptor.address.action.clone(), descriptor.contract))
             .collect();
-    for action in [
-        wire::UNDO,
-        wire::RESTORE,
-        wire::UNDO_RUN,
-        wire::UNDO_RECORD,
-    ] {
+    for action in [wire::UNDO, wire::RESTORE, wire::UNDO_RUN, wire::UNDO_RECORD] {
         let contract = published.get(action).expect("rewinding is published");
         assert!(
             contract.validate_declaration().is_empty(),

@@ -19,6 +19,8 @@ const NEXT: &str = "next";
 const TODAY: &str = "today";
 /// New event (New task on Tasks).
 pub(crate) const NEW: &str = "new";
+const QUICK_ADD: &str = "quick-add";
+const SHORTCUTS: &str = "shortcuts";
 const EXPORT: &str = "export";
 const IMPORT: &str = "import";
 /// A view's slot id: `view:` and its label.
@@ -37,6 +39,8 @@ pub(crate) enum BarAction {
     Today,
     View(View),
     New,
+    QuickAdd,
+    Shortcuts,
     Export,
     Import,
 }
@@ -115,6 +119,14 @@ pub(crate) fn window_toolbar(
     };
     toolbar.actions = vec![
         ToolbarAction::new(NEW, "plus", new),
+        // The one-line add sits beside the full form it saves a person from.
+        ToolbarAction::new(QUICK_ADD, "zap", crate::resource::t("calendar-quick-title")).in_menu(),
+        ToolbarAction::new(
+            SHORTCUTS,
+            "keyboard",
+            crate::resource::t("calendar-help-title"),
+        )
+        .in_menu(),
         ToolbarAction::new(EXPORT, "upload", "Export calendar").in_menu(),
         ToolbarAction::new(IMPORT, "download", "Import calendar").in_menu(),
     ];
@@ -130,6 +142,8 @@ pub(crate) fn bar_action(event: &ToolbarEvent) -> Option<BarAction> {
             NEXT => BarAction::Next,
             TODAY => BarAction::Today,
             NEW => BarAction::New,
+            QUICK_ADD => BarAction::QuickAdd,
+            SHORTCUTS => BarAction::Shortcuts,
             EXPORT => BarAction::Export,
             IMPORT => BarAction::Import,
             other => {

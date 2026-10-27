@@ -319,10 +319,9 @@ impl Cell {
             Cell::Integer(i) => i.to_string(),
             Cell::Real(r) => format_real(*r),
             Cell::Text(s) => s.clone(),
-            Cell::Blob(n) => crate::i18n::t_args(
-                "db-cell-binary",
-                &[("bytes", crate::i18n::count(*n))],
-            ),
+            Cell::Blob(n) => {
+                crate::i18n::t_args("db-cell-binary", &[("bytes", crate::i18n::count(*n))])
+            }
         }
     }
 

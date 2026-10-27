@@ -4164,6 +4164,28 @@ impl ForeignFrameStore {
         guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
+    /// The largest size the client allows itself, in logical pixels, when it
+    /// stated one: the on-screen keyboard parked to a strip says how tall the
+    /// surface it lives on may be.
+    pub fn declared_max_extent(&self, id: SurfaceId) -> Option<(f64, f64)> {
+        self.with_entry(id, |entry| {
+            (entry.max_size.0 > 0 && entry.max_size.1 > 0)
+                .then(|| (f64::from(entry.max_size.0), f64::from(entry.max_size.1)))
+        })
+    }
+
+    /// Where the surface's window is actually drawn inside its tile: the
+    /// whole tile, unless the client kept itself smaller, in which case it
+    /// sits centred in it. Input belongs to the window, not the empty part of
+    /// the tile it was given.
+    pub fn drawn_rect(&self, id: SurfaceId, tile: Rect) -> Rect {
+        let Some((width, height)) = self.frame_size(id) else {
+            return tile;
+        };
+        self.with_entry(id, |entry| entry.frame_rect(tile, width, height))
+            .unwrap_or(tile)
+    }
+
     /// Size of the tab rectangle in physical pixels.
     #[allow(
         clippy::cast_possible_truncation,

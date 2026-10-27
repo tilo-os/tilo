@@ -133,11 +133,10 @@ impl Workspace {
             )
             .anchored(item_resource_id::<Self>("connections", id))
         });
-        let queries =
-            self.saved_queries.iter().map(|(id, saved)| {
-                SearchEntry::new(&saved.name, crate::i18n::t("db-search-saved-query"))
-                    .anchored(item_resource_id::<Self>("saved_queries", id))
-            });
+        let queries = self.saved_queries.iter().map(|(id, saved)| {
+            SearchEntry::new(&saved.name, crate::i18n::t("db-search-saved-query"))
+                .anchored(item_resource_id::<Self>("saved_queries", id))
+        });
         connections.chain(queries).collect()
     }
 }
