@@ -859,9 +859,9 @@ mod reach_tests {
     /// window wide enough to dock it and in a narrow one.
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
-        ui::framework::testing::check_window_sidebar_button(
-            ui::framework::testing::TestApp::<super::FirewallShell>::new,
-        )
+        ui::framework::testing::check_window_sidebar_button(|| {
+            ui::framework::testing::TestApp::<super::FirewallShell>::drive("add-rule")
+        })
         .unwrap_or_else(|error| panic!("{error}"));
     }
 }

@@ -2680,6 +2680,13 @@ impl NavShell {
         if let Some(binding) = self.pane_binding.as_mut() {
             binding.publish(&pane);
         }
+        // A sidebar that is a screen shows or hides with the screen in
+        // front: its toggle and the window bar's slots say so now, not at
+        // the next layout, so an app that builds its slots from the shell's
+        // ([`WindowBarLink::slots`]) while the sidebar covers it reads them
+        // current.
+        self.update_toggle_names();
+        self.publish_open_states();
         self.animating = true;
         self.structure_dirty = true;
         self.invalidate();
