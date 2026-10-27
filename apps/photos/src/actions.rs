@@ -379,48 +379,68 @@ pub fn export_edited_content(
 /// addresses) from `store`: the local run of the offloadable
 /// `make-thumbnails`, byte for byte what the thumbnails package's
 /// `thumbnail-batch` entrypoint makes on another device. As there, content
-/// named twice is one input, and a batch with an input that is not an image
-/// makes nothing.
+/// named twice is one input, and a picture that is not an image makes no
+/// thumbnail of its own while the rest still do. Its failure is listed in
+/// the answer by the photograph the caller named, so the person can see
+/// which picture to look at.
 ///
 /// # Errors
 ///
-/// Names content that is not here or not an image, or a store failure.
+/// Names content that is not a photograph's content, or a store failure.
 pub fn make_thumbnails(
     photos: &[String],
     store: &tilo_content::ContentStore,
 ) -> Result<tilo_actions::ActionOutput, String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut inputs = Vec::with_capacity(photos.len());
+    // The first name the caller gave each distinct content: what the
+    // failure is reported against.
+    let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
     for photo in photos {
         let hash = tilo_actions::content_hash(photo).unwrap_or(photo);
         if !crate::model::is_content_hash(hash) {
             return Err(format!("`{photo}` is not a photograph's content"));
         }
-        if seen.insert(hash) {
-            inputs.push(
-                store
-                    .read(hash)
-                    .ok_or_else(|| format!("the content {hash} is not on this device"))?,
-            );
+        seen.entry(hash).or_insert(photo);
+    }
+    let mut inputs = Vec::with_capacity(seen.len());
+    let mut missing = Vec::new();
+    for (hash, photo) in &seen {
+        match store.read(hash) {
+            Some(bytes) => inputs.push((*photo, bytes)),
+            None => missing.push(json_failure(photo, "is not on this device")),
         }
     }
-    let thumbnails =
-        thumbnail::batch::thumbnail_batch(&inputs).map_err(|error| error.to_string())?;
-    let mut resources = Vec::with_capacity(thumbnails.len());
-    for bytes in thumbnails {
-        let hash = store.put(&bytes).map_err(|error| {
-            tracing::warn!(%error, "photos: could not store a thumbnail");
-            "a thumbnail could not be stored".to_string()
-        })?;
-        resources.push(
-            tilo_actions::content_resource(&hash)
-                .ok_or_else(|| "the content provider returned an invalid address".to_string())?,
-        );
+    let mut resources = Vec::with_capacity(inputs.len());
+    let mut failed = missing;
+    let distinct: Vec<Vec<u8>> = inputs.iter().map(|(_, bytes)| bytes.clone()).collect();
+    for ((photo, _), outcome) in inputs
+        .iter()
+        .zip(thumbnail::batch::thumbnail_batch(&distinct))
+    {
+        match outcome {
+            Ok(thumbnail) => {
+                let hash = store.put(&thumbnail).map_err(|error| {
+                    tracing::warn!(%error, "photos: could not store a thumbnail");
+                    "a thumbnail could not be stored".to_string()
+                })?;
+                resources.push(tilo_actions::content_resource(&hash).ok_or_else(|| {
+                    "the content provider returned an invalid address".to_string()
+                })?);
+            }
+            Err(error) => {
+                tracing::warn!(photo, %error, "photos: a picture made no thumbnail");
+                failed.push(json_failure(photo, "is not an image"));
+            }
+        }
     }
     Ok(tilo_actions::ActionOutput {
-        value: None,
+        value: (!failed.is_empty()).then(|| serde_json::json!({ "failed": failed })),
         resources,
     })
+}
+
+/// One picture that made no thumbnail, named as the caller named it.
+fn json_failure(photo: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({"photo": photo, "reason": reason})
 }
 
 /// The resource `kind` a library photograph publishes under: an item of

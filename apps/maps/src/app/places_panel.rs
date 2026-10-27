@@ -4,7 +4,7 @@ use super::{
     ARRIVING_RESULTS, Affine, BlendMode, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState,
     EmptyStateContent, Fill, GEOCODER, Hit, Icon, Interaction, LatLon, ListRowFace, MapsApp,
     PaintCtx, Panel, Place, Point, RESULT_ROW, Rect, RowLeading, Scene, TextRenderer, TextRole,
-    Theme, draw, geo, on_panel,
+    Theme, draw, failure, geo, on_panel,
 };
 
 impl MapsApp {
@@ -64,7 +64,7 @@ impl MapsApp {
             self.icon_button(
                 &mut PaintCtx::new(scene, t, tr, &ink),
                 back,
-                (Icon::ChevronLeft, "Back to places"),
+                (Icon::ChevronLeft, &failure::t("maps-back-to-places")),
                 ButtonRole::Plain,
                 false,
                 Hit::PanelBack,
@@ -77,14 +77,14 @@ impl MapsApp {
         if docked {
             let toggle = button_at(trailing - side);
             let (icon, name) = if collapsed {
-                (Icon::ChevronDown, "Expand panel")
+                (Icon::ChevronDown, failure::t("maps-expand-panel"))
             } else {
-                (Icon::ChevronUp, "Collapse panel")
+                (Icon::ChevronUp, failure::t("maps-collapse-panel"))
             };
             self.icon_button(
                 &mut PaintCtx::new(scene, t, tr, &ink),
                 toggle,
-                (icon, name),
+                (icon, &name),
                 ButtonRole::Plain,
                 false,
                 Hit::ToggleCollapse,
@@ -94,7 +94,7 @@ impl MapsApp {
             self.icon_button(
                 &mut PaintCtx::new(scene, t, tr, &ink),
                 search,
-                (Icon::Search, "Search places"),
+                (Icon::Search, &failure::t("maps-search-places")),
                 ButtonRole::Plain,
                 false,
                 Hit::OpenSearch,
@@ -102,16 +102,16 @@ impl MapsApp {
             trailing = search.x0;
         }
         let title = if matches!(self.model.panel, Panel::Directions) {
-            "Directions"
+            failure::t("maps-directions")
         } else {
-            "Places"
+            failure::t("maps-panel-places")
         };
         let heading = theme.text(TextRole::Heading);
         let mut ctx = PaintCtx::new(scene, t, tr, &ink);
         let top = draw::vmid(ctx.text, header.y0, header_h, &heading);
         draw::text_clip(
             &mut ctx,
-            title,
+            &title,
             Point::new(title_x, top),
             &heading,
             ink.text_primary,
@@ -295,7 +295,7 @@ impl MapsApp {
                 &mut PaintCtx::new(scene, t, tr, theme),
                 content,
                 y,
-                "Results",
+                &failure::t("maps-results"),
                 None,
             );
         }
@@ -359,10 +359,12 @@ impl MapsApp {
             && self.pois.is_empty();
         if empty {
             let rect = Rect::new(content.x0, y, content.x1, content.y1);
+            let search_label = failure::t("maps-search-places");
+            let empty_hint = failure::t("maps-panel-empty");
             let empty_state = EmptyStateContent {
                 icon: Some(Icon::Search),
-                action_label: Some("Search places"),
-                ..EmptyStateContent::new("Search for a place or an address to see it here.")
+                action_label: Some(&search_label),
+                ..EmptyStateContent::new(&empty_hint)
             };
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             if let Some(action) = EmptyState::paint(&mut ctx, rect, &empty_state, self.last_mouse) {
@@ -385,9 +387,10 @@ impl MapsApp {
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             face.paint(&mut ctx, card);
             let body = face.body_rect(ctx.text, theme, card);
+            let category = sel.category.label();
             draw::text(
                 &mut ctx,
-                sel.category.label(),
+                &category,
                 Point::new(body.x0, body.y0),
                 &caption,
                 theme.text_dim,
@@ -404,19 +407,24 @@ impl MapsApp {
             let by = body.y0 + caption_h * 2.0 + s4;
             let bw = (body.width() - 2.0 * s2) / 3.0;
             let saved = sel.saved;
-            let actions: [(&str, Hit, ButtonRole); 3] = [
-                ("Directions", Hit::Directions, ButtonRole::Primary),
-                ("Transit", Hit::Transit, ButtonRole::Secondary),
+            let save_label = failure::t(if saved { "maps-saved" } else { "maps-save" });
+            let actions: [(String, Hit, ButtonRole); 3] = [
                 (
-                    if saved { "Saved" } else { "Save" },
-                    Hit::ToggleSave,
+                    failure::t("maps-directions"),
+                    Hit::Directions,
+                    ButtonRole::Primary,
+                ),
+                (
+                    failure::t("maps-transit"),
+                    Hit::Transit,
                     ButtonRole::Secondary,
                 ),
+                (save_label, Hit::ToggleSave, ButtonRole::Secondary),
             ];
             for (i, (label, hit, role)) in actions.into_iter().enumerate() {
                 let bx = body.x0 + i as f64 * (bw + s2);
                 let br = Rect::new(bx, by, bx + bw, by + button_h);
-                let mut face = ButtonFace::new(br, label).role(role);
+                let mut face = ButtonFace::new(br, &label).role(role);
                 if matches!(hit, Hit::ToggleSave) {
                     face = face.icon(Icon::Star).toggled(saved);
                 }
@@ -433,7 +441,7 @@ impl MapsApp {
                 &mut PaintCtx::new(scene, t, tr, theme),
                 content,
                 y,
-                "Results",
+                &failure::t("maps-results"),
                 None,
             );
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
@@ -443,14 +451,14 @@ impl MapsApp {
                 let secondary = if p.address.is_empty() {
                     p.category.label()
                 } else {
-                    p.address.as_str()
+                    p.address.clone()
                 };
                 let selected = self.model.selected.as_deref() == Some(p.id.as_str());
                 y = self.draw_row(
                     &mut ctx,
                     content,
                     y,
-                    ListRowFace::new(&p.name).secondary(secondary).meta(&meta),
+                    ListRowFace::new(&p.name).secondary(&secondary).meta(&meta),
                     selected,
                     i < last,
                     Hit::SelectPlace(p.id.clone()),
@@ -471,7 +479,7 @@ impl MapsApp {
                 &mut PaintCtx::new(scene, t, tr, theme),
                 content,
                 y,
-                "Nearby",
+                &failure::t("maps-nearby"),
                 None,
             );
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
@@ -508,7 +516,7 @@ impl MapsApp {
                 &mut PaintCtx::new(scene, t, tr, theme),
                 content,
                 y,
-                "Saved places",
+                &failure::t("maps-saved-places"),
                 None,
             );
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
@@ -516,13 +524,13 @@ impl MapsApp {
             for (i, p) in saved.iter().enumerate() {
                 let meta = distance(p.pos);
                 let selected = self.model.selected.as_deref() == Some(p.id.as_str());
+                let category = p.category.label();
+                let row = ListRowFace::new(&p.name).secondary(&category).meta(&meta);
                 y = self.draw_row(
                     &mut ctx,
                     content,
                     y,
-                    ListRowFace::new(&p.name)
-                        .secondary(p.category.label())
-                        .meta(&meta),
+                    row,
                     selected,
                     i < last,
                     Hit::SelectPlace(p.id.clone()),
@@ -536,8 +544,8 @@ impl MapsApp {
                 &mut PaintCtx::new(scene, t, tr, theme),
                 content,
                 y,
-                "Recent searches",
-                Some(("Clear", Hit::ClearRecents)),
+                &failure::t("maps-recent-searches"),
+                Some((&failure::t("maps-clear"), Hit::ClearRecents)),
             );
             let recents = self.model.recents.clone();
             let mut ctx = PaintCtx::new(scene, t, tr, theme);

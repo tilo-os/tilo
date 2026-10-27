@@ -2,7 +2,7 @@
 
 use super::{
     Instant, MapsApp, NEARBY_MAX, NetMsg, POI_DEBOUNCE, POI_MIN_ZOOM, Panel, Place, Point,
-    Workspace, bounds_contains, canvas, geo, net, spawn_net,
+    Workspace, bounds_contains, canvas, failure, geo, net, spawn_net,
 };
 
 impl MapsApp {
@@ -175,13 +175,13 @@ impl MapsApp {
     /// Open place `id`: one the map holds, or one the geocoder found for
     /// the platform search, which the map takes in (with its name as a
     /// recent search) before opening it.
-    pub(crate) fn open_place(&mut self, id: &str) -> Result<(), &'static str> {
+    pub(crate) fn open_place(&mut self, id: &str) -> Result<(), String> {
         if self.model.place(id).is_none() {
             let place = self
                 .place_search
                 .geocoded(id)
                 .cloned()
-                .ok_or("Map place is no longer available")?;
+                .ok_or_else(|| failure::t("maps-place-unavailable"))?;
             let query = place.name.clone();
             self.accept_places(vec![place]);
             self.commit_search(&query);
@@ -425,7 +425,7 @@ impl MapsApp {
         let generation = self.poi_generation;
         if self.online {
             self.pending += 1;
-            self.model.status = "Loading places…".to_string();
+            self.model.status = failure::t("maps-loading-places");
             let tx = self.net_tx.clone();
             spawn_net(async move {
                 let pois = net::overpass(

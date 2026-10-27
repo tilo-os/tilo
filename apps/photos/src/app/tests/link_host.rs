@@ -165,7 +165,10 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         )
         .expect("thumbnails are made")
         .expect("the batch answers at once");
-    let expected = thumbnail::batch::thumbnail_batch(&photographs).expect("the package's batch");
+    let expected: Vec<Vec<u8>> = thumbnail::batch::thumbnail_batch(&photographs)
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
     let made: Vec<Vec<u8>> = output
         .resources
         .iter()
@@ -178,15 +181,27 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
     assert_eq!(made, expected, "byte for byte the entrypoint's thumbnails");
 
     let broken = store.put(b"not a photograph").expect("stage bytes");
-    assert_eq!(
-        app.answer_effect(
+    let partial = app
+        .answer_effect(
             PhotosEffect::MakeThumbnails {
-                photos: vec![hashes[0].clone(), broken],
+                photos: vec![hashes[0].clone(), broken.clone()],
             },
             tilo_actions::InvocationId::new(),
             &library,
-        ),
-        Err(thumbnail::batch::BatchError::Undecodable { index: 1 }.to_string())
+        )
+        .expect("one bad picture does not sink the batch")
+        .expect("the batch answers at once");
+    assert_eq!(
+        partial.resources.len(),
+        1,
+        "the good photograph still gets one"
+    );
+    assert_eq!(
+        partial.value,
+        Some(serde_json::json!({
+            "failed": [{"photo": broken, "reason": "is not an image"}]
+        })),
+        "the failure names the picture the caller named, not an index"
     );
     assert!(
         app.answer_effect(

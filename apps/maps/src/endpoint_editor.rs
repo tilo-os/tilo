@@ -23,6 +23,7 @@ use ui::widget::{
 };
 
 use crate::canvas::{self, MapPalette};
+use crate::failure;
 use crate::model::Place;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
@@ -113,7 +114,7 @@ impl Field {
         );
         if editing && waiting {
             self.input
-                .set_status(self.searched.then(|| "No places found".to_string()));
+                .set_status(self.searched.then(|| failure::t("maps-no-places-found")));
             self.input.open();
         }
     }
@@ -132,8 +133,11 @@ pub(super) struct EndpointEditor {
 impl EndpointEditor {
     pub(super) fn new() -> Self {
         Self {
-            origin: Field::new("maps_route_origin", "Choose starting point"),
-            destination: Field::new("maps_route_destination", "Choose destination"),
+            origin: Field::new("maps_route_origin", &failure::t("maps-choose-start")),
+            destination: Field::new(
+                "maps_route_destination",
+                &failure::t("maps-choose-destination"),
+            ),
             focused: None,
             deadline: None,
             swap_rect: None,
@@ -493,7 +497,7 @@ impl EndpointEditor {
             transform,
             text,
             theme,
-            &ButtonFace::icon_only(swap, Icon::ArrowUpDown, "Swap start and destination")
+            &ButtonFace::icon_only(swap, Icon::ArrowUpDown, &failure::t("maps-swap"))
                 .role(ButtonRole::Plain)
                 .hovered(swap.contains(self.pointer)),
         );

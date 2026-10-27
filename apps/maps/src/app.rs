@@ -190,15 +190,13 @@ impl NetSender {
 /// What the map says while no imagery shows. It never claims to be loading
 /// what nothing is fetching, and an unreachable tile server is not blamed on
 /// being offline, which a page cannot tell apart from a blocked request.
-fn imagery_hint(can_fetch: bool, fault: Option<TileFault>) -> &'static str {
-    match fault {
-        _ if !can_fetch => "Map imagery can't be fetched here",
-        Some(TileFault::Rejected) => "The map tile server refused the request",
-        Some(TileFault::Unreachable) => {
-            "The map tile server couldn't be reached. Trying again shortly."
-        }
-        None => "Loading map…",
-    }
+fn imagery_hint(can_fetch: bool, fault: Option<TileFault>) -> String {
+    failure::t(match fault {
+        _ if !can_fetch => "maps-imagery-unavailable",
+        Some(TileFault::Rejected) => "maps-imagery-refused",
+        Some(TileFault::Unreachable) => "maps-imagery-unreachable",
+        None => "maps-loading-map",
+    })
 }
 
 fn spawn_net(fetch: impl Future<Output = ()> + Send + 'static) {
@@ -305,6 +303,9 @@ pub struct MapsApp {
     /// Whether background network/portal work may be spawned. False for the
     /// offline `--shots`/test app so it never touches the wire or D-Bus.
     online: bool,
+    /// True from the moment a download starts until its tiles are in, so
+    /// the completion notice knows the status line is still its own.
+    offline_downloading: bool,
 
     // device location (portal / GeoClue), off the UI thread
     location_rx: Option<LocationChannel>,
@@ -598,8 +599,10 @@ impl Widget for MapsApp {
         if before != after && !after.is_active() && after.total > 0 {
             // A download just finished — refresh the on-disk size readout.
             self.offline_panel.set_cache_bytes(self.tiles.cache_bytes());
-            if self.model.status.contains("Downloading") {
-                self.model.status = format!("Offline area ready ({} tiles)", after.total);
+            if self.offline_downloading {
+                self.offline_downloading = false;
+                self.model.status =
+                    failure::t_args("maps-offline-ready", &[("count", after.total.into())]);
             }
         }
 
@@ -805,9 +808,12 @@ impl Widget for MapsApp {
                 // clearing or updating the chip promptly.
                 let extra_targets = self
                     .menu_rect()
-                    .map(|menu| (menu, "Menu"))
+                    .map(|menu| (menu, failure::t("maps-menu")))
                     .into_iter()
-                    .chain(std::iter::once((self.overflow_rect(), "More")));
+                    .chain(std::iter::once((
+                        self.overflow_rect(),
+                        failure::t("maps-more"),
+                    )));
                 if self
                     .map_controls
                     .on_pointer(p, self.left_down, extra_targets, ui::time::now())
@@ -1048,7 +1054,7 @@ impl Widget for MapsApp {
             .collect();
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                .with_name("Maps")
+                .with_name(failure::t("maps-app-name"))
                 .with_children(children),
         )
     }
