@@ -2,7 +2,7 @@
 //! Workspace scope, what the person chose before, the open window a query
 //! names, and the order loose and file matches give way in.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ui::search::system;
 
