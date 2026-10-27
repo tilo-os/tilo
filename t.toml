@@ -6798,7 +6798,7 @@ on = ["stable"]
 name = "image-kernel-{arch}"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/kernel.sh build {arch} /target/publish/kernel/{arch} /target/publish/kernel-cache/{arch}/compiler-cache.tar"
-inputs = ["tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub", "tools/ci/publish/kernel.sh", "tools/ci/publish/lib.sh"]
+inputs = ["tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "tools/ci/publish/kernel-env.sh", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub", "tools/ci/publish/kernel.sh", "tools/ci/publish/lib.sh"]
 needs = ["os-assets", "image-kernel-cache-{arch}", "kernel-signer-crate", "signing-tools"]
 outputs = ["/target/publish/kernel/{arch}/image.oci.tar", "/target/publish/kernel/{arch}/digest", "/target/publish/kernel/{arch}/secureboot/**", "/target/publish/kernel/{arch}/buildroot", "/target/publish/kernel/{arch}/build-architecture"]
 requires = ["arch={arch}", "disk-100g"]
@@ -6813,7 +6813,7 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "provenance-kernel"
 run = "bash tools/ci/publish/kernel.sh provenance /target/publish/kernel"
-inputs = ["os/kernel-buildroot-snapshot.env", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel.sh", "tools/ci/publish/lib.sh"]
+inputs = ["os/kernel-buildroot-snapshot.env", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel-env.sh", "tools/ci/publish/kernel.sh", "tools/ci/publish/lib.sh"]
 needs = ["image-kernel-x86_64", "image-kernel-aarch64", "signing-tools"]
 outputs = ["/target/publish/kernel/x86_64/provenance.json", "/target/publish/kernel/aarch64/provenance.json"]
 requires = ["arch=any"]
@@ -6844,7 +6844,7 @@ bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'once:sha-{commit}-aarch64'
 bash tools/ci/publish/kernel.sh pins /target/publish/kernel
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "tools/ci/publish/kernel.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "tools/ci/publish/kernel-env.sh", "tools/ci/publish/kernel.sh"]
 needs = ["image-kernel-x86_64", "image-kernel-aarch64", "kernel-acceptance-x86_64", "kernel-acceptance-aarch64", "sign-kernel", "signing-tools"]
 outputs = ["/target/publish/kernel/x86_64/receipt.json", "/target/publish/kernel/aarch64/receipt.json", "/target/publish/kernel/pins.env"]
 pointers = { kernel = "/target/publish/kernel/pins.env" }
@@ -6852,10 +6852,11 @@ id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["stable"]
 
-# The compiler cache image-kernel-<arch> compiles through (kernel.sh compile-cache): every object
+# The compiler cache image-kernel-<arch> compiles through (kernel-compile-cache.sh): every object
 # of the kernel and its modules, compiled on the machine the kernel builds on (`host`, as the
 # kernel product's `hosts` says) into an empty ccache directory. Its inputs are the buildroot
-# (the Fedora source and the toolchain) and the scripts that run it. The patches, the
+# (the Fedora source and the toolchain) and the scripts that run it (kernel-env.sh, not
+# kernel.sh, whose publishing steps change no object). The patches, the
 # configuration and the rest of the build are deliberately not among them: it compiles the tree
 # of the commit that first needs it and stays until the buildroot moves, so a patch or a config
 # change recompiles just the objects it changes. Whatever it holds, the kernel is the one an
@@ -6865,8 +6866,8 @@ on = ["stable"]
 [[check]]
 name = "image-kernel-cache-{arch}"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash tools/ci/publish/kernel.sh compile-cache {arch} /target/publish/kernel-cache/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/cc-wrapper.sh", "os/kernel-buildroot-snapshot.env", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+run = "bash tools/ci/publish/kernel-compile-cache.sh {arch} /target/publish/kernel-cache/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel-env.sh", "tools/ci/publish/kernel-compile-cache.sh", "os/kernel/cc-wrapper.sh", "os/kernel-buildroot-snapshot.env", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
 needs = ["os-assets", "signing-tools"]
 outputs = ["/target/publish/kernel-cache/{arch}/compiler-cache.tar"]
 requires = ["arch={host}", "disk-100g"]
@@ -6885,7 +6886,7 @@ arch = [{ arch = "x86_64", host = "x86_64" }, { arch = "aarch64", host = "aarch6
 [[check]]
 name = "kernel-signer-crate"
 run = "bash tools/ci/publish/kernel.sh signer-crate /target/publish/kernel-signer"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/project-crate.py", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel.sh", "tools/ci/publish/kernel-env.sh", "os/kernel/project-crate.py", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs"]
 needs = ["signing-tools"]
 outputs = ["/target/publish/kernel-signer/**"]
 requires = ["arch=any"]
@@ -6933,7 +6934,7 @@ default = false
 [[check]]
 name = "pin-kernel"
 run = "bash tools/ci/publish/kernel.sh pin"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/dev/verify-kernel-provenance.sh", "os/dev/kernel-build-environment.py", "os/dev/open-snapshot-pr.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel.sh", "tools/ci/publish/kernel-env.sh", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/dev/verify-kernel-provenance.sh", "os/dev/kernel-build-environment.py", "os/dev/open-snapshot-pr.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["signing-tools"]
 reads_pointers = ["stable:kernel"]
 pushes = ["os/kernel-snapshot.env"]

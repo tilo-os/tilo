@@ -6,14 +6,10 @@
 # aarch64 kernel natively or cross-compiled on x86_64 with the aarch64 toolchain the x86_64
 # buildroot carries.
 #
-#   kernel.sh compile-cache ARCH OUT
-#                               compile the kernel and its modules into an empty compiler cache
-#                               and pack it as OUT/compiler-cache.tar (buildah, as root in a
-#                               micro-VM step)
 #   kernel.sh build ARCH OUT [CACHE]
 #                               verify the pinned buildroot, build OUT/image.oci.tar and the
 #                               Secure Boot probe's inputs into OUT/secureboot, through the
-#                               compiler cache CACHE (compile-cache's archive) if given; record
+#                               compiler cache CACHE (kernel-compile-cache.sh's archive) if given; record
 #                               the buildroot and the machine's architecture for provenance
 #
 # kernel-acceptance.sh, beside this script, boots and checks what this builds, on the kernel's
@@ -36,6 +32,7 @@
 #                               (T_POINTER_KERNEL), when main builds the kernel from the same inputs
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/kernel-env.sh"
 cd "$repo_root"
 repository=registry.tilo.so/tilo/tilo-kernel
 
@@ -126,93 +123,22 @@ case ${1:-} in
     exit 0
     ;;
   signer-crate)
-    # The module signer as the kernel compiles it: tilo-crypto projected into a crate of its
-    # own whose lockfile holds only what it links, checked against the root lockfile. The
-    # kernel builds from this, never from the workspace, so a Cargo.lock change that moves
-    # none of the signer's dependencies leaves the kernel's key where it was.
-    out=${2:?usage: kernel.sh signer-crate OUT}
-    rm -rf "$out" && mkdir -p "$out/src"
-    python3 os/kernel/project-crate.py --workspace Cargo.toml \
-      --member crates/system/tilo-crypto/Cargo.toml --lockfile Cargo.lock --output "$out"
-    cp crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs "$out/src/"
-    # Resolving the projected crate prunes the copied lockfile to its own dependencies. Where
-    # there is no cargo (the compiler cache's image) it stays the whole lockfile, which the
-    # kernel build's own cargo prunes as it resolves.
-    if command -v cargo >/dev/null; then
-      (cd "$out" && { cargo fetch --offline 2>/dev/null || cargo fetch; })
-      python3 os/kernel/project-crate.py --lockfile Cargo.lock --verify-lock "$out/Cargo.lock"
-    fi
-    printf 'signer crate: %s locked packages\n' "$(grep -c '^\[\[package\]\]' "$out/Cargo.lock")"
+    kernel_signer_crate "${2:?usage: kernel.sh signer-crate OUT}"
     exit 0
     ;;
 esac
 
+[[ ${1:-} == build ]] || die 'usage: kernel.sh build ARCH OUT [CACHE], signer-crate OUT, provenance|pins DIR, or pin'
 arch=${2:-}
 out=${3:-}
-case $arch in
-  x86_64) kernel_platform=linux/amd64 ;;
-  aarch64) kernel_platform=linux/arm64 ;;
-  *) die 'usage: kernel.sh build ARCH OUT [CACHE], compile-cache ARCH OUT, provenance|pins DIR, or pin' ;;
-esac
-[[ -n $out ]] || die 'usage: kernel.sh build ARCH OUT [CACHE], or compile-cache ARCH OUT'
-# Natively, or the aarch64 kernel cross-compiled on x86_64 with the cross toolchain the x86_64
-# buildroot carries: the build runs FROM the buildroot of the machine it runs on.
-host=$(uname -m)
-case $host:$arch in
-  x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;
-  *) die "the $arch kernel is built natively or on x86_64, not on $host" ;;
-esac
-case $host in
-  x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;
-  aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;
-esac
-
-case ${1:-} in
-  build | compile-cache)
-    . os/kernel-buildroot-snapshot.env
-    buildroot=${!key}
-    [[ $buildroot =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]] \
-      || die "no digest-pinned kernel buildroot for $host"
-    use_cosign
-    cosign verify --key keys/cosign.pub "$buildroot" >/dev/null
-    assets=$(pinned_assets v4l2loopback-0.15.3-a7e4a4d.tar.gz)
-    # The kernel's SOURCE_DATE_EPOCH keeps its default of 0 beside the fixed layer timestamps.
-    # The signer's crate the kernel-signer-crate check made, or one made here where no
-    # check gave it (the compiler cache, a build outside t).
-    signer=${KERNEL_SIGNER_CRATE:-/target/publish/kernel-signer}
-    if [[ ! -s $signer/Cargo.lock ]]; then
-      signer=$scratch/signer-crate
-      bash tools/ci/publish/kernel.sh signer-crate "$signer"
-    fi
-    args=(--platform "$platform" --build-context "github-assets=$assets"
-      --build-context "signer-crate=$signer"
-      --build-arg "KERNEL_BUILDROOT_REF=$buildroot" --build-arg "KERNEL_ARCH=$arch"
-      --build-arg "KERNEL_BUILD_JOBS=$(nproc)")
-    use_buildah kernel
-    # The micro-VM step's scratch disk is ext4 under a kernel of its own, where overlay works;
-    # vfs would copy the multi-gigabyte buildroot for every step and fill the disk.
-    export STORAGE_DRIVER=overlay
-    printf '[storage]\ndriver = "overlay"\n' > "$CONTAINERS_STORAGE_CONF"
-    mkdir -p "$out"
-    ;;
-  *) die 'usage: kernel.sh build ARCH OUT [CACHE], or compile-cache ARCH OUT' ;;
-esac
+[[ -n $arch && -n $out ]] || die 'usage: kernel.sh build ARCH OUT [CACHE]'
+kernel_build_setup "$arch"
+mkdir -p "$out"
 started=$SECONDS
 
 case $1 in
-  compile-cache)
-    # Every object of the kernel and its modules, compiled into an empty directory and packed
-    # as OUT/compiler-cache.tar (ccache stores each entry compressed already).
-    cache=$scratch/compiler-cache
-    rm -rf "$cache" && mkdir -p "$cache"
-    b build --layers --timestamp 0 --file os/kernel/Containerfile --target compile-cache \
-      "${args[@]}" --volume "$cache:/work/compiler-cache" .
-    tar -cf "$out/compiler-cache.tar" -C "$cache" .
-    printf 'compiler cache of the %s kernel: %s in %ss\n' "$arch" \
-      "$(du -sh "$out/compiler-cache.tar" | cut -f1)" "$((SECONDS - started))"
-    ;;
   build)
-    # With CACHE (compile-cache's compiler-cache.tar), the compile reads and writes a copy of
+    # With CACHE (kernel-compile-cache.sh's compiler-cache.tar), the compile reads and writes a copy of
     # it; without, it compiles every object.
     cache_archive=${4:-}
     if [[ -n $cache_archive ]]; then
