@@ -555,6 +555,9 @@ pub struct ChatApp {
     /// The latest call/media problem to show in the call chrome (a refused
     /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
+    /// The channel of a call asked for where it cannot start: its card is
+    /// open and says why ([`Self::call_refused`]) until the person closes it.
+    pub(crate) refused_call: Option<String>,
     pub(crate) canonical_dirty: bool,
     /// The regions the last draws painted, compared to say which changed:
     /// a typed character repaints the composer, not the window.
@@ -828,6 +831,7 @@ impl ChatApp {
             messages_revision: 0,
             camera_on_live: false,
             media_error: None,
+            refused_call: None,
             canonical_dirty: true,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             synced: None,
@@ -846,6 +850,28 @@ impl ChatApp {
             crate::call::CallAction::Camera | crate::call::CallAction::ShareScreen => false,
             _ => self.voice_service_available() && self.perms.allows(action),
         }
+    }
+
+    /// Why a call cannot start here, when it cannot: nothing on this device
+    /// answers calls (a desktop no host carries, or one that only watches),
+    /// or the person may not join calls in this room.
+    pub(crate) fn call_refusal(&self) -> Option<String> {
+        if !self.voice_service_available() {
+            Some(crate::i18n::t("chat-voice-unavailable"))
+        } else if !self.perms.allows(crate::call::CallAction::Join) {
+            Some(crate::i18n::t("chat-call-issue-denied"))
+        } else {
+            None
+        }
+    }
+
+    /// A call asked for on `channel` that cannot start (`reason`): its card
+    /// opens at once and says why, so asking is never met with nothing.
+    pub(crate) fn call_refused(&mut self, channel: &str, reason: String) {
+        self.refused_call = Some(channel.to_owned());
+        self.call.join(channel);
+        self.media_error = Some(reason);
+        self.request_relayout();
     }
 
     pub(crate) fn voice_service_available(&self) -> bool {
