@@ -194,6 +194,7 @@ struct ListedOnce {
     resource: String,
     field: String,
     pred: Option<Pred>,
+    order: Option<tilolang_runtime::query::Order>,
     listing: Rc<Listing>,
 }
 
@@ -224,6 +225,10 @@ impl ListedOnce {
                     .pred
                     .as_ref()
                     .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
+                || self
+                    .order
+                    .as_ref()
+                    .is_some_and(|order| order.field == field)
         };
         (key.resource == self.resource && (key.field == self.field || key.field == ANY_FIELD))
             || (item && filtered_on(&key.field))
@@ -1210,6 +1215,35 @@ impl TiloStore {
         crate::reads::first_text(mirror, &located.obj?, located.schema, &at.id_string())
     }
 
+    /// How many items of the collection `field` of `at` hold each value of their column
+    /// `column` (a toggle's two, an enum's cases), read from the column as the index holds it:
+    /// the counts a filter's chips show.
+    ///
+    /// # Errors
+    /// The resource or its type is unknown, or the index cannot be read.
+    pub fn facets(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        column: &str,
+    ) -> Result<Vec<(String, usize)>, StoreError> {
+        let inner = self.inner.borrow();
+        let (app, ty) = inner.locate(at)?;
+        let schema = lookup(&at.ty)
+            .or_else(|| lookup(&ty))
+            .ok_or_else(|| not_found(ty.clone()))?;
+        let item = schema
+            .field(field)
+            .and_then(|f| f.record.as_deref())
+            .and_then(lookup)
+            .ok_or_else(|| not_found(format!("collection {field}")))?;
+        let view = inner
+            .view(&app)
+            .ok_or_else(|| StoreError::Backend(format!("the index of {app} is being built")))?;
+        view.facets((&at.id_string(), field), item, column)
+            .map_err(backend)
+    }
+
     /// Where the item `item` is in the collection `field` of `at`, as its listing has it: found
     /// by its order key, not by walking the listing.
     #[must_use]
@@ -1814,11 +1848,25 @@ impl Inner {
         field: &str,
         pred: Option<(&TypeId, &Pred)>,
     ) -> Result<Rc<Listing>, StoreError> {
+        self.listed_in(at, field, pred.map(|(item, p)| (item, Some(p))), None)
+    }
+
+    /// The listing of the collection `field` of `at` (of items of the type `item`), filtered
+    /// by `pred` and in `order`, read once in this state of the store.
+    fn listed_in(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        query: Option<(&TypeId, Option<&Pred>)>,
+        order: Option<&tilolang_runtime::query::Order>,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let pred = query.and_then(|(_, p)| p);
         let resource = at.id_string();
         if let Some(held) = self.listed.borrow().iter().find(|held| {
             held.resource == resource
                 && held.field == field
-                && held.pred.as_ref() == pred.map(|(_, p)| p)
+                && held.pred.as_ref() == pred
+                && held.order.as_ref() == order
         }) {
             return Ok(Rc::clone(&held.listing));
         }
@@ -1834,7 +1882,7 @@ impl Inner {
                     .field(field)
                     .filter(|f| f.kind == MergeKind::Collection)
                     .ok_or_else(|| not_found(format!("collection {field}")))?;
-                match pred {
+                match query {
                     None => view.listing(&resource, field).map_err(backend)?,
                     Some((item, pred)) => {
                         let item_schema = spec
@@ -1843,7 +1891,12 @@ impl Inner {
                             .and_then(lookup)
                             .or_else(|| lookup(item))
                             .ok_or_else(|| not_found(format!("type {item}")))?;
-                        view.filtered((&resource, field), item_schema, pred, &self.evaluated)?
+                        view.query(
+                            (&resource, field),
+                            item_schema,
+                            (pred, order),
+                            &self.evaluated,
+                        )?
                     }
                 }
             }
@@ -1860,7 +1913,8 @@ impl Inner {
         self.listed.borrow_mut().push(ListedOnce {
             resource,
             field: field.to_owned(),
-            pred: pred.map(|(_, p)| p.clone()),
+            pred: pred.cloned(),
+            order: order.cloned(),
             listing: Rc::clone(&listing),
         });
         Ok(listing)
@@ -2249,6 +2303,43 @@ impl Store for TiloStore {
         self.inner
             .borrow()
             .listed(at, &field.id, Some((item, pred)))
+    }
+
+    fn listing_query(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: Option<&Pred>,
+        order: Option<&tilolang_runtime::query::Order>,
+    ) -> Result<Rc<Listing>, StoreError> {
+        self.inner
+            .borrow()
+            .listed_in(at, &field.id, Some((item, pred)), order)
+    }
+
+    fn select(
+        &self,
+        ty: &TypeId,
+        pred: &Pred,
+        order: Option<&tilolang_runtime::query::Order>,
+    ) -> Result<Vec<ResourceRef>, StoreError> {
+        let inner = self.inner.borrow();
+        let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
+        let Some(view) = inner.view(&schema.app) else {
+            return Err(StoreError::Backend(format!(
+                "the index of {} is being built",
+                schema.app
+            )));
+        };
+        let paths = view.select(schema, pred, order, &inner.evaluated)?;
+        Ok(paths
+            .into_iter()
+            .filter_map(|path| {
+                let held = view.type_of(&path).ok().flatten()?;
+                ResourceRef::parse_id(&path, held)
+            })
+            .collect())
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {

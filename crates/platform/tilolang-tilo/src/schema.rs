@@ -108,6 +108,47 @@ impl FieldSchema {
     }
 }
 
+/// What a filter column holds (search.md section 4): how its values are written so that
+/// their order is the values' order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ColumnKind {
+    Bool,
+    Int,
+    Float,
+    /// Text, by its letters without regard to case, then as written.
+    Text,
+    Date,
+    Time,
+    /// A case of an enum, by its id.
+    Enum,
+    /// A resource, by its id.
+    Ref,
+    /// An identifier, `scheme:value`, without regard to case.
+    Ident,
+}
+
+/// A filter column of a type (search.md section 4): the index keeps, per collection of the
+/// type's resources and (for the type's filters) across the workspace, a list of them ordered
+/// by the column's value, each value written in [`ColumnKind`]'s order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnSchema {
+    /// What names it in the index: the field's id, or `=key` for a named filter.
+    pub name: String,
+    /// The field it holds, by id; none for a named filter.
+    pub field: Option<String>,
+    pub kind: ColumnKind,
+    /// Whether the field holds several values (a set): one entry per member.
+    pub many: bool,
+    /// A named filter's predicate over the resource's own fields: the column holds whether it
+    /// holds.
+    pub pred: Option<tilolang::pred::Pred<String>>,
+    /// Whether it is one of the type's filters, kept across the workspace as well as per
+    /// collection.
+    pub filter: bool,
+    /// The values it can hold, when they are known: an enum's cases by id.
+    pub cases: Vec<String>,
+}
+
 /// A record type: its id, the app that declared it and its fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeSchema {
@@ -115,6 +156,8 @@ pub struct TypeSchema {
     pub app: String,
     pub name: String,
     pub fields: Vec<FieldSchema>,
+    /// Its filter columns: its filters' and those of every other field a `filter` compares.
+    pub columns: Vec<ColumnSchema>,
 }
 
 impl TypeSchema {
@@ -141,6 +184,7 @@ impl TypeSchema {
             app: app.into(),
             name: name.into(),
             fields: Vec::new(),
+            columns: Vec::new(),
         }
     }
 
@@ -154,6 +198,20 @@ impl TypeSchema {
     #[must_use]
     pub fn field(&self, id: &str) -> Option<&FieldSchema> {
         self.fields.iter().find(|field| field.id == id)
+    }
+
+    /// The column of the field `id`.
+    #[must_use]
+    pub fn column_of(&self, id: &str) -> Option<&ColumnSchema> {
+        self.columns
+            .iter()
+            .find(|column| column.field.as_deref() == Some(id))
+    }
+
+    /// The column `name`.
+    #[must_use]
+    pub fn column(&self, name: &str) -> Option<&ColumnSchema> {
+        self.columns.iter().find(|column| column.name == name)
     }
 }
 
