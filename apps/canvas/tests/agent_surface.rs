@@ -15,17 +15,34 @@ use ui::prelude::TestApp;
 /// The most the whole surface may weigh, in bytes of JSON: what an agent
 /// reads before it can act. Growing past it is a design decision, not drift.
 /// `apply` and `group` name the actions they repeat; the field-edit listing
-/// names each editable path once with its operations; a parameter's schema
-/// does not repeat its description, nor a description its label. Raised
-/// from 64 KiB when every document resource gained `review-restore` and
-/// `restore-reviewed` (exact-item restore, #4581), and to 76 KiB when a
-/// mark's style and adjustments and the ground became fields of their own
-/// rather than one value each: each is now an editable path an agent can
-/// name, which is what lets two people change one mark at once without
-/// overwriting each other. It still holds when a mark's shape became a
-/// per-variant set of fields (`marks.*.shape.rect.x`): those paths are the
-/// geometry controls that merge.
-const BUDGET: usize = 76 * 1024;
+/// names each editable path once with its operations and its value's kind,
+/// and says a field's description once however many paths reach it; a
+/// parameter's schema does not repeat its description, nor a description its
+/// label, and a schema that only restates its declared type is not published
+/// twice.
+///
+/// Raised from 64 KiB when every document resource gained `review-restore`
+/// and `restore-reviewed` (exact-item restore), and to 76 KiB when a mark's
+/// style and adjustments and the ground became fields of their own rather
+/// than one value each, and a mark's shape a per-variant set of fields: each
+/// is now an editable path an agent can name, which is what lets two people
+/// change one mark at once without overwriting each other (`layers.*.adjust`,
+/// `marks.*.shape.rect.x`). Saying each thing once — the parameter schemas
+/// that only restated their type, the effects' descriptions that repeated
+/// their labels, and the field-edit lines that restated the field the path
+/// names, the flags their parent's line carries, or a description they had
+/// already given — brought the same vocabulary down to 70,711 bytes.
+///
+/// What is still above 68 KiB (1,079 bytes) is the field-edit listing's own
+/// words: the field descriptions it states once per field (3,930 bytes of
+/// them), the value kinds it names (1,906), and the example edits an agent
+/// builds a path from (712). None of them is another path's, or another
+/// action's, to say; dropping them is not a representation change, it takes a
+/// field's meaning, its value's kind, or the shape of an edit out of what an
+/// agent is told. Factoring the schemas `draw`, `paint` and `edit-marks`
+/// share would fit, but `$ref` needs a validator and consumers that resolve
+/// it, and this one refuses every keyword it does not know.
+const BUDGET: usize = 70 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {
