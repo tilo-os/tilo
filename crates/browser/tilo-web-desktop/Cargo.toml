@@ -28,7 +28,7 @@ tilo-search = { path = "../../sdk/search", features = ["lazy-engine"] }
 tilo-spellcheck = { path = "../../text/spellcheck", features = ["lazy-dictionaries"] }
 # Hyphenation patterns load the first time text hyphenates, the emoji
 # catalogue the first time something names or picks an emoji.
-tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode", "lazy-emoji"] }
+tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode", "lazy-emoji", "lazy-history"] }
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 # generated apps: begin (tools/web/generate_web_desktop.py)

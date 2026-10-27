@@ -6,8 +6,9 @@
 //! decoders, which the first web page image or decoded picture asks for,
 //! the model service's clients, which the first model request or provider
 //! settings change asks for, the pinned people overlay, which pinning
-//! who is here asks for, and the emoji catalogue, which the first picker,
-//! reaction name or `:name:` completion asks for.
+//! who is here asks for, the emoji catalogue, which the first picker,
+//! reaction name or `:name:` completion asks for, and History, which the
+//! first window that registers it asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -75,6 +76,10 @@ unsafe extern "C" {
     fn load_emoji(callback: Callback, data: *const c_void);
     #[link_name = "__wasm_split_00___emoji___00_import_4b8e2d6f1a9c7035_catalogue"]
     fn emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor;
+    #[link_name = "__wasm_split_load_history_e1a7c5039b6d2f84_host"]
+    fn load_history(callback: Callback, data: *const c_void);
+    #[link_name = "__wasm_split_00___history___00_import_e1a7c5039b6d2f84_host"]
+    fn history_code() -> tilo_ui::history_mode::MakeHistory;
 }
 
 #[unsafe(export_name = "__wasm_split_00___search___00_export_8c1f5e0d2b7a4936_engine")]
@@ -138,6 +143,15 @@ extern "C" fn export_people_overlay() -> tilo_browser_runtime::MakePinnedRoster 
 )]
 extern "C" fn export_emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor {
     tilo_ui::emoji_catalogue::builtin_catalogue
+}
+
+#[unsafe(export_name = "__wasm_split_00___history___00_export_e1a7c5039b6d2f84_host")]
+#[allow(
+    improper_ctypes_definitions,
+    reason = "the function pointer only passes between Rust"
+)]
+extern "C" fn export_history_code() -> tilo_ui::history_mode::MakeHistory {
+    tilo_ui::history_mode::builtin_history()
 }
 
 /// Fetch the search engine's module, then install the engine.
@@ -232,6 +246,19 @@ fn fetch_emoji() {
     });
 }
 
+/// Fetch History's module, then hand it to the windows waiting on it.
+fn fetch_history() {
+    wasm_bindgen_futures::spawn_local(async {
+        if crate::split::load(load_history).await {
+            // SAFETY: the module that defines `history_code` is loaded.
+            tilo_ui::history_mode::install_history_code(unsafe { history_code() });
+            tilo_browser_runtime::refresh_mounts();
+        } else {
+            tilo_ui::history_mode::history_load_failed();
+        }
+    });
+}
+
 /// How often the page looks again whether its first frame is up, or the
 /// dictionaries' code is in.
 const SPELLING_POLL_MS: u32 = 250;
@@ -281,4 +308,5 @@ pub(crate) fn register() {
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);
     tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
     tilo_ui::emoji_catalogue::CATALOGUE.defer(fetch_emoji);
+    tilo_ui::history_mode::defer_history(fetch_history);
 }

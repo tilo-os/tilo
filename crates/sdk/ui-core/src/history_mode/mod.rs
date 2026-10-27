@@ -622,5 +622,10 @@ pub(crate) mod routes;
 /// Opaque retained framework surface used only by owning runner traversal.
 /// No construction, document, review or write authority is public on this type.
 #[doc(hidden)]
-pub use host::HistoryHost as FrameworkHistorySurface;
+/// A window's History as the windows that own one hand it to a visitor.
+pub(crate) type FrameworkHistorySurface = dyn host::HistoryChromeApi;
+pub(crate) use host::SIDE_PANEL_WIDTH;
+pub use host::{MakeHistory, builtin_history};
+#[cfg(feature = "lazy-history")]
+pub use host::{defer_history, history_load_failed, install_history_code};
 pub(crate) mod embedded;
