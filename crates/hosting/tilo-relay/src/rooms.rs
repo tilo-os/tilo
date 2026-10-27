@@ -61,7 +61,6 @@ mod steward_endpoint;
 mod stewardship;
 #[cfg(test)]
 pub(crate) mod tests;
-mod topology_namespace;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
@@ -102,13 +101,12 @@ pub struct WaitListMail {
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
 pub use tilo_relay_session::rooms::{
-    ActionInvitation, CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CancelInvitationRequest, CreatedRoom,
-    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
-    HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest, IssuedInvitation,
-    LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD,
-    PendingInvitation, RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN, RemoveMemberRequest,
-    RoomAdminClient, RoomAdminError, RoomCommand, RoomListing, RoomReply, RoomSummary,
-    SetMemberRoleRequest, member_resource,
+    ActionInvitation, CREATE_ROOM, CancelInvitationRequest, CreatedRoom, ENTER_ROOM, EnteredRoom,
+    GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
+    MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT,
+    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand,
+    RoomListing, RoomReply, RoomSummary, SetMemberRoleRequest, member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -305,13 +303,7 @@ impl GovernedRoom {
         )?;
         select_exact_admission(&mut peer)?;
         peer.install_seed(
-            tilo_peer_state::workspace_seed(
-                &room,
-                authority,
-                &roster,
-                name,
-                rand::random::<u16>().max(1),
-            )?,
+            tilo_peer_state::workspace_seed(&room, authority, &roster, name)?,
             key,
             now,
         )?;
@@ -1606,10 +1598,9 @@ impl Rooms {
     }
 
     /// Take a member's own windows into the room's governance: the changes
-    /// a member publishes to the room document within the topology namespace
-    /// the room registered to that device (`contents_owners_v1`). The room's
-    /// admission decides them exactly as every member's does (a change
-    /// outside the device's namespace is refused); the governor commits what
+    /// a member publishes to the room's layout. The room's admission decides
+    /// them exactly as every member's does (a change to what someone else
+    /// made, without the room's leave, is refused); the governor commits what
     /// it admitted as the room's next generation, which every member then
     /// takes in. Until this, a window someone opened after joining reached
     /// nobody: members take governance only from the governor, and the

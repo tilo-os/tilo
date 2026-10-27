@@ -50,7 +50,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "082430303030303030302d303030302d303030302d303030302d3030303030303030303030311000112233445566778899aabbccddeeff03090807",
     ),
     (
-        "ClaimTopologyNamespace",
+        "RetiredClaimTopologyNamespace",
         "092430303030303030302d303030302d303030302d303030302d3030303030303030303030312a",
     ),
     (
@@ -218,8 +218,8 @@ fn commands() -> Vec<(&'static str, RoomCommand)> {
             },
         ),
         (
-            "ClaimTopologyNamespace",
-            RoomCommand::ClaimTopologyNamespace {
+            "RetiredClaimTopologyNamespace",
+            RoomCommand::RetiredClaimTopologyNamespace {
                 room: room(),
                 salt: 42,
             },
@@ -424,7 +424,7 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomCommand::SetRole { .. }
             | RoomCommand::Remove { .. }
             | RoomCommand::RecordEffectReceipt { .. }
-            | RoomCommand::ClaimTopologyNamespace { .. }
+            | RoomCommand::RetiredClaimTopologyNamespace { .. }
             | RoomCommand::GrantAppAuthorship { .. } => {}
         }
     }
@@ -448,7 +448,11 @@ fn room_admin_wire_cases_cover_every_variant() {
 fn every_command_but_removal_names_the_action_that_replaced_it() {
     for (name, command) in commands() {
         let replaced = command.replaced_by();
-        assert_eq!(replaced.is_none(), name == "Remove", "{name}: {replaced:?}");
+        assert_eq!(
+            replaced.is_none(),
+            ["Remove", "RetiredClaimTopologyNamespace"].contains(&name),
+            "{name}: {replaced:?}"
+        );
         if let Some((provider, action)) = replaced {
             assert!(
                 [

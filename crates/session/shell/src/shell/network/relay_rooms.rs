@@ -42,10 +42,9 @@ use tilo_actions::remote::{
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom,
-    GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS,
-    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing,
-    member_resource,
+    CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER,
+    HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
+    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -429,59 +428,6 @@ impl ShellNetwork {
             arguments,
         );
         self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)
-    }
-
-    /// A host governor answers namespace claims as the member's own action
-    /// on the room's session, not a private action subscriber that the host
-    /// does not run. None retains the native-device governor's ordinary
-    /// semantic action path.
-    pub(super) fn claim_namespace_at_host(
-        &self,
-        room: RoomId,
-        salt: u16,
-    ) -> Option<tilo_actions::remote::Pending<Result<serde_json::Value, String>>> {
-        // A room a device governs keeps its own semantic action path, and
-        // without native custody this device holds no room a host governs.
-        let hosted = self.native_owner().ok()?.with_current(room, |view| {
-            Ok(view.governor().capabilities.can_act_as_host)
-        });
-        if matches!(hosted, Ok(false)) {
-            return None;
-        }
-        let (completer, answer) = tilo_actions::remote::pending();
-        let host = match self.host_governor(room) {
-            Ok(None) => return None,
-            Ok(Some(host)) => host,
-            Err(error) => {
-                completer.complete(Err(error));
-                return Some(answer);
-            }
-        };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("salt".into(), salt.into());
-        let receiver = match self.ask_as_member(room, host, CLAIM_TOPOLOGY_NAMESPACE, arguments) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                completer.complete(Err(error));
-                return Some(answer);
-            }
-        };
-        let Some(runtime) = self.runtime.as_ref() else {
-            completer.complete(Err("topology authority queue is unavailable".into()));
-            return Some(answer);
-        };
-        runtime.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || receiver.recv_timeout(ADMIN_TIMEOUT))
-                .await
-                .map_err(|_| "topology reply worker stopped".to_owned())
-                .and_then(|reply| {
-                    reply.map_err(|_| "topology governor did not answer in time".to_owned())
-                })
-                .and_then(std::convert::identity)
-                .and_then(receipt_value);
-            completer.complete(result);
-        });
-        Some(answer)
     }
 
     /// Ask the host governing `room` the member action `action` (one of
@@ -1419,7 +1365,7 @@ mod tests {
         let member = invocation(
             MEMBER_ACTIONS_PROVIDER,
             member_resource("r"),
-            CLAIM_TOPOLOGY_NAMESPACE,
+            RECORD_EFFECT_RECEIPT,
             serde_json::Map::new(),
         );
         assert_eq!(member.target.provider, "tilo.member");

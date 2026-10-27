@@ -15,9 +15,9 @@ mod display_input_tests;
 #[cfg(test)]
 mod display_observation_refresh_tests;
 mod display_observations;
+mod governed_layout;
 mod governor_actions;
 mod hosted_sites;
-mod hosted_topology;
 mod room_window_carriers;
 mod room_window_views;
 pub use room_window_views::RoomWindowViewer;
@@ -1412,7 +1412,7 @@ pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
     peer_sync_worker: peer_sync_worker::State,
-    hosted_topology: hosted_topology::State,
+    governed_layout: governed_layout::State,
     /// Members viewing this device's windows, and what this device views
     /// of theirs ([`room_window_views`]).
     room_window_views: room_window_views::State,
@@ -2347,7 +2347,7 @@ impl ShellNetwork {
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
             peer_sync_worker: peer_sync_worker::State::default(),
-            hosted_topology: hosted_topology::State::default(),
+            governed_layout: governed_layout::State::default(),
             room_window_views: room_window_views::State::default(),
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
@@ -9042,7 +9042,7 @@ pub(crate) fn shell_network_for_test(
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
         peer_sync_worker: peer_sync_worker::State::default(),
-        hosted_topology: hosted_topology::State::default(),
+        governed_layout: governed_layout::State::default(),
         room_window_views: room_window_views::State::default(),
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
@@ -9300,10 +9300,12 @@ mod tests {
             .expect("push applies on top of what was announced");
         }
         assert!(
-            tilo_desktop_model::projection::contents_of(&peer)
-                .iter()
-                .flat_map(|strip| &strip.groups)
-                .flat_map(|group| &group.tabs)
+            tilo_desktop_model::shared_record::read(&peer, None)
+                .into_iter()
+                .flat_map(|layout| layout.tree.workspaces)
+                .flat_map(|workspace| workspace.strips)
+                .flat_map(|strip| strip.window_groups)
+                .flat_map(|group| group.tabs)
                 .any(|candidate| candidate.id == tab),
             "the pushed change carries the new tab"
         );

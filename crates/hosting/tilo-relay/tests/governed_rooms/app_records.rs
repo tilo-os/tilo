@@ -86,7 +86,7 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     let relay = start(scratch.path(), &alice, &host).await;
     let room = create_and_enter(&relay, &host, &laptop, "Private app records").await;
     let workspace = room.workspace_id;
-    topology_namespace::admit(&relay, &host, &member, &room.room).await;
+    members::admit(&relay, &host, &member, &room.room).await;
     admit_viewer(&relay, &host, &viewer, &room.room).await;
 
     let editor = subscribed(&relay, &member, workspace).await;
