@@ -806,6 +806,59 @@ mod tests {
     }
 
     #[test]
+    fn init_says_when_the_guest_killed_a_process_of_the_command_for_memory() {
+        // A guest out of memory kills a process of the command, whose status alone (137, or
+        // whatever the command made of a child's death) doesn't say why.
+        let killed = INIT
+            .split("\nt_killed() {\n")
+            .nth(1)
+            .and_then(|f| f.split("\n}\n").next())
+            .expect("the init has t_killed");
+        assert!(
+            INIT.contains("\ncode=$?\nt_killed \"$code\"\n"),
+            "the init calls t_killed with the command's status"
+        );
+        let script = format!(
+            "say() {{ echo \"t-vm: $*\"; }}\n\
+             dmesg() {{ printf '%s\\n' \"$DMESG\"; }}\n\
+             T_MEMORY_MIB=256\n\
+             t_killed() {{\n{killed}\n}}\n\
+             t_killed \"$1\""
+        );
+        let run = |code: &str, dmesg: &str| {
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .arg("sh")
+                .arg(code)
+                .env("DMESG", dmesg)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let oom = "[    0.5] booted\n[   12.345678] Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0";
+        let said =
+            "Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0\n";
+        assert_eq!(
+            run("137", oom),
+            format!(
+                "t-vm: the command was killed for memory in the guest, which has 256 MiB: {said}"
+            )
+        );
+        assert_eq!(
+            run("2", oom),
+            format!(
+                "t-vm: a process of the command was killed for memory in the guest, which has 256 MiB, and it ended with status 2: {said}"
+            )
+        );
+        // A command that passed, or failed with no kill for memory, is left to say why itself.
+        assert_eq!(run("0", oom), "");
+        assert_eq!(run("137", "[    0.5] booted"), "");
+    }
+
+    #[test]
     fn a_status_line_is_read_back_and_outputs_unpacked() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("output.img");

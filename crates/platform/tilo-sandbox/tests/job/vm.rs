@@ -41,6 +41,7 @@ fn busybox_root(guest: &Guest, at: &Path) {
     std::fs::copy(&guest.busybox, at.join("bin/busybox")).unwrap();
     for tool in [
         "sh", "mount", "umount", "losetup", "cp", "cat", "echo", "mkdir", "dd", "id", "uname",
+        "awk",
     ] {
         std::os::unix::fs::symlink("busybox", at.join("bin").join(tool)).unwrap();
     }
@@ -144,5 +145,64 @@ fn a_step_runs_as_root_in_its_vm_and_brings_back_its_outputs() {
     assert_eq!(
         std::fs::read_to_string(inputs.join("src/hello.txt")).unwrap(),
         "from the host\n"
+    );
+}
+
+#[test]
+fn a_command_past_the_guests_memory_is_killed_and_its_status_reported() {
+    // The guest's OOM killer ends a process of the command; the guest runs on, says so, and
+    // reports the command's status.
+    needs_sandbox!();
+    let guest = match guest() {
+        Ok(g) => g,
+        Err(why) => {
+            eprintln!("skipped: {why}");
+            return;
+        }
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    busybox_root(&guest, &tree);
+    let root = dir.path().join("root.img");
+    vm::make_image(&tree, &root).expect("make the root image");
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    // Small allocations without end, each touched: what only the OOM killer stops.
+    let script = "awk 'BEGIN { while (1) a[i++] = sprintf(\"%4096d\", i) }'";
+    let spec = VmSpec {
+        guest,
+        root,
+        disks: vec![],
+        scratch: 1 << 30,
+        output: 16 << 20,
+        argv: vec!["sh".into(), "-c".into(), script.into()],
+        env: vec![("PATH".into(), "/bin".into())],
+        cwd: "/".into(),
+        hostname: "step".into(),
+        outputs: vec![],
+        cpus: 1,
+        memory: 256 << 20,
+        kvm: false,
+        network: None,
+        qemu: None,
+    };
+    let prepared = vm::prepare(&spec, &work).expect("prepare the step");
+    let (mut out_r, out_w) = pipe();
+    let err_w = out_w.try_clone().unwrap();
+    let mut job = Launch::new(&prepared.job)
+        .stdout(out_w)
+        .stderr(err_w)
+        .spawn()
+        .expect("start QEMU");
+    let mut output = String::new();
+    out_r.read_to_string(&mut output).unwrap();
+    let qemu = job.wait().unwrap();
+    assert!(qemu.success(), "QEMU ended with {qemu:?}: {output}");
+    assert!(!output.contains("Kernel panic"), "{output}");
+    let status = prepared.finish(None).expect("the step's status");
+    assert_ne!(status.code, Some(0), "{output}");
+    assert!(
+        output.contains("killed for memory in the guest, which has 256 MiB"),
+        "{output}"
     );
 }
