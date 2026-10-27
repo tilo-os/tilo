@@ -394,7 +394,7 @@ mod tests {
         let mut state = state();
         state.outbox = vec![crate::state::QueuedMessage {
             id: "queued".into(),
-            account: state.accounts.active_config().email.clone(),
+            account: state.accounts.active_config().email,
             to: "ada@analytical.example".into(),
             subject: "Notes on the second engine".into(),
             body: "Sent from the platform on the train.".into(),

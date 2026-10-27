@@ -7,7 +7,7 @@ use tilo_relay_protocol::agents::TaskState;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use super::{
-    enrol, message_text, model_endpoint, planning_agent, run_task, start_host, steward, tool_call,
+    enrol, first_turn, model_endpoint, planning_agent, run_task, start_host, steward, tool_call,
 };
 
 const WRITER: &str = "so.tilo.word-processor";
@@ -127,7 +127,7 @@ async fn a_scan_read_as_content_is_shown_to_a_model_that_sees() {
         "the plan after the read sees it"
     );
     let request: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
-    let turn = message_text(&request["messages"][1]);
+    let turn = first_turn(&request);
     assert!(
         turn.contains("\"format\":\"picture\"") && turn.contains("picture shown below, 1024×768"),
         "{turn}"
@@ -155,7 +155,7 @@ async fn a_scan_read_as_content_is_refused_plainly_where_pictures_are_off() {
     );
     assert!(requests.len() >= 2, "{info:?}");
     let repair: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
-    let repair = message_text(&repair["messages"][1]);
+    let repair = first_turn(&repair);
     assert!(
         repair.contains("this agent is not shown the room's pictures"),
         "{repair}"

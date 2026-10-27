@@ -88,7 +88,7 @@ async fn whatsapp_mixed_inbox_commits_both_private_histories_once_and_restores_e
         .broker
         .client()
         .history()
-        .read(fixture.route.clone())
+        .read(fixture.route.clone(), None)
         .await
         .unwrap();
     assert!(

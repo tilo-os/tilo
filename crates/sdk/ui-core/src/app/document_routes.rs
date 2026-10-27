@@ -218,6 +218,15 @@ impl App {
                 .as_deref()
                 .or(self.document_routes.primary.failure.as_deref())
                 .or(self.document_routes.outbound.as_deref())
+                // The workspace answered that it will not take one change;
+                // the connection is fine, so say which change is not
+                // accepted while the rest of the record syncs on.
+                .or(self
+                    .collaboration
+                    .manager
+                    .refused_change()
+                    .as_deref()
+                    .map(|_| "history-sync-refused"))
                 .or_else(|| {
                     self.document_routes
                         .owners
@@ -236,20 +245,14 @@ impl App {
         // A change still on its way to the history says nothing.
         let key = if self.document_routes.witness.is_none() {
             let manager = &self.collaboration.manager;
-            // A change the workspace refused stops sync just as a lost
-            // connection does, but reconnecting will not resume it, and the
-            // person is not offline: say which one happened.
+            // A lost connection says it is offline: reconnecting resumes it.
+            // A refused change is reported above, while still connected.
             if self.native_document_chrome && manager.joining_late_route() {
                 // Opened on the local replica while the route is joined.
                 Some("history-sync-reconnecting")
             } else {
-                (self.native_document_chrome && manager.sync_lost()).then_some(
-                    if manager.document_change_refused() {
-                        "history-sync-refused"
-                    } else {
-                        "history-sync-offline"
-                    },
-                )
+                (self.native_document_chrome && manager.sync_lost())
+                    .then_some("history-sync-offline")
             }
         } else if !self.document_routes.primary.is_empty()
             || self
@@ -332,8 +335,10 @@ impl App {
             .manager
             .set_document_owner_routes(routes, self.autosave_generation);
         // The exact live owner map exists before any join can deliver callbacks.
-        for route in joins {
-            self.collaboration.manager.join_route(route);
+        for join in joins {
+            self.collaboration
+                .manager
+                .join_route(join.route, join.record_kind);
         }
         if self.document_sync_status().as_deref() != before.as_deref() {
             self.layout.layout_dirty = true;

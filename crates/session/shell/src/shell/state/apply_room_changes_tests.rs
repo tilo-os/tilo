@@ -34,24 +34,14 @@ fn changes_since(doc: &mut AutoCommit, heads: &[ChangeHash]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Add a strip `id` made by `person` to `room`'s layout in `doc`.
-fn add_strip(doc: &mut AutoCommit, room: RoomId, id: u64, person: &str) {
-    let mut layout = tilo_desktop_model::shared_record::read(&*doc, None).unwrap_or_else(|| {
-        let workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Room");
-        tilo_desktop_model::ownership::SharedDesktop {
-            tree: DesktopTree {
-                active: workspace.id,
-                workspaces: vec![workspace],
-                ..DesktopTree::default()
-            },
-            ..tilo_desktop_model::ownership::SharedDesktop::default()
-        }
-    });
-    layout.tree.workspaces[0]
-        .strips
-        .push(Strip::new(StripId(id), "Member's strip"));
-    layout.authors.insert(id, person.to_owned());
-    tilo_desktop_model::shared_record::write(doc, &layout).expect("written");
+/// Have `room`'s document in `doc` hold the record `record`, as any member
+/// writes it.
+fn hold_record(doc: &mut AutoCommit, record: &str) {
+    tilo_desktop_model::projection::project_room_records(
+        doc,
+        &BTreeMap::from([(record.to_owned(), "document".to_owned())]),
+    )
+    .expect("written");
 }
 
 fn owner_of(tree: &WorkspaceTree, ws: WorkspaceId) -> Option<String> {
@@ -120,15 +110,14 @@ fn viewer_cannot_rewrite_room_contents() {
     }
     host.sync_room_doc(room);
 
-    // A strip under the member's own id salt: room content, not governance.
+    // A record the room holds: room content, not governance.
     let mut doc = host
         .room_docs
         .get(&room)
         .expect("the host's room document")
         .clone();
     let heads = doc.get_heads();
-    let member = person_id_of(editor).expect("a root names a person");
-    add_strip(&mut doc, room, compose_id(0x3333, 1), &member);
+    hold_record(&mut doc, "file:/members-notes.md");
     doc.commit();
     let edit = changes_since(&mut doc, &heads);
     let edit_heads = doc.get_heads();
@@ -315,7 +304,7 @@ fn a_batch_admitted_off_the_tree_installs_on_what_the_room_gained_meanwhile() {
         .clone()
         .with_actor(automerge::ActorId::random());
     let heads = doc.get_heads();
-    add_strip(&mut doc, room, compose_id(0x4444, 1), &person);
+    hold_record(&mut doc, "file:/plan.md");
     doc.commit();
     let edit = changes_since(&mut doc, &heads);
     let edit_heads = doc.get_heads();
@@ -367,17 +356,7 @@ fn a_batch_admitted_off_the_tree_installs_on_what_the_room_gained_meanwhile() {
         .clone()
         .with_actor(automerge::ActorId::random());
     let heads = doc.get_heads();
-    let mut layout = tilo_desktop_model::shared_record::read(&doc, None).expect("layout");
-    for held in layout
-        .tree
-        .workspaces
-        .iter_mut()
-        .flat_map(|w| &mut w.strips)
-        .filter(|held| held.id == StripId(compose_id(0x4444, 1)))
-    {
-        held.name = "Edited again".into();
-    }
-    tilo_desktop_model::shared_record::write(&mut doc, &layout).expect("written");
+    hold_record(&mut doc, "file:/plan-again.md");
     doc.commit();
     let again = changes_since(&mut doc, &heads);
     let admitted = basis.admit(&again, &from_editor);

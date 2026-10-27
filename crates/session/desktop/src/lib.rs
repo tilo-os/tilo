@@ -51,7 +51,9 @@ pub mod workspace_settings;
 // The workspace history pane, the notification stack and centre, the
 // drill-in list and the desktop's catalogue are portable: they live with the
 // desktop surface, which the browser builds too.
-pub use tilo_desktop_surface::{activity, drill_in, i18n, notifications, person_cursor};
+pub use tilo_desktop_surface::{
+    activity, drill_in, history_log, i18n, notifications, person_cursor,
+};
 
 #[cfg(test)]
 mod i18n_copy_lint_tests;

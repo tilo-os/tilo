@@ -270,23 +270,15 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     let holder = {
         std::thread::spawn(move || {
             let mut guard = tree.write();
-            let group = guard
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-                .and_then(|workspace| workspace.strips.first_mut())
-                .and_then(|strip| strip.window_groups.first_mut())
-                .unwrap();
-            group.tabs.push(Tab {
-                id: tilo_desktop_model::compose_id(SALT, 99),
-                title: "Held".into(),
-                tile: TileContent::Stub {
-                    kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
-                    label: "Notes".into(),
-                },
-                app_title: None,
-            });
+            // A record the room holds now: every member writes it into the
+            // room's document.
+            guard.set_room_records(
+                room,
+                std::collections::BTreeMap::from([(
+                    "file:/held.md".to_owned(),
+                    "document".to_owned(),
+                )]),
+            );
             guard.seed_doc_from_cache();
             drop(guard);
             // Still writing: the change above is visible, the tree is held.

@@ -1,5 +1,5 @@
 //! How much of what the agent's apps can do a plan is told
-//! ([`Catalog`]).
+//! ([`Catalog`]), and where ([`system_messages`]).
 //!
 //! In [`Catalog::All`] the reference describes every app the context
 //! offers it ([`super::briefing`]). In [`Catalog::Relevant`] the first turn
@@ -33,8 +33,9 @@ pub struct Section {
     pub text: String,
     /// The ids it shows that a plan may name now: those offered.
     pub shown: Vec<String>,
-    /// The operations it describes, by resource kind and name.
-    pub described: Vec<(String, String)>,
+    /// The operations it describes, by resource kind and name, with the
+    /// signature of their parameters.
+    pub described: Vec<(String, String, String)>,
     /// How many operations it left out, over the budget.
     pub left_out: usize,
     /// The resources and resource kinds its operations act on, by which an
@@ -104,6 +105,7 @@ pub(crate) fn app_section(
         section.described.push((
             offer.descriptor.resource_kind.clone(),
             offer.descriptor.address.action.clone(),
+            tilo_agent::tools::parameter_signature(&offer),
         ));
         if offered.contains(&id) {
             section.shown.push(id);
@@ -136,12 +138,14 @@ pub(crate) fn describe(briefing: &mut Briefing, app: &str, section: &Section, in
         );
     }
     briefing.shown.extend(section.shown.iter().cloned());
-    briefing.described.extend(
-        section
-            .described
-            .iter()
-            .map(|(kind, action)| (app.to_owned(), kind.clone(), action.clone())),
-    );
+    briefing
+        .described
+        .extend(section.described.iter().map(|(kind, action, signature)| {
+            (
+                (app.to_owned(), kind.clone(), action.clone()),
+                signature.clone(),
+            )
+        }));
     briefing.described_apps.push(app.to_owned());
 }
 
@@ -164,18 +168,24 @@ pub(crate) const INSTRUCTIONS_NOTE: &str = " Here these instructions end with on
     request; for another app, call `list_operations` with its `application` id before you plan \
     its operations.";
 
-/// The system messages a [`Catalog::Relevant`] plan opens with:
-/// `instructions` with the [`index`], the same for every plan of the agent,
-/// then the relevant apps' reference. A provider caches its prompt up to
-/// the end of a system message (`OpenAI` up to the end of the instructions
-/// the leading ones are joined into), never within the request after them:
-/// what they hold is read from its cache by every plan that describes the
-/// same apps, rather than written to it again by each.
+/// The system messages a plan opens with: `instructions`, the same for
+/// every plan (in [`Catalog::Relevant`] ending with the [`index`], the same
+/// for every plan of the agent), then the apps' reference. A provider
+/// caches a prompt up to the end of a system message, never within the
+/// request after them: every plan reads the instructions and the tools from
+/// its cache whatever the reference describes, and the reference too when
+/// it describes the same apps, rather than writing them to it again. The
+/// instructions stay a message of their own, so a provider that takes them
+/// apart (`OpenAI`'s `instructions`, Anthropic's first system block) keeps
+/// what varies out of them.
 pub(crate) fn system_messages(instructions: &str, briefing: &Briefing) -> Vec<Message> {
-    let mut opening = format!("{instructions}{INSTRUCTIONS_NOTE}");
-    if !briefing.index.is_empty() {
-        opening.push_str("\n\n");
-        opening.push_str(&briefing.index);
+    let mut opening = instructions.to_owned();
+    if briefing.catalog == Catalog::Relevant {
+        opening.push_str(INSTRUCTIONS_NOTE);
+        if !briefing.index.is_empty() {
+            opening.push_str("\n\n");
+            opening.push_str(&briefing.index);
+        }
     }
     let mut messages = vec![Message::text(Role::System, opening)];
     if !briefing.reference.is_empty() {

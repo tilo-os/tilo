@@ -267,7 +267,7 @@ pub fn entries(shown: &Shown<'_>) -> Vec<SearchEntry> {
         let hit = PlaceHit::Recent(query.clone());
         SearchEntry::new(query.as_str(), String::new())
             .opening(hit.resource_id(), &hit.effect())
-            .grouped(&failure::t("maps-recent-searches"))
+            .grouped(failure::t("maps-recent-searches"))
             .with_icon(Icon::History.name())
     }));
     if let Some((query, found)) = shown.found {

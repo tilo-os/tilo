@@ -37,6 +37,11 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
     use ui::record::{RecordCheckout, RecordId, RecordOwners};
     tokio::task::LocalSet::new()
         .run_until(async {
+            // Every Settings entry point brings its parts together before a
+            // window opens (`ui::main!`'s init does for the app); the root
+            // definition mounts the core shell, which alone knows only
+            // Settings' own part and so would publish no area's rows.
+            settings::install();
             let directions = Arc::new(Mutex::new(Vec::new()));
             tracing::subscriber::set_global_default(KeyboardReadBridgeProbe(directions.clone())).unwrap();
             let env = Environment::with_owner_initializer(|path| {

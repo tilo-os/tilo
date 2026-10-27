@@ -1081,35 +1081,34 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         let seed = peer
             .export_room_changes_since(room, &[])
             .expect("peer room changes");
-        assert!(
-            local
-                .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-                .expect("legitimate remote layout merges"),
-            "initial remote layout is accepted"
+        local
+            .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
+            .expect("the room's document merges");
+        // The peer's layout reaches this device over the room's layout
+        // record, signed by a device it knows by its hub alone.
+        let device = [1; 32];
+        local
+            .hear_layout(&mut peer, room, device)
+            .expect("legitimate remote layout merges");
+        let stale = collab_types::DocumentMutation::Snapshot(
+            peer.layout_docs
+                .get_mut(&room)
+                .expect("a layout record")
+                .save(),
         );
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&local);
-        let peer_base = peer.room_heads(room);
         assert!(peer.reorder_group_for_tests(remote_strip, remote_id(4), 0));
         assert!(peer.reorder_tab_for_tests(remote_group, 2, 0));
-        let delta = peer
-            .export_room_changes_since(room, &peer_base)
-            .expect("reorder room delta");
         {
             let mut state = chrome.borrow_mut();
-            assert!(
-                state
-                    .tree_mut()
-                    .apply_room_changes(room, &delta, &PeerOrigin::hub(1))
-                    .expect("accepted reorder delta"),
-                "room merger reports the remote reorder"
-            );
-            assert!(
-                !state
-                    .tree_mut()
-                    .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-                    .expect("an already-superseded room snapshot parses"),
-                "a stale room snapshot cannot undo the newer accepted reorder"
-            );
+            state
+                .tree_mut()
+                .hear_layout(&mut peer, room, device)
+                .expect("the reorder merges");
+            state
+                .tree_mut()
+                .receive_layout(room, device, &stale)
+                .expect("an older copy of the layout is no news");
             state.bump();
         }
         assert!(host.take_structure_dirty());

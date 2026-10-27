@@ -424,7 +424,11 @@ fn completed_owned_job_retires_retained_handler_and_worker_custody() {
         fn poll(&mut self) -> Vec<CollabEvent> {
             vec![]
         }
-        fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        fn join_route(
+            &mut self,
+            _: crate::collaboration::RouteSpec,
+            _: crate::record::RecordKind,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn send_to_route(

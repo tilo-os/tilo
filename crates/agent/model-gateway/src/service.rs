@@ -1903,14 +1903,17 @@ const MAX_CACHE_BREAKPOINTS: usize = 4;
 ///    conversation is read back incrementally on the next turn — skipped
 ///    when the caller asked for automatic caching (top-level
 ///    `cache_control`), which places that breakpoint itself;
-/// 3. the first block of the first user message with at least two text
+/// 3. the first of several `system` blocks: stable instructions kept apart
+///    from the system context after them (a planner's apps), which still
+///    holds when that context changes;
+/// 4. the first block of the first user message with at least two text
 ///    blocks: the catalogue boundary preserved separately from the task;
-/// 4. the last tool, which still holds when the system prompt changes.
+/// 5. the last tool, which still holds when the system prompt changes.
 ///
 /// A caller's own breakpoints count against the limit and are never moved or
-/// duplicated. System, catalogue, tail and tools are the whole budget, and
-/// while the first turn is still the last one its tail marker goes on the
-/// request after the catalogue. A caller that chose a non-default TTL owns the whole layout
+/// duplicated. At most four are placed, in this order, and while the first
+/// turn is still the last one its tail marker goes on the request after the
+/// catalogue. A caller that chose a non-default TTL owns the whole layout
 /// (a shorter-lived entry may not precede a longer one), so nothing is
 /// added. A profile listing `cache_control` in `omit_params` (an
 /// Anthropic-compatible endpoint that rejects it) gets no breakpoints and
@@ -1941,6 +1944,19 @@ fn apply_anthropic_cache_breakpoints(
         free = free.saturating_sub(1);
     }
     if free > 0 && !automatic && mark_conversation_tail(object) {
+        free = free.saturating_sub(1);
+    }
+    let system = object
+        .get_mut("system")
+        .and_then(serde_json::Value::as_array_mut);
+    let several =
+        |blocks: &&mut Vec<_>| blocks.iter().filter(|block| cacheable_block(block)).count() > 1;
+    if let Some(stable) = system
+        .filter(several)
+        .and_then(|blocks| blocks.first_mut())
+        .filter(|block| free > 0 && cacheable_block(block) && block.get("cache_control").is_none())
+    {
+        stable["cache_control"] = serde_json::json!({ "type": "ephemeral" });
         free = free.saturating_sub(1);
     }
     if free > 0 && mark_catalogue_boundary(object) {

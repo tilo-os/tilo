@@ -1145,6 +1145,26 @@ class AppResourceActionContractTests(unittest.TestCase):
         self.assertEqual(counts[("closure_control", "apps/sample/src/tests.rs")], 0)
         self.assertTrue(any("5 found, audited ceiling 0" in item.reason for item in violations))
 
+    def test_closure_run_buttons_of_composites_count_by_call_shape(self):
+        header = (
+            "use tilo_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        root = self.fixture(
+            header
+            + "fn view() {\n"
+            " Dialog::new().primary_action(\"Save\", save).secondary_action(\"Cancel\", || ());\n"
+            " let items = vec![MenuItem::action(\"Copy\", copy), MenuItem::separator()];\n"
+            " ListRow::new().action(Icon::X, \"Remove\", remove);\n"
+            " spec.action(\"go\");\n"
+            "}\n"
+        )
+        counts: dict[tuple[str, str], int] = {}
+        contract.audit(root, counts)
+        self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 4)
+
     def test_write_baseline_only_lowers_ceilings_unless_seeding_a_new_ratchet(self):
         root = self.fixture("")
         baseline = root / contract.BASELINE

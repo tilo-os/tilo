@@ -348,13 +348,6 @@ impl ShellNetwork {
             .is_ok_and(|route| route.elsewhere())
     }
 
-    /// [`Self::governed_elsewhere`] as `owner`, already open, admits it:
-    /// for the frame loop, which never opens one.
-    pub(crate) fn governed_elsewhere_by(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
-        self.governor_route_of(owner, room)
-            .is_ok_and(|route| route.elsewhere())
-    }
-
     /// Whether `room`'s governor opens the apps launched in it, creating
     /// and placing their records. A host governing it runs no apps: this
     /// session opens them itself, as it does its legacy windows.

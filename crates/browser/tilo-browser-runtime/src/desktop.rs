@@ -102,6 +102,12 @@ pub(crate) fn may_open(
     Ok(())
 }
 
+/// What a window of `app`, which this page does not run, shows instead:
+/// where the app runs.
+fn not_in_the_browser(app: &str) -> String {
+    tilo_desktop_search::availability::runs_elsewhere(app, "the browser")
+}
+
 pub(crate) fn known_application(app: &str) -> Option<&'static str> {
     let scratch = crate::scratch::definition();
     known_applications()
@@ -895,9 +901,6 @@ impl Shared {
     }
 }
 
-/// The Settings app, which the page lends the person's linked accounts.
-const SETTINGS: &str = "so.tilo.settings";
-
 /// An action of a room record the desktop asked the room's host to run, as
 /// the page reads it from the mount's status (`room-action`) and answers it
 /// ([`crate::browser::desktop_exports::desktop_room_action_answer`]).
@@ -1066,8 +1069,7 @@ impl Tiles {
 
     fn component(&mut self, tab: &Tab) -> Result<AppComponent, Unready> {
         let app_id = self.ready_app(tab)?;
-        let definition = application(app_id)
-            .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
+        let definition = application(app_id).ok_or_else(|| not_in_the_browser(app_id))?;
         let unbound = self.shared.unbound.borrow_mut().remove(&tab.id);
         if let Some(id) = unbound.as_deref().and_then(RecordId::parse) {
             let checkout = RecordCheckout::new(id, definition.record_kind.clone());
@@ -1149,10 +1151,6 @@ impl Tiles {
                 self.inputs.provider_admin.clone(),
             )?;
         }
-        // Settings shows the person's linked accounts beside their others.
-        if definition.app_id() == SETTINGS {
-            context.lend(self.shared.linked.clone());
-        }
         let destination = Rc::clone(&self.shared.images);
         let first_loader = self.shared.images.borrow().len();
         let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
@@ -1193,8 +1191,7 @@ impl Tiles {
     /// `view`'s app on this page's copy of its record, for a window that
     /// embeds it. A record not here yet is said so, never created.
     fn embedded(&mut self, view: &ResourceView) -> Result<TileHost, String> {
-        const NO_APP: &str = "Its app doesn't run in the browser";
-        let title = known_application(&view.app).ok_or(NO_APP)?;
+        let title = known_application(&view.app).ok_or_else(|| not_in_the_browser(&view.app))?;
         may_open(&self.inputs.permissions.borrow(), &view.app, true)
             .map_err(|_| format!("You can't open {title} here"))?;
         // An app whose code the page has not fetched yet is not among the
@@ -1205,7 +1202,7 @@ impl Tiles {
         }
         let definition = application(&view.app)
             .filter(|definition| definition.app_id() != tilo_desktop::feedback::PACKAGE)
-            .ok_or(NO_APP)?;
+            .ok_or_else(|| not_in_the_browser(&view.app))?;
         let id = RecordId::from_route(&view.record).ok_or("It is no longer there")?;
         let store = self.store(definition)?;
         let checkout = RecordCheckout::new(id, definition.record_kind.clone());

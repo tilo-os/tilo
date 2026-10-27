@@ -105,9 +105,11 @@ pub enum TransportCommand {
     /// A request on an explicitly named additional route, joined lazily and
     /// retained. Never a `Hello`.
     ToRoute(RouteSpec, CollabRequest),
-    /// Join and subscribe to an additional route without publishing traffic.
-    /// Repeated joins of one route are idempotent.
-    Join(RouteSpec),
+    /// Join and subscribe to an additional route without publishing traffic,
+    /// naming the kind its record holds so a host that creates the record on
+    /// this device's first change knows what it holds. Repeated joins of one
+    /// route are idempotent.
+    Join(RouteSpec, crate::record::RecordKind),
     /// Report the remote end's decision about the latest primary `Hello`,
     /// ordered behind every command submitted before it.
     ConfirmPrimaryRoute,
@@ -246,6 +248,15 @@ pub trait CollabTransport: Send {
         true
     }
 
+    /// The kind of record `channel` was joined with, when the owner's join
+    /// named it. A change that arrives before the route's join resolved
+    /// re-joins naming this kind, so a host creating the record knows what
+    /// it holds.
+    fn joined_record_kind(&self, channel: &str) -> Option<crate::record::RecordKind> {
+        let _ = channel;
+        None
+    }
+
     /// Why the last join of `channel` failed, until a join of it succeeds.
     fn route_join_failure(&self, channel: &str) -> Option<String> {
         let _ = channel;
@@ -285,10 +296,18 @@ pub trait CollabTransport: Send {
         false
     }
 
-    /// Whether that failure was the workspace refusing a change, rather than
-    /// the connection or the transport failing.
-    fn document_change_refused(&self) -> bool {
-        false
+    /// The last publication outcome this transport reported, for telling a
+    /// refusal of one change apart from a lost connection.
+    fn publication_outcome(&self) -> Option<DocumentPublicationError> {
+        None
+    }
+
+    /// The last change the peer answered but would not accept, while nothing
+    /// later has gone through. A refusal fails that change alone: the
+    /// transport stays open and the owner reconciles its local copy. `None`
+    /// when no change is waiting on a refusal.
+    fn refused_change(&self) -> Option<String> {
+        None
     }
 
     /// Withdraw the transport after an unrecoverable publication outcome.

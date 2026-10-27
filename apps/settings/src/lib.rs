@@ -65,7 +65,9 @@ pub fn enable_provider_administration() {
 }
 
 /// The app as every host mounts it: Settings' shell, which the core crate
-/// defines over the resource it declares.
+/// defines over the resource it declares. A host calls [`install`] first:
+/// without it the core shell knows only Settings' own part, and its window
+/// holds no area.
 #[cfg(not(test))]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     settings_core::definition()

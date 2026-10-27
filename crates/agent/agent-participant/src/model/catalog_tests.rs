@@ -1,6 +1,7 @@
-//! How much of what the apps can do a plan is told: the request in mode
-//! `all` as before, in mode `relevant` the line per app, the relevant apps
-//! in full, lookups and misses; and what a request costs, section by
+//! How much of what the apps can do a plan is told, and where: in mode
+//! `all` every app's reference after the instructions, in mode `relevant`
+//! the line per app, the relevant apps in full, lookups and misses; the
+//! prefix every plan of a task shares; and what a request costs, section by
 //! section, for the campaign's agents and real apps.
 
 use super::catalog::{INSTRUCTIONS_NOTE, relevant_apps};
@@ -96,10 +97,6 @@ fn system_texts(request: &ModelRequest) -> Vec<String> {
         .take_while(|message| message.role == Role::System)
         .map(text_of)
         .collect()
-}
-
-fn system_text(request: &ModelRequest) -> String {
-    system_texts(request).first().cloned().unwrap_or_default()
 }
 
 fn tool_names(request: &ModelRequest) -> Vec<String> {
@@ -301,32 +298,43 @@ fn a_plan_naming_an_app_it_was_not_told_works_and_is_counted() {
     assert_eq!((used.looked_up.len(), used.misses), (0, 1));
 }
 
-/// Every plan of a task told only the relevant apps opens with the same
-/// bytes: the tools and the instructions with the line per app, whatever
-/// the system message after them describes.
+/// Every plan of a task opens with the same bytes: the tools and the
+/// instructions (told only the relevant apps, with the line per app),
+/// whatever the system message after them describes; told every app, the
+/// reference after them too.
 #[test]
 fn the_stable_prefix_is_the_same_across_a_tasks_plans() {
-    let mut context = casework();
-    let reply = "Reply briefly in her channel.";
-    let (before, _) = first_request(reply, &context);
-    // A step of the task opened the workbook since.
-    context.open.push((
-        route(SHEETS, "w1"),
-        operations("sheets.workbook", &["set-cells"]),
-    ));
-    let (after, _) = first_request(reply, &context);
-    assert_eq!(before.tools, after.tools);
-    let (before, after) = (system_texts(&before), system_texts(&after));
-    assert_eq!(before[0], after[0]);
-    assert!(before[0].ends_with(&catalog::index(&context)));
-    assert!(!before[1].contains("## so.tilo.sheets") && after[1].contains("## so.tilo.sheets"));
+    for catalog in [Catalog::Relevant, Catalog::All] {
+        let mut context = casework();
+        context.catalog = catalog;
+        let reply = "Reply briefly in her channel.";
+        let (before, _) = first_request(reply, &context);
+        // A step of the task opened the workbook since.
+        context.open.push((
+            route(SHEETS, "w1"),
+            operations("sheets.workbook", &["set-cells"]),
+        ));
+        let (after, _) = first_request(reply, &context);
+        assert_eq!(before.tools, after.tools);
+        let (before, after) = (system_texts(&before), system_texts(&after));
+        assert_eq!(before[0], after[0]);
+        if catalog == Catalog::Relevant {
+            assert!(before[0].ends_with(&catalog::index(&context)));
+            assert!(
+                !before[1].contains("## so.tilo.sheets") && after[1].contains("## so.tilo.sheets")
+            );
+        } else {
+            assert_eq!(before, after);
+        }
+    }
 }
 
-/// In mode `all` the request is what it was before the setting: the
-/// instructions alone, no lookups, the reference first, and nothing of
-/// the app names the relevant mode uses.
+/// In mode `all` the instructions are a system message of their own,
+/// the same for every agent, and the reference of every app the context
+/// offers is the next; the first turn starts with what is published. No
+/// lookups, and nothing of the app names the relevant mode uses.
 #[test]
-fn mode_all_sends_what_it_sent_before() {
+fn mode_all_tells_the_reference_as_system_content() {
     let mut context = casework();
     context.catalog = Catalog::All;
     let (named, used) = first_request(CASE_TASK, &context);
@@ -336,12 +344,64 @@ fn mode_all_sends_what_it_sent_before() {
         serde_json::to_string(&named).unwrap(),
         serde_json::to_string(&unnamed).unwrap()
     );
-    assert_eq!(system_text(&named), PLANNER_INSTRUCTIONS);
+    let [instructions, reference] = <[String; 2]>::try_from(system_texts(&named)).unwrap();
+    assert_eq!(instructions, PLANNER_INSTRUCTIONS);
+    assert!(reference.starts_with(REFERENCE_INTRO), "{reference}");
+    for app in [CHAT, MAIL, NOTES, PDF, SHEETS] {
+        assert!(reference.contains(&format!("## {app}\n")), "{reference}");
+    }
+    let turn = first_user_text(&named);
+    assert!(turn.starts_with("Operations published right now"), "{turn}");
+    assert!(!turn.contains(REFERENCE_INTRO), "{turn}");
     assert!(!tool_names(&named).contains(&tilo_agent::tools::LIST_OPERATIONS.to_owned()));
-    assert!(first_user_text(&named).starts_with(REFERENCE_INTRO));
     assert_eq!(used.mode, Catalog::All);
     assert_eq!(used.described.len(), 5);
     assert!(used.listed.is_empty());
+}
+
+/// An operation the reference describes is named in the list of what is
+/// published without its signature again (`<resource># a, b`), and may be
+/// planned; one whose record publishes other parameters or choices than
+/// the reference shows (its own sheets) is listed in full.
+#[test]
+fn the_published_list_does_not_repeat_what_the_reference_describes() {
+    use tilo_actions::{ActionParam, ParamType};
+    for catalog in [Catalog::All, Catalog::Relevant] {
+        let mut context = casework();
+        context.catalog = catalog;
+        let sheet = |choices: &[&str]| {
+            let mut set = operation(
+                "sheets.workbook",
+                "set-cells",
+                tilo_actions::OperationKind::Document,
+                vec![
+                    ActionParam::required("sheet", ParamType::Text, "The sheet")
+                        .with_choices(choices.iter().map(|choice| (*choice).to_owned())),
+                ],
+            );
+            set.description = None;
+            set
+        };
+        context.reference[4].1 = vec![sheet(&[])];
+        context
+            .open
+            .push((route(SHEETS, "w1"), vec![sheet(&["Cases"])]));
+        let (request, _) = first_request(CASE_TASK, &context);
+        let turn = first_user_text(&request);
+        assert!(turn.contains("  chat.channel# post, rename\n"), "{turn}");
+        assert!(!turn.contains("chat.channel#post — "), "{turn}");
+        assert!(
+            turn.contains("  sheets.workbook#set-cells — set-cells {sheet: text [Cases]}"),
+            "{turn}"
+        );
+        assert!(turn.contains("names operations whose parameters are described"));
+    }
+    // A plan naming a compacted operation runs.
+    let post = serde_json::json!({"steps": [{"operation": "chat.channel#post",
+        "arguments": {}}], "reply": "Posted."});
+    let (mut planner, _) = scripted(vec![called("p1", tilo_agent::tools::PLAN, &post)], false);
+    let steps = planner.plan(CASE_TASK, &casework()).unwrap();
+    assert_eq!(steps[0].record.as_deref(), Some("c1"));
 }
 
 /// What a new record of `app` publishes.

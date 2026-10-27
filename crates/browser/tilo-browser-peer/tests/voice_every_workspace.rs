@@ -4,8 +4,11 @@
 //!
 //! - a room the host governs (a room service's room, such as the Lounge);
 //! - a room the host governs that a guest was invited into;
-//! - the person's own workspace, which the host only carries for them (it
-//!   syncs across their devices through it, and no room governs it here).
+//! - a workspace of the host's owner, which the host only carries for them
+//!   (it syncs across their devices through it, and no room governs it
+//!   here);
+//! - the person's own room, which a host carries for every person it
+//!   trusts: a member of the host's Lounge has their own desktop there.
 //!
 //! A new kind of workspace belongs in [`KINDS`]; one without calls fails.
 
@@ -42,15 +45,23 @@ enum Kind {
     Governed,
     /// A room the host governs, which a guest was invited into.
     Invited,
-    /// The person's own workspace, which the host carries but no room
+    /// A workspace of the host's owner, which the host carries but no room
     /// governs here.
+    Carried,
+    /// The person's own room, carried for a person the host trusts because
+    /// a room it governs let them in.
     Own,
 }
 
-const KINDS: [Kind; 3] = [Kind::Governed, Kind::Invited, Kind::Own];
+const KINDS: [Kind; 4] = [Kind::Governed, Kind::Invited, Kind::Carried, Kind::Own];
 
-/// `device`'s own session with `workspace_id`, subscribed.
-async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {
+/// Connects `device` to the host and asks to subscribe to `workspace_id`:
+/// the host's answer, `Ready` or `NotAuthorised`.
+async fn subscribe(
+    address: iroh::EndpointAddr,
+    workspace_id: u64,
+    device: &Device,
+) -> (RelayClient, Result<(), String>) {
     let client = RelayCoeditSession::join(
         RelayClient::connect_to_pinned_host(
             endpoint(&device.key).await,
@@ -66,12 +77,21 @@ async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device
     )
     .unwrap()
     .into_client();
-    native(&client, |envelope| match envelope {
-        Envelope::Ready { .. } => Some(()),
-        Envelope::NotAuthorised { reason, .. } => panic!("device not admitted: {reason}"),
+    let answer = native(&client, |envelope| match envelope {
+        Envelope::Ready { .. } => Some(Ok(())),
+        Envelope::NotAuthorised { reason, .. } => Some(Err(reason)),
         _ => None,
     })
     .await;
+    (client, answer)
+}
+
+/// `device`'s own session with `workspace_id`, subscribed.
+async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {
+    let (client, answer) = subscribe(address, workspace_id, device).await;
+    if let Err(reason) = answer {
+        panic!("device not admitted: {reason}");
+    }
     client
 }
 
@@ -117,12 +137,36 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                 };
                 (room.workspace_id, owner, other, channel)
             }
-            Kind::Own => {
-                // Her devices sync her own workspace through her host: it
-                // takes it on for them, and governs no room for it.
+            Kind::Carried => {
+                // Her devices sync her workspace through her host: it takes
+                // it on for them, and governs no room for it.
                 let workspace_id = 0x0077_6e00_0000_0001;
                 let first = session(address.clone(), workspace_id, &laptop).await;
                 let second = session(address.clone(), workspace_id, &phone).await;
+                (workspace_id, first, second, "voice".to_owned())
+            }
+            Kind::Own => {
+                // Carol is a member of the host's Lounge, nothing more. Her
+                // own room is carried for her laptop and phone alike, and
+                // for no one else the host trusts.
+                let lounge = relay.rooms().unwrap().create("Lounge").await.unwrap();
+                enter(&relay, &laptop.cert, &lounge.room).await;
+                let carol = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let carol_laptop = enrol(&carol, "carol-laptop", DeviceCapabilities::member());
+                let carol_phone = enrol(&carol, "carol-phone", DeviceCapabilities::member());
+                invite(&relay, &laptop.cert, &lounge.room, &carol, &carol_laptop).await;
+                let dave = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let dave_laptop = enrol(&dave, "dave-laptop", DeviceCapabilities::member());
+                invite(&relay, &laptop.cert, &lounge.room, &dave, &dave_laptop).await;
+                let own = tilo_relay::own_room(&carol.verifying_key().to_bytes());
+                let workspace_id = tilo_relay::room_workspace_id(&own).unwrap();
+                let first = session(address.clone(), workspace_id, &carol_laptop).await;
+                let second = session(address.clone(), workspace_id, &carol_phone).await;
+                let (_dave, answer) = subscribe(address.clone(), workspace_id, &dave_laptop).await;
+                assert!(
+                    answer.is_err(),
+                    "another person the host trusts is not admitted to carol's own room"
+                );
                 (workspace_id, first, second, "voice".to_owned())
             }
         };

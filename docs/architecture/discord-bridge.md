@@ -86,7 +86,7 @@ pub struct DRole { pub id: String, pub name: String, pub permissions: String,
 |---|---|---|---|
 | `observe-layout(channels, roles, emojis)` | bots | Undoable | Records Discord's layout (and the server's custom emoji) as the latest layout event reported it, for the reconcile (§4) and for mirroring reactions (§3). |
 | `send`, `edit`, `delete`, `react`, `unreact`, `start-thread`, `create-webhook` | bots | Outside | Queues the matching webhook or REST call. |
-| `apply-channel`, `delete-channel`, `apply-role`, `delete-role`, `set-member-roles`, `kick`, `ban`, `unban`, `set-overwrite` | bots | Outside | Queues layout and membership calls (§4, §5). |
+| `apply-channel`, `delete-channel`, `arrange-channels`, `apply-role`, `delete-role`, `set-member-roles`, `kick`, `ban`, `unban`, `set-overwrite` | bots | Outside | Queues layout and membership calls (§4, §5). |
 | `apply-emoji`, `delete-emoji` | bots | Outside | Uploads, renames or deletes a custom emoji the bridge uploaded for a workspace emoji (§3, Reactions). |
 | `settle-emoji` | bots | Undoable | Records the emoji an `apply-emoji` or `delete-emoji` left in the server, or why there is none (`emoji_problem`). |
 | `map`, `unmap` | bots | Undoable | Writes the id map (§6). |
@@ -114,7 +114,7 @@ another server.
 | `message-updated` | channel, message id, content, edit time | message id + edit time |
 | `message-deleted` | channel, message id, executor from the audit log when Discord reports one | message id + `deleted` |
 | `reaction-added`, `reaction-removed` | channel, message id, user id, the member's name and avatar (on an add), emoji (Unicode, or a custom emoji as `:name:` with its id and whether it is animated) | message, user, emoji, add or remove, and the gateway sequence |
-| `layout-changed` | the guild's channels, roles and custom emoji, read after any channel, role or emoji event | gateway sequence |
+| `layout-changed` | the guild's channels, roles and custom emoji, read after any channel, role or emoji event, and on (re)connecting (`connected`) | gateway sequence |
 | `member-changed` | user id, roles, banned or kicked | gateway sequence |
 | `command` | `/link` or `/unlink`, interaction id, user id, names and avatar hash; for `/link` the check of the token its reply's button carries (the token itself stays in the worker and the button) | interaction id |
 | `sign-in` | the consent page the room's host offers signing in with Discord through, without its state, or empty for none; appended by the relay at start | `sign-in:` + the page's SHA-256, shortened |
@@ -192,7 +192,7 @@ The bridge is a Shortcut program with `RecordChanged` triggers on
 mirroring). It asks for `Personas`
 appearance. Its derived grant comes to: Chat `post`, `edit-message`,
 `delete-message`, `create-category`, `create-channel`,
-`move-channel`, `delete-channel`, `remove-message`, `lock-channel` and
+`move-channel`, `arrange-channels`, `delete-channel`, `remove-message`, `lock-channel` and
 `unlock-channel`; the field edit of Chat's messages
 (`chat.messages/resource:*/**/action:field-edit`), which reaches only their
 reactions: every other field of a message is read-only, so the record and
@@ -285,8 +285,9 @@ itself for Discord members, under each member's appearance.
 
 Connecting to a server adopts it. The server was there first, with its own
 channels, roles and permissions, and the people who run it keep running it
-in Discord. The bridge never renames, moves, recreates or deletes a channel
-it did not make, and never changes a permission it does not own.
+in Discord. The bridge never renames, recreates or deletes a channel it
+did not make, and never changes a permission it does not own. Where the
+bridged channels sit is one fact both sides share (Order, below).
 
 - **Mapping.** Each Discord category maps to a Tilo category, each text
   channel to a Text channel, and each voice channel to a Voice channel. The
@@ -316,12 +317,32 @@ it did not make, and never changes a permission it does not own.
 - **After adoption.** A category or channel created in Discord later is
   imported the same way. One deleted on either side lets its pair go: the map
   entry is removed and both ids are kept apart (`tilo_only`,
-  `discord_only`), so neither side recreates it. A Discord channel renamed or
-  moved stays as Discord has it.
+  `discord_only`), so neither side recreates it. A Discord channel renamed
+  stays as Discord has it.
 - **Mirroring.** Only with `mirror_channels` does a category or channel
-  created in Tilo after adoption get made in Discord, placed last among its
-  siblings. Only such a bridge-made channel follows Tilo's name, topic and
-  category, and only it is deleted in Discord when Tilo deletes its side.
+  created in Tilo after adoption get made in Discord, made last in its list
+  and then put where Tilo lists it (Order). Only such a bridge-made channel
+  follows Tilo's name and topic, and only it is deleted in Discord when
+  Tilo deletes its side.
+- **Order.** The order of the bridged categories, and of the bridged
+  channels with the category each is listed under, is one fact; whoever
+  moved something last is followed. A move in Discord (a layout event whose
+  order of bridged channels differs from the one recorded) rearranges Chat
+  with `arrange-channels`, as do the layout the worker reports on
+  (re)connecting (`connected`), for what moved while the bridge was away,
+  and finishing the adoption. A Chat change that rearranges channels
+  (`move-channel`, `move-category`, `set-channel-category`, creating,
+  archiving, `arrange-channels`) puts Discord in Chat's order with one bulk
+  position change (`arrange-channels` on the guild), when the bridge mirrors
+  channels. Order only shows between neighbours, so that change places the
+  server's own bridged channels too; a channel the bridge does not carry is
+  only renumbered within its own list, never moved to another category.
+  Discord sorts categories, and each parent's text and voice channels, by
+  position then id; a list that differs is numbered anew from 0. Channels
+  kept on one side, archived in Tilo, or under a category the other side
+  lacks keep their places. Discord shows an arrangement as one update per
+  channel; until it shows it whole, the arrangement is laid over what
+  Discord reports, so its echo is never taken for a move in Discord.
   What Tilo had before adoption stays in Tilo.
 - **Webhooks.** Every mapped text channel gets the bridge's webhook, which
   is how Tilo messages are posted (§3). That webhook is the one change
@@ -342,7 +363,9 @@ it did not make, and never changes a permission it does not own.
 
 The bot's guards are in the record as well as in the bot: `apply-channel`
 and `delete-channel` are refused without `mirror_channels`, before adoption,
-and for any channel the bridge did not make.
+and for any channel the bridge did not make; `arrange-channels` is refused
+without `mirror_channels`, before adoption, and for moving a channel the
+bridge does not carry to another category.
 
 For the Tilo Discord server, joined with a room whose Chat already has
 "Channels" with #general, #help and #show-and-tell, adoption produces this:

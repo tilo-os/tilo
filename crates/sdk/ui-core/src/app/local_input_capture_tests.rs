@@ -56,7 +56,11 @@ impl crate::collaboration::PeerTransport for CapturePeer {
     fn poll(&mut self) -> Vec<CollabEvent> {
         Vec::new()
     }
-    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+    fn join_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        _: crate::record::RecordKind,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
@@ -605,7 +609,11 @@ impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
     fn poll(&mut self) -> Vec<CollabEvent> {
         Vec::new()
     }
-    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+    fn join_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        _: crate::record::RecordKind,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {

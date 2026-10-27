@@ -76,12 +76,11 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
             crate::i18n::t("chat-voice-unavailable"),
         ))
     );
+    // Attaching needs no paths: the browser's file chooser hands over the
+    // bytes, which go to the page's content store.
     assert!(
-        unavailable.contains(&ui::framework::EffectStatus::unavailable(
-            crate::effects::ChatEffect::ATTACH_FILE,
-            "no_services",
-            crate::i18n::t("chat-attachment-import-unavailable"),
-        ))
+        !format!("{unavailable:?}").contains("attach-file"),
+        "{unavailable:?}"
     );
     app.native_voice_command(
         &channel.id,
@@ -102,6 +101,66 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     assert!(
         !app.call_allows(crate::call::CallAction::Speak),
         "the live room role still gates publication"
+    );
+}
+
+#[test]
+fn a_call_that_cannot_start_says_why_and_never_does_nothing() {
+    use ui::native_media::{Command, Snapshot, State};
+    use ui::widget::Collaborative;
+    let identity = LocalIdentity::demo();
+    let mut doc = AutoCommit::new();
+    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    let channel = crate::testing::channels(&doc)
+        .into_iter()
+        .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
+        .unwrap();
+    let mut app = projection(&doc, identity);
+    let watch = app
+        .take_collab_requests()
+        .into_iter()
+        .find_map(|request| match request {
+            ui::collaboration::CollabRequest::NativeMediaCommand {
+                request_id,
+                command,
+            } if matches!(command.command, Command::Watch { .. }) => Some(request_id),
+            _ => None,
+        })
+        .unwrap();
+    // Nothing here answers calls yet: asking for one opens its card, which
+    // says why, and asks no service.
+    let join = Command::Join {
+        channel_id: channel.id.clone(),
+    };
+    app.native_voice_command(&channel.id, join.clone()).unwrap();
+    assert!(app.call.active, "the call's card opens");
+    assert_eq!(
+        app.media_error.as_deref(),
+        Some(crate::i18n::t("chat-voice-unavailable").as_str()),
+        "and says why the call cannot start"
+    );
+    assert!(app.native_voice.channel.is_none());
+    assert!(app.start_call(None).is_ok(), "the Call button shows it too");
+    assert!(app.call.active);
+    // Closing it closes it.
+    app.native_voice_command(&channel.id, Command::Leave)
+        .unwrap();
+    assert!(!app.call.active && app.media_error.is_none());
+    app.native_voice_command(&channel.id, join.clone()).unwrap();
+    // Once a service answers, the card that said why goes, and a call is
+    // asked of the service.
+    let mut idle = Snapshot::unavailable();
+    idle.state = State::Idle;
+    idle.issue = None;
+    app.handle_collab_event(&ui::collaboration::CollabEvent::NativeMediaCommandResult {
+        request_id: watch,
+        result: Ok(idle),
+    });
+    assert!(app.refused_call.is_none() && app.media_error.is_none());
+    app.native_voice_command(&channel.id, join).unwrap();
+    assert_eq!(
+        app.native_voice.channel.as_deref(),
+        Some(channel.id.as_str())
     );
 }
 

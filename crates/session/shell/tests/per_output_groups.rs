@@ -833,6 +833,7 @@ fn the_partition_is_never_replicated() {
     let room = RoomId::parse(ROOM).expect("room");
     tree.seed_doc_from_cache();
     tree.sync_room_doc(room);
+    tree.capture_workspace_layout(room);
     let forbidden = [
         "outputs",
         "home",
@@ -849,6 +850,14 @@ fn the_partition_is_never_replicated() {
         &ROOT,
         &mut room_keys,
     );
+    let mut layout_keys = BTreeSet::new();
+    keys(
+        tree.layout_docs
+            .get(&room)
+            .expect("the room's layout was written"),
+        &ROOT,
+        &mut layout_keys,
+    );
     drop(tree);
     drop(chrome);
     assert!(
@@ -856,10 +865,14 @@ fn the_partition_is_never_replicated() {
         "the desktop document carries the strip's windows: {desktop_keys:?}"
     );
     assert!(
-        room_keys.contains(&ON_PRIMARY[0].to_string()),
-        "the room document carries the strip's windows: {room_keys:?}"
+        layout_keys.contains(&ON_PRIMARY[0].to_string()),
+        "the room's layout record carries the strip's windows: {layout_keys:?}"
     );
-    for (name, found) in [("desktop", &desktop_keys), ("room", &room_keys)] {
+    for (name, found) in [
+        ("desktop", &desktop_keys),
+        ("room", &room_keys),
+        ("layout", &layout_keys),
+    ] {
         for key in forbidden {
             assert!(
                 !found.contains(key),
@@ -891,16 +904,19 @@ impl Collaborator {
     /// Take in everything `desk` publishes for the room now, after
     /// mirroring its cache into its documents the way any later edit does.
     fn receive(&mut self, desk: &Desk) {
-        let changes = {
-            let chrome = desk.fb.chrome();
-            let mut tree = chrome.tree_mut();
-            tree.seed_doc_from_cache();
-            tree.export_room_changes_since(self.room, &[])
-                .expect("the room is published")
-        };
+        let chrome = desk.fb.chrome();
+        let mut tree = chrome.tree_mut();
+        tree.seed_doc_from_cache();
+        let changes = tree
+            .export_room_changes_since(self.room, &[])
+            .expect("the room is published");
         self.tree
             .apply_room_changes(self.room, &changes, &PeerOrigin::peer_id("docked-laptop"))
             .expect("the room's changes apply");
+        // Its layout, over the room's layout record.
+        self.tree
+            .hear_layout(&mut tree, self.room, [0xd0; 32])
+            .expect("the room's layout applies");
     }
 
     fn strip_order(&self) -> Vec<GroupId> {

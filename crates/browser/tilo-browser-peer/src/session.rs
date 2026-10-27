@@ -3321,6 +3321,10 @@ impl Task {
     /// (`Err` with the host's reason; it can never become durable).
     fn acknowledge(&mut self, op: [u8; 16], outcome: Result<u64, String>) {
         let seq = outcome.as_ref().ok().copied();
+        // The host read this commit and would not take it: the session is
+        // fine, and saying so keeps the app connected. What the host said is
+        // what the person is owed, so it travels with the refusal.
+        let refusal = outcome.as_ref().err().map(|reason| refusal_text(reason));
         let Some(index) = self.outbox.iter().position(|entry| entry.op == op) else {
             return;
         };
@@ -3358,9 +3362,7 @@ impl Task {
             }),
         }
         let outstanding: BTreeSet<[u8; 16]> = self.outbox.iter().map(|entry| entry.op).collect();
-        let result = seq
-            .map(|_| ())
-            .ok_or_else(|| "the host refused a document change".to_string());
+        let result = refusal.map_or(Ok(()), Err);
         let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
             .into_iter()
             .partition(|(target, _)| outstanding.contains(target));
@@ -3370,6 +3372,21 @@ impl Task {
         }
     }
 }
+
+/// Whether `reason` is the host answering "no" about a change it read, as
+/// [`PeerHandle::barrier_then`] carries it. A lost, cancelled or overloaded
+/// session is not an answer: only that leaves the change's outcome unknown.
+pub fn is_refusal(reason: &str) -> bool {
+    reason.trim_start().starts_with(REFUSAL)
+}
+
+/// What this session reports when the host would not take a change it read.
+fn refusal_text(reason: &str) -> String {
+    format!("{REFUSAL}: {}", reason.trim())
+}
+
+/// The phrasing this session uses for the one answer that is a refusal.
+const REFUSAL: &str = "the workspace refused the change";
 
 /// This device's certificate for a room's other members. A native shell
 /// accepts a member's edits only from a device whose certificate it holds,

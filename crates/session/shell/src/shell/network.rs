@@ -15,7 +15,6 @@ mod display_input_tests;
 #[cfg(test)]
 mod display_observation_refresh_tests;
 mod display_observations;
-mod governed_layout;
 mod governor_actions;
 mod hosted_sites;
 mod room_window_carriers;
@@ -57,6 +56,7 @@ mod presence_identity_tests;
 mod private_chat;
 #[cfg(test)]
 mod surface_update_tests;
+mod viewer_hosts;
 pub(crate) use private_chat::PrivateChatRoute;
 #[cfg(test)]
 mod reachability_tests;
@@ -1414,7 +1414,6 @@ pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
     peer_sync_worker: peer_sync_worker::State,
-    governed_layout: governed_layout::State,
     /// Members viewing this device's windows, and what this device views
     /// of theirs ([`room_window_views`]).
     room_window_views: room_window_views::State,
@@ -2350,7 +2349,6 @@ impl ShellNetwork {
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
             peer_sync_worker: peer_sync_worker::State::default(),
-            governed_layout: governed_layout::State::default(),
             room_window_views: room_window_views::State::default(),
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
@@ -9056,7 +9054,6 @@ pub(crate) fn shell_network_for_test(
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
         peer_sync_worker: peer_sync_worker::State::default(),
-        governed_layout: governed_layout::State::default(),
         room_window_views: room_window_views::State::default(),
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
@@ -9233,7 +9230,7 @@ mod tests {
     use crate::shell::state::WorkspaceAuthority as _;
 
     #[test]
-    fn a_local_tab_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
+    fn a_room_change_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
         const SALT: u16 = 0xCAFE;
         let tree = WorkspaceTree::bootstrap_demo().shared();
         tree.write().set_salt_override(SALT);
@@ -9270,30 +9267,16 @@ mod tests {
             .cloned()
             .expect("room document");
 
-        let tab = tilo_desktop_model::compose_id(SALT, 77);
+        // The room is renamed here, where it is governed: its document
+        // takes the name.
         {
             let mut tree = tree.write();
-            let workspace = tree
-                .desktop
+            tree.desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.room() == room)
-                .expect("room workspace");
-            let group = workspace
-                .strips
-                .iter_mut()
-                .flat_map(|strip| strip.window_groups.iter_mut())
-                .next()
-                .expect("a window group");
-            group.tabs.push(crate::shell::state::Tab {
-                id: tab,
-                title: "Pushed".into(),
-                tile: crate::shell::state::TileContent::Stub {
-                    kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
-                    label: "Notes".into(),
-                },
-                app_title: None,
-            });
+                .expect("room workspace")
+                .name = "Pushed".into();
             tree.seed_doc_from_cache();
         }
         net.tick();
@@ -9314,15 +9297,14 @@ mod tests {
             )
             .expect("push applies on top of what was announced");
         }
-        assert!(
-            tilo_desktop_model::shared_record::read(&peer, None)
-                .into_iter()
-                .flat_map(|layout| layout.tree.workspaces)
-                .flat_map(|workspace| workspace.strips)
-                .flat_map(|strip| strip.window_groups)
-                .flat_map(|group| group.tabs)
-                .any(|candidate| candidate.id == tab),
-            "the pushed change carries the new tab"
+        assert_eq!(
+            automerge::ReadDoc::get(&peer, automerge::ROOT, "name")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_string().ok())
+                .as_deref(),
+            Some("Pushed"),
+            "the pushed change carries the room's new name"
         );
         assert_eq!(changes.len(), 1, "one incremental change, not a checkpoint");
         eprintln!(

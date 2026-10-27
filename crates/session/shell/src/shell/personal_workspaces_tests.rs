@@ -223,16 +223,11 @@ fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
     );
 
     // The laptop opens a document app; the board, now in the room, folds it
-    // in as the laptop's window.
+    // in from the room's layout record as the laptop's window.
     let tab = open_tab(&mut laptop, research, LAPTOP, "Draft");
-    let changes = laptop
-        .export_room_changes_since(research, &[])
-        .expect("the laptop is in the room");
-    assert!(
-        board
-            .apply_room_changes(research, &changes, &origin_of(&laptop_device))
-            .expect("same-person room")
-    );
+    board
+        .hear_layout(&mut laptop, research, laptop_device.cert.device_public_key)
+        .expect("the person's own device");
     let arrived = board
         .desktop
         .workspaces

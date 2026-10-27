@@ -2182,6 +2182,13 @@ async fn retained_transactions_release_global_workers_between_quanta() {
     queued.await.unwrap();
     // This unrelated transaction is now waiting for the global worker pool.
     // Each retained write must yield its worker before its later sort phase.
+    // A blocking task runs quanta until it has spent a whole slice, and each
+    // write's slice began before it paused: unless the pause outlasts the
+    // slice, a write that paused moments ago continues into its sort phase on
+    // the same worker, and with all four doing so the fifth never gets one.
+    // Waiting out a slice here makes "slice spent" true for every write by the
+    // monotonic clock, whatever the machine's speed.
+    tokio::time::sleep(crate::persistence::SLICE).await;
     drop(first);
     let progress = tokio::time::timeout(
         tilo_test_env::hang_bound(),
