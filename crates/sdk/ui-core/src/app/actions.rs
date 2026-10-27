@@ -109,6 +109,20 @@ impl App {
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
+        // Also at an exhausted generation, which no longer moves on.
+        self.layout.walks = runtime::TreeWalks::default();
+    }
+
+    /// The retained tree the frame's whole-tree walks read, as far as a
+    /// walk can tell it apart from the last one
+    /// ([`runtime::TreeGeneration`]).
+    fn tree_generation(&self) -> runtime::TreeGeneration {
+        runtime::TreeGeneration {
+            resources: self.actions.resource_generation.get(),
+            rebuilds: self.layout.rebuilds,
+            remounts: self.layout.remounts,
+            permissions: self.actions.permission_generation.get(),
+        }
     }
 
     fn ensure_resource_cache(&self) -> ResourceCacheKey {
@@ -282,10 +296,36 @@ impl App {
         resources
     }
 
+    /// Push what each control in the tree may run now into it. The walks
+    /// of the tree here read only the tree, the document and permissions it
+    /// was built from, what the window's own History door serves and
+    /// whether input goes to History: a frame that moved none of them (one
+    /// only an animation asked for) walks no more than its bound components,
+    /// whose authority is their own.
     fn refresh_control_action_availability(&mut self) {
-        use crate::profiling::resource_trace::{CacheResult, Stage};
-        if !self.framework_input.get()
-            && self.history.as_ref().is_none_or(|h| !h.captures_input())
+        let history_captures = self.history.as_ref().is_some_and(|h| h.captures_input());
+        let history_door = self.refresh_history_controls();
+        tilo_startup_metrics::startup_mark("actions-history-done");
+        let inputs = runtime::AvailabilityInputs {
+            tree: self.tree_generation(),
+            framework_input: self.framework_input.get(),
+            history_captures,
+            history_door,
+        };
+        let unchanged = self.layout.walks.availability.as_ref().filter(|walk| {
+            walk.inputs == inputs && walk.controls == self.actions.last_control_availability
+        });
+        if let Some(walk) = unchanged {
+            if walk.bound {
+                let history_door = inputs.history_door.clone();
+                let _ = self.refresh_bound_control_availability(&history_door);
+            }
+            return;
+        }
+        #[cfg(test)]
+        let _walk = crate::profiling::frame_probe::span("walk.availability");
+        if !inputs.framework_input
+            && !history_captures
             && let Err(error) = crate::bound_dispatch::legacy_document::refresh_legacy_controls(
                 self.root_widget.as_mut(),
                 &self.permission_ctx,
@@ -298,9 +338,24 @@ impl App {
         // startup file names the stage. Startup-only: this runs on
         // every rebuild.
         tilo_startup_metrics::startup_mark("actions-legacy-done");
+        let history_door = inputs.history_door.clone();
+        let bound = self.refresh_bound_control_availability(&history_door);
+        self.refresh_emitter_availability(history_door);
+        self.layout.walks.availability = Some(runtime::AvailabilityWalk {
+            inputs,
+            controls: self.actions.last_control_availability.clone(),
+            bound,
+        });
+    }
+
+    /// Push what the bound components' controls may run into them; whether
+    /// the tree holds any.
+    fn refresh_bound_control_availability(
+        &mut self,
+        history_door: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) -> bool {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
-        let history_door = self.refresh_history_controls();
-        tilo_startup_metrics::startup_mark("actions-history-done");
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -314,10 +369,19 @@ impl App {
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root_widget.as_mut(),
             &snapshots,
-            &history_door,
+            history_door,
         );
         trace.finish(CacheResult::NotApplicable);
         tilo_startup_metrics::startup_mark("actions-bound-projection-done");
+        !snapshots.is_empty()
+    }
+
+    /// Push the local action surface into the tree's action emitters.
+    fn refresh_emitter_availability(
+        &mut self,
+        history_door: std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
         // Recheck presence: widget-local changes can add/remove emitters.

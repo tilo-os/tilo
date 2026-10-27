@@ -14151,6 +14151,20 @@ pub fn run() {
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
+        // Input, a session change, a marker gone or an output presentation
+        // may move what the desktop lays out; a client's new buffer, the
+        // cursor, peers' pointers or an animation alone do not. The tree's
+        // revisions and the widgets' own notes count apart
+        // (`FrameBuilder::relayout_if_owed`).
+        if redraw_reasons.force
+            || redraw_reasons.backend_event
+            || redraw_reasons.session
+            || redraw_reasons.presentation
+            || markers_retired
+            || accessibility_changed
+        {
+            frame_builder.owe_layout();
+        }
         let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
@@ -14334,7 +14348,7 @@ pub fn run() {
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
             let paint_cpu = metrics.cpu_snapshot();
-            frame_builder.relayout();
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             let relaid_out = Instant::now();
             metrics::profile::record_phase(
@@ -14856,8 +14870,8 @@ pub fn run() {
             }
         } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
-            // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
-            frame_builder.relayout();
+            // event hit-tests post-input rects, not the pre-overlay tree.
+            frame_builder.relayout_if_owed();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // The post-dispatch `flush_configures` below sends this layout's sizes.
             publish_layout_to_clients(

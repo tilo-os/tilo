@@ -1347,13 +1347,14 @@ impl MainPanel {
     }
 
     /// Scroll the page while a dragged block's pointer rests near the edge
-    /// of what is visible, so a target below the fold can be reached.
-    /// Returns whether the page moved.
-    pub fn autoscroll_block_drag(&mut self) -> bool {
+    /// of what is visible, so a target below the fold can be reached. Like
+    /// a glide it moves only the body: no change of the model, only the
+    /// move ([`ui::widget::note_layout_moved`]).
+    pub fn autoscroll_block_drag(&mut self) {
         let now = ui::time::now();
         if !self.editor.editor().block_drag_active() {
             self.drag_scroll_tick = None;
-            return false;
+            return;
         }
         let elapsed = self
             .drag_scroll_tick
@@ -1364,11 +1365,13 @@ impl MainPanel {
         let viewport = self.scroll_viewport();
         let delta = self.editor.editor_mut().tick_block_drag(viewport, elapsed);
         if delta == 0.0 {
-            return false;
+            return;
         }
         let before = self.scroll_y;
         self.set_scroll_offset(before + delta);
-        (self.scroll_y - before).abs() > f64::EPSILON
+        if self.scroll_y.to_bits() != before.to_bits() {
+            ui::widget::note_layout_moved();
+        }
     }
 
     fn scroll_viewport(&self) -> Rect {

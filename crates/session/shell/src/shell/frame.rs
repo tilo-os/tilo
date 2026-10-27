@@ -919,6 +919,11 @@ pub struct FrameBuilder {
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
     /// Frames whose layout failed, skipped, and when that was last logged.
     skipped_frames: ui::widget::SkippedFrames,
+    /// Something the desktop lays out changed since it was last laid out
+    /// that the tree's revisions do not show ([`Self::relayout_if_owed`]).
+    layout_owed: bool,
+    /// The tree's revisions the desktop was last laid out at.
+    laid_out_at: Option<TreeRevisions>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1254,6 +1259,8 @@ impl FrameBuilder {
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
             skipped_frames: ui::widget::SkippedFrames::default(),
+            layout_owed: true,
+            laid_out_at: None,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -1388,6 +1395,7 @@ impl FrameBuilder {
         }
         self.taffy = TaffyTree::new();
         self.node_map.clear();
+        self.layout_owed = true;
         // Push display geometry before the tree is built: the strips read it
         // to resolve each group's width fraction in this same pass.
         let outputs = self.effective_outputs();
@@ -1971,18 +1979,54 @@ impl FrameBuilder {
         true
     }
 
+    /// Something the desktop lays out changed in a way neither the tree's
+    /// revisions nor its widgets report (an input the desktop handled, a
+    /// change of the session): the next [`Self::relayout_if_owed`] lays it
+    /// out.
+    pub fn owe_layout(&mut self) {
+        self.layout_owed = true;
+    }
+
+    /// The tree's revisions now ([`TreeRevisions`]).
+    fn tree_revisions(&self) -> TreeRevisions {
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        TreeRevisions::read(&chrome, &tree)
+    }
+
+    /// Lay the desktop out for the frame about to be painted, when anything
+    /// it lays out changed since it was last laid out: its structure, the
+    /// tree (a window opened or closed, a strip or tab change, a display
+    /// added: [`TreeRevisions`]), what an input or the session changed
+    /// ([`Self::owe_layout`]), or what a widget's animation moved
+    /// ([`ui::widget::note_layout_moved`], in its update or as it was laid
+    /// out). A frame nothing of that changed for (a client's new buffer,
+    /// the cursor, an app drawing in its tile, a fade) is only painted, on
+    /// the layout it already has. Whether it laid out.
+    pub fn relayout_if_owed(&mut self) -> bool {
+        // Before anything is read: what the compositor's fullscreen state
+        // and the tree's pending topology change rebuild.
+        self.host.sync_fullscreen_from_chrome();
+        let structure = self.host.take_structure_dirty();
+        if structure {
+            self.rebuild_layout_tree();
+        }
+        let moved = ui::widget::take_layout_moved();
+        if !(std::mem::take(&mut self.layout_owed)
+            || moved
+            || self.laid_out_at != Some(self.tree_revisions()))
+        {
+            return false;
+        }
+        self.lay_out();
+        true
+    }
+
     /// Run `compute_layout` + `apply_layout` against the current tree. Animation
     /// state is preserved since the taffy tree isn't rebuilt — only layout
     /// re-runs, unless `take_structure_dirty()` says otherwise, in which
     /// case the taffy tree rebuilds first.
     pub fn relayout(&mut self) {
-        #[cfg(test)]
-        {
-            self.layout_passes = self
-                .layout_passes
-                .checked_add(1)
-                .expect("test layout pass counter exhausted");
-        }
         // Apply the compositor's live fullscreen state to the strip rows
         // first, flagging the owning row dirty so the structure-dirty check
         // below rebuilds and the collapse (or restore) takes this frame.
@@ -1990,12 +2034,38 @@ impl FrameBuilder {
         if self.host.take_structure_dirty() {
             self.rebuild_layout_tree();
         }
+        self.lay_out();
+    }
+
+    /// [`Self::relayout`] once the structure is settled. What the widgets'
+    /// animations note while they are laid out (one advancing as it is
+    /// placed) owes the next frame a layout too, until they come to rest.
+    fn lay_out(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_passes = self
+                .layout_passes
+                .checked_add(1)
+                .expect("test layout pass counter exhausted");
+        }
+        // What was noted before this layout is laid out by it.
+        let _ = ui::widget::take_layout_moved();
+        self.layout_owed = !self.solve_layout();
+        self.layout_owed |= ui::widget::take_layout_moved();
+        // Read after the layout: placing the strips can resync them from the
+        // tree, which bumps the chrome.
+        self.laid_out_at = Some(self.tree_revisions());
+    }
+
+    /// Whether the desktop was laid out (no tree to lay out, or a layout
+    /// that failed, leaves it owed).
+    fn solve_layout(&mut self) -> bool {
         let (w, h) = self.viewport;
         // `None` only in the narrow window where `rebuild_layout_tree` just
         // failed to build a tree (see its doc) — nothing to lay out until
         // the next successful rebuild.
         let (Some(outer), Some(child)) = (self.root_node, self.host_node) else {
-            return;
+            return false;
         };
         // Borrowed rather than cloned — the closure only needs read access
         // and the borrow is disjoint from `self.taffy`/`self.text_renderer`.
@@ -2040,7 +2110,7 @@ impl FrameBuilder {
             if let Some(line) = self.skipped_frames.skip(&err, ui::time::now()) {
                 tracing::error!("frame-builder: {line}");
             }
-            return;
+            return false;
         }
         let solved = std::time::Instant::now();
         crate::compositor::metrics::profile::record_phase(
@@ -2056,6 +2126,7 @@ impl FrameBuilder {
             self.settle_palette_focus(palette);
         }
         self.layout_osk_overlay();
+        true
     }
 
     /// Dock the keyboard at the bottom of the output it serves: the one
@@ -2192,6 +2263,9 @@ impl FrameBuilder {
                 update_done.duration_since(sync_done),
             );
         }
+        // What changed may be laid out differently; what an animation moved
+        // it noted (`ui::widget::note_layout_moved`).
+        self.layout_owed |= changed || settled;
         changed || settled
     }
 
@@ -5954,6 +6028,22 @@ impl FrameBuilder {
     /// layout/paint core shared by both. Both `ShellDriver::dispatch` and
     /// the compositor's `pump_test_control_conn` route through this one method.
     pub fn dispatch_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        state: &mut ui::widget::Edits<'_>,
+        root_obj: &ObjId,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let focus_before = *focus;
+        let handled = self.dispatch_to_desktop(event, modifiers, state, root_obj, focus);
+        // What the desktop handled, or a move of focus, may move what it
+        // lays out, as in an app's window.
+        self.layout_owed |= handled || *focus != focus_before;
+        handled
+    }
+
+    fn dispatch_to_desktop(
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
@@ -10466,6 +10556,10 @@ mod window_bar_keyboard_tests;
 #[cfg(test)]
 #[path = "frame_quiet_pump_tests.rs"]
 mod quiet_pump_tests;
+
+#[cfg(test)]
+#[path = "frame_layout_owed_tests.rs"]
+mod layout_owed_tests;
 
 #[cfg(test)]
 #[allow(

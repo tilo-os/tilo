@@ -112,6 +112,8 @@ pub(super) struct LayoutRuntime {
     /// What a host that draws only its frames' damage keeps from frame to
     /// frame ([`crate::draw_cull`]).
     pub(super) cull: crate::draw_cull::Culling,
+    /// What the frame's whole-tree walks last read.
+    pub(super) walks: TreeWalks,
 }
 
 impl LayoutRuntime {
@@ -141,6 +143,7 @@ impl LayoutRuntime {
             placed_all: None,
             placed_partly: false,
             cull: crate::draw_cull::Culling::default(),
+            walks: TreeWalks::default(),
         }
     }
 
@@ -155,6 +158,78 @@ impl LayoutRuntime {
             self.undescribed_by = Some(std::panic::Location::caller());
         }
     }
+}
+
+/// Which retained widgets, declaring what, a frame's whole-tree walks read.
+/// What the widgets declare moves on with the resource generation (an
+/// update, a sync or an input that changed it:
+/// `App::invalidate_widget_resource_cache`), the widgets themselves with a
+/// rebuild or a remount, and what the local actor may do with the
+/// permission generation. Equal generations are the same tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TreeGeneration {
+    pub(super) resources: u64,
+    pub(super) rebuilds: u64,
+    pub(super) remounts: u64,
+    pub(super) permissions: u64,
+}
+
+/// What a frame's walks of the whole widget tree last read. A walk whose
+/// inputs are all as it last read them would find what it found then, so
+/// a frame that changed none of them (one only an animation asked for)
+/// skips it. Emptied with the widget resource cache.
+#[derive(Default)]
+pub(super) struct TreeWalks {
+    /// What control availability was last pushed into the tree from.
+    pub(super) availability: Option<AvailabilityWalk>,
+    /// What the document routes were last reconciled against.
+    pub(super) routes: Option<RouteInputs>,
+    /// What the last walk for History surfaces in the tree read and found.
+    pub(super) history: Option<HistoryWalk>,
+}
+
+/// Every input of pushing control availability into the tree.
+#[derive(PartialEq, Eq)]
+pub(super) struct AvailabilityInputs {
+    pub(super) tree: TreeGeneration,
+    pub(super) framework_input: bool,
+    pub(super) history_captures: bool,
+    /// The addresses the window's History door serves.
+    pub(super) history_door: std::collections::HashSet<tilo_actions::ActionAddress>,
+}
+
+/// What pushing control availability into the tree last read and found.
+pub(super) struct AvailabilityWalk {
+    pub(super) inputs: AvailabilityInputs,
+    /// What the action emitters were last refreshed against
+    /// (`ActionRuntime::last_control_availability`) as the walk left it:
+    /// anything that drops it asks for the walk again.
+    pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
+    /// The tree holds bound components. Each reads its authority from a
+    /// permission context of its own, which changes without the app's
+    /// generations moving, so their controls are refreshed every frame.
+    pub(super) bound: bool,
+}
+
+/// Every input of reconciling the document routes with the tree.
+#[derive(PartialEq)]
+pub(super) struct RouteInputs {
+    pub(super) tree: TreeGeneration,
+    pub(super) witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) autosave_generation: u64,
+    pub(super) document: (Vec<automerge::ChangeHash>, usize),
+}
+
+/// What the last walk for History surfaces read and found.
+pub(super) struct HistoryWalk {
+    pub(super) tree: TreeGeneration,
+    pub(super) status: Option<crate::widget::WindowStatus>,
+    /// The tree holds History surfaces. Each asks every frame for what other
+    /// threads deliver to it, so the tree is walked every frame while any is
+    /// in it.
+    pub(super) embedded: bool,
+    /// The window's own History found the root it registered.
+    pub(super) root_valid: bool,
 }
 
 /// Input modality, gesture, cursor, and tooltip state.
